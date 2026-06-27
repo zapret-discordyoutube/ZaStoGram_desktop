@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "core/core_settings_proxy.h"
+#include "mtproto/mtproto_proxy_data.h"
 #include "media/media_common.h"
 #include "dialogs/ui/dialogs_quick_action.h"
 #include "window/themes/window_themes_embedded.h"
@@ -1031,6 +1032,9 @@ public:
 	void setMediaGridZoomStep(int value) {
 		_mediaGridZoomStep = value;
 	}
+
+	[[nodiscard]] MTP::ProxyStealthOptions proxyStealthOptions();
+	void setProxyStealthOptions(const MTP::ProxyStealthOptions &value);
 
 	template <typename Type, typename Other>
 	void writePref(std::string_view key, Other &&value) {

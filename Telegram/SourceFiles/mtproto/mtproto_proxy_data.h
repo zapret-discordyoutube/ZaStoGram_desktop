@@ -53,6 +53,57 @@ struct ProxyData {
 
 };
 
+enum class ProxyTlsProfile {
+	Auto,
+	Firefox,
+	AndroidChrome,
+	Yandex,
+	FirefoxAndroid,
+	AndroidOkHttp,
+	AutoRotate,
+	ChromeModern,
+};
+enum class ProxyClientHelloFragmentation {
+	Off,
+	Soft,
+};
+enum class ProxyConnectionPattern {
+	Off,
+	Soft,
+	Quiet,
+	Strict,
+	Browser,
+};
+enum class ProxyRecordSizing {
+	Off,
+	Conservative,
+	Varied,
+};
+enum class ProxyTiming {
+	Off,
+	Gentle,
+	Balanced,
+};
+enum class ProxyStartupCover {
+	Off,
+	Soft,
+	Strict,
+};
+
+struct ProxyStealthOptions {
+	ProxyTlsProfile tlsProfile = ProxyTlsProfile::Auto;
+	ProxyClientHelloFragmentation clientHelloFragmentation
+		= ProxyClientHelloFragmentation::Off;
+	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
+	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
+	ProxyTiming timing = ProxyTiming::Off;
+	ProxyStartupCover startupCover = ProxyStartupCover::Soft;
+
+	friend bool operator==(
+		const ProxyStealthOptions &,
+		const ProxyStealthOptions &) = default;
+};
+
 [[nodiscard]] ProxyData ToDirectIpProxy(
 	const ProxyData &proxy,
 	int ipIndex = 0);

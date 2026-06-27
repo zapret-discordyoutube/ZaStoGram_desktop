@@ -31,6 +31,11 @@ const auto kServerHeader = qstr("\x17\x03\x03");
 constexpr auto kClientPartSize = 2878;
 const auto kClientPrefix = qstr("\x14\x03\x03\x00\x01\x01");
 const auto kClientHeader = qstr("\x17\x03\x03");
+constexpr auto kStartupCoverSoftWindow = crl::time(12000);
+constexpr auto kStartupCoverStrictWindow = crl::time(20000);
+constexpr auto kStartupCoverSoftFrames = 8;
+constexpr auto kStartupCoverStrictFrames = 14;
+constexpr auto kRecordSizeMin = 256;
 
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
@@ -600,10 +605,15 @@ TlsSocket::TlsSocket(
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
 	const QNetworkProxy &proxy,
-	bool protocolForFiles)
+	bool protocolForFiles,
+	const ProxyStealthOptions &stealth)
 : AbstractSocket(thread)
 , _secret(secret) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
+
+	_recordSizing = RecordSizing(int(stealth.recordSizing));
+	_startupCover = StartupCover(int(stealth.startupCover));
+	_clientHelloFragmentation = stealth.clientHelloFragmentation;
 
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
@@ -647,10 +657,27 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 	return bytes::make_span(_secret).subspan(1, 16);
 }
 
+void TlsSocket::writeClientHello(const QByteArray &data) {
+	const auto size = int(data.size());
+	if (_clientHelloFragmentation != ProxyClientHelloFragmentation::Soft
+		|| size < 384) {
+		_socket.write(data);
+		return;
+	}
+	const auto maxFirst = std::min(768, size - 96);
+	const auto minFirst = std::min(224, maxFirst);
+	const auto range = (maxFirst > minFirst) ? (maxFirst - minFirst + 1) : 1;
+	const auto first = minFirst + base::RandomIndex(range);
+	_socket.write(data.constData(), first);
+	_socket.flush();
+	_socket.write(data.constData() + first, size - first);
+}
+
 void TlsSocket::plainConnected() {
 	if (_state != State::Connecting) {
 		return;
 	}
+	_phase = HandshakePhase::TcpConnected;
 
 	static const auto kClientHelloRules = PrepareClientHelloRules();
 	const auto hello = PrepareClientHello(
@@ -664,7 +691,8 @@ void TlsSocket::plainConnected() {
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
-		_socket.write(hello.data);
+		writeClientHello(hello.data);
+		_phase = HandshakePhase::ClientHelloSent;
 	}
 }
 
@@ -778,6 +806,11 @@ void TlsSocket::checkHelloDigest() {
 	}
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
 	_state = State::Connected;
+	_phase = HandshakePhase::ServerHelloOk;
+	if (_startupCover != StartupCover::Off) {
+		_startupCoverStartedAt = crl::now();
+		_startupCoverFrames = 0;
+	}
 	_connected.fire({});
 }
 
@@ -814,6 +847,7 @@ bool TlsSocket::checkNextPacket() {
 			}
 			_incomingGoodDataOffset = fullHeader;
 			_incomingGoodDataLimit = length;
+			_phase = HandshakePhase::FirstDataReceived;
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -893,6 +927,52 @@ int64 TlsSocket::read(bytes::span buffer) {
 	return written;
 }
 
+TlsSocket::RecordSizing TlsSocket::effectiveRecordSizing() {
+	if (!startupCoverActive()) {
+		return _recordSizing;
+	} else if (_startupCover == StartupCover::Strict) {
+		return RecordSizing::Varied;
+	}
+	return (_recordSizing == RecordSizing::Off)
+		? RecordSizing::Conservative
+		: _recordSizing;
+}
+
+bool TlsSocket::startupCoverActive() {
+	if (_startupCover == StartupCover::Off || !_startupCoverStartedAt) {
+		return false;
+	}
+	const auto strict = (_startupCover == StartupCover::Strict);
+	const auto window = strict
+		? kStartupCoverStrictWindow
+		: kStartupCoverSoftWindow;
+	const auto maxFrames = strict
+		? kStartupCoverStrictFrames
+		: kStartupCoverSoftFrames;
+	if (crl::now() - _startupCoverStartedAt > window
+		|| _startupCoverFrames >= maxFrames) {
+		_startupCoverStartedAt = 0;
+		return false;
+	}
+	return true;
+}
+
+int TlsSocket::nextRecordPayloadSize() {
+	const auto mode = effectiveRecordSizing();
+	auto cap = int(kClientPartSize);
+	if (mode == RecordSizing::Conservative) {
+		static constexpr int kCaps[] = {
+			1440, 1728, 2016, 2304, 2580, 2878,
+		};
+		cap = kCaps[base::RandomIndex(int(std::size(kCaps)))];
+	} else if (mode == RecordSizing::Varied) {
+		const auto minCap = _firstAppDataSent ? 768 : 1200;
+		const auto maxCap = _firstAppDataSent ? 2878 : 2016;
+		cap = minCap + base::RandomIndex(maxCap - minCap + 1);
+	}
+	return std::clamp(cap, kRecordSizeMin, int(kClientPartSize));
+}
+
 void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	Expects(!buffer.empty());
 
@@ -903,9 +983,10 @@ void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 		_socket.write(kClientPrefix.data(), kClientPrefix.size());
 	}
 	while (!buffer.empty()) {
+		const auto cap = nextRecordPayloadSize();
 		const auto write = std::min(
-			kClientPartSize - prefix.size(),
-			buffer.size());
+			cap - int(prefix.size()),
+			int(buffer.size()));
 		_socket.write(kClientHeader.data(), kClientHeader.size());
 		const auto size = qToBigEndian(uint16(prefix.size() + write));
 		_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
@@ -919,6 +1000,8 @@ void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 			reinterpret_cast<const char*>(buffer.data()),
 			write);
 		buffer = buffer.subspan(write);
+		_firstAppDataSent = true;
+		++_startupCoverFrames;
 	}
 }
 
@@ -928,6 +1011,10 @@ int32 TlsSocket::debugState() {
 
 QString TlsSocket::debugPostfix() const {
 	return u"_ee"_q;
+}
+
+HandshakePhase TlsSocket::handshakePhase() const {
+	return _phase;
 }
 
 void TlsSocket::handleError(int errorCode) {

@@ -73,7 +73,8 @@ public:
 		DcOptions::Variants::Protocol protocol,
 		QThread *thread,
 		const bytes::vector &secret,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		const ProxyStealthOptions &stealth);
 
 	[[nodiscard]] virtual ConnectionPointer clone(const ProxyData &proxy) = 0;
 

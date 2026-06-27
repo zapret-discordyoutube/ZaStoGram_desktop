@@ -36,6 +36,8 @@ constexpr auto kMinConnectedTimeout = crl::time(1000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
 constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
+constexpr auto kProxyReconnectMinTimeout = 1800;
+constexpr auto kProxyReconnectMaxTimeout = 8000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kPingDelayDisconnect = 60;
 constexpr auto kPingSendAfter = 30 * crl::time(1000);
@@ -206,7 +208,8 @@ void SessionPrivate::appendTestConnection(
 			protocol,
 			thread(),
 			protocolSecret,
-			_options->proxy),
+			_options->proxy,
+			_options->stealth),
 		priority
 	});
 	const auto weak = _testConnections.back().data.get();
@@ -992,12 +995,15 @@ void SessionPrivate::tryToSend() {
 }
 
 void SessionPrivate::retryByTimer() {
+	const auto proxied = _options
+		&& (_options->proxy.type != ProxyData::Type::None);
+	const auto maxTimeout = proxied ? kProxyReconnectMaxTimeout : 64000;
 	if (_retryTimeout < 3) {
 		++_retryTimeout;
 	} else if (_retryTimeout == 3) {
-		_retryTimeout = 1000;
-	} else if (_retryTimeout < 64000) {
-		_retryTimeout *= 2;
+		_retryTimeout = proxied ? kProxyReconnectMinTimeout : 1000;
+	} else if (_retryTimeout < maxTimeout) {
+		_retryTimeout = std::min(_retryTimeout * 2, maxTimeout);
 	}
 	connectToServer();
 }
@@ -1224,8 +1230,17 @@ void SessionPrivate::waitReceivedFailed() {
 		return;
 	}
 
-	DEBUG_LOG(("MTP Info: immediate restart!"));
-	InvokeQueued(this, [=] { connectToServer(); });
+	if (_options->proxy.type != ProxyData::Type::None) {
+		if (_retryTimeout < kProxyReconnectMinTimeout) {
+			_retryTimeout = kProxyReconnectMinTimeout;
+		}
+		DEBUG_LOG(("MTP Info: proxy reconnect backoff %1ms!"
+			).arg(_retryTimeout));
+		setState(-_retryTimeout);
+	} else {
+		DEBUG_LOG(("MTP Info: immediate restart!"));
+		InvokeQueued(this, [=] { connectToServer(); });
+	}
 
 	const auto instance = _instance;
 	const auto shiftedDcId = _shiftedDcId;
@@ -1246,8 +1261,19 @@ void SessionPrivate::waitConnectedFailed() {
 
 	connectingTimedOut();
 
-	DEBUG_LOG(("MTP Info: immediate restart!"));
-	InvokeQueued(this, [=] { connectToServer(); });
+	if (_options
+		&& (_options->proxy.type != ProxyData::Type::None)
+		&& !_retryTimer.isActive()) {
+		if (_retryTimeout < kProxyReconnectMinTimeout) {
+			_retryTimeout = kProxyReconnectMinTimeout;
+		}
+		DEBUG_LOG(("MTP Info: proxy reconnect backoff %1ms!"
+			).arg(_retryTimeout));
+		setState(-_retryTimeout);
+	} else {
+		DEBUG_LOG(("MTP Info: immediate restart!"));
+		InvokeQueued(this, [=] { connectToServer(); });
+	}
 }
 
 void SessionPrivate::waitBetterFailed() {

@@ -59,7 +59,8 @@ void StartProxyCheck(
 			connType,
 			QThread::currentThread(),
 			secret,
-			proxy);
+			proxy,
+			ProxyStealthOptions());
 		const auto raw = checker.get();
 		raw->connect(raw, &Connection::connected, [=] {
 			if (done) {

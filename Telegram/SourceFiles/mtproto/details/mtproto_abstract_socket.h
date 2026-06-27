@@ -9,8 +9,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/basic_types.h"
+#include "mtproto/mtproto_proxy_data.h"
 
 namespace MTP::details {
+
+enum class HandshakePhase {
+	None,
+	TcpConnected,
+	ClientHelloSent,
+	ServerHelloOk,
+	FirstDataReceived,
+};
 
 class AbstractSocket : protected QObject {
 public:
@@ -18,7 +27,8 @@ public:
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		const ProxyStealthOptions &stealth);
 
 	void setDebugId(const QString &id) {
 		_debugId = id;
@@ -57,6 +67,10 @@ public:
 
 	virtual int32 debugState() = 0;
 	[[nodiscard]] virtual QString debugPostfix() const = 0;
+
+	[[nodiscard]] virtual HandshakePhase handshakePhase() const {
+		return HandshakePhase::None;
+	}
 
 protected:
 	static const int kFilesSendBufferSize = 2 * 1024 * 1024;

@@ -49,6 +49,7 @@ struct SessionOptions {
 	bool useIPv6 = true;
 	bool useHttp = true;
 	bool useTcp = true;
+	ProxyStealthOptions stealth;
 
 };
 

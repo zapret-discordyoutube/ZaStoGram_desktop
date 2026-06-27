@@ -245,7 +245,7 @@ void Session::refreshOptions() {
 	const auto useHttp = (proxyType != ProxyData::Type::Mtproto);
 	const auto useIPv4 = true;
 	const auto useIPv6 = settings.tryIPv6();
-	_data->setOptions(SessionOptions(
+	auto options = SessionOptions(
 		_instance->systemLangCode(),
 		_instance->cloudLangCode(),
 		_instance->langPackName(),
@@ -253,7 +253,9 @@ void Session::refreshOptions() {
 		useIPv4,
 		useIPv6,
 		useHttp,
-		useTcp));
+		useTcp);
+	options.stealth = Core::App().settings().proxyStealthOptions();
+	_data->setOptions(std::move(options));
 }
 
 void Session::reInitConnection() {

@@ -247,14 +247,20 @@ auto TcpConnection::Protocol::Create(bytes::const_span secret)
 TcpConnection::TcpConnection(
 	not_null<Instance*> instance,
 	QThread *thread,
-	const ProxyData &proxy)
+	const ProxyData &proxy,
+	const ProxyStealthOptions &stealth)
 : AbstractConnection(thread, proxy)
 , _instance(instance)
+, _stealth(stealth)
 , _checkNonce(base::RandomValue<MTPint128>()) {
 }
 
 ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
-	return ConnectionPointer::New<TcpConnection>(_instance, thread(), proxy);
+	return ConnectionPointer::New<TcpConnection>(
+		_instance,
+		thread(),
+		proxy,
+		_stealth);
 }
 
 void TcpConnection::ensureAvailableInBuffer(int amount) {
@@ -530,7 +536,8 @@ void TcpConnection::connectToServer(
 		thread(),
 		secret,
 		ToNetworkProxy(_proxy),
-		protocolForFiles);
+		protocolForFiles,
+		_stealth);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();

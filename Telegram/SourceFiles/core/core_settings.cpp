@@ -1249,6 +1249,57 @@ void Settings::writePrefImpl<bool>(std::string_view key, bool value) {
 	writePrefGeneric(key, value ? "\x1"_q : QByteArray());
 }
 
+MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
+	const auto read = [&](std::string_view key, int fallback, int maxValue) {
+		if (const auto data = readPrefGeneric(key)) {
+			auto ok = false;
+			const auto value = data->toInt(&ok);
+			if (ok && value >= 0 && value <= maxValue) {
+				return value;
+			}
+		}
+		return fallback;
+	};
+	auto result = MTP::ProxyStealthOptions();
+	result.tlsProfile = MTP::ProxyTlsProfile(read(
+		"mtproxy/tlsProfile",
+		int(result.tlsProfile),
+		int(MTP::ProxyTlsProfile::ChromeModern)));
+	result.clientHelloFragmentation = MTP::ProxyClientHelloFragmentation(read(
+		"mtproxy/chFrag",
+		int(result.clientHelloFragmentation),
+		int(MTP::ProxyClientHelloFragmentation::Soft)));
+	result.connectionPattern = MTP::ProxyConnectionPattern(read(
+		"mtproxy/pattern",
+		int(result.connectionPattern),
+		int(MTP::ProxyConnectionPattern::Browser)));
+	result.recordSizing = MTP::ProxyRecordSizing(read(
+		"mtproxy/recordSizing",
+		int(result.recordSizing),
+		int(MTP::ProxyRecordSizing::Varied)));
+	result.timing = MTP::ProxyTiming(read(
+		"mtproxy/timing",
+		int(result.timing),
+		int(MTP::ProxyTiming::Balanced)));
+	result.startupCover = MTP::ProxyStartupCover(read(
+		"mtproxy/startupCover",
+		int(result.startupCover),
+		int(MTP::ProxyStartupCover::Strict)));
+	return result;
+}
+
+void Settings::setProxyStealthOptions(const MTP::ProxyStealthOptions &value) {
+	const auto write = [&](std::string_view key, int v) {
+		writePrefGeneric(key, QByteArray::number(v));
+	};
+	write("mtproxy/tlsProfile", int(value.tlsProfile));
+	write("mtproxy/chFrag", int(value.clientHelloFragmentation));
+	write("mtproxy/pattern", int(value.connectionPattern));
+	write("mtproxy/recordSizing", int(value.recordSizing));
+	write("mtproxy/timing", int(value.timing));
+	write("mtproxy/startupCover", int(value.startupCover));
+}
+
 QString Settings::getSoundPath(const QString &key) const {
 	auto it = _soundOverrides.find(key);
 	if (it != _soundOverrides.end()) {

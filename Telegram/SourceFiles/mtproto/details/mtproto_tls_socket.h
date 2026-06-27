@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/mtproto_proxy_data.h"
 
 namespace MTP::details {
 
@@ -17,7 +18,8 @@ public:
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		const ProxyStealthOptions &stealth);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -29,6 +31,7 @@ public:
 
 	int32 debugState() override;
 	QString debugPostfix() const override;
+	HandshakePhase handshakePhase() const override;
 
 private:
 	enum class State {
@@ -37,6 +40,16 @@ private:
 		WaitingHello,
 		Connected,
 		Error,
+	};
+	enum class RecordSizing {
+		Off,
+		Conservative,
+		Varied,
+	};
+	enum class StartupCover {
+		Off,
+		Soft,
+		Strict,
 	};
 
 	[[nodiscard]] bytes::const_span domainFromSecret() const;
@@ -54,6 +67,10 @@ private:
 	void readData();
 	[[nodiscard]] bool checkNextPacket();
 	void shiftIncomingBy(int amount);
+	[[nodiscard]] RecordSizing effectiveRecordSizing();
+	[[nodiscard]] bool startupCoverActive();
+	[[nodiscard]] int nextRecordPayloadSize();
+	void writeClientHello(const QByteArray &data);
 
 	const bytes::vector _secret;
 	QTcpSocket _socket;
@@ -62,6 +79,14 @@ private:
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;
 	int16 _serverHelloLength = 0;
+	RecordSizing _recordSizing = RecordSizing::Off;
+	StartupCover _startupCover = StartupCover::Soft;
+	crl::time _startupCoverStartedAt = 0;
+	int _startupCoverFrames = 0;
+	bool _firstAppDataSent = false;
+	ProxyClientHelloFragmentation _clientHelloFragmentation
+		= ProxyClientHelloFragmentation::Off;
+	HandshakePhase _phase = HandshakePhase::None;
 
 };
 
