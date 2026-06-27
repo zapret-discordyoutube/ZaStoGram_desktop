@@ -240,3 +240,36 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: artifact\
+
+  release:
+    name: Pre-release
+    needs: windows
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts.
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+      - name: Collect binaries.
+        run: |
+          mkdir release
+          for d in artifacts/*/; do
+            name="$(basename "$d")"
+            arch="$(echo "$name" | sed 's/^Telegram //; s/ /_/g')"
+            [ -f "$d/Telegram.exe" ] && cp "$d/Telegram.exe" "release/ZaStoGram-$arch.exe"
+            [ -f "$d/Updater.exe" ] && cp "$d/Updater.exe" "release/Updater-$arch.exe"
+          done
+          ls -la release
+      - name: Publish pre-release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "dev-${{ github.run_number }}" release/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "ZaStoGram dev ${{ github.run_number }}" \
+            --notes "Automated pre-release from ${{ github.sha }}." \
+            --prerelease
