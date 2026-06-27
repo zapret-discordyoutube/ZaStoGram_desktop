@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/mtproto_proxy_data.h"
+#include "base/timer.h"
 
 namespace MTP::details {
 
@@ -70,7 +71,10 @@ private:
 	[[nodiscard]] RecordSizing effectiveRecordSizing();
 	[[nodiscard]] bool startupCoverActive();
 	[[nodiscard]] int nextRecordPayloadSize();
+	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
+	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
+	void sendOutgoing();
 
 	const bytes::vector _secret;
 	QTcpSocket _socket;
@@ -86,6 +90,12 @@ private:
 	bool _firstAppDataSent = false;
 	ProxyClientHelloFragmentation _clientHelloFragmentation
 		= ProxyClientHelloFragmentation::Off;
+	ProxyTlsProfile _tlsProfile = ProxyTlsProfile::Auto;
+	ProxyTiming _timing = ProxyTiming::Off;
+	QByteArray _outgoing;
+	int _outgoingOffset = 0;
+	bool _clientPrefixSent = false;
+	base::Timer _pacingTimer;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };

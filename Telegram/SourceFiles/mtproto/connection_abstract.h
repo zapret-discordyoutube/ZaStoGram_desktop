@@ -131,6 +131,17 @@ public:
 	[[nodiscard]] QString debugId() const {
 		return _debugId;
 	}
+	enum class TransportMode {
+		None,
+		Direct,
+		Socks5,
+		Http,
+		PlainMtproxy,
+		FakeTlsMtproxy,
+	};
+	[[nodiscard]] TransportMode transportMode() const {
+		return _transport;
+	}
 	void logInfo(const QString &message);
 	void logError(const QString &message);
 
@@ -152,6 +163,7 @@ protected:
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet
 	int _pingTime = 0;
 	ProxyData _proxy;
+	TransportMode _transport = TransportMode::None;
 
 	QString _debugId;
 

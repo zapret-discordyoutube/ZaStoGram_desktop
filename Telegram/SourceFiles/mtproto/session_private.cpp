@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "base/openssl_help.h"
 #include "base/unixtime.h"
+#include "base/call_delayed.h"
 #include "base/platform/base_platform_info.h"
 
 #include <ksandbox.h>
@@ -38,6 +39,8 @@ constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
+constexpr auto kEndpointCooldownTimeout = crl::time(10000);
+constexpr auto kEndpointCooldownPenalty = 8;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kPingDelayDisconnect = 60;
 constexpr auto kPingSendAfter = 30 * crl::time(1000);
@@ -69,6 +72,17 @@ constexpr auto kCutContainerOnSize = 16 * 1024;
 auto SyncTimeRequestDuration = kFastRequestDuration;
 
 using namespace details;
+
+[[nodiscard]] crl::time ProxyPatternSpacing(ProxyConnectionPattern pattern) {
+	switch (pattern) {
+	case ProxyConnectionPattern::Soft: return crl::time(150);
+	case ProxyConnectionPattern::Quiet: return crl::time(400);
+	case ProxyConnectionPattern::Strict: return crl::time(700);
+	case ProxyConnectionPattern::Browser: return crl::time(250);
+	case ProxyConnectionPattern::Off: break;
+	}
+	return crl::time(0);
+}
 
 [[nodiscard]] QString LogIdsVector(const QVector<MTPlong> &ids) {
 	if (!ids.size()) return "[]";
@@ -199,9 +213,17 @@ void SessionPrivate::appendTestConnection(
 		const bytes::vector &protocolSecret) {
 	QWriteLocker lock(&_stateMutex);
 
+	const auto endpoint = ip.isEmpty()
+		? (_options->proxy.host + ':' + QString::number(_options->proxy.port))
+		: (ip + ':' + QString::number(port));
+	const auto cooled = [&] {
+		const auto i = _endpointCooldownUntil.find(endpoint);
+		return (i != end(_endpointCooldownUntil)) && (i->second > crl::now());
+	}();
 	const auto priority = (qthelp::is_ipv6(ip) ? (OptionPreferIPv6.value() ? 2 : 0) : 1)
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
-		+ (protocolSecret.empty() ? 0 : 1);
+		+ (protocolSecret.empty() ? 0 : 1)
+		- (cooled ? kEndpointCooldownPenalty : 0);
 	_testConnections.push_back({
 		AbstractConnection::Create(
 			_instance,
@@ -210,7 +232,8 @@ void SessionPrivate::appendTestConnection(
 			protocolSecret,
 			_options->proxy,
 			_options->stealth),
-		priority
+		priority,
+		endpoint
 	});
 	const auto weak = _testConnections.back().data.get();
 	connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -241,14 +264,24 @@ void SessionPrivate::appendTestConnection(
 		//|| isUploadDcId(_shiftedDcId)
 		|| (_realDcType == DcType::Cdn);
 	const auto protocolDcId = getProtocolDcId();
-	InvokeQueued(_testConnections.back().data, [=] {
+	const auto start = [=] {
 		weak->connectToServer(
 			ip,
 			port,
 			protocolSecret,
 			protocolDcId,
 			protocolForFiles);
-	});
+	};
+	const auto proxied = (_options->proxy.type != ProxyData::Type::None);
+	const auto spacing = proxied
+		? ProxyPatternSpacing(_options->stealth.connectionPattern)
+		: crl::time(0);
+	const auto startDelay = spacing * (int(_testConnections.size()) - 1);
+	if (startDelay > 0) {
+		base::call_delayed(startDelay, weak, start);
+	} else {
+		InvokeQueued(_testConnections.back().data, start);
+	}
 }
 
 int16 SessionPrivate::getProtocolDcId() const {
@@ -2352,6 +2385,7 @@ void SessionPrivate::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_testConnections));
+	_endpointCooldownUntil.remove(i->endpoint);
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_testConnections,
@@ -2637,6 +2671,14 @@ void SessionPrivate::onError(
 		InvokeQueued(_instance, [instance = _instance] {
 			instance->badConfigurationError();
 		});
+	}
+	const auto found = ranges::find(
+		_testConnections,
+		connection.get(),
+		[](const TestConnection &test) { return test.data.get(); });
+	if (found != end(_testConnections) && !found->endpoint.isEmpty()) {
+		_endpointCooldownUntil[found->endpoint] = crl::now()
+			+ kEndpointCooldownTimeout;
 	}
 	removeTestConnection(connection);
 

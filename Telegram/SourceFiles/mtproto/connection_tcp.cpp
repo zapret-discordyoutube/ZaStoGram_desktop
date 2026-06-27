@@ -523,6 +523,15 @@ void TcpConnection::connectToServer(
 	const auto secret = (_proxy.type == ProxyData::Type::Mtproto)
 		? _proxy.secretFromMtprotoPassword()
 		: protocolSecret;
+	_transport = (_proxy.type == ProxyData::Type::Socks5)
+		? TransportMode::Socks5
+		: (_proxy.type == ProxyData::Type::Http)
+		? TransportMode::Http
+		: (_proxy.type == ProxyData::Type::Mtproto)
+		? ((secret.size() >= 21 && secret[0] == bytes::type(0xEE))
+			? TransportMode::FakeTlsMtproxy
+			: TransportMode::PlainMtproxy)
+		: TransportMode::Direct;
 	if (_proxy.type == ProxyData::Type::Mtproto) {
 		_address = _proxy.host;
 		_port = _proxy.port;

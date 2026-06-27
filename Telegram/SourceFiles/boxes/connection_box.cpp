@@ -1196,6 +1196,73 @@ void ProxiesBox::setupContent() {
 			st::boxDividerLabel),
 		st::proxyAboutPadding);
 
+	const auto addStealthToggle = [&](
+			const QString &label,
+			bool checked,
+			Fn<void(bool)> save) {
+		const auto toggle = inner->add(
+			object_ptr<Ui::Checkbox>(inner, label, checked),
+			st::proxyTryIPv6Padding);
+		toggle->checkedChanges(
+		) | rpl::on_next([=](bool value) {
+			save(value);
+		}, toggle->lifetime());
+	};
+	{
+		const auto saved = Core::App().settings().proxyStealthOptions();
+		addStealthToggle(
+			u"Mask MTProxy start (anti-DPI)"_q,
+			(saved.startupCover != MTP::ProxyStartupCover::Off),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.startupCover = on
+					? MTP::ProxyStartupCover::Soft
+					: MTP::ProxyStartupCover::Off;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Fragment ClientHello"_q,
+			(saved.clientHelloFragmentation
+				!= MTP::ProxyClientHelloFragmentation::Off),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.clientHelloFragmentation = on
+					? MTP::ProxyClientHelloFragmentation::Soft
+					: MTP::ProxyClientHelloFragmentation::Off;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Vary TLS record sizes"_q,
+			(saved.recordSizing != MTP::ProxyRecordSizing::Off),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.recordSizing = on
+					? MTP::ProxyRecordSizing::Conservative
+					: MTP::ProxyRecordSizing::Off;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Pace MTProxy traffic"_q,
+			(saved.timing != MTP::ProxyTiming::Off),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.timing = on
+					? MTP::ProxyTiming::Gentle
+					: MTP::ProxyTiming::Off;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Spread connection attempts"_q,
+			(saved.connectionPattern != MTP::ProxyConnectionPattern::Off),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.connectionPattern = on
+					? MTP::ProxyConnectionPattern::Soft
+					: MTP::ProxyConnectionPattern::Off;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+	}
+
 	_about = inner->add(
 		object_ptr<Ui::DividerLabel>(
 			inner,

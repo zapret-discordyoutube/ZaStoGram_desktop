@@ -40,7 +40,8 @@ constexpr auto kRecordSizeMin = 256;
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
 
-[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules() {
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules(
+		ProxyTlsProfile profile) {
 	using Scope = QVector<MTPTlsBlock>;
 	using Permutation = std::vector<Scope>;
 	using StackElement = std::variant<Scope, Permutation>;
@@ -127,6 +128,273 @@ using BigNumContext = openssl::Context;
 
 	stack.emplace_back(Scope());
 
+	switch (profile) {
+	case ProxyTlsProfile::Firefox: {
+		S("\x16\x03\x01"_q);
+		OpenScope();
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x03\x03"_q);
+		Z(32);
+		S("\x20"_q);
+		R(32);
+		S("\x00\x22"_q);
+		G(0);
+		S(""
+			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
+			"\xc0\x30\xc0\x0a\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"_q);
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x00\x00"_q);
+		OpenScope();
+		OpenScope();
+		S("\x00"_q);
+		OpenScope();
+		D();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		S("\x00\x17\x00\x00"_q);
+		S("\xff\x01\x00\x01\x00"_q);
+		S("\x00\x0a\x00\x10\x00\x0e"_q);
+		G(2);
+		S("\x00\x1d\x00\x17\x00\x18\x00\x19\x01\x00\x01\x01"_q);
+		S("\x00\x0b\x00\x02\x01\x00"_q);
+		S("\x00\x23\x00\x00"_q);
+		S(""
+			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
+			"\x2e\x31"_q);
+		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
+		S("\x00\x33\x05\x2f\x05\x2d"_q);
+		S("\x11\xec\x04\xc0"_q);
+		M();
+		K();
+		S("\x00\x1d\x00\x20"_q);
+		K();
+		S("\x00\x17\x00\x41"_q);
+		R(65);
+		S("\x00\x2b\x00\x07\x06"_q);
+		G(4);
+		S("\x03\x04\x03\x03"_q);
+		S(""
+			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
+			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
+		S("\x00\x2d\x00\x02\x01\x01"_q);
+		S("\x00\x1c\x00\x02\x40\x01"_q);
+		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
+		S("\xfe\x0d\x01\x19"_q);
+		S("\x00\x00\x01\x00\x01"_q);
+		R(1);
+		S("\x00\x20"_q);
+		K();
+		S("\x00\xef"_q);
+		R(239);
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		break;
+	}
+	case ProxyTlsProfile::FirefoxAndroid: {
+		S("\x16\x03\x01"_q);
+		OpenScope();
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x03\x03"_q);
+		Z(32);
+		S("\x20"_q);
+		R(32);
+		S("\x00\x22"_q);
+		S(""
+			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
+			"\xc0\x30\xc0\x0a\xc0\x09\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f"
+			"\x00\x35"_q);
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x00\x00"_q);
+		OpenScope();
+		OpenScope();
+		S("\x00"_q);
+		OpenScope();
+		D();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		S("\x00\x17\x00\x00"_q);
+		S("\xff\x01\x00\x01\x00"_q);
+		S(""
+			"\x00\x0a\x00\x10\x00\x0e\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19"
+			"\x01\x00\x01\x01"_q);
+		S("\x00\x0b\x00\x02\x01\x00"_q);
+		S(""
+			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
+			"\x2e\x31"_q);
+		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
+		S("\x00\x33\x05\x2f\x05\x2d"_q);
+		S("\x11\xec\x04\xc0"_q);
+		M();
+		K();
+		S("\x00\x1d\x00\x20"_q);
+		K();
+		S("\x00\x17\x00\x41"_q);
+		R(65);
+		S("\x00\x2b\x00\x05\x04\x03\x04\x03\x03"_q);
+		S(""
+			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
+			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
+		S("\x00\x2d\x00\x02\x01\x01"_q);
+		S("\x00\x1c\x00\x02\x40\x01"_q);
+		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
+		S("\xfe\x0d\x01\xb9"_q);
+		S("\x00\x00\x01\x00\x01"_q);
+		R(1);
+		S("\x00\x20"_q);
+		K();
+		S("\x01\x8f"_q);
+		R(399);
+		S("\x00\x29"_q);
+		OpenScope();
+		S("\x00\x6f\x00\x69"_q);
+		R(105);
+		R(4);
+		S("\x00\x21\x20"_q);
+		R(32);
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		break;
+	}
+	case ProxyTlsProfile::AndroidOkHttp: {
+		S("\x16\x03\x01"_q);
+		OpenScope();
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x03\x03"_q);
+		Z(32);
+		S("\x20"_q);
+		R(32);
+		S("\x00\x20"_q);
+		G(0);
+		S(""
+			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
+			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
+		OpenScope();
+		G(2);
+		S("\x00\x00"_q);
+		S("\x00\x00"_q);
+		OpenScope();
+		OpenScope();
+		S("\x00"_q);
+		OpenScope();
+		D();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		S("\x00\x0a\x00\x0a\x00\x08"_q);
+		G(4);
+		S("\x00\x1d\x00\x17\x00\x18"_q);
+		S("\x00\x0b\x00\x02\x01\x00"_q);
+		S(""
+			"\x00\x0d\x00\x0e\x00\x0c\x04\x03\x05\x03\x04\x01\x05\x01\x02\x01"
+			"\x02\x03"_q);
+		S(""
+			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
+			"\x2e\x31"_q);
+		S("\x00\x2b\x00\x07\x06"_q);
+		G(6);
+		S("\x03\x04\x03\x03"_q);
+		S("\x00\x2d\x00\x02\x01\x01"_q);
+		S("\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20"_q);
+		K();
+		G(3);
+		S("\x00\x01\x00"_q);
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		break;
+	}
+	case ProxyTlsProfile::Yandex: {
+		S("\x16\x03\x01"_q);
+		OpenScope();
+		S("\x01\x00"_q);
+		OpenScope();
+		S("\x03\x03"_q);
+		Z(32);
+		S("\x20"_q);
+		R(32);
+		S("\x00\x20"_q);
+		G(0);
+		S(""
+			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
+			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
+		OpenScope();
+		G(2);
+		S("\x00\x00"_q);
+		S("\x00\x17\x00\x00"_q);
+		S(""
+			"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05"
+			"\x05\x01\x08\x06\x06\x01"_q);
+		S("\x00\x00"_q);
+		OpenScope();
+		OpenScope();
+		S("\x00"_q);
+		OpenScope();
+		D();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		S("\x00\x0b\x00\x02\x01\x00"_q);
+		S("\x00\x2d\x00\x02\x01\x01"_q);
+		S("\x00\x1b\x00\x03\x02\x00\x02"_q);
+		S(""
+			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
+			"\x2e\x31"_q);
+		S("\xff\x01\x00\x01\x00"_q);
+		S("\x00\x23\x00\x00"_q);
+		S("\x00\x2b\x00\x07\x06"_q);
+		G(6);
+		S("\x03\x04\x03\x03"_q);
+		S("\x00\x12\x00\x00"_q);
+		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+		S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
+		S("\x00\x0a\x00\x0c\x00\x0a"_q);
+		G(4);
+		S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
+		S("\xfe\x0d"_q);
+		OpenScope();
+		S("\x00\x00\x01\x00\x01"_q);
+		R(1);
+		S("\x00\x20"_q);
+		K();
+		OpenScope();
+		E();
+		CloseScope();
+		CloseScope();
+		S("\x00\x33\x04\xef\x04\xed"_q);
+		G(4);
+		S("\x00\x01\x00\x11\xec\x04\xc0"_q);
+		M();
+		K();
+		S("\x00\x1d\x00\x20"_q);
+		K();
+		G(3);
+		S("\x00\x00"_q);
+		S("\x00\x29"_q);
+		OpenScope();
+		S("\x00\x6f\x00\x69"_q);
+		R(105);
+		R(4);
+		S("\x00\x21\x20"_q);
+		R(32);
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+		break;
+	}
+	default: {
 	S("\x16\x03\x01"_q);
 	OpenScope();
 	S("\x01\x00"_q);
@@ -231,6 +499,9 @@ using BigNumContext = openssl::Context;
 	CloseScope();
 	CloseScope();
 	CloseScope();
+		break;
+	}
+	}
 
 	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
 }
@@ -614,6 +885,9 @@ TlsSocket::TlsSocket(
 	_recordSizing = RecordSizing(int(stealth.recordSizing));
 	_startupCover = StartupCover(int(stealth.startupCover));
 	_clientHelloFragmentation = stealth.clientHelloFragmentation;
+	_tlsProfile = stealth.tlsProfile;
+	_timing = stealth.timing;
+	_pacingTimer.setCallback([=] { sendOutgoing(); });
 
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
@@ -657,6 +931,15 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 	return bytes::make_span(_secret).subspan(1, 16);
 }
 
+ProxyTlsProfile TlsSocket::effectiveTlsProfile() const {
+	if (_tlsProfile == ProxyTlsProfile::AutoRotate) {
+		return (base::RandomIndex(2) == 0)
+			? ProxyTlsProfile::FirefoxAndroid
+			: ProxyTlsProfile::Yandex;
+	}
+	return _tlsProfile;
+}
+
 void TlsSocket::writeClientHello(const QByteArray &data) {
 	const auto size = int(data.size());
 	if (_clientHelloFragmentation != ProxyClientHelloFragmentation::Soft
@@ -679,9 +962,9 @@ void TlsSocket::plainConnected() {
 	}
 	_phase = HandshakePhase::TcpConnected;
 
-	static const auto kClientHelloRules = PrepareClientHelloRules();
+	const auto rules = PrepareClientHelloRules(effectiveTlsProfile());
 	const auto hello = PrepareClientHello(
-		kClientHelloRules,
+		rules,
 		domainFromSecret(),
 		keyFromSecret());
 	if (hello.data.isEmpty()) {
@@ -702,6 +985,10 @@ void TlsSocket::plainDisconnected() {
 	_serverHelloLength = 0;
 	_incomingGoodDataOffset = 0;
 	_incomingGoodDataLimit = 0;
+	_outgoing = QByteArray();
+	_outgoingOffset = 0;
+	_clientPrefixSent = false;
+	_pacingTimer.cancel();
 	_disconnected.fire({});
 }
 
@@ -979,30 +1266,82 @@ void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	if (!isConnected()) {
 		return;
 	}
-	if (!prefix.empty()) {
-		_socket.write(kClientPrefix.data(), kClientPrefix.size());
-	}
-	while (!buffer.empty()) {
-		const auto cap = nextRecordPayloadSize();
-		const auto write = std::min(
-			cap - int(prefix.size()),
-			int(buffer.size()));
-		_socket.write(kClientHeader.data(), kClientHeader.size());
-		const auto size = qToBigEndian(uint16(prefix.size() + write));
-		_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
+	if (_timing == ProxyTiming::Off) {
 		if (!prefix.empty()) {
-			_socket.write(
-				reinterpret_cast<const char*>(prefix.data()),
-				prefix.size());
-			prefix = bytes::const_span();
+			_socket.write(kClientPrefix.data(), kClientPrefix.size());
 		}
-		_socket.write(
-			reinterpret_cast<const char*>(buffer.data()),
-			write);
-		buffer = buffer.subspan(write);
+		while (!buffer.empty()) {
+			const auto cap = nextRecordPayloadSize();
+			const auto write = std::min(
+				cap - int(prefix.size()),
+				int(buffer.size()));
+			_socket.write(kClientHeader.data(), kClientHeader.size());
+			const auto size = qToBigEndian(uint16(prefix.size() + write));
+			_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
+			if (!prefix.empty()) {
+				_socket.write(
+					reinterpret_cast<const char*>(prefix.data()),
+					prefix.size());
+				prefix = bytes::const_span();
+			}
+			_socket.write(
+				reinterpret_cast<const char*>(buffer.data()),
+				write);
+			buffer = buffer.subspan(write);
+			_firstAppDataSent = true;
+			++_startupCoverFrames;
+		}
+		return;
+	}
+	if (!prefix.empty() && !_clientPrefixSent) {
+		_socket.write(kClientPrefix.data(), kClientPrefix.size());
+		_clientPrefixSent = true;
+	}
+	if (!prefix.empty()) {
+		_outgoing.append(
+			reinterpret_cast<const char*>(prefix.data()),
+			prefix.size());
+	}
+	_outgoing.append(
+		reinterpret_cast<const char*>(buffer.data()),
+		buffer.size());
+	if (!_pacingTimer.isActive()) {
+		sendOutgoing();
+	}
+}
+
+void TlsSocket::sendOutgoing() {
+	while (_outgoingOffset < _outgoing.size()) {
+		const auto cap = nextRecordPayloadSize();
+		const auto available = int(_outgoing.size()) - _outgoingOffset;
+		const auto take = std::min(cap, available);
+		_socket.write(kClientHeader.data(), kClientHeader.size());
+		const auto size = qToBigEndian(uint16(take));
+		_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
+		_socket.write(_outgoing.constData() + _outgoingOffset, take);
+		_outgoingOffset += take;
 		_firstAppDataSent = true;
 		++_startupCoverFrames;
+		if (_outgoingOffset < _outgoing.size()) {
+			const auto delay = recordPacingDelay();
+			if (delay > 0) {
+				_socket.flush();
+				_pacingTimer.callOnce(delay);
+				return;
+			}
+		}
 	}
+	_outgoing.clear();
+	_outgoingOffset = 0;
+}
+
+crl::time TlsSocket::recordPacingDelay() {
+	if (_timing == ProxyTiming::Gentle) {
+		return 8 + base::RandomIndex(14) + base::RandomIndex(25);
+	} else if (_timing == ProxyTiming::Balanced) {
+		return 20 + base::RandomIndex(28) + base::RandomIndex(54);
+	}
+	return 0;
 }
 
 int32 TlsSocket::debugState() {

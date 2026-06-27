@@ -56,6 +56,7 @@ private:
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
+		QString endpoint;
 	};
 	struct SentContainer {
 		crl::time sent = 0;
@@ -192,6 +193,7 @@ private:
 
 	ConnectionPointer _connection;
 	std::vector<TestConnection> _testConnections;
+	base::flat_map<QString, crl::time> _endpointCooldownUntil;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer
