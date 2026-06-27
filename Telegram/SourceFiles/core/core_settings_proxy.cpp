@@ -110,6 +110,29 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
 
 SettingsProxy::SettingsProxy()
 : _tryIPv6(!Platform::IsWindows()) {
+	ensureDefaultProxy();
+}
+
+void SettingsProxy::ensureDefaultProxy() {
+	if (_defaultProxyAdded) {
+		return;
+	}
+	_defaultProxyAdded = true;
+
+	auto def = MTP::ProxyData();
+	def.type = MTP::ProxyData::Type::Socks5;
+	def.host = u"127.0.0.1"_q;
+	def.port = 1353;
+	const auto wasEmpty = _list.empty();
+	if (ranges::find(_list, def) == _list.end()) {
+		_list.insert(_list.begin(), def);
+	}
+	if (wasEmpty && !_selected) {
+		_selected = def;
+		if (_settings == MTP::ProxyData::Settings::System) {
+			_settings = MTP::ProxyData::Settings::Enabled;
+		}
+	}
 }
 
 QByteArray SettingsProxy::serialize() const {
@@ -126,7 +149,7 @@ QByteArray SettingsProxy::serialize() const {
 			0,
 			ranges::plus(),
 			&Serialize::bytearraySize)
-		+ (4 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
+		+ (5 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
 	auto stream = Serialize::ByteArrayWriter(size);
 	stream
 		<< qint32(_tryIPv6 ? 1 : 0)
@@ -145,6 +168,7 @@ QByteArray SettingsProxy::serialize() const {
 	for (const auto index : _proxyRotationPreferredIndices) {
 		stream << qint32(index);
 	}
+	stream << qint32(_defaultProxyAdded ? 1 : 0);
 	return std::move(stream).result();
 }
 
@@ -211,6 +235,11 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 		}
 	}
 
+	auto defaultProxyAdded = qint32(0);
+	if (!stream.atEnd()) {
+		stream >> defaultProxyAdded;
+	}
+
 	if (!stream.ok()) {
 		LOG(("App Error: "
 			"Bad data for Core::SettingsProxy::setFromSerialized()"));
@@ -226,6 +255,9 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_selected = DeserializeProxyData(selectedProxy);
 	_list = std::move(list);
 	setProxyRotationPreferredIndices(std::move(preferredIndices));
+	_defaultProxyAdded = (defaultProxyAdded == 1);
+
+	ensureDefaultProxy();
 
 	return true;
 }

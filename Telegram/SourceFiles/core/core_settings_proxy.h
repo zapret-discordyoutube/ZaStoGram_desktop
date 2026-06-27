@@ -74,10 +74,13 @@ public:
 	bool setFromSerialized(const QByteArray &serialized);
 
 private:
+	void ensureDefaultProxy();
+
 	bool _tryIPv6 = false;
 	bool _useProxyForCalls = false;
 	bool _proxyRotationEnabled = false;
 	bool _checkIpWarningShown = false;
+	bool _defaultProxyAdded = false;
 	int _proxyRotationTimeout = kDefaultProxyRotationTimeout;
 	MTP::ProxyData::Settings _settings = MTP::ProxyData::Settings::System;
 	MTP::ProxyData _selected;
