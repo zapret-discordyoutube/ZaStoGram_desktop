@@ -21,7 +21,7 @@ namespace MTP::details {
 namespace {
 
 constexpr auto kMaxGrease = 8;
-constexpr auto kClientHelloLimit = 2048;
+constexpr auto kClientHelloLimit = 4096;
 constexpr auto kHelloDigestLength = 32;
 constexpr auto kLengthSize = sizeof(uint16);
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
@@ -36,6 +36,7 @@ constexpr auto kStartupCoverStrictWindow = crl::time(20000);
 constexpr auto kStartupCoverSoftFrames = 8;
 constexpr auto kStartupCoverStrictFrames = 14;
 constexpr auto kRecordSizeMin = 256;
+constexpr auto kMaxPacedFrames = 24;
 
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
@@ -1336,6 +1337,9 @@ void TlsSocket::sendOutgoing() {
 }
 
 crl::time TlsSocket::recordPacingDelay() {
+	if (_startupCoverFrames > kMaxPacedFrames) {
+		return 0;
+	}
 	if (_timing == ProxyTiming::Gentle) {
 		return 8 + base::RandomIndex(14) + base::RandomIndex(25);
 	} else if (_timing == ProxyTiming::Balanced) {

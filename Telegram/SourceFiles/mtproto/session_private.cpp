@@ -21,7 +21,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "base/openssl_help.h"
 #include "base/unixtime.h"
-#include "base/call_delayed.h"
+
+#include <QtCore/QTimer>
 #include "base/platform/base_platform_info.h"
 
 #include <ksandbox.h>
@@ -41,6 +42,7 @@ constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
 constexpr auto kEndpointCooldownTimeout = crl::time(10000);
 constexpr auto kEndpointCooldownPenalty = 8;
+constexpr auto kWaitForProxyTimeout = 2000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kPingDelayDisconnect = 60;
 constexpr auto kPingSendAfter = 30 * crl::time(1000);
@@ -278,7 +280,7 @@ void SessionPrivate::appendTestConnection(
 		: crl::time(0);
 	const auto startDelay = spacing * (int(_testConnections.size()) - 1);
 	if (startDelay > 0) {
-		base::call_delayed(startDelay, weak, start);
+		QTimer::singleShot(int(startDelay), weak, start);
 	} else {
 		InvokeQueued(_testConnections.back().data, start);
 	}
@@ -1060,6 +1062,13 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	}
 
 	_options = std::make_unique<SessionOptions>(_sessionData->options());
+
+	if (_options->proxy.type == ProxyData::Type::None) {
+		DEBUG_LOG(("MTP Info: proxy required, "
+			"waiting for a proxy before connecting."));
+		setState(-kWaitForProxyTimeout);
+		return;
+	}
 
 	const auto bareDc = BareDcId(_shiftedDcId);
 
@@ -2424,7 +2433,9 @@ void SessionPrivate::confirmBestConnection() {
 		_testConnections,
 		std::less<>(),
 		[](const TestConnection &test) {
-			return test.data->isConnected() ? test.priority : -1;
+			return test.data->isConnected()
+				? test.priority
+				: (-1 - kEndpointCooldownPenalty);
 		});
 	Assert(i != end(_testConnections));
 	if (!i->data->isConnected()) {

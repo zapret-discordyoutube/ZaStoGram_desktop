@@ -442,10 +442,7 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 	result.proxyEnabled = state.useProxy;
 	result.progressShown = (state.type != State::Type::Connected);
 	result.visible = state.exposed
-		&& !state.updateReady
-		&& (state.useProxy
-			|| state.type == State::Type::Connecting
-			|| state.type == State::Type::Waiting);
+		&& !state.updateReady;
 	switch (state.type) {
 	case State::Type::Connecting:
 		result.text = state.underCursor
