@@ -48,8 +48,8 @@ jobs:
 
     strategy:
       matrix:
-        arch: [x64_x86, x64]
-        qt: [""]
+        arch: [x64]
+        qt: [qt6]
         generator: [""]
 
     env:
@@ -258,7 +258,7 @@ jobs:
           mkdir release
           for d in artifacts/*/; do
             name="$(basename "$d")"
-            arch="$(echo "$name" | sed 's/^Telegram //; s/ /_/g')"
+            arch="$(echo "$name" | sed 's/^Telegram //; s/ qt6//; s/ /_/g')"
             [ -f "$d/Telegram.exe" ] && cp "$d/Telegram.exe" "release/ZaStoGram-$arch.exe"
             [ -f "$d/Updater.exe" ] && cp "$d/Updater.exe" "release/Updater-$arch.exe"
           done
