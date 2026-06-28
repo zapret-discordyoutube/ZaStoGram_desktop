@@ -1063,7 +1063,8 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 
 	_options = std::make_unique<SessionOptions>(_sessionData->options());
 
-	if (_options->proxy.type == ProxyData::Type::None) {
+	if (_options->proxy.type == ProxyData::Type::None
+		&& _options->stealth.transport != ProxyTransport::Wss) {
 		DEBUG_LOG(("MTP Info: proxy required, "
 			"waiting for a proxy before connecting."));
 		setState(-kWaitForProxyTimeout);

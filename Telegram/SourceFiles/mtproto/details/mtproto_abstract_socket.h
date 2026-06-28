@@ -28,7 +28,8 @@ public:
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
 		bool protocolForFiles,
-		const ProxyStealthOptions &stealth);
+		const ProxyStealthOptions &stealth,
+		int16 protocolDcId = 0);
 
 	void setDebugId(const QString &id) {
 		_debugId = id;

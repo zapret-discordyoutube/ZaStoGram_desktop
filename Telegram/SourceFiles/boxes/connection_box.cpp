@@ -563,6 +563,7 @@ public:
 
 	rpl::producer<> deleteClicks() const;
 	rpl::producer<> restoreClicks() const;
+	rpl::producer<> checkClicks() const;
 	rpl::producer<> editClicks() const;
 	rpl::producer<> shareClicks() const;
 	rpl::producer<> showQrClicks() const;
@@ -585,6 +586,7 @@ private:
 	object_ptr<Ui::IconButton> _menuToggle;
 	rpl::event_stream<> _deleteClicks;
 	rpl::event_stream<> _restoreClicks;
+	rpl::event_stream<> _checkClicks;
 	rpl::event_stream<> _editClicks;
 	rpl::event_stream<> _shareClicks;
 	rpl::event_stream<> _showQrClicks;
@@ -711,6 +713,10 @@ rpl::producer<> ProxyRow::deleteClicks() const {
 
 rpl::producer<> ProxyRow::restoreClicks() const {
 	return _restoreClicks.events();
+}
+
+rpl::producer<> ProxyRow::checkClicks() const {
+	return _checkClicks.events();
 }
 
 rpl::producer<> ProxyRow::editClicks() const {
@@ -852,6 +858,8 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 	}();
 	const auto status = [&] {
 		switch (_view.state) {
+		case State::Unknown:
+			return tr::lng_proxy_box_check_status(tr::now);
 		case State::Available:
 			return tr::lng_proxy_available(
 				tr::now,
@@ -962,6 +970,11 @@ void ProxyRow::showMenu() {
 			const style::icon *icon) {
 		return _menu->addAction(text, std::move(callback), icon);
 	};
+	if (!_view.deleted) {
+		addAction(tr::lng_proxy_box_check_status(tr::now), [=] {
+			_checkClicks.fire({});
+		}, &st::menuIconSearch);
+	}
 	addAction(tr::lng_proxy_menu_edit(tr::now), [=] {
 		_editClicks.fire({});
 	}, &st::menuIconEdit);
@@ -1261,6 +1274,16 @@ void ProxiesBox::setupContent() {
 					: MTP::ProxyConnectionPattern::Off;
 				Core::App().settings().setProxyStealthOptions(o);
 			});
+		addStealthToggle(
+			u"Route via WSS (web, DC2/DC4 only)"_q,
+			(saved.transport == MTP::ProxyTransport::Wss),
+			[](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.transport = on
+					? MTP::ProxyTransport::Wss
+					: MTP::ProxyTransport::Tcp;
+				Core::App().settings().setProxyStealthOptions(o);
+			});
 	}
 
 	inner->add(
@@ -1487,6 +1510,11 @@ void ProxiesBox::setupButtons(int id, not_null<ProxyRow*> button) {
 	button->restoreClicks(
 	) | rpl::on_next([=] {
 		_controller->restoreItem(id);
+	}, button->lifetime());
+
+	button->checkClicks(
+	) | rpl::on_next([=] {
+		_controller->checkItem(id);
 	}, button->lifetime());
 
 	button->editClicks(
@@ -1813,9 +1841,6 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 		}
 	}, _lifetime);
 
-	for (auto &item : _list) {
-		refreshChecker(item);
-	}
 }
 
 void ProxiesBoxController::ShowApplyConfirmation(
@@ -2104,6 +2129,7 @@ auto ProxiesBoxController::proxySettingsValue() const
 
 void ProxiesBoxController::refreshChecker(Item &item) {
 	item.state = ItemState::Checking;
+	updateView(item);
 	const auto id = item.id;
 	MTP::StartProxyCheck(
 		&_account->mtp(),
@@ -2220,6 +2246,14 @@ void ProxiesBoxController::shareItems() {
 		.iconLottie = u"toast/copy"_q,
 		.iconLottieSize = st::toastLottieIconSize,
 	});
+}
+
+void ProxiesBoxController::checkItem(int id) {
+	auto item = findById(id);
+	if (item->deleted) {
+		return;
+	}
+	refreshChecker(*item);
 }
 
 void ProxiesBoxController::applyItem(int id) {

@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/details/mtproto_tls_socket.h"
+#include "mtproto/details/mtproto_wss_socket.h"
 
 namespace MTP::details {
 
@@ -17,7 +18,17 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
 		bool protocolForFiles,
-		const ProxyStealthOptions &stealth) {
+		const ProxyStealthOptions &stealth,
+		int16 protocolDcId) {
+	if (stealth.transport == ProxyTransport::Wss) {
+		if (auto route = WssOfficialRoute(protocolDcId, protocolForFiles)) {
+			return std::make_unique<WssSocket>(
+				thread,
+				proxy,
+				protocolForFiles,
+				std::move(*route));
+		}
+	}
 	if (secret.size() >= 21 && secret[0] == bytes::type(0xEE)) {
 		return std::make_unique<TlsSocket>(
 			thread,

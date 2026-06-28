@@ -1285,6 +1285,10 @@ MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
 		"mtproxy/startupCover",
 		int(result.startupCover),
 		int(MTP::ProxyStartupCover::Strict)));
+	result.transport = MTP::ProxyTransport(read(
+		"mtproxy/transport",
+		int(result.transport),
+		int(MTP::ProxyTransport::Wss)));
 	return result;
 }
 
@@ -1298,6 +1302,7 @@ void Settings::setProxyStealthOptions(const MTP::ProxyStealthOptions &value) {
 	write("mtproxy/recordSizing", int(value.recordSizing));
 	write("mtproxy/timing", int(value.timing));
 	write("mtproxy/startupCover", int(value.startupCover));
+	write("mtproxy/transport", int(value.transport));
 }
 
 QString Settings::getSoundPath(const QString &key) const {

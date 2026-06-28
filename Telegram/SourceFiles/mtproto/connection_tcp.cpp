@@ -546,7 +546,8 @@ void TcpConnection::connectToServer(
 		secret,
 		ToNetworkProxy(_proxy),
 		protocolForFiles,
-		_stealth);
+		_stealth,
+		protocolDcId);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();

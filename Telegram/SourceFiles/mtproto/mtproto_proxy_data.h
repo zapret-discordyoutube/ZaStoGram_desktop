@@ -89,6 +89,10 @@ enum class ProxyStartupCover {
 	Soft,
 	Strict,
 };
+enum class ProxyTransport {
+	Tcp,
+	Wss,
+};
 
 struct ProxyStealthOptions {
 	ProxyTlsProfile tlsProfile = ProxyTlsProfile::Auto;
@@ -98,6 +102,7 @@ struct ProxyStealthOptions {
 	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
 	ProxyTiming timing = ProxyTiming::Off;
 	ProxyStartupCover startupCover = ProxyStartupCover::Soft;
+	ProxyTransport transport = ProxyTransport::Tcp;
 
 	friend bool operator==(
 		const ProxyStealthOptions &,
