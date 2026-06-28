@@ -33,9 +33,8 @@ void SetProxyConnectionStatus(
 	if (proxy.type == ProxyData::Type::None) {
 		return;
 	}
-	const auto status = ProxyConnectionStatus{ phase, error, proxy };
 	InvokeQueued(instance, [=] {
-		instance->setProxyConnectionStatus(status);
+		instance->setProxyConnectionStatus({ phase, error, proxy });
 	});
 }
 
@@ -450,7 +449,7 @@ void TcpConnection::socketConnected() {
 
 	auto buffer = preparePQFake(_checkNonce);
 
-	CONNECTION_LOG_INFO("Sending fake req_pq.");
+	CONNECTION_LOG_INFO("Socket connected; sending fake req_pq.");
 	SetProxyConnectionStatus(
 		_instance,
 		_proxy,
@@ -461,6 +460,7 @@ void TcpConnection::socketConnected() {
 }
 
 void TcpConnection::socketDisconnected() {
+	CONNECTION_LOG_INFO("Socket disconnected.");
 	if (_status == Status::Waiting || _status == Status::Ready) {
 		disconnected();
 	}
@@ -700,6 +700,12 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 }
 
 void TcpConnection::timedOut() {
+	CONNECTION_LOG_ERROR("Connection timed out.");
+	SetProxyConnectionStatus(
+		_instance,
+		_proxy,
+		ProxyConnectionPhase::Failed,
+		ProxyConnectionError::Timeout);
 	if (_socket) {
 		_socket->timedOut();
 	}
@@ -739,12 +745,13 @@ void TcpConnection::socketError(int errorCode) {
 		return;
 	}
 
+	CONNECTION_LOG_ERROR(u"Socket error %1."_q.arg(errorCode));
 	SetProxyConnectionStatus(
 		_instance,
 		_proxy,
 		ProxyConnectionPhase::Failed,
 		SocketProxyConnectionError(errorCode));
-	error(kErrorCodeOther);
+	error(errorCode);
 }
 
 void TcpConnection::socketProgress(HandshakePhase phase) {
@@ -753,7 +760,15 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		return;
 
 	case HandshakePhase::TcpConnected:
+		CONNECTION_LOG_INFO("mtproxy tcp_connected");
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Connecting);
+		return;
+
 	case HandshakePhase::ClientHelloSent:
+		CONNECTION_LOG_INFO("mtproxy client_hello_sent");
 		SetProxyConnectionStatus(
 			_instance,
 			_proxy,
@@ -761,7 +776,15 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		return;
 
 	case HandshakePhase::ServerHelloOk:
+		CONNECTION_LOG_INFO("mtproxy server_hello_hmac_ok");
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::CheckingTelegram);
+		return;
+
 	case HandshakePhase::FirstDataReceived:
+		CONNECTION_LOG_INFO("mtproxy first_tls_app_recv");
 		SetProxyConnectionStatus(
 			_instance,
 			_proxy,

@@ -29,6 +29,7 @@ void closeMain();
 void writeMain(const QString &v);
 void writeDebug(const QString &v);
 void writeMtp(int32 dc, const QString &v);
+void writeMtproxy(const QString &v);
 
 QString full();
 

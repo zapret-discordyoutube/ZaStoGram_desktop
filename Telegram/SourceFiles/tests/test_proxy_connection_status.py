@@ -13,13 +13,14 @@ CONNECTING_WIDGET = SOURCE_DIR / "window" / "window_connecting_widget.cpp"
 
 
 def test_proxy_status_model_is_exposed_to_ui():
-    header = INSTANCE_H.read_text(encoding="utf-8")
+    instance_header = INSTANCE_H.read_text(encoding="utf-8")
+    abstract_connection = ABSTRACT_CONNECTION_H.read_text(encoding="utf-8")
     source = INSTANCE_CPP.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
 
-    assert "struct ProxyConnectionStatus" in header
-    assert "proxyConnectionStatusValue()" in header
-    assert "setProxyConnectionStatus(ProxyConnectionStatus status)" in header
+    assert "struct ProxyConnectionStatus" in abstract_connection
+    assert "proxyConnectionStatusValue()" in instance_header
+    assert "setProxyConnectionStatus(ProxyConnectionStatus status)" in instance_header
     assert "rpl::variable<ProxyConnectionStatus> _proxyConnectionStatus" in source
     assert "proxyConnectionStatusValue()" in widget
     assert "ProxyConnectionStatusText(" in widget

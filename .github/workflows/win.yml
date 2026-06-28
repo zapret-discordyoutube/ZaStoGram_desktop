@@ -229,7 +229,7 @@ jobs:
           %TDESKTOP_BUILD_ARCH% ^
           ${{ matrix.qt }} ^
           %TDESKTOP_BUILD_API% ^
-          -D CMAKE_CONFIGURATION_TYPES=Debug ^
+          -D CMAKE_CONFIGURATION_TYPES=Release ^
           -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
@@ -238,7 +238,7 @@ jobs:
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
           %TDESKTOP_BUILD_DEFINE%
 
-          cmake --build ..\out --config Debug --parallel
+          cmake --build ..\out --config Release --parallel
 
       - name: sccache stats.
         if: always() && env.ONLY_CACHE == 'false'
@@ -248,7 +248,7 @@ jobs:
       - name: Move artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
         run: |
-          set OUT=%TBUILD%\%REPO_NAME%\out\Debug
+          set OUT=%TBUILD%\%REPO_NAME%\out\Release
           mkdir artifact
           move %OUT%\Telegram.exe artifact/
           move %OUT%\Updater.exe artifact/

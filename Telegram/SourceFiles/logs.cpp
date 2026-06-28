@@ -34,6 +34,7 @@ enum LogDataType {
 	LogDataMain,
 	LogDataDebug,
 	LogDataMtp,
+	LogDataMtproxy,
 
 	LogDataCount
 };
@@ -55,8 +56,13 @@ QString _logsFilePath(LogDataType type, const QString &postfix = QString()) {
 	case LogDataMain: path += u"log"_q + postfix + u".txt"_q; break;
 	case LogDataDebug: path += u"DebugLogs/log"_q + postfix + u".txt"_q; break;
 	case LogDataMtp: path += u"DebugLogs/mtp"_q + postfix + u".txt"_q; break;
+	case LogDataMtproxy: path += u"DebugLogs/mtproxy"_q + postfix + u".txt"_q; break;
 	}
 	return path;
+}
+
+bool AlwaysWriteLogData(LogDataType type) {
+	return (type == LogDataMain) || (type == LogDataMtproxy);
 }
 
 int32 LogsStartIndexChosen = -1;
@@ -257,6 +263,7 @@ NEW LOGGING INSTANCE STARTED!!!\n\
 
 		reopen(LogDataDebug, dayIndex, postfix);
 		reopen(LogDataMtp, dayIndex, postfix);
+		reopen(LogDataMtproxy, dayIndex, postfix);
 	}
 
 };
@@ -270,8 +277,8 @@ LogsInMemoryList *DeletedLogsInMemory = SharedMemoryLocation<LogsInMemoryList, 0
 QString LogsBeforeSingleInstanceChecked; // LogsInMemory already dumped in LogsData, but LogsData is about to be deleted
 
 void _logsWrite(LogDataType type, const QString &msg) {
-	if (LogsData && (type == LogDataMain || LogsStartIndexChosen < 0)) {
-		if (type == LogDataMain || Logs::DebugEnabled()) {
+	if (LogsData && (AlwaysWriteLogData(type) || LogsStartIndexChosen < 0)) {
+		if (AlwaysWriteLogData(type) || Logs::DebugEnabled()) {
 			LogsData->write(type, msg);
 		}
 	} else if (LogsInMemory != DeletedLogsInMemory) {
@@ -569,6 +576,14 @@ void writeMtp(int32 dc, const QString &v) {
 		+ v
 		+ '\n';
 	_logsWrite(LogDataMtp, msg);
+}
+
+void writeMtproxy(const QString &v) {
+	const auto msg = _logsEntryStart()
+		+ u" "_q
+		+ v
+		+ '\n';
+	_logsWrite(LogDataMtproxy, msg);
 }
 
 QString full() {

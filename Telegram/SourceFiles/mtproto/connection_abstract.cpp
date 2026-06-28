@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_http.h"
 #include "mtproto/connection_resolving.h"
 #include "mtproto/session.h"
+#include "logs.h"
 #include "base/unixtime.h"
 #include "base/random.h"
 
@@ -19,6 +20,11 @@ namespace details {
 namespace {
 
 std::atomic<int> GlobalConnectionCounter/* = 0*/;
+
+[[nodiscard]] bool IsMtproxyTransport(AbstractConnection::TransportMode mode) {
+	return (mode == AbstractConnection::TransportMode::PlainMtproxy)
+		|| (mode == AbstractConnection::TransportMode::FakeTlsMtproxy);
+}
 
 } // namespace
 
@@ -210,11 +216,21 @@ QString AbstractConnection::ProtocolDcDebugId(int16 protocolDcId) {
 }
 
 void AbstractConnection::logInfo(const QString &message) {
-	DEBUG_LOG(("Connection %1 Info: ").arg(_debugId) + message);
+	const auto full = QString("Connection %1 Info: ").arg(_debugId) + message;
+	if (IsMtproxyTransport(_transport)) {
+		Logs::writeMtproxy(full);
+	} else {
+		DEBUG_LOG((full));
+	}
 }
 
 void AbstractConnection::logError(const QString &message) {
-	DEBUG_LOG(("Connection %1 Error: ").arg(_debugId) + message);
+	const auto full = QString("Connection %1 Error: ").arg(_debugId) + message;
+	if (IsMtproxyTransport(_transport)) {
+		Logs::writeMtproxy(full);
+	} else {
+		DEBUG_LOG((full));
+	}
 }
 
 uint32 AbstractConnection::extendedNotSecurePadding() const {
