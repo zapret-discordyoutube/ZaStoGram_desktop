@@ -8,10 +8,37 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/connection_abstract.h"
+#include "mtproto/handshake_gate.h"
+
+#include <memory>
 
 namespace MTP {
 
-using ProxyCheckConnection = details::ConnectionPointer;
+class ProxyCheckConnection final {
+public:
+	struct Data {
+		details::ConnectionPointer connection;
+		details::HandshakeGateLease handshakeGate;
+	};
+
+	ProxyCheckConnection();
+	ProxyCheckConnection(const ProxyCheckConnection &other) = delete;
+	ProxyCheckConnection &operator=(const ProxyCheckConnection &other) = delete;
+	ProxyCheckConnection(ProxyCheckConnection &&other) noexcept;
+	ProxyCheckConnection &operator=(ProxyCheckConnection &&other) noexcept;
+	~ProxyCheckConnection();
+
+	[[nodiscard]] details::AbstractConnection *get() const;
+	[[nodiscard]] explicit operator bool() const;
+	[[nodiscard]] details::AbstractConnection *operator->() const;
+	[[nodiscard]] std::shared_ptr<Data> state() const;
+	void reset();
+	void releaseGate();
+
+private:
+	std::shared_ptr<Data> _data;
+
+};
 
 void ResetProxyCheckers(
 	ProxyCheckConnection &v4,

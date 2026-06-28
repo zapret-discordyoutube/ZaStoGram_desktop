@@ -104,6 +104,13 @@ struct ProxyStealthOptions {
 	ProxyStartupCover startupCover = ProxyStartupCover::Soft;
 	ProxyTransport transport = ProxyTransport::Tcp;
 
+	// Expert-only custom WSS relay; used when transport == Wss and
+	// wssCustomHost is set, independent of the official DC2/4 route.
+	QString wssCustomHost;
+	int wssCustomPort = 443;
+	QString wssCustomPath;
+	QString wssCustomDomain;
+
 	friend bool operator==(
 		const ProxyStealthOptions &,
 		const ProxyStealthOptions &) = default;

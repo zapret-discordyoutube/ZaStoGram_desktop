@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cstring>
 #include <algorithm>
 
+#include <QtCore/QCryptographicHash>
+
 namespace MTP::details {
 namespace {
 
@@ -46,6 +48,24 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId, bool media) {
 	route.domain = media
 		? (name + u"-1.web.telegram.org"_q)
 		: (name + u".web.telegram.org"_q);
+	return route;
+}
+
+std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
+	if (stealth.wssCustomHost.isEmpty()) {
+		return std::nullopt;
+	}
+	auto route = WssRoute();
+	route.relayHost = stealth.wssCustomHost;
+	route.relayPort = (stealth.wssCustomPort > 0 && stealth.wssCustomPort <= 65535)
+		? stealth.wssCustomPort
+		: 443;
+	route.path = stealth.wssCustomPath.isEmpty()
+		? u"/apiws"_q
+		: stealth.wssCustomPath;
+	route.domain = stealth.wssCustomDomain.isEmpty()
+		? stealth.wssCustomHost
+		: stealth.wssCustomDomain;
 	return route;
 }
 
@@ -183,6 +203,10 @@ HandshakePhase WssSocket::handshakePhase() const {
 	return _phase;
 }
 
+QString WssSocket::transportName() const {
+	return u"WSS"_q;
+}
+
 void WssSocket::handleError(int errorCode) {
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);
@@ -197,7 +221,7 @@ void WssSocket::onEncrypted() {
 }
 
 void WssSocket::sendHttpUpgrade() {
-	const auto key = QString::fromLatin1(RandomBytes(16).toBase64());
+	_secWebSocketKey = QString::fromLatin1(RandomBytes(16).toBase64());
 	auto host = _route.domain;
 	if (_route.relayPort != 443) {
 		host += u":%1"_q.arg(_route.relayPort);
@@ -213,7 +237,7 @@ void WssSocket::sendHttpUpgrade() {
 		u"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 		u"AppleWebKit/537.36 (KHTML, like Gecko) "
 		u"Chrome/131.0.0.0 Safari/537.36\r\n"
-		u"\r\n"_q).arg(_route.path, host, key);
+		u"\r\n"_q).arg(_route.path, host, _secWebSocketKey);
 	const auto utf8 = request.toUtf8();
 	_socket.write(utf8);
 }
@@ -234,11 +258,36 @@ bool WssSocket::tryFinishUpgrade() {
 		_error.fire_copy(AbstractConnection::kErrorCodeOther);
 		return false;
 	}
+	if (!checkUpgradeAccept(header)) {
+		logError(0, u"WSS Sec-WebSocket-Accept mismatch"_q);
+		_error.fire_copy(AbstractConnection::kErrorCodeOther);
+		return false;
+	}
 	_upgraded = true;
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
 	_connected.fire({});
 	return true;
+}
+
+bool WssSocket::checkUpgradeAccept(const QByteArray &header) const {
+	const auto expected = QCryptographicHash::hash(
+		_secWebSocketKey.toLatin1()
+			+ QByteArrayLiteral("258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+		QCryptographicHash::Sha1).toBase64();
+	const auto lowered = header.toLower();
+	const auto marker = QByteArrayLiteral("sec-websocket-accept:");
+	const auto pos = lowered.indexOf(marker);
+	if (pos < 0) {
+		return false;
+	}
+	auto valueEnd = header.indexOf('\n', pos);
+	if (valueEnd < 0) {
+		valueEnd = header.size();
+	}
+	const auto from = pos + marker.size();
+	const auto value = header.mid(from, valueEnd - from).trimmed();
+	return (value == expected);
 }
 
 void WssSocket::onReadyRead() {

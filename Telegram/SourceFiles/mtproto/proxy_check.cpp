@@ -10,15 +10,72 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
 
+#include <QtCore/QTimer>
+
+#include <utility>
+
 namespace MTP {
 
 using Connection = details::AbstractConnection;
 
+ProxyCheckConnection::ProxyCheckConnection()
+: _data(std::make_shared<Data>()) {
+}
+
+ProxyCheckConnection::ProxyCheckConnection(
+		ProxyCheckConnection &&other) noexcept
+: _data(std::move(other._data)) {
+}
+
+ProxyCheckConnection &ProxyCheckConnection::operator=(
+		ProxyCheckConnection &&other) noexcept {
+	if (this != &other) {
+		reset();
+		_data = std::move(other._data);
+	}
+	return *this;
+}
+
+ProxyCheckConnection::~ProxyCheckConnection() {
+	reset();
+}
+
+Connection *ProxyCheckConnection::get() const {
+	return _data ? _data->connection.get() : nullptr;
+}
+
+ProxyCheckConnection::operator bool() const {
+	return get() != nullptr;
+}
+
+Connection *ProxyCheckConnection::operator->() const {
+	return get();
+}
+
+std::shared_ptr<ProxyCheckConnection::Data> ProxyCheckConnection::state() const {
+	return _data;
+}
+
+void ProxyCheckConnection::reset() {
+	releaseGate();
+	if (_data) {
+		_data->connection = nullptr;
+	}
+}
+
+void ProxyCheckConnection::releaseGate() {
+	if (_data) {
+		_data->handshakeGate.release();
+	}
+}
+
 void ResetProxyCheckers(
 		ProxyCheckConnection &v4,
 		ProxyCheckConnection &v6) {
-	v4 = nullptr;
-	v6 = nullptr;
+	v4.releaseGate();
+	v6.releaseGate();
+	v4.reset();
+	v6.reset();
 }
 
 void DropProxyChecker(
@@ -26,9 +83,11 @@ void DropProxyChecker(
 		ProxyCheckConnection &v6,
 		not_null<Connection*> raw) {
 	if (v4.get() == raw) {
-		v4 = nullptr;
+		v4.releaseGate();
+		v4.reset();
 	} else if (v6.get() == raw) {
-		v6 = nullptr;
+		v6.releaseGate();
+		v6.reset();
 	}
 }
 
@@ -49,25 +108,35 @@ void StartProxyCheck(
 	using Variants = DcOptions::Variants;
 
 	ResetProxyCheckers(v4, v6);
+	const auto proxied = (proxy.type != ProxyData::Type::None);
 	const auto connType = (proxy.type == ProxyData::Type::Http)
 		? Variants::Http
 		: Variants::Tcp;
 	const auto dcId = mtproto->mainDcId();
-	const auto setup = [&](ProxyCheckConnection &checker, const bytes::vector &secret) {
-		checker = Connection::Create(
+	const auto setup = [&](
+			ProxyCheckConnection &checker,
+			const bytes::vector &secret) {
+		const auto state = checker.state();
+		auto handshakeGate = proxied
+			? details::ReserveHandshakeGate()
+			: details::HandshakeGateLease();
+		state->connection = Connection::Create(
 			mtproto,
 			connType,
 			QThread::currentThread(),
 			secret,
 			proxy,
 			ProxyStealthOptions());
-		const auto raw = checker.get();
+		state->handshakeGate = std::move(handshakeGate);
+		const auto raw = state->connection.get();
 		raw->connect(raw, &Connection::connected, [=] {
+			state->handshakeGate.release();
 			if (done) {
 				done(raw, raw->pingTime());
 			}
 		});
 		const auto failed = [=] {
+			state->handshakeGate.release();
 			if (fail) {
 				fail(raw);
 			}
@@ -75,35 +144,60 @@ void StartProxyCheck(
 		raw->connect(raw, &Connection::disconnected, failed);
 		raw->connect(raw, &Connection::error, failed);
 	};
+	const auto start = [&](
+			ProxyCheckConnection &checker,
+			QString address,
+			int port,
+			bytes::vector secret) {
+		const auto state = checker.state();
+		const auto raw = state->connection.get();
+		const auto gateDelay = state->handshakeGate.delay();
+		const auto start = [=, secret = std::move(secret)] {
+			if (state->connection.get() != raw) {
+				return;
+			}
+			raw->connectToServer(
+				address,
+				port,
+				secret,
+				dcId,
+				false);
+		};
+		if (gateDelay > 0) {
+			QTimer::singleShot(int(gateDelay), raw, start);
+		} else {
+			start();
+		}
+	};
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto secret = proxy.secretFromMtprotoPassword();
 		setup(v4, secret);
-		v4->connectToServer(
+		start(
+			v4,
 			proxy.host,
 			proxy.port,
-			secret,
-			dcId,
-			false);
+			secret);
 		return;
 	}
 	const auto options = mtproto->dcOptions().lookup(
 		dcId,
 		DcType::Regular,
 		true);
-	const auto tryConnect = [&](ProxyCheckConnection &checker, Variants::Address address) {
+	const auto tryConnect = [&](
+			ProxyCheckConnection &checker,
+			Variants::Address address) {
 		const auto &list = options.data[address][connType];
 		if (list.empty() || ((address == Variants::IPv6) && !tryIPv6)) {
-			checker = nullptr;
+			checker.reset();
 			return;
 		}
 		const auto &endpoint = list.front();
 		setup(checker, endpoint.secret);
-		checker->connectToServer(
+		start(
+			checker,
 			QString::fromStdString(endpoint.ip),
 			endpoint.port,
-			endpoint.secret,
-			dcId,
-			false);
+			endpoint.secret);
 	};
 	tryConnect(v4, Variants::IPv4);
 	tryConnect(v6, Variants::IPv6);

@@ -72,6 +72,10 @@ public:
 	virtual int32 debugState() = 0;
 	[[nodiscard]] virtual QString debugPostfix() const = 0;
 
+	[[nodiscard]] virtual QString transportName() const {
+		return u"TCP"_q;
+	}
+
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const {
 		return HandshakePhase::None;
 	}

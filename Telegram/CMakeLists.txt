@@ -1495,6 +1495,8 @@ PRIVATE
     mtproto/dedicated_file_loader.h
     mtproto/facade.cpp
     mtproto/facade.h
+    mtproto/handshake_gate.cpp
+    mtproto/handshake_gate.h
     mtproto/mtp_instance.cpp
     mtproto/mtp_instance.h
     mtproto/proxy_check.cpp

@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
+#include "mtproto/handshake_gate.h"
 #include "base/timer.h"
 
 namespace MTP {
@@ -57,6 +58,7 @@ private:
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
+		HandshakeGateLease handshakeGate;
 	};
 	struct SentContainer {
 		crl::time sent = 0;

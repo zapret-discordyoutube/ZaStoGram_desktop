@@ -723,7 +723,7 @@ QString TcpConnection::transport() const {
 	if (!isConnected()) {
 		return QString();
 	}
-	auto result = u"TCP"_q;
+	auto result = _socket ? _socket->transportName() : u"TCP"_q;
 	if (qthelp::is_ipv6(_address)) {
 		result += u"/IPv6"_q;
 	}

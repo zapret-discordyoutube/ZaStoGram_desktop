@@ -226,6 +226,11 @@ void SessionPrivate::appendTestConnection(
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
 		+ (protocolSecret.empty() ? 0 : 1)
 		- (cooled ? kEndpointCooldownPenalty : 0);
+	const auto proxied = (_options->proxy.type != ProxyData::Type::None);
+	auto handshakeGate = proxied
+		? ReserveHandshakeGate()
+		: HandshakeGateLease();
+	const auto gateDelay = handshakeGate.delay();
 	_testConnections.push_back({
 		AbstractConnection::Create(
 			_instance,
@@ -235,7 +240,8 @@ void SessionPrivate::appendTestConnection(
 			_options->proxy,
 			_options->stealth),
 		priority,
-		endpoint
+		endpoint,
+		std::move(handshakeGate)
 	});
 	const auto weak = _testConnections.back().data.get();
 	connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -274,11 +280,11 @@ void SessionPrivate::appendTestConnection(
 			protocolDcId,
 			protocolForFiles);
 	};
-	const auto proxied = (_options->proxy.type != ProxyData::Type::None);
 	const auto spacing = proxied
 		? ProxyPatternSpacing(_options->stealth.connectionPattern)
 		: crl::time(0);
-	const auto startDelay = spacing * (int(_testConnections.size()) - 1);
+	const auto startDelay = spacing * (int(_testConnections.size()) - 1)
+		+ gateDelay;
 	if (startDelay > 0) {
 		QTimer::singleShot(int(startDelay), weak, start);
 	} else {
@@ -2395,6 +2401,7 @@ void SessionPrivate::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_testConnections));
+	i->handshakeGate.release();
 	_endpointCooldownUntil.remove(i->endpoint);
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
@@ -2454,12 +2461,14 @@ void SessionPrivate::confirmBestConnection() {
 
 void SessionPrivate::removeTestConnection(
 		not_null<AbstractConnection*> connection) {
-	_testConnections.erase(
-		ranges::remove(
-			_testConnections,
-			connection.get(),
-			[](const TestConnection &test) { return test.data.get(); }),
-		end(_testConnections));
+	const auto i = ranges::find(
+		_testConnections,
+		connection.get(),
+		[](const TestConnection &test) { return test.data.get(); });
+	if (i != end(_testConnections)) {
+		i->handshakeGate.release();
+		_testConnections.erase(i);
+	}
 }
 
 void SessionPrivate::checkAuthKey() {

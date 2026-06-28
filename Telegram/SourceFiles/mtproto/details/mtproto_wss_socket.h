@@ -28,6 +28,12 @@ struct WssRoute {
 	int16 protocolDcId,
 	bool protocolForFiles);
 
+// Expert-only user-configured relay (ProxyStealthOptions.wssCustom*), used
+// for any DC when set. Inherits the same VerifyNone camouflage as the
+// official route, so it is a MITM footgun unless the relay is trusted.
+[[nodiscard]] std::optional<WssRoute> WssCustomRoute(
+	const ProxyStealthOptions &stealth);
+
 // A clean, self-contained MTProto-over-WebSocket(-over-TLS) transport. It
 // speaks RFC 6455 over a real QSslSocket and carries the obfuscated MTProto
 // stream transparently inside binary frames, so the rest of the connection
@@ -51,6 +57,7 @@ public:
 	int32 debugState() override;
 	QString debugPostfix() const override;
 	HandshakePhase handshakePhase() const override;
+	QString transportName() const override;
 
 private:
 	void handleError(int errorCode);
@@ -58,11 +65,13 @@ private:
 	void onReadyRead();
 	void sendHttpUpgrade();
 	[[nodiscard]] bool tryFinishUpgrade();
+	[[nodiscard]] bool checkUpgradeAccept(const QByteArray &header) const;
 	void parseFrames();
 	void sendFrame(quint8 opcode, const char *data, int size);
 
 	QSslSocket _socket;
 	WssRoute _route;
+	QString _secWebSocketKey;
 	QByteArray _incoming;
 	QByteArray _readBuffer;
 	bool _upgraded = false;

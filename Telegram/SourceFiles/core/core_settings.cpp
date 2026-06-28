@@ -1289,6 +1289,16 @@ MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
 		"mtproxy/transport",
 		int(result.transport),
 		int(MTP::ProxyTransport::Wss)));
+	const auto readString = [&](std::string_view key) {
+		if (const auto data = readPrefGeneric(key)) {
+			return QString::fromUtf8(*data);
+		}
+		return QString();
+	};
+	result.wssCustomHost = readString("mtproxy/wssHost");
+	result.wssCustomPort = read("mtproxy/wssPort", result.wssCustomPort, 65535);
+	result.wssCustomPath = readString("mtproxy/wssPath");
+	result.wssCustomDomain = readString("mtproxy/wssDomain");
 	return result;
 }
 
@@ -1303,6 +1313,10 @@ void Settings::setProxyStealthOptions(const MTP::ProxyStealthOptions &value) {
 	write("mtproxy/timing", int(value.timing));
 	write("mtproxy/startupCover", int(value.startupCover));
 	write("mtproxy/transport", int(value.transport));
+	writePrefGeneric("mtproxy/wssHost", value.wssCustomHost.toUtf8());
+	write("mtproxy/wssPort", value.wssCustomPort);
+	writePrefGeneric("mtproxy/wssPath", value.wssCustomPath.toUtf8());
+	writePrefGeneric("mtproxy/wssDomain", value.wssCustomDomain.toUtf8());
 }
 
 QString Settings::getSoundPath(const QString &key) const {

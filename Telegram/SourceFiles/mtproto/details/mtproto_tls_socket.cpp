@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_tls_socket.h"
 
 #include "mtproto/details/mtproto_tcp_socket.h"
+#include "mtproto/details/mtproto_proxy_adaptive_policy.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
@@ -933,12 +934,24 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 }
 
 ProxyTlsProfile TlsSocket::effectiveTlsProfile() const {
-	if (_tlsProfile == ProxyTlsProfile::AutoRotate) {
-		return (base::RandomIndex(2) == 0)
-			? ProxyTlsProfile::FirefoxAndroid
-			: ProxyTlsProfile::Yandex;
+	// Per-endpoint AutoRotate cursor (see mtproto_proxy_adaptive_policy);
+	// explicit profiles (and Auto) pass through unchanged.
+	return ResolveEffectiveTlsProfile(_tlsProfile, _endpointKey);
+}
+
+QString TlsSocket::failureDiagnostic() const {
+	switch (_phase) {
+	case HandshakePhase::None:
+	case HandshakePhase::TcpConnected:
+		return u"tcp_not_connected"_q;
+	case HandshakePhase::ClientHelloSent:
+		return u"client_hello_sent_no_server_hello"_q;
+	case HandshakePhase::ServerHelloOk:
+		return u"post_handshake_no_appdata"_q;
+	case HandshakePhase::FirstDataReceived:
+		break;
 	}
-	return _tlsProfile;
+	return QString();
 }
 
 void TlsSocket::writeClientHello(const QByteArray &data) {
@@ -1164,6 +1177,7 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	Expects(_state == State::NotConnected);
 
 	_state = State::Connecting;
+	_endpointKey = address + u":%1"_q.arg(port);
 	_socket.connectToHost(address, port);
 }
 
@@ -1367,6 +1381,13 @@ HandshakePhase TlsSocket::handshakePhase() const {
 void TlsSocket::handleError(int errorCode) {
 	if (_state != State::Connected) {
 		_syncTimeRequests.fire({});
+		// A failure before the data path is up may be a JA4/ClientHello
+		// problem; advance the per-endpoint AutoRotate cursor so the next
+		// attempt to this endpoint tries a different profile.
+		RotateTlsProfileOnFailure(
+			_endpointKey,
+			failureDiagnostic(),
+			effectiveTlsProfile());
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _socket.errorString());
