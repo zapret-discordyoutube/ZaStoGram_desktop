@@ -82,6 +82,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qt/qt_common_adapters.h"
 #include "base/qt/qt_key_modifiers.h"
 #include "base/unixtime.h"
+#include "ui/boxes/confirm_box.h"
 #include "base/call_delayed.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
@@ -3309,6 +3310,22 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		} else if (item) {
 			const auto itemId = item->fullId();
 			const auto blockSender = item->history()->peer->isRepliesChat();
+			if (!item->history()->owner().editVersions(itemId).empty()) {
+				_menu->addAction(u"Edit history"_q, [=] {
+					const auto &list = controller->session().data().editVersions(itemId);
+					auto text = QString();
+					for (const auto &v : list) {
+						if (!text.isEmpty()) {
+							text += QString(2, QChar(0x0A));
+						}
+						text += base::unixtime::parse(v.date).toString("dd.MM.yy hh:mm");
+						text += QChar(0x0A);
+						text += v.text.text;
+					}
+					controller->uiShow()->showBox(
+						Ui::MakeInformBox(TextWithEntities{ text }));
+				}, &st::menuIconEdit);
+			}
 			if (isUponSelected != -2) {
 				if (item->allowsForward()) {
 					_menu->addAction(tr::lng_context_forward_msg(tr::now), [=] {

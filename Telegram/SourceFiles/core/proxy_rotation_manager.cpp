@@ -20,7 +20,7 @@ namespace {
 
 constexpr auto kProxyRotationCheckInterval = 2 * crl::time(1000);
 constexpr auto kProxyRotationCheckLifetime = 20 * crl::time(1000);
-constexpr auto kProxyRotationMaxActiveChecks = 10;
+constexpr auto kProxyRotationMaxActiveChecks = 2;
 
 } // namespace
 
