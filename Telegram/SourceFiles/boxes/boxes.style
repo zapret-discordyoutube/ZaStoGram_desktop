@@ -705,6 +705,15 @@ groupStickersSubTitleHeight: 48px;
 
 proxyUsePadding: margins(22px, 6px, 22px, 5px);
 proxyTryIPv6Padding: margins(22px, 8px, 22px, 5px);
+proxySettingsBoxWidth: 680px;
+proxySettingsBoxMaxHeight: 620px;
+proxySettingsListColumnWidth: boxWideWidth;
+proxySettingsColumnSkip: 16px;
+proxySettingsControlsMinWidth: 240px;
+proxySettingsRightCheckPadding: margins(0px, 8px, 0px, 5px);
+proxySettingsRightUsePadding: margins(0px, 6px, 0px, 5px);
+proxySettingsRightSliderPadding: margins(0px, 7px, 0px, 4px);
+proxySettingsRightAboutPadding: margins(0px, 7px, 0px, 14px);
 proxyRowPadding: margins(22px, 8px, 8px, 8px);
 proxyRowIconSkip: 32px;
 proxyRowSkip: 2px;

@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/basic_types.h"
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/connection_abstract.h"
 
 namespace MTP::details {
 
@@ -49,11 +49,14 @@ public:
 	[[nodiscard]] rpl::producer<> readyRead() const {
 		return _readyRead.events();
 	}
-	[[nodiscard]] rpl::producer<> error() const {
+	[[nodiscard]] rpl::producer<int> error() const {
 		return _error.events();
 	}
 	[[nodiscard]] rpl::producer<> syncTimeRequests() const {
 		return _syncTimeRequests.events();
+	}
+	[[nodiscard]] rpl::producer<HandshakePhase> progress() const {
+		return _progress.events();
 	}
 
 	virtual void connectToHost(const QString &address, int port) = 0;
@@ -78,14 +81,20 @@ protected:
 	static const int kFilesReceiveBufferSize = 2 * 1024 * 1024;
 
 	void logError(int errorCode, const QString &errorText);
+	void connectionProgress(HandshakePhase phase) {
+		_progress.fire_copy(phase);
+	}
 
 	QString _debugId;
 	rpl::event_stream<> _connected;
 	rpl::event_stream<> _disconnected;
 	rpl::event_stream<> _readyRead;
-	rpl::event_stream<> _error;
+	rpl::event_stream<int> _error;
 	rpl::event_stream<> _syncTimeRequests;
+	rpl::event_stream<HandshakePhase> _progress;
 
 };
+
+[[nodiscard]] ProxyConnectionError SocketProxyConnectionError(int errorCode);
 
 } // namespace MTP::details

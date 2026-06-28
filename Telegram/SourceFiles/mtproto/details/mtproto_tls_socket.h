@@ -59,7 +59,7 @@ private:
 	void plainConnected();
 	void plainDisconnected();
 	void plainReadyRead();
-	void handleError(int errorCode = 0);
+	void handleError(int errorCode = AbstractConnection::kErrorCodeOther);
 	[[nodiscard]] bool requiredHelloPartReady() const;
 	void readHello();
 	void checkHelloParts12(int parts1Size);

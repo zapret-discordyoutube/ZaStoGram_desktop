@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_tls_socket.h"
 #include "mtproto/details/mtproto_wss_socket.h"
 
+#include <QtNetwork/QAbstractSocket>
+
 namespace MTP::details {
 
 std::unique_ptr<AbstractSocket> AbstractSocket::Create(
@@ -39,6 +41,39 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 	} else {
 		return std::make_unique<TcpSocket>(thread, proxy, protocolForFiles);
 	}
+}
+
+ProxyConnectionError SocketProxyConnectionError(int errorCode) {
+	if (errorCode == AbstractConnection::kErrorCodeOther) {
+		return ProxyConnectionError::BadResponse;
+	}
+	switch (errorCode) {
+	case QAbstractSocket::HostNotFoundError:
+	case QAbstractSocket::ProxyNotFoundError:
+		return ProxyConnectionError::HostNotFound;
+
+	case QAbstractSocket::ConnectionRefusedError:
+	case QAbstractSocket::ProxyConnectionRefusedError:
+		return ProxyConnectionError::ConnectionRefused;
+
+	case QAbstractSocket::SocketTimeoutError:
+	case QAbstractSocket::ProxyConnectionTimeoutError:
+		return ProxyConnectionError::Timeout;
+
+	case QAbstractSocket::ProxyAuthenticationRequiredError:
+		return ProxyConnectionError::Authentication;
+
+	case QAbstractSocket::ProxyProtocolError:
+		return ProxyConnectionError::ProxyProtocol;
+
+	case QAbstractSocket::RemoteHostClosedError:
+	case QAbstractSocket::ProxyConnectionClosedError:
+		return ProxyConnectionError::RemoteClosed;
+
+	case QAbstractSocket::NetworkError:
+		return ProxyConnectionError::Network;
+	}
+	return ProxyConnectionError::Unknown;
 }
 
 void AbstractSocket::logError(int errorCode, const QString &errorText) {

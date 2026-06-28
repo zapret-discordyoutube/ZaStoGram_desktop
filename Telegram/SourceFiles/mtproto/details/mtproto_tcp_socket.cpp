@@ -119,7 +119,7 @@ QString TcpSocket::debugPostfix() const {
 
 void TcpSocket::handleError(int errorCode) {
 	logError(errorCode, _socket.errorString());
-	_error.fire({});
+	_error.fire_copy(errorCode);
 }
 
 } // namespace MTP::details

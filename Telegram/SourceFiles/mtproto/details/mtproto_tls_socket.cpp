@@ -962,6 +962,7 @@ void TlsSocket::plainConnected() {
 		return;
 	}
 	_phase = HandshakePhase::TcpConnected;
+	connectionProgress(_phase);
 
 	const auto rules = PrepareClientHelloRules(effectiveTlsProfile());
 	const auto hello = PrepareClientHello(
@@ -971,12 +972,13 @@ void TlsSocket::plainConnected() {
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
 		_state = State::Error;
-		_error.fire({});
+		_error.fire_copy(AbstractConnection::kErrorCodeOther);
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
 		writeClientHello(hello.data);
 		_phase = HandshakePhase::ClientHelloSent;
+		connectionProgress(_phase);
 	}
 }
 
@@ -1095,6 +1097,7 @@ void TlsSocket::checkHelloDigest() {
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
 	_state = State::Connected;
 	_phase = HandshakePhase::ServerHelloOk;
+	connectionProgress(_phase);
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();
 		_startupCoverFrames = 0;
@@ -1136,6 +1139,7 @@ bool TlsSocket::checkNextPacket() {
 			_incomingGoodDataOffset = fullHeader;
 			_incomingGoodDataLimit = length;
 			_phase = HandshakePhase::FirstDataReceived;
+			connectionProgress(_phase);
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -1364,11 +1368,11 @@ void TlsSocket::handleError(int errorCode) {
 	if (_state != State::Connected) {
 		_syncTimeRequests.fire({});
 	}
-	if (errorCode) {
+	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _socket.errorString());
 	}
 	_state = State::Error;
-	_error.fire({});
+	_error.fire_copy(errorCode);
 }
 
 } // namespace MTP::details

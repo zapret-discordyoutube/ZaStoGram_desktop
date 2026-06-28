@@ -603,6 +603,59 @@ private:
 
 };
 
+class ProxySettingsColumns final : public Ui::RpWidget {
+public:
+	explicit ProxySettingsColumns(QWidget *parent)
+	: RpWidget(parent)
+	, _left(this)
+	, _right(this) {
+	}
+
+	[[nodiscard]] not_null<Ui::VerticalLayout*> left() const {
+		return _left.data();
+	}
+	[[nodiscard]] not_null<Ui::VerticalLayout*> right() const {
+		return _right.data();
+	}
+
+protected:
+	int resizeGetHeight(int newWidth) override {
+		const auto wideEnough = newWidth >= st::proxySettingsListColumnWidth
+			+ st::proxySettingsColumnSkip
+			+ st::proxySettingsControlsMinWidth;
+		if (!wideEnough) {
+			const auto leftHeight = _left->resizeGetHeight(newWidth);
+			_left->setGeometryToLeft(0, 0, newWidth, leftHeight, newWidth);
+			const auto rightHeight = _right->resizeGetHeight(newWidth);
+			_right->setGeometryToLeft(
+				0,
+				leftHeight,
+				newWidth,
+				rightHeight,
+				newWidth);
+			return leftHeight + rightHeight;
+		}
+		const auto leftWidth = st::proxySettingsListColumnWidth;
+		const auto rightLeft = leftWidth + st::proxySettingsColumnSkip;
+		const auto rightWidth = newWidth - rightLeft;
+		const auto leftHeight = _left->resizeGetHeight(leftWidth);
+		const auto rightHeight = _right->resizeGetHeight(rightWidth);
+		_left->setGeometryToLeft(0, 0, leftWidth, leftHeight, newWidth);
+		_right->setGeometryToLeft(
+			rightLeft,
+			0,
+			rightWidth,
+			rightHeight,
+			newWidth);
+		return std::max(leftHeight, rightHeight);
+	}
+
+private:
+	object_ptr<Ui::VerticalLayout> _left;
+	object_ptr<Ui::VerticalLayout> _right;
+
+};
+
 class ProxiesBox : public Ui::BoxContent {
 public:
 	using View = ProxiesBoxController::ItemView;
@@ -1119,80 +1172,94 @@ void ProxiesBox::setupTopButton() {
 
 void ProxiesBox::setupContent() {
 	const auto inner = setInnerWidget(object_ptr<Ui::VerticalLayout>(this));
+	const auto columns = inner->add(
+		object_ptr<ProxySettingsColumns>(inner),
+		style::al_justify);
+	const auto left = columns->left();
+	const auto right = columns->right();
 
-	_tryIPv6 = inner->add(
+	_tryIPv6 = right->add(
 		object_ptr<Ui::Checkbox>(
-			inner,
+			right,
 			tr::lng_connection_try_ipv6(tr::now),
 			_settings.tryIPv6()),
-		st::proxyTryIPv6Padding);
+		st::proxySettingsRightCheckPadding);
+	_tryIPv6->setAllowTextLines(2);
 	_proxySettings
 		= std::make_shared<Ui::RadioenumGroup<ProxyData::Settings>>(
 			_settings.settings());
-	inner->add(
+	left->add(
 		object_ptr<Ui::Radioenum<ProxyData::Settings>>(
-			inner,
+			left,
 			_proxySettings,
 			ProxyData::Settings::Disabled,
 			tr::lng_proxy_disable(tr::now)),
 		st::proxyUsePadding);
-	inner->add(
+	left->add(
 		object_ptr<Ui::Radioenum<ProxyData::Settings>>(
-			inner,
+			left,
 			_proxySettings,
 			ProxyData::Settings::System,
 			tr::lng_proxy_use_system_settings(tr::now)),
 		st::proxyUsePadding);
-	inner->add(
+	left->add(
 		object_ptr<Ui::Radioenum<ProxyData::Settings>>(
-			inner,
+			left,
 			_proxySettings,
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
-	_proxyForCalls = inner->add(
-		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
-			inner,
-			object_ptr<Ui::Checkbox>(
-				inner,
-				tr::lng_proxy_use_for_calls(tr::now),
-				_settings.useProxyForCalls()),
+	{
+		auto checkbox = object_ptr<Ui::Checkbox>(
+			right,
+			tr::lng_proxy_use_for_calls(tr::now),
+			_settings.useProxyForCalls());
+		checkbox->setAllowTextLines(2);
+		_proxyForCalls = right->add(
+			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
+				right,
+				std::move(checkbox),
+				style::margins(
+					0,
+					st::proxySettingsRightUsePadding.top(),
+					0,
+					st::proxySettingsRightUsePadding.bottom())),
 			style::margins(
+				st::proxySettingsRightCheckPadding.left(),
 				0,
-				st::proxyUsePadding.top(),
-				0,
-				st::proxyUsePadding.bottom())),
-		style::margins(
-			st::proxyTryIPv6Padding.left(),
-			0,
-			st::proxyTryIPv6Padding.right(),
-			st::proxyTryIPv6Padding.top()));
-	_proxyRotation = inner->add(
-		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
-			inner,
-			object_ptr<Ui::Checkbox>(
-				inner,
-				tr::lng_proxy_auto_switch(tr::now),
-				_settings.proxyRotationEnabled()),
+				st::proxySettingsRightCheckPadding.right(),
+				st::proxySettingsRightCheckPadding.top()));
+	}
+	{
+		auto checkbox = object_ptr<Ui::Checkbox>(
+			right,
+			tr::lng_proxy_auto_switch(tr::now),
+			_settings.proxyRotationEnabled());
+		checkbox->setAllowTextLines(2);
+		_proxyRotation = right->add(
+			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
+				right,
+				std::move(checkbox),
+				style::margins(
+					0,
+					st::proxySettingsRightUsePadding.top(),
+					0,
+					st::proxySettingsRightUsePadding.bottom())),
 			style::margins(
+				st::proxySettingsRightCheckPadding.left(),
 				0,
-				st::proxyUsePadding.top(),
-				0,
-				st::proxyUsePadding.bottom())),
-		style::margins(
-			st::proxyTryIPv6Padding.left(),
-			0,
-			st::proxyTryIPv6Padding.right(),
-			st::proxyTryIPv6Padding.top()));
-	_proxyRotationOptions = inner->add(
+				st::proxySettingsRightCheckPadding.right(),
+				st::proxySettingsRightCheckPadding.top()));
+	}
+	_proxyRotationOptions = right->add(
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			inner,
-			object_ptr<Ui::VerticalLayout>(inner)));
+			right,
+			object_ptr<Ui::VerticalLayout>(right)));
 	_proxyRotationTimeout = _proxyRotationOptions->entity()->add(
 		object_ptr<Ui::SettingsSlider>(
 			_proxyRotationOptions->entity(),
 			st::settingsSlider),
-		st::settingsBigScalePadding);
+		st::proxySettingsRightSliderPadding);
 	for (const auto seconds : Core::SettingsProxy::kProxyRotationTimeouts) {
 		_proxyRotationTimeout->addSection(
 			tr::lng_proxy_auto_switch_timeout(
@@ -1207,15 +1274,16 @@ void ProxiesBox::setupContent() {
 			_proxyRotationOptions->entity(),
 			tr::lng_proxy_auto_switch_about(tr::now),
 			st::boxDividerLabel),
-		st::proxyAboutPadding);
+		st::proxySettingsRightAboutPadding);
 
 	const auto addStealthToggle = [&](
 			const QString &label,
 			bool checked,
 			Fn<void(bool)> save) {
-		const auto toggle = inner->add(
-			object_ptr<Ui::Checkbox>(inner, label, checked),
-			st::proxyTryIPv6Padding);
+		const auto toggle = right->add(
+			object_ptr<Ui::Checkbox>(right, label, checked),
+			st::proxySettingsRightCheckPadding);
+		toggle->setAllowTextLines(2);
 		toggle->checkedChanges(
 		) | rpl::on_next([=](bool value) {
 			save(value);
@@ -1286,24 +1354,25 @@ void ProxiesBox::setupContent() {
 			});
 	}
 
-	inner->add(
+	right->add(
 		object_ptr<Ui::FlatLabel>(
-			inner,
+			right,
 			u"TLS fingerprint (JA4)"_q,
 			st::boxDividerLabel),
-		st::proxyAboutPadding);
+		st::proxySettingsRightAboutPadding);
 	{
 		using Profile = MTP::ProxyTlsProfile;
 		const auto tlsGroup = std::make_shared<Ui::RadioenumGroup<Profile>>(
 			Core::App().settings().proxyStealthOptions().tlsProfile);
 		const auto addTls = [&](Profile value, const QString &label) {
-			inner->add(
+			const auto radio = right->add(
 				object_ptr<Ui::Radioenum<Profile>>(
-					inner,
+					right,
 					tlsGroup,
 					value,
 					label),
-				st::proxyUsePadding);
+				st::proxySettingsRightUsePadding);
+			radio->setAllowTextLines(2);
 		};
 		addTls(Profile::Auto, u"Auto (Chrome)"_q);
 		addTls(Profile::Firefox, u"Firefox"_q);
@@ -1318,19 +1387,19 @@ void ProxiesBox::setupContent() {
 		});
 	}
 
-	_about = inner->add(
+	_about = left->add(
 		object_ptr<Ui::DividerLabel>(
-			inner,
+			left,
 			object_ptr<Ui::FlatLabel>(
-				inner,
+				left,
 				tr::lng_proxy_about(tr::now),
 				st::boxDividerLabel),
 			st::proxyAboutPadding),
 		style::margins(0, 0, 0, st::proxyRowPadding.top()));
 
-	_wrap = inner->add(std::move(_initialWrap));
-	inner->add(object_ptr<Ui::FixedHeightWidget>(
-		inner,
+	_wrap = left->add(std::move(_initialWrap));
+	left->add(object_ptr<Ui::FixedHeightWidget>(
+		left,
 		st::proxyRowPadding.bottom()));
 
 	_proxySettings->setChangedCallback([=](ProxyData::Settings value) {
@@ -1378,10 +1447,10 @@ void ProxiesBox::setupContent() {
 	_proxyRotationOptions->finishAnimating();
 
 	{
-		const auto wrap = inner->add(
+		const auto wrap = left->add(
 			object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-				inner,
-				object_ptr<Ui::VerticalLayout>(inner)));
+				left,
+				object_ptr<Ui::VerticalLayout>(left)));
 		const auto shareList = Settings::AddButtonWithIcon(
 			wrap->entity(),
 			tr::lng_proxy_edit_share_list_button(),
@@ -1395,18 +1464,18 @@ void ProxiesBox::setupContent() {
 		wrap->finishAnimating();
 	}
 
-	inner->resizeToWidth(st::boxWideWidth);
+	inner->resizeToWidth(st::proxySettingsBoxWidth);
 
 	inner->heightValue(
 	) | rpl::map([=](int height) {
 		return std::min(
-			std::max(height, _about->y()
-				+ _about->height()
-				+ 3 * rowHeight()),
-			st::boxMaxListHeight);
+			std::max(
+				height,
+				_wrap->y() + 3 * rowHeight()),
+			st::proxySettingsBoxMaxHeight);
 	}) | rpl::distinct_until_changed(
 	) | rpl::on_next([=](int height) {
-		setDimensions(st::boxWideWidth, height);
+		setDimensions(st::proxySettingsBoxWidth, height);
 	}, inner->lifetime());
 }
 
@@ -1470,7 +1539,7 @@ void ProxiesBox::applyView(View &&view) {
 		if (_noRows) {
 			_noRows.reset();
 		}
-		wrap->resizeToWidth(width());
+		wrap->resizeToWidth(st::proxySettingsListColumnWidth);
 	} else if (view.host.isEmpty()) {
 		_rows.erase(i);
 	} else {
@@ -1486,7 +1555,7 @@ void ProxiesBox::createNoRowsLabel() {
 			rowHeight()),
 		st::proxyEmptyListPadding));
 	_noRows->resize(
-		(st::boxWideWidth
+		(st::proxySettingsListColumnWidth
 			- st::proxyEmptyListPadding.left()
 			- st::proxyEmptyListPadding.right()),
 		_noRows->height());

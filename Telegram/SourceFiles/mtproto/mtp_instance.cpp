@@ -106,6 +106,10 @@ public:
 	void restart(ShiftedDcId shiftedDcId);
 	[[nodiscard]] int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] QString dctransport(ShiftedDcId shiftedDcId = 0);
+	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;
+	[[nodiscard]] auto proxyConnectionStatusValue() const
+	-> rpl::producer<ProxyConnectionStatus>;
+	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	[[nodiscard]] int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
@@ -243,6 +247,7 @@ private:
 	base::flat_map<ShiftedDcId, std::unique_ptr<Session>> _sessions;
 	std::vector<std::unique_ptr<Session>> _sessionsToDestroy;
 	rpl::event_stream<ShiftedDcId> _restartsByTimeout;
+	rpl::variable<ProxyConnectionStatus> _proxyConnectionStatus;
 
 	std::unique_ptr<ConfigLoader> _configLoader;
 	std::unique_ptr<DomainResolver> _domainResolver;
@@ -368,6 +373,9 @@ Instance::Private::Private(
 	) | rpl::on_next([=] {
 		if (_configLoader) {
 			_configLoader->setProxyEnabled(_proxySettings.isEnabled());
+		}
+		if (!_proxySettings.isEnabled()) {
+			setProxyConnectionStatus({});
 		}
 	}, _lifetime);
 }
@@ -650,6 +658,27 @@ QString Instance::Private::dctransport(ShiftedDcId shiftedDcId) {
 		return session->transport();
 	}
 	return QString();
+}
+
+ProxyConnectionStatus Instance::Private::proxyConnectionStatus() const {
+	return _proxyConnectionStatus.current();
+}
+
+auto Instance::Private::proxyConnectionStatusValue() const
+-> rpl::producer<ProxyConnectionStatus> {
+	return _proxyConnectionStatus.value();
+}
+
+void Instance::Private::setProxyConnectionStatus(
+		ProxyConnectionStatus status) {
+	if (!_proxySettings.isEnabled()
+		&& status.phase != ProxyConnectionPhase::None) {
+		return;
+	}
+	if (status == _proxyConnectionStatus.current()) {
+		return;
+	}
+	_proxyConnectionStatus = status;
 }
 
 void Instance::Private::ping() {
@@ -1954,6 +1983,19 @@ int32 Instance::dcstate(ShiftedDcId shiftedDcId) {
 
 QString Instance::dctransport(ShiftedDcId shiftedDcId) {
 	return _private->dctransport(shiftedDcId);
+}
+
+ProxyConnectionStatus Instance::proxyConnectionStatus() const {
+	return _private->proxyConnectionStatus();
+}
+
+auto Instance::proxyConnectionStatusValue() const
+-> rpl::producer<ProxyConnectionStatus> {
+	return _private->proxyConnectionStatusValue();
+}
+
+void Instance::setProxyConnectionStatus(ProxyConnectionStatus status) {
+	_private->setProxyConnectionStatus(status);
 }
 
 void Instance::ping() {

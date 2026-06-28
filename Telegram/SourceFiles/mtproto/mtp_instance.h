@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "mtproto/connection_abstract.h"
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtproto_response.h"
 
@@ -93,6 +94,10 @@ public:
 	void restart(ShiftedDcId shiftedDcId);
 	int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	QString dctransport(ShiftedDcId shiftedDcId = 0);
+	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;
+	[[nodiscard]] auto proxyConnectionStatusValue() const
+	-> rpl::producer<ProxyConnectionStatus>;
+	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms

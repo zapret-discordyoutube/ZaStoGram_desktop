@@ -917,7 +917,9 @@ void Stories::preloadListsMore() {
 	};
 	const auto countLoaded = [&](StorySourcesList list) {
 		const auto index = static_cast<int>(list);
-		return _sourcesLoaded[index] || !_sourcesStates[index].isEmpty();
+		return _sourcesLoaded[index]
+			|| (!_sourcesStateFromSnapshot[index]
+				&& !_sourcesStates[index].isEmpty());
 	};
 	const auto selfId = _owner->session().userPeerId();
 	constexpr auto archive = kStoriesAlbumIdArchive;

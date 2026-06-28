@@ -185,13 +185,15 @@ HandshakePhase WssSocket::handshakePhase() const {
 
 void WssSocket::handleError(int errorCode) {
 	logError(errorCode, _socket.errorString());
-	_error.fire({});
+	_error.fire_copy(errorCode);
 }
 
 void WssSocket::onEncrypted() {
 	_phase = HandshakePhase::TcpConnected;
+	connectionProgress(_phase);
 	sendHttpUpgrade();
 	_phase = HandshakePhase::ClientHelloSent;
+	connectionProgress(_phase);
 }
 
 void WssSocket::sendHttpUpgrade() {
@@ -221,7 +223,7 @@ bool WssSocket::tryFinishUpgrade() {
 	if (end < 0) {
 		if (_incoming.size() > kWssHeaderLimit) {
 			logError(0, u"WSS HTTP response too large"_q);
-			_error.fire({});
+			_error.fire_copy(AbstractConnection::kErrorCodeOther);
 		}
 		return false;
 	}
@@ -229,11 +231,12 @@ bool WssSocket::tryFinishUpgrade() {
 	_incoming.remove(0, end + 4);
 	if (!header.contains(" 101 ") && !header.contains(" 101\r")) {
 		logError(0, u"WSS HTTP upgrade rejected"_q);
-		_error.fire({});
+		_error.fire_copy(AbstractConnection::kErrorCodeOther);
 		return false;
 	}
 	_upgraded = true;
 	_phase = HandshakePhase::ServerHelloOk;
+	connectionProgress(_phase);
 	_connected.fire({});
 	return true;
 }
@@ -277,7 +280,7 @@ void WssSocket::parseFrames() {
 		}
 		if (length > kWssMaxFrame) {
 			logError(0, u"WSS frame too large"_q);
-			_error.fire({});
+			_error.fire_copy(AbstractConnection::kErrorCodeOther);
 			return;
 		}
 		const auto maskLen = masked ? 4 : 0;
@@ -289,7 +292,7 @@ void WssSocket::parseFrames() {
 		const auto payload = p + headerLen + maskLen;
 		if (opcode == 0x8) { // close
 			logError(0, u"WSS close frame received"_q);
-			_error.fire({});
+			_error.fire_copy(AbstractConnection::kErrorCodeOther);
 			return;
 		} else if (opcode == 0x9) { // ping -> pong
 			sendFrame(
@@ -320,6 +323,7 @@ void WssSocket::parseFrames() {
 	if (produced) {
 		if (_phase == HandshakePhase::ServerHelloOk) {
 			_phase = HandshakePhase::FirstDataReceived;
+			connectionProgress(_phase);
 		}
 		_readyRead.fire({});
 	}

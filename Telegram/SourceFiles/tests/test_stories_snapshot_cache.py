@@ -46,3 +46,14 @@ def test_stories_not_modified_response_marks_snapshot_state_loaded():
 
     assert "_sourcesLoaded[index] = true" in block
     assert "scheduleSnapshotWrite()" in block
+
+
+def test_restored_state_does_not_skip_hidden_list_validation():
+    source = read("SourceFiles/data/data_stories.cpp")
+    marker = "const auto countLoaded = [&](StorySourcesList list)"
+    assert marker in source
+    block = source[source.index(marker):source.index("};", source.index(marker))]
+
+    assert "_sourcesLoaded[index]" in block
+    assert "!_sourcesStateFromSnapshot[index]" in block
+    assert "!_sourcesStates[index].isEmpty()" in block

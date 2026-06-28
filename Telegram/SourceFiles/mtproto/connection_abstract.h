@@ -20,6 +20,42 @@ namespace MTP {
 
 class Instance;
 
+enum class ProxyConnectionPhase {
+	None,
+	Resolving,
+	Connecting,
+	Handshake,
+	CheckingTelegram,
+	Connected,
+	Failed,
+};
+
+enum class ProxyConnectionError {
+	None,
+	HostNotFound,
+	ConnectionRefused,
+	Timeout,
+	Authentication,
+	ProxyProtocol,
+	RemoteClosed,
+	Network,
+	BadResponse,
+	Unknown,
+};
+
+struct ProxyConnectionStatus {
+	ProxyConnectionPhase phase = ProxyConnectionPhase::None;
+	ProxyConnectionError error = ProxyConnectionError::None;
+	ProxyData proxy;
+
+	bool operator==(const ProxyConnectionStatus &other) const {
+		return (phase == other.phase)
+			&& (error == other.error)
+			&& (proxy == other.proxy);
+	}
+
+};
+
 namespace details {
 
 struct ConnectionOptions;
