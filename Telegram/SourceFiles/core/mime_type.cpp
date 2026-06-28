@@ -9,9 +9,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/utils.h"
 #include "ui/image/image_prepare.h"
+#ifdef Q_OS_WIN
+#include "platform/win/media_clipboard_win.h"
+#endif // Q_OS_WIN
 
 #include <QtCore/QMimeDatabase>
 #include <QtCore/QMimeData>
+#include <QtGui/QClipboard>
+#include <QtGui/QGuiApplication>
 
 #include <kurlmimedata.h>
 
@@ -35,6 +40,65 @@ namespace {
 	// check for a special Firefox mime type to check for that case.
 	return data->hasFormat(u"application/x-moz-nativeimage"_q)
 		&& data->hasImage();
+}
+
+[[nodiscard]] QByteArray ExpectedImageFormat(const QString &mime) {
+	if (mime.contains(u"jpeg"_q, Qt::CaseInsensitive)
+		|| mime.contains(u"jpg"_q, Qt::CaseInsensitive)
+		|| mime.contains(u"jfif"_q, Qt::CaseInsensitive)) {
+		return "jpeg";
+	} else if (mime.contains(u"png"_q, Qt::CaseInsensitive)) {
+		return "png";
+	}
+	return QByteArray();
+}
+
+[[nodiscard]] MimeImageData ReadEncodedImage(
+		not_null<const QMimeData*> data,
+		const QString &mime) {
+	if (!data->hasFormat(mime)) {
+		return {};
+	}
+	auto bytes = data->data(mime);
+	if (bytes.isEmpty()) {
+		return {};
+	}
+	auto read = Images::Read({ .content = bytes });
+	const auto expected = ExpectedImageFormat(mime);
+	if (read.image.isNull()
+		|| (!expected.isEmpty() && read.format != expected)) {
+		return {};
+	}
+	return {
+		.image = std::move(read.image),
+		.content = std::move(bytes),
+	};
+}
+
+[[nodiscard]] MimeImageData ReadWindowsEncodedImage(
+		not_null<const QMimeData*> data,
+		const QString &format) {
+	return ReadEncodedImage(
+		data,
+		u"application/x-qt-windows-mime;value=\"%1\""_q.arg(format));
+}
+
+void FillMimeData(
+		not_null<QMimeData*> mime,
+		MediaClipboardPayload &&payload) {
+	if (!payload.image.isNull()) {
+		mime->setImageData(std::move(payload.image));
+	}
+	if (!payload.content.isEmpty() && !payload.mime.isEmpty()) {
+		mime->setData(payload.mime, std::move(payload.content));
+		if (payload.mime == u"image/jpeg"_q) {
+			mime->setData(u"application/x-td-use-jpeg"_q, "1");
+		}
+	}
+	if (!payload.filepath.isEmpty()) {
+		mime->setUrls({ QUrl::fromLocalFile(payload.filepath) });
+		KUrlMimeData::exportUrlsToPortal(mime.get());
+	}
 }
 
 [[nodiscard]] base::flat_set<QString> SplitExtensions(
@@ -173,19 +237,36 @@ bool FileIsImage(const QString &name, const QString &mime) {
 		: (DetectNameType(name) == NameType::Image);
 }
 
+bool SetMediaClipboard(MediaClipboardPayload &&payload) {
+#ifdef Q_OS_WIN
+	auto nativePayload = payload;
+	if (Platform::SetMediaClipboard(std::move(nativePayload))) {
+		return true;
+	}
+#endif // Q_OS_WIN
+	auto mime = std::make_unique<QMimeData>();
+	FillMimeData(mime.get(), std::move(payload));
+	QGuiApplication::clipboard()->setMimeData(mime.release());
+	return true;
+}
+
 std::shared_ptr<QMimeData> ShareMimeMediaData(
 		not_null<const QMimeData*> original) {
 	auto result = std::make_shared<QMimeData>();
 	if (original->hasFormat(u"application/x-td-forward"_q)) {
 		result->setData(u"application/x-td-forward"_q, "1");
 	}
-	if (original->hasImage()) {
-		result->setImageData(original->imageData());
-	}
 	if (original->hasFormat(u"application/x-td-use-jpeg"_q)
 		&& original->hasFormat(u"image/jpeg"_q)) {
 		result->setData(u"application/x-td-use-jpeg"_q, "1");
 		result->setData(u"image/jpeg"_q, original->data(u"image/jpeg"_q));
+	} else if (original->hasFormat(u"image/png"_q)) {
+		result->setData(u"image/png"_q, original->data(u"image/png"_q));
+	} else if (original->hasFormat(u"image/jpeg"_q)) {
+		result->setData(u"image/jpeg"_q, original->data(u"image/jpeg"_q));
+	}
+	if (original->hasImage()) {
+		result->setImageData(original->imageData());
 	}
 	if (auto list = ReadMimeUrls(original); !list.isEmpty()) {
 		result->setUrls(std::move(list));
@@ -196,15 +277,26 @@ std::shared_ptr<QMimeData> ShareMimeMediaData(
 
 MimeImageData ReadMimeImage(not_null<const QMimeData*> data) {
 	if (data->hasFormat(u"application/x-td-use-jpeg"_q)) {
-		auto bytes = data->data(u"image/jpeg"_q);
-		auto read = Images::Read({ .content = bytes });
-		if (read.format == "jpeg" && !read.image.isNull()) {
-			return {
-				.image = std::move(read.image),
-				.content = std::move(bytes),
-			};
+		if (auto result = ReadEncodedImage(data, u"image/jpeg"_q)) {
+			return result;
 		}
-	} else if (data->hasImage()) {
+	}
+	if (auto result = ReadEncodedImage(data, u"image/png"_q)) {
+		return result;
+	}
+	if (auto result = ReadWindowsEncodedImage(data, u"PNG"_q)) {
+		return result;
+	}
+	if (auto result = ReadEncodedImage(data, u"image/jpeg"_q)) {
+		return result;
+	}
+	if (auto result = ReadWindowsEncodedImage(data, u"JFIF"_q)) {
+		return result;
+	}
+	if (auto result = ReadWindowsEncodedImage(data, u"JPEG"_q)) {
+		return result;
+	}
+	if (data->hasImage()) {
 		return { .image = qvariant_cast<QImage>(data->imageData()) };
 	}
 	return {};

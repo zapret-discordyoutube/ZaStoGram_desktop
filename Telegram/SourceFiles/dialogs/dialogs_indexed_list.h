@@ -30,7 +30,7 @@ public:
 	bool updateHeights(float64 narrowRatio);
 
 	// row must belong to this indexed list all().
-	void movePinned(Row *row, int deltaSign);
+	void movePinned(Row *row, int delta);
 
 	// For sortMode != SortMode::Date && != Complex
 	void peerNameChanged(

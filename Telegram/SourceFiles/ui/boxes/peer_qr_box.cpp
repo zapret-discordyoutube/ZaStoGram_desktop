@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/peer_qr_box.h"
 
 #include "core/application.h"
+#include "core/mime_type.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
@@ -45,8 +46,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_widgets.h"
 #include "styles/style_window.h"
 
-#include <QtCore/QMimeData>
-#include <QtGui/QGuiApplication>
 #include <QtSvg/QSvgRenderer>
 
 namespace Ui {
@@ -976,9 +975,12 @@ void FillPeerQrBox(
 			}
 			crl::on_main(weak, [=] {
 				state->saveButtonBusy = false;
-				auto mime = std::make_unique<QMimeData>();
-				mime->setImageData(std::move(image));
-				QGuiApplication::clipboard()->setMimeData(mime.release());
+				Core::SetMediaClipboard({
+					.mime = u"image/png"_q,
+					.image = std::move(image),
+					.suggestedName = u"qr.png"_q,
+					.alreadyTransformed = true,
+				});
 				show->showToast({
 					.text = { tr::lng_group_invite_qr_copied(tr::now) },
 					.iconLottie = u"toast/copy"_q,

@@ -50,6 +50,17 @@ private:
 
 [[nodiscard]] bool FileIsImage(const QString &name, const QString &mime);
 
+struct MediaClipboardPayload {
+	QByteArray content;
+	QString mime;
+	QImage image;
+	QString filepath;
+	QString suggestedName;
+	bool alreadyTransformed = false;
+};
+
+[[nodiscard]] bool SetMediaClipboard(MediaClipboardPayload &&payload);
+
 [[nodiscard]] std::shared_ptr<QMimeData> ShareMimeMediaData(
 	not_null<const QMimeData*> original);
 

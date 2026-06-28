@@ -3552,15 +3552,16 @@ void OverlayWidget::copyMedia() {
 		const auto filepath = _document->filepath(true);
 		auto image = transformedShownContent();
 		if (!image.isNull() || !filepath.isEmpty()) {
-			auto mime = std::make_unique<QMimeData>();
-			if (!image.isNull()) {
-				mime->setImageData(std::move(image));
-			}
-			if (!filepath.isEmpty() && !videoShown()) {
-				mime->setUrls({ QUrl::fromLocalFile(filepath) });
-				KUrlMimeData::exportUrlsToPortal(mime.get());
-			}
-			QGuiApplication::clipboard()->setMimeData(mime.release());
+			const auto canUseFile = !filepath.isEmpty()
+				&& !videoShown()
+				&& (finalContentRotation() == 0);
+			Core::SetMediaClipboard({
+				.mime = u"image/png"_q,
+				.image = std::move(image),
+				.filepath = canUseFile ? filepath : QString(),
+				.suggestedName = u"image.png"_q,
+				.alreadyTransformed = true,
+			});
 		}
 	} else if (_photo && _photoMedia->loaded()) {
 		_photoMedia->setToClipboard();

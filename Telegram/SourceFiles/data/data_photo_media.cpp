@@ -9,14 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_file_origin.h"
 #include "data/data_session.h"
+#include "core/mime_type.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "storage/file_download.h"
-
-#include <QtGui/QGuiApplication>
-#include <QtGui/QClipboard>
 
 namespace Data {
 
@@ -222,18 +220,20 @@ bool PhotoMedia::setToClipboard() {
 	if (const auto video = videoContent(large); !video.isEmpty()) {
 		return false;
 	}
-	auto fallback = image(large)->original();
+	const auto largeImage = image(large);
+	if (!largeImage) {
+		return false;
+	}
+	auto fallback = largeImage->original();
 	if (fallback.isNull()) {
 		return false;
 	}
-	auto mime = std::make_unique<QMimeData>();
-	mime->setImageData(std::move(fallback));
-	if (auto bytes = imageBytes(large); !bytes.isEmpty()) {
-		mime->setData(u"image/jpeg"_q, std::move(bytes));
-	}
-	mime->setData(u"application/x-td-use-jpeg"_q, "1");
-	QGuiApplication::clipboard()->setMimeData(mime.release());
-	return true;
+	return Core::SetMediaClipboard({
+		.content = imageBytes(large),
+		.mime = u"image/jpeg"_q,
+		.image = std::move(fallback),
+		.suggestedName = u"photo.jpg"_q,
+	});
 }
 
 } // namespace Data

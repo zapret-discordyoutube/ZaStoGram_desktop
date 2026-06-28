@@ -79,19 +79,12 @@ void IndexedList::moveToTop(Key key) {
 	}
 }
 
-void IndexedList::movePinned(Row *row, int deltaSign) {
-	auto swapPinnedIndexWith = find(row);
-	Assert(swapPinnedIndexWith != cend());
-	if (deltaSign > 0) {
-		++swapPinnedIndexWith;
-	} else {
-		Assert(swapPinnedIndexWith != cbegin());
-		--swapPinnedIndexWith;
-	}
-	row->key().entry()->owner().reorderTwoPinnedChats(
+void IndexedList::movePinned(Row *row, int delta) {
+	Assert(find(row) != cend());
+	row->key().entry()->owner().movePinnedChat(
 		_filterId,
 		row->key(),
-		(*swapPinnedIndexWith)->key());
+		delta);
 }
 
 void IndexedList::peerNameChanged(

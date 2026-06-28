@@ -2460,7 +2460,6 @@ bool InnerWidget::updateReorderPinned(QPoint localPosition) {
 			}
 			delta -= height;
 			--shift;
-			_shownList->movePinned(_dragging, -1);
 			std::swap(_pinnedRows[from], _pinnedRows[from - 1]);
 			_pinnedRows[from].yadd = anim::value(
 				_pinnedRows[from].yadd.current() - draggingHeight,
@@ -2479,7 +2478,6 @@ bool InnerWidget::updateReorderPinned(QPoint localPosition) {
 			}
 			delta -= height;
 			++shift;
-			_shownList->movePinned(_dragging, 1);
 			std::swap(_pinnedRows[from], _pinnedRows[from + 1]);
 			_pinnedRows[from].yadd = anim::value(
 				_pinnedRows[from].yadd.current() + draggingHeight,
@@ -2489,6 +2487,7 @@ bool InnerWidget::updateReorderPinned(QPoint localPosition) {
 		}
 	}
 	if (shift) {
+		_shownList->movePinned(_dragging, shift);
 		_draggingIndex += shift;
 		_aboveIndex = _draggingIndex;
 		_dragStart.setY(_dragStart.y() + shiftHeight);

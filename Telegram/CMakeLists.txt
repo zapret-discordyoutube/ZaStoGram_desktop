@@ -1619,6 +1619,8 @@ PRIVATE
     platform/win/integration_win.h
     platform/win/main_window_win.cpp
     platform/win/main_window_win.h
+    platform/win/media_clipboard_win.cpp
+    platform/win/media_clipboard_win.h
     platform/win/notifications_manager_win.cpp
     platform/win/notifications_manager_win.h
     platform/win/overlay_widget_win.h

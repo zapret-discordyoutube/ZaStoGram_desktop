@@ -31,6 +31,7 @@ public:
 
 	// if (pinned) places on the first place in the list.
 	void setPinned(Key key, bool pinned);
+	void move(Key key, int delta);
 
 	void clear();
 

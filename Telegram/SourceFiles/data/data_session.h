@@ -564,6 +564,10 @@ public:
 	void applyPinnedTopics(
 		not_null<Forum*> forum,
 		const QVector<MTPint> &list);
+	void movePinnedChat(
+		FilterId filterId,
+		Dialogs::Key key,
+		int delta);
 	void reorderTwoPinnedChats(
 		FilterId filterId,
 		Dialogs::Key key1,

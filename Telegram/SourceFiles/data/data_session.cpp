@@ -2729,6 +2729,22 @@ void Session::clearPinnedChats(Data::Folder *folder) {
 	chatsList(folder)->pinned()->clear();
 }
 
+void Session::movePinnedChat(
+		FilterId filterId,
+		Dialogs::Key key,
+		int delta) {
+	Expects(key.entry()->folderKnown());
+
+	const auto topic = key.topic();
+	const auto list = topic
+		? topic->forum()->topicsList()
+		: filterId
+		? chatsFilters().chatsList(filterId)
+		: chatsListFor(key.entry());
+	list->pinned()->move(key, delta);
+	notifyPinnedDialogsOrderUpdated();
+}
+
 void Session::reorderTwoPinnedChats(
 		FilterId filterId,
 		Dialogs::Key key1,

@@ -72,6 +72,44 @@ void PinnedList::setPinned(Key key, bool pinned) {
 	}
 }
 
+void PinnedList::move(Key key, int delta) {
+	if (!delta) {
+		return;
+	}
+	const auto from = ranges::find(_data, key);
+	if (from == end(_data)) {
+		return;
+	}
+	const auto oldIndex = int(from - begin(_data));
+	const auto newIndex = std::clamp(
+		oldIndex + delta,
+		0,
+		int(_data.size()) - 1);
+	if (newIndex == oldIndex) {
+		return;
+	}
+	const auto begin = _data.begin();
+	if (newIndex > oldIndex) {
+		std::rotate(
+			begin + oldIndex,
+			begin + oldIndex + 1,
+			begin + newIndex + 1);
+	} else {
+		std::rotate(
+			begin + newIndex,
+			begin + oldIndex,
+			begin + oldIndex + 1);
+	}
+	const auto first = std::min(oldIndex, newIndex);
+	const auto last = std::max(oldIndex, newIndex);
+	for (auto i = first; i != last + 1; ++i) {
+		if (i != newIndex) {
+			_data[i].entry()->cachePinnedIndex(_filterId, i + 1);
+		}
+	}
+	key.entry()->cachePinnedIndex(_filterId, newIndex + 1);
+}
+
 void PinnedList::applyLimit(int limit) {
 	Expects(limit >= 0);
 
