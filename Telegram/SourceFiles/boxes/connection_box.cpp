@@ -1263,6 +1263,38 @@ void ProxiesBox::setupContent() {
 			});
 	}
 
+	inner->add(
+		object_ptr<Ui::FlatLabel>(
+			inner,
+			u"TLS fingerprint (JA4)"_q,
+			st::boxDividerLabel),
+		st::proxyAboutPadding);
+	{
+		using Profile = MTP::ProxyTlsProfile;
+		const auto tlsGroup = std::make_shared<Ui::RadioenumGroup<Profile>>(
+			Core::App().settings().proxyStealthOptions().tlsProfile);
+		const auto addTls = [&](Profile value, const QString &label) {
+			inner->add(
+				object_ptr<Ui::Radioenum<Profile>>(
+					inner,
+					tlsGroup,
+					value,
+					label),
+				st::proxyUsePadding);
+		};
+		addTls(Profile::Auto, u"Auto (Chrome)"_q);
+		addTls(Profile::Firefox, u"Firefox"_q);
+		addTls(Profile::FirefoxAndroid, u"Firefox Android"_q);
+		addTls(Profile::Yandex, u"Yandex"_q);
+		addTls(Profile::AndroidOkHttp, u"Android OkHttp"_q);
+		addTls(Profile::AutoRotate, u"Auto-rotate"_q);
+		tlsGroup->setChangedCallback([=](Profile value) {
+			auto o = Core::App().settings().proxyStealthOptions();
+			o.tlsProfile = value;
+			Core::App().settings().setProxyStealthOptions(o);
+		});
+	}
+
 	_about = inner->add(
 		object_ptr<Ui::DividerLabel>(
 			inner,
