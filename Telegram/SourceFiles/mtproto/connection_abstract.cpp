@@ -183,7 +183,10 @@ ConnectionPointer AbstractConnection::Create(
 				proxy,
 				stealth);
 		} else {
-			return ConnectionPointer::New<HttpConnection>(thread, proxy);
+			return ConnectionPointer::New<HttpConnection>(
+				instance,
+				thread,
+				proxy);
 		}
 	}();
 	if (proxy.tryCustomResolve()) {

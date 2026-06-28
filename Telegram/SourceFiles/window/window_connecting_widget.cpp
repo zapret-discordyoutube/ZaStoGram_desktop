@@ -32,6 +32,73 @@ constexpr auto kConnectingStateDelay = crl::time(1000);
 constexpr auto kRefreshTimeout = crl::time(200);
 constexpr auto kMinimalWaitingStateDuration = crl::time(4000);
 
+[[nodiscard]] QString ProxyConnectionErrorText(
+		MTP::ProxyConnectionError error) {
+	switch (error) {
+	case MTP::ProxyConnectionError::None:
+		return QString();
+
+	case MTP::ProxyConnectionError::HostNotFound:
+		return tr::lng_proxy_status_host_not_found(tr::now);
+
+	case MTP::ProxyConnectionError::ConnectionRefused:
+		return tr::lng_proxy_status_refused(tr::now);
+
+	case MTP::ProxyConnectionError::Timeout:
+		return tr::lng_proxy_status_timeout(tr::now);
+
+	case MTP::ProxyConnectionError::Authentication:
+		return tr::lng_proxy_status_auth_failed(tr::now);
+
+	case MTP::ProxyConnectionError::ProxyProtocol:
+		return tr::lng_proxy_status_protocol(tr::now);
+
+	case MTP::ProxyConnectionError::RemoteClosed:
+		return tr::lng_proxy_status_closed(tr::now);
+
+	case MTP::ProxyConnectionError::Network:
+		return tr::lng_proxy_status_network(tr::now);
+
+	case MTP::ProxyConnectionError::BadResponse:
+		return tr::lng_proxy_status_bad_response(tr::now);
+
+	case MTP::ProxyConnectionError::Unknown:
+		return tr::lng_proxy_status_failed(tr::now);
+	}
+	return QString();
+}
+
+[[nodiscard]] QString ProxyConnectionStatusText(
+		const MTP::ProxyConnectionStatus &status) {
+	const auto error = ProxyConnectionErrorText(status.error);
+	if (!error.isEmpty()) {
+		return error;
+	}
+	switch (status.phase) {
+	case MTP::ProxyConnectionPhase::None:
+		return QString();
+
+	case MTP::ProxyConnectionPhase::Resolving:
+		return tr::lng_proxy_status_resolving(tr::now);
+
+	case MTP::ProxyConnectionPhase::Connecting:
+		return tr::lng_proxy_status_connecting(tr::now);
+
+	case MTP::ProxyConnectionPhase::Handshake:
+		return tr::lng_proxy_status_handshake(tr::now);
+
+	case MTP::ProxyConnectionPhase::CheckingTelegram:
+		return tr::lng_proxy_status_checking(tr::now);
+
+	case MTP::ProxyConnectionPhase::Connected:
+		return tr::lng_proxy_status_connected(tr::now);
+
+	case MTP::ProxyConnectionPhase::Failed:
+		return tr::lng_proxy_status_failed(tr::now);
+	}
+	return QString();
+}
+
 class Progress : public Ui::RpWidget {
 public:
 	Progress(QWidget *parent);
@@ -213,7 +280,8 @@ bool ConnectionState::State::operator==(const State &other) const {
 		&& (exposed == other.exposed)
 		&& (underCursor == other.underCursor)
 		&& (updateReady == other.updateReady)
-		&& (waitTillRetry == other.waitTillRetry);
+		&& (waitTillRetry == other.waitTillRetry)
+		&& (proxyStatus == other.proxyStatus);
 }
 
 ConnectionState::ConnectionState(
@@ -247,6 +315,7 @@ ConnectionState::ConnectionState(
 
 	rpl::combine(
 		Core::App().settings().proxy().connectionTypeValue(),
+		_account->mtp().proxyConnectionStatusValue(),
 		rpl::single(QRect()) | rpl::then(_parent->paintRequest())
 	) | rpl::on_next([=] {
 		refreshState();
@@ -314,19 +383,48 @@ void ConnectionState::refreshState() {
 			&& (Checker().state() == Checker::State::Ready);
 		const auto state = _account->mtp().dcstate();
 		const auto proxy = Core::App().settings().proxy().isEnabled();
+		const auto proxyStatus = _account->mtp().proxyConnectionStatus();
 		if (state == MTP::ConnectingState
 			|| state == MTP::DisconnectedState
 			|| (state < 0 && state > -600)) {
-			return { State::Type::Connecting, proxy, exposed, under, ready };
+			return {
+				State::Type::Connecting,
+				proxy,
+				exposed,
+				under,
+				ready,
+				0,
+				proxyStatus };
 		} else if (state < 0
 			&& state >= -kMinimalWaitingStateDuration
 			&& _state.type != State::Type::Waiting) {
-			return { State::Type::Connecting, proxy, exposed, under, ready };
+			return {
+				State::Type::Connecting,
+				proxy,
+				exposed,
+				under,
+				ready,
+				0,
+				proxyStatus };
 		} else if (state < 0) {
 			const auto wait = ((-state) / 1000) + 1;
-			return { State::Type::Waiting, proxy, exposed, under, ready, wait };
+			return {
+				State::Type::Waiting,
+				proxy,
+				exposed,
+				under,
+				ready,
+				wait,
+				proxyStatus };
 		}
-		return { State::Type::Connected, proxy, exposed, under, ready };
+		return {
+			State::Type::Connected,
+			proxy,
+			exposed,
+			under,
+			ready,
+			0,
+			proxyStatus };
 	}();
 	if (state.exposed && state.waitTillRetry > 0) {
 		_refreshTimer.callOnce(kRefreshTimeout);
@@ -445,17 +543,40 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 		&& !state.updateReady;
 	switch (state.type) {
 	case State::Type::Connecting:
-		result.text = state.underCursor
-			? tr::lng_connecting(tr::now)
-			: QString();
+		if (state.useProxy) {
+			result.text = ProxyConnectionStatusText(state.proxyStatus);
+			if (result.text.isEmpty()) {
+				result.text = tr::lng_connection_proxy_connecting(tr::now);
+			}
+		} else {
+			result.text = state.underCursor
+				? tr::lng_connecting(tr::now)
+				: QString();
+		}
 		break;
 
 	case State::Type::Waiting:
 		Assert(state.waitTillRetry > 0);
-		result.text = tr::lng_reconnecting(
-			tr::now,
-			lt_count,
-			state.waitTillRetry);
+		if (state.useProxy) {
+			const auto error = ProxyConnectionErrorText(
+				state.proxyStatus.error);
+			result.text = error.isEmpty()
+				? tr::lng_proxy_status_retry(
+					tr::now,
+					lt_count,
+					state.waitTillRetry)
+				: tr::lng_proxy_status_retry_with_error(
+					tr::now,
+					lt_error,
+					error,
+					lt_count,
+					state.waitTillRetry);
+		} else {
+			result.text = tr::lng_reconnecting(
+				tr::now,
+				lt_count,
+				state.waitTillRetry);
+		}
 		break;
 	}
 	result.textWidth = st::normalFont->width(result.text);

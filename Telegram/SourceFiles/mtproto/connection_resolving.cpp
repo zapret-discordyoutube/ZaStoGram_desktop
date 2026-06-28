@@ -15,6 +15,20 @@ namespace {
 
 constexpr auto kOneConnectionTimeout = 4000;
 
+void SetProxyConnectionStatus(
+		not_null<Instance*> instance,
+		const ProxyData &proxy,
+		ProxyConnectionPhase phase,
+		ProxyConnectionError error = ProxyConnectionError::None) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	const auto status = ProxyConnectionStatus{ phase, error, proxy };
+	InvokeQueued(instance, [=] {
+		instance->setProxyConnectionStatus(status);
+	});
+}
+
 } // namespace
 
 ResolvingConnection::ResolvingConnection(
@@ -27,6 +41,10 @@ ResolvingConnection::ResolvingConnection(
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
 	if (proxy.resolvedExpireAt < crl::now()) {
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Resolving);
 		const auto host = proxy.host;
 		connect(
 			instance,
@@ -92,6 +110,13 @@ void ResolvingConnection::domainResolved(
 		return;
 	}
 	_proxy.resolvedExpireAt = expireAt;
+	if (ips.empty()) {
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Failed,
+			ProxyConnectionError::HostNotFound);
+	}
 
 	auto index = 0;
 	for (const auto &ip : ips) {
@@ -212,6 +237,11 @@ void ResolvingConnection::connectToServer(
 		int16 protocolDcId,
 		bool protocolForFiles) {
 	if (!_child) {
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Failed,
+			ProxyConnectionError::HostNotFound);
 		InvokeQueued(this, [=] { emitError(kErrorCodeOther); });
 		return;
 	}

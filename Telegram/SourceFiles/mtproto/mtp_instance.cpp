@@ -671,9 +671,28 @@ auto Instance::Private::proxyConnectionStatusValue() const
 
 void Instance::Private::setProxyConnectionStatus(
 		ProxyConnectionStatus status) {
-	if (!_proxySettings.isEnabled()
-		&& status.phase != ProxyConnectionPhase::None) {
-		return;
+	if (status.phase != ProxyConnectionPhase::None) {
+		if (!_proxySettings.isEnabled()) {
+			return;
+		}
+		const auto selected = _proxySettings.selected();
+		const auto matches = [&] {
+			if (status.proxy == selected) {
+				return true;
+			} else if (!selected.tryCustomResolve()) {
+				return false;
+			} else if (status.proxy.type != selected.type
+				|| status.proxy.port != selected.port
+				|| status.proxy.user != selected.user
+				|| status.proxy.password != selected.password) {
+				return false;
+			}
+			return ranges::find(selected.resolvedIPs, status.proxy.host)
+				!= end(selected.resolvedIPs);
+		}();
+		if (!matches) {
+			return;
+		}
 	}
 	if (status == _proxyConnectionStatus.current()) {
 		return;

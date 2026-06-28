@@ -59,7 +59,8 @@ private:
 
 	void socketConnected();
 	void socketDisconnected();
-	void socketError();
+	void socketError(int errorCode);
+	void socketProgress(HandshakePhase phase);
 
 	mtpBuffer parsePacket(bytes::const_span bytes);
 	void ensureAvailableInBuffer(int amount);

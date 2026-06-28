@@ -8,7 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_tcp.h"
 
 #include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/mtp_instance.h"
 #include "base/bytes.h"
+#include "base/invoke_queued.h"
 #include "base/openssl_help.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
@@ -22,6 +24,20 @@ constexpr auto kFullConnectionTimeout = 8 * crl::time(1000);
 constexpr auto kSmallBufferSize = 256 * 1024;
 constexpr auto kMinPacketBuffer = 256;
 constexpr auto kConnectionStartPrefixSize = 64;
+
+void SetProxyConnectionStatus(
+		not_null<Instance*> instance,
+		const ProxyData &proxy,
+		ProxyConnectionPhase phase,
+		ProxyConnectionError error = ProxyConnectionError::None) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	const auto status = ProxyConnectionStatus{ phase, error, proxy };
+	InvokeQueued(instance, [=] {
+		instance->setProxyConnectionStatus(status);
+	});
+}
 
 } // namespace
 
@@ -296,6 +312,11 @@ void TcpConnection::socketRead() {
 
 	if (!_socket || !_socket->isConnected()) {
 		CONNECTION_LOG_ERROR("Socket not connected in socketRead()");
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Failed,
+			ProxyConnectionError::BadResponse);
 		error(kErrorCodeOther);
 		return;
 	}
@@ -350,6 +371,11 @@ void TcpConnection::socketRead() {
 						CONNECTION_LOG_ERROR(
 							u"Bad packet size in 4 bytes: %1"_q
 							.arg(packetSize));
+						SetProxyConnectionStatus(
+							_instance,
+							_proxy,
+							ProxyConnectionPhase::Failed,
+							ProxyConnectionError::BadResponse);
 						error(kErrorCodeOther);
 						return;
 					} else if (available.size() >= packetSize) {
@@ -382,6 +408,11 @@ void TcpConnection::socketRead() {
 			}
 		} else if (readCount < 0) {
 			CONNECTION_LOG_ERROR(u"Socket read return %1."_q.arg(readCount));
+			SetProxyConnectionStatus(
+				_instance,
+				_proxy,
+				ProxyConnectionPhase::Failed,
+				ProxyConnectionError::BadResponse);
 			error(kErrorCodeOther);
 			return;
 		} else {
@@ -420,6 +451,10 @@ void TcpConnection::socketConnected() {
 	auto buffer = preparePQFake(_checkNonce);
 
 	CONNECTION_LOG_INFO("Sending fake req_pq.");
+	SetProxyConnectionStatus(
+		_instance,
+		_proxy,
+		ProxyConnectionPhase::CheckingTelegram);
 
 	_pingTime = crl::now();
 	sendData(std::move(buffer));
@@ -562,6 +597,10 @@ void TcpConnection::connectToServer(
 	_socket->setDebugId(_debugId);
 
 	CONNECTION_LOG_INFO("Connecting...");
+	SetProxyConnectionStatus(
+		_instance,
+		_proxy,
+		ProxyConnectionPhase::Connecting);
 
 	_socket->connected(
 	) | rpl::on_next([=] {
@@ -579,8 +618,13 @@ void TcpConnection::connectToServer(
 	}, _lifetime);
 
 	_socket->error(
-	) | rpl::on_next([=] {
-		socketError();
+	) | rpl::on_next([=](int errorCode) {
+		socketError(errorCode);
+	}, _lifetime);
+
+	_socket->progress(
+	) | rpl::on_next([=](HandshakePhase phase) {
+		socketProgress(phase);
 	}, _lifetime);
 
 	_socket->syncTimeRequests(
@@ -606,6 +650,11 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 	const auto data = parsePacket(bytes);
 	if (data.size() == 1) {
 		if (data[0] != 0) {
+			SetProxyConnectionStatus(
+				_instance,
+				_proxy,
+				ProxyConnectionPhase::Failed,
+				ProxyConnectionError::BadResponse);
 			error(data[0]);
 		} else {
 			// nop
@@ -623,14 +672,28 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 				_status = Status::Ready;
 				_connectedLifetime.destroy();
 				_pingTime = (crl::now() - _pingTime);
+				SetProxyConnectionStatus(
+					_instance,
+					_proxy,
+					ProxyConnectionPhase::Connected);
 				connected();
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Wrong nonce received in TCP fake pq-responce");
+				SetProxyConnectionStatus(
+					_instance,
+					_proxy,
+					ProxyConnectionPhase::Failed,
+					ProxyConnectionError::BadResponse);
 				error(kErrorCodeOther);
 			}
 		} else {
 			CONNECTION_LOG_ERROR("Could not parse TCP fake pq-responce");
+			SetProxyConnectionStatus(
+				_instance,
+				_proxy,
+				ProxyConnectionPhase::Failed,
+				ProxyConnectionError::BadResponse);
 			error(kErrorCodeOther);
 		}
 	}
@@ -671,12 +734,40 @@ QString TcpConnection::tag() const {
 	return result;
 }
 
-void TcpConnection::socketError() {
+void TcpConnection::socketError(int errorCode) {
 	if (!_socket) {
 		return;
 	}
 
+	SetProxyConnectionStatus(
+		_instance,
+		_proxy,
+		ProxyConnectionPhase::Failed,
+		SocketProxyConnectionError(errorCode));
 	error(kErrorCodeOther);
+}
+
+void TcpConnection::socketProgress(HandshakePhase phase) {
+	switch (phase) {
+	case HandshakePhase::None:
+		return;
+
+	case HandshakePhase::TcpConnected:
+	case HandshakePhase::ClientHelloSent:
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Handshake);
+		return;
+
+	case HandshakePhase::ServerHelloOk:
+	case HandshakePhase::FirstDataReceived:
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::CheckingTelegram);
+		return;
+	}
 }
 
 TcpConnection::~TcpConnection() = default;

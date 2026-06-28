@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "base/unique_qptr.h"
+#include "mtproto/connection_abstract.h"
 #include "ui/effects/animations.h"
 
 namespace Ui {
@@ -50,6 +51,7 @@ private:
 		bool underCursor = false;
 		bool updateReady = false;
 		int waitTillRetry = 0;
+		MTP::ProxyConnectionStatus proxyStatus;
 
 		bool operator==(const State &other) const;
 

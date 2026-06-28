@@ -56,6 +56,8 @@ jobs:
       UPLOAD_ARTIFACT: "true"
       ONLY_CACHE: "false"
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
     defaults:
       run:
@@ -85,6 +87,8 @@ jobs:
           DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
           SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
           echo "SDK=$SDK" >> $GITHUB_ENV
+          printf 'SCCACHE_BASEDIRS=%s\\%s\n' "$TBUILD" "$REPO_NAME" >> $GITHUB_ENV
+          printf 'SCCACHE_GHA_VERSION=%s\n' "${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${SDK}-${{ matrix.defines || 'default' }}-msvc-v1" >> $GITHUB_ENV
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
 
@@ -156,6 +160,12 @@ jobs:
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent ${{ matrix.qt }}
 
+      - name: sccache.
+        if: env.ONLY_CACHE == 'false'
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: "v0.16.0"
+
       - name: Read configuration matrix.
         shell: bash
         run: |
@@ -176,7 +186,8 @@ jobs:
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.qt }}"
           fi
 
-          GENERATOR=""
+          GENERATOR="-G \"Ninja Multi-Config\""
+          echo "Generator: $GENERATOR"
           if [ -n "${{ matrix.generator }}" ]; then
             GENERATOR="-G \"${{ matrix.generator }}\""
             echo "Generator from matrix: $GENERATOR"
@@ -219,6 +230,8 @@ jobs:
           ${{ matrix.qt }} ^
           %TDESKTOP_BUILD_API% ^
           -D CMAKE_CONFIGURATION_TYPES=Debug ^
+          -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
+          -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
@@ -226,6 +239,11 @@ jobs:
           %TDESKTOP_BUILD_DEFINE%
 
           cmake --build ..\out --config Debug --parallel
+
+      - name: sccache stats.
+        if: always() && env.ONLY_CACHE == 'false'
+        shell: bash
+        run: ${SCCACHE_PATH:-sccache} --show-stats
 
       - name: Move artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')

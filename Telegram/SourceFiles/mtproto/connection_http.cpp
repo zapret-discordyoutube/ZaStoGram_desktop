@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/connection_http.h"
 
+#include "mtproto/mtp_instance.h"
+#include "base/invoke_queued.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
 
@@ -17,17 +19,72 @@ namespace {
 constexpr auto kForceHttpPort = 80;
 constexpr auto kFullConnectionTimeout = crl::time(8000);
 
+void SetProxyConnectionStatus(
+		not_null<Instance*> instance,
+		const ProxyData &proxy,
+		ProxyConnectionPhase phase,
+		ProxyConnectionError error = ProxyConnectionError::None) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	const auto status = ProxyConnectionStatus{ phase, error, proxy };
+	InvokeQueued(instance, [=] {
+		instance->setProxyConnectionStatus(status);
+	});
+}
+
+ProxyConnectionError ReplyProxyConnectionError(
+		QNetworkReply::NetworkError error) {
+	switch (error) {
+	case QNetworkReply::HostNotFoundError:
+	case QNetworkReply::ProxyNotFoundError:
+		return ProxyConnectionError::HostNotFound;
+
+	case QNetworkReply::ConnectionRefusedError:
+	case QNetworkReply::ProxyConnectionRefusedError:
+		return ProxyConnectionError::ConnectionRefused;
+
+	case QNetworkReply::TimeoutError:
+	case QNetworkReply::ProxyTimeoutError:
+		return ProxyConnectionError::Timeout;
+
+	case QNetworkReply::ProxyAuthenticationRequiredError:
+	case QNetworkReply::AuthenticationRequiredError:
+		return ProxyConnectionError::Authentication;
+
+	case QNetworkReply::ProxyConnectionClosedError:
+	case QNetworkReply::RemoteHostClosedError:
+		return ProxyConnectionError::RemoteClosed;
+
+	case QNetworkReply::ProtocolUnknownError:
+	case QNetworkReply::ProtocolInvalidOperationError:
+	case QNetworkReply::ProtocolFailure:
+		return ProxyConnectionError::ProxyProtocol;
+
+	case QNetworkReply::TemporaryNetworkFailureError:
+	case QNetworkReply::NetworkSessionFailedError:
+	case QNetworkReply::BackgroundRequestNotAllowedError:
+	case QNetworkReply::UnknownNetworkError:
+		return ProxyConnectionError::Network;
+	}
+	return ProxyConnectionError::Unknown;
+}
+
 } // namespace
 
-HttpConnection::HttpConnection(QThread *thread, const ProxyData &proxy)
+HttpConnection::HttpConnection(
+	not_null<Instance*> instance,
+	QThread *thread,
+	const ProxyData &proxy)
 : AbstractConnection(thread, proxy)
+, _instance(instance)
 , _checkNonce(base::RandomValue<MTPint128>()) {
 	_manager.moveToThread(thread);
 	_manager.setProxy(ToNetworkProxy(proxy));
 }
 
 ConnectionPointer HttpConnection::clone(const ProxyData &proxy) {
-	return ConnectionPointer::New<HttpConnection>(thread(), proxy);
+	return ConnectionPointer::New<HttpConnection>(_instance, thread(), proxy);
 }
 
 void HttpConnection::sendData(mtpBuffer &&buffer) {
@@ -89,6 +146,10 @@ void HttpConnection::connectToServer(
 			.arg(ProtocolDcDebugId(protocolDcId), url().toDisplayString());
 	}
 
+	SetProxyConnectionStatus(
+		_instance,
+		_proxy,
+		ProxyConnectionPhase::Connecting);
 	_pingTime = crl::now();
 	sendData(std::move(buffer));
 }
@@ -199,9 +260,18 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 	reply->deleteLater();
 	if (reply->error() == QNetworkReply::NoError) {
 		_requests.remove(reply);
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::CheckingTelegram);
 
 		mtpBuffer data = handleResponse(reply);
 		if (data.size() == 1) {
+			SetProxyConnectionStatus(
+				_instance,
+				_proxy,
+				ProxyConnectionPhase::Failed,
+				ProxyConnectionError::BadResponse);
 			error(data[0]);
 		} else if (!data.isEmpty()) {
 			if (_status == Status::Ready) {
@@ -214,15 +284,29 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 						"HTTP-transport connected by pq-response.");
 					_status = Status::Ready;
 					_pingTime = crl::now() - _pingTime;
+					SetProxyConnectionStatus(
+						_instance,
+						_proxy,
+						ProxyConnectionPhase::Connected);
 					connected();
 				} else {
 					CONNECTION_LOG_ERROR(
 						"Wrong nonce in HTTP fake pq-response.");
+					SetProxyConnectionStatus(
+						_instance,
+						_proxy,
+						ProxyConnectionPhase::Failed,
+						ProxyConnectionError::BadResponse);
 					error(kErrorCodeOther);
 				}
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Could not parse HTTP fake pq-response.");
+				SetProxyConnectionStatus(
+					_instance,
+					_proxy,
+					ProxyConnectionPhase::Failed,
+					ProxyConnectionError::BadResponse);
 				error(kErrorCodeOther);
 			}
 		}
@@ -231,6 +315,11 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			return;
 		}
 
+		SetProxyConnectionStatus(
+			_instance,
+			_proxy,
+			ProxyConnectionPhase::Failed,
+			ReplyProxyConnectionError(reply->error()));
 		error(handleError(reply));
 	}
 }

@@ -17,7 +17,10 @@ namespace details {
 
 class HttpConnection : public AbstractConnection {
 public:
-	HttpConnection(QThread *thread, const ProxyData &proxy);
+	HttpConnection(
+		not_null<Instance*> instance,
+		QThread *thread,
+		const ProxyData &proxy);
 
 	ConnectionPointer clone(const ProxyData &proxy) override;
 
@@ -47,6 +50,8 @@ private:
 	QUrl url() const;
 
 	void requestFinished(QNetworkReply *reply);
+
+	const not_null<Instance*> _instance;
 
 	enum class Status {
 		Waiting = 0,
