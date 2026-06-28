@@ -420,12 +420,11 @@ bool Story::out() const {
 }
 
 bool Story::canDownloadIfPremium() const {
-	return !forbidsForward() || _peer->isSelf();
+	return true; // ZaStoGram: allow saving any story.
 }
 
 bool Story::canDownloadChecked() const {
-	return _peer->isSelf()
-		|| (canDownloadIfPremium() && _peer->session().premium());
+	return true; // ZaStoGram: download even forbidden/protected stories.
 }
 
 bool Story::canShare() const {
