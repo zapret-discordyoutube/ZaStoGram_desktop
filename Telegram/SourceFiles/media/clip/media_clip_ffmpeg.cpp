@@ -318,6 +318,7 @@ bool FFMpegReaderImplementation::start(Mode mode, crl::time &positionMs) {
 		return false;
 	}
 	_codecContext->pkt_timebase = _fmtContext->streams[_streamId]->time_base;
+	FFmpeg::ConfigureDecoderThreads(_codecContext);
 	av_opt_set_int(_codecContext, "refcounted_frames", 1, 0);
 
 	const auto codec = FFmpeg::FindDecoder(_codecContext);

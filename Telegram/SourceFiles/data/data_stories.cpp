@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "apiwrap.h"
 #include "core/application.h"
+#include "core/version.h"
 #include "data/components/top_peers.h"
 #include "data/data_changes.h"
 #include "data/data_channel.h"
@@ -24,12 +25,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
+#include "storage/serialize_peer.h"
+#include "storage/storage_account.h"
 #include "ui/layers/show.h"
 #include "ui/text/text_utilities.h"
+
+#include <QtCore/QBuffer>
 
 namespace Data {
 namespace {
 
+constexpr auto kStoriesSnapshotPref = "stories_snapshot";
+constexpr auto kStoriesSnapshotVersion = qint32(1);
+constexpr auto kMaxSnapshotSources = 4096;
+constexpr auto kMaxSnapshotIdsPerSource = 1024;
+constexpr auto kSnapshotWriteDelay = crl::time(1000);
 constexpr auto kMaxResolveTogether = 100;
 constexpr auto kIgnorePreloadAroundIfLoaded = 15;
 constexpr auto kPreloadAroundCount = 30;
@@ -189,7 +199,8 @@ Stories::Stories(not_null<Session*> owner)
 , _markReadTimer([=] { sendMarkAsReadRequests(); })
 , _incrementViewsTimer([=] { sendIncrementViewsRequests(); })
 , _pollingTimer([=] { sendPollingRequests(); })
-, _pollingViewsTimer([=] { sendPollingViewsRequests(); }) {
+, _pollingViewsTimer([=] { sendPollingViewsRequests(); })
+, _snapshotWriteTimer([=] { writeSnapshotNow(); }) {
 	crl::on_main(this, [=] {
 		session().changes().peerUpdates(
 			Data::PeerUpdate::Flag::Rights
@@ -218,6 +229,9 @@ Stories::Stories(not_null<Session*> owner)
 }
 
 Stories::~Stories() {
+	if (_snapshotWriteTimer.isActive()) {
+		writeSnapshotNow();
+	}
 	Expects(_pollingSettings.empty());
 	Expects(_pollingViews.empty());
 }
@@ -227,6 +241,133 @@ void Stories::clear() {
 	_pollingViews.clear();
 	_stories.clear();
 	_deletingStories.clear();
+}
+
+void Stories::restoreFromLocal() {
+	const auto bytes = session().local().readPref<QByteArray>(
+		kStoriesSnapshotPref);
+	if (bytes.isEmpty()) {
+		session().local().clearPref(kStoriesSnapshotPref);
+		return;
+	}
+
+	QDataStream stream(bytes);
+	stream.setVersion(QDataStream::Qt_5_1);
+
+	auto version = qint32(0);
+	auto streamAppVersion = qint32(0);
+	auto savedAt = qint32(0);
+	stream >> version >> streamAppVersion >> savedAt;
+	const auto fail = [&] {
+		session().local().clearPref(kStoriesSnapshotPref);
+	};
+	const auto bad = [&] {
+		return stream.status() != QDataStream::Ok;
+	};
+	if (bad()
+		|| version != kStoriesSnapshotVersion
+		|| streamAppVersion <= 0
+		|| savedAt <= 0) {
+		fail();
+		return;
+	}
+
+	auto all = std::unordered_map<PeerId, StoriesSource>();
+	std::vector<StoriesSourceInfo> sources[kStorySourcesListCount];
+	QString states[kStorySourcesListCount];
+	bool loaded[kStorySourcesListCount] = { false };
+	const auto now = base::unixtime::now();
+	for (auto index = 0; index != kStorySourcesListCount; ++index) {
+		auto loadedValue = qint32(0);
+		auto count = qint32(0);
+		stream >> states[index] >> loadedValue >> count;
+		if (bad() || count < 0 || count > kMaxSnapshotSources) {
+			fail();
+			return;
+		}
+		loaded[index] = (loadedValue != 0);
+		sources[index].reserve(count);
+		for (auto i = qint32(0); i != count; ++i) {
+			const auto peer = Serialize::readPeer(
+				&session(),
+				streamAppVersion,
+				stream);
+			auto readTill = qint32(0);
+			auto hidden = qint32(0);
+			auto hasVideoStream = qint32(0);
+			auto idsCount = qint32(0);
+			stream >> readTill >> hidden >> hasVideoStream >> idsCount;
+			if (bad()
+				|| !peer
+				|| idsCount < 0
+				|| idsCount > kMaxSnapshotIdsPerSource) {
+				fail();
+				return;
+			}
+			auto ids = base::flat_set<StoryIdDates>();
+			for (auto j = qint32(0); j != idsCount; ++j) {
+				auto id = qint32(0);
+				auto date = qint32(0);
+				auto expires = qint32(0);
+				auto videoStream = qint32(0);
+				stream >> id >> date >> expires >> videoStream;
+				if (bad()) {
+					fail();
+					return;
+				} else if (id > 0 && expires > now) {
+					ids.emplace(StoryIdDates{
+						.id = id,
+						.date = date,
+						.expires = expires,
+						.videoStream = (videoStream != 0),
+					});
+				}
+			}
+			if (ids.empty() || all.contains(peer->id)) {
+				continue;
+			}
+			const auto hiddenFlag = (hidden != 0);
+			if (peer->hasStoriesHidden() != hiddenFlag) {
+				peer->setStoriesHidden(hiddenFlag);
+			}
+			auto source = StoriesSource{
+				.peer = not_null(peer),
+				.ids = std::move(ids),
+				.readTill = readTill,
+				.hidden = hiddenFlag,
+				.hasVideoStream = (hasVideoStream != 0),
+			};
+			const auto info = source.info();
+			all.emplace(peer->id, std::move(source));
+			sources[index].push_back(info);
+		}
+	}
+	if (bad() || !stream.atEnd()) {
+		fail();
+		return;
+	}
+
+	const auto guard = gsl::finally([&] {
+		_restoringSnapshot = false;
+	});
+	_restoringSnapshot = true;
+	_all = std::move(all);
+	for (auto index = 0; index != kStorySourcesListCount; ++index) {
+		_sources[index] = std::move(sources[index]);
+		_sourcesStates[index] = std::move(states[index]);
+		_sourcesLoaded[index] = false;
+		_sourcesStateFromSnapshot[index] = !_sourcesStates[index].isEmpty();
+		_sourcesSnapshotLoaded[index] = loaded[index];
+	}
+	_readTill.clear();
+	for (const auto &[peerId, source] : _all) {
+		_readTill[peerId] = source.readTill;
+		for (const auto &id : source.ids) {
+			registerExpiring(id.expires, { peerId, id.id });
+		}
+		updatePeerStoriesState(source.peer);
+	}
+	pushHiddenCountsToFolder();
 }
 
 Session &Stories::owner() const {
@@ -524,6 +665,7 @@ void Stories::parseAndApply(
 	}
 	_sourceChanged.fire_copy(peerId);
 	updatePeerStoriesState(result.peer);
+	scheduleSnapshotWrite();
 }
 
 Story *Stories::parseAndApply(
@@ -725,16 +867,21 @@ void Stories::loadMore(StorySourcesList list) {
 	const auto hidden = (list == StorySourcesList::Hidden);
 	const auto api = &_owner->session().api();
 	using Flag = MTPstories_GetAllStories::Flag;
+	const auto hasState = !_sourcesStates[index].isEmpty();
+	const auto fromSnapshot = _sourcesStateFromSnapshot[index];
+	const auto requestNext = hasState
+		&& (!fromSnapshot || !_sourcesSnapshotLoaded[index]);
 	_loadMoreRequestId[index] = api->request(MTPstories_GetAllStories(
 		MTP_flags((hidden ? Flag::f_hidden : Flag())
-			| (_sourcesStates[index].isEmpty()
-				? Flag(0)
-				: (Flag::f_next | Flag::f_state))),
+			| (hasState ? Flag::f_state : Flag())
+			| (requestNext ? Flag::f_next : Flag())),
 		MTP_string(_sourcesStates[index])
 	)).done([=](const MTPstories_AllStories &result) {
 		_loadMoreRequestId[index] = 0;
 
 		result.match([&](const MTPDstories_allStories &data) {
+			_sourcesStateFromSnapshot[index] = false;
+			_sourcesSnapshotLoaded[index] = false;
 			_owner->processUsers(data.vusers());
 			_owner->processChats(data.vchats());
 			_sourcesStates[index] = qs(data.vstate());
@@ -742,7 +889,12 @@ void Stories::loadMore(StorySourcesList list) {
 			for (const auto &single : data.vpeer_stories().v) {
 				parseAndApply(single, ParseSource::MyStrip);
 			}
-		}, [](const MTPDstories_allStoriesNotModified &) {
+			scheduleSnapshotWrite();
+		}, [&](const MTPDstories_allStoriesNotModified &) {
+			_sourcesStateFromSnapshot[index] = false;
+			_sourcesSnapshotLoaded[index] = false;
+			_sourcesLoaded[index] = true;
+			scheduleSnapshotWrite();
 		});
 
 		result.match([&](const auto &data) {
@@ -783,9 +935,98 @@ void Stories::preloadListsMore() {
 
 void Stories::notifySourcesChanged(StorySourcesList list) {
 	_sourcesChanged[static_cast<int>(list)].fire({});
+	scheduleSnapshotWrite();
 	if (list == StorySourcesList::Hidden) {
 		pushHiddenCountsToFolder();
 	}
+}
+
+void Stories::scheduleSnapshotWrite() {
+	if (_restoringSnapshot) {
+		return;
+	}
+	_snapshotWriteTimer.callOnce(kSnapshotWriteDelay);
+}
+
+void Stories::writeSnapshotNow() {
+	_snapshotWriteTimer.cancel();
+	if (_restoringSnapshot) {
+		return;
+	}
+
+	const auto now = base::unixtime::now();
+	std::vector<const StoriesSource*> prepared[kStorySourcesListCount];
+	for (auto index = 0; index != kStorySourcesListCount; ++index) {
+		prepared[index].reserve(_sources[index].size());
+		for (const auto &info : _sources[index]) {
+			const auto i = _all.find(info.id);
+			if (i == end(_all)) {
+				continue;
+			}
+			const auto hasLiveStory = ranges::any_of(
+				i->second.ids,
+				[=](const StoryIdDates &id) {
+					return id.expires > now;
+				});
+			if (hasLiveStory) {
+				prepared[index].push_back(&i->second);
+			}
+		}
+	}
+	const auto hasSources = ranges::any_of(prepared, [](const auto &list) {
+		return !list.empty();
+	});
+	const auto hasStates = ranges::any_of(_sourcesStates, [](const auto &state) {
+		return !state.isEmpty();
+	});
+	if (!hasSources && !hasStates) {
+		session().local().clearPref(kStoriesSnapshotPref);
+		return;
+	}
+
+	auto bytes = QByteArray();
+	auto buffer = QBuffer(&bytes);
+	buffer.open(QIODevice::WriteOnly);
+	auto stream = QDataStream(&buffer);
+	stream.setVersion(QDataStream::Qt_5_1);
+	stream
+		<< kStoriesSnapshotVersion
+		<< qint32(AppVersion)
+		<< qint32(now);
+	for (auto index = 0; index != kStorySourcesListCount; ++index) {
+		stream
+			<< _sourcesStates[index]
+			<< qint32(_sourcesLoaded[index] ? 1 : 0)
+			<< qint32(prepared[index].size());
+		for (const auto source : prepared[index]) {
+			auto ids = std::vector<const StoryIdDates*>();
+			ids.reserve(std::min(
+				int(source->ids.size()),
+				kMaxSnapshotIdsPerSource));
+			for (const auto &id : source->ids) {
+				if (id.expires > now) {
+					ids.push_back(&id);
+					if (int(ids.size()) == kMaxSnapshotIdsPerSource) {
+						break;
+					}
+				}
+			}
+			Serialize::writePeer(stream, source->peer);
+			stream
+				<< qint32(source->readTill)
+				<< qint32(source->hidden ? 1 : 0)
+				<< qint32(source->hasVideoStream ? 1 : 0)
+				<< qint32(ids.size());
+			for (const auto id : ids) {
+				stream
+					<< qint32(id->id)
+					<< qint32(id->date)
+					<< qint32(id->expires)
+					<< qint32(id->videoStream ? 1 : 0);
+			}
+		}
+	}
+	session().local().writePref<QByteArray>(kStoriesSnapshotPref, bytes);
 }
 
 void Stories::pushHiddenCountsToFolder() {
@@ -1304,6 +1545,7 @@ bool Stories::bumpReadTill(PeerId peerId, StoryId maxReadTill) {
 		refreshInList(StorySourcesList::NotHidden);
 		refreshInList(StorySourcesList::Hidden);
 	}
+	scheduleSnapshotWrite();
 	return true;
 }
 

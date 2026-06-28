@@ -159,6 +159,7 @@ public:
 	static constexpr auto kInProfileToastDuration = 4 * crl::time(1000);
 
 	void clear();
+	void restoreFromLocal();
 
 	[[nodiscard]] Session &owner() const;
 	[[nodiscard]] Main::Session &session() const;
@@ -384,6 +385,8 @@ private:
 	void preloadListsMore();
 
 	void notifySourcesChanged(StorySourcesList list);
+	void scheduleSnapshotWrite();
+	void writeSnapshotNow();
 	void pushHiddenCountsToFolder();
 	void setPinnedToTop(
 		PeerId peerId,
@@ -432,9 +435,13 @@ private:
 	rpl::event_stream<> _sourcesChanged[kStorySourcesListCount];
 	bool _sourcesLoaded[kStorySourcesListCount] = { false };
 	QString _sourcesStates[kStorySourcesListCount];
+	bool _sourcesStateFromSnapshot[kStorySourcesListCount] = { false };
+	bool _sourcesSnapshotLoaded[kStorySourcesListCount] = { false };
 	Folder *_folderForHidden = nullptr;
 
 	mtpRequestId _loadMoreRequestId[kStorySourcesListCount] = { 0 };
+	base::Timer _snapshotWriteTimer;
+	bool _restoringSnapshot = false;
 
 	rpl::event_stream<PeerId> _sourceChanged;
 	rpl::event_stream<PeerId> _itemsChanged;

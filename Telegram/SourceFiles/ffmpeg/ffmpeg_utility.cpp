@@ -49,6 +49,7 @@ constexpr auto kAvioBlockSize = 4096;
 constexpr auto kMaxFrameStorageBytes = 64 * 1024 * 1024;
 constexpr auto kMaxPixelsPaddingRatio = 32;
 constexpr auto kMaxPixelsFixedPadding = 64 * 1024;
+constexpr auto kMaxSoftwareVideoDecoderThreads = 2;
 constexpr auto kTimeUnknown = std::numeric_limits<crl::time>::min();
 constexpr auto kDurationMax = crl::time(std::numeric_limits<int>::max());
 
@@ -419,6 +420,13 @@ const AVCodec *FindDecoder(not_null<AVCodecContext*> context) {
 		: avcodec_find_decoder(context->codec_id);
 }
 
+void ConfigureDecoderThreads(not_null<AVCodecContext*> context) {
+	if (context->codec_type == AVMEDIA_TYPE_VIDEO) {
+		context->thread_count = kMaxSoftwareVideoDecoderThreads;
+		context->thread_type = FF_THREAD_FRAME;
+	}
+}
+
 int64_t MaxPixelsForAreaLimit(int64_t area) {
 	// Decoders may check internally padded frame dimensions against max_pixels,
 	// not just the visible frame size. Leave room for alignment/cropping slack.
@@ -446,7 +454,7 @@ CodecPointer MakeCodecPointer(CodecDescriptor descriptor) {
 		context->max_pixels = MaxPixelsForAreaLimit(
 			descriptor.videoMaxArea);
 	}
-	av_opt_set(context, "threads", "auto", 0);
+	ConfigureDecoderThreads(context);
 	av_opt_set_int(context, "refcounted_frames", 1, 0);
 
 	const auto codec = FindDecoder(context);

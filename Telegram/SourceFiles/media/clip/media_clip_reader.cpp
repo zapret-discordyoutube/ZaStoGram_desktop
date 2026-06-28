@@ -34,8 +34,10 @@ namespace Clip {
 namespace {
 
 constexpr auto kClipThreadsCount = 8;
+constexpr auto kMaxStartedClipReadersPerWorker = 4;
 constexpr auto kAverageGifSize = 320 * 240;
 constexpr auto kWaitBeforeGifPause = crl::time(200);
+constexpr auto kQueuedClipStartDelay = crl::time(50);
 
 QImage PrepareFrame(
 		const FrameRequest &request,
@@ -543,6 +545,14 @@ public:
 		return ProcessResult::Wait;
 	}
 
+	bool hasDecoder() const {
+		return (_implementation != nullptr);
+	}
+
+	bool needsDecoderStart() const {
+		return !_implementation && (_state == State::Reading);
+	}
+
 	ProcessResult finishProcess(crl::time ms) {
 		auto frameMs = _seekPositionMs + ms - _animationStarted;
 		auto readResult = _implementation->readFramesTill(frameMs, ms);
@@ -894,9 +904,26 @@ void Manager::process() {
 		checkAllReaders = (_readers.size() > _readerPointers.size());
 	}
 
+	auto startedReaders = 0;
+	for (auto i = _readers.cbegin(), e = _readers.cend(); i != e; ++i) {
+		if (i.key()->hasDecoder()) {
+			++startedReaders;
+		}
+	}
+
 	for (auto i = _readers.begin(), e = _readers.end(); i != e;) {
 		ReaderPrivate *reader = i.key();
 		if (i.value() <= ms) {
+			if (reader->needsDecoderStart()
+				&& startedReaders >= kMaxStartedClipReadersPerWorker) {
+				i.value() = ms + kQueuedClipStartDelay;
+				if (!reader->_autoPausedGif && i.value() < minms) {
+					minms = i.value();
+				}
+				++i;
+				continue;
+			}
+			const auto hadDecoder = reader->hasDecoder();
 			ResultHandleState state = handleResult(reader, reader->process(ms), ms);
 			if (state == ResultHandleRemove) {
 				i = _readers.erase(i);
@@ -904,6 +931,9 @@ void Manager::process() {
 			} else if (state == ResultHandleStop) {
 				_processingInThread = nullptr;
 				return;
+			}
+			if (!hadDecoder && reader->hasDecoder()) {
+				++startedReaders;
 			}
 			ms = crl::now();
 			if (reader->_videoPausedAtMs) {

@@ -270,6 +270,8 @@ Session::Session(not_null<Main::Session*> session)
 	_cache->open(_session->local().cacheKey());
 	_bigFileCache->open(_session->local().cacheBigFileKey());
 
+	stories().restoreFromLocal();
+
 	if constexpr (Platform::IsLinux()) {
 		const auto wasVersion = _session->local().oldMapVersion();
 		if (wasVersion >= 1007011 && wasVersion < 1007015) {

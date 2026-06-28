@@ -55,6 +55,7 @@ public:
 	object_ptr<Ui::BoxContent> create(const QString &highlightId = QString());
 
 	enum class ItemState {
+		Unknown,
 		Connecting,
 		Online,
 		Checking,
@@ -71,7 +72,7 @@ public:
 		bool deleted = false;
 		bool supportsShare = false;
 		bool supportsCalls = false;
-		ItemState state = ItemState::Checking;
+		ItemState state = ItemState::Unknown;
 
 	};
 
@@ -80,6 +81,7 @@ public:
 	void restoreItem(int id);
 	void shareItem(int id, bool qr);
 	void shareItems();
+	void checkItem(int id);
 	void applyItem(int id);
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();
@@ -107,7 +109,7 @@ private:
 		bool deleted = false;
 		Checker checker;
 		Checker checkerv6;
-		ItemState state = ItemState::Checking;
+		ItemState state = ItemState::Unknown;
 		int ping = 0;
 
 	};

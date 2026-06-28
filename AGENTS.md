@@ -39,6 +39,10 @@ Dependencies are located relative to the repository: `../Libraries`, `../win64/L
 
 ## Build Configuration
 
+### Default Verification Policy
+
+Do not run a compile/build step unless the user's latest request explicitly asks for compilation or a build. This applies even when an earlier plan or generic test checklist mentions building. For ordinary implementation work, prefer targeted fast checks such as focused scripts, static guards, `git diff --check`, line-ending checks, and source inspection. If build verification is useful but was not explicitly requested, report what was checked and note that compilation was skipped by repository instruction.
+
 ### Build Commands
 
 **From repository root, run:**
