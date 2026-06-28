@@ -51,7 +51,9 @@ Do not run a compile/build step unless the user's latest request explicitly asks
 cmake --build out --config Debug --target Telegram
 ```
 
-That's it. The `out/` directory is already configured. The executable will be at `out/Debug/Telegram.exe`.
+That's it for local verification when the user explicitly asks for a build. The `out/` directory is already configured. The executable will be at `out/Debug/Telegram.exe`.
+
+**GitHub Windows CI builds Release artifacts.** Keep `.github/workflows/win.yml` on `Release` for both `x64_x86` and `x64`, and keep artifact collection pointed at `out/Release`.
 
 **From WSL, run through the Linux Docker build environment:**
 
@@ -64,7 +66,7 @@ Telegram/build/docker/centos_env/build_debug.sh
 cmake --build "l:\Telegram\tx64\out" --config Debug --target Telegram
 ```
 
-**Never build Release** - it's extremely heavy and not needed for testing changes.
+Do not switch CI artifact builds back to Debug unless the user explicitly asks for that tradeoff.
 
 ## Platform-Specific Requirements
 
@@ -124,8 +126,8 @@ Retrying builds wastes time and context. The ONLY fix is for the user to close t
 
 ## Best Practices
 
-1. **Always use Debug builds** - Release builds are extremely heavy
-2. **Don't build Release configuration** - it's too heavy for testing
+1. **Use Debug for local verification builds** unless the user explicitly asks for Release.
+2. **Use Release for GitHub Windows CI artifacts** in `.github/workflows/win.yml`.
 
 ## Text File Format
 
