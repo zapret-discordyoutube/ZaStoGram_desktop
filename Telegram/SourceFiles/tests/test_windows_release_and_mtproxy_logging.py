@@ -17,8 +17,14 @@ def test_windows_artifact_uses_release_configuration():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "-D CMAKE_CONFIGURATION_TYPES=Release" in workflow
-    assert "cmake --build ..\\out --config Release --parallel" in workflow
+    assert "-D DESKTOP_APP_ENABLE_LTO=ON" in workflow
+    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=ON" in workflow
+    assert "cmake --build ..\\out --config Release --target Telegram --parallel" in workflow
     assert "set OUT=%TBUILD%\\%REPO_NAME%\\out\\Release" in workflow
+    assert "%TBUILD%\\%REPO_NAME%\\Telegram\\build\\prepare\\win.bat skip-release" not in workflow
+    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF" not in workflow
+    assert "move %OUT%\\Updater.exe artifact/" not in workflow
+    assert "release/Updater-$arch.exe" not in workflow
     assert "-D CMAKE_CONFIGURATION_TYPES=Debug" not in workflow
     assert "cmake --build ..\\out --config Debug" not in workflow
     assert "set OUT=%TBUILD%\\%REPO_NAME%\\out\\Debug" not in workflow
