@@ -1,99 +1,111 @@
-# [Telegram Desktop][telegram_desktop] – Official Messenger
+# ZaStoGram Desktop
 
-This is the complete source code and the build instructions for the official [Telegram][telegram] messenger desktop client, based on the [Telegram API][telegram_api] and the [MTProto][telegram_proto] secure protocol.
+**ZaStoGram** — форк [Telegram Desktop][tdesktop], заточенный под работу в сетях с DPI‑цензурой и под приватность. Цель проекта: чтобы клиент **уверенно подключался там, где обычный Telegram режут**, маскировал трафик под обычный браузерный HTTPS и **не терял переписку** (удалённые сообщения, истории, правки).
 
-[![Version](https://badge.fury.io/gh/telegramdesktop%2Ftdesktop.svg)](https://github.com/telegramdesktop/tdesktop/releases)
-[![Build Status](https://github.com/telegramdesktop/tdesktop/workflows/Windows./badge.svg)](https://github.com/telegramdesktop/tdesktop/actions)
-[![Build Status](https://github.com/telegramdesktop/tdesktop/workflows/MacOS./badge.svg)](https://github.com/telegramdesktop/tdesktop/actions)
-[![Build Status](https://github.com/telegramdesktop/tdesktop/workflows/Linux./badge.svg)](https://github.com/telegramdesktop/tdesktop/actions)
-[![Built with Depot](https://img.shields.io/badge/Built%20with-Depot.dev-46A75A)](https://depot.dev)
+Это **неофициальная** сборка. Она основана на исходниках официального клиента и сохраняет весь его функционал, добавляя сверху сетевой стелс, WSS‑транспорт и набор приватных функций.
 
-[![Preview of Telegram Desktop][preview_image]][preview_image_url]
+> ⚠️ Используйте на свой риск. Проект не связан с Telegram FZ‑LLC. Базовый код — под GPLv3 с OpenSSL‑исключением (см. раздел «Лицензия»).
 
-The source code is published under GPLv3 with OpenSSL exception, the license is available [here][license].
+---
 
-## Supported systems
+## Чем отличается от обычного Telegram Desktop
 
-The latest version is available for
+| Область | Что добавлено |
+|---|---|
+| **Обход DPI** | FakeTLS‑стелс: профили отпечатка **JA4**, маскировка старта, фрагментация ClientHello, варьирование размера TLS‑записей, пейсинг трафика, разнос попыток подключения |
+| **Надёжность** | Классифицированный loop‑backoff переподключения (cap 8 c), деприоритизация «залипших» endpoint'ов (cooldown) |
+| **Транспорт** | Встроенный **WSS** (MTProto поверх WebSocket к web‑релею Telegram) |
+| **Прокси** | Обязательный прокси (force‑proxy) + дефолтный локальный SOCKS5 `127.0.0.1:1353` |
+| **Приватность** | Сохранение **удалённых** сообщений, **историй** (stories), **истории правок** сообщений |
+| **Производительность** | Ограничение числа потоков софт‑декодера видео, троттлинг под нагрузкой |
+| **UX** | Список прокси больше не устраивает «шквал» проверок при открытии |
+| **Бренд** | Имя и иконка ZaStoGram |
 
-* [Windows 7 and above (64 bit)](https://telegram.org/dl/desktop/win64) ([portable](https://telegram.org/dl/desktop/win64_portable))
-* [Windows 7 and above (32 bit)](https://telegram.org/dl/desktop/win) ([portable](https://telegram.org/dl/desktop/win_portable))
-* [macOS 10.13 and above](https://telegram.org/dl/desktop/mac)
-* [Linux static build for 64 bit](https://telegram.org/dl/desktop/linux)
-* [Snap](https://snapcraft.io/telegram-desktop)
-* [Flatpak](https://flathub.org/apps/details/org.telegram.desktop)
+---
 
-## Old system versions
+## 🛡️ Обход DPI — стелс MTProxy
 
-Version **4.9.9** was the last that supports older systems
+Когда задан MTProxy (FakeTLS), клиент маскирует подключение под настоящий браузерный TLS‑хэндшейк. Всё настраивается тумблерами в окне прокси (**Настройки → Продвинутые → Тип соединения → список прокси**).
 
-* [macOS 10.12](https://updates.tdesktop.com/tmac/tsetup.4.9.9.dmg)
-* [Linux with glibc < 2.28 static build](https://updates.tdesktop.com/tlinux/tsetup.4.9.9.tar.xz)
+- **Профиль отпечатка JA4** — ClientHello воспроизводит реальный браузер/приложение: `Auto (Chrome)`, `Firefox`, `Firefox Android`, `Yandex`, `Android OkHttp`, а также `Auto‑rotate` (случайная ротация профиля между подключениями).
+- **Маскировка старта (startup‑cover)** — первые записи разбиваются и подаются так, чтобы начало сессии не выделялось характерным паттерном.
+- **Фрагментация ClientHello** — ClientHello дробится при отправке, чтобы DPI было сложнее собрать и распознать его целиком.
+- **Варьирование размера TLS‑записей** — размеры записей не фиксированы, что ломает сигнатуры по длине.
+- **Пейсинг трафика** — межзаписевые задержки на старте сглаживают «взрывной» профиль (без удушения уже установленного потока).
+- **Разнос попыток подключения** — попытки к нескольким endpoint'ам стартуют со сдвигом, а не пачкой.
 
-Version **2.4.4** was the last that supports older systems
+### Надёжность подключения
+- **Loop‑backoff** — классифицированные таймауты переповтора, привязанные к прокси, с верхней границей, чтобы не зацикливаться на мёртвом узле и не спамить коннектами.
+- **Endpoint cooldown** — endpoint, который только что отвалился, временно понижается в приоритете (а не выбрасывается), чтобы клиент пробовал живые маршруты, не теряя резервные.
 
-* [OS X 10.10 and 10.11](https://updates.tdesktop.com/tosx/tsetup-osx.2.4.4.dmg)
-* [Linux static build for 32 bit](https://updates.tdesktop.com/tlinux32/tsetup32.2.4.4.tar.xz)
+---
 
-Version **1.8.15** was the last that supports older systems
+## 🌐 WSS‑транспорт
 
-* [Windows XP and Vista](https://updates.tdesktop.com/tsetup/tsetup.1.8.15.exe) ([portable](https://updates.tdesktop.com/tsetup/tportable.1.8.15.zip))
-* [OS X 10.8 and 10.9](https://updates.tdesktop.com/tmac/tsetup.1.8.15.dmg)
-* [OS X 10.6 and 10.7](https://updates.tdesktop.com/tmac32/tsetup32.1.8.15.dmg)
+Встроенный **MTProto‑over‑WebSocket** (чистая реализация на `QSslSocket` + RFC 6455): настоящий TLS → HTTP‑upgrade (`GET /apiws`) → бинарные WS‑фреймы, внутри которых идёт обфусцированный MTProto‑поток. Подключается к официальным web‑релеям Telegram (`kws2/kws4.web.telegram.org`) для **DC2/DC4**.
 
-## Third-party
+Включается тумблером **«Route via WSS (web, DC2/DC4 only)»**. Полезен там, где прямой TCP к DC блокируется, но веб‑Telegram работает. Может ходить как напрямую, так и через заданный SOCKS‑прокси.
 
-* Qt 6 ([LGPL](http://doc.qt.io/qt-6/lgpl.html)) and Qt 5.15 ([LGPL](http://doc.qt.io/qt-5/lgpl.html)) slightly patched
-* OpenSSL 3.2.1 ([Apache License 2.0](https://openssl-library.org/source/license/apache-license-2.0.txt))
-* WebRTC ([New BSD License](https://github.com/desktop-app/tg_owt/blob/master/LICENSE))
-* zlib ([zlib License](http://www.zlib.net/zlib_license.html))
-* LZMA SDK 9.20 ([public domain](http://www.7-zip.org/sdk.html))
-* liblzma ([public domain](http://tukaani.org/xz/))
-* Google Breakpad ([License](https://chromium.googlesource.com/breakpad/breakpad/+/master/LICENSE))
-* Google Crashpad ([Apache License 2.0](https://chromium.googlesource.com/crashpad/crashpad/+/master/LICENSE))
-* GYP ([BSD License](https://github.com/bnoordhuis/gyp/blob/master/LICENSE))
-* Ninja ([Apache License 2.0](https://github.com/ninja-build/ninja/blob/master/COPYING))
-* OpenAL Soft ([LGPL](https://github.com/kcat/openal-soft/blob/master/COPYING))
-* Opus codec ([BSD License](http://www.opus-codec.org/license/))
-* FFmpeg ([LGPL](https://www.ffmpeg.org/legal.html))
-* Guideline Support Library ([MIT License](https://github.com/Microsoft/GSL/blob/master/LICENSE))
-* Range-v3 ([Boost License](https://github.com/ericniebler/range-v3/blob/master/LICENSE.txt))
-* Open Sans font ([Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0.html))
-* Vazirmatn font ([SIL Open Font License 1.1](https://github.com/rastikerdar/vazirmatn/blob/master/OFL.txt))
-* Emoji alpha codes ([MIT License](https://github.com/emojione/emojione/blob/master/extras/alpha-codes/LICENSE.md))
-* xxHash ([BSD License](https://github.com/Cyan4973/xxHash/blob/dev/LICENSE))
-* QR Code generator ([MIT License](https://github.com/nayuki/QR-Code-generator#license))
-* CMake ([New BSD License](https://github.com/Kitware/CMake/blob/master/Copyright.txt))
-* Hunspell ([LGPL](https://github.com/hunspell/hunspell/blob/master/COPYING.LESSER))
-* Ada ([Apache License 2.0](https://github.com/ada-url/ada/blob/main/LICENSE-APACHE))
+Альтернатива встроенному WSS — внешний локальный прокси (`telegram_proxy` из zapret‑набора) на `127.0.0.1:1353`, к которому клиент подключается по SOCKS5 (см. ниже).
 
-## Build instructions
+---
 
-* [Windows (32-bit and 64-bit)][win]
-* [macOS][mac]
-* [GNU/Linux using Docker][linux]
+## 🔌 Прокси: обязательный + дефолтный
 
-[//]: # (LINKS)
-[telegram]: https://telegram.org
-[telegram_desktop]: https://desktop.telegram.org
-[telegram_api]: https://core.telegram.org
-[telegram_proto]: https://core.telegram.org/mtproto
-[license]: LICENSE
-[win]: docs/building-win.md
-[mac]: docs/building-mac.md
-[linux]: docs/building-linux.md
-[preview_image]: https://github.com/telegramdesktop/tdesktop/blob/dev/docs/assets/preview.png "Preview of Telegram Desktop"
-[preview_image_url]: https://raw.githubusercontent.com/telegramdesktop/tdesktop/dev/docs/assets/preview.png
+- **Force‑proxy** — без выбранного прокси клиент не выходит в сеть; «щит» соединения виден всегда. Исключение — включённый режим WSS (он сам является методом обхода). Это страховка от случайного прямого подключения в опасной сети.
+- **Дефолтный SOCKS5 `127.0.0.1:1353`** — добавляется в список один раз (если такого ещё нет; существующие прокси не перетираются). Это endpoint внешнего сервиса `telegram_proxy`: схема `tdesktop → SOCKS5 1353 → telegram_proxy → WSS/FakeTLS → Telegram`.
 
-## Thanks to
+---
 
-<a href="https://depot.dev">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://depot.dev/assets/brand/1693758816/depot-logo-horizontal-on-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://depot.dev/assets/brand/1693758816/depot-logo-horizontal-on-light.svg">
-    <img alt="Depot" src="https://depot.dev/assets/brand/1693758816/depot-logo-horizontal-on-light.svg" width="150">
-  </picture>
-</a>
+## 🔒 Приватность
 
-CI infrastructure sponsored by [Depot](https://depot.dev) — fast GitHub Actions runners.
+Клиент‑сайд функции, которые сохраняют данные локально (по умолчанию включены):
 
+- **Сохранение удалённых сообщений** — когда сервер присылает «удалить», сообщение не уничтожается локально, а остаётся (помечается как удалённое отправителем). Переписка не пропадает.
+- **Сохранение историй (stories)** — локальный снэпшот историй с восстановлением при старте; истории не исчезают по истечении срока.
+- **История правок** — при редактировании сообщения предыдущие версии (текст + время) сохраняются, чтобы видеть, что было изменено.
+
+> Это локальные функции: они не влияют на сервер и не нарушают шифрование. Хранение части данных может быть только в памяти до перезапуска (персистентность отдельных частей — в развитии).
+
+---
+
+## ⚡ Производительность
+
+- **Decoder policy** — централизованное ограничение числа потоков софтверного видео‑декодера и троттлинг запуска декодеров под нагрузкой, чтобы тяжёлые медиа не «съедали» CPU и не плодили лишние декодеры.
+
+## 🧰 Спокойная архитектура прокси
+
+- Список прокси **не запускает проверку всех строк** при открытии окна — это убирает «шквал» одновременных тестовых коннектов. Строки по умолчанию в состоянии *Unknown*; проверка запускается **вручную** по пункту *Check Status*.
+
+---
+
+## 🗺️ Roadmap (запланировано, ещё не реализовано)
+
+- **Глобальный лимитер MTProxy‑handshakes** — в текущем Desktop каждый аккаунт держит свой `MTP::Instance` со своей DC‑сессией (разные auth keys, msg_id/seqno, salt), поэтому «один общий поток» для всех аккаунтов сделать нельзя без серверной поддержки. Вместо этого планируется безопасный лимитер: общий cap на число одновременных MTProxy‑handshakes между аккаунтами + jitter/backoff + очередь; снижение числа активных проверок ротации (10 → 1–2); кэширование статусов прокси; единый gate для всех `StartProxyCheck` и рабочих handshakes. Это сгладит всплеск подключений, не душа уже установленный трафик.
+- **UI приватности** — видимая метка «удалено» на сохранённых сообщениях и просмотрщик истории правок (контекст‑меню).
+
+---
+
+## 🏗️ Сборка и CI
+
+- Сборка идёт через **GitHub Actions** (`.github/workflows/win.yml`): только **Windows**, конфигурации `x64` и `x64_x86` (Qt5). После каждого пуша автоматически публикуется **пре‑релиз** `dev-N` с готовыми `.exe`.
+- Зависимости (Qt, Libraries, ThirdParty) кэшируются между запусками.
+- Инструкции по ручной сборке официального клиента (применимы и здесь) — в [`docs/`](docs/).
+
+> Базовый клиент собирается стандартным тулчейном Telegram Desktop. Артефакты пре‑релиза переименовываются в `ZaStoGram-<arch>.exe`.
+
+---
+
+## 📥 Установка
+
+Скачайте `ZaStoGram-x64.exe` (или `x64_x86` для 32‑бит) из раздела **Releases** (пре‑релиз `dev-N`). Это сборка из исходников этого репозитория. Для работы дефолтного прокси `127.0.0.1:1353` нужен запущенный внешний сервис `telegram_proxy`, либо включите встроенный WSS‑транспорт.
+
+---
+
+## 📄 Лицензия
+
+Проект основан на [Telegram Desktop][tdesktop] и распространяется под **GPLv3 с OpenSSL‑исключением** — тот же текст лицензии, что и у апстрима, см. [LICENSE](LICENSE) и [LEGAL](LEGAL).
+
+ZaStoGram — независимый форк; товарные знаки Telegram принадлежат их владельцам.
+
+[tdesktop]: https://github.com/telegramdesktop/tdesktop
