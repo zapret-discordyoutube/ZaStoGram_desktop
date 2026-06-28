@@ -163,6 +163,12 @@ public:
 	void setModerateModeEnabled(bool value) {
 		_moderateModeEnabled = value;
 	}
+	[[nodiscard]] bool keepDeletedMessages() {
+		return readPref<bool>("zastoKeepDeleted", true);
+	}
+	void setKeepDeletedMessages(bool value) {
+		writePref<bool>("zastoKeepDeleted", value);
+	}
 	[[nodiscard]] float64 songVolume() const {
 		return _songVolume.current();
 	}
@@ -1035,6 +1041,13 @@ public:
 
 	[[nodiscard]] MTP::ProxyStealthOptions proxyStealthOptions();
 	void setProxyStealthOptions(const MTP::ProxyStealthOptions &value);
+
+	[[nodiscard]] bool keepEditHistory() {
+		return readPref<bool>("zastoKeepEditHistory", true);
+	}
+	void setKeepEditHistory(bool value) {
+		writePref<bool>("zastoKeepEditHistory", value);
+	}
 
 	template <typename Type, typename Other>
 	void writePref(std::string_view key, Other &&value) {

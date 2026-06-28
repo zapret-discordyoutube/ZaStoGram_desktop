@@ -36,6 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "media/audio/media_audio.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "core/click_handler_types.h"
@@ -2052,6 +2053,15 @@ bool HistoryItem::isGuestChatBotMessage() const {
 	return (_flags & MessageFlag::GuestChatViaFrom);
 }
 
+void HistoryItem::markDeletedBySender() {
+	if (_flags & MessageFlag::DeletedBySender) {
+		return;
+	}
+	_flags |= MessageFlag::DeletedBySender;
+	_history->owner().notifyItemDataChange(this);
+	_history->owner().requestItemRepaint(this);
+}
+
 UserData *HistoryItem::getMessageBot() const {
 	if (const auto bot = viaBot()) {
 		return bot;
@@ -2192,6 +2202,17 @@ void HistoryItem::clearMainView() {
 }
 
 void HistoryItem::applyEdition(HistoryMessageEdition &&edition) {
+	auto previousEditText = TextWithEntities();
+	auto previousEditDate = TimeId(0);
+	const auto trackEditHistory = (edition.editDate != -1)
+		&& Core::App().settings().keepEditHistory();
+	if (trackEditHistory) {
+		previousEditText = originalText();
+		previousEditDate = Has<HistoryMessageEdited>()
+			? Get<HistoryMessageEdited>()->date
+			: date();
+	}
+
 	int keyboardTop = -1;
 	//if (!pendingResize()) {// #TODO edit bot message
 	//	if (auto keyboard = inlineReplyKeyboard()) {
@@ -2297,6 +2318,14 @@ void HistoryItem::applyEdition(HistoryMessageEdition &&edition) {
 	} else {
 		setText(std::move(updatedText));
 		addToSharedMediaIndex();
+	}
+	if (trackEditHistory
+		&& !previousEditText.text.isEmpty()
+		&& originalText().text != previousEditText.text) {
+		_history->owner().recordEditVersion(
+			fullId(),
+			previousEditText,
+			previousEditDate);
 	}
 	if (mediaCheck == MediaCheckResult::Unsupported) {
 		setReplyMarkup(UnsupportedMessageMarkup());

@@ -152,6 +152,7 @@ int BottomInfo::firstLineWidth() const {
 
 bool BottomInfo::isWide() const {
 	return (_data.flags & Data::Flag::Edited)
+		|| (_data.flags & Data::Flag::DeletedBySender)
 		|| _data.scheduleRepeatPeriod
 		|| !_data.author.isEmpty()
 		|| !_views.isEmpty()
@@ -472,10 +473,14 @@ void BottomInfo::layout() {
 }
 
 void BottomInfo::layoutDateText() {
-	const auto editedPrimary = (_data.flags & Data::Flag::EditedPrimary)
+	const auto deletedBySender = (_data.flags & Data::Flag::DeletedBySender);
+	const auto editedPrimary = !deletedBySender
+		&& (_data.flags & Data::Flag::EditedPrimary)
 		&& !(_data.flags & Data::Flag::ForwardedDate);
 	const auto edited = editedPrimary
 		? QString()
+		: deletedBySender
+		? (tr::lng_deleted_by_sender(tr::now) + ' ')
 		: (_data.flags & Data::Flag::Edited)
 		? (tr::lng_edited(tr::now) + ' ')
 		: (_data.flags & Data::Flag::EstimateDate)
@@ -676,6 +681,9 @@ BottomInfo::Data BottomInfoDataFromMessage(not_null<Message*> message) {
 			result.flags |= Flag::EditedPrimary;
 			result.editedDate = base::unixtime::parse(editedDate);
 		}
+	}
+	if (item->isDeletedBySender()) {
+		result.flags |= Flag::DeletedBySender;
 	}
 	if (const auto views = item->Get<HistoryMessageViews>()) {
 		if (views->views.count >= 0) {

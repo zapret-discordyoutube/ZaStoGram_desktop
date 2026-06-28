@@ -258,6 +258,9 @@ public:
 	[[nodiscard]] bool isPinned() const {
 		return _flags & MessageFlag::Pinned;
 	}
+	[[nodiscard]] bool isDeletedBySender() const {
+		return _flags & MessageFlag::DeletedBySender;
+	}
 	[[nodiscard]] bool invertMedia() const {
 		return _flags & MessageFlag::InvertMedia;
 	}
@@ -282,6 +285,7 @@ public:
 	void markMediaAndMentionRead();
 	bool markContentsRead(bool fromThisClient = false);
 	void setIsPinned(bool isPinned);
+	void markDeletedBySender();
 	void setStoryInProfile(bool inProfile);
 
 	// For edit media in history_message.

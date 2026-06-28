@@ -2993,9 +2993,15 @@ void Session::processMessagesDeleted(
 		}
 	}
 	if (!toDestroy.empty()) {
-		notifyItemsAboutToBeDestroyed(toDestroy);
-		for (const auto &item : toDestroy) {
-			item->destroy();
+		if (Core::App().settings().keepDeletedMessages()) {
+			for (const auto &item : toDestroy) {
+				item->markDeletedBySender();
+			}
+		} else {
+			notifyItemsAboutToBeDestroyed(toDestroy);
+			for (const auto &item : toDestroy) {
+				item->destroy();
+			}
 		}
 	}
 	for (const auto &history : historiesToCheck) {
@@ -3003,6 +3009,25 @@ void Session::processMessagesDeleted(
 			history->requestChatListMessage();
 		}
 	}
+}
+
+void Session::recordEditVersion(
+		FullMsgId id,
+		TextWithEntities text,
+		TimeId date) {
+	constexpr auto kMaxVersions = 50;
+	auto &list = _editVersions[id];
+	list.push_back({ date, std::move(text) });
+	if (int(list.size()) > kMaxVersions) {
+		list.erase(list.begin(), list.begin() + (list.size() - kMaxVersions));
+	}
+}
+
+const std::vector<Data::EditedVersion> &Session::editVersions(
+		FullMsgId id) const {
+	static const auto kEmpty = std::vector<EditedVersion>();
+	const auto i = _editVersions.find(id);
+	return (i != end(_editVersions)) ? i->second : kEmpty;
 }
 
 void Session::processNonChannelMessagesDeleted(const QVector<MTPint> &data) {
@@ -3016,9 +3041,15 @@ void Session::processNonChannelMessagesDeleted(const QVector<MTPint> &data) {
 		}
 	}
 	if (!toDestroy.empty()) {
-		notifyItemsAboutToBeDestroyed(toDestroy);
-		for (const auto &item : toDestroy) {
-			item->destroy();
+		if (Core::App().settings().keepDeletedMessages()) {
+			for (const auto &item : toDestroy) {
+				item->markDeletedBySender();
+			}
+		} else {
+			notifyItemsAboutToBeDestroyed(toDestroy);
+			for (const auto &item : toDestroy) {
+				item->destroy();
+			}
 		}
 	}
 	for (const auto &history : historiesToCheck) {

@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_cloud_file.h"
 #include "data/data_star_gift.h"
 #include "history/history_location_manager.h"
+#include "ui/text/text_entity.h"
 #include "base/timer.h"
 
 class Image;
@@ -135,6 +136,11 @@ struct SentFromScheduled {
 struct RecentSelfForwards {
 	PeerId fromPeerId = 0;
 	MessageIdsList ids;
+};
+
+struct EditedVersion {
+	TimeId date = 0;
+	TextWithEntities text;
 };
 
 struct RecentJoinChat {
@@ -593,6 +599,12 @@ public:
 	void processMessagesDeleted(
 		PeerId peerId,
 		const QVector<MTPint> &data);
+	void recordEditVersion(
+		FullMsgId id,
+		TextWithEntities text,
+		TimeId date);
+	[[nodiscard]] const std::vector<EditedVersion> &editVersions(
+		FullMsgId id) const;
 
 	void removeReactionsFromParticipant(
 		not_null<PeerData*> peer,
@@ -1239,6 +1251,7 @@ private:
 
 	base::flat_map<uint64, FullMsgId> _messageByRandomId;
 	base::flat_map<uint64, SentData> _sentMessagesData;
+	base::flat_map<FullMsgId, std::vector<EditedVersion>> _editVersions;
 
 	base::Timer _selfDestructTimer;
 	std::vector<FullMsgId> _selfDestructItems;
