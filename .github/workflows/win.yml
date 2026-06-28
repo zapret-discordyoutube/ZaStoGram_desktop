@@ -117,6 +117,15 @@ jobs:
           Remove-Item vs_buildtools.exe -Force
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
 
+      - name: Install ATL (breakpad dump_syms needs atlbase.h).
+        if: matrix.arch != 'arm64'
+        shell: pwsh
+        run: |
+          $installPath = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $modifyArgs = "modify --installPath ""$installPath"" --add Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart --nocache"
+          $p = Start-Process -FilePath "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe" -ArgumentList $modifyArgs -Wait -PassThru
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
+
       - uses: Eden-CI/msvc-dev-cmd@master
         name: Native Tools Command Prompt.
         with:
