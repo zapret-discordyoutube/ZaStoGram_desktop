@@ -48,7 +48,7 @@ jobs:
 
   windows:
     name: Windows
-    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-2022') }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
 
     strategy:
       matrix:
@@ -238,7 +238,7 @@ jobs:
           -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
-          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded ^
+          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
           %TDESKTOP_BUILD_DEFINE%
