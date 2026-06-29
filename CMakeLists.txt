@@ -81,5 +81,6 @@ add_subdirectory(Telegram)
 if(TARGET external_qt_static_plugins_kimageformats)
     set_target_properties(external_qt_static_plugins_kimageformats PROPERTIES
         C_COMPILER_LAUNCHER ""
-        CXX_COMPILER_LAUNCHER "")
+        CXX_COMPILER_LAUNCHER ""
+        MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase")
 endif()
