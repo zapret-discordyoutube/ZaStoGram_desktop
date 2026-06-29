@@ -60,4 +60,16 @@ struct AdaptiveRecipeResult {
 	ProxyTlsProfile effective,
 	int recipeLevel);
 
+// Per-endpoint recipe escalation state: advances (capped at 4) on a
+// JA4-relevant failure, resets when a working data path is reached.
+[[nodiscard]] int EndpointRecipeLevel(const QString &endpointKey);
+[[nodiscard]] QString EndpointLastDiagnostic(const QString &endpointKey);
+void NoteEndpointFailure(const QString &endpointKey, const QString &diagnostic);
+void NoteEndpointSuccess(const QString &endpointKey);
+
+// Diagnostic-aware endpoint cooldown duration in ms: longer for post-handshake
+// stalls / JA4-suspect failures, 10s default otherwise (matches the previous
+// fixed timeout when no diagnostic is recorded).
+[[nodiscard]] int CooldownMsForEndpoint(const QString &endpointKey);
+
 } // namespace MTP::details

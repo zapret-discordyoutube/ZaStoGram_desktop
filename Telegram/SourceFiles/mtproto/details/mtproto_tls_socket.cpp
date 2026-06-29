@@ -889,6 +889,7 @@ TlsSocket::TlsSocket(
 	_clientHelloFragmentation = stealth.clientHelloFragmentation;
 	_tlsProfile = stealth.tlsProfile;
 	_timing = stealth.timing;
+	_stealth = stealth;
 	_pacingTimer.setCallback([=] { sendOutgoing(); });
 
 	_socket.moveToThread(thread);
@@ -954,6 +955,30 @@ QString TlsSocket::failureDiagnostic() const {
 	return QString();
 }
 
+void TlsSocket::applyAdaptiveRecipe() {
+	const auto level = EndpointRecipeLevel(_endpointKey);
+	if (!level) {
+		return;
+	}
+	auto input = AdaptiveRecipeInput();
+	input.endpointKey = _endpointKey;
+	input.recipeLevel = level;
+	input.lastDiagnostic = EndpointLastDiagnostic(_endpointKey);
+	input.configuredTlsProfile = _tlsProfile;
+	input.stealth = _stealth;
+	const auto recipe = ApplyAdaptiveRecipe(input);
+	if (!recipe.changed) {
+		return;
+	}
+	// Apply only the knobs TlsSocket owns; the TLS profile is escalated via
+	// effectiveTlsProfile()/RotateTlsProfileOnFailure and connectionPattern
+	// is a session-level concern, so neither is touched here.
+	_recordSizing = RecordSizing(int(recipe.stealth.recordSizing));
+	_startupCover = StartupCover(int(recipe.stealth.startupCover));
+	_clientHelloFragmentation = recipe.stealth.clientHelloFragmentation;
+	_timing = recipe.stealth.timing;
+}
+
 void TlsSocket::writeClientHello(const QByteArray &data) {
 	const auto size = int(data.size());
 	if (_clientHelloFragmentation != ProxyClientHelloFragmentation::Soft
@@ -976,6 +1001,8 @@ void TlsSocket::plainConnected() {
 	}
 	_phase = HandshakePhase::TcpConnected;
 	connectionProgress(_phase);
+
+	applyAdaptiveRecipe();
 
 	const auto rules = PrepareClientHelloRules(effectiveTlsProfile());
 	const auto hello = PrepareClientHello(
@@ -1153,6 +1180,7 @@ bool TlsSocket::checkNextPacket() {
 			_incomingGoodDataLimit = length;
 			_phase = HandshakePhase::FirstDataReceived;
 			connectionProgress(_phase);
+			NoteEndpointSuccess(_endpointKey);
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -1382,11 +1410,13 @@ void TlsSocket::handleError(int errorCode) {
 	if (_state != State::Connected) {
 		_syncTimeRequests.fire({});
 		// A failure before the data path is up may be a JA4/ClientHello
-		// problem; advance the per-endpoint AutoRotate cursor so the next
-		// attempt to this endpoint tries a different profile.
+		// problem; record it to escalate the recipe and advance the
+		// per-endpoint AutoRotate cursor for the next attempt.
+		const auto diagnostic = failureDiagnostic();
+		NoteEndpointFailure(_endpointKey, diagnostic);
 		RotateTlsProfileOnFailure(
 			_endpointKey,
-			failureDiagnostic(),
+			diagnostic,
 			effectiveTlsProfile());
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {

@@ -1387,6 +1387,66 @@ void ProxiesBox::setupContent() {
 		});
 	}
 
+	{
+		const auto saved = Core::App().settings().proxyStealthOptions();
+		right->add(
+			object_ptr<Ui::FlatLabel>(
+				right,
+				u"Custom WSS relay (expert, any DC)"_q,
+				st::boxDividerLabel),
+			st::proxySettingsRightAboutPadding);
+		right->add(
+			object_ptr<Ui::FlatLabel>(
+				right,
+				u"No certificate check is done — use only a relay you trust."_q,
+				st::boxDividerLabel),
+			st::proxySettingsRightAboutPadding);
+		const auto addWssField = [&](
+				const QString &placeholder,
+				const QString &initial,
+				Fn<void(MTP::ProxyStealthOptions&, const QString&)> apply) {
+			const auto field = right->add(
+				object_ptr<Ui::InputField>(
+					right,
+					st::connectionHostInputField,
+					rpl::single(placeholder),
+					initial),
+				st::proxyEditInputPadding);
+			field->changes(
+			) | rpl::on_next([=] {
+				const auto value = field->getLastText().trimmed();
+				auto o = Core::App().settings().proxyStealthOptions();
+				apply(o, value);
+				Core::App().settings().setProxyStealthOptions(o);
+			}, field->lifetime());
+		};
+		addWssField(
+			u"WSS relay host (empty = official DC2/DC4)"_q,
+			saved.wssCustomHost,
+			[](MTP::ProxyStealthOptions &o, const QString &v) {
+				o.wssCustomHost = v;
+			});
+		addWssField(
+			u"WSS relay port"_q,
+			saved.wssCustomPort ? QString::number(saved.wssCustomPort) : QString(),
+			[](MTP::ProxyStealthOptions &o, const QString &v) {
+				const auto port = v.toInt();
+				o.wssCustomPort = (port > 0 && port <= 65535) ? port : 443;
+			});
+		addWssField(
+			u"WSS path (default /apiws)"_q,
+			saved.wssCustomPath,
+			[](MTP::ProxyStealthOptions &o, const QString &v) {
+				o.wssCustomPath = v;
+			});
+		addWssField(
+			u"WSS SNI domain (default = host)"_q,
+			saved.wssCustomDomain,
+			[](MTP::ProxyStealthOptions &o, const QString &v) {
+				o.wssCustomDomain = v;
+			});
+	}
+
 	_about = left->add(
 		object_ptr<Ui::DividerLabel>(
 			left,

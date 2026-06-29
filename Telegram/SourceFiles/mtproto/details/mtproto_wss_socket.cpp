@@ -48,6 +48,9 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId, bool media) {
 	route.domain = media
 		? (name + u"-1.web.telegram.org"_q)
 		: (name + u".web.telegram.org"_q);
+	// Fallback: if the hardcoded relay IP is unreachable, retry once via the
+	// domain so DNS yields a currently-valid address.
+	route.relayHostFallback = route.domain;
 	return route;
 }
 
@@ -66,6 +69,9 @@ std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
 	route.domain = stealth.wssCustomDomain.isEmpty()
 		? stealth.wssCustomHost
 		: stealth.wssCustomDomain;
+	if (route.domain != route.relayHost) {
+		route.relayHostFallback = route.domain;
+	}
 	return route;
 }
 
@@ -208,6 +214,23 @@ QString WssSocket::transportName() const {
 }
 
 void WssSocket::handleError(int errorCode) {
+	// On a connect/handshake failure to the primary relay host, retry once
+	// via the fallback (the domain) before giving up, so a blocked or stale
+	// relay IP does not kill DC2/DC4 connectivity.
+	if (!_upgraded
+		&& !_usedFallback
+		&& !_route.relayHostFallback.isEmpty()
+		&& (_route.relayHostFallback != _route.relayHost)) {
+		_usedFallback = true;
+		_incoming = QByteArray();
+		_phase = HandshakePhase::None;
+		_socket.abort();
+		_socket.connectToHostEncrypted(
+			_route.relayHostFallback,
+			quint16(_route.relayPort),
+			_route.domain);
+		return;
+	}
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);
 }

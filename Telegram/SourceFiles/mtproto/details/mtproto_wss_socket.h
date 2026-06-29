@@ -17,6 +17,7 @@ namespace MTP::details {
 
 struct WssRoute {
 	QString relayHost;
+	QString relayHostFallback; // retried once if relayHost fails (e.g. domain)
 	int relayPort = 443;
 	QString domain;
 	QString path;
@@ -75,6 +76,7 @@ private:
 	QByteArray _incoming;
 	QByteArray _readBuffer;
 	bool _upgraded = false;
+	bool _usedFallback = false;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };

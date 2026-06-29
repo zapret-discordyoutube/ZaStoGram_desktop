@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/details/mtproto_proxy_adaptive_policy.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_dc_options.h"
@@ -40,7 +41,6 @@ constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
-constexpr auto kEndpointCooldownTimeout = crl::time(10000);
 constexpr auto kEndpointCooldownPenalty = 8;
 constexpr auto kWaitForProxyTimeout = 2000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
@@ -2699,7 +2699,7 @@ void SessionPrivate::onError(
 		[](const TestConnection &test) { return test.data.get(); });
 	if (found != end(_testConnections) && !found->endpoint.isEmpty()) {
 		_endpointCooldownUntil[found->endpoint] = crl::now()
-			+ kEndpointCooldownTimeout;
+			+ CooldownMsForEndpoint(found->endpoint);
 	}
 	removeTestConnection(connection);
 

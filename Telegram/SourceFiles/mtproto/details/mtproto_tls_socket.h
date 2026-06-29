@@ -73,12 +73,14 @@ private:
 	[[nodiscard]] int nextRecordPayloadSize();
 	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
 	[[nodiscard]] QString failureDiagnostic() const;
+	void applyAdaptiveRecipe();
 	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
 	void sendOutgoing();
 
 	const bytes::vector _secret;
 	QString _endpointKey;
+	ProxyStealthOptions _stealth;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;
 	QByteArray _incoming;

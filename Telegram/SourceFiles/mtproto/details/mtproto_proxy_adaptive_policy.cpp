@@ -26,6 +26,8 @@ constexpr auto kAutoRotatePoolSize = int(std::size(kAutoRotatePool));
 struct AutoProfileState {
 	int profileIndex = -1;
 	uint32 failures = 0;
+	int recipeLevel = 0;
+	QString lastDiagnostic;
 };
 
 QMutex AutoProfilesMutex;
@@ -172,6 +174,64 @@ ProxyTlsProfile RotateTlsProfileOnFailure(
 	state.profileIndex = (state.profileIndex + 1) % kAutoRotatePoolSize;
 	++state.failures;
 	return kAutoRotatePool[state.profileIndex];
+}
+
+int EndpointRecipeLevel(const QString &endpointKey) {
+	if (endpointKey.isEmpty()) {
+		return 0;
+	}
+	QMutexLocker lock(&AutoProfilesMutex);
+	const auto i = AutoProfiles.find(endpointKey);
+	return (i != AutoProfiles.end()) ? i->second.recipeLevel : 0;
+}
+
+QString EndpointLastDiagnostic(const QString &endpointKey) {
+	if (endpointKey.isEmpty()) {
+		return QString();
+	}
+	QMutexLocker lock(&AutoProfilesMutex);
+	const auto i = AutoProfiles.find(endpointKey);
+	return (i != AutoProfiles.end()) ? i->second.lastDiagnostic : QString();
+}
+
+void NoteEndpointFailure(
+		const QString &endpointKey,
+		const QString &diagnostic) {
+	if (endpointKey.isEmpty() || !FailureNeedsRecipe(diagnostic)) {
+		return;
+	}
+	QMutexLocker lock(&AutoProfilesMutex);
+	auto &state = AutoProfiles[endpointKey];
+	state.lastDiagnostic = diagnostic;
+	if (state.recipeLevel < 4) {
+		++state.recipeLevel;
+	}
+}
+
+void NoteEndpointSuccess(const QString &endpointKey) {
+	if (endpointKey.isEmpty()) {
+		return;
+	}
+	QMutexLocker lock(&AutoProfilesMutex);
+	const auto i = AutoProfiles.find(endpointKey);
+	if (i != AutoProfiles.end()) {
+		i->second.recipeLevel = 0;
+		i->second.lastDiagnostic.clear();
+	}
+}
+
+int CooldownMsForEndpoint(const QString &endpointKey) {
+	const auto diagnostic = EndpointLastDiagnostic(endpointKey);
+	if (diagnostic == u"post_handshake_no_appdata"_q) {
+		return 20000;
+	} else if (diagnostic == u"server_hello_hmac_mismatch"_q
+		|| diagnostic == u"client_hello_sent_no_server_hello"_q
+		|| diagnostic == u"tls_alert_after_client_hello"_q
+		|| diagnostic == u"short_tls_response_after_client_hello"_q
+		|| diagnostic == u"unrecognized_tls_response_after_client_hello"_q) {
+		return 15000;
+	}
+	return 10000;
 }
 
 } // namespace MTP::details
