@@ -73,3 +73,13 @@ set(desktop_app_skip_libs
 
 add_subdirectory(cmake)
 add_subdirectory(Telegram)
+
+# ZaStoGram: sccache mishandles the kimageformats Qt plugin's deep relative
+# obj paths under MSVC (it passes an empty /Fd -> fatal C1083). Build that
+# external plugin without the compiler launcher; sccache still accelerates
+# the rest of the build (the Telegram app, lib_*, etc.).
+if(TARGET external_qt_static_plugins_kimageformats)
+    set_target_properties(external_qt_static_plugins_kimageformats PROPERTIES
+        C_COMPILER_LAUNCHER ""
+        CXX_COMPILER_LAUNCHER "")
+endif()
