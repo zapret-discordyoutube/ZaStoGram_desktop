@@ -14,6 +14,7 @@ namespace MTP {
 namespace details {
 
 class AbstractSocket;
+enum class HandshakePhase;
 
 class TcpConnection : public AbstractConnection {
 public:
