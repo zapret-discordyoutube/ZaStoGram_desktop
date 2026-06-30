@@ -188,7 +188,7 @@ Q_SIGNALS:
 	void receivedData();
 	void receivedSome(); // to stop restart timer
 
-	void error(qint32 errorCodebool);
+	void error(qint32 errorCode);
 
 	void connected();
 	void disconnected();
