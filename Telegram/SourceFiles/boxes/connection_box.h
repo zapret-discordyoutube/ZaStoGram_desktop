@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/object_ptr.h"
 #include "core/core_settings_proxy.h"
 #include "mtproto/connection_abstract.h"
+#include "mtproto/proxy_check.h"
 #include "mtproto/mtproto_proxy_data.h"
 
 namespace Ui {

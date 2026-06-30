@@ -624,9 +624,11 @@ protected:
 			+ st::proxySettingsColumnSkip
 			+ st::proxySettingsControlsMinWidth;
 		if (!wideEnough) {
-			const auto leftHeight = _left->resizeGetHeight(newWidth);
+			_left->resizeToWidth(newWidth);
+			const auto leftHeight = _left->height();
 			_left->setGeometryToLeft(0, 0, newWidth, leftHeight, newWidth);
-			const auto rightHeight = _right->resizeGetHeight(newWidth);
+			_right->resizeToWidth(newWidth);
+			const auto rightHeight = _right->height();
 			_right->setGeometryToLeft(
 				0,
 				leftHeight,
@@ -638,8 +640,10 @@ protected:
 		const auto leftWidth = st::proxySettingsListColumnWidth;
 		const auto rightLeft = leftWidth + st::proxySettingsColumnSkip;
 		const auto rightWidth = newWidth - rightLeft;
-		const auto leftHeight = _left->resizeGetHeight(leftWidth);
-		const auto rightHeight = _right->resizeGetHeight(rightWidth);
+		_left->resizeToWidth(leftWidth);
+		const auto leftHeight = _left->height();
+		_right->resizeToWidth(rightWidth);
+		const auto rightHeight = _right->height();
 		_left->setGeometryToLeft(0, 0, leftWidth, leftHeight, newWidth);
 		_right->setGeometryToLeft(
 			rightLeft,
