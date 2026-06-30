@@ -1,0 +1,63 @@
+name: Cache cleanup.
+
+# Keep the GitHub Actions cache under the 10 GB/repo budget so the LRU eviction
+# never throws away a cache that is still in use. We prune by AGE: a cache not
+# accessed in DAYS days is deleted. A restore bumps last-accessed, so any cache
+# actively reused by any workflow family (win/linux/mac; libs/Qt/ThirdParty;
+# sccache objects) always survives — only the genuinely stale tail is removed.
+# (Rank-based "keep newest N" was rejected: it can strand the only cache of a
+# low-frequency family and would churn sccache's many small entries.)
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily, 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Delete caches not accessed in the last N days'
+        required: false
+        default: '7'
+
+concurrency:
+  group: cache-cleanup
+  cancel-in-progress: false
+
+permissions:
+  actions: write        # required to delete caches
+  contents: read
+
+jobs:
+  cleanup:
+    name: Prune stale Actions caches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune caches not accessed recently.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DAYS: ${{ github.event.inputs.days || '7' }}
+        run: |
+          set -uo pipefail
+          cutoff=$(date -u -d "$DAYS days ago" +%s)
+          # Fail loudly on an API/auth error instead of masking it as "0 caches".
+          if ! rows=$(gh cache list -L 1000 --sort last_accessed_at --order asc --json id,lastAccessedAt -q '.[] | "\(.id)\t\(.lastAccessedAt)"'); then
+            echo "::error::gh cache list failed (auth or API error)"
+            exit 1
+          fi
+          total=$(printf '%s' "$rows" | grep -c . || true)
+          echo "Total caches: $total; deleting those not accessed since $(date -u -d "@$cutoff" +%Y-%m-%dT%H:%M:%SZ) ($DAYS day(s))."
+          deleted=0
+          while IFS=$'\t' read -r id ts; do
+            [ -n "$id" ] || continue
+            if ! acc=$(date -u -d "$ts" +%s 2>/dev/null); then
+              echo "warn: cannot parse timestamp '$ts' for cache $id, skipping" >&2
+              continue
+            fi
+            if [ "$acc" -lt "$cutoff" ]; then
+              if gh cache delete "$id"; then
+                deleted=$((deleted+1))
+              else
+                echo "warn: failed to delete cache $id" >&2
+              fi
+            fi
+          done <<< "$rows"
+          echo "Pruned $deleted stale cache(s)."

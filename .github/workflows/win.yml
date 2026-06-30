@@ -60,8 +60,15 @@ jobs:
       UPLOAD_ARTIFACT: "true"
       ONLY_CACHE: "false"
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+      # CACHE_KEY (in "First set up") auto-hashes prepare.py recipes + win.bat + SDK.
+      # CACHE_VERSION is a manual kill-switch: bump it to invalidate ALL caches at
+      # once for changes that are NOT auto-detected — the disk-trim filter or the
+      # cache path lists below, and as a safety net for a toolset bump.
+      CACHE_VERSION: "v1"
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_LOG: warn
 
     defaults:
       run:
@@ -93,10 +100,16 @@ jobs:
           echo "SDK=$SDK" >> $GITHUB_ENV
           printf 'SCCACHE_BASEDIRS=%s\\%s\n' "$TBUILD" "$REPO_NAME" >> $GITHUB_ENV
           printf 'SCCACHE_GHA_VERSION=%s\n' "${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${SDK}-${{ matrix.defines || 'default' }}-msvc-v1" >> $GITHUB_ENV
+          echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/sccache_log.txt" >> $GITHUB_ENV
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
 
-          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          # CACHE_KEY hashes the recipe-relevant content of prepare.py (comment-only
+          # and blank lines dropped, so formatting churn does not rotate the key) plus
+          # win.bat and the SDK. Per-library cache_keys inside prepare.py re-validate
+          # every stage regardless, so CACHE_KEY only affects which tarball we select.
+          { grep -vE '^[[:space:]]*#' "$TBUILD/$REPO_NAME/$PREPARE_PATH" || true; } | sed '/^[[:space:]]*$/d' | sha256sum | awk '{ print $1 }' >> CACHE_KEY.txt
+          sha256sum "$TBUILD/$REPO_NAME/$(dirname "$PREPARE_PATH")/win.bat" | awk '{ print $1 }' >> CACHE_KEY.txt
           echo "$SDK" >> CACHE_KEY.txt
           echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
 
@@ -129,17 +142,20 @@ jobs:
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
-      - name: ThirdParty cache.
+      - name: ThirdParty cache (restore).
         id: cache-third-party
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_VERSION }}-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_VERSION }}-${{ env.SDK }}-
+            ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_VERSION }}-
+            ${{ runner.OS }}-${{ runner.arch }}-third-party-
 
-      - name: Libraries cache.
+      - name: Libraries cache (restore).
         id: cache-libs
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -147,20 +163,56 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_VERSION }}-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_VERSION }}-${{ env.SDK }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_VERSION }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-libs-
 
-      - name: Qt cache.
+      - name: Qt cache (restore).
         id: cache-qt
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_VERSION }}-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_VERSION }}-${{ env.SDK }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_VERSION }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-
+
+      # Self-healing sanity check on the restored caches, before win.bat trusts them.
+      # prepare.py marks a stage 'Good' if <dir>/<name> exists and cache_keys/<name>
+      # matches — it never looks INSIDE the dir, so a truncated restore (zero-byte
+      # .lib) or a dir emptied by the trim filter would be silently reused. Deleting
+      # a per-stage key only forces THAT stage to rebuild (always safe), so we err
+      # toward deleting on any corruption signal. Never fails the job.
+      - name: Verify restored caches.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          check_tree() {
+            local root="$1"
+            [ -d "$root/cache_keys" ] || return 0
+            local key name dir
+            for key in "$root"/cache_keys/*; do
+              name="$(basename "$key")"
+              dir="$root/$name"
+              if [ ! -d "$dir" ]; then
+                rm -f "$key"; echo "smoke: $name -> orphan key (no artifact dir), will rebuild"; continue
+              fi
+              if [ -n "$(find "$dir" -type f \( -name '*.lib' -o -name '*.a' -o -name '*.exe' \) -size 0 -print -quit)" ]; then
+                rm -f "$key"; echo "smoke: $name -> zero-byte artifact (truncated restore), will rebuild"; continue
+              fi
+            done
+          }
+          check_tree "${LibrariesPath//\\//}"
+          check_tree "${TBUILD//\\//}/ThirdParty"
+          echo "smoke: cache verification done"
 
       - name: Libraries.
+        id: build-libs
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
 
@@ -223,6 +275,52 @@ jobs:
         shell: bash
         run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
 
+      # Save caches BEFORE the (possibly failing) Telegram compile, gated on the
+      # libraries step having succeeded — not on the whole job. This is the fix for
+      # "compile fails -> nothing cached -> libraries rebuilt every run".
+      #   !cancelled()                      -> save on compile failure, skip on cancellation
+      #   build-libs.outcome == 'success'   -> never cache a half-built libraries tree
+      #   cache-hit != 'true'               -> don't re-save an already-present exact key
+      - name: ThirdParty cache (save).
+        if: >-
+          !cancelled()
+          && steps.build-libs.outcome == 'success'
+          && steps.cache-third-party.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
+
+      - name: Libraries cache (save).
+        if: >-
+          !cancelled()
+          && steps.build-libs.outcome == 'success'
+          && steps.cache-libs.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.cache-libs.outputs.cache-primary-key }}
+
+      - name: Qt cache (save).
+        if: >-
+          !cancelled()
+          && steps.build-libs.outcome == 'success'
+          && steps.cache-qt.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.cache-qt.outputs.cache-primary-key }}
+
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
         run: |
@@ -234,7 +332,7 @@ jobs:
           ${{ matrix.qt }} ^
           %TDESKTOP_BUILD_API% ^
           -D CMAKE_CONFIGURATION_TYPES=Release ^
-          -D DESKTOP_APP_ENABLE_LTO=ON ^
+          -D DESKTOP_APP_ENABLE_LTO=${{ (github.ref == 'refs/heads/nightly' || startsWith(github.ref, 'refs/tags/')) && 'ON' || 'OFF' }} ^
           -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
           -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
@@ -250,6 +348,11 @@ jobs:
         if: always() && env.ONLY_CACHE == 'false'
         shell: bash
         run: ${SCCACHE_PATH:-sccache} --show-stats
+
+      - name: sccache error log.
+        if: always() && env.ONLY_CACHE == 'false'
+        shell: bash
+        run: cat "${SCCACHE_ERROR_LOG//\\//}" 2>/dev/null || echo "(no sccache error log)"
 
       - name: Move artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
