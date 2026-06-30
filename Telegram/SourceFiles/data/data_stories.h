@@ -440,7 +440,6 @@ private:
 	Folder *_folderForHidden = nullptr;
 
 	mtpRequestId _loadMoreRequestId[kStorySourcesListCount] = { 0 };
-	base::Timer _snapshotWriteTimer;
 	bool _restoringSnapshot = false;
 
 	rpl::event_stream<PeerId> _sourceChanged;
@@ -492,6 +491,7 @@ private:
 	base::flat_set<not_null<Story*>> _pollingViews;
 	base::Timer _pollingTimer;
 	base::Timer _pollingViewsTimer;
+	base::Timer _snapshotWriteTimer;
 
 	mtpRequestId _reorderStoriesRequestId = 0;
 
