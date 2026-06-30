@@ -18,7 +18,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
-constexpr auto kTestModeDcIdShift = 10000;
 constexpr auto kWssMaxFrame = 2 * 1024 * 1024;
 constexpr auto kWssHeaderLimit = 32 * 1024;
 

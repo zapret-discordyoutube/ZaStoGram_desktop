@@ -1414,7 +1414,7 @@ void TlsSocket::handleError(int errorCode) {
 		// per-endpoint AutoRotate cursor for the next attempt.
 		const auto diagnostic = failureDiagnostic();
 		NoteEndpointFailure(_endpointKey, diagnostic);
-		RotateTlsProfileOnFailure(
+		(void)RotateTlsProfileOnFailure(
 			_endpointKey,
 			diagnostic,
 			effectiveTlsProfile());
