@@ -214,7 +214,7 @@ jobs:
       - name: Libraries.
         id: build-libs
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-debug silent ${{ matrix.qt }}
 
       - name: sccache.
         if: env.ONLY_CACHE == 'false'
