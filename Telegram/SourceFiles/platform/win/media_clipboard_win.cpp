@@ -192,6 +192,9 @@ struct FormatEntry {
 		&& (requested.lindex == -1 || offered.lindex == requested.lindex);
 }
 
+#pragma warning(push)
+// class has virtual functions, but destructor is not virtual
+#pragma warning(disable:4265)
 class FormatEnumerator final : public IEnumFORMATETC {
 public:
 	explicit FormatEnumerator(
@@ -464,6 +467,7 @@ private:
 	Core::MediaClipboardPayload _payload;
 	std::vector<FormatEntry> _entries;
 };
+#pragma warning(pop)
 
 } // namespace
 
