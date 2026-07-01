@@ -425,6 +425,19 @@ jobs:
               "--",
           ]).decode("utf-8", "surrogateescape").split("\0")))
 
+          cmake_graph_inputs = (
+              "CMakeLists.txt",
+              "Telegram/CMakeLists.txt",
+              "Telegram/cmake/",
+              "Telegram/configure.",
+              "cmake/",
+          )
+          cmake_graph_changed = any(
+              item.endswith("CMakeLists.txt")
+              or item.endswith(".cmake")
+              or item.startswith(cmake_graph_inputs)
+              for item in changed)
+
           def changed_path(path):
               path = path.as_posix()
               return path in changed or any(
@@ -463,6 +476,13 @@ jobs:
           print(
               f"mtime: normalized unchanged sources from {cached_head[:12]} "
               f"to keep restored Ninja outputs reusable")
+          cache = repo / "out" / "CMakeCache.txt"
+          if cache.exists() and not cmake_graph_changed:
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+                  env.write("TELEGRAM_SKIP_CONFIGURE=true\n")
+              print("mtime: restored CMake configure can be reused")
+          elif cmake_graph_changed:
+              print("mtime: CMake graph changed, configure will run")
           PY
 
       - name: Telegram Desktop build.
@@ -471,21 +491,25 @@ jobs:
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
 
-          call configure.bat ^
-          %TDESKTOP_BUILD_GENERATOR% ^
-          %TDESKTOP_BUILD_ARCH% ^
-          ${{ matrix.qt }} ^
-          %TDESKTOP_BUILD_API% ^
-          -D CMAKE_CONFIGURATION_TYPES=Release ^
-          -D DESKTOP_APP_ENABLE_LTO=${{ (github.ref == 'refs/heads/nightly' || startsWith(github.ref, 'refs/tags/')) && 'ON' || 'OFF' }} ^
-          -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
-          -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
-          -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
-          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
-          -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
-          -D DESKTOP_APP_DISABLE_QT_PLUGINS=ON ^
-          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
-          %TDESKTOP_BUILD_DEFINE%
+          if "%TELEGRAM_SKIP_CONFIGURE%"=="true" (
+            echo Reusing restored CMake configure.
+          ) else (
+            call configure.bat ^
+            %TDESKTOP_BUILD_GENERATOR% ^
+            %TDESKTOP_BUILD_ARCH% ^
+            ${{ matrix.qt }} ^
+            %TDESKTOP_BUILD_API% ^
+            -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D DESKTOP_APP_ENABLE_LTO=${{ (github.ref == 'refs/heads/nightly' || startsWith(github.ref, 'refs/tags/')) && 'ON' || 'OFF' }} ^
+            -D CMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
+            -D DESKTOP_APP_DISABLE_QT_PLUGINS=ON ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
+            %TDESKTOP_BUILD_DEFINE%
+          )
 
           cmake --build ..\out --config Release --target Telegram --parallel
 

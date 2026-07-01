@@ -99,6 +99,11 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "97e7512e600590ca2254c7bd523c2b07346b494f8c07d2334e9fff922a2c7e73" in workflow
     assert "e48a776cea3c96cdf4cfbf0bcd71426b2945ba854f733ac6c1774413f89253bb" in workflow
     assert "GITHUB_EVENT_BEFORE" not in workflow
+    assert "TELEGRAM_SKIP_CONFIGURE=true" in workflow
+    assert "Reusing restored CMake configure." in workflow
+    assert "\"CMakeLists.txt\"" in workflow
+    assert "item.endswith(\".cmake\")" in workflow
+    assert "mtime: CMake graph changed, configure will run" in workflow
     assert "\"diff\"," in workflow
     assert "\"--name-only\"," in workflow
     assert "os.utime" in workflow
