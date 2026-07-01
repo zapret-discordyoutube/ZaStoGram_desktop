@@ -107,7 +107,8 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "mtime: CMake graph changed, configure will run" in workflow
     assert "\"diff\"," in workflow
     assert "\"--name-only\"," in workflow
-    assert "os.utime" in workflow
+    assert "os.utime(path, (old_mtime, old_mtime))" in workflow
+    assert "follow_symlinks" not in workflow
 
 
 def test_windows_ffmpeg_links_static_dav1d_dependency():

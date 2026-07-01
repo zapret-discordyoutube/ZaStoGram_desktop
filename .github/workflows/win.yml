@@ -457,7 +457,7 @@ jobs:
 
           def normalize_file(path):
               try:
-                  os.utime(path, (old_mtime, old_mtime), follow_symlinks=False)
+                  os.utime(path, (old_mtime, old_mtime))
               except FileNotFoundError:
                   pass
 
