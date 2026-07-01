@@ -65,6 +65,7 @@ jobs:
       # once for changes that are NOT auto-detected — the disk-trim filter or the
       # cache path lists below, and as a safety net for a toolset bump.
       CACHE_VERSION: "v1"
+      TELEGRAM_BUILD_CACHE_VERSION: "v1"
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SCCACHE_IDLE_TIMEOUT: "0"
@@ -111,7 +112,21 @@ jobs:
           { grep -vE '^[[:space:]]*#' "$TBUILD/$REPO_NAME/$PREPARE_PATH" || true; } | sed '/^[[:space:]]*$/d' | sha256sum | awk '{ print $1 }' >> CACHE_KEY.txt
           sha256sum "$TBUILD/$REPO_NAME/$(dirname "$PREPARE_PATH")/win.bat" | awk '{ print $1 }' >> CACHE_KEY.txt
           echo "$SDK" >> CACHE_KEY.txt
-          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+          CACHE_KEY_VALUE="$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')"
+          echo "CACHE_KEY=$CACHE_KEY_VALUE" >> $GITHUB_ENV
+
+          TELEGRAM_BUILD_CACHE_SCOPE="${{ runner.OS }}-${{ matrix.arch }}-telegram-build-${TELEGRAM_BUILD_CACHE_VERSION}-${SDK}-${{ matrix.qt || 'qt' }}-${{ matrix.generator || 'ninja-multi-config' }}-${{ matrix.defines || 'default' }}-${{ (github.ref == 'refs/heads/nightly' || startsWith(github.ref, 'refs/tags/')) && 'lto' || 'nolto' }}-${CACHE_KEY_VALUE}"
+          {
+            printf '%s\n' "$TELEGRAM_BUILD_CACHE_SCOPE"
+            git -C "$TBUILD/$REPO_NAME" rev-parse HEAD
+            git -C "$TBUILD/$REPO_NAME" submodule status --recursive
+            sha256sum "$TBUILD/$REPO_NAME/.github/workflows/win.yml"
+            sha256sum "$TBUILD/$REPO_NAME/CMakeLists.txt"
+            sha256sum "$TBUILD/$REPO_NAME/Telegram/CMakeLists.txt"
+            sha256sum "$TBUILD/$REPO_NAME/Telegram/build/prepare/win.bat"
+          } > TELEGRAM_BUILD_CACHE_KEY.txt
+          echo "TELEGRAM_BUILD_CACHE_SCOPE=$TELEGRAM_BUILD_CACHE_SCOPE" >> $GITHUB_ENV
+          echo "TELEGRAM_BUILD_CACHE_KEY=$(sha256sum TELEGRAM_BUILD_CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
 
           echo "Configurate git for cherry-picks."
           git config --global user.email "you@example.com"
@@ -321,7 +336,23 @@ jobs:
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
           key: ${{ steps.cache-qt.outputs.cache-primary-key }}
 
+      - name: Telegram build cache (restore).
+        if: env.ONLY_CACHE == 'false'
+        id: cache-telegram-build
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.exe
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.pdb
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.lib
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.exp
+          key: ${{ env.TELEGRAM_BUILD_CACHE_SCOPE }}-${{ env.TELEGRAM_BUILD_CACHE_KEY }}
+          restore-keys: |
+            ${{ env.TELEGRAM_BUILD_CACHE_SCOPE }}-
+
       - name: Telegram Desktop build.
+        id: build-telegram
         if: env.ONLY_CACHE == 'false'
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
@@ -343,6 +374,24 @@ jobs:
           %TDESKTOP_BUILD_DEFINE%
 
           cmake --build ..\out --config Release --target Telegram --parallel
+
+      - name: Telegram build cache (save).
+        if: >-
+          always()
+          && !cancelled()
+          && env.ONLY_CACHE == 'false'
+          && steps.build-telegram.outcome != 'skipped'
+          && steps.cache-telegram-build.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.exe
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.pdb
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.lib
+            !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.exp
+          key: ${{ steps.cache-telegram-build.outputs.cache-primary-key }}
 
       - name: sccache stats.
         if: always() && env.ONLY_CACHE == 'false'

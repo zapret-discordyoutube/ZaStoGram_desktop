@@ -66,6 +66,29 @@ def test_windows_dependency_caches_save_before_compile():
     assert "steps.cache-qt.outputs.cache-hit != 'true'" in workflow
 
 
+def test_windows_telegram_build_tree_cache_survives_compile_failures():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    restore_build_tree = workflow.index("- name: Telegram build cache (restore).")
+    telegram_build = workflow.index("- name: Telegram Desktop build.")
+    save_build_tree = workflow.index("- name: Telegram build cache (save).")
+    move_artifact = workflow.index("- name: Move artifact.")
+
+    assert restore_build_tree < telegram_build < save_build_tree < move_artifact
+    assert "TELEGRAM_BUILD_CACHE_VERSION: \"v1\"" in workflow
+    assert "TELEGRAM_BUILD_CACHE_SCOPE=" in workflow
+    assert "TELEGRAM_BUILD_CACHE_KEY=" in workflow
+    assert "uses: actions/cache/restore@v5" in workflow
+    assert "uses: actions/cache/save@v5" in workflow
+    assert "id: cache-telegram-build" in workflow
+    assert "${{ env.TBUILD }}\\${{ env.REPO_NAME }}\\out" in workflow
+    assert "!${{ env.TBUILD }}\\${{ env.REPO_NAME }}\\out\\Release\\Telegram.exe" in workflow
+    assert "steps.cache-telegram-build.outputs.cache-hit != 'true'" in workflow
+    assert "key: ${{ steps.cache-telegram-build.outputs.cache-primary-key }}" in workflow
+    assert "steps.build-telegram.outcome != 'skipped'" in workflow
+    assert "always()" in workflow[save_build_tree:move_artifact]
+
+
 def test_windows_ffmpeg_links_static_dav1d_dependency():
     prepare = PREPARE_PY.read_text(encoding="utf-8")
     cmake = ROOT_CMAKE.read_text(encoding="utf-8")
@@ -111,6 +134,7 @@ if __name__ == "__main__":
     test_windows_artifact_uses_release_configuration()
     test_windows_ci_prepares_release_dependencies_only()
     test_windows_dependency_caches_save_before_compile()
+    test_windows_telegram_build_tree_cache_survives_compile_failures()
     test_windows_ffmpeg_links_static_dav1d_dependency()
     test_mtproxy_logs_have_release_visible_stream()
     test_mtproxy_progress_errors_and_success_are_reported()
