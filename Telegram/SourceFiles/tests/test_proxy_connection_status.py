@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -60,7 +61,21 @@ def test_visible_proxy_phrases_exist():
         assert f'"{key}' in lang
 
 
+def test_proxy_retry_with_error_uses_generated_argument_order():
+    widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
+    call = re.search(
+        r"tr::lng_proxy_status_retry_with_error\((.*?)\);",
+        widget,
+        re.S)
+
+    assert call
+    assert re.search(
+        r"tr::now,\s*lt_count,\s*state\.waitTillRetry,\s*lt_error,\s*error",
+        call.group(1))
+
+
 if __name__ == "__main__":
     test_proxy_status_model_is_exposed_to_ui()
     test_proxy_status_tracks_phases_and_socket_errors()
     test_visible_proxy_phrases_exist()
+    test_proxy_retry_with_error_uses_generated_argument_order()

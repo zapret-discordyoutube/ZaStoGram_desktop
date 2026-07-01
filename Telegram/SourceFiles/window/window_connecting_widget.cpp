@@ -567,10 +567,10 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 					state.waitTillRetry)
 				: tr::lng_proxy_status_retry_with_error(
 					tr::now,
-					lt_error,
-					error,
 					lt_count,
-					state.waitTillRetry);
+					state.waitTillRetry,
+					lt_error,
+					error);
 		} else {
 			result.text = tr::lng_reconnecting(
 				tr::now,
