@@ -5,6 +5,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "win.yml"
 PREPARE_PY = ROOT / "Telegram" / "build" / "prepare" / "prepare.py"
+ROOT_CMAKE = ROOT / "CMakeLists.txt"
 LOGS_H = SOURCE_DIR / "logs.h"
 LOGS_CPP = SOURCE_DIR / "logs.cpp"
 ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
@@ -65,6 +66,15 @@ def test_windows_dependency_caches_save_before_compile():
     assert "steps.cache-qt.outputs.cache-hit != 'true'" in workflow
 
 
+def test_windows_ffmpeg_links_static_dav1d_dependency():
+    prepare = PREPARE_PY.read_text(encoding="utf-8")
+    cmake = ROOT_CMAKE.read_text(encoding="utf-8")
+
+    assert "--enable-libdav1d" in prepare
+    assert "target_link_libraries(external_ffmpeg" in cmake
+    assert "dav1d/builddir-$<IF:$<CONFIG:Debug>,debug,release>/src/libdav1d.a" in cmake
+
+
 def test_mtproxy_logs_have_release_visible_stream():
     logs_h = LOGS_H.read_text(encoding="utf-8")
     logs_cpp = LOGS_CPP.read_text(encoding="utf-8")
@@ -101,5 +111,6 @@ if __name__ == "__main__":
     test_windows_artifact_uses_release_configuration()
     test_windows_ci_prepares_release_dependencies_only()
     test_windows_dependency_caches_save_before_compile()
+    test_windows_ffmpeg_links_static_dav1d_dependency()
     test_mtproxy_logs_have_release_visible_stream()
     test_mtproxy_progress_errors_and_success_are_reported()

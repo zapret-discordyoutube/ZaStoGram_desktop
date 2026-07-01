@@ -72,6 +72,14 @@ set(desktop_app_skip_libs
 )
 
 add_subdirectory(cmake)
+
+if (WIN32 AND NOT DESKTOP_APP_USE_PACKAGED AND TARGET external_ffmpeg)
+    target_link_libraries(external_ffmpeg
+    INTERFACE
+        ${libs_loc}/dav1d/builddir-$<IF:$<CONFIG:Debug>,debug,release>/src/libdav1d.a
+    )
+endif()
+
 add_subdirectory(Telegram)
 
 # ZaStoGram: sccache mishandles the kimageformats Qt plugin's deep relative
