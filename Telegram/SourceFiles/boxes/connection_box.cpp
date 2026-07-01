@@ -685,6 +685,7 @@ private:
 	int rowHeight() const;
 	void refreshProxyForCalls();
 	void refreshProxyRotation();
+	void refreshRouteViaWss();
 
 	not_null<ProxiesBoxController*> _controller;
 	Core::SettingsProxy &_settings;
@@ -694,6 +695,7 @@ private:
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxyRotationOptions;
 	QPointer<Ui::SettingsSlider> _proxyRotationTimeout;
+	QPointer<Ui::Checkbox> _routeViaWss;
 	QPointer<Ui::DividerLabel> _about;
 	base::unique_qptr<Ui::RpWidget> _noRows;
 	object_ptr<Ui::VerticalLayout> _initialWrap;
@@ -1292,6 +1294,7 @@ void ProxiesBox::setupContent() {
 		) | rpl::on_next([=](bool value) {
 			save(value);
 		}, toggle->lifetime());
+		return toggle;
 	};
 	{
 		const auto saved = Core::App().settings().proxyStealthOptions();
@@ -1346,7 +1349,7 @@ void ProxiesBox::setupContent() {
 					: MTP::ProxyConnectionPattern::Off;
 				Core::App().settings().setProxyStealthOptions(o);
 			});
-		addStealthToggle(
+		_routeViaWss = addStealthToggle(
 			u"Route via WSS (web, DC2/DC4 only)"_q,
 			(saved.transport == MTP::ProxyTransport::Wss),
 			[](bool on) {
@@ -1355,6 +1358,7 @@ void ProxiesBox::setupContent() {
 					? MTP::ProxyTransport::Wss
 					: MTP::ProxyTransport::Tcp;
 				Core::App().settings().setProxyStealthOptions(o);
+				refreshRouteViaWss();
 			});
 	}
 
@@ -1473,6 +1477,7 @@ void ProxiesBox::setupContent() {
 		}
 		refreshProxyForCalls();
 		refreshProxyRotation();
+		refreshRouteViaWss();
 	});
 	_tryIPv6->checkedChanges(
 	) | rpl::on_next([=](bool checked) {
@@ -1484,6 +1489,11 @@ void ProxiesBox::setupContent() {
 		_proxySettings->setValue(value);
 		refreshProxyForCalls();
 		refreshProxyRotation();
+		refreshRouteViaWss();
+	}, inner->lifetime());
+	_settings.connectionTypeChanges(
+	) | rpl::on_next([=] {
+		refreshRouteViaWss();
 	}, inner->lifetime());
 
 	_proxyForCalls->entity()->checkedChanges(
@@ -1506,6 +1516,7 @@ void ProxiesBox::setupContent() {
 	}
 	refreshProxyForCalls();
 	refreshProxyRotation();
+	refreshRouteViaWss();
 	_proxyForCalls->finishAnimating();
 	_proxyRotation->finishAnimating();
 	_proxyRotationOptions->finishAnimating();
@@ -1565,6 +1576,20 @@ void ProxiesBox::refreshProxyRotation() {
 	_proxyRotationOptions->toggle(
 		visible && _proxyRotation->entity()->checked(),
 		anim::type::normal);
+}
+
+void ProxiesBox::refreshRouteViaWss() {
+	if (!_routeViaWss) {
+		return;
+	}
+	const auto mtprotoEnabled = _settings.isEnabled()
+		&& _settings.selected().type == ProxyData::Type::Mtproto;
+	const auto checked = (Core::App().settings().proxyStealthOptions().transport
+		== MTP::ProxyTransport::Wss);
+	_routeViaWss->setDisabled(mtprotoEnabled);
+	_routeViaWss->setChecked(
+		checked,
+		Ui::Checkbox::NotifyAboutChange::DontNotify);
 }
 
 int ProxiesBox::rowHeight() const {

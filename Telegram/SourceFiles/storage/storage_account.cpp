@@ -3289,6 +3289,16 @@ void Account::readSelf(
 	const auto user = session->user();
 	const auto wasLoadedStatus = user->loadedStatus();
 	user->setLoadedStatus(PeerData::LoadedStatus::Not);
+
+	auto peerIdSerialized = quint64();
+	auto peerIdStream = QDataStream(serialized);
+	peerIdStream >> peerIdSerialized;
+	if (peerIdStream.status() != QDataStream::Ok
+		|| DeserializePeerId(peerIdSerialized) != session->userPeerId()) {
+		user->setLoadedStatus(wasLoadedStatus);
+		return;
+	}
+
 	const auto self = Serialize::readPeer(
 		session,
 		streamVersion,

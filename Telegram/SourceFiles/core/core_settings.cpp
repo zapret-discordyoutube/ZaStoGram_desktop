@@ -1250,6 +1250,10 @@ void Settings::writePrefImpl<bool>(std::string_view key, bool value) {
 }
 
 MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
+	const auto mtprotoProxyEnabled = [&] {
+		return _proxy.isEnabled()
+			&& _proxy.selected().type == MTP::ProxyData::Type::Mtproto;
+	};
 	const auto read = [&](std::string_view key, int fallback, int maxValue) {
 		if (const auto data = readPrefGeneric(key)) {
 			auto ok = false;
@@ -1299,24 +1303,35 @@ MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
 	result.wssCustomPort = read("mtproxy/wssPort", result.wssCustomPort, 65535);
 	result.wssCustomPath = readString("mtproxy/wssPath");
 	result.wssCustomDomain = readString("mtproxy/wssDomain");
+	if (mtprotoProxyEnabled()) {
+		result.transport = MTP::ProxyTransport::Tcp;
+	}
 	return result;
 }
 
 void Settings::setProxyStealthOptions(const MTP::ProxyStealthOptions &value) {
+	const auto mtprotoProxyEnabled = [&] {
+		return _proxy.isEnabled()
+			&& _proxy.selected().type == MTP::ProxyData::Type::Mtproto;
+	};
+	auto copy = value;
+	if (mtprotoProxyEnabled()) {
+		copy.transport = MTP::ProxyTransport::Tcp;
+	}
 	const auto write = [&](std::string_view key, int v) {
 		writePrefGeneric(key, QByteArray::number(v));
 	};
-	write("mtproxy/tlsProfile", int(value.tlsProfile));
-	write("mtproxy/chFrag", int(value.clientHelloFragmentation));
-	write("mtproxy/pattern", int(value.connectionPattern));
-	write("mtproxy/recordSizing", int(value.recordSizing));
-	write("mtproxy/timing", int(value.timing));
-	write("mtproxy/startupCover", int(value.startupCover));
-	write("mtproxy/transport", int(value.transport));
-	writePrefGeneric("mtproxy/wssHost", value.wssCustomHost.toUtf8());
-	write("mtproxy/wssPort", value.wssCustomPort);
-	writePrefGeneric("mtproxy/wssPath", value.wssCustomPath.toUtf8());
-	writePrefGeneric("mtproxy/wssDomain", value.wssCustomDomain.toUtf8());
+	write("mtproxy/tlsProfile", int(copy.tlsProfile));
+	write("mtproxy/chFrag", int(copy.clientHelloFragmentation));
+	write("mtproxy/pattern", int(copy.connectionPattern));
+	write("mtproxy/recordSizing", int(copy.recordSizing));
+	write("mtproxy/timing", int(copy.timing));
+	write("mtproxy/startupCover", int(copy.startupCover));
+	write("mtproxy/transport", int(copy.transport));
+	writePrefGeneric("mtproxy/wssHost", copy.wssCustomHost.toUtf8());
+	write("mtproxy/wssPort", copy.wssCustomPort);
+	writePrefGeneric("mtproxy/wssPath", copy.wssCustomPath.toUtf8());
+	writePrefGeneric("mtproxy/wssDomain", copy.wssCustomDomain.toUtf8());
 }
 
 QString Settings::getSoundPath(const QString &key) const {

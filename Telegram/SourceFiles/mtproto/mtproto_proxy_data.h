@@ -102,7 +102,7 @@ struct ProxyStealthOptions {
 	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
 	ProxyTiming timing = ProxyTiming::Off;
 	ProxyStartupCover startupCover = ProxyStartupCover::Soft;
-	ProxyTransport transport = ProxyTransport::Tcp;
+	ProxyTransport transport = ProxyTransport::Wss;
 
 	// Expert-only custom WSS relay; used when transport == Wss and
 	// wssCustomHost is set, independent of the official DC2/4 route.

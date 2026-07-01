@@ -401,26 +401,12 @@ void Sandbox::singleInstanceChecked() {
 		} else {
 			launchApplication();
 		}
-	}, [&](const QByteArray &crashdump) {
-		// If crash dump is empty with that status it means that we
-		// didn't close the application properly. Just ignore for now.
-		if (crashdump.isEmpty()) {
-			if (CrashReports::Restart() == CrashReports::CantOpen) {
-				new NotStartedWindow();
-			} else {
-				launchApplication();
-			}
-			return;
+	}, [&](const QByteArray &) {
+		if (CrashReports::Restart() == CrashReports::CantOpen) {
+			new NotStartedWindow();
+		} else {
+			launchApplication();
 		}
-		_lastCrashDump = crashdump;
-		auto window = new LastCrashedWindow(
-			_lastCrashDump,
-			[=] { launchApplication(); });
-		window->proxyChanges(
-		) | rpl::on_next([=](MTP::ProxyData &&proxy) {
-			_sandboxProxy = std::move(proxy);
-			refreshGlobalProxy();
-		}, window->lifetime());
 	});
 }
 

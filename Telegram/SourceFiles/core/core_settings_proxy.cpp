@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/core_settings_proxy.h"
 
+#include "base/random.h"
 #include "base/platform/base_platform_info.h"
 #include "storage/serialize_common.h"
 
@@ -14,6 +15,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Core {
 namespace {
+
+constexpr auto kDefaultProxyPortMin = 10000;
+constexpr auto kDefaultProxyPortMax = 59999;
 
 [[nodiscard]] qint32 ProxySettingsToInt(MTP::ProxyData::Settings settings) {
 	switch(settings) {
@@ -106,6 +110,11 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
 	return filtered;
 }
 
+[[nodiscard]] int GenerateDefaultProxyPort() {
+	return kDefaultProxyPortMin
+		+ base::RandomIndex(kDefaultProxyPortMax - kDefaultProxyPortMin + 1);
+}
+
 } // namespace
 
 SettingsProxy::SettingsProxy()
@@ -122,7 +131,7 @@ void SettingsProxy::ensureDefaultProxy() {
 	auto def = MTP::ProxyData();
 	def.type = MTP::ProxyData::Type::Socks5;
 	def.host = u"127.0.0.1"_q;
-	def.port = 1353;
+	def.port = GenerateDefaultProxyPort();
 	const auto wasEmpty = _list.empty();
 	if (ranges::find(_list, def) == _list.end()) {
 		_list.insert(_list.begin(), def);

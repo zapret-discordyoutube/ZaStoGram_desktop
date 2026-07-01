@@ -137,9 +137,8 @@ private:
 
 base::options::toggle ShowPeerIdBelowAbout({
 	.id = kOptionShowPeerIdBelowAbout,
-	.name = "Show Peer IDs in Profile",
-	.description = "Show peer IDs from API below their Bio / Description."
-		" Add contact IDs to exported data.",
+	.name = "Export Contact IDs",
+	.description = "Add contact IDs to exported data.",
 });
 
 base::options::toggle ShowChannelJoinedBelowAbout({
@@ -230,28 +229,21 @@ base::options::toggle ShowChannelJoinedBelowAbout({
 	return AboutValue(
 		peer
 	) | rpl::map([=](TextWithEntities &&value) {
-		if (ShowPeerIdBelowAbout.value()) {
-			using namespace Ui::Text;
-			if (!value.empty()) {
-				value.append("\n\n");
-			}
-			value.append(Italic(u"id: "_q));
-			const auto raw = peer->id.value & PeerId::kChatTypeMask;
-			value.append(Link(
-				Italic(Lang::FormatCountDecimal(raw)),
-				kPeerIdLinkIndex));
+		using namespace Ui::Text;
+		if (!value.empty()) {
+			value.append("\n\n");
 		}
+		value.append(Italic(u"id: "_q));
+		const auto raw = peer->id.value & PeerId::kChatTypeMask;
+		value.append(Link(
+			Italic(Lang::FormatCountDecimal(raw)),
+			kPeerIdLinkIndex));
 		if (ShowChannelJoinedBelowAbout.value()) {
 			if (const auto channel = peer->asChannel()) {
 				if (!channel->amCreator() && channel->inviteDate) {
 					if (!value.empty()) {
-						if (ShowPeerIdBelowAbout.value()) {
-							value.append("\n");
-						} else {
-							value.append("\n\n");
-						}
+						value.append("\n");
 					}
-					using namespace Ui::Text;
 					value.append((channel->isMegagroup()
 						? tr::lng_you_joined_group
 						: tr::lng_action_you_joined)(
@@ -272,9 +264,6 @@ base::options::toggle ShowChannelJoinedBelowAbout({
 void SetupAboutPeerIdDrag(
 		not_null<Ui::FlatLabel*> label,
 		not_null<PeerData*> peer) {
-	if (!ShowPeerIdBelowAbout.value()) {
-		return;
-	}
 	const auto id = QString::number(peer->id.value & PeerId::kChatTypeMask);
 	AboutValue(
 		peer
