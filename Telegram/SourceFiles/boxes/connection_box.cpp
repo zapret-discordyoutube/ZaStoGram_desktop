@@ -1352,7 +1352,7 @@ void ProxiesBox::setupContent() {
 		_routeViaWss = addStealthToggle(
 			u"Route via WSS (web, DC2/DC4 only)"_q,
 			(saved.transport == MTP::ProxyTransport::Wss),
-			[](bool on) {
+			[this](bool on) {
 				auto o = Core::App().settings().proxyStealthOptions();
 				o.transport = on
 					? MTP::ProxyTransport::Wss

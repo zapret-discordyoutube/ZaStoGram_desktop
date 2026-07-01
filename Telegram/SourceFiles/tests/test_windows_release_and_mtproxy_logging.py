@@ -6,6 +6,7 @@ ROOT = SOURCE_DIR.parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "win.yml"
 PREPARE_PY = ROOT / "Telegram" / "build" / "prepare" / "prepare.py"
 ROOT_CMAKE = ROOT / "CMakeLists.txt"
+CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 LOGS_H = SOURCE_DIR / "logs.h"
 LOGS_CPP = SOURCE_DIR / "logs.cpp"
 ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
@@ -120,6 +121,15 @@ def test_windows_ffmpeg_links_static_dav1d_dependency():
     assert "dav1d/builddir-$<IF:$<CONFIG:Debug>,debug,release>/src/libdav1d.a" in cmake
 
 
+def test_wss_route_toggle_refresh_captures_proxy_box():
+    connection_box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
+    route_toggle = connection_box.split("_routeViaWss = addStealthToggle(", 1)[1]
+    route_toggle = route_toggle.split("right->add(", 1)[0]
+
+    assert "[this](bool on)" in route_toggle
+    assert "refreshRouteViaWss();" in route_toggle
+
+
 def test_mtproxy_logs_have_release_visible_stream():
     logs_h = LOGS_H.read_text(encoding="utf-8")
     logs_cpp = LOGS_CPP.read_text(encoding="utf-8")
@@ -158,5 +168,6 @@ if __name__ == "__main__":
     test_windows_dependency_caches_save_before_compile()
     test_windows_telegram_build_tree_cache_survives_compile_failures()
     test_windows_ffmpeg_links_static_dav1d_dependency()
+    test_wss_route_toggle_refresh_captures_proxy_box()
     test_mtproxy_logs_have_release_visible_stream()
     test_mtproxy_progress_errors_and_success_are_reported()
