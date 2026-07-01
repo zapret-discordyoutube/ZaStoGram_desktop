@@ -585,7 +585,8 @@ not_null<HistoryItem*> History::addNewMessage(
 		MessageFlags localFlags,
 		NewMessageType type) {
 	const auto newMessage = (type == NewMessageType::Unread);
-	if (newMessage && isUnknownMessageDeleted(id)) {
+	const auto unknownDeleted = newMessage && isUnknownMessageDeleted(id);
+	if (unknownDeleted) {
 		const auto &updates = session().updates();
 		LOG(("Unknown deleted message re-added. "
 			"Peer ID: %1, Message ID: %2, Source: %3.")
@@ -604,6 +605,9 @@ not_null<HistoryItem*> History::addNewMessage(
 		localFlags,
 		detachExisting,
 		newMessage);
+	if (unknownDeleted) {
+		item->markDeletedBySender();
+	}
 	if (type == NewMessageType::Existing || item->mainView()) {
 		return item;
 	}

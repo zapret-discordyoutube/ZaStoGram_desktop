@@ -1499,6 +1499,8 @@ PRIVATE
     mtproto/handshake_gate.h
     mtproto/mtp_instance.cpp
     mtproto/mtp_instance.h
+    mtproto/proxy_diagnostics.cpp
+    mtproto/proxy_diagnostics.h
     mtproto/proxy_check.cpp
     mtproto/proxy_check.h
     mtproto/sender.h

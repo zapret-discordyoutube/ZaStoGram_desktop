@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_http.h"
 
 #include "mtproto/mtp_instance.h"
+#include "mtproto/proxy_diagnostics.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
@@ -30,6 +31,29 @@ void SetProxyConnectionStatus(
 	const auto status = ProxyConnectionStatus{ phase, error, proxy };
 	InvokeQueued(instance, [=] {
 		instance->setProxyConnectionStatus(status);
+	});
+}
+
+void AddHttpDiagnostics(
+		const ProxyData &proxy,
+		ProxyDiagnosticsPhase phase,
+		ProxyConnectionError error,
+		const QString &connectionId,
+		const QString &message) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	AddProxyDiagnosticsEvent({
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = phase,
+		.severity = (error == ProxyConnectionError::None)
+			? ProxyDiagnosticsSeverity::Info
+			: ProxyDiagnosticsSeverity::Error,
+		.error = error,
+		.proxy = proxy,
+		.transport = u"HTTP"_q,
+		.connectionId = connectionId,
+		.message = message,
 	});
 }
 
@@ -150,6 +174,12 @@ void HttpConnection::connectToServer(
 		_instance,
 		_proxy,
 		ProxyConnectionPhase::Connecting);
+	AddHttpDiagnostics(
+		_proxy,
+		ProxyDiagnosticsPhase::Connecting,
+		ProxyConnectionError::None,
+		_debugId,
+		u"connecting to proxy"_q);
 	_pingTime = crl::now();
 	sendData(std::move(buffer));
 }
@@ -264,6 +294,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			_instance,
 			_proxy,
 			ProxyConnectionPhase::CheckingTelegram);
+		AddHttpDiagnostics(
+			_proxy,
+			ProxyDiagnosticsPhase::TelegramCheck,
+			ProxyConnectionError::None,
+			_debugId,
+			u"checking telegram through proxy"_q);
 
 		mtpBuffer data = handleResponse(reply);
 		if (data.size() == 1) {
@@ -272,6 +308,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 				_proxy,
 				ProxyConnectionPhase::Failed,
 				ProxyConnectionError::BadResponse);
+			AddHttpDiagnostics(
+				_proxy,
+				ProxyDiagnosticsPhase::Failed,
+				ProxyConnectionError::BadResponse,
+				_debugId,
+				u"bad proxy response"_q);
 			error(data[0]);
 		} else if (!data.isEmpty()) {
 			if (_status == Status::Ready) {
@@ -288,6 +330,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 						_instance,
 						_proxy,
 						ProxyConnectionPhase::Connected);
+					AddHttpDiagnostics(
+						_proxy,
+						ProxyDiagnosticsPhase::Connected,
+						ProxyConnectionError::None,
+						_debugId,
+						u"proxy connected"_q);
 					connected();
 				} else {
 					CONNECTION_LOG_ERROR(
@@ -297,6 +345,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 						_proxy,
 						ProxyConnectionPhase::Failed,
 						ProxyConnectionError::BadResponse);
+					AddHttpDiagnostics(
+						_proxy,
+						ProxyDiagnosticsPhase::Failed,
+						ProxyConnectionError::BadResponse,
+						_debugId,
+						u"wrong nonce in proxy response"_q);
 					error(kErrorCodeOther);
 				}
 			} else {
@@ -307,6 +361,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 					_proxy,
 					ProxyConnectionPhase::Failed,
 					ProxyConnectionError::BadResponse);
+				AddHttpDiagnostics(
+					_proxy,
+					ProxyDiagnosticsPhase::Failed,
+					ProxyConnectionError::BadResponse,
+					_debugId,
+					u"could not parse proxy response"_q);
 				error(kErrorCodeOther);
 			}
 		}
@@ -320,6 +380,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			_proxy,
 			ProxyConnectionPhase::Failed,
 			ReplyProxyConnectionError(reply->error()));
+		AddHttpDiagnostics(
+			_proxy,
+			ProxyDiagnosticsPhase::Failed,
+			ReplyProxyConnectionError(reply->error()),
+			_debugId,
+			u"proxy request failed"_q);
 		error(handleError(reply));
 	}
 }

@@ -14,15 +14,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_ptr.h"
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "core/file_utilities.h"
 #include "core/local_url_handlers.h"
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_config.h"
+#include "mtproto/proxy_diagnostics.h"
 #include "mtproto/proxy_check.h"
 #include "qr/qr_generate.h"
 #include "settings/settings_common.h"
+#include "settings.h"
 #include "storage/localstorage.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/boxes/confirm_box.h"
@@ -61,6 +64,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
+#include <QtCore/QStringList>
 #include <QtWidgets/QTextEdit>
 
 namespace {
@@ -686,6 +690,8 @@ private:
 	void refreshProxyForCalls();
 	void refreshProxyRotation();
 	void refreshRouteViaWss();
+	void setupLogsSection();
+	void refreshLogsView();
 
 	not_null<ProxiesBoxController*> _controller;
 	Core::SettingsProxy &_settings;
@@ -698,6 +704,7 @@ private:
 	QPointer<Ui::Checkbox> _routeViaWss;
 	QPointer<Ui::DividerLabel> _about;
 	base::unique_qptr<Ui::RpWidget> _noRows;
+	QPointer<Ui::VerticalLayout> _contentWrap;
 	object_ptr<Ui::VerticalLayout> _initialWrap;
 	QPointer<Ui::VerticalLayout> _wrap;
 	int _currentProxySupportsCallsId = 0;
@@ -706,6 +713,13 @@ private:
 
 	QPointer<Ui::RpWidget> _addProxyButton;
 	QPointer<Ui::RpWidget> _shareListButton;
+	QPointer<Ui::VerticalLayout> _logsWrap;
+	QPointer<Ui::SettingsSlider> _logsFilter;
+	QPointer<Ui::InputField> _logsSearch;
+	QPointer<Ui::FlatLabel> _logsView;
+	std::vector<MTP::ProxyDiagnosticsEvent> _logsSnapshot;
+	QString _logsVisibleText;
+	QString _logsSearchQuery;
 	QString _highlightId;
 
 };
@@ -1178,6 +1192,7 @@ void ProxiesBox::setupTopButton() {
 
 void ProxiesBox::setupContent() {
 	const auto inner = setInnerWidget(object_ptr<Ui::VerticalLayout>(this));
+	_contentWrap = inner;
 	const auto columns = inner->add(
 		object_ptr<ProxySettingsColumns>(inner),
 		style::al_justify);
@@ -1539,6 +1554,8 @@ void ProxiesBox::setupContent() {
 		wrap->finishAnimating();
 	}
 
+	setupLogsSection();
+
 	inner->resizeToWidth(st::proxySettingsBoxWidth);
 
 	inner->heightValue(
@@ -1552,6 +1569,139 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](int height) {
 		setDimensions(st::proxySettingsBoxWidth, height);
 	}, inner->lifetime());
+}
+
+void ProxiesBox::setupLogsSection() {
+	const auto inner = _contentWrap.data();
+	if (!inner) {
+		return;
+	}
+	constexpr auto kLogsTailLimit = 1000;
+
+	Ui::AddSkip(inner);
+	Ui::AddDivider(inner);
+	Ui::AddSubsectionTitle(inner, tr::lng_proxy_logs_tab());
+
+	_logsWrap = inner->add(object_ptr<Ui::VerticalLayout>(inner));
+	_logsSnapshot = MTP::LoadProxyDiagnosticsTail(kLogsTailLimit);
+
+	_logsFilter = _logsWrap->add(
+		object_ptr<Ui::SettingsSlider>(_logsWrap, st::settingsSlider),
+		st::proxySettingsRightSliderPadding);
+	_logsFilter->addSection(tr::lng_proxy_logs_filter_all(tr::now));
+	_logsFilter->addSection(tr::lng_proxy_logs_filter_mtproxy(tr::now));
+	_logsFilter->addSection(tr::lng_proxy_logs_filter_network(tr::now));
+	_logsFilter->setActiveSectionFast(0);
+	_logsFilter->sectionActivated(
+	) | rpl::on_next([=] {
+		refreshLogsView();
+	}, _logsFilter->lifetime());
+
+	_logsSearch = _logsWrap->add(
+		object_ptr<Ui::InputField>(
+			_logsWrap,
+			st::connectionHostInputField,
+			tr::lng_proxy_logs_search(),
+			QString()),
+		st::proxyEditInputPadding);
+	_logsSearch->changes(
+	) | rpl::on_next([=] {
+		_logsSearchQuery = _logsSearch->getLastText().trimmed();
+		refreshLogsView();
+	}, _logsSearch->lifetime());
+
+	const auto copy = Settings::AddButtonWithIcon(
+		_logsWrap,
+		tr::lng_proxy_logs_copy(),
+		st::settingsButton,
+		{ &st::menuIconCopy });
+	copy->setClickedCallback([=] {
+		TextUtilities::SetClipboardText(
+			TextForMimeData::Simple(_logsVisibleText));
+	});
+
+	const auto refresh = Settings::AddButtonWithIcon(
+		_logsWrap,
+		tr::lng_proxy_logs_refresh(),
+		st::settingsButton,
+		{ &st::menuIconRestartBot });
+	refresh->setClickedCallback([=] {
+		_logsSnapshot = MTP::LoadProxyDiagnosticsTail(kLogsTailLimit);
+		refreshLogsView();
+	});
+
+	const auto open = Settings::AddButtonWithIcon(
+		_logsWrap,
+		tr::lng_proxy_logs_open_folder(),
+		st::settingsButton,
+		{ &st::menuIconShowInFolder });
+	open->setClickedCallback([=] {
+		File::ShowInFolder(cWorkingDir() + u"DebugLogs"_q);
+	});
+
+	const auto clear = Settings::AddButtonWithIcon(
+		_logsWrap,
+		tr::lng_proxy_logs_clear(),
+		st::settingsButton,
+		{ &st::menuIconClear });
+	clear->setClickedCallback([=] {
+		_logsSnapshot.clear();
+		refreshLogsView();
+	});
+
+	_logsView = _logsWrap->add(
+		object_ptr<Ui::FlatLabel>(
+			_logsWrap,
+			QString(),
+			st::boxDividerLabel),
+		st::proxySettingsRightAboutPadding);
+	_logsView->setSelectable(true);
+	_logsView->setBreakEverywhere(true);
+
+	MTP::ProxyDiagnosticsEventsValue() | rpl::on_next([=](
+			std::vector<MTP::ProxyDiagnosticsEvent> events) {
+		if (!events.empty()) {
+			_logsSnapshot = std::move(events);
+		}
+		refreshLogsView();
+	}, _logsWrap->lifetime());
+
+	refreshLogsView();
+}
+
+void ProxiesBox::refreshLogsView() {
+	if (!_logsView) {
+		return;
+	}
+
+	const auto active = _logsFilter ? _logsFilter->activeSection() : 0;
+	auto lines = QStringList();
+	for (const auto &event : _logsSnapshot) {
+		if (active == 1
+			&& event.source != MTP::ProxyDiagnosticsSource::MTProxy) {
+			continue;
+		} else if (active == 2
+			&& event.source == MTP::ProxyDiagnosticsSource::MTProxy) {
+			continue;
+		}
+		const auto line = MTP::FormatProxyDiagnosticsEvent(event);
+		if (!_logsSearchQuery.isEmpty()
+			&& !line.contains(_logsSearchQuery, Qt::CaseInsensitive)) {
+			continue;
+		}
+		lines.push_back(line);
+	}
+
+	_logsVisibleText = lines.join(u'\n');
+	const auto text = _logsVisibleText.isEmpty()
+		? tr::lng_proxy_logs_empty(tr::now)
+		: _logsVisibleText;
+	_logsView->setText(text);
+	_logsView->setContextCopyText(_logsVisibleText);
+	_logsView->resizeToWidth(_logsView->width());
+	if (_logsWrap) {
+		_logsWrap->resizeToWidth(_logsWrap->width());
+	}
 }
 
 void ProxiesBox::refreshProxyForCalls() {

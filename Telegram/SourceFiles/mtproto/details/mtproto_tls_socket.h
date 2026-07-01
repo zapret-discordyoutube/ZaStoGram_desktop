@@ -95,6 +95,7 @@ private:
 	ProxyClientHelloFragmentation _clientHelloFragmentation
 		= ProxyClientHelloFragmentation::Off;
 	ProxyTlsProfile _tlsProfile = ProxyTlsProfile::Auto;
+	ProxyTlsProfile _sentTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTiming _timing = ProxyTiming::Off;
 	QByteArray _outgoing;
 	int _outgoingOffset = 0;

@@ -7,6 +7,7 @@ DATA_TYPES = SOURCE_DIR / "data" / "data_types.h"
 DATA_SESSION = SOURCE_DIR / "data" / "data_session.cpp"
 HISTORY_ITEM_H = SOURCE_DIR / "history" / "history_item.h"
 HISTORY_ITEM_CPP = SOURCE_DIR / "history" / "history_item.cpp"
+HISTORY_CPP = SOURCE_DIR / "history" / "history.cpp"
 BOTTOM_INFO_H = SOURCE_DIR / "history" / "view" / "history_view_bottom_info.h"
 BOTTOM_INFO_CPP = SOURCE_DIR / "history" / "view" / "history_view_bottom_info.cpp"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
@@ -70,6 +71,19 @@ def test_delete_updates_keep_items_when_pref_enabled():
             "notifyItemsAboutToBeDestroyed(toDestroy);")
 
 
+def test_late_loaded_unknown_deleted_messages_get_marker():
+    history = body_after(
+        HISTORY_CPP,
+        "not_null<HistoryItem*> History::addNewMessage")
+
+    assert "const auto unknownDeleted = newMessage" in history
+    assert "&& isUnknownMessageDeleted(id);" in history
+    assert "if (unknownDeleted)" in history
+    assert "item->markDeletedBySender();" in history
+    assert history.index("const auto item = createItem(") < history.index(
+        "item->markDeletedBySender();")
+
+
 def test_kept_deleted_messages_show_bottom_info_marker():
     bottom_info_h = BOTTOM_INFO_H.read_text(encoding="utf-8")
     bottom_info_cpp = BOTTOM_INFO_CPP.read_text(encoding="utf-8")
@@ -89,4 +103,5 @@ if __name__ == "__main__":
     test_keep_deleted_messages_pref_defaults_on()
     test_deleted_by_sender_flag_and_marker_exist()
     test_delete_updates_keep_items_when_pref_enabled()
+    test_late_loaded_unknown_deleted_messages_get_marker()
     test_kept_deleted_messages_show_bottom_info_marker()

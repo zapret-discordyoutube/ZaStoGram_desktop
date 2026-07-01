@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_resolving.h"
 
 #include "mtproto/mtp_instance.h"
+#include "mtproto/proxy_diagnostics.h"
 
 namespace MTP {
 namespace details {
@@ -29,6 +30,26 @@ void SetProxyConnectionStatus(
 	});
 }
 
+void AddResolvingDiagnostics(
+		const ProxyData &proxy,
+		ProxyDiagnosticsPhase phase,
+		ProxyConnectionError error,
+		const QString &message) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	AddProxyDiagnosticsEvent({
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = phase,
+		.severity = (error == ProxyConnectionError::None)
+			? ProxyDiagnosticsSeverity::Info
+			: ProxyDiagnosticsSeverity::Error,
+		.error = error,
+		.proxy = proxy,
+		.message = message,
+	});
+}
+
 } // namespace
 
 ResolvingConnection::ResolvingConnection(
@@ -45,6 +66,11 @@ ResolvingConnection::ResolvingConnection(
 			_instance,
 			_proxy,
 			ProxyConnectionPhase::Resolving);
+		AddResolvingDiagnostics(
+			_proxy,
+			ProxyDiagnosticsPhase::Resolving,
+			ProxyConnectionError::None,
+			u"resolving proxy host"_q);
 		const auto host = proxy.host;
 		connect(
 			instance,
@@ -116,6 +142,11 @@ void ResolvingConnection::domainResolved(
 			_proxy,
 			ProxyConnectionPhase::Failed,
 			ProxyConnectionError::HostNotFound);
+		AddResolvingDiagnostics(
+			_proxy,
+			ProxyDiagnosticsPhase::Failed,
+			ProxyConnectionError::HostNotFound,
+			u"proxy host not found"_q);
 	}
 
 	auto index = 0;
@@ -242,6 +273,11 @@ void ResolvingConnection::connectToServer(
 			_proxy,
 			ProxyConnectionPhase::Failed,
 			ProxyConnectionError::HostNotFound);
+		AddResolvingDiagnostics(
+			_proxy,
+			ProxyDiagnosticsPhase::Failed,
+			ProxyConnectionError::HostNotFound,
+			u"proxy host not found"_q);
 		InvokeQueued(this, [=] { emitError(kErrorCodeOther); });
 		return;
 	}

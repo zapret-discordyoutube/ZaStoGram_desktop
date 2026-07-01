@@ -15,8 +15,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "base/unixtime.h"
 
+#include <QtCore/QMutex>
 #include <QtCore/QtEndian>
 #include <range/v3/algorithm/reverse.hpp>
+
+#include <map>
+#include <optional>
 
 namespace MTP::details {
 namespace {
@@ -38,6 +42,9 @@ constexpr auto kStartupCoverSoftFrames = 8;
 constexpr auto kStartupCoverStrictFrames = 14;
 constexpr auto kRecordSizeMin = 256;
 constexpr auto kMaxPacedFrames = 24;
+constexpr auto kSyntheticPskPoolSize = 3;
+constexpr auto kSyntheticPskMinLifetime = crl::time(2 * 60 * 60 * 1000);
+constexpr auto kSyntheticPskMaxLifetime = crl::time(8 * 60 * 60 * 1000);
 
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
@@ -192,6 +199,7 @@ using BigNumContext = openssl::Context;
 		K();
 		S("\x00\xef"_q);
 		R(239);
+		P();
 		CloseScope();
 		CloseScope();
 		CloseScope();
@@ -255,14 +263,7 @@ using BigNumContext = openssl::Context;
 		K();
 		S("\x01\x8f"_q);
 		R(399);
-		S("\x00\x29"_q);
-		OpenScope();
-		S("\x00\x6f\x00\x69"_q);
-		R(105);
-		R(4);
-		S("\x00\x21\x20"_q);
-		R(32);
-		CloseScope();
+		P();
 		CloseScope();
 		CloseScope();
 		CloseScope();
@@ -312,6 +313,7 @@ using BigNumContext = openssl::Context;
 		K();
 		G(3);
 		S("\x00\x01\x00"_q);
+		P();
 		CloseScope();
 		CloseScope();
 		CloseScope();
@@ -383,14 +385,7 @@ using BigNumContext = openssl::Context;
 		K();
 		G(3);
 		S("\x00\x00"_q);
-		S("\x00\x29"_q);
-		OpenScope();
-		S("\x00\x6f\x00\x69"_q);
-		R(105);
-		R(4);
-		S("\x00\x21\x20"_q);
-		R(32);
-		CloseScope();
+		P();
 		CloseScope();
 		CloseScope();
 		CloseScope();
@@ -566,12 +561,157 @@ struct ClientHello {
 	QByteArray digest;
 };
 
+struct SyntheticPskOffer {
+	bytes::vector identity;
+	uint32 obfuscatedTicketAge = 0;
+	int binderLength = 0;
+};
+
+struct SyntheticPskTicket {
+	bytes::vector identity;
+	uint32 ticketAgeAdd = 0;
+	crl::time issuedAt = 0;
+	crl::time expiresAt = 0;
+	int binderLength = 0;
+};
+
+struct SyntheticPskCacheEntry {
+	std::vector<SyntheticPskTicket> tickets;
+	int nextIndex = 0;
+};
+
+QMutex SyntheticPskCacheMutex;
+std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
+
+[[nodiscard]] bool ShouldPadBeforeSyntheticPsk(ProxyTlsProfile profile) {
+	switch (profile) {
+	case ProxyTlsProfile::Firefox:
+	case ProxyTlsProfile::FirefoxAndroid:
+	case ProxyTlsProfile::AndroidOkHttp:
+	case ProxyTlsProfile::Yandex:
+		return false;
+	default:
+		return true;
+	}
+}
+
+[[nodiscard]] uint32 RandomUint32() {
+	auto result = uint32();
+	bytes::set_random(bytes::object_as_span(&result));
+	return result;
+}
+
+[[nodiscard]] QString SyntheticPskCacheKey(
+		const QString &endpointKey,
+		bytes::const_span domain,
+		ProxyTlsProfile profile) {
+	return endpointKey
+		+ u"|"_q
+		+ QString::number(int(profile))
+		+ u"|"_q
+		+ QString::fromLatin1(QByteArray(
+			reinterpret_cast<const char*>(domain.data()),
+			int(domain.size())).toHex());
+}
+
+[[nodiscard]] SyntheticPskTicket MakeSyntheticPskTicket(crl::time now) {
+	const auto identityLengths = std::array{ 32, 105, 256 };
+	const auto binderLengths = std::array{ 32, 48 };
+	const auto identityLength = identityLengths[
+		base::RandomIndex(identityLengths.size())];
+	const auto binderLength = binderLengths[
+		base::RandomIndex(binderLengths.size())];
+	const auto lifetimeRange = int(
+		kSyntheticPskMaxLifetime - kSyntheticPskMinLifetime + 1);
+	auto result = SyntheticPskTicket();
+	result.identity.resize(identityLength);
+	bytes::set_random(result.identity);
+	result.ticketAgeAdd = RandomUint32();
+	result.issuedAt = now;
+	result.expiresAt = now
+		+ kSyntheticPskMinLifetime
+		+ base::RandomIndex(lifetimeRange);
+	result.binderLength = binderLength;
+	return result;
+}
+
+void DropExpiredSyntheticPskTickets(
+		SyntheticPskCacheEntry &entry,
+		crl::time now) {
+	for (auto i = entry.tickets.begin(); i != entry.tickets.end();) {
+		if (i->expiresAt <= now) {
+			i = entry.tickets.erase(i);
+		} else {
+			++i;
+		}
+	}
+	if (entry.tickets.empty()) {
+		entry.nextIndex = 0;
+	} else if (entry.nextIndex >= int(entry.tickets.size())) {
+		entry.nextIndex = 0;
+	}
+}
+
+[[nodiscard]] std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(
+		const QString &endpointKey,
+		bytes::const_span domain,
+		ProxyTlsProfile profile) {
+	if (endpointKey.isEmpty() || domain.empty()) {
+		return std::nullopt;
+	}
+	const auto now = crl::now();
+	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&SyntheticPskCacheMutex);
+	const auto i = SyntheticPskCache.find(key);
+	if (i == end(SyntheticPskCache)) {
+		return std::nullopt;
+	}
+	auto &entry = i->second;
+	DropExpiredSyntheticPskTickets(entry, now);
+	if (entry.tickets.empty()) {
+		SyntheticPskCache.erase(i);
+		return std::nullopt;
+	}
+	auto &ticket = entry.tickets[entry.nextIndex];
+	const auto count = int(entry.tickets.size());
+	entry.nextIndex = (entry.nextIndex + 1) % count;
+	const auto age = std::max(crl::time(0), now - ticket.issuedAt);
+	return SyntheticPskOffer{
+		.identity = ticket.identity,
+		.obfuscatedTicketAge = uint32(
+			uint64(ticket.ticketAgeAdd) + uint64(age)),
+		.binderLength = ticket.binderLength,
+	};
+}
+
+void NoteSyntheticPskHandshakeSuccess(
+		const QString &endpointKey,
+		bytes::const_span domain,
+		ProxyTlsProfile profile) {
+	if (endpointKey.isEmpty() || domain.empty()) {
+		return;
+	}
+	const auto now = crl::now();
+	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&SyntheticPskCacheMutex);
+	auto &entry = SyntheticPskCache[key];
+	DropExpiredSyntheticPskTickets(entry, now);
+	while (int(entry.tickets.size()) < kSyntheticPskPoolSize) {
+		entry.tickets.push_back(MakeSyntheticPskTicket(now));
+	}
+	if (entry.nextIndex >= int(entry.tickets.size())) {
+		entry.nextIndex = 0;
+	}
+}
+
 class Generator {
 public:
 	Generator(
 		const MTPTlsClientHello &rules,
 		bytes::const_span domain,
-		bytes::const_span key);
+		bytes::const_span key,
+		bool padBeforeSyntheticPsk,
+		std::optional<SyntheticPskOffer> pskOffer);
 	[[nodiscard]] ClientHello take();
 
 private:
@@ -579,7 +719,9 @@ private:
 	public:
 		explicit Part(
 			bytes::const_span domain,
-			const bytes::vector &greases);
+			const bytes::vector &greases,
+			bool padBeforeSyntheticPsk,
+			const std::optional<SyntheticPskOffer> *pskOffer);
 
 		[[nodiscard]] bytes::span grow(int size);
 		void writeBlocks(const QVector<MTPTlsBlock> &blocks);
@@ -602,11 +744,14 @@ private:
 		[[nodiscard]] QByteArray take();
 
 	private:
+		void writeSyntheticPskExtension();
 		void writeDigest(bytes::const_span key);
 		void injectTimestamp();
 
 		bytes::const_span _domain;
 		const bytes::vector &_greases;
+		bool _padBeforeSyntheticPsk = false;
+		const std::optional<SyntheticPskOffer> *_pskOffer = nullptr;
 		QByteArray _result;
 		const char *_data = nullptr;
 		int _digestPosition = -1;
@@ -615,6 +760,8 @@ private:
 	};
 
 	bytes::vector _greases;
+	std::optional<SyntheticPskOffer> _pskOffer;
+	bool _padBeforeSyntheticPsk = false;
 	Part _result;
 	QByteArray _digest;
 
@@ -622,9 +769,13 @@ private:
 
 Generator::Part::Part(
 	bytes::const_span domain,
-	const bytes::vector &greases)
+	const bytes::vector &greases,
+	bool padBeforeSyntheticPsk,
+	const std::optional<SyntheticPskOffer> *pskOffer)
 : _domain(domain)
-, _greases(greases) {
+, _greases(greases)
+, _padBeforeSyntheticPsk(padBeforeSyntheticPsk)
+, _pskOffer(pskOffer) {
 	_result.reserve(kClientHelloLimit);
 	_data = _result.constData();
 }
@@ -740,7 +891,11 @@ void Generator::Part::writeBlock(const MTPDtlsBlockPermutation &data) {
 	auto list = std::vector<QByteArray>();
 	list.reserve(data.ventries().v.size());
 	for (const auto &inner : data.ventries().v) {
-		auto part = Part(_domain, _greases);
+		auto part = Part(
+			_domain,
+			_greases,
+			_padBeforeSyntheticPsk,
+			nullptr);
 		part.writeBlocks(inner.v);
 		if (part.error()) {
 			_error = true;
@@ -790,11 +945,71 @@ void Generator::Part::writeBlock(const MTPDtlsBlockE &data) {
 
 void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data) {
 	const auto length = int(_result.size());
-	if (length < 513) {
+	if (_padBeforeSyntheticPsk && length < 513) {
 		const auto zero = MTP_tlsBlockZero(MTP_int(513 - length));
 		writeBlock(MTP_tlsBlockString(MTP_bytes("\x00\x15"_q)));
 		writeBlock(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(1, zero)));
 	}
+	writeSyntheticPskExtension();
+}
+
+void Generator::Part::writeSyntheticPskExtension() {
+	if (!_pskOffer || !*_pskOffer) {
+		return;
+	}
+	const auto &offer = **_pskOffer;
+	const auto binderLengths = std::array{ 32, 48 };
+	const auto identityLength = int(offer.identity.size());
+	const auto binderLength = offer.binderLength;
+	if (identityLength <= 0
+		|| (binderLength != binderLengths[0]
+			&& binderLength != binderLengths[1])) {
+		_error = true;
+		return;
+	}
+	const auto identitiesLength = identityLength + 6;
+	const auto bindersLength = binderLength + 1;
+	const auto extensionLength = identitiesLength + bindersLength + 4;
+	const auto write16 = [&](uint16 value) {
+		const auto big = qToBigEndian(value);
+		const auto storage = grow(sizeof(big));
+		if (storage.empty()) {
+			return;
+		}
+		bytes::copy(storage, bytes::object_as_span(&big));
+	};
+	const auto write32 = [&](uint32 value) {
+		const auto big = qToBigEndian(value);
+		const auto storage = grow(sizeof(big));
+		if (storage.empty()) {
+			return;
+		}
+		bytes::copy(storage, bytes::object_as_span(&big));
+	};
+	const auto random = [&](int length) {
+		const auto storage = grow(length);
+		if (storage.empty()) {
+			return;
+		}
+		bytes::set_random(storage);
+	};
+	write16(uint16(0x0029));
+	write16(uint16(extensionLength));
+	write16(uint16(identitiesLength));
+	write16(uint16(identityLength));
+	const auto identityStorage = grow(identityLength);
+	if (identityStorage.empty()) {
+		return;
+	}
+	bytes::copy(identityStorage, offer.identity);
+	write32(offer.obfuscatedTicketAge);
+	write16(uint16(bindersLength));
+	const auto binderPrefix = grow(1);
+	if (binderPrefix.empty()) {
+		return;
+	}
+	binderPrefix[0] = bytes::type(binderLength);
+	random(binderLength);
 }
 
 void Generator::Part::finalize(bytes::const_span key) {
@@ -838,9 +1053,13 @@ void Generator::Part::injectTimestamp() {
 Generator::Generator(
 	const MTPTlsClientHello &rules,
 	bytes::const_span domain,
-	bytes::const_span key)
+	bytes::const_span key,
+	bool padBeforeSyntheticPsk,
+	std::optional<SyntheticPskOffer> pskOffer)
 : _greases(PrepareGreases())
-, _result(domain, _greases) {
+, _pskOffer(std::move(pskOffer))
+, _padBeforeSyntheticPsk(padBeforeSyntheticPsk)
+, _result(domain, _greases, _padBeforeSyntheticPsk, &_pskOffer) {
 	_result.writeBlocks(rules.data().vblocks().v);
 	_result.finalize(key);
 }
@@ -853,8 +1072,15 @@ ClientHello Generator::take() {
 [[nodiscard]] ClientHello PrepareClientHello(
 		const MTPTlsClientHello &rules,
 		bytes::const_span domain,
-		bytes::const_span key) {
-	return Generator(rules, domain, key).take();
+		bytes::const_span key,
+		ProxyTlsProfile profile,
+		std::optional<SyntheticPskOffer> pskOffer) {
+	return Generator(
+		rules,
+		domain,
+		key,
+		ShouldPadBeforeSyntheticPsk(profile),
+		std::move(pskOffer)).take();
 }
 
 [[nodiscard]] bool CheckPart(bytes::const_span data, QLatin1String check) {
@@ -1004,11 +1230,19 @@ void TlsSocket::plainConnected() {
 
 	applyAdaptiveRecipe();
 
-	const auto rules = PrepareClientHelloRules(effectiveTlsProfile());
+	const auto profile = effectiveTlsProfile();
+	_sentTlsProfile = profile;
+	const auto rules = PrepareClientHelloRules(profile);
+	auto pskOffer = PrepareSyntheticPskOffer(
+		_endpointKey,
+		domainFromSecret(),
+		profile);
 	const auto hello = PrepareClientHello(
 		rules,
 		domainFromSecret(),
-		keyFromSecret());
+		keyFromSecret(),
+		profile,
+		std::move(pskOffer));
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
 		_state = State::Error;
@@ -1137,6 +1371,10 @@ void TlsSocket::checkHelloDigest() {
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
 	_state = State::Connected;
 	_phase = HandshakePhase::ServerHelloOk;
+	NoteSyntheticPskHandshakeSuccess(
+		_endpointKey,
+		domainFromSecret(),
+		_sentTlsProfile);
 	connectionProgress(_phase);
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();

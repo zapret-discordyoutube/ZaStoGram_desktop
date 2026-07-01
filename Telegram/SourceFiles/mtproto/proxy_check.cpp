@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
+#include "mtproto/proxy_diagnostics.h"
 
 #include <QtCore/QTimer>
 
@@ -17,6 +18,38 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 using Connection = details::AbstractConnection;
+
+namespace {
+
+[[nodiscard]] ProxyDiagnosticsSource DiagnosticsSource(
+		const ProxyData &proxy) {
+	return (proxy.type == ProxyData::Type::Mtproto)
+		? ProxyDiagnosticsSource::MTProxy
+		: ProxyDiagnosticsSource::Network;
+}
+
+void AddCheckDiagnostics(
+		const ProxyData &proxy,
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsSeverity severity,
+		DcId dcId,
+		const QString &connectionId,
+		const QString &message) {
+	if (proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	AddProxyDiagnosticsEvent({
+		.source = DiagnosticsSource(proxy),
+		.phase = phase,
+		.severity = severity,
+		.proxy = proxy,
+		.dc = QString::number(dcId),
+		.connectionId = connectionId,
+		.message = message,
+	});
+}
+
+} // namespace
 
 ProxyCheckConnection::ProxyCheckConnection()
 : _data(std::make_shared<Data>()) {
@@ -113,6 +146,13 @@ void StartProxyCheck(
 		? Variants::Http
 		: Variants::Tcp;
 	const auto dcId = mtproto->mainDcId();
+	AddCheckDiagnostics(
+		proxy,
+		ProxyDiagnosticsPhase::ProxyCheckStarted,
+		ProxyDiagnosticsSeverity::Info,
+		dcId,
+		QString(),
+		u"proxy check started"_q);
 	const auto setup = [&](
 			ProxyCheckConnection &checker,
 			const bytes::vector &secret) {
@@ -131,12 +171,26 @@ void StartProxyCheck(
 		const auto raw = state->connection.get();
 		raw->connect(raw, &Connection::connected, [=] {
 			state->handshakeGate.release();
+			AddCheckDiagnostics(
+				proxy,
+				ProxyDiagnosticsPhase::ProxyCheckFinished,
+				ProxyDiagnosticsSeverity::Info,
+				dcId,
+				raw->debugId(),
+				u"proxy check succeeded"_q);
 			if (done) {
 				done(raw, raw->pingTime());
 			}
 		});
 		const auto failed = [=] {
 			state->handshakeGate.release();
+			AddCheckDiagnostics(
+				proxy,
+				ProxyDiagnosticsPhase::ProxyCheckFinished,
+				ProxyDiagnosticsSeverity::Error,
+				dcId,
+				raw->debugId(),
+				u"proxy check failed"_q);
 			if (fail) {
 				fail(raw);
 			}

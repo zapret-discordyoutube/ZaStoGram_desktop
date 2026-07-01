@@ -73,3 +73,4 @@ settings.local.json
 /docs/changelog/
 /Telegram/SourceFiles/tests/__pycache__
 cmake
+/docs

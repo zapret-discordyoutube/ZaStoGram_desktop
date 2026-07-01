@@ -14,6 +14,8 @@ ABSTRACT_SOCKET_CPP = (
     SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
 )
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
+DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy_diagnostics.h"
+DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy_diagnostics.cpp"
 
 
 def test_windows_artifact_uses_release_configuration():
@@ -135,13 +137,18 @@ def test_mtproxy_logs_have_release_visible_stream():
     logs_cpp = LOGS_CPP.read_text(encoding="utf-8")
     abstract_connection = ABSTRACT_CONNECTION_CPP.read_text(encoding="utf-8")
     abstract_socket = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
+    diagnostics_header = DIAGNOSTICS_H.read_text(encoding="utf-8")
+    diagnostics_source = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
 
     assert "void writeMtproxy(const QString &v);" in logs_h
     assert "LogDataMtproxy" in logs_cpp
     assert 'u"DebugLogs/mtproxy"_q' in logs_cpp
     assert "AlwaysWriteLogData(type)" in logs_cpp
-    assert "Logs::writeMtproxy(" in abstract_connection
-    assert "Logs::writeMtproxy(" in abstract_socket
+    assert "WriteProxyDiagnosticsLine(" in abstract_connection
+    assert "WriteProxyDiagnosticsLine(" in abstract_socket
+    assert "WriteProxyDiagnosticsLine(" in diagnostics_header
+    assert "Logs::writeMtproxy(" in diagnostics_source
+    assert "LoadProxyDiagnosticsTail(" in diagnostics_header
 
 
 def test_mtproxy_progress_errors_and_success_are_reported():

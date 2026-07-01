@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/config_loader.h"
+#include "mtproto/proxy_diagnostics.h"
 #include "mtproto/sender.h"
 #include "storage/localstorage.h"
 #include "calls/calls_instance.h"
@@ -697,6 +698,16 @@ void Instance::Private::setProxyConnectionStatus(
 	if (status == _proxyConnectionStatus.current()) {
 		return;
 	}
+	AddProxyDiagnosticsEvent({
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = ProxyDiagnosticsPhaseFromStatus(status.phase),
+		.severity = (status.error == ProxyConnectionError::None)
+			? ProxyDiagnosticsSeverity::Info
+			: ProxyDiagnosticsSeverity::Error,
+		.error = status.error,
+		.proxy = status.proxy,
+		.message = u"selected proxy status changed"_q,
+	});
 	_proxyConnectionStatus = status;
 }
 

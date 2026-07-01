@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/details/mtproto_tls_socket.h"
 #include "mtproto/details/mtproto_wss_socket.h"
+#include "mtproto/proxy_diagnostics.h"
 #include "logs.h"
 
 #include <QtNetwork/QAbstractSocket>
@@ -85,7 +86,14 @@ void AbstractSocket::logError(int errorCode, const QString &errorText) {
 	const auto log = [&](const QString &message) {
 		const auto full = QString("Socket %1 Error: ").arg(_debugId) + message;
 		if (_debugId.contains(u"mtproxy "_q)) {
-			Logs::writeMtproxy(full);
+			WriteProxyDiagnosticsLine({
+				.source = ProxyDiagnosticsSource::MTProxy,
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.severity = ProxyDiagnosticsSeverity::Error,
+				.error = SocketProxyConnectionError(errorCode),
+				.socketId = _debugId,
+				.message = full,
+			});
 		} else {
 			DEBUG_LOG((full));
 		}

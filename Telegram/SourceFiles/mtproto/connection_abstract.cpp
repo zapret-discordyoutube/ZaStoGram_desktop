@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_tcp.h"
 #include "mtproto/connection_http.h"
 #include "mtproto/connection_resolving.h"
+#include "mtproto/proxy_diagnostics.h"
 #include "mtproto/session.h"
 #include "logs.h"
 #include "base/unixtime.h"
@@ -218,7 +219,15 @@ QString AbstractConnection::ProtocolDcDebugId(int16 protocolDcId) {
 void AbstractConnection::logInfo(const QString &message) {
 	const auto full = QString("Connection %1 Info: ").arg(_debugId) + message;
 	if (IsMtproxyTransport(_transport)) {
-		Logs::writeMtproxy(full);
+		WriteProxyDiagnosticsLine({
+			.source = ProxyDiagnosticsSource::MTProxy,
+			.phase = ProxyDiagnosticsPhase::None,
+			.severity = ProxyDiagnosticsSeverity::Info,
+			.proxy = _proxy,
+			.transport = transport(),
+			.connectionId = _debugId,
+			.message = full,
+		});
 	} else {
 		DEBUG_LOG((full));
 	}
@@ -227,7 +236,15 @@ void AbstractConnection::logInfo(const QString &message) {
 void AbstractConnection::logError(const QString &message) {
 	const auto full = QString("Connection %1 Error: ").arg(_debugId) + message;
 	if (IsMtproxyTransport(_transport)) {
-		Logs::writeMtproxy(full);
+		WriteProxyDiagnosticsLine({
+			.source = ProxyDiagnosticsSource::MTProxy,
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.severity = ProxyDiagnosticsSeverity::Error,
+			.proxy = _proxy,
+			.transport = transport(),
+			.connectionId = _debugId,
+			.message = full,
+		});
 	} else {
 		DEBUG_LOG((full));
 	}
