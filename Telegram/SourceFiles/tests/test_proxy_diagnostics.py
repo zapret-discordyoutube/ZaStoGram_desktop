@@ -39,6 +39,13 @@ def test_diagnostics_model_is_registered_and_bounded():
     assert "while (copy.size() > kProxyDiagnosticsLimit)" in source
 
 
+def test_diagnostics_event_stream_does_not_require_event_equality():
+    source = read(DIAGNOSTICS_CPP)
+
+    assert "Events.force_assign(std::move(copy));" in source
+    assert "Events = std::move(copy);" not in source
+
+
 def test_diagnostics_redacts_secret_material():
     source = read(DIAGNOSTICS_CPP)
 

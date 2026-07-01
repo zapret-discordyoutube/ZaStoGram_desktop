@@ -304,7 +304,7 @@ void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event) {
 	while (copy.size() > kProxyDiagnosticsLimit) {
 		copy.erase(begin(copy));
 	}
-	Events = std::move(copy);
+	Events.force_assign(std::move(copy));
 }
 
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
