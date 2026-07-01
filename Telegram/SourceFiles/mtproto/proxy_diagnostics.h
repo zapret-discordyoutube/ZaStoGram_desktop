@@ -10,6 +10,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_abstract.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QString>
+
+#include <rpl/producer.h>
 
 #include <vector>
 

@@ -1583,10 +1583,11 @@ void ProxiesBox::setupLogsSection() {
 	Ui::AddSubsectionTitle(inner, tr::lng_proxy_logs_tab());
 
 	_logsWrap = inner->add(object_ptr<Ui::VerticalLayout>(inner));
+	const auto wrap = not_null(_logsWrap.data());
 	_logsSnapshot = MTP::LoadProxyDiagnosticsTail(kLogsTailLimit);
 
-	_logsFilter = _logsWrap->add(
-		object_ptr<Ui::SettingsSlider>(_logsWrap, st::settingsSlider),
+	_logsFilter = wrap->add(
+		object_ptr<Ui::SettingsSlider>(wrap, st::settingsSlider),
 		st::proxySettingsRightSliderPadding);
 	_logsFilter->addSection(tr::lng_proxy_logs_filter_all(tr::now));
 	_logsFilter->addSection(tr::lng_proxy_logs_filter_mtproxy(tr::now));
@@ -1597,9 +1598,9 @@ void ProxiesBox::setupLogsSection() {
 		refreshLogsView();
 	}, _logsFilter->lifetime());
 
-	_logsSearch = _logsWrap->add(
+	_logsSearch = wrap->add(
 		object_ptr<Ui::InputField>(
-			_logsWrap,
+			wrap,
 			st::connectionHostInputField,
 			tr::lng_proxy_logs_search(),
 			QString()),
@@ -1611,7 +1612,7 @@ void ProxiesBox::setupLogsSection() {
 	}, _logsSearch->lifetime());
 
 	const auto copy = Settings::AddButtonWithIcon(
-		_logsWrap,
+		wrap,
 		tr::lng_proxy_logs_copy(),
 		st::settingsButton,
 		{ &st::menuIconCopy });
@@ -1621,7 +1622,7 @@ void ProxiesBox::setupLogsSection() {
 	});
 
 	const auto refresh = Settings::AddButtonWithIcon(
-		_logsWrap,
+		wrap,
 		tr::lng_proxy_logs_refresh(),
 		st::settingsButton,
 		{ &st::menuIconRestartBot });
@@ -1631,7 +1632,7 @@ void ProxiesBox::setupLogsSection() {
 	});
 
 	const auto open = Settings::AddButtonWithIcon(
-		_logsWrap,
+		wrap,
 		tr::lng_proxy_logs_open_folder(),
 		st::settingsButton,
 		{ &st::menuIconShowInFolder });
@@ -1640,7 +1641,7 @@ void ProxiesBox::setupLogsSection() {
 	});
 
 	const auto clear = Settings::AddButtonWithIcon(
-		_logsWrap,
+		wrap,
 		tr::lng_proxy_logs_clear(),
 		st::settingsButton,
 		{ &st::menuIconClear });
@@ -1649,9 +1650,9 @@ void ProxiesBox::setupLogsSection() {
 		refreshLogsView();
 	});
 
-	_logsView = _logsWrap->add(
+	_logsView = wrap->add(
 		object_ptr<Ui::FlatLabel>(
-			_logsWrap,
+			wrap,
 			QString(),
 			st::boxDividerLabel),
 		st::proxySettingsRightAboutPadding);
@@ -1664,7 +1665,7 @@ void ProxiesBox::setupLogsSection() {
 			_logsSnapshot = std::move(events);
 		}
 		refreshLogsView();
-	}, _logsWrap->lifetime());
+	}, wrap->lifetime());
 
 	refreshLogsView();
 }
@@ -1692,7 +1693,7 @@ void ProxiesBox::refreshLogsView() {
 		lines.push_back(line);
 	}
 
-	_logsVisibleText = lines.join(u'\n');
+	_logsVisibleText = lines.join(u"\n"_q);
 	const auto text = _logsVisibleText.isEmpty()
 		? tr::lng_proxy_logs_empty(tr::now)
 		: _logsVisibleText;

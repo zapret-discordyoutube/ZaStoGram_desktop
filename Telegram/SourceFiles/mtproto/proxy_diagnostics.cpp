@@ -10,6 +10,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "logs.h"
 #include "settings.h"
 
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QStringList>
+
+#include <rpl/variable.h>
+
+#include <algorithm>
+
 namespace MTP {
 namespace {
 
@@ -261,7 +271,7 @@ std::vector<ProxyDiagnosticsEvent> LoadProxyDiagnosticsTail(int maxLines) {
 			QDir::Time));
 	}
 	std::sort(files.begin(), files.end(), [](const auto &a, const auto &b) {
-		return a.lastModified() > b.lastModified();
+		return a.lastModified() < b.lastModified();
 	});
 	for (const auto &info : files) {
 		for (const auto &line : TailLines(info, maxLines)) {
@@ -298,6 +308,9 @@ void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event) {
 }
 
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
+	if (!event.timestamp.isValid()) {
+		event.timestamp = QDateTime::currentDateTime();
+	}
 	const auto line = FormatProxyDiagnosticsEvent(event);
 	AddProxyDiagnosticsEvent(std::move(event));
 	Logs::writeMtproxy(line);
