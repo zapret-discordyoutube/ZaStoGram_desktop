@@ -169,6 +169,8 @@ public:
 	[[nodiscard]] bool paused() const;
 	void togglePaused(bool paused);
 	void contentPressed(bool pressed);
+	void sliderSeekProgress(float64 progress);
+	void sliderSeekFinished(float64 progress);
 	void setMenuShown(bool shown);
 
 	[[nodiscard]] PauseState pauseState() const;

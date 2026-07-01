@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include <optional>
+
 namespace Ui {
 class RpWidget;
 } // namespace Ui
@@ -46,6 +48,9 @@ private:
 	void resetProgress();
 
 	void layout(int width);
+	[[nodiscard]] std::optional<float64> progressAt(QPoint position) const;
+	void handleSeekProgress(QPoint position);
+	void handleSeekFinished(QPoint position);
 	void paint(QRectF clip);
 
 	const not_null<Controller*> _controller;
@@ -56,6 +61,7 @@ private:
 	QRect _activeBoundingRect;
 
 	SliderData _data;
+	bool _seeking = false;
 
 
 };

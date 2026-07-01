@@ -15,6 +15,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_widgets.h"
 #include "styles/style_media_view.h"
 
+#include <QtGui/QMouseEvent>
+
 namespace Media::Stories {
 namespace {
 
@@ -59,6 +61,31 @@ void Slider::show(SliderData data) {
 			&& (raw->width() >= st::storiesSliderWidth);
 	}) | rpl::on_next([=](QRect clip) {
 		paint(QRectF(clip));
+	}, raw->lifetime());
+
+	raw->events(
+	) | rpl::on_next([=](not_null<QEvent*> event) {
+		if (_data.videoStream) {
+			return;
+		}
+		const auto type = event->type();
+		if (type == QEvent::MouseButtonPress) {
+			const auto mouse = static_cast<QMouseEvent*>(event.get());
+			if (mouse->button() == Qt::LeftButton) {
+				_seeking = true;
+				handleSeekProgress(mouse->pos());
+			}
+		} else if (type == QEvent::MouseMove) {
+			if (_seeking) {
+				const auto mouse = static_cast<QMouseEvent*>(event.get());
+				handleSeekProgress(mouse->pos());
+			}
+		} else if (type == QEvent::MouseButtonRelease) {
+			const auto mouse = static_cast<QMouseEvent*>(event.get());
+			if (_seeking && mouse->button() == Qt::LeftButton) {
+				handleSeekFinished(mouse->pos());
+			}
+		}
 	}, raw->lifetime());
 
 	raw->show();
@@ -109,6 +136,36 @@ void Slider::layout(int width) {
 	}
 	for (auto i = count; i != _rects.size(); ++i) {
 		_rects[i] = QRectF();
+	}
+}
+
+std::optional<float64> Slider::progressAt(QPoint position) const {
+	if (_activeBoundingRect.isEmpty()) {
+		return std::nullopt;
+	}
+	const auto width = _activeBoundingRect.width();
+	if (width <= 0) {
+		return std::nullopt;
+	}
+	return std::clamp(
+		(position.x() - _activeBoundingRect.x()) / float64(width),
+		0.,
+		1.);
+}
+
+void Slider::handleSeekProgress(QPoint position) {
+	if (const auto progress = progressAt(position)) {
+		_progress->setValue(*progress, false);
+		_controller->sliderSeekProgress(*progress);
+	}
+}
+
+void Slider::handleSeekFinished(QPoint position) {
+	const auto progress = progressAt(position);
+	_seeking = false;
+	if (progress) {
+		_progress->setValue(*progress, false);
+		_controller->sliderSeekFinished(*progress);
 	}
 }
 

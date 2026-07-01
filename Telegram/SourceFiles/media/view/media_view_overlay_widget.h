@@ -277,6 +277,8 @@ private:
 	bool storiesPaused() override;
 	rpl::producer<bool> storiesLayerShown() override;
 	void storiesTogglePaused(bool paused) override;
+	void storiesSeekProgress(float64 progress) override;
+	void storiesSeekFinished(float64 progress) override;
 	float64 storiesSiblingOver(Stories::SiblingType type) override;
 	void storiesRepaint() override;
 	void storiesVolumeToggle() override;
@@ -656,6 +658,7 @@ private:
 
 	bool _streamingStartPaused = false;
 	bool _fullScreenVideo = false;
+	bool _storyContentPressTogglesPause = false;
 	int _fullScreenZoomCache = 0;
 	float64 _lastPositiveVolume = 1.;
 

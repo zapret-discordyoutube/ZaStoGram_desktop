@@ -1395,6 +1395,8 @@ TextState Gif::textState(QPoint point, StateRequest request) const {
 				: (isRound && media && media->ttlSeconds())
 				? _openl
 				: _spoiler->link;
+		} else if (_data->isVideoMessage()) {
+			result.link = _openl;
 		} else if (_seekl && isRoundSeekable()) {
 			result.link = _seekl;
 		} else {
@@ -1485,10 +1487,6 @@ void Gif::clickHandlerPressedChanged(
 					1.,
 					0.,
 					kSeekAnimationDuration);
-			} else if (_seekPressPoint != QPoint()) {
-				_seekPressPoint = QPoint();
-				::Media::Player::instance()->playPauseCancelClicked(
-					AudioMsgId::Type::Voice);
 			}
 		}
 	}

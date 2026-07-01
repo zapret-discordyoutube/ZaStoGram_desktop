@@ -1476,13 +1476,20 @@ void Controller::togglePaused(bool paused) {
 }
 
 void Controller::contentPressed(bool pressed) {
-	togglePaused(pressed);
 	if (_captionFullView) {
 		_captionFullView->close();
 	}
 	if (pressed) {
 		_reactions->outsidePressed();
 	}
+}
+
+void Controller::sliderSeekProgress(float64 progress) {
+	_delegate->storiesSeekProgress(progress);
+}
+
+void Controller::sliderSeekFinished(float64 progress) {
+	_delegate->storiesSeekFinished(progress);
 }
 
 void Controller::setMenuShown(bool shown) {

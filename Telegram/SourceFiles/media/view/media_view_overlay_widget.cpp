@@ -5012,7 +5012,7 @@ bool OverlayWidget::createStreamingObjects() {
 			|| _document->isVideoFile()
 			|| _document->isVoiceMessage()
 			|| _document->isVideoMessage());
-	if (streamingRequiresControls()) {
+	if (streamingRequiresControls() || _stories) {
 		_streamed->controls = std::make_unique<PlaybackControls>(
 			_body,
 			static_cast<PlaybackControls::Delegate*>(this));
@@ -5384,7 +5384,7 @@ void OverlayWidget::restartAtSeekPosition(crl::time position) {
 			? _document->duration()
 			: crl::time(0)),
 		.hwAllowed = Core::App().settings().hardwareAcceleratedVideo(),
-		.seekable = !_stories,
+		.seekable = true,
 	};
 	if (!_streamed->withSound) {
 		options.mode = Streaming::Mode::Video;
@@ -5733,6 +5733,28 @@ void OverlayWidget::storiesTogglePaused(bool paused) {
 		_streamed->instance.pause();
 		updatePlaybackState();
 	}
+}
+
+void OverlayWidget::storiesSeekProgress(float64 progress) {
+	if (!_streamed) {
+		return;
+	}
+	if (!_streamed->instance.player().paused()
+		&& !_streamed->instance.player().finished()) {
+		_streamed->pausedBySeek = true;
+		_streamed->instance.pause();
+		updatePlaybackState();
+	}
+}
+
+void OverlayWidget::storiesSeekFinished(float64 progress) {
+	if (!_streamed) {
+		return;
+	}
+	_streamingStartPaused = !_streamed->pausedBySeek
+		&& !_streamed->instance.player().finished();
+	restartAtProgress(progress);
+	activateControls();
 }
 
 float64 OverlayWidget::storiesSiblingOver(Stories::SiblingType type) {
@@ -7557,6 +7579,7 @@ void OverlayWidget::handleMousePress(
 
 	if (button == Qt::LeftButton) {
 		_down = Over::None;
+		_storyContentPressTogglesPause = false;
 		if (!ClickHandler::getPressed()) {
 			if ((_over == Over::Left && moveToNext(-1))
 				|| (_over == Over::Right && moveToNext(1))
@@ -7580,6 +7603,7 @@ void OverlayWidget::handleMousePress(
 				|| _over == Over::Video) {
 				_down = _over;
 				if (_over == Over::Video && _stories) {
+					_storyContentPressTogglesPause = true;
 					_stories->contentPressed(true);
 				} else if (_over == Over::Video
 					&& _streamed
@@ -8078,7 +8102,12 @@ void OverlayWidget::handleMouseRelease(
 		recognize();
 	} else if (_down == Over::Video) {
 		if (_stories) {
-			_stories->contentPressed(false);
+			if (_storyContentPressTogglesPause
+				&& _over == Over::Video
+				&& !_window->mousePressCancelled()) {
+				_stories->togglePaused(!_stories->paused());
+			}
+			_storyContentPressTogglesPause = false;
 		} else {
 			_speedBoostHoldTimer.cancel();
 			if (_speedBoostActive && _speedBoostFromMouse) {
