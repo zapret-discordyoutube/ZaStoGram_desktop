@@ -172,6 +172,8 @@ Session::Session(
 , _saveSettingsTimer([=] { saveSettings(); }) {
 	Expects(_settings != nullptr);
 
+	data().restoreLocalState();
+
 	_api->requestTermsUpdate();
 	_api->requestFullPeer(_user);
 

@@ -182,6 +182,8 @@ public:
 	explicit Session(not_null<Main::Session*> session);
 	~Session();
 
+	void restoreLocalState();
+
 	[[nodiscard]] Main::Session &session() const {
 		return *_session;
 	}

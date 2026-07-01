@@ -70,11 +70,14 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     restore_build_tree = workflow.index("- name: Telegram build cache (restore).")
+    normalize_mtimes = workflow.index("- name: Normalize Telegram source mtimes.")
     telegram_build = workflow.index("- name: Telegram Desktop build.")
+    cache_metadata = workflow.index("- name: Telegram build cache metadata.")
     save_build_tree = workflow.index("- name: Telegram build cache (save).")
     move_artifact = workflow.index("- name: Move artifact.")
 
-    assert restore_build_tree < telegram_build < save_build_tree < move_artifact
+    assert restore_build_tree < normalize_mtimes < telegram_build
+    assert telegram_build < cache_metadata < save_build_tree < move_artifact
     assert "TELEGRAM_BUILD_CACHE_VERSION: \"v1\"" in workflow
     assert "TELEGRAM_BUILD_CACHE_SCOPE=" in workflow
     assert "TELEGRAM_BUILD_CACHE_KEY=" in workflow
@@ -87,6 +90,18 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "key: ${{ steps.cache-telegram-build.outputs.cache-primary-key }}" in workflow
     assert "steps.build-telegram.outcome != 'skipped'" in workflow
     assert "always()" in workflow[save_build_tree:move_artifact]
+    assert "steps.cache-telegram-build.outputs.cache-matched-key != ''" in workflow
+    assert ".telegram_build_cache_metadata" in workflow
+    assert "TELEGRAM_BUILD_CACHE_HIT: ${{ steps.cache-telegram-build.outputs.cache-hit }}" in workflow
+    assert "TELEGRAM_BUILD_CACHE_MATCHED_KEY: ${{ steps.cache-telegram-build.outputs.cache-matched-key }}" in workflow
+    assert "TELEGRAM_BUILD_CACHE_HIT\") == \"true\"" in workflow
+    assert "dc7fc515605489f2486904c1a2d3e60811335b54" in workflow
+    assert "97e7512e600590ca2254c7bd523c2b07346b494f8c07d2334e9fff922a2c7e73" in workflow
+    assert "e48a776cea3c96cdf4cfbf0bcd71426b2945ba854f733ac6c1774413f89253bb" in workflow
+    assert "GITHUB_EVENT_BEFORE" not in workflow
+    assert "\"diff\"," in workflow
+    assert "\"--name-only\"," in workflow
+    assert "os.utime" in workflow
 
 
 def test_windows_ffmpeg_links_static_dav1d_dependency():
