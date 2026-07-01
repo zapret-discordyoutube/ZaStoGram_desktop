@@ -3555,7 +3555,7 @@ void OverlayWidget::copyMedia() {
 			const auto canUseFile = !filepath.isEmpty()
 				&& !videoShown()
 				&& (finalContentRotation() == 0);
-			Core::SetMediaClipboard({
+			(void)Core::SetMediaClipboard({
 				.mime = u"image/png"_q,
 				.image = std::move(image),
 				.filepath = canUseFile ? filepath : QString(),

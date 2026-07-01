@@ -975,7 +975,7 @@ void FillPeerQrBox(
 			}
 			crl::on_main(weak, [=] {
 				state->saveButtonBusy = false;
-				Core::SetMediaClipboard({
+				(void)Core::SetMediaClipboard({
 					.mime = u"image/png"_q,
 					.image = std::move(image),
 					.suggestedName = u"qr.png"_q,

@@ -74,3 +74,11 @@ def test_image_copy_call_sites_use_media_clipboard_api():
     assert "QGuiApplication::clipboard()->setMimeData" not in photo_media
     assert "QGuiApplication::clipboard()->setMimeData" not in media_view
     assert "QGuiApplication::clipboard()->setMimeData" not in peer_qr
+
+
+def test_void_media_clipboard_call_sites_discard_result_explicitly():
+    media_view = MEDIA_VIEW_CPP.read_text(encoding="utf-8")
+    peer_qr = PEER_QR_CPP.read_text(encoding="utf-8")
+
+    assert "(void)Core::SetMediaClipboard({" in media_view
+    assert "(void)Core::SetMediaClipboard({" in peer_qr
