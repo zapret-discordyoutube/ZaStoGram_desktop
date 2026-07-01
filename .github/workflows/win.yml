@@ -386,6 +386,18 @@ jobs:
                   stdout=subprocess.DEVNULL,
                   stderr=subprocess.DEVNULL).returncode == 0
 
+          def ensure_commit(value):
+              if not value or set(value) == {"0"}:
+                  return False
+              if valid_commit(value):
+                  return True
+              subprocess.run(
+                  ["git", "fetch", "--no-tags", "--depth=1", "origin", value],
+                  cwd=repo,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL)
+              return valid_commit(value)
+
           cached_head = ""
           if metadata.exists():
               for line in metadata.read_text(encoding="utf-8").splitlines():
@@ -406,13 +418,13 @@ jobs:
                   "dc7fc515605489f2486904c1a2d3e60811335b54",
           }
           matched_key = os.environ.get("TELEGRAM_BUILD_CACHE_MATCHED_KEY", "")
-          if not valid_commit(cached_head):
+          if not ensure_commit(cached_head):
               for suffix, head in legacy_cache_heads.items():
                   if matched_key.endswith(suffix):
                       cached_head = head
                       break
 
-          if not valid_commit(cached_head):
+          if not ensure_commit(cached_head):
               print("mtime: no comparable cached head, leaving checkout mtimes")
               raise SystemExit(0)
 

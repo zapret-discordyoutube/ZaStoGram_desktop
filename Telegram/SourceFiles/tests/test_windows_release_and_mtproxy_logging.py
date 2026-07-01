@@ -101,6 +101,7 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "GITHUB_EVENT_BEFORE" not in workflow
     assert "TELEGRAM_SKIP_CONFIGURE=true" in workflow
     assert "Reusing restored CMake configure." in workflow
+    assert "[\"git\", \"fetch\", \"--no-tags\", \"--depth=1\", \"origin\", value]" in workflow
     assert "\"CMakeLists.txt\"" in workflow
     assert "item.endswith(\".cmake\")" in workflow
     assert "mtime: CMake graph changed, configure will run" in workflow
