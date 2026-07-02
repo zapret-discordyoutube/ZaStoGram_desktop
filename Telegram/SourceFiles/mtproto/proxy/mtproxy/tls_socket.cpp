@@ -5,10 +5,10 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
-#include "mtproto/details/mtproto_tls_socket.h"
+#include "mtproto/proxy/mtproxy/tls_socket.h"
 
 #include "mtproto/details/mtproto_tcp_socket.h"
-#include "mtproto/details/mtproto_proxy_adaptive_policy.h"
+#include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
@@ -1161,7 +1161,7 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 }
 
 ProxyTlsProfile TlsSocket::effectiveTlsProfile() const {
-	// Per-endpoint AutoRotate cursor (see mtproto_proxy_adaptive_policy);
+	// Per-endpoint AutoRotate cursor (see proxy/mtproxy/adaptive_policy);
 	// explicit profiles (and Auto) pass through unchanged.
 	return ResolveEffectiveTlsProfile(_tlsProfile, _endpointKey);
 }

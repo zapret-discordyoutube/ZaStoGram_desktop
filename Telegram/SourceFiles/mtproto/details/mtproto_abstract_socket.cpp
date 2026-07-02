@@ -8,8 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_abstract_socket.h"
 
 #include "mtproto/details/mtproto_tcp_socket.h"
-#include "mtproto/details/mtproto_tls_socket.h"
-#include "mtproto/details/mtproto_wss_socket.h"
+#include "mtproto/proxy/mtproxy/tls_socket.h"
+#include "mtproto/proxy/wss/socket.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "logs.h"
 

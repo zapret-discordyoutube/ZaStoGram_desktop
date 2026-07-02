@@ -2,7 +2,19 @@ from pathlib import Path
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
-TLS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_tls_socket.cpp"
+MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
+ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
+
+
+def test_mtproxy_transport_policy_files_live_in_proxy_module():
+    header = ADAPTIVE_POLICY_H.read_text(encoding="utf-8")
+    source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
+
+    assert "struct AdaptiveRecipeInput" in header
+    assert "ApplyAdaptiveRecipe(" in header
+    assert '#include "mtproto/proxy/mtproxy/adaptive_policy.h"' in source
 
 
 def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
@@ -137,6 +149,7 @@ def body_from_brace(text: str, brace: int) -> str:
 
 
 if __name__ == "__main__":
+    test_mtproxy_transport_policy_files_live_in_proxy_module()
     test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
     test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
     test_synthetic_psk_uses_cached_identity_and_plausible_age()

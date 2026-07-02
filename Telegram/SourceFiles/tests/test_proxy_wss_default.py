@@ -3,6 +3,8 @@ from pathlib import Path
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 PROXY_DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+WSS_SOCKET_H = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.h"
+WSS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.cpp"
 CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CORE_SETTINGS_PROXY_CPP = SOURCE_DIR / "core" / "core_settings_proxy.cpp"
@@ -13,6 +15,15 @@ def test_wss_transport_is_the_stealth_default():
     header = PROXY_DATA_H.read_text(encoding="utf-8")
 
     assert "ProxyTransport transport = ProxyTransport::Wss;" in header
+
+
+def test_wss_transport_lives_in_proxy_module():
+    header = WSS_SOCKET_H.read_text(encoding="utf-8")
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+
+    assert "struct WssRoute" in header
+    assert "class WssSocket final" in header
+    assert '#include "mtproto/proxy/wss/socket.h"' in source
 
 
 def test_persisted_transport_falls_back_to_wss():
@@ -74,6 +85,7 @@ def test_route_via_wss_checkbox_refreshes_after_proxy_change():
 
 if __name__ == "__main__":
     test_wss_transport_is_the_stealth_default()
+    test_wss_transport_lives_in_proxy_module()
     test_persisted_transport_falls_back_to_wss()
     test_route_via_wss_toggle_uses_transport_setting()
     test_default_local_proxy_port_is_generated_on_first_add()
