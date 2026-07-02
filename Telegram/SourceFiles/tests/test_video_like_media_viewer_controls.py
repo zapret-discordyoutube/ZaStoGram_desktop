@@ -69,11 +69,15 @@ def test_story_content_click_toggles_pause_on_release():
 def test_video_message_content_click_opens_media_viewer():
     source = read("SourceFiles/history/view/media/history_view_gif.cpp")
     text_state = function_body(source, "TextState Gif::textState(")
+    play_animation = function_body(source, "void Gif::playAnimation(bool autoplay)")
     pressed = function_body(
         source,
         "void Gif::clickHandlerPressedChanged(")
 
-    assert "ResolveOpenRoute(_data)" in text_state
+    assert "::Media::View::ResolveOpenRoute(_data)" in text_state
+    assert "::Media::View::OpenRoute::MediaView" in text_state
+    assert "::Media::View::ResolveOpenRoute(_data)" in play_animation
+    assert "::Media::View::OpenRoute::MediaView" in play_animation
     assert "result.link = _openl;" in text_state
     assert "playPauseCancelClicked" not in pressed
 

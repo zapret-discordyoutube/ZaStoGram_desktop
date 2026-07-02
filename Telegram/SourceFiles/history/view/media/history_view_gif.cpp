@@ -1396,8 +1396,8 @@ TextState Gif::textState(QPoint point, StateRequest request) const {
 				: (isRound && media && media->ttlSeconds())
 				? _openl
 				: _spoiler->link;
-		} else if (Media::View::ResolveOpenRoute(_data)
-			== Media::View::OpenRoute::MediaView) {
+		} else if (::Media::View::ResolveOpenRoute(_data)
+			== ::Media::View::OpenRoute::MediaView) {
 			result.link = _openl;
 		} else if (_seekl && isRoundSeekable()) {
 			result.link = _seekl;
@@ -2191,8 +2191,8 @@ Gif::Streamed *Gif::activeOwnStreamed() const {
 
 void Gif::playAnimation(bool autoplay) {
 	ensureDataMediaCreated();
-	if (Media::View::ResolveOpenRoute(_data)
-		== Media::View::OpenRoute::MediaView
+	if (::Media::View::ResolveOpenRoute(_data)
+		== ::Media::View::OpenRoute::MediaView
 		&& !autoplay) {
 		_parent->delegate()->elementOpenDocument(
 			_data,
