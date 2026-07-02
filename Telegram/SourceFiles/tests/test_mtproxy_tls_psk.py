@@ -4,8 +4,10 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
+TCP_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_tcp_socket.h"
 
 
 def test_mtproxy_transport_policy_files_live_in_proxy_module():
@@ -15,6 +17,14 @@ def test_mtproxy_transport_policy_files_live_in_proxy_module():
     assert "struct AdaptiveRecipeInput" in header
     assert "ApplyAdaptiveRecipe(" in header
     assert '#include "mtproto/proxy/mtproxy/adaptive_policy.h"' in source
+
+
+def test_qtcp_socket_members_have_direct_header_include():
+    for path in (TLS_SOCKET_H, TCP_SOCKET_H):
+        header = path.read_text(encoding="utf-8")
+
+        assert "#include <QtNetwork/QTcpSocket>" in header
+        assert "QTcpSocket _socket;" in header
 
 
 def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
@@ -150,6 +160,7 @@ def body_from_brace(text: str, brace: int) -> str:
 
 if __name__ == "__main__":
     test_mtproxy_transport_policy_files_live_in_proxy_module()
+    test_qtcp_socket_members_have_direct_header_include()
     test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
     test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
     test_synthetic_psk_uses_cached_identity_and_plausible_age()

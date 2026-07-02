@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_abstract_socket.h"
 
+#include <QtNetwork/QTcpSocket>
+
 namespace MTP::details {
 
 class TcpSocket final : public AbstractSocket {

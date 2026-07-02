@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/data.h"
 #include "base/timer.h"
 
+#include <QtNetwork/QTcpSocket>
+
 namespace MTP::details {
 
 class TlsSocket final : public AbstractSocket {
