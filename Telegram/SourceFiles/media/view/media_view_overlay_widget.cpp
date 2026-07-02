@@ -53,6 +53,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/moderate_messages_box.h"
 #include "boxes/report_messages_box.h"
 #include "media/audio/media_audio.h"
+#include "media/view/media_view_action_router.h"
 #include "media/view/media_view_group_thumbs.h"
 #include "media/view/media_view_pip.h"
 #include "media/view/media_view_overlay_raster.h"
@@ -6944,6 +6945,73 @@ bool OverlayWidget::isSaveMsgShown() const {
 	return _saveMsgAnimation.animating() || _saveMsgTimer.isActive();
 }
 
+bool OverlayWidget::executeMediaViewAction(const ActionRequest &request) {
+	switch (request.action) {
+	case Action::TogglePlayback:
+		if (_stories) {
+			_stories->togglePaused(!_stories->paused());
+		} else {
+			playbackPauseResume();
+		}
+		return true;
+	case Action::SeekRelative:
+		activateControls();
+		seekRelativeTime(request.relative);
+		return true;
+	case Action::SeekToStart:
+		activateControls();
+		restartAtSeekPosition(0);
+		return true;
+	case Action::SeekToProgress:
+		activateControls();
+		restartAtProgress(request.progress);
+		return true;
+	case Action::StepFrame:
+		activateControls();
+		if (_stories && !_stories->paused()) {
+			_stories->togglePaused(true);
+		}
+		_frameStepPending += request.direction;
+		if (!_frameStepThrottle.isActive()) {
+			flushPendingFrameStep();
+		}
+		return true;
+	case Action::JumpChapter: {
+		if (!_streamed || !_streamed->controls) {
+			return true;
+		}
+		const auto &state = _streamed->instance.info().video.state;
+		const auto duration = state.duration;
+		if (duration <= 0) {
+			return true;
+		}
+		const auto progress = state.position / float64(duration);
+		const auto &controls = _streamed->controls;
+		if (request.direction > 0) {
+			if (const auto ts = controls->nextTimestamp(progress)) {
+				activateControls();
+				restartAtProgress(ts->position);
+				showChapterIndicator(ts->label, 1);
+			}
+		} else if (const auto ts = controls->prevTimestamp(progress)) {
+			activateControls();
+			restartAtProgress(ts->position);
+			showChapterIndicator(ts->label, -1);
+		} else {
+			activateControls();
+			restartAtSeekPosition(0);
+		}
+		return true;
+	}
+	case Action::ToggleFullscreen:
+		playbackToggleFullScreen();
+		return true;
+	case Action::None:
+		return false;
+	}
+	Unexpected("Action in OverlayWidget::executeMediaViewAction.");
+}
+
 void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 	if (_processingKeyPress) {
 		return;
@@ -6952,90 +7020,32 @@ void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 	const auto guard = gsl::finally([&] { _processingKeyPress = false; });
 	const auto key = e->key();
 	const auto modifiers = e->modifiers();
-	const auto ctrl = modifiers.testFlag(Qt::ControlModifier);
+	if (_streamed) {
+		const auto request = Media::View::ResolveAction({
+			.key = key,
+			.modifiers = modifiers,
+			.autoRepeat = e->isAutoRepeat(),
+			.hasStreamed = true,
+			.stories = (_stories != nullptr),
+			.fullScreenVideo = _fullScreenVideo,
+			.paused = _streamed->instance.player().paused(),
+			.hasTimestamps = _streamed->controls
+				&& _streamed->controls->hasTimestamps(),
+		});
+		if (request && executeMediaViewAction(*request)) {
+			return;
+		}
+	}
 	if (_stories) {
 		if (key == Qt::Key_Space && _down != Over::Video) {
 			_stories->togglePaused(!_stories->paused());
 			return;
 		}
 	} else if (_streamed) {
-		// Ctrl + F for full screen toggle is in eventFilter().
-		const auto toggleFull = (modifiers.testFlag(Qt::AltModifier) || ctrl)
-			&& (key == Qt::Key_Enter || key == Qt::Key_Return);
-		if (toggleFull) {
-			playbackToggleFullScreen();
-			return;
-		} else if (key == Qt::Key_K) {
-			playbackPauseResume();
-			return;
-		} else if (key == Qt::Key_Space) {
+		if (key == Qt::Key_Space) {
 			if (!e->isAutoRepeat()) {
 				_speedBoostHoldTimer.callOnce(
 					st::mediaviewSpeedBoostHoldDelay);
-			}
-			return;
-		} else if (key == Qt::Key_J) {
-			activateControls();
-			seekRelativeTime(-kSeekTimeMsLong);
-			return;
-		} else if (key == Qt::Key_L) {
-			activateControls();
-			seekRelativeTime(kSeekTimeMsLong);
-			return;
-		} else if ((key == Qt::Key_Period || key == Qt::Key_Comma)
-			&& _streamed->instance.player().paused()) {
-			activateControls();
-			_frameStepPending += (key == Qt::Key_Period) ? 1 : -1;
-			if (!_frameStepThrottle.isActive()) {
-				flushPendingFrameStep();
-				_frameStepThrottle.callOnce(kFrameStepThrottleMs);
-			}
-			return;
-		} else if (modifiers.testFlag(Qt::AltModifier)
-			&& (key == Qt::Key_Left || key == Qt::Key_Right)
-			&& _streamed->controls
-			&& _streamed->controls->hasTimestamps()) {
-			const auto &state = _streamed->instance.info().video.state;
-			const auto duration = state.duration;
-			if (duration > 0) {
-				const auto progress = state.position
-					/ float64(duration);
-				const auto &controls = _streamed->controls;
-				if (key == Qt::Key_Right) {
-					if (const auto ts = controls->nextTimestamp(progress)) {
-						activateControls();
-						restartAtProgress(ts->position);
-						showChapterIndicator(ts->label, 1);
-					}
-				} else {
-					if (const auto ts = controls->prevTimestamp(progress)) {
-						activateControls();
-						restartAtProgress(ts->position);
-						showChapterIndicator(ts->label, -1);
-					} else {
-						activateControls();
-						restartAtSeekPosition(0);
-					}
-				}
-			}
-			return;
-		} else if (_fullScreenVideo) {
-			if (key == Qt::Key_Escape) {
-				playbackToggleFullScreen();
-			} else if (ctrl) {
-			} else if (key == Qt::Key_0) {
-				activateControls();
-				restartAtSeekPosition(0);
-			} else if (key >= Qt::Key_1 && key <= Qt::Key_9) {
-				activateControls();
-				const auto index = int(key - Qt::Key_0);
-				restartAtProgress(index / 10.0);
-			} else if (key == Qt::Key_Left) {
-				activateControls();
-				seekRelativeTime(-kSeekTimeMs);
-			} else if (key == Qt::Key_Right) {
-				activateControls();
-				seekRelativeTime(kSeekTimeMs);
 			}
 			return;
 		}

@@ -111,19 +111,6 @@ constexpr auto kClearEmojiImageSourceTimeout = 10 * crl::time(1000);
 
 LaunchState GlobalLaunchState/* = LaunchState::Running*/;
 
-void DisableWssForMtprotoProxy(
-		Settings &settings,
-		const MTP::ProxyData &proxy,
-		MTP::ProxyData::Settings proxySettings) {
-	if (proxySettings != MTP::ProxyData::Settings::Enabled
-		|| proxy.type != MTP::ProxyData::Type::Mtproto) {
-		return;
-	}
-	auto stealth = settings.proxyStealthOptions();
-	stealth.transport = MTP::ProxyTransport::Tcp;
-	settings.setProxyStealthOptions(stealth);
-}
-
 void SetCrashAnnotationsGL() {
 #ifdef DESKTOP_APP_USE_ANGLE
 	CrashReports::SetAnnotation("OpenGL ANGLE", [] {
@@ -847,7 +834,6 @@ void Application::setCurrentProxy(
 	const auto was = current();
 	my.setSelected(proxy);
 	my.setSettings(settings);
-	DisableWssForMtprotoProxy(_private->settings, proxy, settings);
 	const auto now = current();
 	refreshGlobalProxy();
 	_proxyChanges.fire({ was, now });

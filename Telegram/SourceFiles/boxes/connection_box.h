@@ -50,6 +50,7 @@ public:
 	static object_ptr<Ui::BoxContent> CreateOwningBox(
 		not_null<Main::Account*> account,
 		const QString &highlightId = QString());
+	static object_ptr<Ui::BoxContent> CreateLogsBox();
 	static void Show(
 		not_null<Window::SessionController*> controller,
 		const QString &highlightId = QString());

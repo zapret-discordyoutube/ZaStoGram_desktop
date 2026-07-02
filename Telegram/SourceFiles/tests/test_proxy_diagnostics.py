@@ -16,6 +16,8 @@ TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 HTTP_CPP = SOURCE_DIR / "mtproto" / "connection_http.cpp"
 PROXY_CHECK_CPP = PROXY_DIR / "check.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
+CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
+SETTINGS_MAIN_CPP = SOURCE_DIR / "settings" / "sections" / "settings_main.cpp"
 
 
 def read(path):
@@ -119,9 +121,11 @@ def test_proxy_reporting_is_centralized():
     assert "AddProxyDiagnosticsEvent" not in instance
 
 
-def test_proxy_settings_logs_tab_exists():
+def test_proxy_logs_have_separate_settings_entry():
     lang = read(LANG)
     box = read(CONNECTION_BOX_CPP)
+    header = read(CONNECTION_BOX_H)
+    settings = read(SETTINGS_MAIN_CPP)
 
     for key in (
         "lng_proxy_logs_tab",
@@ -138,7 +142,13 @@ def test_proxy_settings_logs_tab_exists():
     ):
         assert f'"{key}' in lang
 
-    assert "setupLogsSection()" in box
+    assert "class ProxyLogsBox final : public Ui::BoxContent" in box
+    assert "ProxiesBoxController::CreateLogsBox()" in box
+    assert "static object_ptr<Ui::BoxContent> CreateLogsBox();" in header
+    assert 'id = u"main/proxy_logs"_q' in settings
+    assert "tr::lng_proxy_logs_tab()" in settings
+    assert "ProxiesBoxController::CreateLogsBox()" in settings
+    assert "setupLogsSection" not in box
     assert "ProxyDiagnosticsEventsValue(" in box
     assert "LoadProxyDiagnosticsTail(" in box
     assert "File::ShowInFolder(cWorkingDir() + u\"DebugLogs\"" in box
@@ -150,7 +160,7 @@ def test_proxy_settings_logs_tab_exists():
 
 def test_proxy_logs_file_tail_load_is_user_triggered():
     box = read(CONNECTION_BOX_CPP)
-    setup_start = box.index("void ProxiesBox::setupLogsSection()")
+    setup_start = box.index("void ProxyLogsBox::setupContent()")
     refresh_button = box.index(
         "const auto refresh = Settings::AddButtonWithIcon",
         setup_start)
@@ -166,12 +176,12 @@ def test_proxy_logs_file_tail_load_is_user_triggered():
 def test_proxy_logs_initial_snapshot_is_rendered_once():
     box = read(CONNECTION_BOX_CPP)
     setup = box[
-        box.index("void ProxiesBox::setupLogsSection()"):
-        box.index("void ProxiesBox::refreshLogsView()")]
+        box.index("void ProxyLogsBox::setupContent()"):
+        box.index("void ProxyLogsBox::refreshLogsView()")]
 
     assert "_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();" in setup
     assert "ProxyDiagnosticsEventsValue(\n\t) | rpl::skip(1)" in setup
-    assert "refreshLogsView();\n}" in setup
+    assert "refreshLogsView();\n\n\tinner->resizeToWidth" in setup
 
 
 def test_logs_view_renders_one_text_string_per_line():
@@ -180,7 +190,7 @@ def test_logs_view_renders_one_text_string_per_line():
     # Ui::Text::String stores block positions as uint16 (64K chars max),
     # so feeding the whole joined log tail into one FlatLabel overflows
     # them and asserts in lib_ui text.cpp:590 (crash on opening the
-    # proxy settings box). The logs view must keep one Text::String per
+    # proxy diagnostics logs). The logs view must keep one Text::String per
     # log line, with a defensive per-line length cap.
     assert "class ProxyLogsView" in box
     assert "QPointer<ProxyLogsView> _logsView" in box
@@ -196,7 +206,7 @@ if __name__ == "__main__":
     test_diagnostics_redacts_secret_material()
     test_transport_paths_emit_diagnostics()
     test_proxy_reporting_is_centralized()
-    test_proxy_settings_logs_tab_exists()
+    test_proxy_logs_have_separate_settings_entry()
     test_proxy_logs_file_tail_load_is_user_triggered()
     test_proxy_logs_initial_snapshot_is_rendered_once()
     test_logs_view_renders_one_text_string_per_line()

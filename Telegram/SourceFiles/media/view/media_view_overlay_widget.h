@@ -86,6 +86,7 @@ struct ContentLayout;
 
 namespace Media::View {
 
+struct ActionRequest;
 class VideoStream;
 class PlaybackSponsored;
 class GroupThumbs;
@@ -260,6 +261,7 @@ private:
 	void playbackPauseOnCall();
 	void playbackResumeOnCall();
 	void playbackPauseMusic();
+	bool executeMediaViewAction(const ActionRequest &request);
 	void switchToPip();
 	[[nodiscard]] int topNotchSkip() const;
 	[[nodiscard]] std::shared_ptr<ChatHelpers::Show> uiShow();

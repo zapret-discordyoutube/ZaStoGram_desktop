@@ -1429,6 +1429,8 @@ PRIVATE
     media/streaming/media_streaming_video_track.cpp
     media/streaming/media_streaming_video_track.h
     media/streaming/media_streaming_native_frame_mac.h
+    media/view/media_view_action_router.cpp
+    media/view/media_view_action_router.h
     media/view/media_view_group_thumbs.cpp
     media/view/media_view_group_thumbs.h
     media/view/media_view_open_common.cpp
@@ -1488,6 +1490,8 @@ PRIVATE
     mtproto/connection_http.h
     mtproto/proxy/data.cpp
     mtproto/proxy/data.h
+    mtproto/proxy/transport_policy.cpp
+    mtproto/proxy/transport_policy.h
     mtproto/proxy/status.h
     mtproto/proxy/resolving_connection.cpp
     mtproto/proxy/resolving_connection.h

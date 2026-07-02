@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/transport_policy.h"
 
 #include <QtCore/QTimer>
 
@@ -115,10 +116,10 @@ void StartProxyCheck(
 		? Variants::Http
 		: Variants::Tcp;
 	const auto dcId = mtproto->mainDcId();
-	auto checkStealth = stealth;
-	if (proxy.type == ProxyData::Type::Mtproto) {
-		checkStealth.transport = ProxyTransport::Tcp;
-	}
+	const auto checkStealth = MTP::EffectiveProxyStealthOptions(
+		proxy,
+		ProxyData::Settings::Enabled,
+		stealth);
 	ReportProxyEvent(mtproto, {
 		.phase = ProxyDiagnosticsPhase::ProxyCheckStarted,
 		.proxy = proxy,

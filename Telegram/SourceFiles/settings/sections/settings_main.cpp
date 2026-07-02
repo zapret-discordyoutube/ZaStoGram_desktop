@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "base/call_delayed.h"
 #include "base/platform/base_platform_info.h"
+#include "boxes/connection_box.h"
 #include "boxes/language_box.h"
 #include "boxes/star_gift_box.h"
 #include "boxes/username_box.h"
@@ -465,6 +466,16 @@ void BuildSectionButtons(SectionBuilder &builder) {
 			Guard = LanguageBox::Show(controller);
 		},
 		.keywords = { u"translate"_q, u"localization"_q, u"language"_q },
+	});
+
+	builder.addButton({
+		.id = u"main/proxy_logs"_q,
+		.title = tr::lng_proxy_logs_tab(),
+		.icon = { &st::menuIconGroupLog },
+		.onClick = [=] {
+			controller->show(ProxiesBoxController::CreateLogsBox());
+		},
+		.keywords = { u"proxy"_q, u"logs"_q, u"diagnostics"_q, u"network"_q },
 	});
 }
 

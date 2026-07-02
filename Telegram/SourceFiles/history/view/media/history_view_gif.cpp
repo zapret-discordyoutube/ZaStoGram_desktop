@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/streaming/media_streaming_instance.h"
 #include "media/streaming/media_streaming_player.h"
 #include "media/streaming/media_streaming_utility.h"
+#include "media/view/media_view_action_router.h"
 #include "media/view/media_view_open_common.h"
 #include "media/view/media_view_playback_progress.h"
 #include "ui/boxes/confirm_box.h"
@@ -1395,7 +1396,7 @@ TextState Gif::textState(QPoint point, StateRequest request) const {
 				: (isRound && media && media->ttlSeconds())
 				? _openl
 				: _spoiler->link;
-		} else if (_data->isVideoMessage()) {
+		} else if (Media::View::ShouldOpenDocumentInMediaView(_data)) {
 			result.link = _openl;
 		} else if (_seekl && isRoundSeekable()) {
 			result.link = _seekl;
@@ -2189,7 +2190,11 @@ Gif::Streamed *Gif::activeOwnStreamed() const {
 
 void Gif::playAnimation(bool autoplay) {
 	ensureDataMediaCreated();
-	if (_data->isVideoMessage() && !autoplay) {
+	if (Media::View::ShouldOpenDocumentInMediaView(_data) && !autoplay) {
+		_parent->delegate()->elementOpenDocument(
+			_data,
+			_parent->data()->fullId(),
+			true);
 		return;
 	} else if (_streamed && autoplay) {
 		return;
