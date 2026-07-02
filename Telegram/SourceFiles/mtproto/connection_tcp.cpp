@@ -26,50 +26,6 @@ constexpr auto kSmallBufferSize = 256 * 1024;
 constexpr auto kMinPacketBuffer = 256;
 constexpr auto kConnectionStartPrefixSize = 64;
 
-void SetProxyConnectionStatus(
-		not_null<Instance*> instance,
-		const ProxyData &proxy,
-		ProxyConnectionPhase phase,
-		ProxyConnectionError error = ProxyConnectionError::None) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	InvokeQueued(instance, [=] {
-		instance->setProxyConnectionStatus({ phase, error, proxy });
-	});
-}
-
-[[nodiscard]] ProxyDiagnosticsSource DiagnosticsSource(
-		const ProxyData &proxy) {
-	return (proxy.type == ProxyData::Type::Mtproto)
-		? ProxyDiagnosticsSource::MTProxy
-		: ProxyDiagnosticsSource::Network;
-}
-
-void AddTcpDiagnostics(
-		const ProxyData &proxy,
-		ProxyDiagnosticsPhase phase,
-		ProxyConnectionError error,
-		const QString &transport,
-		const QString &connectionId,
-		const QString &message) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	AddProxyDiagnosticsEvent({
-		.source = DiagnosticsSource(proxy),
-		.phase = phase,
-		.severity = (error == ProxyConnectionError::None)
-			? ProxyDiagnosticsSeverity::Info
-			: ProxyDiagnosticsSeverity::Error,
-		.error = error,
-		.proxy = proxy,
-		.transport = transport,
-		.connectionId = connectionId,
-		.message = message,
-	});
-}
-
 } // namespace
 
 class TcpConnection::Protocol {
@@ -343,18 +299,14 @@ void TcpConnection::socketRead() {
 
 	if (!_socket || !_socket->isConnected()) {
 		CONNECTION_LOG_ERROR("Socket not connected in socketRead()");
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Failed,
-			ProxyConnectionError::BadResponse);
-		AddTcpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::Failed,
-			ProxyConnectionError::BadResponse,
-			tag(),
-			_debugId,
-			u"socket not connected while reading"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ProxyConnectionError::BadResponse,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"socket not connected while reading"_q,
+		});
 		error(kErrorCodeOther);
 		return;
 	}
@@ -409,18 +361,14 @@ void TcpConnection::socketRead() {
 						CONNECTION_LOG_ERROR(
 							u"Bad packet size in 4 bytes: %1"_q
 							.arg(packetSize));
-						SetProxyConnectionStatus(
-							_instance,
-							_proxy,
-							ProxyConnectionPhase::Failed,
-							ProxyConnectionError::BadResponse);
-						AddTcpDiagnostics(
-							_proxy,
-							ProxyDiagnosticsPhase::Failed,
-							ProxyConnectionError::BadResponse,
-							tag(),
-							_debugId,
-							u"bad packet size while reading"_q);
+						ReportProxyEvent(_instance, {
+							.phase = ProxyDiagnosticsPhase::Failed,
+							.error = ProxyConnectionError::BadResponse,
+							.proxy = _proxy,
+							.transport = tag(),
+							.connectionId = _debugId,
+							.message = u"bad packet size while reading"_q,
+						});
 						error(kErrorCodeOther);
 						return;
 					} else if (available.size() >= packetSize) {
@@ -453,18 +401,14 @@ void TcpConnection::socketRead() {
 			}
 		} else if (readCount < 0) {
 			CONNECTION_LOG_ERROR(u"Socket read return %1."_q.arg(readCount));
-			SetProxyConnectionStatus(
-				_instance,
-				_proxy,
-				ProxyConnectionPhase::Failed,
-				ProxyConnectionError::BadResponse);
-			AddTcpDiagnostics(
-				_proxy,
-				ProxyDiagnosticsPhase::Failed,
-				ProxyConnectionError::BadResponse,
-				tag(),
-				_debugId,
-				u"socket read failed"_q);
+			ReportProxyEvent(_instance, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"socket read failed"_q,
+			});
 			error(kErrorCodeOther);
 			return;
 		} else {
@@ -503,17 +447,13 @@ void TcpConnection::socketConnected() {
 	auto buffer = preparePQFake(_checkNonce);
 
 	CONNECTION_LOG_INFO("Socket connected; sending fake req_pq.");
-	SetProxyConnectionStatus(
-		_instance,
-		_proxy,
-		ProxyConnectionPhase::CheckingTelegram);
-	AddTcpDiagnostics(
-		_proxy,
-		ProxyDiagnosticsPhase::TelegramCheck,
-		ProxyConnectionError::None,
-		tag(),
-		_debugId,
-		u"checking telegram through proxy"_q);
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::TelegramCheck,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"checking telegram through proxy"_q,
+	});
 
 	_pingTime = crl::now();
 	sendData(std::move(buffer));
@@ -657,17 +597,13 @@ void TcpConnection::connectToServer(
 	_socket->setDebugId(_debugId);
 
 	CONNECTION_LOG_INFO("Connecting...");
-	SetProxyConnectionStatus(
-		_instance,
-		_proxy,
-		ProxyConnectionPhase::Connecting);
-	AddTcpDiagnostics(
-		_proxy,
-		ProxyDiagnosticsPhase::Connecting,
-		ProxyConnectionError::None,
-		tag(),
-		_debugId,
-		u"connecting to proxy"_q);
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::Connecting,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"connecting to proxy"_q,
+	});
 
 	_socket->connected(
 	) | rpl::on_next([=] {
@@ -717,18 +653,14 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 	const auto data = parsePacket(bytes);
 	if (data.size() == 1) {
 		if (data[0] != 0) {
-			SetProxyConnectionStatus(
-				_instance,
-				_proxy,
-				ProxyConnectionPhase::Failed,
-				ProxyConnectionError::BadResponse);
-			AddTcpDiagnostics(
-				_proxy,
-				ProxyDiagnosticsPhase::Failed,
-				ProxyConnectionError::BadResponse,
-				tag(),
-				_debugId,
-				u"bad proxy response"_q);
+			ReportProxyEvent(_instance, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"bad proxy response"_q,
+			});
 			error(data[0]);
 		} else {
 			// nop
@@ -746,49 +678,37 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 				_status = Status::Ready;
 				_connectedLifetime.destroy();
 				_pingTime = (crl::now() - _pingTime);
-				SetProxyConnectionStatus(
-					_instance,
-					_proxy,
-					ProxyConnectionPhase::Connected);
-				AddTcpDiagnostics(
-					_proxy,
-					ProxyDiagnosticsPhase::Connected,
-					ProxyConnectionError::None,
-					tag(),
-					_debugId,
-					u"proxy connected"_q);
+				ReportProxyEvent(_instance, {
+					.phase = ProxyDiagnosticsPhase::Connected,
+					.proxy = _proxy,
+					.transport = tag(),
+					.connectionId = _debugId,
+					.message = u"proxy connected"_q,
+				});
 				connected();
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Wrong nonce received in TCP fake pq-responce");
-				SetProxyConnectionStatus(
-					_instance,
-					_proxy,
-					ProxyConnectionPhase::Failed,
-					ProxyConnectionError::BadResponse);
-				AddTcpDiagnostics(
-					_proxy,
-					ProxyDiagnosticsPhase::Failed,
-					ProxyConnectionError::BadResponse,
-					tag(),
-					_debugId,
-					u"wrong nonce in proxy response"_q);
+				ReportProxyEvent(_instance, {
+					.phase = ProxyDiagnosticsPhase::Failed,
+					.error = ProxyConnectionError::BadResponse,
+					.proxy = _proxy,
+					.transport = tag(),
+					.connectionId = _debugId,
+					.message = u"wrong nonce in proxy response"_q,
+				});
 				error(kErrorCodeOther);
 			}
 		} else {
 			CONNECTION_LOG_ERROR("Could not parse TCP fake pq-responce");
-			SetProxyConnectionStatus(
-				_instance,
-				_proxy,
-				ProxyConnectionPhase::Failed,
-				ProxyConnectionError::BadResponse);
-			AddTcpDiagnostics(
-				_proxy,
-				ProxyDiagnosticsPhase::Failed,
-				ProxyConnectionError::BadResponse,
-				tag(),
-				_debugId,
-				u"could not parse proxy response"_q);
+			ReportProxyEvent(_instance, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"could not parse proxy response"_q,
+			});
 			error(kErrorCodeOther);
 		}
 	}
@@ -796,18 +716,14 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 
 void TcpConnection::timedOut() {
 	CONNECTION_LOG_ERROR("Connection timed out.");
-	SetProxyConnectionStatus(
-		_instance,
-		_proxy,
-		ProxyConnectionPhase::Failed,
-		ProxyConnectionError::Timeout);
-	AddTcpDiagnostics(
-		_proxy,
-		ProxyDiagnosticsPhase::Failed,
-		ProxyConnectionError::Timeout,
-		tag(),
-		_debugId,
-		u"proxy connection timed out"_q);
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::Failed,
+		.error = ProxyConnectionError::Timeout,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"proxy connection timed out"_q,
+	});
 	if (_socket) {
 		_socket->timedOut();
 	}
@@ -848,18 +764,14 @@ void TcpConnection::socketError(int errorCode) {
 	}
 
 	CONNECTION_LOG_ERROR(u"Socket error %1."_q.arg(errorCode));
-	SetProxyConnectionStatus(
-		_instance,
-		_proxy,
-		ProxyConnectionPhase::Failed,
-		SocketProxyConnectionError(errorCode));
-	AddTcpDiagnostics(
-		_proxy,
-		ProxyDiagnosticsPhase::Failed,
-		SocketProxyConnectionError(errorCode),
-		tag(),
-		_debugId,
-		u"proxy socket error"_q);
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::Failed,
+		.error = SocketProxyConnectionError(errorCode),
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"proxy socket error"_q,
+	});
 	error(errorCode);
 }
 
@@ -870,62 +782,46 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 
 	case HandshakePhase::TcpConnected:
 		CONNECTION_LOG_INFO("mtproxy tcp_connected");
-		AddTcpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::TcpConnected,
-			ProxyConnectionError::None,
-			tag(),
-			_debugId,
-			u"tcp connected"_q);
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Connecting);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::TcpConnected,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"tcp connected"_q,
+		});
 		return;
 
 	case HandshakePhase::ClientHelloSent:
 		CONNECTION_LOG_INFO("mtproxy client_hello_sent");
-		AddTcpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::ClientHelloSent,
-			ProxyConnectionError::None,
-			tag(),
-			_debugId,
-			u"client hello sent"_q);
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Handshake);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::ClientHelloSent,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"client hello sent"_q,
+		});
 		return;
 
 	case HandshakePhase::ServerHelloOk:
 		CONNECTION_LOG_INFO("mtproxy server_hello_hmac_ok");
-		AddTcpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::ServerHelloOk,
-			ProxyConnectionError::None,
-			tag(),
-			_debugId,
-			u"server hello hmac ok"_q);
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::CheckingTelegram);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::ServerHelloOk,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"server hello hmac ok"_q,
+		});
 		return;
 
 	case HandshakePhase::FirstDataReceived:
 		CONNECTION_LOG_INFO("mtproxy first_tls_app_recv");
-		AddTcpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::TelegramCheck,
-			ProxyConnectionError::None,
-			tag(),
-			_debugId,
-			u"first tls app data received"_q);
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::CheckingTelegram);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::TelegramCheck,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"first tls app data received"_q,
+		});
 		return;
 	}
 }

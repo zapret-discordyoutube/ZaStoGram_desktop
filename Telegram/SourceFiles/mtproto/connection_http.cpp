@@ -20,43 +20,6 @@ namespace {
 constexpr auto kForceHttpPort = 80;
 constexpr auto kFullConnectionTimeout = crl::time(8000);
 
-void SetProxyConnectionStatus(
-		not_null<Instance*> instance,
-		const ProxyData &proxy,
-		ProxyConnectionPhase phase,
-		ProxyConnectionError error = ProxyConnectionError::None) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	const auto status = ProxyConnectionStatus{ phase, error, proxy };
-	InvokeQueued(instance, [=] {
-		instance->setProxyConnectionStatus(status);
-	});
-}
-
-void AddHttpDiagnostics(
-		const ProxyData &proxy,
-		ProxyDiagnosticsPhase phase,
-		ProxyConnectionError error,
-		const QString &connectionId,
-		const QString &message) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	AddProxyDiagnosticsEvent({
-		.source = ProxyDiagnosticsSource::Network,
-		.phase = phase,
-		.severity = (error == ProxyConnectionError::None)
-			? ProxyDiagnosticsSeverity::Info
-			: ProxyDiagnosticsSeverity::Error,
-		.error = error,
-		.proxy = proxy,
-		.transport = u"HTTP"_q,
-		.connectionId = connectionId,
-		.message = message,
-	});
-}
-
 ProxyConnectionError ReplyProxyConnectionError(
 		QNetworkReply::NetworkError error) {
 	switch (error) {
@@ -170,16 +133,13 @@ void HttpConnection::connectToServer(
 			.arg(ProtocolDcDebugId(protocolDcId), url().toDisplayString());
 	}
 
-	SetProxyConnectionStatus(
-		_instance,
-		_proxy,
-		ProxyConnectionPhase::Connecting);
-	AddHttpDiagnostics(
-		_proxy,
-		ProxyDiagnosticsPhase::Connecting,
-		ProxyConnectionError::None,
-		_debugId,
-		u"connecting to proxy"_q);
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::Connecting,
+		.proxy = _proxy,
+		.transport = u"HTTP"_q,
+		.connectionId = _debugId,
+		.message = u"connecting to proxy"_q,
+	});
 	_pingTime = crl::now();
 	sendData(std::move(buffer));
 }
@@ -290,30 +250,24 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 	reply->deleteLater();
 	if (reply->error() == QNetworkReply::NoError) {
 		_requests.remove(reply);
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::CheckingTelegram);
-		AddHttpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::TelegramCheck,
-			ProxyConnectionError::None,
-			_debugId,
-			u"checking telegram through proxy"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::TelegramCheck,
+			.proxy = _proxy,
+			.transport = u"HTTP"_q,
+			.connectionId = _debugId,
+			.message = u"checking telegram through proxy"_q,
+		});
 
 		mtpBuffer data = handleResponse(reply);
 		if (data.size() == 1) {
-			SetProxyConnectionStatus(
-				_instance,
-				_proxy,
-				ProxyConnectionPhase::Failed,
-				ProxyConnectionError::BadResponse);
-			AddHttpDiagnostics(
-				_proxy,
-				ProxyDiagnosticsPhase::Failed,
-				ProxyConnectionError::BadResponse,
-				_debugId,
-				u"bad proxy response"_q);
+			ReportProxyEvent(_instance, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.proxy = _proxy,
+				.transport = u"HTTP"_q,
+				.connectionId = _debugId,
+				.message = u"bad proxy response"_q,
+			});
 			error(data[0]);
 		} else if (!data.isEmpty()) {
 			if (_status == Status::Ready) {
@@ -326,47 +280,38 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 						"HTTP-transport connected by pq-response.");
 					_status = Status::Ready;
 					_pingTime = crl::now() - _pingTime;
-					SetProxyConnectionStatus(
-						_instance,
-						_proxy,
-						ProxyConnectionPhase::Connected);
-					AddHttpDiagnostics(
-						_proxy,
-						ProxyDiagnosticsPhase::Connected,
-						ProxyConnectionError::None,
-						_debugId,
-						u"proxy connected"_q);
+					ReportProxyEvent(_instance, {
+						.phase = ProxyDiagnosticsPhase::Connected,
+						.proxy = _proxy,
+						.transport = u"HTTP"_q,
+						.connectionId = _debugId,
+						.message = u"proxy connected"_q,
+					});
 					connected();
 				} else {
 					CONNECTION_LOG_ERROR(
 						"Wrong nonce in HTTP fake pq-response.");
-					SetProxyConnectionStatus(
-						_instance,
-						_proxy,
-						ProxyConnectionPhase::Failed,
-						ProxyConnectionError::BadResponse);
-					AddHttpDiagnostics(
-						_proxy,
-						ProxyDiagnosticsPhase::Failed,
-						ProxyConnectionError::BadResponse,
-						_debugId,
-						u"wrong nonce in proxy response"_q);
+					ReportProxyEvent(_instance, {
+						.phase = ProxyDiagnosticsPhase::Failed,
+						.error = ProxyConnectionError::BadResponse,
+						.proxy = _proxy,
+						.transport = u"HTTP"_q,
+						.connectionId = _debugId,
+						.message = u"wrong nonce in proxy response"_q,
+					});
 					error(kErrorCodeOther);
 				}
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Could not parse HTTP fake pq-response.");
-				SetProxyConnectionStatus(
-					_instance,
-					_proxy,
-					ProxyConnectionPhase::Failed,
-					ProxyConnectionError::BadResponse);
-				AddHttpDiagnostics(
-					_proxy,
-					ProxyDiagnosticsPhase::Failed,
-					ProxyConnectionError::BadResponse,
-					_debugId,
-					u"could not parse proxy response"_q);
+				ReportProxyEvent(_instance, {
+					.phase = ProxyDiagnosticsPhase::Failed,
+					.error = ProxyConnectionError::BadResponse,
+					.proxy = _proxy,
+					.transport = u"HTTP"_q,
+					.connectionId = _debugId,
+					.message = u"could not parse proxy response"_q,
+				});
 				error(kErrorCodeOther);
 			}
 		}
@@ -375,17 +320,14 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			return;
 		}
 
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Failed,
-			ReplyProxyConnectionError(reply->error()));
-		AddHttpDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::Failed,
-			ReplyProxyConnectionError(reply->error()),
-			_debugId,
-			u"proxy request failed"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ReplyProxyConnectionError(reply->error()),
+			.proxy = _proxy,
+			.transport = u"HTTP"_q,
+			.connectionId = _debugId,
+			.message = u"proxy request failed"_q,
+		});
 		error(handleError(reply));
 	}
 }

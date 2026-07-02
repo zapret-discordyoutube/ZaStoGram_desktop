@@ -7,6 +7,7 @@ LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
 INSTANCE_H = SOURCE_DIR / "mtproto" / "mtp_instance.h"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
 ABSTRACT_CONNECTION_H = SOURCE_DIR / "mtproto" / "connection_abstract.h"
+DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy_diagnostics.cpp"
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.h"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
@@ -31,6 +32,7 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     abstract_connection = ABSTRACT_CONNECTION_H.read_text(encoding="utf-8")
     abstract_socket_h = ABSTRACT_SOCKET_H.read_text(encoding="utf-8")
     abstract_socket_cpp = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
+    diagnostics = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
     tcp_connection = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
 
     assert "enum class ProxyConnectionPhase" in abstract_connection
@@ -39,8 +41,9 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     assert "rpl::producer<HandshakePhase> progress() const" in abstract_socket_h
     assert "ProxyAuthenticationRequiredError" in abstract_socket_cpp
     assert "ProxyConnectionError::Authentication" in abstract_socket_cpp
-    assert "setProxyConnectionStatus({" in tcp_connection
-    assert "ProxyConnectionPhase::CheckingTelegram" in tcp_connection
+    assert "ReportProxyEvent(_instance, {" in tcp_connection
+    assert "setProxyConnectionStatus(status)" in diagnostics
+    assert "ProxyConnectionPhase::CheckingTelegram" in diagnostics
 
 
 def test_visible_proxy_phrases_exist():

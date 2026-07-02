@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtNetwork/QNetworkReply>
 #include <optional>
 
+class QHostInfo;
+
 namespace MTP::details {
 
 [[nodiscard]] const std::vector<QString> &DnsDomains();
@@ -45,6 +47,7 @@ public:
 		const QString &domain,
 		const QStringList &ips,
 		crl::time expireAt)> callback);
+	~DomainResolver();
 
 	void resolve(const QString &domain);
 
@@ -80,9 +83,14 @@ private:
 	};
 
 	void resolve(const AttemptKey &key);
+	void resolveBySystemDns(const QString &domain);
+	void systemDnsDone(const QString &domain, const QHostInfo &result);
+	void resolveByDnsOverHttps(const AttemptKey &key);
 	void sendNextRequest(const AttemptKey &key);
 	void performRequest(const AttemptKey &key, const Attempt &attempt);
 	void checkExpireAndPushResult(const QString &domain);
+	void checkAttemptsExhausted(const AttemptKey &key);
+	void pushResultIfResolveDone(const QString &domain);
 	void requestFinished(
 		const AttemptKey &key,
 		not_null<QNetworkReply*> reply);
@@ -96,6 +104,7 @@ private:
 		crl::time expireAt)> _callback;
 
 	QNetworkAccessManager _manager;
+	std::map<QString, int> _systemLookups;
 	std::map<AttemptKey, Attempts> _attempts;
 	std::map<AttemptKey, std::vector<ServiceWebRequest>> _requests;
 	std::map<AttemptKey, CacheEntry> _cache;

@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonObject>
+#include <QtNetwork/QHostInfo>
 #include <range/v3/algorithm/shuffle.hpp>
 #include <range/v3/algorithm/reverse.hpp>
 #include <range/v3/algorithm/remove.hpp>
@@ -25,6 +26,7 @@ namespace {
 constexpr auto kSendNextTimeout = crl::time(800);
 constexpr auto kMinTimeToLive = 10 * crl::time(1000);
 constexpr auto kMaxTimeToLive = 300 * crl::time(1000);
+constexpr auto kSystemDnsTimeToLive = 60 * crl::time(1000);
 
 } // namespace
 
@@ -186,6 +188,12 @@ DomainResolver::DomainResolver(Fn<void(
 	_manager.setProxy(QNetworkProxy::NoProxy);
 }
 
+DomainResolver::~DomainResolver() {
+	for (const auto &[domain, lookupId] : _systemLookups) {
+		QHostInfo::abortHostLookup(lookupId);
+	}
+}
+
 void DomainResolver::resolve(const QString &domain) {
 	resolve({ domain, false });
 	resolve({ domain, true });
@@ -196,11 +204,67 @@ void DomainResolver::resolve(const AttemptKey &key) {
 		return;
 	} else if (_requests.find(key) != end(_requests)) {
 		return;
+	} else if (_systemLookups.find(key.domain) != end(_systemLookups)) {
+		return;
 	}
 	const auto i = _cache.find(key);
 	_lastTimestamp = crl::now();
 	if (i != end(_cache) && i->second.expireAt > _lastTimestamp) {
 		checkExpireAndPushResult(key.domain);
+		return;
+	}
+	resolveBySystemDns(key.domain);
+}
+
+void DomainResolver::resolveBySystemDns(const QString &domain) {
+	const auto lookupId = QHostInfo::lookupHost(
+		domain,
+		this,
+		[=](const QHostInfo &result) { systemDnsDone(domain, result); });
+	_systemLookups.emplace(domain, lookupId);
+}
+
+void DomainResolver::systemDnsDone(
+		const QString &domain,
+		const QHostInfo &result) {
+	_systemLookups.erase(domain);
+
+	auto ipv4 = QStringList();
+	auto ipv6 = QStringList();
+	for (const auto &address : result.addresses()) {
+		if (address.protocol() == QAbstractSocket::IPv4Protocol) {
+			ipv4.push_back(address.toString());
+		} else if (address.protocol() == QAbstractSocket::IPv6Protocol) {
+			ipv6.push_back(address.toString());
+		}
+	}
+	if (result.error() != QHostInfo::NoError) {
+		DEBUG_LOG(("Resolve Error: System DNS failed for %1, error: %2"
+			).arg(domain
+			).arg(result.errorString()));
+	}
+	_lastTimestamp = crl::now();
+	const auto apply = [&](bool v6, const QStringList &ips) {
+		if (ips.isEmpty()) {
+			resolveByDnsOverHttps({ domain, v6 });
+			return;
+		}
+		auto entry = CacheEntry();
+		entry.ips = ips;
+		entry.expireAt = _lastTimestamp + kSystemDnsTimeToLive;
+		_cache[AttemptKey{ domain, v6 }] = std::move(entry);
+	};
+	apply(false, ipv4);
+	apply(true, ipv6);
+	if (!ipv4.isEmpty()) {
+		checkExpireAndPushResult(domain);
+	}
+	pushResultIfResolveDone(domain);
+}
+
+void DomainResolver::resolveByDnsOverHttps(const AttemptKey &key) {
+	if (_attempts.find(key) != end(_attempts)
+		|| _requests.find(key) != end(_requests)) {
 		return;
 	}
 
@@ -314,12 +378,56 @@ void DomainResolver::performRequest(
 	});
 }
 
+void DomainResolver::checkAttemptsExhausted(const AttemptKey &key) {
+	const auto i = _attempts.find(key);
+	if (i != end(_attempts) && !i->second.list.empty()) {
+		return;
+	} else if (_requests.find(key) != end(_requests)) {
+		return;
+	}
+	_attempts.erase(key);
+	pushResultIfResolveDone(key.domain);
+}
+
+void DomainResolver::pushResultIfResolveDone(const QString &domain) {
+	const auto pending = [&](bool v6) {
+		const auto key = AttemptKey{ domain, v6 };
+		return (_attempts.find(key) != end(_attempts))
+			|| (_requests.find(key) != end(_requests));
+	};
+	if (pending(false)
+		|| pending(true)
+		|| _systemLookups.find(domain) != end(_systemLookups)) {
+		return;
+	}
+	_lastTimestamp = crl::now();
+	const auto ipv4 = _cache.find({ domain, false });
+	if (ipv4 != end(_cache) && ipv4->second.expireAt > _lastTimestamp) {
+		return;
+	}
+	const auto ipv6 = _cache.find({ domain, true });
+	if (ipv6 != end(_cache) && ipv6->second.expireAt > _lastTimestamp) {
+		const auto result = ipv6->second;
+		InvokeQueued(this, [=] {
+			_callback(domain, result.ips, result.expireAt);
+		});
+	} else {
+		LOG(("Resolve Error: Could not resolve domain %1 "
+			"by system DNS or DNS over HTTPS.").arg(domain));
+		const auto now = _lastTimestamp;
+		InvokeQueued(this, [=] {
+			_callback(domain, QStringList(), now);
+		});
+	}
+}
+
 void DomainResolver::requestFinished(
 		const AttemptKey &key,
 		not_null<QNetworkReply*> reply) {
 	const auto result = finalizeRequest(key, reply);
 	const auto response = ParseDnsResponse(result);
 	if (response.empty()) {
+		checkAttemptsExhausted(key);
 		return;
 	}
 	_requests.erase(key);
@@ -338,6 +446,7 @@ void DomainResolver::requestFinished(
 	_cache[key] = std::move(entry);
 
 	checkExpireAndPushResult(key.domain);
+	pushResultIfResolveDone(key.domain);
 }
 
 QByteArray DomainResolver::finalizeRequest(

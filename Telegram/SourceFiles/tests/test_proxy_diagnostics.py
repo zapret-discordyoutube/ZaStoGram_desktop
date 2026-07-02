@@ -59,7 +59,6 @@ def test_diagnostics_redacts_secret_material():
 
 
 def test_transport_paths_emit_diagnostics():
-    instance = read(INSTANCE_CPP)
     abstract_connection = read(ABSTRACT_CONNECTION_CPP)
     abstract_socket = read(ABSTRACT_SOCKET_CPP)
     resolving = read(RESOLVING_CPP)
@@ -67,8 +66,6 @@ def test_transport_paths_emit_diagnostics():
     http = read(HTTP_CPP)
     proxy_check = read(PROXY_CHECK_CPP)
 
-    assert "AddProxyDiagnosticsEvent" in instance
-    assert "ProxyDiagnosticsPhaseFromStatus" in instance
     assert "WriteProxyDiagnosticsLine" in abstract_connection
     assert "WriteProxyDiagnosticsLine" in abstract_socket
     assert "ProxyDiagnosticsPhase::Resolving" in resolving
@@ -81,6 +78,33 @@ def test_transport_paths_emit_diagnostics():
     assert "ProxyDiagnosticsPhase::TelegramCheck" in http
     assert "ProxyDiagnosticsPhase::ProxyCheckStarted" in proxy_check
     assert "ProxyDiagnosticsPhase::ProxyCheckFinished" in proxy_check
+
+
+def test_proxy_reporting_is_centralized():
+    header = read(DIAGNOSTICS_H)
+    diagnostics = read(DIAGNOSTICS_CPP)
+    instance = read(INSTANCE_CPP)
+    resolving = read(RESOLVING_CPP)
+    tcp = read(TCP_CPP)
+    http = read(HTTP_CPP)
+    proxy_check = read(PROXY_CHECK_CPP)
+
+    assert "struct ProxyEventReport" in header
+    assert "void ReportProxyEvent(" in header
+    assert "StatusPhaseFromDiagnostics" in diagnostics
+    assert "SourceForProxy" in diagnostics
+    assert "setProxyConnectionStatus" in diagnostics
+    assert "crl::on_main" in diagnostics
+
+    for transport in (resolving, tcp, http):
+        assert "ReportProxyEvent(_instance, {" in transport
+        assert "SetProxyConnectionStatus" not in transport
+        assert "AddProxyDiagnosticsEvent" not in transport
+    assert "ReportProxyEvent(mtproto, {" in proxy_check
+    assert "AddProxyDiagnosticsEvent" not in proxy_check
+
+    assert "selected proxy status changed" not in instance
+    assert "AddProxyDiagnosticsEvent" not in instance
 
 
 def test_proxy_settings_logs_tab_exists():
@@ -112,8 +136,25 @@ def test_proxy_settings_logs_tab_exists():
     assert "_logsSearchQuery" in box
 
 
+def test_logs_view_renders_one_text_string_per_line():
+    box = read(CONNECTION_BOX_CPP)
+
+    # Ui::Text::String stores block positions as uint16 (64K chars max),
+    # so feeding the whole joined log tail into one FlatLabel overflows
+    # them and asserts in lib_ui text.cpp:590 (crash on opening the
+    # proxy settings box). The logs view must keep one Text::String per
+    # log line, with a defensive per-line length cap.
+    assert "class ProxyLogsView" in box
+    assert "QPointer<ProxyLogsView> _logsView" in box
+    assert "_logsView->setLines(" in box
+    assert "constexpr auto kMaxLineLength" in box
+    assert "QPointer<Ui::FlatLabel> _logsView" not in box
+
+
 if __name__ == "__main__":
     test_diagnostics_model_is_registered_and_bounded()
     test_diagnostics_redacts_secret_material()
     test_transport_paths_emit_diagnostics()
+    test_proxy_reporting_is_centralized()
     test_proxy_settings_logs_tab_exists()
+    test_logs_view_renders_one_text_string_per_line()

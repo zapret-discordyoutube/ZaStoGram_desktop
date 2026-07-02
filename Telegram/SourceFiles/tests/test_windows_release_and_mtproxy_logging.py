@@ -153,6 +153,7 @@ def test_mtproxy_logs_have_release_visible_stream():
 
 def test_mtproxy_progress_errors_and_success_are_reported():
     tcp_connection = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
+    diagnostics_source = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
 
     assert "_socket->progress(" in tcp_connection
     assert "socketProgress(phase);" in tcp_connection
@@ -164,9 +165,12 @@ def test_mtproxy_progress_errors_and_success_are_reported():
     assert "HandshakePhase::ClientHelloSent" in tcp_connection
     assert "HandshakePhase::ServerHelloOk" in tcp_connection
     assert "HandshakePhase::FirstDataReceived" in tcp_connection
-    assert "ProxyConnectionPhase::Handshake" in tcp_connection
-    assert "ProxyConnectionPhase::CheckingTelegram" in tcp_connection
-    assert "ProxyConnectionPhase::Connected" in tcp_connection
+    assert "ProxyDiagnosticsPhase::ClientHelloSent" in tcp_connection
+    assert "ProxyDiagnosticsPhase::TelegramCheck" in tcp_connection
+    assert "ProxyDiagnosticsPhase::Connected" in tcp_connection
+    assert "ProxyConnectionPhase::Handshake" in diagnostics_source
+    assert "ProxyConnectionPhase::CheckingTelegram" in diagnostics_source
+    assert "ProxyConnectionPhase::Connected" in diagnostics_source
 
 
 if __name__ == "__main__":

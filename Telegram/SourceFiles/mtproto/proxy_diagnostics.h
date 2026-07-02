@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <rpl/producer.h>
 
+#include <optional>
 #include <vector>
 
 namespace MTP {
@@ -58,8 +59,17 @@ struct ProxyDiagnosticsEvent {
 	QDateTime timestamp;
 };
 
-[[nodiscard]] ProxyDiagnosticsPhase ProxyDiagnosticsPhaseFromStatus(
-	ProxyConnectionPhase phase);
+struct ProxyEventReport {
+	ProxyDiagnosticsPhase phase = ProxyDiagnosticsPhase::None;
+	ProxyConnectionError error = ProxyConnectionError::None;
+	std::optional<ProxyDiagnosticsSeverity> severity;
+	ProxyData proxy;
+	QString transport;
+	QString dc;
+	QString connectionId;
+	QString message;
+};
+
 [[nodiscard]] QString FormatProxyDiagnosticsEvent(
 	const ProxyDiagnosticsEvent &event);
 [[nodiscard]] std::vector<ProxyDiagnosticsEvent> ProxyDiagnosticsSnapshot();
@@ -70,5 +80,6 @@ struct ProxyDiagnosticsEvent {
 
 void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event);
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event);
+void ReportProxyEvent(not_null<Instance*> instance, ProxyEventReport report);
 
 } // namespace MTP

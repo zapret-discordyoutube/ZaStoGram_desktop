@@ -16,40 +16,6 @@ namespace {
 
 constexpr auto kOneConnectionTimeout = 4000;
 
-void SetProxyConnectionStatus(
-		not_null<Instance*> instance,
-		const ProxyData &proxy,
-		ProxyConnectionPhase phase,
-		ProxyConnectionError error = ProxyConnectionError::None) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	const auto status = ProxyConnectionStatus{ phase, error, proxy };
-	InvokeQueued(instance, [=] {
-		instance->setProxyConnectionStatus(status);
-	});
-}
-
-void AddResolvingDiagnostics(
-		const ProxyData &proxy,
-		ProxyDiagnosticsPhase phase,
-		ProxyConnectionError error,
-		const QString &message) {
-	if (proxy.type == ProxyData::Type::None) {
-		return;
-	}
-	AddProxyDiagnosticsEvent({
-		.source = ProxyDiagnosticsSource::Network,
-		.phase = phase,
-		.severity = (error == ProxyConnectionError::None)
-			? ProxyDiagnosticsSeverity::Info
-			: ProxyDiagnosticsSeverity::Error,
-		.error = error,
-		.proxy = proxy,
-		.message = message,
-	});
-}
-
 } // namespace
 
 ResolvingConnection::ResolvingConnection(
@@ -62,15 +28,11 @@ ResolvingConnection::ResolvingConnection(
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
 	if (proxy.resolvedExpireAt < crl::now()) {
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Resolving);
-		AddResolvingDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::Resolving,
-			ProxyConnectionError::None,
-			u"resolving proxy host"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Resolving,
+			.proxy = _proxy,
+			.message = u"resolving proxy host"_q,
+		});
 		const auto host = proxy.host;
 		connect(
 			instance,
@@ -137,16 +99,19 @@ void ResolvingConnection::domainResolved(
 	}
 	_proxy.resolvedExpireAt = expireAt;
 	if (ips.empty()) {
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Failed,
-			ProxyConnectionError::HostNotFound);
-		AddResolvingDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::Failed,
-			ProxyConnectionError::HostNotFound,
-			u"proxy host not found"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ProxyConnectionError::HostNotFound,
+			.proxy = _proxy,
+			.message = u"proxy host not found"_q,
+		});
+	} else {
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Resolving,
+			.proxy = _proxy,
+			.message = u"proxy host resolved (%1 addresses)"_q.arg(
+				ips.size()),
+		});
 	}
 
 	auto index = 0;
@@ -268,16 +233,12 @@ void ResolvingConnection::connectToServer(
 		int16 protocolDcId,
 		bool protocolForFiles) {
 	if (!_child) {
-		SetProxyConnectionStatus(
-			_instance,
-			_proxy,
-			ProxyConnectionPhase::Failed,
-			ProxyConnectionError::HostNotFound);
-		AddResolvingDiagnostics(
-			_proxy,
-			ProxyDiagnosticsPhase::Failed,
-			ProxyConnectionError::HostNotFound,
-			u"proxy host not found"_q);
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ProxyConnectionError::HostNotFound,
+			.proxy = _proxy,
+			.message = u"proxy host not found"_q,
+		});
 		InvokeQueued(this, [=] { emitError(kErrorCodeOther); });
 		return;
 	}

@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy_diagnostics.h"
 
+#include "base/invoke_queued.h"
 #include "logs.h"
+#include "mtproto/mtp_instance.h"
 #include "settings.h"
 
 #include <QtCore/QDir>
@@ -183,28 +185,38 @@ rpl::variable<std::vector<ProxyDiagnosticsEvent>> Events;
 	return result;
 }
 
-} // namespace
-
-ProxyDiagnosticsPhase ProxyDiagnosticsPhaseFromStatus(
-		ProxyConnectionPhase phase) {
+[[nodiscard]] auto StatusPhaseFromDiagnostics(ProxyDiagnosticsPhase phase)
+-> std::optional<ProxyConnectionPhase> {
 	switch (phase) {
-	case ProxyConnectionPhase::None:
-		return ProxyDiagnosticsPhase::None;
-	case ProxyConnectionPhase::Resolving:
-		return ProxyDiagnosticsPhase::Resolving;
-	case ProxyConnectionPhase::Connecting:
-		return ProxyDiagnosticsPhase::Connecting;
-	case ProxyConnectionPhase::Handshake:
-		return ProxyDiagnosticsPhase::ClientHelloSent;
-	case ProxyConnectionPhase::CheckingTelegram:
-		return ProxyDiagnosticsPhase::TelegramCheck;
-	case ProxyConnectionPhase::Connected:
-		return ProxyDiagnosticsPhase::Connected;
-	case ProxyConnectionPhase::Failed:
-		return ProxyDiagnosticsPhase::Failed;
+	case ProxyDiagnosticsPhase::Resolving:
+		return ProxyConnectionPhase::Resolving;
+	case ProxyDiagnosticsPhase::Connecting:
+	case ProxyDiagnosticsPhase::TcpConnected:
+		return ProxyConnectionPhase::Connecting;
+	case ProxyDiagnosticsPhase::ClientHelloSent:
+		return ProxyConnectionPhase::Handshake;
+	case ProxyDiagnosticsPhase::ServerHelloOk:
+	case ProxyDiagnosticsPhase::TelegramCheck:
+		return ProxyConnectionPhase::CheckingTelegram;
+	case ProxyDiagnosticsPhase::Connected:
+		return ProxyConnectionPhase::Connected;
+	case ProxyDiagnosticsPhase::Failed:
+		return ProxyConnectionPhase::Failed;
+	case ProxyDiagnosticsPhase::None:
+	case ProxyDiagnosticsPhase::ProxyCheckStarted:
+	case ProxyDiagnosticsPhase::ProxyCheckFinished:
+		return std::nullopt;
 	}
-	return ProxyDiagnosticsPhase::None;
+	return std::nullopt;
 }
+
+[[nodiscard]] ProxyDiagnosticsSource SourceForProxy(const ProxyData &proxy) {
+	return (proxy.type == ProxyData::Type::Mtproto)
+		? ProxyDiagnosticsSource::MTProxy
+		: ProxyDiagnosticsSource::Network;
+}
+
+} // namespace
 
 QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	const auto safe = RedactEvent(event);
@@ -299,12 +311,14 @@ void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event) {
 	if (!event.timestamp.isValid()) {
 		event.timestamp = QDateTime::currentDateTime();
 	}
-	auto copy = Events.current();
-	copy.push_back(std::move(event));
-	while (copy.size() > kProxyDiagnosticsLimit) {
-		copy.erase(begin(copy));
-	}
-	Events.force_assign(std::move(copy));
+	crl::on_main([event = std::move(event)]() mutable {
+		auto copy = Events.current();
+		copy.push_back(std::move(event));
+		while (copy.size() > kProxyDiagnosticsLimit) {
+			copy.erase(begin(copy));
+		}
+		Events.force_assign(std::move(copy));
+	});
 }
 
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
@@ -314,6 +328,38 @@ void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
 	const auto line = FormatProxyDiagnosticsEvent(event);
 	AddProxyDiagnosticsEvent(std::move(event));
 	Logs::writeMtproxy(line);
+}
+
+void ReportProxyEvent(
+		not_null<Instance*> instance,
+		ProxyEventReport report) {
+	if (report.proxy.type == ProxyData::Type::None) {
+		return;
+	}
+	if (const auto phase = StatusPhaseFromDiagnostics(report.phase)) {
+		const auto status = ProxyConnectionStatus{
+			*phase,
+			report.error,
+			report.proxy,
+		};
+		InvokeQueued(instance, [=] {
+			instance->setProxyConnectionStatus(status);
+		});
+	}
+	AddProxyDiagnosticsEvent({
+		.source = SourceForProxy(report.proxy),
+		.phase = report.phase,
+		.severity = report.severity.value_or(
+			(report.error == ProxyConnectionError::None)
+				? ProxyDiagnosticsSeverity::Info
+				: ProxyDiagnosticsSeverity::Error),
+		.error = report.error,
+		.proxy = std::move(report.proxy),
+		.transport = std::move(report.transport),
+		.dc = std::move(report.dc),
+		.connectionId = std::move(report.connectionId),
+		.message = std::move(report.message),
+	});
 }
 
 } // namespace MTP

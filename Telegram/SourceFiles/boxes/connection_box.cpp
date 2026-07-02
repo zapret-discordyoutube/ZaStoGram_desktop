@@ -664,6 +664,108 @@ private:
 
 };
 
+// Renders the diagnostics log tail as one Ui::Text::String per line.
+// Ui::Text stores block positions as uint16, so a single string is
+// limited to 64K chars - the log tail as a whole is not.
+class ProxyLogsView final : public Ui::RpWidget {
+public:
+	ProxyLogsView(QWidget *parent, const style::FlatLabel &st)
+	: RpWidget(parent)
+	, _st(st) {
+	}
+
+	void setLines(const QStringList &lines) {
+		constexpr auto kMaxLineLength = 16 * 1024;
+		_lines.clear();
+		_lines.resize(lines.size());
+		for (auto i = 0; i != int(lines.size()); ++i) {
+			const auto &line = lines[i];
+			_lines[i].text.setText(
+				_st.style,
+				(line.size() > kMaxLineLength
+					? line.left(kMaxLineLength) + Ui::kQEllipsis
+					: line),
+				kPlainTextOptions);
+		}
+		resizeToWidth(width());
+		update();
+	}
+
+	void setCopyText(const QString &text) {
+		_copyText = text;
+	}
+
+protected:
+	int resizeGetHeight(int newWidth) override {
+		const auto available = newWidth
+			- _st.margin.left()
+			- _st.margin.right();
+		auto top = _st.margin.top();
+		for (auto &line : _lines) {
+			line.top = top;
+			line.height = (available > 0)
+				? line.text.countHeight(available, true)
+				: 0;
+			top += line.height;
+		}
+		return top + _st.margin.bottom();
+	}
+
+	void paintEvent(QPaintEvent *e) override {
+		const auto available = width()
+			- _st.margin.left()
+			- _st.margin.right();
+		if (available <= 0) {
+			return;
+		}
+		auto p = QPainter(this);
+		p.setPen(_st.textFg);
+		const auto clip = e->rect();
+		for (const auto &line : _lines) {
+			if (line.top >= clip.y() + clip.height()) {
+				break;
+			} else if (line.top + line.height <= clip.y()) {
+				continue;
+			}
+			line.text.draw(p, {
+				.position = { _st.margin.left(), line.top },
+				.availableWidth = available,
+				.align = _st.align,
+				.clip = clip,
+				.palette = &_st.palette,
+				.elisionHeight = line.height,
+				.elisionBreakEverywhere = true,
+			});
+		}
+	}
+
+	void contextMenuEvent(QContextMenuEvent *e) override {
+		if (_copyText.isEmpty()) {
+			return;
+		}
+		_menu = base::make_unique_q<Ui::PopupMenu>(
+			this,
+			st::defaultPopupMenu);
+		_menu->addAction(tr::lng_proxy_logs_copy(tr::now), [text = _copyText] {
+			TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+		});
+		_menu->popup(e->globalPos());
+	}
+
+private:
+	struct Line {
+		Ui::Text::String text;
+		int top = 0;
+		int height = 0;
+	};
+
+	const style::FlatLabel &_st;
+	std::vector<Line> _lines;
+	base::unique_qptr<Ui::PopupMenu> _menu;
+	QString _copyText;
+
+};
+
 class ProxiesBox : public Ui::BoxContent {
 public:
 	using View = ProxiesBoxController::ItemView;
@@ -716,7 +818,7 @@ private:
 	QPointer<Ui::VerticalLayout> _logsWrap;
 	QPointer<Ui::SettingsSlider> _logsFilter;
 	QPointer<Ui::InputField> _logsSearch;
-	QPointer<Ui::FlatLabel> _logsView;
+	QPointer<ProxyLogsView> _logsView;
 	std::vector<MTP::ProxyDiagnosticsEvent> _logsSnapshot;
 	QString _logsVisibleText;
 	QString _logsSearchQuery;
@@ -1651,13 +1753,8 @@ void ProxiesBox::setupLogsSection() {
 	});
 
 	_logsView = wrap->add(
-		object_ptr<Ui::FlatLabel>(
-			wrap,
-			QString(),
-			st::boxDividerLabel),
+		object_ptr<ProxyLogsView>(wrap, st::boxDividerLabel),
 		st::proxySettingsRightAboutPadding);
-	_logsView->setSelectable(true);
-	_logsView->setBreakEverywhere(true);
 
 	MTP::ProxyDiagnosticsEventsValue() | rpl::on_next([=](
 			std::vector<MTP::ProxyDiagnosticsEvent> events) {
@@ -1694,11 +1791,11 @@ void ProxiesBox::refreshLogsView() {
 	}
 
 	_logsVisibleText = lines.join(u"\n"_q);
-	const auto text = _logsVisibleText.isEmpty()
-		? tr::lng_proxy_logs_empty(tr::now)
-		: _logsVisibleText;
-	_logsView->setText(text);
-	_logsView->setContextCopyText(_logsVisibleText);
+	if (lines.isEmpty()) {
+		lines.push_back(tr::lng_proxy_logs_empty(tr::now));
+	}
+	_logsView->setLines(lines);
+	_logsView->setCopyText(_logsVisibleText);
 	_logsView->resizeToWidth(_logsView->width());
 	if (_logsWrap) {
 		_logsWrap->resizeToWidth(_logsWrap->width());
