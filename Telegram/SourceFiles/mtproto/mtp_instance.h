@@ -7,9 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/connection_abstract.h"
 #include "mtproto/details/mtproto_serialized_request.h"
+#include "mtproto/proxy/status.h"
 #include "mtproto/mtproto_response.h"
+
+#include <QtCore/QObject>
 
 namespace MTP {
 namespace details {

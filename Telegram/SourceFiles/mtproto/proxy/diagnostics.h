@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/connection_abstract.h"
+#include "mtproto/proxy/status.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QString>
@@ -18,6 +18,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <vector>
 
 namespace MTP {
+
+class Instance;
 
 enum class ProxyDiagnosticsSource {
 	MTProxy,

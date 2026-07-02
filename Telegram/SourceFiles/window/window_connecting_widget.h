@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "base/unique_qptr.h"
-#include "mtproto/connection_abstract.h"
+#include "mtproto/proxy/status.h"
 #include "ui/effects/animations.h"
 
 namespace Ui {

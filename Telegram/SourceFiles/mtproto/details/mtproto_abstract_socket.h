@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/basic_types.h"
 #include "mtproto/connection_abstract.h"
+#include "mtproto/proxy/status.h"
 
 namespace MTP::details {
 
