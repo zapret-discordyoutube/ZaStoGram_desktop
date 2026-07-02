@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/mtp_instance.h"
-#include "mtproto/proxy_diagnostics.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"

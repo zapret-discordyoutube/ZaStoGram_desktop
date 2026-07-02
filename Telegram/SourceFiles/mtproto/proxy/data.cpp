@@ -5,7 +5,7 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/proxy/data.h"
 
 #include "base/qthelp_url.h"
 #include "base/qt/qt_string_view.h"

@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/connection_abstract.h"
-#include "mtproto/handshake_gate.h"
+#include "mtproto/proxy/handshake_gate.h"
 
 #include <memory>
 

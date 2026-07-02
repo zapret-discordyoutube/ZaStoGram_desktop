@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/connection_tcp.h"
 #include "mtproto/connection_http.h"
-#include "mtproto/connection_resolving.h"
-#include "mtproto/proxy_diagnostics.h"
+#include "mtproto/proxy/resolving_connection.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/session.h"
 #include "logs.h"
 #include "base/unixtime.h"

@@ -4,12 +4,13 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
-GATE_H = SOURCE_DIR / "mtproto" / "handshake_gate.h"
-GATE_CPP = SOURCE_DIR / "mtproto" / "handshake_gate.cpp"
+PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
+GATE_H = PROXY_DIR / "handshake_gate.h"
+GATE_CPP = PROXY_DIR / "handshake_gate.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session_private.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
-PROXY_CHECK_H = SOURCE_DIR / "mtproto" / "proxy_check.h"
-PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy_check.cpp"
+PROXY_CHECK_H = PROXY_DIR / "check.h"
+PROXY_CHECK_CPP = PROXY_DIR / "check.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
 
 
@@ -18,8 +19,8 @@ def test_gate_module_is_registered():
 
     assert GATE_H.exists()
     assert GATE_CPP.exists()
-    assert "mtproto/handshake_gate.cpp" in cmake
-    assert "mtproto/handshake_gate.h" in cmake
+    assert "mtproto/proxy/handshake_gate.cpp" in cmake
+    assert "mtproto/proxy/handshake_gate.h" in cmake
 
 
 def test_gate_lease_api_and_constants():
@@ -48,7 +49,7 @@ def test_session_private_uses_gate_for_proxied_test_connections():
     header = SESSION_H.read_text(encoding="utf-8")
     source = SESSION_CPP.read_text(encoding="utf-8")
 
-    assert '#include "mtproto/handshake_gate.h"' in header
+    assert '#include "mtproto/proxy/handshake_gate.h"' in header
     assert "HandshakeGateLease handshakeGate;" in header
     assert "const auto proxied = (_options->proxy.type != ProxyData::Type::None);" in source
     assert "auto handshakeGate = proxied" in source
@@ -74,7 +75,7 @@ def test_remove_connection_releases_before_erasing():
 def test_proxy_check_connection_holds_gate_lease():
     header = PROXY_CHECK_H.read_text(encoding="utf-8")
 
-    assert '#include "mtproto/handshake_gate.h"' in header
+    assert '#include "mtproto/proxy/handshake_gate.h"' in header
     assert "class ProxyCheckConnection" in header
     assert "#include <memory>" in header
     assert "struct Data" in header

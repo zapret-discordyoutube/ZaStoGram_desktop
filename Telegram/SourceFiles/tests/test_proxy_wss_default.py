@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
-PROXY_DATA_H = SOURCE_DIR / "mtproto" / "mtproto_proxy_data.h"
+PROXY_DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
 CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CORE_SETTINGS_PROXY_CPP = SOURCE_DIR / "core" / "core_settings_proxy.cpp"

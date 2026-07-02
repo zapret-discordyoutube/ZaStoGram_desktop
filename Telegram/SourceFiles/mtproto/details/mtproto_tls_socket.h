@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/details/mtproto_abstract_socket.h"
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/proxy/data.h"
 #include "base/timer.h"
 
 namespace MTP::details {

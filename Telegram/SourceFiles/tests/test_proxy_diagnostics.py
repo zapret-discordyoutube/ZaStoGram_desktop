@@ -5,15 +5,16 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
-DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy_diagnostics.h"
-DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy_diagnostics.cpp"
+PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
+DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
+DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
 ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
-RESOLVING_CPP = SOURCE_DIR / "mtproto" / "connection_resolving.cpp"
+RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 HTTP_CPP = SOURCE_DIR / "mtproto" / "connection_http.cpp"
-PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy_check.cpp"
+PROXY_CHECK_CPP = PROXY_DIR / "check.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 
 
@@ -27,8 +28,8 @@ def test_diagnostics_model_is_registered_and_bounded():
     header = read(DIAGNOSTICS_H)
     source = read(DIAGNOSTICS_CPP)
 
-    assert "mtproto/proxy_diagnostics.cpp" in cmake
-    assert "mtproto/proxy_diagnostics.h" in cmake
+    assert "mtproto/proxy/diagnostics.cpp" in cmake
+    assert "mtproto/proxy/diagnostics.h" in cmake
     assert "enum class ProxyDiagnosticsSource" in header
     assert "enum class ProxyDiagnosticsPhase" in header
     assert "struct ProxyDiagnosticsEvent" in header

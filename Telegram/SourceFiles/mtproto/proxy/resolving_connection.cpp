@@ -5,10 +5,10 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
-#include "mtproto/connection_resolving.h"
+#include "mtproto/proxy/resolving_connection.h"
 
 #include "mtproto/mtp_instance.h"
-#include "mtproto/proxy_diagnostics.h"
+#include "mtproto/proxy/diagnostics.h"
 
 namespace MTP {
 namespace details {

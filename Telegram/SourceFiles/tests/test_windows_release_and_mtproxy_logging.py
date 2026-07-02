@@ -14,8 +14,8 @@ ABSTRACT_SOCKET_CPP = (
     SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
 )
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
-DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy_diagnostics.h"
-DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy_diagnostics.cpp"
+DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.h"
+DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 
 
 def test_windows_artifact_uses_release_configuration():

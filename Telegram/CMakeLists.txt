@@ -1486,8 +1486,8 @@ PRIVATE
     mtproto/connection_abstract.h
     mtproto/connection_http.cpp
     mtproto/connection_http.h
-    mtproto/connection_resolving.cpp
-    mtproto/connection_resolving.h
+    mtproto/proxy/resolving_connection.cpp
+    mtproto/proxy/resolving_connection.h
     mtproto/connection_tcp.cpp
     mtproto/connection_tcp.h
     mtproto/core_types.h
@@ -1495,14 +1495,14 @@ PRIVATE
     mtproto/dedicated_file_loader.h
     mtproto/facade.cpp
     mtproto/facade.h
-    mtproto/handshake_gate.cpp
-    mtproto/handshake_gate.h
+    mtproto/proxy/handshake_gate.cpp
+    mtproto/proxy/handshake_gate.h
     mtproto/mtp_instance.cpp
     mtproto/mtp_instance.h
-    mtproto/proxy_diagnostics.cpp
-    mtproto/proxy_diagnostics.h
-    mtproto/proxy_check.cpp
-    mtproto/proxy_check.h
+    mtproto/proxy/diagnostics.cpp
+    mtproto/proxy/diagnostics.h
+    mtproto/proxy/check.cpp
+    mtproto/proxy/check.h
     mtproto/sender.h
     mtproto/session.cpp
     mtproto/session.h

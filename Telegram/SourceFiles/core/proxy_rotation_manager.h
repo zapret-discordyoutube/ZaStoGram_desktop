@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/timer.h"
-#include "mtproto/proxy_check.h"
+#include "mtproto/proxy/check.h"
 
 #include <rpl/lifetime.h>
 #include <vector>

@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_http.h"
 
 #include "mtproto/mtp_instance.h"
-#include "mtproto/proxy_diagnostics.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"

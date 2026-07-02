@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "mtproto/mtproto_auth_key.h"
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/proxy/data.h"
 #include "window/window_separate_id.h"
 
 class History;
