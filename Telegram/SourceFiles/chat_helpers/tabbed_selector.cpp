@@ -1295,7 +1295,7 @@ void TabbedSelector::switchTab() {
 
 	currentTab()->widget()->refreshRecent();
 	currentTab()->widget()->preloadImages();
-	setWidgetToScrollArea();
+	setWidgetToScrollArea(false);
 	currentTab()->widget()->setAnimationActive(false);
 
 	auto nowCache = grabForAnimation();
@@ -1368,7 +1368,7 @@ not_null<StickersListWidget*> TabbedSelector::masks() const {
 		getTab(indexByType(SelectorTab::Masks))->widget());
 }
 
-void TabbedSelector::setWidgetToScrollArea() {
+void TabbedSelector::setWidgetToScrollArea(bool activateAnimations) {
 	auto inner = _scroll->setOwnedWidget(currentTab()->takeWidget());
 	auto innerWidth = _scroll->width() - st::emojiScroll.width;
 	auto scrollHeight = _scroll->height();
@@ -1383,7 +1383,7 @@ void TabbedSelector::setWidgetToScrollArea() {
 	_scroll->disableScroll(false);
 	scrollToY(currentTab()->getScrollTop());
 	handleScroll();
-	inner->setAnimationActive(!_a_slide.animating());
+	inner->setAnimationActive(activateAnimations && !_a_slide.animating());
 }
 
 void TabbedSelector::scrollToY(int y) {

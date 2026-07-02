@@ -53,7 +53,8 @@ public:
 
 	[[nodiscard]] PickerAnimationLease requestLease(
 		PickerAnimationKey key,
-		bool visible);
+		bool visible,
+		bool needsStart);
 
 	void queueRepaint(QWidget *widget, QRect rect);
 	void flushRepaints();

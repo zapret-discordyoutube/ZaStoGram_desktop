@@ -902,7 +902,7 @@ void GifsListWidget::syncVisibleAnimations() {
 			.owner = reinterpret_cast<uintptr_t>(this),
 			.index = item->position(),
 			.kind = PickerAnimationKind::Gif,
-		}, rect.intersects(visible));
+		}, rect.intersects(visible), item->needsAnimationStart());
 		item->prepareAnimation(lease);
 		if (lease.visible
 			&& !lease.canStart
@@ -946,6 +946,9 @@ void GifsListWidget::animationActiveChanged(bool active) {
 		syncVisibleAnimations();
 	} else {
 		clearHeavyData();
+		if (_footer) {
+			_footer->clearHeavyData();
+		}
 	}
 }
 

@@ -61,6 +61,9 @@ def test_inline_layout_items_expose_animation_lifecycle():
     assert "virtual void stopAnimation() const" in header
     assert "void Gif::prepareAnimation(PickerAnimationLease lease) const" in source
     assert "void Gif::stopAnimation() const" in source
+    assert "virtual bool needsAnimationStart() const" in header
+    assert "bool Gif::needsAnimationStart() const" in source
+    assert "bool Sticker::needsAnimationStart() const" in source
 
 
 def test_gif_animation_work_is_outside_paint():
@@ -106,6 +109,14 @@ def test_sticker_animation_work_is_outside_paint():
 
     assert "void syncVisibleAnimations();" in header
     assert "QRect stickerRect(" in header
+    assert "void clearHeavyOutsideRetentionIn(" in header
+    assert "clearHeavyOutsideRetentionIn(info, retentionTop, retentionBottom)" in source
+    cleanup = function_body(
+        source,
+        "void StickersListWidget::clearHeavyOutsideRetentionIn(")
+    assert "set.lottiePlayer->remove(sticker.lottie)" in cleanup
+    assert "ensureMediaCreated()" not in paint
+    assert "checkStickerSmall()" not in paint
     assert "setupLottie(" not in paint
     assert "setupWebm(" not in paint
     assert "queueRepaint(this" in callback

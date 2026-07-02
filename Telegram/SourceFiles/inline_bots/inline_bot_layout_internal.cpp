@@ -193,6 +193,15 @@ void Gif::prepareAnimation(PickerAnimationLease lease) const {
 	}
 }
 
+bool Gif::needsAnimationStart() const {
+	const auto document = getShownDocument();
+	if (!document || _gif || _gif.isBad() || !CanPlayInline(document)) {
+		return false;
+	}
+	ensureDataMediaCreated(document);
+	return Data::VideoPreviewState(_dataMedia.get()).loaded();
+}
+
 void Gif::stopAnimation() const {
 	const_cast<Gif*>(this)->unloadHeavyPart();
 }
@@ -512,6 +521,24 @@ void Sticker::prepareAnimation(PickerAnimationLease lease) const {
 	} else if (!_webm && sticker->isWebm()) {
 		setupWebm();
 	}
+}
+
+bool Sticker::needsAnimationStart() const {
+	const auto document = getShownDocument();
+	if (!document) {
+		return false;
+	}
+	const auto sticker = document->sticker();
+	if (!sticker) {
+		return false;
+	} else if ((sticker->isLottie() && _lottie)
+		|| (sticker->isWebm() && _webm)) {
+		return false;
+	} else if (!sticker->isLottie() && !sticker->isWebm()) {
+		return false;
+	}
+	ensureDataMediaCreated(document);
+	return _dataMedia->loaded();
 }
 
 void Sticker::ensureDataMediaCreated(not_null<DocumentData*> document) const {

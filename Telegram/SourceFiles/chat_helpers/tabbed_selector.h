@@ -276,7 +276,7 @@ private:
 	int indexByType(SelectorTab type) const;
 
 	bool hasSectionIcons() const;
-	void setWidgetToScrollArea();
+	void setWidgetToScrollArea(bool activateAnimations = true);
 	void createTabsSlider();
 	void fillTabsSliderSections();
 	void updateTabsSliderGeometry();

@@ -1884,6 +1884,7 @@ void StickersListWidget::syncVisibleAnimations() {
 			clearHeavyIn(set, false);
 			return true;
 		}
+		clearHeavyOutsideRetentionIn(info, retentionTop, retentionBottom);
 		const auto fromRow = floorclamp(
 			visibleTop - info.rowsTop,
 			_singleSize.height(),
@@ -1982,6 +1983,45 @@ void StickersListWidget::pauseInvisibleLottieIn(const SectionInfo &info) {
 			pauseHeight / _singleSize.height(),
 			info.rowsCount);
 		pauseInRows(info.rowsCount - pauseRows, info.rowsCount);
+	}
+}
+
+void StickersListWidget::clearHeavyOutsideRetentionIn(
+		const SectionInfo &info,
+		int retentionTop,
+		int retentionBottom) {
+	auto &set = shownSets()[info.section];
+	const auto clearRows = [&](int fromRow, int tillRow) {
+		Expects(fromRow <= tillRow);
+
+		for (auto row = fromRow; row != tillRow; ++row) {
+			for (auto column = 0; column != _columnCount; ++column) {
+				const auto index = row * _columnCount + column;
+				if (index >= info.count) {
+					break;
+				}
+				auto &sticker = set.stickers[index];
+				sticker.webm = nullptr;
+				if (sticker.lottie && set.lottiePlayer) {
+					set.lottiePlayer->remove(sticker.lottie);
+				}
+				sticker.lottie = nullptr;
+				sticker.documentMedia = nullptr;
+			}
+		}
+	};
+
+	if (retentionTop > info.rowsTop) {
+		const auto rows = std::min(
+			(retentionTop - info.rowsTop) / _singleSize.height(),
+			info.rowsCount);
+		clearRows(0, rows);
+	}
+	if (retentionBottom < info.rowsBottom) {
+		const auto rows = std::min(
+			(info.rowsBottom - retentionBottom) / _singleSize.height(),
+			info.rowsCount);
+		clearRows(info.rowsCount - rows, info.rowsCount);
 	}
 }
 
@@ -2097,7 +2137,9 @@ void StickersListWidget::setupVisibleStickerAnimation(
 		.owner = reinterpret_cast<uintptr_t>(&set),
 		.index = index,
 		.kind = kind,
-	}, true);
+	}, true, ((data->isLottie() && !sticker.lottie)
+		|| (data->isWebm() && !sticker.webm))
+		&& sticker.documentMedia->loaded());
 	if (!sticker.documentMedia->loaded() || !lease.canStart) {
 		if (lease.visible
 			&& !lease.canStart
@@ -2279,13 +2321,12 @@ void StickersListWidget::paintSticker(
 		int index,
 		crl::time now,
 		bool paused,
-		bool selected,
-		bool deleteSelected) {
+	bool selected,
+	bool deleteSelected) {
 	auto &sticker = set.stickers[index];
-	sticker.ensureMediaCreated();
 	const auto document = sticker.document;
 	const auto &media = sticker.documentMedia;
-	if (!document->sticker()) {
+	if (!document->sticker() || !media) {
 		return;
 	}
 
@@ -2304,8 +2345,6 @@ void StickersListWidget::paintSticker(
 		}
 		_overBg.paint(p, QRect(tl, _singleSize));
 	}
-
-	media->checkStickerSmall();
 
 	const auto size = ComputeStickerSize(document, boundingBoxSize());
 	const auto ppos = pos + QPoint(
@@ -3270,7 +3309,7 @@ void StickersListWidget::refreshFooterIcons() {
 }
 
 void StickersListWidget::preloadImages() {
-	if (_footer) {
+	if (_footer && animationActive()) {
 		_footer->preloadImages();
 	}
 }
@@ -3931,6 +3970,9 @@ void StickersListWidget::animationActiveChanged(bool active) {
 		syncVisibleAnimations();
 	} else {
 		clearHeavyData();
+		if (_footer) {
+			_footer->clearHeavyData();
+		}
 	}
 }
 

@@ -335,6 +335,10 @@ private:
 	void syncVisibleAnimations();
 	void checkVisibleLottie();
 	void pauseInvisibleLottieIn(const SectionInfo &info);
+	void clearHeavyOutsideRetentionIn(
+		const SectionInfo &info,
+		int retentionTop,
+		int retentionBottom);
 	void takeHeavyData(std::vector<Set> &to, std::vector<Set> &from);
 	void takeHeavyData(Set &to, Set &from);
 	void takeHeavyData(Sticker &to, Sticker &from);

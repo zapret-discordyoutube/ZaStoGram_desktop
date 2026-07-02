@@ -58,12 +58,13 @@ int PickerAnimationScheduler::retentionBottom(
 
 PickerAnimationLease PickerAnimationScheduler::requestLease(
 		PickerAnimationKey key,
-		bool visible) {
+		bool visible,
+		bool needsStart) {
 	const auto now = crl::now();
 	const auto admitted = _active && visible;
 	return {
 		.visible = admitted,
-		.canStart = admitted && consumeStart(key.kind, now),
+		.canStart = admitted && (!needsStart || consumeStart(key.kind, now)),
 		.frameMs = admitted ? now : crl::time(0),
 		.nextRepaintDelay = kRepaintTick,
 	};

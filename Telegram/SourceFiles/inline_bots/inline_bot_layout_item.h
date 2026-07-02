@@ -95,6 +95,9 @@ public:
 	virtual void preload() const;
 	virtual void prepareAnimation(PickerAnimationLease lease) const {
 	}
+	[[nodiscard]] virtual bool needsAnimationStart() const {
+		return false;
+	}
 	virtual void stopAnimation() const {
 		const_cast<ItemBase*>(this)->unloadHeavyPart();
 	}
