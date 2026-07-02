@@ -29,6 +29,11 @@ enum class Action {
 	ToggleFullscreen,
 };
 
+enum class OpenRoute {
+	None,
+	MediaView,
+};
+
 struct ActionContext {
 	int key = 0;
 	Qt::KeyboardModifiers modifiers;
@@ -47,10 +52,24 @@ struct ActionRequest {
 	crl::time relative = 0;
 };
 
+struct ActionHandlers {
+	Fn<void()> togglePlayback;
+	Fn<void(crl::time)> seekRelative;
+	Fn<void()> seekToStart;
+	Fn<void(float64)> seekToProgress;
+	Fn<void(int)> stepFrame;
+	Fn<void(int)> jumpChapter;
+	Fn<void()> toggleFullscreen;
+};
+
 [[nodiscard]] std::optional<ActionRequest> ResolveAction(
 	ActionContext context);
 
-[[nodiscard]] bool ShouldOpenDocumentInMediaView(
+[[nodiscard]] bool ExecuteAction(
+	const ActionRequest &request,
+	const ActionHandlers &handlers);
+
+[[nodiscard]] OpenRoute ResolveOpenRoute(
 	not_null<DocumentData*> document);
 
 } // namespace Media::View

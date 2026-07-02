@@ -92,8 +92,62 @@ std::optional<ActionRequest> ResolveAction(ActionContext context) {
 	return std::nullopt;
 }
 
-bool ShouldOpenDocumentInMediaView(not_null<DocumentData*> document) {
-	return document->isVideoMessage();
+bool ExecuteAction(
+		const ActionRequest &request,
+		const ActionHandlers &handlers) {
+	switch (request.action) {
+	case Action::TogglePlayback:
+		if (handlers.togglePlayback) {
+			handlers.togglePlayback();
+			return true;
+		}
+		return false;
+	case Action::SeekRelative:
+		if (handlers.seekRelative) {
+			handlers.seekRelative(request.relative);
+			return true;
+		}
+		return false;
+	case Action::SeekToStart:
+		if (handlers.seekToStart) {
+			handlers.seekToStart();
+			return true;
+		}
+		return false;
+	case Action::SeekToProgress:
+		if (handlers.seekToProgress) {
+			handlers.seekToProgress(request.progress);
+			return true;
+		}
+		return false;
+	case Action::StepFrame:
+		if (handlers.stepFrame) {
+			handlers.stepFrame(request.direction);
+			return true;
+		}
+		return false;
+	case Action::JumpChapter:
+		if (handlers.jumpChapter) {
+			handlers.jumpChapter(request.direction);
+			return true;
+		}
+		return false;
+	case Action::ToggleFullscreen:
+		if (handlers.toggleFullscreen) {
+			handlers.toggleFullscreen();
+			return true;
+		}
+		return false;
+	case Action::None:
+		return false;
+	}
+	Unexpected("Action in Media::View::ExecuteAction.");
+}
+
+OpenRoute ResolveOpenRoute(not_null<DocumentData*> document) {
+	return document->isVideoMessage()
+		? OpenRoute::MediaView
+		: OpenRoute::None;
 }
 
 } // namespace Media::View

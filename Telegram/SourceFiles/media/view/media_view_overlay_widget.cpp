@@ -6946,70 +6946,68 @@ bool OverlayWidget::isSaveMsgShown() const {
 }
 
 bool OverlayWidget::executeMediaViewAction(const ActionRequest &request) {
-	switch (request.action) {
-	case Action::TogglePlayback:
-		if (_stories) {
-			_stories->togglePaused(!_stories->paused());
-		} else {
-			playbackPauseResume();
-		}
-		return true;
-	case Action::SeekRelative:
-		activateControls();
-		seekRelativeTime(request.relative);
-		return true;
-	case Action::SeekToStart:
-		activateControls();
-		restartAtSeekPosition(0);
-		return true;
-	case Action::SeekToProgress:
-		activateControls();
-		restartAtProgress(request.progress);
-		return true;
-	case Action::StepFrame:
-		activateControls();
-		if (_stories && !_stories->paused()) {
-			_stories->togglePaused(true);
-		}
-		_frameStepPending += request.direction;
-		if (!_frameStepThrottle.isActive()) {
-			flushPendingFrameStep();
-		}
-		return true;
-	case Action::JumpChapter: {
-		if (!_streamed || !_streamed->controls) {
-			return true;
-		}
-		const auto &state = _streamed->instance.info().video.state;
-		const auto duration = state.duration;
-		if (duration <= 0) {
-			return true;
-		}
-		const auto progress = state.position / float64(duration);
-		const auto &controls = _streamed->controls;
-		if (request.direction > 0) {
-			if (const auto ts = controls->nextTimestamp(progress)) {
+	return Media::View::ExecuteAction(request, {
+		.togglePlayback = [=] {
+			if (_stories) {
+				_stories->togglePaused(!_stories->paused());
+			} else {
+				playbackPauseResume();
+			}
+		},
+		.seekRelative = [=](crl::time relative) {
+			activateControls();
+			seekRelativeTime(relative);
+		},
+		.seekToStart = [=] {
+			activateControls();
+			restartAtSeekPosition(0);
+		},
+		.seekToProgress = [=](float64 progress) {
+			activateControls();
+			restartAtProgress(progress);
+		},
+		.stepFrame = [=](int direction) {
+			activateControls();
+			if (_stories && !_stories->paused()) {
+				_stories->togglePaused(true);
+			}
+			_frameStepPending += direction;
+			if (!_frameStepThrottle.isActive()) {
+				flushPendingFrameStep();
+			}
+		},
+		.jumpChapter = [=](int direction) {
+			if (!_streamed || !_streamed->controls) {
+				return;
+			}
+			const auto &state = _streamed->instance.info().video.state;
+			const auto duration = state.duration;
+			if (duration <= 0) {
+				return;
+			}
+			const auto progress = state.position / float64(duration);
+			const auto &controls = _streamed->controls;
+			if (direction > 0) {
+				const auto ts = controls->nextTimestamp(progress);
+				if (!ts) {
+					return;
+				}
 				activateControls();
 				restartAtProgress(ts->position);
 				showChapterIndicator(ts->label, 1);
+			} else if (const auto ts = controls->prevTimestamp(progress)) {
+				activateControls();
+				restartAtProgress(ts->position);
+				showChapterIndicator(ts->label, -1);
+			} else {
+				activateControls();
+				restartAtSeekPosition(0);
 			}
-		} else if (const auto ts = controls->prevTimestamp(progress)) {
-			activateControls();
-			restartAtProgress(ts->position);
-			showChapterIndicator(ts->label, -1);
-		} else {
-			activateControls();
-			restartAtSeekPosition(0);
-		}
-		return true;
-	}
-	case Action::ToggleFullscreen:
-		playbackToggleFullScreen();
-		return true;
-	case Action::None:
-		return false;
-	}
-	Unexpected("Action in OverlayWidget::executeMediaViewAction.");
+		},
+		.toggleFullscreen = [=] {
+			playbackToggleFullScreen();
+		},
+	});
 }
 
 void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {

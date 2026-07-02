@@ -31,11 +31,16 @@ def test_action_router_api_exists():
     assert "StepFrame" in header
     assert "struct ActionContext" in header
     assert "struct ActionRequest" in header
+    assert "struct ActionHandlers" in header
     assert "ResolveAction(" in header
+    assert "ExecuteAction(" in header
     assert "ActionContext context" in header
-    assert "ShouldOpenDocumentInMediaView(" in header
+    assert "enum class OpenRoute" in header
+    assert "ResolveOpenRoute(" in header
     assert "ResolveAction(ActionContext context)" in source
-    assert "ShouldOpenDocumentInMediaView(" in source
+    assert "ExecuteAction(" in source
+    assert "ResolveOpenRoute(" in source
+    assert "OpenRoute::MediaView" in source
 
 
 def test_action_router_is_registered_in_build_list():
@@ -83,7 +88,9 @@ def test_overlay_delegates_media_keys_before_story_fallback():
     assert "executeMediaViewAction" in body
     assert body.index("Media::View::ResolveAction") < body.index(
         "_stories->tryProcessKeyInput(e)")
-    assert "Action::StepFrame" in source
+    router = read("SourceFiles/media/view/media_view_action_router.cpp")
+
+    assert "Action::StepFrame" in router
     assert "flushPendingFrameStep()" in source
 
 
@@ -109,6 +116,8 @@ def test_story_media_actions_keep_story_pause_state():
         source,
         "bool OverlayWidget::executeMediaViewAction(")
 
+    assert "Media::View::ExecuteAction" in body
+    assert "switch (request.action)" not in body
     assert "_stories->togglePaused(!_stories->paused())" in body
     assert "_stories->togglePaused(true)" in body
 
@@ -119,9 +128,11 @@ def test_video_message_open_routing_uses_shared_helper():
     play_animation = function_body(source, "void Gif::playAnimation(bool autoplay)")
 
     assert "media/view/media_view_action_router.h" in source
-    assert "ShouldOpenDocumentInMediaView(_data)" in text_state
+    assert "ResolveOpenRoute(_data)" in text_state
+    assert "OpenRoute::MediaView" in text_state
     assert "} else if (_data->isVideoMessage()) {\n\t\t\tresult.link = _openl;" not in text_state
-    assert "ShouldOpenDocumentInMediaView(_data) && !autoplay" in play_animation
+    assert "ResolveOpenRoute(_data)" in play_animation
+    assert "OpenRoute::MediaView" in play_animation
     assert "elementOpenDocument(" in play_animation
     assert "if (_data->isVideoMessage() && !autoplay) {\n\t\treturn;" not in play_animation
 

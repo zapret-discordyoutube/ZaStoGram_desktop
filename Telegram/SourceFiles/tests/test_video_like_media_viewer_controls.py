@@ -73,7 +73,7 @@ def test_video_message_content_click_opens_media_viewer():
         source,
         "void Gif::clickHandlerPressedChanged(")
 
-    assert "ShouldOpenDocumentInMediaView(_data)" in text_state
+    assert "ResolveOpenRoute(_data)" in text_state
     assert "result.link = _openl;" in text_state
     assert "playPauseCancelClicked" not in pressed
 
