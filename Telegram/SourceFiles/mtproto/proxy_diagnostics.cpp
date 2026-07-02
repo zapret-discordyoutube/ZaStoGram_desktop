@@ -179,8 +179,8 @@ rpl::variable<std::vector<ProxyDiagnosticsEvent>> Events;
 	while (!result.isEmpty() && result.back().trimmed().isEmpty()) {
 		result.removeLast();
 	}
-	while (result.size() > maxLines) {
-		result.removeFirst();
+	if (result.size() > maxLines) {
+		result = result.mid(result.size() - maxLines);
 	}
 	return result;
 }
@@ -299,8 +299,8 @@ std::vector<ProxyDiagnosticsEvent> LoadProxyDiagnosticsTail(int maxLines) {
 				.timestamp = info.lastModified(),
 			});
 		}
-		while (result.size() > maxLines) {
-			result.erase(begin(result));
+		if (int(result.size()) > maxLines) {
+			result.erase(result.begin(), result.end() - maxLines);
 		}
 	}
 	return result;
@@ -314,8 +314,8 @@ void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event) {
 	crl::on_main([event = std::move(event)]() mutable {
 		auto copy = Events.current();
 		copy.push_back(std::move(event));
-		while (copy.size() > kProxyDiagnosticsLimit) {
-			copy.erase(begin(copy));
+		if (copy.size() > kProxyDiagnosticsLimit) {
+			copy.erase(copy.begin(), copy.end() - kProxyDiagnosticsLimit);
 		}
 		Events.force_assign(std::move(copy));
 	});

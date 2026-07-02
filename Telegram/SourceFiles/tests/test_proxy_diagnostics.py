@@ -36,7 +36,9 @@ def test_diagnostics_model_is_registered_and_bounded():
     assert "ProxyDiagnosticsSnapshot()" in header
     assert "LoadProxyDiagnosticsTail(" in header
     assert "constexpr auto kProxyDiagnosticsLimit" in source
-    assert "while (copy.size() > kProxyDiagnosticsLimit)" in source
+    assert "if (copy.size() > kProxyDiagnosticsLimit)" in source
+    assert "copy.erase(copy.begin(), copy.end() - kProxyDiagnosticsLimit);" in source
+    assert "while (copy.size() > kProxyDiagnosticsLimit)" not in source
 
 
 def test_diagnostics_event_stream_does_not_require_event_equality():
@@ -44,6 +46,15 @@ def test_diagnostics_event_stream_does_not_require_event_equality():
 
     assert "Events.force_assign(std::move(copy));" in source
     assert "Events = std::move(copy);" not in source
+
+
+def test_diagnostics_tail_trimming_is_linear():
+    source = read(DIAGNOSTICS_CPP)
+
+    assert "removeFirst()" not in source
+    assert "result.erase(begin(result));" not in source
+    assert "result = result.mid(result.size() - maxLines);" in source
+    assert "result.erase(result.begin(), result.end() - maxLines);" in source
 
 
 def test_diagnostics_redacts_secret_material():
@@ -153,6 +164,8 @@ def test_logs_view_renders_one_text_string_per_line():
 
 if __name__ == "__main__":
     test_diagnostics_model_is_registered_and_bounded()
+    test_diagnostics_event_stream_does_not_require_event_equality()
+    test_diagnostics_tail_trimming_is_linear()
     test_diagnostics_redacts_secret_material()
     test_transport_paths_emit_diagnostics()
     test_proxy_reporting_is_centralized()
