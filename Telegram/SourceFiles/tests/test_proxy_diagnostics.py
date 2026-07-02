@@ -139,13 +139,39 @@ def test_proxy_settings_logs_tab_exists():
         assert f'"{key}' in lang
 
     assert "setupLogsSection()" in box
-    assert "ProxyDiagnosticsEventsValue()" in box
+    assert "ProxyDiagnosticsEventsValue(" in box
     assert "LoadProxyDiagnosticsTail(" in box
     assert "File::ShowInFolder(cWorkingDir() + u\"DebugLogs\"" in box
     assert "TextUtilities::SetClipboardText" in box
     assert "Ui::SettingsSlider" in box
     assert "_logsSearch" in box
     assert "_logsSearchQuery" in box
+
+
+def test_proxy_logs_file_tail_load_is_user_triggered():
+    box = read(CONNECTION_BOX_CPP)
+    setup_start = box.index("void ProxiesBox::setupLogsSection()")
+    refresh_button = box.index(
+        "const auto refresh = Settings::AddButtonWithIcon",
+        setup_start)
+    open_button = box.index("const auto open = Settings::AddButtonWithIcon")
+    initial_setup = box[setup_start:refresh_button]
+    refresh_block = box[refresh_button:open_button]
+
+    assert "_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();" in initial_setup
+    assert "LoadProxyDiagnosticsTail(" not in initial_setup
+    assert "LoadProxyDiagnosticsTail(" in refresh_block
+
+
+def test_proxy_logs_initial_snapshot_is_rendered_once():
+    box = read(CONNECTION_BOX_CPP)
+    setup = box[
+        box.index("void ProxiesBox::setupLogsSection()"):
+        box.index("void ProxiesBox::refreshLogsView()")]
+
+    assert "_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();" in setup
+    assert "ProxyDiagnosticsEventsValue(\n\t) | rpl::skip(1)" in setup
+    assert "refreshLogsView();\n}" in setup
 
 
 def test_logs_view_renders_one_text_string_per_line():
@@ -171,4 +197,6 @@ if __name__ == "__main__":
     test_transport_paths_emit_diagnostics()
     test_proxy_reporting_is_centralized()
     test_proxy_settings_logs_tab_exists()
+    test_proxy_logs_file_tail_load_is_user_triggered()
+    test_proxy_logs_initial_snapshot_is_rendered_once()
     test_logs_view_renders_one_text_string_per_line()

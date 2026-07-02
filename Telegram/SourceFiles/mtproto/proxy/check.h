@@ -54,6 +54,7 @@ void StartProxyCheck(
 	not_null<Instance*> mtproto,
 	const ProxyData &proxy,
 	bool tryIPv6,
+	const ProxyStealthOptions &stealth,
 	ProxyCheckConnection &v4,
 	ProxyCheckConnection &v6,
 	Fn<void(details::AbstractConnection *raw, int ping)> done,

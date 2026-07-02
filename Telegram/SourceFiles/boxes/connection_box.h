@@ -120,7 +120,7 @@ private:
 	void setDeleted(int id, bool deleted);
 	void updateView(const Item &item);
 	void share(const ProxyData &proxy, bool qr = false);
-	void saveDelayed();
+	void saveDelayed(bool notifyRotation = true);
 	void refreshChecker(Item &item);
 
 	void replaceItemWith(

@@ -67,6 +67,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QStringList>
 #include <QtWidgets/QTextEdit>
 
+#include <rpl/skip.h>
+
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
@@ -776,6 +778,9 @@ public:
 		Core::SettingsProxy &settings,
 		const QString &highlightId = QString());
 
+	void beginInitialRows();
+	void finishInitialRows();
+
 protected:
 	void prepare() override;
 	void showFinished() override;
@@ -823,6 +828,7 @@ private:
 	QString _logsVisibleText;
 	QString _logsSearchQuery;
 	QString _highlightId;
+	bool _initializingRows = false;
 
 };
 
@@ -1686,7 +1692,7 @@ void ProxiesBox::setupLogsSection() {
 
 	_logsWrap = inner->add(object_ptr<Ui::VerticalLayout>(inner));
 	const auto wrap = not_null(_logsWrap.data());
-	_logsSnapshot = MTP::LoadProxyDiagnosticsTail(kLogsTailLimit);
+	_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();
 
 	_logsFilter = wrap->add(
 		object_ptr<Ui::SettingsSlider>(wrap, st::settingsSlider),
@@ -1756,7 +1762,8 @@ void ProxiesBox::setupLogsSection() {
 		object_ptr<ProxyLogsView>(wrap, st::boxDividerLabel),
 		st::proxySettingsRightAboutPadding);
 
-	MTP::ProxyDiagnosticsEventsValue() | rpl::on_next([=](
+	MTP::ProxyDiagnosticsEventsValue(
+	) | rpl::skip(1) | rpl::on_next([=](
 			std::vector<MTP::ProxyDiagnosticsEvent> events) {
 		if (!events.empty()) {
 			_logsSnapshot = std::move(events);
@@ -1852,13 +1859,31 @@ void ProxiesBox::addNewProxy() {
 	getDelegate()->show(_controller->addNewItemBox());
 }
 
+void ProxiesBox::beginInitialRows() {
+	_initializingRows = true;
+}
+
+void ProxiesBox::finishInitialRows() {
+	_initializingRows = false;
+	const auto wrap = _wrap
+		? _wrap.data()
+		: _initialWrap.data();
+	if (!_rows.empty()) {
+		wrap->resizeToWidth(st::proxySettingsListColumnWidth);
+	}
+	refreshProxyForCalls();
+	refreshProxyRotation();
+}
+
 void ProxiesBox::applyView(View &&view) {
 	if (view.selected) {
 		_currentProxySupportsCallsId = view.supportsCalls ? view.id : 0;
 	} else if (view.id == _currentProxySupportsCallsId) {
 		_currentProxySupportsCallsId = 0;
 	}
-	refreshProxyForCalls();
+	if (!_initializingRows) {
+		refreshProxyForCalls();
+	}
 
 	const auto id = view.id;
 	const auto i = _rows.find(id);
@@ -1866,23 +1891,28 @@ void ProxiesBox::applyView(View &&view) {
 		const auto wrap = _wrap
 			? _wrap.data()
 			: _initialWrap.data();
-		const auto &[i, ok] = _rows.emplace(id, nullptr);
-		i->second.reset(wrap->insert(
-			0,
-			object_ptr<ProxyRow>(
-				wrap,
-				std::move(view))));
-		setupButtons(id, i->second.get());
+		const auto rowEntry = _rows.emplace(id, nullptr).first;
+		auto row = object_ptr<ProxyRow>(
+			wrap,
+			std::move(view));
+		rowEntry->second.reset(_initializingRows
+			? wrap->add(std::move(row))
+			: wrap->insert(0, std::move(row)));
+		setupButtons(id, rowEntry->second.get());
 		if (_noRows) {
 			_noRows.reset();
 		}
-		wrap->resizeToWidth(st::proxySettingsListColumnWidth);
+		if (!_initializingRows) {
+			wrap->resizeToWidth(st::proxySettingsListColumnWidth);
+		}
 	} else if (view.host.isEmpty()) {
 		_rows.erase(i);
 	} else {
 		i->second->updateFields(std::move(view));
 	}
-	refreshProxyRotation();
+	if (!_initializingRows) {
+		refreshProxyRotation();
+	}
 }
 
 void ProxiesBox::createNoRowsLabel() {
@@ -2428,6 +2458,7 @@ void ProxiesBoxController::ShowApplyConfirmation(
 					&account->mtp(),
 					proxy,
 					Core::App().settings().proxy().tryIPv6(),
+					Core::App().settings().proxyStealthOptions(),
 					state->v4,
 					state->v6,
 					[=](Connection *raw, int ping) {
@@ -2541,6 +2572,7 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 		&_account->mtp(),
 		item.data,
 		Core::App().settings().proxy().tryIPv6(),
+		Core::App().settings().proxyStealthOptions(),
 		item.checker,
 		item.checkerv6,
 		[=](Connection *raw, int pingTime) {
@@ -2592,9 +2624,11 @@ object_ptr<Ui::BoxContent> ProxiesBoxController::create(
 		const QString &highlightId) {
 	auto result = Box<ProxiesBox>(this, _settings, highlightId);
 	_show = result->uiShow();
-	for (const auto &item : _list) {
-		updateView(item);
+	result->beginInitialRows();
+	for (auto i = _list.rbegin(); i != _list.rend(); ++i) {
+		updateView(*i);
 	}
+	result->finishInitialRows();
 	return result;
 }
 
@@ -2670,17 +2704,16 @@ void ProxiesBoxController::applyItem(int id) {
 		return;
 	}
 
-	auto j = findByProxy(_settings.selected());
+	auto old = findByProxy(_settings.selected());
 
 	Core::App().setCurrentProxy(
 		item->data,
 		ProxyData::Settings::Enabled);
-	saveDelayed();
+	saveDelayed(false);
 
-	if (j != end(_list)) {
-		updateView(*j);
+	if (old != end(_list) && old->id != id) {
+		updateView(*old);
 	}
-	updateView(*item);
 }
 
 void ProxiesBoxController::setDeleted(int id, bool deleted) {
@@ -2836,7 +2869,7 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
 		}
 	}
 	Core::App().setCurrentProxy(_settings.selected(), value);
-	saveDelayed();
+	saveDelayed(false);
 	return true;
 }
 
@@ -2877,8 +2910,10 @@ void ProxiesBoxController::setTryIPv6(bool enabled) {
 	saveDelayed();
 }
 
-void ProxiesBoxController::saveDelayed() {
-	Core::App().proxyRotationSettingsChanged();
+void ProxiesBoxController::saveDelayed(bool notifyRotation) {
+	if (notifyRotation) {
+		Core::App().proxyRotationSettingsChanged();
+	}
 	_saveTimer.callOnce(kSaveSettingsDelayedTimeout);
 }
 

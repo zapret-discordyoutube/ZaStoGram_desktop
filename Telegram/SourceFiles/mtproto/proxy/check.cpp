@@ -102,6 +102,7 @@ void StartProxyCheck(
 		not_null<Instance*> mtproto,
 		const ProxyData &proxy,
 		bool tryIPv6,
+		const ProxyStealthOptions &stealth,
 		ProxyCheckConnection &v4,
 		ProxyCheckConnection &v6,
 		Fn<void(Connection *raw, int ping)> done,
@@ -114,6 +115,10 @@ void StartProxyCheck(
 		? Variants::Http
 		: Variants::Tcp;
 	const auto dcId = mtproto->mainDcId();
+	auto checkStealth = stealth;
+	if (proxy.type == ProxyData::Type::Mtproto) {
+		checkStealth.transport = ProxyTransport::Tcp;
+	}
 	ReportProxyEvent(mtproto, {
 		.phase = ProxyDiagnosticsPhase::ProxyCheckStarted,
 		.proxy = proxy,
@@ -133,7 +138,7 @@ void StartProxyCheck(
 			QThread::currentThread(),
 			secret,
 			proxy,
-			ProxyStealthOptions());
+			checkStealth);
 		state->handshakeGate = std::move(handshakeGate);
 		const auto raw = state->connection.get();
 		raw->connect(raw, &Connection::connected, [=] {

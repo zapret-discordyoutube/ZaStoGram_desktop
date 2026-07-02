@@ -9,6 +9,9 @@ CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CORE_SETTINGS_PROXY_CPP = SOURCE_DIR / "core" / "core_settings_proxy.cpp"
 APPLICATION_CPP = SOURCE_DIR / "core" / "application.cpp"
+PROXY_CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
+PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+PROXY_ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
 
 
 def test_wss_transport_is_the_stealth_default():
@@ -83,6 +86,24 @@ def test_route_via_wss_checkbox_refreshes_after_proxy_change():
     assert "refreshRouteViaWss();" in source
 
 
+def test_proxy_checks_reuse_runtime_stealth_transport():
+    header = PROXY_CHECK_H.read_text(encoding="utf-8")
+    source = PROXY_CHECK_CPP.read_text(encoding="utf-8")
+    box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
+    rotation = PROXY_ROTATION_MANAGER_CPP.read_text(encoding="utf-8")
+
+    assert "const ProxyStealthOptions &stealth" in header
+    assert "const ProxyStealthOptions &stealth" in source
+    assert "auto checkStealth = stealth;" in source
+    assert "if (proxy.type == ProxyData::Type::Mtproto)" in source
+    assert "checkStealth.transport = ProxyTransport::Tcp;" in source
+    assert "Connection::Create(" in source
+    assert "checkStealth);" in source
+    assert "ProxyStealthOptions())" not in source
+    assert box.count("Core::App().settings().proxyStealthOptions(),") >= 2
+    assert "App().settings().proxyStealthOptions()," in rotation
+
+
 if __name__ == "__main__":
     test_wss_transport_is_the_stealth_default()
     test_wss_transport_lives_in_proxy_module()
@@ -92,3 +113,4 @@ if __name__ == "__main__":
     test_active_mtproxy_forces_wss_transport_off()
     test_enabling_mtproxy_persists_wss_transport_off()
     test_route_via_wss_checkbox_refreshes_after_proxy_change()
+    test_proxy_checks_reuse_runtime_stealth_transport()

@@ -246,6 +246,7 @@ void ProxyRotationManager::startNextCheck() {
 			&accountForChecks()->mtp(),
 			proxy,
 			settings.tryIPv6(),
+			App().settings().proxyStealthOptions(),
 			entry.v4,
 			entry.v6,
 			[=](MTP::details::AbstractConnection *raw, int ping) {

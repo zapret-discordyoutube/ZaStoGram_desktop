@@ -28,6 +28,22 @@ def test_proxy_list_open_does_not_start_bulk_checks():
     assert "refreshChecker(" not in constructor
 
 
+def test_proxy_window_open_path_does_not_start_probe_checks():
+    bodies = [
+        body_after("ProxiesBoxController::ProxiesBoxController"),
+        body_after("object_ptr<Ui::BoxContent> ProxiesBoxController::create"),
+        body_after("ProxiesBox::ProxiesBox("),
+        body_after("void ProxiesBox::prepare"),
+        body_after("void ProxiesBox::setupContent"),
+        body_after("void ProxiesBox::applyView"),
+        body_after("void ProxiesBox::setupButtons"),
+    ]
+    open_path = "\n".join(bodies)
+
+    assert "refreshChecker(" not in open_path
+    assert "MTP::StartProxyCheck(" not in open_path
+
+
 def test_proxy_rows_start_unchecked_and_offer_manual_check():
     header = HEADER.read_text(encoding="utf-8")
     paint = body_after("void ProxyRow::paintEvent")
@@ -44,6 +60,42 @@ def test_proxy_rows_start_unchecked_and_offer_manual_check():
     assert "_controller->checkItem(id)" in setup_buttons
 
 
+def test_initial_proxy_rows_are_batched_on_open():
+    source = SOURCE.read_text(encoding="utf-8")
+
+    assert "void ProxiesBox::beginInitialRows()" in source
+    assert "void ProxiesBox::finishInitialRows()" in source
+
+    create = body_after("object_ptr<Ui::BoxContent> ProxiesBoxController::create")
+    apply = body_after("void ProxiesBox::applyView")
+    finish = body_after("void ProxiesBox::finishInitialRows")
+
+    assert "result->beginInitialRows();" in create
+    assert "for (auto i = _list.rbegin(); i != _list.rend(); ++i)" in create
+    assert "updateView(*i);" in create
+    assert "result->finishInitialRows();" in create
+    assert "_initializingRows" in apply
+    assert "wrap->add(" in apply
+    assert "wrap->insert(" in apply
+    assert "if (!_initializingRows)" in apply
+    assert "wrap->resizeToWidth(st::proxySettingsListColumnWidth);" in finish
+
+
+def test_proxy_switch_avoids_duplicate_row_and_rotation_updates():
+    header = HEADER.read_text(encoding="utf-8")
+    apply = body_after("void ProxiesBoxController::applyItem")
+    settings = body_after("bool ProxiesBoxController::setProxySettings")
+
+    assert "void saveDelayed(bool notifyRotation = true);" in header
+    assert "auto old = findByProxy(_settings.selected());" in apply
+    assert "saveDelayed(false);" in apply
+    assert "old->id != id" in apply
+    assert "updateView(*old)" in apply
+    assert "updateView(*item)" not in apply
+    assert "Core::App().setCurrentProxy(_settings.selected(), value);" in settings
+    assert "saveDelayed(false);" in settings
+
+
 def test_explicit_proxy_changes_still_start_check():
     add_new = body_after("void ProxiesBoxController::addNewItem")
     replace = body_after("void ProxiesBoxController::replaceItemValue")
@@ -54,5 +106,8 @@ def test_explicit_proxy_changes_still_start_check():
 
 if __name__ == "__main__":
     test_proxy_list_open_does_not_start_bulk_checks()
+    test_proxy_window_open_path_does_not_start_probe_checks()
     test_proxy_rows_start_unchecked_and_offer_manual_check()
+    test_initial_proxy_rows_are_batched_on_open()
+    test_proxy_switch_avoids_duplicate_row_and_rotation_updates()
     test_explicit_proxy_changes_still_start_check()
