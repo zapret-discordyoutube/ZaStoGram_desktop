@@ -488,6 +488,8 @@ PRIVATE
     chat_helpers/gifs_list_widget.h
     chat_helpers/message_field.cpp
     chat_helpers/message_field.h
+    chat_helpers/picker_animation_scheduler.cpp
+    chat_helpers/picker_animation_scheduler.h
     chat_helpers/share_message_phrase_factory.cpp
     chat_helpers/share_message_phrase_factory.h
     chat_helpers/spellchecker_common.cpp

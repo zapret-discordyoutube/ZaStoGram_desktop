@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_toggling_media.h" // Api::ToggleSavedGif
 #include "base/const_string.h"
 #include "base/qt/qt_key_modifiers.h"
+#include "chat_helpers/picker_animation_scheduler.h"
 #include "chat_helpers/stickers_list_footer.h"
 #include "data/data_photo.h"
 #include "data/data_document.h"
@@ -109,7 +110,10 @@ GifsListWidget::GifsListWidget(
 , _show(std::move(descriptor.show))
 , _api(&session().mtp())
 , _section(Section::Gifs)
-, _updateInlineItems([=] { updateInlineItems(); })
+, _updateInlineItems([=] {
+	syncVisibleAnimations();
+	updateInlineItems();
+})
 , _mosaic(st::emojiPanWidth - st::inlineResultsLeft)
 , _previewTimer([=] { showPreview(); }) {
 	setMouseTracking(true);
@@ -131,12 +135,14 @@ GifsListWidget::GifsListWidget(
 
 	session().downloaderTaskFinished(
 	) | rpl::on_next([=] {
+		syncVisibleAnimations();
 		updateInlineItems();
 	}, lifetime());
 
 	_show->pauseChanged(
 	) | rpl::on_next([=] {
 		if (!paused()) {
+			syncVisibleAnimations();
 			updateInlineItems();
 		}
 	}, lifetime());
@@ -251,6 +257,7 @@ void GifsListWidget::visibleTopBottomUpdated(
 		int visibleBottom) {
 	const auto top = getVisibleTop();
 	Inner::visibleTopBottomUpdated(visibleTop, visibleBottom);
+	syncVisibleAnimations();
 	if (top != getVisibleTop()) {
 		_lastScrolledAt = crl::now();
 		update();
@@ -621,6 +628,7 @@ void GifsListWidget::refreshSavedGifs() {
 		deleteUnusedGifLayouts();
 
 		resizeToWidth(width());
+		syncVisibleAnimations();
 		repaintItems();
 	}
 
@@ -705,7 +713,13 @@ void GifsListWidget::deleteUnusedInlineLayouts() {
 }
 
 void GifsListWidget::preloadImages() {
-	_mosaic.forEach([](not_null<const LayoutItem*> item) {
+	if (!animationActive()) {
+		return;
+	}
+	forEachVisibleGif([](
+			not_null<const LayoutItem*> item,
+			QRect,
+			bool) {
 		item->preload();
 	});
 }
@@ -750,6 +764,7 @@ int GifsListWidget::refreshInlineRows(const InlineCacheEntry *entry, bool result
 	}
 
 	resizeToWidth(width());
+	syncVisibleAnimations();
 	repaintItems();
 
 	_lastMousePos = QCursor::pos();
@@ -791,24 +806,119 @@ void GifsListWidget::inlineItemLayoutChanged(const InlineBots::Layout::ItemBase 
 
 void GifsListWidget::inlineItemRepaint(
 		const InlineBots::Layout::ItemBase *layout) {
-	updateInlineItems();
+	const auto rect = itemRect(layout);
+	if (rect.isEmpty()) {
+		return;
+	}
+	_lastUpdatedAt = crl::now();
+	animationScheduler().queueRepaint(this, rect);
 }
 
 bool GifsListWidget::inlineItemVisible(
 		const InlineBots::Layout::ItemBase *layout) {
-	auto position = layout->position();
-	if (position < 0 || !isVisible()) {
-		return false;
-	}
+	const auto rect = itemRect(layout);
+	const auto visible = QRect(
+		0,
+		getVisibleTop(),
+		width(),
+		getVisibleBottom() - getVisibleTop());
+	return !rect.isEmpty() && rect.intersects(visible);
+}
 
-	const auto &[row, column] = Layout::IndexToPosition(position);
-	auto top = 0;
-	for (auto i = 0; i != row; ++i) {
-		top += _mosaic.rowHeightAt(i);
+QRect GifsListWidget::itemRect(const LayoutItem *layout) const {
+	if (!layout || !isVisible()) {
+		return QRect();
 	}
+	const auto position = layout->position();
+	return (position < 0) ? QRect() : _mosaic.findRect(position);
+}
 
-	return (top < getVisibleBottom())
-		&& (top + _mosaic.itemAt(row, column)->height() > getVisibleTop());
+void GifsListWidget::forEachVisibleGif(
+		Fn<void(not_null<const LayoutItem*>, QRect, bool)> callback) {
+	if (_mosaic.empty()) {
+		return;
+	}
+	const auto visibleTop = getVisibleTop();
+	const auto visibleBottom = getVisibleBottom();
+	const auto retentionTop = animationScheduler().retentionTop(
+		visibleTop,
+		visibleBottom);
+	const auto retentionBottom = animationScheduler().retentionBottom(
+		visibleTop,
+		visibleBottom);
+	const auto retention = QRect(
+		0,
+		retentionTop,
+		width(),
+		retentionBottom - retentionTop);
+	const auto visible = QRect(
+		0,
+		visibleTop,
+		width(),
+		visibleBottom - visibleTop);
+	_mosaic.forEach([&](not_null<const LayoutItem*> item) {
+		const auto rect = itemRect(item.get());
+		if (!rect.isEmpty() && rect.intersects(retention)) {
+			callback(item, rect, rect.intersects(visible));
+		}
+	});
+}
+
+void GifsListWidget::syncVisibleAnimations() {
+	if (_mosaic.empty()) {
+		return;
+	}
+	if (!animationActive()) {
+		_mosaic.forEach([](not_null<const LayoutItem*> item) {
+			item->stopAnimation();
+		});
+		return;
+	}
+	const auto visibleTop = getVisibleTop();
+	const auto visibleBottom = getVisibleBottom();
+	const auto retentionTop = animationScheduler().retentionTop(
+		visibleTop,
+		visibleBottom);
+	const auto retentionBottom = animationScheduler().retentionBottom(
+		visibleTop,
+		visibleBottom);
+	const auto retention = QRect(
+		0,
+		retentionTop,
+		width(),
+		retentionBottom - retentionTop);
+	const auto visible = QRect(
+		0,
+		visibleTop,
+		width(),
+		visibleBottom - visibleTop);
+	_mosaic.forEach([&](not_null<const LayoutItem*> item) {
+		const auto rect = itemRect(item.get());
+		if (rect.isEmpty() || !rect.intersects(retention)) {
+			item->stopAnimation();
+			return;
+		}
+		const auto lease = animationScheduler().requestLease({
+			.owner = reinterpret_cast<uintptr_t>(this),
+			.index = item->position(),
+			.kind = PickerAnimationKind::Gif,
+		}, rect.intersects(visible));
+		item->prepareAnimation(lease);
+		if (lease.visible
+			&& !lease.canStart
+			&& !_updateInlineItems.isActive()) {
+			_updateInlineItems.callOnce(lease.nextRepaintDelay);
+		}
+	});
+}
+
+void GifsListWidget::repaintItem(const LayoutItem *layout, crl::time now) {
+	const auto rect = itemRect(layout);
+	if (rect.isEmpty()) {
+		return;
+	}
+	_lastUpdatedAt = now ? now : crl::now();
+	animationScheduler().queueRepaint(this, rect);
 }
 
 Data::FileOrigin GifsListWidget::inlineItemFileOrigin() {
@@ -818,14 +928,24 @@ Data::FileOrigin GifsListWidget::inlineItemFileOrigin() {
 }
 
 void GifsListWidget::afterShown() {
+	syncVisibleAnimations();
 	if (_search) {
 		_search->stealFocus();
 	}
 }
 
 void GifsListWidget::beforeHiding() {
+	syncVisibleAnimations();
 	if (_search) {
 		_search->returnFocus();
+	}
+}
+
+void GifsListWidget::animationActiveChanged(bool active) {
+	if (active) {
+		syncVisibleAnimations();
+	} else {
+		clearHeavyData();
 	}
 }
 

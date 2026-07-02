@@ -75,6 +75,8 @@ public:
 	}
 
 	void paint(Painter &p, const QRect &clip, const PaintContext *context) const override;
+	void prepareAnimation(PickerAnimationLease lease) const override;
+	void stopAnimation() const override;
 	TextState getState(
 		QPoint point,
 		StateRequest request) const override;
@@ -152,6 +154,7 @@ public:
 	}
 
 	void paint(Painter &p, const QRect &clip, const PaintContext *context) const override;
+	void prepareAnimation(PickerAnimationLease lease) const override;
 	TextState getState(
 		QPoint point,
 		StateRequest request) const override;

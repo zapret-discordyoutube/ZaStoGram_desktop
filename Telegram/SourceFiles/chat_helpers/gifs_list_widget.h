@@ -91,6 +91,7 @@ public:
 
 	void afterShown() override;
 	void beforeHiding() override;
+	void animationActiveChanged(bool active) override;
 
 	void setInlineQueryPeer(PeerData *peer) {
 		_inlineQueryPeer = peer;
@@ -157,6 +158,8 @@ private:
 	[[nodiscard]] std::vector<StickerIcon> fillIcons();
 
 	void updateInlineItems();
+	void syncVisibleAnimations();
+	void repaintItem(const LayoutItem *layout, crl::time now = 0);
 	void repaintItems(crl::time now = 0);
 	void showPreview();
 
@@ -168,6 +171,9 @@ private:
 	void deleteUnusedGifLayouts();
 
 	void deleteUnusedInlineLayouts();
+	void forEachVisibleGif(
+		Fn<void(not_null<const LayoutItem*>, QRect, bool)> callback);
+	[[nodiscard]] QRect itemRect(const LayoutItem *layout) const;
 
 	int validateExistingInlineRows(const InlineResults &results);
 	void selectInlineResult(

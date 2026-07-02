@@ -25,8 +25,6 @@ PRIVATE
     mtproto/details/mtproto_domain_resolver.h
     mtproto/details/mtproto_dump_to_text.cpp
     mtproto/details/mtproto_dump_to_text.h
-    mtproto/details/mtproto_proxy_adaptive_policy.cpp
-    mtproto/details/mtproto_proxy_adaptive_policy.h
     mtproto/details/mtproto_received_ids_manager.cpp
     mtproto/details/mtproto_received_ids_manager.h
     mtproto/details/mtproto_rsa_public_key.cpp
@@ -35,10 +33,6 @@ PRIVATE
     mtproto/details/mtproto_serialized_request.h
     mtproto/details/mtproto_tcp_socket.cpp
     mtproto/details/mtproto_tcp_socket.h
-    mtproto/details/mtproto_tls_socket.cpp
-    mtproto/details/mtproto_tls_socket.h
-    mtproto/details/mtproto_wss_socket.cpp
-    mtproto/details/mtproto_wss_socket.h
     mtproto/mtproto_auth_key.cpp
     mtproto/mtproto_auth_key.h
     mtproto/mtproto_concurrent_sender.cpp
@@ -50,8 +44,6 @@ PRIVATE
     mtproto/mtproto_dh_utils.cpp
     mtproto/mtproto_dh_utils.h
     mtproto/mtproto_pch.h
-    mtproto/mtproto_proxy_data.cpp
-    mtproto/mtproto_proxy_data.h
     mtproto/mtproto_response.cpp
     mtproto/mtproto_response.h
 )

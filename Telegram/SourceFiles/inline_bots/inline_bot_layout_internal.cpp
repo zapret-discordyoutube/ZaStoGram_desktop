@@ -170,19 +170,20 @@ QRect Gif::innerContentRect() const {
 	return QRect(QPoint(), size);
 }
 
-void Gif::paint(Painter &p, const QRect &clip, const PaintContext *context) const {
+void Gif::prepareAnimation(PickerAnimationLease lease) const {
 	const auto document = getShownDocument();
+	if (!document || !lease.visible) {
+		return;
+	}
 	ensureDataMediaCreated(document);
 	const auto preview = Data::VideoPreviewState(_dataMedia.get());
 	preview.automaticLoad(fileOrigin());
 
-	const auto displayLoading = !preview.usingThumbnail()
-		&& document->displayLoading();
 	const auto loaded = preview.loaded();
-	const auto loading = preview.loading();
 	if (loaded
 		&& !_gif
 		&& !_gif.isBad()
+		&& lease.canStart
 		&& CanPlayInline(document)) {
 		auto that = const_cast<Gif*>(this);
 		that->_gif = preview.makeAnimation([=](
@@ -190,6 +191,20 @@ void Gif::paint(Painter &p, const QRect &clip, const PaintContext *context) cons
 			that->clipCallback(notification);
 		});
 	}
+}
+
+void Gif::stopAnimation() const {
+	const_cast<Gif*>(this)->unloadHeavyPart();
+}
+
+void Gif::paint(Painter &p, const QRect &clip, const PaintContext *context) const {
+	const auto document = getShownDocument();
+	const auto preview = Data::VideoPreviewState(_dataMedia.get());
+	const auto displayLoading = _dataMedia
+		&& !preview.usingThumbnail()
+		&& document->displayLoading();
+	const auto loaded = preview.loaded();
+	const auto loading = preview.loading();
 
 	const auto animating = (_gif && _gif->started());
 	if (displayLoading) {
@@ -365,10 +380,9 @@ void Gif::validateThumbnail(
 }
 
 void Gif::prepareThumbnail(QSize size, QSize frame) const {
-	const auto document = getShownDocument();
-	Assert(document != nullptr);
-
-	ensureDataMediaCreated(document);
+	if (!_dataMedia) {
+		return;
+	}
 	validateThumbnail(_dataMedia->thumbnail(), size, frame, true);
 	validateThumbnail(_dataMedia->thumbnailInline(), size, frame, false);
 }
@@ -481,6 +495,23 @@ void Sticker::preload() const {
 
 	ensureDataMediaCreated(document);
 	_dataMedia->checkStickerSmall();
+}
+
+void Sticker::prepareAnimation(PickerAnimationLease lease) const {
+	const auto document = getShownDocument();
+	if (!document || !lease.visible) {
+		return;
+	}
+	ensureDataMediaCreated(document);
+	const auto sticker = document->sticker();
+	if (!sticker || !_dataMedia->loaded() || !lease.canStart) {
+		return;
+	}
+	if (!_lottie && sticker->isLottie()) {
+		setupLottie();
+	} else if (!_webm && sticker->isWebm()) {
+		setupWebm();
+	}
 }
 
 void Sticker::ensureDataMediaCreated(not_null<DocumentData*> document) const {
@@ -633,14 +664,6 @@ void Sticker::prepareThumbnail() const {
 	Assert(document != nullptr);
 
 	ensureDataMediaCreated(document);
-	const auto sticker = document->sticker();
-	if (sticker && _dataMedia->loaded()) {
-		if (!_lottie && sticker->isLottie()) {
-			setupLottie();
-		} else if (!_webm && sticker->isWebm()) {
-			setupWebm();
-		}
-	}
 	_dataMedia->checkStickerSmall();
 	if (const auto image = _dataMedia->getStickerSmall()) {
 		if (!_lottie && !_thumbLoaded) {

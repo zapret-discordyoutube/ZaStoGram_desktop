@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/emoji_list_widget.h"
 #include "chat_helpers/stickers_list_widget.h"
 #include "chat_helpers/gifs_list_widget.h"
+#include "chat_helpers/picker_animation_scheduler.h"
 #include "menu/menu_send.h"
 #include "ui/controls/swipe_handler.h"
 #include "ui/controls/tabbed_search.h"
@@ -389,6 +390,7 @@ TabbedSelector::TabbedSelector(
 , _topShadow(full() ? object_ptr<Ui::PlainShadow>(this) : nullptr)
 , _bottomShadow(this)
 , _scroll(this, st::emojiScroll)
+, _animationScheduler(std::make_unique<PickerAnimationScheduler>())
 , _tabs([&] {
 	std::vector<Tab> tabs;
 	if (full()) {
@@ -1017,13 +1019,16 @@ QRect TabbedSelector::floatPlayerAvailableRect() const {
 
 void TabbedSelector::hideFinished() {
 	for (auto &tab : _tabs) {
+		tab.widget()->setAnimationActive(false);
 		tab.widget()->panelHideFinished();
 	}
+	_animationScheduler->setActive(false);
 	_a_slide.stop();
 	_slideAnimation.reset();
 }
 
 void TabbedSelector::showStarted() {
+	_animationScheduler->setActive(true);
 	if (hasStickersTab()) {
 		session().api().updateStickers();
 	}
@@ -1037,6 +1042,7 @@ void TabbedSelector::showStarted() {
 		session().api().updateSavedGifs();
 	}
 	currentTab()->widget()->refreshRecent();
+	currentTab()->widget()->setAnimationActive(true);
 	currentTab()->widget()->preloadImages();
 	_a_slide.stop();
 	_slideAnimation.reset();
@@ -1045,6 +1051,7 @@ void TabbedSelector::showStarted() {
 
 void TabbedSelector::beforeHiding() {
 	if (!_scroll->isHidden()) {
+		currentTab()->widget()->setAnimationActive(false);
 		currentTab()->widget()->beforeHiding();
 		if (_beforeHidingCallback) {
 			_beforeHidingCallback(_currentTabType);
@@ -1058,6 +1065,7 @@ void TabbedSelector::beforeHiding() {
 void TabbedSelector::afterShown() {
 	if (!_a_slide.animating()) {
 		showAll();
+		currentTab()->widget()->setAnimationActive(true);
 		currentTab()->widget()->afterShown();
 		if (_afterShownCallback) {
 			_afterShownCallback(_currentTabType);
@@ -1266,6 +1274,7 @@ void TabbedSelector::switchTab() {
 
 	const auto wasSectionIcons = hasSectionIcons();
 	const auto wasIndex = indexByType(_currentTabType);
+	currentTab()->widget()->setAnimationActive(false);
 	currentTab()->saveScrollTop();
 
 	beforeHiding();
@@ -1287,6 +1296,7 @@ void TabbedSelector::switchTab() {
 	currentTab()->widget()->refreshRecent();
 	currentTab()->widget()->preloadImages();
 	setWidgetToScrollArea();
+	currentTab()->widget()->setAnimationActive(false);
 
 	auto nowCache = grabForAnimation();
 
@@ -1373,6 +1383,7 @@ void TabbedSelector::setWidgetToScrollArea() {
 	_scroll->disableScroll(false);
 	scrollToY(currentTab()->getScrollTop());
 	handleScroll();
+	inner->setAnimationActive(!_a_slide.animating());
 }
 
 void TabbedSelector::scrollToY(int y) {
@@ -1462,6 +1473,23 @@ TabbedSelector::Inner::Inner(
 , _show(std::move(show))
 , _session(&_show->session())
 , _paused(paused) {
+	if (const auto selector = dynamic_cast<TabbedSelector*>(parent)) {
+		_animationScheduler = selector->_animationScheduler.get();
+	} else {
+		_ownedAnimationScheduler = std::make_unique<PickerAnimationScheduler>();
+		_animationScheduler = _ownedAnimationScheduler.get();
+		_animationActive = true;
+	}
+}
+
+TabbedSelector::Inner::~Inner() = default;
+
+void TabbedSelector::Inner::setAnimationActive(bool active) {
+	if (_animationActive == active) {
+		return;
+	}
+	_animationActive = active;
+	animationActiveChanged(active);
 }
 
 rpl::producer<int> TabbedSelector::Inner::scrollToRequests() const {

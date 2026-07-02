@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "chat_helpers/picker_animation_scheduler.h"
 #include "layout/layout_item_base.h"
 #include "ui/text/text.h"
 
@@ -21,6 +22,8 @@ namespace InlineBots {
 class Result;
 
 namespace Layout {
+
+using ChatHelpers::PickerAnimationLease;
 
 class ItemBase;
 
@@ -90,6 +93,11 @@ public:
 	PhotoData *getPreviewPhoto() const;
 
 	virtual void preload() const;
+	virtual void prepareAnimation(PickerAnimationLease lease) const {
+	}
+	virtual void stopAnimation() const {
+		const_cast<ItemBase*>(this)->unloadHeavyPart();
+	}
 	virtual void unloadHeavyPart() {
 		_thumbnail = nullptr;
 	}

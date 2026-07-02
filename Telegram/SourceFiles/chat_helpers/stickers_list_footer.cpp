@@ -1190,7 +1190,20 @@ void StickersListFooter::paintStickerSettingsIcon(QPainter &p) const {
 void StickersListFooter::customEmojiRepaint() {
 	if (!_repaintScheduled) {
 		_repaintScheduled = true;
-		update();
+		auto repainted = false;
+		enumerateVisibleIcons([&](const IconInfo &info) {
+			if (_icons[info.index].custom) {
+				update(
+					info.adjustedLeft,
+					_iconsTop,
+					info.width,
+					st().footer);
+				repainted = true;
+			}
+		});
+		if (!repainted) {
+			update();
+		}
 	}
 }
 

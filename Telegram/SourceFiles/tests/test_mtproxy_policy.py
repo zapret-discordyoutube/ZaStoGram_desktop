@@ -9,6 +9,7 @@ POLICY_CPP = MTPROXY_DIR / "policy.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 CMAKE = ROOT_DIR / "Telegram" / "CMakeLists.txt"
+TD_MTPROTO_CMAKE = ROOT_DIR / "Telegram" / "cmake" / "td_mtproto.cmake"
 
 
 def test_session_uses_mtproxy_policy_for_spacing_and_cooldown():
@@ -64,7 +65,18 @@ def test_proxy_module_sources_are_registered_for_build():
         assert path in cmake
 
 
+def test_td_mtproto_source_list_only_references_existing_files():
+    cmake = TD_MTPROTO_CMAKE.read_text(encoding="utf-8")
+
+    for line in cmake.splitlines():
+        path = line.strip()
+        if not path.startswith("mtproto/") or not path.endswith((".cpp", ".h")):
+            continue
+        assert (SOURCE_DIR / path).exists(), path
+
+
 if __name__ == "__main__":
     test_session_uses_mtproxy_policy_for_spacing_and_cooldown()
     test_tls_socket_reports_endpoint_state_through_mtproxy_policy()
     test_proxy_module_sources_are_registered_for_build()
+    test_td_mtproto_source_list_only_references_existing_files()

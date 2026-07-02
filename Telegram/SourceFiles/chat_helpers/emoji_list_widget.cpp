@@ -44,6 +44,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/stickers/data_stickers.h"
 #include "data/stickers/data_custom_emoji.h"
 #include "chat_helpers/emoji_keywords.h"
+#include "chat_helpers/picker_animation_scheduler.h"
 #include "chat_helpers/stickers_list_widget.h"
 #include "chat_helpers/stickers_list_footer.h"
 #include "emoji_suggestions_data.h"
@@ -1457,28 +1458,33 @@ void EmojiListWidget::provideRecent(
 }
 
 void EmojiListWidget::repaintCustom(uint64 setId) {
+	if (!animationActive()) {
+		return;
+	}
 	if (!_repaintsScheduled.emplace(setId).second) {
 		return;
 	}
 	const auto repaintSearch = (setId == SearchEmojiSectionSetId());
 	if (_searchMode) {
 		if (repaintSearch) {
-			update();
+			animationScheduler().queueRepaint(this, rect());
 		} else {
 			for (auto i = 0, count = int(_searchShortcutSets.size());
 					i != count; ++i) {
 				if (_searchShortcutSets[i].id == setId) {
-					rtlupdate(searchShortcutRect(i));
+					animationScheduler().queueRepaint(
+						this,
+						searchShortcutRect(i));
 				}
 			}
 			enumerateSections([&](const SectionInfo &info) {
 				if (info.section > 0
 					&& searchSetBySection(info.section).id == setId) {
-					update(
+					animationScheduler().queueRepaint(this, QRect(
 						0,
 						info.rowsTop,
 						width(),
-						info.rowsBottom - info.rowsTop);
+						info.rowsBottom - info.rowsTop));
 				}
 				return true;
 			});
@@ -1493,11 +1499,11 @@ void EmojiListWidget::repaintCustom(uint64 setId) {
 			&& (info.section >= _staticCount)
 			&& (setId == _custom[info.section - _staticCount].id);
 		if (repaint1 || repaint2) {
-			update(
+			animationScheduler().queueRepaint(this, QRect(
 				0,
 				info.rowsTop,
 				width(),
-				info.rowsBottom - info.rowsTop);
+				info.rowsBottom - info.rowsTop));
 		}
 		return true;
 	});
@@ -1562,6 +1568,10 @@ void EmojiListWidget::visibleTopBottomUpdated(
 		int visibleTop,
 		int visibleBottom) {
 	Inner::visibleTopBottomUpdated(visibleTop, visibleBottom);
+	if (!animationActive()) {
+		unloadAllCustom();
+		return;
+	}
 	if (_footer) {
 		_footer->validateSelectedIcon(
 			currentSet(visibleTop),
@@ -1654,6 +1664,7 @@ object_ptr<TabbedSelector::InnerFooter> EmojiListWidget::createFooter() {
 }
 
 void EmojiListWidget::afterShown() {
+	visibleTopBottomUpdated(getVisibleTop(), getVisibleBottom());
 	const auto steal = (_mode == Mode::EmojiStatus)
 		|| (_mode == Mode::FullReactions)
 		|| (_mode == Mode::UserpicBuilder);
@@ -1663,8 +1674,17 @@ void EmojiListWidget::afterShown() {
 }
 
 void EmojiListWidget::beforeHiding() {
+	unloadAllCustom();
 	if (_search) {
 		_search->returnFocus();
+	}
+}
+
+void EmojiListWidget::animationActiveChanged(bool active) {
+	if (active) {
+		visibleTopBottomUpdated(getVisibleTop(), getVisibleBottom());
+	} else {
+		unloadAllCustom();
 	}
 }
 

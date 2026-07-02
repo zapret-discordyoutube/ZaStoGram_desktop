@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "data/data_peer_values.h"
 #include "menu/menu_send.h" // SendMenu::FillSendMenu
+#include "chat_helpers/picker_animation_scheduler.h"
 #include "chat_helpers/stickers_lottie.h"
 #include "chat_helpers/stickers_list_footer.h"
 #include "ui/controls/tabbed_search.h"
@@ -218,7 +219,10 @@ StickersListWidget::StickersListWidget(
 , _isMasks(_mode == Mode::Masks)
 , _isEffects(_mode == Mode::MessageEffects)
 , _excludeSetId(descriptor.excludeSetId)
-, _updateItemsTimer([=] { updateItems(); })
+, _updateItemsTimer([=] {
+	syncVisibleAnimations();
+	updateItems();
+})
 , _updateSetsTimer([=] { updateSets(); })
 , _trendingAddBgOver(
 	ImageRoundRadius::Large,
@@ -274,6 +278,7 @@ StickersListWidget::StickersListWidget(
 	session().downloaderTaskFinished(
 	) | rpl::on_next([=] {
 		if (isVisible()) {
+			syncVisibleAnimations();
 			updateItems();
 			readVisibleFeatured(getVisibleTop(), getVisibleBottom());
 		}
@@ -378,6 +383,7 @@ void StickersListWidget::visibleTopBottomUpdated(
 		checkVisibleFeatured(visibleTop, visibleBottom);
 	} else {
 		checkVisibleLottie();
+		syncVisibleAnimations();
 		if (_section == Section::Search) {
 			checkPaginateSearchStickers(visibleTop, visibleBottom);
 		}
@@ -1853,6 +1859,54 @@ void StickersListWidget::markLottieFrameShown(Set &set) {
 	}
 }
 
+void StickersListWidget::syncVisibleAnimations() {
+	if (shownSets().empty() || _singleSize.isEmpty() || !_columnCount) {
+		return;
+	}
+	if (!animationActive()) {
+		for (auto &set : shownSets()) {
+			clearHeavyIn(set, false);
+		}
+		return;
+	}
+	const auto visibleTop = getVisibleTop();
+	const auto visibleBottom = getVisibleBottom();
+	const auto retentionTop = animationScheduler().retentionTop(
+		visibleTop,
+		visibleBottom);
+	const auto retentionBottom = animationScheduler().retentionBottom(
+		visibleTop,
+		visibleBottom);
+	enumerateSections([&](const SectionInfo &info) {
+		auto &set = shownSets()[info.section];
+		if (retentionBottom <= info.rowsTop
+			|| retentionTop >= info.rowsBottom) {
+			clearHeavyIn(set, false);
+			return true;
+		}
+		const auto fromRow = floorclamp(
+			visibleTop - info.rowsTop,
+			_singleSize.height(),
+			0,
+			info.rowsCount);
+		const auto toRow = ceilclamp(
+			visibleBottom - info.rowsTop,
+			_singleSize.height(),
+			0,
+			info.rowsCount);
+		for (auto row = fromRow; row != toRow; ++row) {
+			for (auto column = 0; column != _columnCount; ++column) {
+				const auto index = row * _columnCount + column;
+				if (index >= info.count) {
+					break;
+				}
+				setupVisibleStickerAnimation(info, index);
+			}
+		}
+		return true;
+	});
+}
+
 void StickersListWidget::checkVisibleLottie() {
 	if (shownSets().empty()) {
 		return;
@@ -1865,7 +1919,7 @@ void StickersListWidget::checkVisibleLottie() {
 	enumerateSections([&](const SectionInfo &info) {
 		if (destroyBelow <= info.rowsTop
 			|| destroyAbove >= info.rowsBottom) {
-			clearHeavyIn(shownSets()[info.section]);
+			clearHeavyIn(shownSets()[info.section], false);
 		} else if ((visibleTop > info.rowsTop && visibleTop < info.rowsBottom)
 			|| (visibleBottom > info.rowsTop
 				&& visibleBottom < info.rowsBottom)) {
@@ -1982,7 +2036,14 @@ void StickersListWidget::ensureLottiePlayer(Set &set) {
 			if (sets[info.section].lottiePlayer.get() != raw) {
 				return true;
 			}
-			updateSet(info);
+			const auto &set = sets[info.section];
+			for (auto i = 0, count = int(set.stickers.size());
+					i != count;
+					++i) {
+				if (set.stickers[i].lottie && itemVisible(info, i)) {
+					repaintSticker(info, i);
+				}
+			}
 			return false;
 		});
 	}, set.lottieLifetime);
@@ -2017,6 +2078,41 @@ void StickersListWidget::setupWebm(Set &set, int section, int index) {
 		std::move(callback));
 }
 
+void StickersListWidget::setupVisibleStickerAnimation(
+		const SectionInfo &info,
+		int index) {
+	auto &set = shownSets()[info.section];
+	auto &sticker = set.stickers[index];
+	const auto document = sticker.document;
+	const auto data = document->sticker();
+	if (!data || !itemVisible(info, index)) {
+		return;
+	}
+	sticker.ensureMediaCreated();
+	sticker.documentMedia->checkStickerSmall();
+	const auto kind = data->isWebm()
+		? PickerAnimationKind::StickerWebm
+		: PickerAnimationKind::StickerLottie;
+	const auto lease = animationScheduler().requestLease({
+		.owner = reinterpret_cast<uintptr_t>(&set),
+		.index = index,
+		.kind = kind,
+	}, true);
+	if (!sticker.documentMedia->loaded() || !lease.canStart) {
+		if (lease.visible
+			&& !lease.canStart
+			&& !_updateItemsTimer.isActive()) {
+			_updateItemsTimer.callOnce(lease.nextRepaintDelay);
+		}
+		return;
+	}
+	if (!sticker.lottie && data->isLottie()) {
+		setupLottie(set, info.section, index);
+	} else if (!sticker.webm && data->isWebm()) {
+		setupWebm(set, info.section, index);
+	}
+}
+
 void StickersListWidget::clipCallback(
 		Media::Clip::Notification notification,
 		uint64 setId,
@@ -2030,6 +2126,7 @@ void StickersListWidget::clipCallback(
 		if (set.id != setId) {
 			return true;
 		}
+		auto repaintIndex = indexHint;
 		using namespace Media::Clip;
 		switch (notification) {
 		case Notification::Reinit: {
@@ -2041,6 +2138,7 @@ void StickersListWidget::clipCallback(
 				break;
 			}
 			const auto index = j - begin(set.stickers);
+			repaintIndex = index;
 			auto &webm = j->webm;
 			if (webm->state() == State::Error) {
 				webm.setBad();
@@ -2057,9 +2155,28 @@ void StickersListWidget::clipCallback(
 		case Notification::Repaint: break;
 		}
 
-		updateSet(info);
+		animationScheduler().queueRepaint(this, stickerRect(info, repaintIndex));
 		return false;
 	});
+}
+
+QRect StickersListWidget::stickerRect(
+		const SectionInfo &info,
+		int index) const {
+	if (index < 0 || index >= info.count || _singleSize.isEmpty()) {
+		return QRect();
+	}
+	const auto row = index / _columnCount;
+	const auto column = index % _columnCount;
+	auto left = stickersLeft() + column * _singleSize.width();
+	if (rtl()) {
+		left = width() - left - _singleSize.width();
+	}
+	return QRect(
+		left,
+		info.rowsTop + row * _singleSize.height(),
+		_singleSize.width(),
+		_singleSize.height());
 }
 
 bool StickersListWidget::itemVisible(
@@ -2071,6 +2188,12 @@ bool StickersListWidget::itemVisible(
 	const auto top = info.rowsTop + row * _singleSize.height();
 	const auto bottom = top + _singleSize.height();
 	return (visibleTop < bottom) && (visibleBottom > top);
+}
+
+void StickersListWidget::repaintSticker(
+		const SectionInfo &info,
+		int index) {
+	animationScheduler().queueRepaint(this, stickerRect(info, index));
 }
 
 void StickersListWidget::updateSets() {
@@ -2167,15 +2290,6 @@ void StickersListWidget::paintSticker(
 	}
 
 	const auto premium = document->isPremiumSticker();
-	const auto isLottie = document->sticker()->isLottie();
-	const auto isWebm = document->sticker()->isWebm();
-	if (isLottie
-		&& !sticker.lottie
-		&& media->loaded()) {
-		setupLottie(set, section, index);
-	} else if (isWebm && !sticker.webm && media->loaded()) {
-		setupWebm(set, section, index);
-	}
 
 	const auto row = int((index / _columnCount));
 	const auto col = int(index % _columnCount);
@@ -3022,6 +3136,7 @@ void StickersListWidget::refreshStickers() {
 	repaintItems();
 
 	visibleTopBottomUpdated(getVisibleTop(), getVisibleBottom());
+	syncVisibleAnimations();
 }
 
 void StickersListWidget::refreshEffects() {
@@ -3798,14 +3913,24 @@ void StickersListWidget::showMegagroupSet(ChannelData *megagroup) {
 }
 
 void StickersListWidget::afterShown() {
+	syncVisibleAnimations();
 	if (_search) {
 		_search->stealFocus();
 	}
 }
 
 void StickersListWidget::beforeHiding() {
+	syncVisibleAnimations();
 	if (_search) {
 		_search->returnFocus();
+	}
+}
+
+void StickersListWidget::animationActiveChanged(bool active) {
+	if (active) {
+		syncVisibleAnimations();
+	} else {
+		clearHeavyData();
 	}
 }
 

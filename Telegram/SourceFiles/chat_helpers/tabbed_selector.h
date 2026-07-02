@@ -50,6 +50,7 @@ class Show;
 class EmojiListWidget;
 class StickersListWidget;
 class GifsListWidget;
+class PickerAnimationScheduler;
 enum class PauseReason;
 
 enum class SelectorTab {
@@ -320,6 +321,7 @@ private:
 	object_ptr<Ui::ScrollArea> _scroll;
 	object_ptr<Ui::FlatLabel> _restrictedLabel = { nullptr };
 	QString _restrictedLabelKey;
+	std::unique_ptr<PickerAnimationScheduler> _animationScheduler;
 	std::vector<Tab> _tabs;
 	SelectorTab _currentTabType = SelectorTab::Emoji;
 
@@ -353,6 +355,7 @@ public:
 		const style::EmojiPan &st,
 		std::shared_ptr<Show> show,
 		Fn<bool()> paused);
+	~Inner() override;
 
 	[[nodiscard]] Main::Session &session() const {
 		return *_session;
@@ -366,6 +369,13 @@ public:
 	[[nodiscard]] bool paused() const {
 		return _paused();
 	}
+	[[nodiscard]] PickerAnimationScheduler &animationScheduler() const {
+		return *_animationScheduler;
+	}
+	[[nodiscard]] bool animationActive() const {
+		return _animationActive;
+	}
+	void setAnimationActive(bool active);
 
 	[[nodiscard]] int getVisibleTop() const {
 		return _visibleTop;
@@ -392,6 +402,8 @@ public:
 	virtual void afterShown() {
 	}
 	virtual void beforeHiding() {
+	}
+	virtual void animationActiveChanged(bool active) {
 	}
 	[[nodiscard]] virtual base::unique_qptr<Ui::PopupMenu> fillContextMenu(
 			const SendMenu::Details &details) {
@@ -435,10 +447,13 @@ private:
 	const std::shared_ptr<Show> _show;
 	const not_null<Main::Session*> _session;
 	const Fn<bool()> _paused;
+	std::unique_ptr<PickerAnimationScheduler> _ownedAnimationScheduler;
+	PickerAnimationScheduler *_animationScheduler = nullptr;
 
 	int _visibleTop = 0;
 	int _visibleBottom = 0;
 	std::optional<int> _minimalHeight;
+	bool _animationActive = false;
 
 	rpl::event_stream<int> _scrollToRequests;
 	rpl::event_stream<bool> _disableScrollRequests;

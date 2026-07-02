@@ -116,6 +116,7 @@ public:
 
 	void afterShown() override;
 	void beforeHiding() override;
+	void animationActiveChanged(bool active) override;
 
 	void refreshStickers();
 
@@ -321,13 +322,17 @@ private:
 	void ensureLottiePlayer(Set &set);
 	void setupLottie(Set &set, int section, int index);
 	void setupWebm(Set &set, int section, int index);
+	void setupVisibleStickerAnimation(const SectionInfo &info, int index);
 	void clipCallback(
 		Media::Clip::Notification notification,
 		uint64 setId,
 		not_null<DocumentData*> document,
 		int indexHint);
+	[[nodiscard]] QRect stickerRect(const SectionInfo &info, int index) const;
 	[[nodiscard]] bool itemVisible(const SectionInfo &info, int index) const;
+	void repaintSticker(const SectionInfo &info, int index);
 	void markLottieFrameShown(Set &set);
+	void syncVisibleAnimations();
 	void checkVisibleLottie();
 	void pauseInvisibleLottieIn(const SectionInfo &info);
 	void takeHeavyData(std::vector<Set> &to, std::vector<Set> &from);

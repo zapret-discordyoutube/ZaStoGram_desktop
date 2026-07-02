@@ -130,6 +130,7 @@ public:
 
 	void afterShown() override;
 	void beforeHiding() override;
+	void animationActiveChanged(bool active) override;
 
 	void showSet(uint64 setId);
 	[[nodiscard]] uint64 currentSet(int yOffset) const;
