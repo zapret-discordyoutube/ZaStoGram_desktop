@@ -11,6 +11,21 @@ The work is intentionally split into two stages:
 1. Mechanical relocation with minimal behavior risk.
 2. Real ownership cleanup after the moved tree exposes the boundaries clearly.
 
+## Implementation Status
+
+Implemented on 2026-07-02 on branch `dev`.
+
+The module split landed in these commits:
+
+- `c102c380eb` Move proxy core into its module
+- `a51cb580e5` Move MTProxy transports into proxy module
+- `d5cf8a29bb` Extract proxy status model
+- `de83da3717` Extract MTProxy policy ownership
+
+The final layout is represented in `Telegram/CMakeLists.txt` and guarded by
+the focused proxy source-contract tests. Compilation remains intentionally
+outside this proof boundary unless explicitly requested.
+
 ## Non-Goals
 
 - Do not change proxy behavior during stage 1.
