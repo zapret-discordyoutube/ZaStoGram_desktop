@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
+#include "mtproto/proxy/mtproxy/policy.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
@@ -1418,7 +1419,7 @@ bool TlsSocket::checkNextPacket() {
 			_incomingGoodDataLimit = length;
 			_phase = HandshakePhase::FirstDataReceived;
 			connectionProgress(_phase);
-			NoteEndpointSuccess(_endpointKey);
+			MtproxyNoteEndpointSuccess(_endpointKey);
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -1651,8 +1652,8 @@ void TlsSocket::handleError(int errorCode) {
 		// problem; record it to escalate the recipe and advance the
 		// per-endpoint AutoRotate cursor for the next attempt.
 		const auto diagnostic = failureDiagnostic();
-		NoteEndpointFailure(_endpointKey, diagnostic);
-		(void)RotateTlsProfileOnFailure(
+		MtproxyNoteEndpointFailure(_endpointKey, diagnostic);
+		(void)MtproxyRotateTlsProfileOnFailure(
 			_endpointKey,
 			diagnostic,
 			effectiveTlsProfile());

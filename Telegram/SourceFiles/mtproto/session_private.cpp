@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/mtproxy/adaptive_policy.h"
+#include "mtproto/proxy/mtproxy/policy.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_dc_options.h"
@@ -74,17 +74,6 @@ constexpr auto kCutContainerOnSize = 16 * 1024;
 auto SyncTimeRequestDuration = kFastRequestDuration;
 
 using namespace details;
-
-[[nodiscard]] crl::time ProxyPatternSpacing(ProxyConnectionPattern pattern) {
-	switch (pattern) {
-	case ProxyConnectionPattern::Soft: return crl::time(150);
-	case ProxyConnectionPattern::Quiet: return crl::time(400);
-	case ProxyConnectionPattern::Strict: return crl::time(700);
-	case ProxyConnectionPattern::Browser: return crl::time(250);
-	case ProxyConnectionPattern::Off: break;
-	}
-	return crl::time(0);
-}
 
 [[nodiscard]] QString LogIdsVector(const QVector<MTPlong> &ids) {
 	if (!ids.size()) return "[]";
@@ -281,7 +270,7 @@ void SessionPrivate::appendTestConnection(
 			protocolForFiles);
 	};
 	const auto spacing = proxied
-		? ProxyPatternSpacing(_options->stealth.connectionPattern)
+		? MtproxyConnectionSpacing(_options->stealth.connectionPattern)
 		: crl::time(0);
 	const auto startDelay = spacing * (int(_testConnections.size()) - 1)
 		+ gateDelay;
@@ -2699,7 +2688,7 @@ void SessionPrivate::onError(
 		[](const TestConnection &test) { return test.data.get(); });
 	if (found != end(_testConnections) && !found->endpoint.isEmpty()) {
 		_endpointCooldownUntil[found->endpoint] = crl::now()
-			+ CooldownMsForEndpoint(found->endpoint);
+			+ MtproxyEndpointCooldown(found->endpoint);
 	}
 	removeTestConnection(connection);
 
