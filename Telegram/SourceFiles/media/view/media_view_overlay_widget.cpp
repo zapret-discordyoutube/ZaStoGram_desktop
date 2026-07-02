@@ -7018,6 +7018,7 @@ void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 	const auto guard = gsl::finally([&] { _processingKeyPress = false; });
 	const auto key = e->key();
 	const auto modifiers = e->modifiers();
+	const auto ctrl = modifiers.testFlag(Qt::ControlModifier);
 	if (_streamed) {
 		const auto request = Media::View::ResolveAction({
 			.key = key,

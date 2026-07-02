@@ -66,6 +66,16 @@ def test_story_content_click_toggles_pause_on_release():
     assert "_stories->contentPressed(false)" not in release
 
 
+def test_overlay_key_press_keeps_ctrl_modifier_available():
+    source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
+    key_press = function_body(source, "void OverlayWidget::handleKeyPress(")
+
+    assert "const auto modifiers = e->modifiers();" in key_press
+    assert "const auto ctrl = modifiers.testFlag(Qt::ControlModifier);" in key_press
+    assert "key == Qt::Key_C && ctrl" in key_press
+    assert "} else if (ctrl) {" in key_press
+
+
 def test_video_message_content_click_opens_media_viewer():
     source = read("SourceFiles/history/view/media/history_view_gif.cpp")
     text_state = function_body(source, "TextState Gif::textState(")
@@ -86,6 +96,7 @@ def main() -> None:
     test_story_streaming_is_seekable_and_has_controls()
     test_story_slider_exposes_seek_callbacks()
     test_story_content_click_toggles_pause_on_release()
+    test_overlay_key_press_keeps_ctrl_modifier_available()
     test_video_message_content_click_opens_media_viewer()
 
 
