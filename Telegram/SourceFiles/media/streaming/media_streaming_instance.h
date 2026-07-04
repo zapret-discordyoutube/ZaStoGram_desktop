@@ -60,6 +60,7 @@ public:
 	void stop();
 	void stopAudio();
 	void saveFrameToCover();
+	void setWaitForMarkAsShown(bool wait);
 
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] bool ready() const;

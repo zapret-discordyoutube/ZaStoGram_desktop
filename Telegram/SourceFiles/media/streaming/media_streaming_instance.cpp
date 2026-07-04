@@ -140,6 +140,12 @@ void Instance::saveFrameToCover() {
 	_shared->saveFrameToCover();
 }
 
+void Instance::setWaitForMarkAsShown(bool wait) {
+	Expects(_shared != nullptr);
+
+	_shared->player().setWaitForMarkAsShown(wait);
+}
+
 bool Instance::active() const {
 	Expects(_shared != nullptr);
 

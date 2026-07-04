@@ -54,6 +54,10 @@ bool PriorityQueue::empty() const {
 	return _data.empty();
 }
 
+int PriorityQueue::size() const {
+	return int(_data.size());
+}
+
 std::optional<int64> PriorityQueue::front() const {
 	return _data.empty()
 		? std::nullopt

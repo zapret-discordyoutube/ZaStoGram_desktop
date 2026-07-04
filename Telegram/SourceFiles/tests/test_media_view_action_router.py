@@ -179,9 +179,35 @@ def test_exact_frame_seek_is_buffer_gated():
     assert "_documentMedia->loaded()" in exact_ready
     assert "kExactFrameSeekLoadAhead" in exact_ready
     assert "SeekFramePolicy::AtOrAfter" in source
-    assert "seekFrameByApproximatePosition(direction)" in frame_step
-    assert "exactFrameSeekReady(position)" in frame_step
+    # Frame stepping never approximates by time: forward steps advance
+    # the live pipeline by exactly one frame, backwards steps use the
+    # frame history or an exact AtOrBefore seek.
+    assert "seekFrameByApproximatePosition" not in source
+    assert "stepVideoFrameForward()" in frame_step
+    assert "stepVideoFrameBackwardCached()" in frame_step
+    assert "SeekFramePolicy::AtOrBefore" in frame_step
     assert "seekFramePolicyForPosition(" in seek_finished
+
+
+def test_frame_step_shows_every_real_frame():
+    source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
+    header = read("SourceFiles/media/view/media_view_overlay_widget.h")
+    forward = function_body(
+        source,
+        "void OverlayWidget::stepVideoFrameForward()")
+    capture = function_body(
+        source,
+        "void OverlayWidget::frameStepCaptureCurrent()")
+
+    assert "_frameStepHistory" in header
+    assert "_frameStepWaitMode" in header
+    # A live forward step switches the track to the no-drop mode, so
+    # exactly one real frame is advanced.
+    assert "setFrameStepWaitMode(true)" in forward
+    assert "_frameStepForwardPending = true" in forward
+    # History frames own their pixel data.
+    assert "image.detach()" in capture
+    assert "kFrameStepHistoryBudget" in capture
 
 
 def test_video_message_open_routing_uses_shared_helper():
@@ -207,6 +233,9 @@ def main() -> None:
     test_overlay_delegates_media_keys_before_story_fallback()
     test_overlay_handle_keypress_no_longer_duplicates_router_actions()
     test_story_media_actions_keep_story_pause_state()
+    test_streaming_initial_seek_can_choose_previous_or_nearest_frame()
+    test_exact_frame_seek_is_buffer_gated()
+    test_frame_step_shows_every_real_frame()
     test_video_message_open_routing_uses_shared_helper()
 
 

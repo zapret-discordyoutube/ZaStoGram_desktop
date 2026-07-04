@@ -23,9 +23,13 @@ constexpr auto kMaxOnlyInHeader = 80 * kPartSize;
 constexpr auto kPartsOutsideFirstSliceGood = 8;
 constexpr auto kSlicesInMemory = 2;
 
-// 1 MB of parts are requested from cloud ahead of reading demand.
-constexpr auto kPreloadPartsAhead = 8;
+// 3 MB of parts are requested from cloud ahead of reading demand.
+constexpr auto kPreloadPartsAhead = 24;
 constexpr auto kDownloaderRequestsLimit = 4;
+
+// While the demuxer sleeps (the player buffer is full or paused) we keep
+// loading the rest of the file to cache, up to this many parts in flight.
+constexpr auto kBackgroundLoadingInFlight = 12;
 
 using PartsMap = base::flat_map<uint32, QByteArray>;
 
@@ -849,6 +853,87 @@ Reader::SerializedSlice Reader::Slices::unloadToCache() {
 	return {};
 }
 
+auto Reader::Slices::collectBackgroundWork(uint32 hintOffset)
+-> BackgroundWork {
+	Expects(_headerMode != HeaderMode::Unknown);
+
+	auto result = BackgroundWork();
+	const auto alignToParts = [](uint32 size) {
+		return ((size + kPartSize - 1) / kPartSize) * uint32(kPartSize);
+	};
+	if (isFullInHeader()) {
+		const auto offsets = _header.offsetsFromLoader(
+			0,
+			alignToParts(_size));
+		for (const auto offset : offsets.values()) {
+			if (offset < _size) {
+				result.offsetsFromLoader.add(offset);
+			}
+		}
+		return result;
+	}
+	const auto count = int(_data.size());
+	const auto start = int(hintOffset / kInSlice);
+	for (auto i = 0; i != count; ++i) {
+		const auto index = (start + i) % count;
+		auto &slice = _data[index];
+		if (slice.flags & Slice::Flag::FullInCache) {
+			continue;
+		} else if (_headerMode != HeaderMode::NoCache
+			&& !(slice.flags & Slice::Flag::LoadedFromCache)) {
+			// Load the cached parts of this slice before requesting
+			// the missing ones, otherwise we may download them twice.
+			if (!(slice.flags & Slice::Flag::LoadingFromCache)) {
+				slice.flags |= Slice::Flag::LoadingFromCache;
+				result.sliceNumberFromCache = index + 1;
+			}
+			return result;
+		}
+		const auto sliceSize = uint32(maxSliceSize(index + 1));
+		const auto offsets = slice.offsetsFromLoader(
+			0,
+			alignToParts(sliceSize));
+		auto added = false;
+		for (const auto offset : offsets.values()) {
+			const auto full = uint32(index) * kInSlice + offset;
+			if (offset < kInSlice && full < _size) {
+				if (result.offsetsFromLoader.add(full)) {
+					added = true;
+				}
+			}
+		}
+		if (added) {
+			return result;
+		}
+	}
+	return result;
+}
+
+auto Reader::Slices::serializeAndUnloadFinishedBackground(
+	int keepFromIndex,
+	int keepTillIndex)
+-> SerializedSlice {
+	if (isFullInHeader()
+		|| _headerMode == HeaderMode::Unknown
+		|| _headerMode == HeaderMode::NoCache) {
+		return {};
+	}
+	const auto count = int(_data.size());
+	for (auto index = 0; index != count; ++index) {
+		auto &slice = _data[index];
+		if (!(slice.flags & Slice::Flag::FullInCache)
+			|| slice.parts.empty()
+			|| (index >= keepFromIndex && index <= keepTillIndex)
+			|| (ranges::find(_usedSlices, index) != end(_usedSlices))) {
+			continue;
+		} else if (slice.flags & Slice::Flag::ChangedSinceCache) {
+			return serializeAndUnloadSlice(index + 1);
+		}
+		unloadSlice(slice);
+	}
+	return {};
+}
+
 Reader::Reader(
 	std::unique_ptr<Loader> loader,
 	Storage::Cache::Database *cache)
@@ -867,17 +952,63 @@ Reader::Reader(
 		if (const auto waiting = _waiting.load(std::memory_order_acquire)) {
 			_waiting.store(nullptr, std::memory_order_release);
 			waiting->release();
+		} else if (_streamingActive
+			&& !_backgroundLoadingFinished.load(std::memory_order_relaxed)) {
+			// Let the sleeping streaming thread continue the background
+			// loading of the file to cache.
+			wakeFromSleep();
 		}
 	}, _lifetime);
 
 	if (_cacheHelper) {
 		readFromCache(0);
+	} else {
+		// Background loading requires the cache to unload slices to.
+		_backgroundLoadingFinished = true;
 	}
 }
 
 void Reader::startSleep(not_null<crl::semaphore*> wake) {
 	_sleeping.store(wake, std::memory_order_release);
 	processDownloaderRequests();
+	if (!_backgroundLoadingFinished.load(std::memory_order_relaxed)) {
+		checkForSomethingMoreReceived();
+		continueBackgroundLoading();
+	}
+}
+
+void Reader::continueBackgroundLoading() {
+	if (!_cacheHelper
+		|| _streamingError
+		|| _backgroundLoadingFinished.load(std::memory_order_relaxed)
+		|| _slices.headerModeUnknown()
+		|| _slices.waitingForHeaderCache()) {
+		return;
+	}
+	const auto keepFrom = int(_backgroundHint / kInSlice);
+	auto toCache = _slices.serializeAndUnloadFinishedBackground(
+		keepFrom,
+		keepFrom + 1);
+	while (toCache.number >= 0) {
+		putToCache(std::move(toCache));
+		toCache = _slices.serializeAndUnloadFinishedBackground(
+			keepFrom,
+			keepFrom + 1);
+	}
+	if (_slices.fullInCache()) {
+		_backgroundLoadingFinished = true;
+		_loader->tryRemoveFromQueue();
+		return;
+	} else if (_loadingOffsets.size() >= kBackgroundLoadingInFlight) {
+		return;
+	}
+	const auto work = _slices.collectBackgroundWork(_backgroundHint);
+	if (work.sliceNumberFromCache > 0) {
+		readFromCache(work.sliceNumberFromCache);
+	}
+	for (const auto offset : work.offsetsFromLoader.values()) {
+		loadAtOffset(offset);
+	}
 }
 
 void Reader::wakeFromSleep() {
@@ -1256,6 +1387,8 @@ Reader::FillState Reader::fill(
 		notify->release();
 		return FillState::Failed;
 	};
+
+	_backgroundHint = uint32(offset);
 
 	checkForSomethingMoreReceived();
 	if (_streamingError) {

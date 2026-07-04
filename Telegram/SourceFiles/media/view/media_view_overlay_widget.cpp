@@ -188,9 +188,16 @@ constexpr auto kPinchZoomStep = 0.25;
 constexpr auto kOverlayLoaderPriority = 2;
 constexpr auto kSeekTimeMs = 5 * crl::time(1000);
 constexpr auto kSeekTimeMsLong = 10 * crl::time(1000);
-constexpr auto kApproximateFrameStepFallbackFps = 30.;
 constexpr auto kExactFrameSeekLoadAhead = crl::time(1000);
 constexpr auto kFrameStepThrottleMs = crl::time(150);
+constexpr auto kFrameStepPendingLimit = 4;
+
+// Frame-by-frame history keeps recently shown frames as images, so that
+// stepping between them requires no seeks and no decoding. The size is
+// limited by the memory budget, not by the frames count.
+constexpr auto kFrameStepHistoryBudget = int64(128) * 1024 * 1024;
+constexpr auto kFrameStepHistoryMinFrames = 2;
+constexpr auto kFrameStepHistoryMaxFrames = 24;
 
 // macOS OpenGL renderer fails to render larger texture
 // even though it reports that max texture size is 16384.
@@ -1425,6 +1432,10 @@ void OverlayWidget::clearStreaming(bool savePosition) {
 			_document,
 			_streamed->instance.player().prepareLegacyState());
 	}
+	_frameStepForwardPending = false;
+	_frameStepWaitMode = false;
+	_frameStepPending = 0;
+	frameStepClearHistory();
 	_fullScreenVideo = false;
 	_streamed = nullptr;
 }
@@ -5054,8 +5065,13 @@ void OverlayWidget::updatePowerSaveBlocker(
 }
 
 QImage OverlayWidget::transformedShownContent() const {
+	const auto browsing = frameStepBrowsingImage();
 	return transformShownContent(
-		videoShown() ? currentVideoFrameImage() : _staticContent,
+		(browsing && videoShown())
+			? *browsing
+			: videoShown()
+			? currentVideoFrameImage()
+			: _staticContent,
 		finalContentRotation());
 }
 
@@ -5085,6 +5101,26 @@ void OverlayWidget::handleStreamingUpdate(Streaming::Update &&update) {
 	}, [&](PreloadedVideo) {
 		updatePlaybackState();
 	}, [&](UpdateVideo update) {
+		if (_frameStepForwardPending) {
+			// A single frame-step forward completed, pause right back.
+			_frameStepForwardPending = false;
+			const auto &player = _streamed->instance.player();
+			if (player.active() && !player.paused() && !player.finished()) {
+				_streamed->instance.pause();
+			}
+			setFrameStepWaitMode(false);
+			frameStepCaptureCurrent();
+		} else if (frameStepBrowsing()) {
+			// Live playback took over (resumed not through our UI),
+			// drop the frame-by-frame browsing state.
+			frameStepClearHistory();
+		} else if (!_frameStepHistory.empty()
+			&& _frameStepHistory.back().position != update.position) {
+			// Live playback moved past the history, its frames are no
+			// longer adjacent to the current one - drop them, so that
+			// a backwards step never jumps over frames.
+			frameStepClearHistory();
+		}
 		updateContentRect();
 		Core::App().updateNonIdle();
 		updatePlaybackState();
@@ -5097,6 +5133,9 @@ void OverlayWidget::handleStreamingUpdate(Streaming::Update &&update) {
 	}, [](SpeedEstimate) {
 	}, [](MutedByOther) {
 	}, [&](Finished) {
+		_frameStepForwardPending = false;
+		setFrameStepWaitMode(false);
+		frameStepClearHistory();
 		updatePlaybackState();
 	});
 }
@@ -5312,6 +5351,8 @@ void OverlayWidget::playbackControlsRotate() {
 void OverlayWidget::playbackPauseResume() {
 	Expects(_streamed != nullptr);
 
+	_frameStepForwardPending = false;
+	setFrameStepWaitMode(false);
 	_streamed->resumeOnCallEnd = false;
 	if (_streamed->instance.player().failed()) {
 		clearStreaming();
@@ -5324,6 +5365,12 @@ void OverlayWidget::playbackPauseResume() {
 		_streamedQualityChangeFinished = false;
 		_streamingStartPaused = false;
 		restartAtSeekPosition(0);
+	} else if (frameStepBrowsing()) {
+		// Continue playing from the frame the user is looking at,
+		// not from the (further) live player position.
+		const auto position = _frameStepHistory[_frameStepShown].position;
+		_streamingStartPaused = false;
+		restartAtSeekPosition(position);
 	} else if (_streamed->instance.player().paused()) {
 		_streamed->instance.resume();
 		updatePlaybackState();
@@ -5339,7 +5386,8 @@ void OverlayWidget::flushPendingFrameStep() {
 		_frameStepThrottle.cancel();
 		return;
 	}
-	if (!_streamed->instance.ready()) {
+	if (!_streamed->instance.ready() || _frameStepForwardPending) {
+		// Not ready or the previous forward step is still in progress.
 		_frameStepThrottle.callOnce(kFrameStepThrottleMs);
 		return;
 	}
@@ -5383,17 +5431,6 @@ Streaming::SeekFramePolicy OverlayWidget::seekFramePolicyForPosition(
 		: Streaming::SeekFramePolicy::AtOrAfter;
 }
 
-void OverlayWidget::seekFrameByApproximatePosition(int direction) {
-	Expects(_streamed != nullptr);
-
-	const auto fps = _streamed->instance.info().video.fps;
-	const auto stepMs = 1000.
-		/ ((fps > 0.) ? fps : kApproximateFrameStepFallbackFps);
-	const auto shift = crl::time(std::round(direction * stepMs));
-	_streamingStartPaused = true;
-	seekRelativeTime(shift);
-}
-
 void OverlayWidget::seekFrameByDecodedPosition(int direction) {
 	Expects(_streamed != nullptr);
 
@@ -5403,19 +5440,154 @@ void OverlayWidget::seekFrameByDecodedPosition(int direction) {
 		|| state.duration == kDurationUnavailable) {
 		return;
 	}
-	const auto forward = (direction > 0);
-	const auto position = forward
-		? std::min(state.position + crl::time(1), state.duration)
-		: ((state.position > 0) ? (state.position - crl::time(1)) : 0);
-	if (!exactFrameSeekReady(position)) {
-		seekFrameByApproximatePosition(direction);
+	if (direction > 0) {
+		stepVideoFrameForward();
+		return;
+	} else if (stepVideoFrameBackwardCached()) {
 		return;
 	}
-	const auto policy = forward
-		? Streaming::SeekFramePolicy::AtOrAfter
-		: Streaming::SeekFramePolicy::AtOrBefore;
+	// Always seek to the exact previous frame (AtOrBefore decodes all
+	// frames from the nearest key frame), even if it means waiting for
+	// the data to be loaded first: frame-by-frame mode must show real
+	// frames, never a time-based approximation.
+	const auto base = frameStepBrowsing()
+		? _frameStepHistory[_frameStepShown].position
+		: state.position;
+	const auto position = (base > 0) ? (base - crl::time(1)) : 0;
 	_streamingStartPaused = true;
-	restartAtSeekPosition(position, policy);
+	restartAtSeekPosition(position, Streaming::SeekFramePolicy::AtOrBefore);
+}
+
+void OverlayWidget::stepVideoFrameForward() {
+	Expects(_streamed != nullptr);
+
+	if (frameStepBrowsing()) {
+		frameStepShowHistory(_frameStepShown + 1);
+		return;
+	}
+	const auto &player = _streamed->instance.player();
+	if (!videoShown()
+		|| !player.active()
+		|| player.finished()
+		|| player.failed()) {
+		return;
+	} else if (!player.paused()) {
+		_streamed->instance.pause();
+		updatePlaybackState();
+		frameStepCaptureCurrent();
+		return;
+	}
+	// The next frame is already decoded in the frame ring buffer, so
+	// instead of a full player restart with a seek and decoding from
+	// the nearest key frame we just resume and pause back as soon as
+	// the next frame gets displayed.
+	//
+	// While the step is in progress the track is switched to the
+	// wait-for-mark-as-shown mode: frames are never dropped as stale
+	// and the next one is not presented until the current one is
+	// really rendered, so exactly one real frame is advanced.
+	frameStepCaptureCurrent();
+	setFrameStepWaitMode(true);
+	_frameStepForwardPending = true;
+	_streamed->instance.resume();
+}
+
+void OverlayWidget::setFrameStepWaitMode(bool enabled) {
+	Expects(_streamed != nullptr);
+
+	if (_frameStepWaitMode == enabled) {
+		return;
+	}
+	_frameStepWaitMode = enabled;
+	_streamed->instance.setWaitForMarkAsShown(enabled);
+}
+
+bool OverlayWidget::stepVideoFrameBackwardCached() {
+	Expects(_streamed != nullptr);
+
+	if (frameStepBrowsing()) {
+		if (_frameStepShown > 0) {
+			frameStepShowHistory(_frameStepShown - 1);
+			return true;
+		}
+		// History exhausted, fall back to a restart from the browsed
+		// position.
+		return false;
+	}
+	const auto &player = _streamed->instance.player();
+	if (!videoShown()
+		|| !player.active()
+		|| !player.paused()
+		|| player.failed()) {
+		return false;
+	}
+	frameStepCaptureCurrent();
+	const auto count = int(_frameStepHistory.size());
+	const auto position = _streamed->instance.info().video.state.position;
+	if (count >= 2 && _frameStepHistory.back().position == position) {
+		frameStepShowHistory(count - 2);
+		return true;
+	}
+	return false;
+}
+
+bool OverlayWidget::frameStepBrowsing() const {
+	return (_frameStepShown >= 0)
+		&& (_frameStepShown < int(_frameStepHistory.size()));
+}
+
+const QImage *OverlayWidget::frameStepBrowsingImage() const {
+	return frameStepBrowsing()
+		? &_frameStepHistory[_frameStepShown].image
+		: nullptr;
+}
+
+void OverlayWidget::frameStepCaptureCurrent() {
+	if (!videoShown()
+		|| !_streamed->instance.player().ready()
+		|| _streamed->instance.info().video.alpha) {
+		return;
+	}
+	const auto position = _streamed->instance.info().video.state.position;
+	if (position == kTimeUnknown
+		|| (!_frameStepHistory.empty()
+			&& _frameStepHistory.back().position == position)) {
+		return;
+	}
+	auto image = videoFrame();
+	if (image.isNull()) {
+		return;
+	}
+	// Own the pixel data, the streaming pipeline reuses frame buffers.
+	image.detach();
+	_frameStepHistory.push_back({ position, std::move(image) });
+
+	const auto bytes = int64(_frameStepHistory.back().image.sizeInBytes());
+	const auto limit = bytes
+		? std::clamp(
+			int(kFrameStepHistoryBudget / bytes),
+			kFrameStepHistoryMinFrames,
+			kFrameStepHistoryMaxFrames)
+		: kFrameStepHistoryMinFrames;
+	while (int(_frameStepHistory.size()) > limit) {
+		_frameStepHistory.pop_front();
+	}
+}
+
+void OverlayWidget::frameStepShowHistory(int index) {
+	Expects(index >= 0 && index < int(_frameStepHistory.size()));
+
+	// The last history entry always is the live (current) frame.
+	_frameStepShown = (index + 1 == int(_frameStepHistory.size()))
+		? -1
+		: index;
+	updateContentRect();
+	updatePlaybackState();
+}
+
+void OverlayWidget::frameStepClearHistory() {
+	_frameStepHistory.clear();
+	_frameStepShown = -1;
 }
 
 void OverlayWidget::restartAtProgress(float64 progress) {
@@ -5434,6 +5606,8 @@ void OverlayWidget::restartAtSeekPosition(
 		Streaming::SeekFramePolicy policy) {
 	Expects(_streamed != nullptr);
 
+	_frameStepForwardPending = false;
+	_frameStepWaitMode = false; // Player restarts with fresh options.
 	if (videoShown()) {
 		_streamed->instance.saveFrameToCover();
 		const auto saved = base::take(_rotation);
@@ -5441,11 +5615,12 @@ void OverlayWidget::restartAtSeekPosition(
 		_rotation = saved;
 		updateContentRect();
 	}
+	frameStepClearHistory();
 	const auto overrideDuration = _stories
 		|| (_chosenQuality && _chosenQuality != _document);
 	auto options = Streaming::PlaybackOptions{
 		.position = position,
-		.seekFramePolicy = seekFramePolicyForPosition(position, policy),
+		.seekFramePolicy = policy,
 		.durationOverride = ((overrideDuration
 			&& _document
 			&& _document->hasDuration())
@@ -5926,7 +6101,10 @@ void OverlayWidget::updatePlaybackState() {
 	if (!_streamed->controls && !_stories) {
 		return;
 	}
-	const auto state = _streamed->instance.player().prepareLegacyState();
+	auto state = _streamed->instance.player().prepareLegacyState();
+	if (frameStepBrowsing()) {
+		state.position = _frameStepHistory[_frameStepShown].position;
+	}
 	if (state.position != kTimeUnknown && state.length != kTimeUnknown) {
 		_streamedPosition = state.position;
 		if (_streamed->controls) {
@@ -6113,7 +6291,14 @@ Ui::GL::ChosenRenderer OverlayWidget::chooseRenderer(
 void OverlayWidget::paint(not_null<Renderer*> renderer) {
 	renderer->paintBackground();
 	if (contentShown()) {
-		if (videoShown()) {
+		if (const auto image = frameStepBrowsingImage()
+			; image && videoShown()) {
+			renderer->paintTransformedStaticContent(
+				*image,
+				contentGeometry(),
+				false, // semi-transparent
+				false); // fill transparent background
+		} else if (videoShown()) {
 			renderer->paintTransformedVideoFrame(contentGeometry());
 			if (_streamed->instance.player().ready()) {
 				_streamed->instance.markFrameShown();
@@ -7042,7 +7227,14 @@ bool OverlayWidget::executeMediaViewAction(const ActionRequest &request) {
 			if (_stories && !_stories->paused()) {
 				_stories->togglePaused(true);
 			}
-			_frameStepPending += direction;
+			// Don't queue up more steps than we can process quickly,
+			// otherwise the player keeps stepping (each backwards step
+			// is a restart with decoding from the nearest key frame)
+			// for a long time after the user input has stopped.
+			_frameStepPending = std::clamp(
+				_frameStepPending + direction,
+				-kFrameStepPendingLimit,
+				kFrameStepPendingLimit);
 			if (!_frameStepThrottle.isActive()) {
 				flushPendingFrameStep();
 			}

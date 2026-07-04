@@ -168,6 +168,17 @@ private:
 		[[nodiscard]] FillResult fill(uint32 offset, bytes::span buffer);
 		[[nodiscard]] SerializedSlice unloadToCache();
 
+		// Background (whole file) preloading while streaming sleeps.
+		struct BackgroundWork {
+			StackIntVector<kLoadFromRemoteMax> offsetsFromLoader;
+			int sliceNumberFromCache = -1;
+		};
+		[[nodiscard]] BackgroundWork collectBackgroundWork(
+			uint32 hintOffset);
+		[[nodiscard]] SerializedSlice serializeAndUnloadFinishedBackground(
+			int keepFromIndex,
+			int keepTillIndex);
+
 		[[nodiscard]] QByteArray partForDownloader(uint32 offset) const;
 		[[nodiscard]] bool readCacheForDownloaderRequired(uint32 offset);
 
@@ -224,6 +235,8 @@ private:
 
 	void finalizeCache();
 
+	void continueBackgroundLoading();
+
 	void processDownloaderRequests();
 	void checkCacheResultsForDownloader();
 	void pruneDownloaderCache(uint32 minimalOffset);
@@ -249,6 +262,7 @@ private:
 	std::atomic<crl::semaphore*> _waiting = nullptr;
 	std::atomic<crl::semaphore*> _sleeping = nullptr;
 	std::atomic<bool> _stopStreamingAsync = false;
+	std::atomic<bool> _backgroundLoadingFinished = false;
 	PriorityQueue _loadingOffsets;
 
 	Slices _slices;
@@ -266,6 +280,7 @@ private:
 	bool _streamingActive = false;
 
 	// Streaming thread.
+	uint32 _backgroundHint = 0;
 	std::deque<uint32> _offsetsForDownloader;
 	base::flat_set<uint32> _downloaderOffsetsRequested;
 	base::flat_map<uint32, std::optional<PartsMap>> _downloaderReadCache;

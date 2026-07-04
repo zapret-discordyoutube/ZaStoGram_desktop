@@ -447,9 +447,19 @@ private:
 	[[nodiscard]] Streaming::SeekFramePolicy seekFramePolicyForPosition(
 		crl::time position,
 		Streaming::SeekFramePolicy policy) const;
-	void seekFrameByApproximatePosition(int direction);
 	void seekFrameByDecodedPosition(int direction);
+	void stepVideoFrameForward();
+	[[nodiscard]] bool stepVideoFrameBackwardCached();
+	void setFrameStepWaitMode(bool enabled);
 	void flushPendingFrameStep();
+
+	// Frame-by-frame history: recently shown frames are kept as images,
+	// so stepping between them requires no seeks and no decoding at all.
+	[[nodiscard]] bool frameStepBrowsing() const;
+	[[nodiscard]] const QImage *frameStepBrowsingImage() const;
+	void frameStepCaptureCurrent();
+	void frameStepShowHistory(int index);
+	void frameStepClearHistory();
 
 	void refreshClipControllerGeometry();
 	void refreshCaptionGeometry();
@@ -843,6 +853,15 @@ private:
 	base::Timer _speedBoostHoldTimer;
 	base::Timer _frameStepThrottle;
 	int _frameStepPending = 0;
+	bool _frameStepForwardPending = false;
+	bool _frameStepWaitMode = false;
+
+	struct FrameStepFrame {
+		crl::time position = kTimeUnknown;
+		QImage image;
+	};
+	std::deque<FrameStepFrame> _frameStepHistory;
+	int _frameStepShown = -1; // -1 means the live frame is shown.
 	Ui::Animations::Basic _speedBoostTicker;
 	float64 _speedBoostPhase = 0.;
 	crl::time _speedBoostLastFrame = 0;
