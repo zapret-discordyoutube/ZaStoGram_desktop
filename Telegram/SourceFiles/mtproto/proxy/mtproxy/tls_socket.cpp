@@ -611,6 +611,17 @@ bool TlsSocket::isGoodStartNonce(bytes::const_span nonce) {
 
 void TlsSocket::timedOut() {
 	_syncTimeRequests.fire({});
+	if (_state == State::Error) {
+		return;
+	}
+	MtProxy::EndpointHealth::Instance().reportFailure({
+		.endpoint = _endpointId,
+		.use = _endpointUse,
+		.reason = failureReason(),
+		.configuredTlsProfile = _tlsProfile,
+		.sentProfile = _sentTlsProfile,
+	});
+	_state = State::Error;
 }
 
 bool TlsSocket::isConnected() {

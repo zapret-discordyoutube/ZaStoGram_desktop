@@ -411,7 +411,7 @@ constexpr auto kClientHelloFragmentDelayMax = crl::time(7);
 				S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
 			}
 			StartPermutationElement(); {
-				S("\x00\x0b\x00\x02\x00\x00"_q);
+				S("\x00\x0b\x00\x02\x01\x00"_q);
 			}
 			StartPermutationElement(); {
 				S(""

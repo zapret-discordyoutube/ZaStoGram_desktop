@@ -110,6 +110,7 @@ def test_chrome_modern_builder_template_matches_capture_ja4_facts():
     fixture_facts = parse_client_hello(bytes.fromhex(fixture["client_hello_hex"]))
     builder_facts = parse_client_hello(render_chrome_modern_builder_hello())
 
+    assert builder_facts["ja4"] == profile_expected_ja4("ChromeModern")
     assert builder_facts["ja4"] == fixture["ja4"]
     assert builder_facts["ja4"] == fixture_facts["ja4"]
     for key in (
@@ -122,16 +123,40 @@ def test_chrome_modern_builder_template_matches_capture_ja4_facts():
         assert builder_facts[key] == fixture_facts[key]
 
 
-def test_auto_rotate_policy_uses_validated_profile_metadata():
+def test_chrome_modern_builder_matches_capture_extension_payloads():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    fixture_extensions = client_hello_extensions(
+        bytes.fromhex(fixture["client_hello_hex"]))
+    builder_extensions = client_hello_extensions(
+        render_chrome_modern_builder_hello())
+
+    for extension in (
+        0x0005,
+        0x000B,
+        0x000D,
+        0x0010,
+        0x0012,
+        0x0017,
+        0x001B,
+        0x002D,
+        0x44CD,
+        0xFF01,
+    ):
+        assert builder_extensions[extension] == fixture_extensions[extension]
+
+
+def test_auto_rotate_policy_uses_known_template_pool():
     source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
+    pool_body = function_body(source, "[[nodiscard]] int AutoRotatePoolSize()")
 
     assert '#include "mtproto/proxy/mtproxy/client_hello_profile.h"' in source
     assert "kAutoRotateCandidatePool" in source
-    assert "IsClientHelloProfileValidated(profile)" in source
     assert "DefaultClientHelloProfile()" in source
-    assert "ValidatedClientHelloProfile(candidate)" in source
+    assert "KnownClientHelloProfile(candidate)" in source
     assert "AutoRotatePoolProfile(state.profileIndex)" in source
     assert "kAutoRotatePool[]" not in source
+    assert "std::size(kAutoRotateCandidatePool)" in pool_body
+    assert "IsClientHelloProfileValidated(profile)" not in pool_body
 
 
 def test_new_client_hello_sources_are_registered_for_build():
@@ -261,6 +286,44 @@ def parse_client_hello(data: bytes) -> dict:
     }
 
 
+def client_hello_extensions(data: bytes) -> dict[int, bytes]:
+    if len(data) < 5 or data[0] != 0x16:
+        raise AssertionError("ClientHello must start with a TLS handshake record")
+    position = 5
+    if data[position] != 0x01:
+        raise AssertionError("ClientHello record must contain a ClientHello")
+    position += 4
+    position += 2 + 32
+    session_id_length = data[position]
+    position += 1 + session_id_length
+    cipher_suites_length = read16(data, position)
+    position += 2 + cipher_suites_length
+    compression_methods_length = data[position]
+    position += 1 + compression_methods_length
+    extensions_length = read16(data, position)
+    position += 2
+    extensions_end = position + extensions_length
+    result = {}
+    while position + 4 <= extensions_end:
+        extension = read16(data, position)
+        length = read16(data, position + 2)
+        value = data[position + 4:position + 4 + length]
+        position += 4 + length
+        if not is_grease(extension):
+            result[extension] = value
+    return result
+
+
+def profile_expected_ja4(profile: str) -> str:
+    source = (MTPROXY_DIR / "client_hello_profile.cpp").read_text(
+        encoding="utf-8")
+    initializer = initializer_after(source, f"ProxyTlsProfile::{profile}")
+    match = re.search(r'\.expectedJa4 = "([^"]+)"', initializer)
+    if not match:
+        raise AssertionError(f"expectedJa4 not found for {profile}")
+    return match.group(1)
+
+
 def read16(data: bytes, offset: int) -> int:
     return int.from_bytes(data[offset:offset + 2], "big")
 
@@ -324,6 +387,25 @@ def block_after(text: str, marker: str) -> str:
             if depth == 0:
                 return text[brace + 1:index]
     raise AssertionError("block not found")
+
+
+def function_body(text: str, signature: str) -> str:
+    start = text.index(signature)
+    brace = text.index(" {\n", start) + 1
+    return body_from_brace(text, brace)
+
+
+def body_from_brace(text: str, brace: int) -> str:
+    depth = 0
+    for index in range(brace, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+    raise AssertionError("body not found")
 
 
 def initializer_after(text: str, marker: str) -> str:
@@ -435,6 +517,7 @@ if __name__ == "__main__":
     test_client_hello_builder_owns_templates_and_fragmentation_plan()
     test_client_hello_facts_module_parses_and_computes_ja4()
     test_chrome_modern_builder_template_matches_capture_ja4_facts()
-    test_auto_rotate_policy_uses_validated_profile_metadata()
+    test_chrome_modern_builder_matches_capture_extension_payloads()
+    test_auto_rotate_policy_uses_known_template_pool()
     test_new_client_hello_sources_are_registered_for_build()
     test_cpp_smoke_invokes_deterministic_builder_and_ja4_facts()

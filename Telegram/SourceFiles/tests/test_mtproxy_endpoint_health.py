@@ -9,6 +9,7 @@ ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session_private.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
@@ -82,6 +83,7 @@ def test_session_private_admission_gates_before_socket_creation():
         append_body.index("AbstractConnection::Create("))
     assert "std::move(admission.lease)" in append_body
     assert "ReserveHandshakeGateForProxy(_options->proxy)" not in append_body
+    assert "const auto proxied =" not in append_body
 
 
 def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
@@ -105,6 +107,7 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
 
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in timeout_body
     assert "MtProxy::FailureReason::Timeout" in timeout_body
+    assert "connection.mtproxyEndpoint.domain.isEmpty()" in timeout_body
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in error_body
     assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in error_body
     assert "i->mtproxyLease.release();" in connected_body
@@ -121,6 +124,10 @@ def test_tls_socket_reports_typed_terminal_reasons():
         source,
         "void TlsSocket::checkHelloParts12(int parts1Size)")
     error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
+    timeout_body = function_body(source, "void TlsSocket::timedOut()")
+    tcp_timeout_body = function_body(
+        read(CONNECTION_TCP_CPP),
+        "void TcpConnection::timedOut()")
 
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in header
     assert "MtProxy::FailureReason _failureReason" in header
@@ -139,6 +146,17 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in error_body
     assert "MtproxyNoteEndpointFailure(" not in source
     assert "MtproxyNoteEndpointSuccess(" not in source
+    assert "MtProxy::EndpointHealth::Instance().reportFailure(" in timeout_body
+    assert ".reason = failureReason()" in timeout_body
+    assert ".configuredTlsProfile = _tlsProfile" in timeout_body
+    assert ".sentProfile = _sentTlsProfile" in timeout_body
+    assert "MtProxy::FailureReason::Timeout" not in timeout_body
+    assert tcp_timeout_body.index("_socket->timedOut();") < (
+        tcp_timeout_body.index("ReportProxyEvent("))
+    assert ".mtproxyReason = _socket\n\t\t\t? _socket->mtproxyTerminalReason()" in (
+        tcp_timeout_body)
+    assert ".terminalUntil = _socket\n\t\t\t? _socket->mtproxyTerminalUntil()" in (
+        tcp_timeout_body)
     assert "MtproxyRotateTlsProfileOnFailure(" not in source
 
 

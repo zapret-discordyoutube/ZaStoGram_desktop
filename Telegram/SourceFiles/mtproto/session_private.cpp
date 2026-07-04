@@ -211,7 +211,6 @@ bool SessionPrivate::appendTestConnection(
 	const auto priority = (qthelp::is_ipv6(ip) ? (OptionPreferIPv6.value() ? 2 : 0) : 1)
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
 		+ (protocolSecret.empty() ? 0 : 1);
-	const auto proxied = (_options->proxy.type != ProxyData::Type::None);
 	auto admission = MtProxy::Admission();
 	const auto mtproxy = (_options->proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = protocolForFiles
@@ -1370,7 +1369,8 @@ void SessionPrivate::waitBetterFailed() {
 
 void SessionPrivate::connectingTimedOut() {
 	for (const auto &connection : _testConnections) {
-		if (!connection.mtproxyEndpoint.host.isEmpty()) {
+		if (!connection.mtproxyEndpoint.host.isEmpty()
+			&& connection.mtproxyEndpoint.domain.isEmpty()) {
 			MtProxy::EndpointHealth::Instance().reportFailure({
 				.endpoint = connection.mtproxyEndpoint,
 				.use = connection.mtproxyUse,

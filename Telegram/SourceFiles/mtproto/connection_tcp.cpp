@@ -716,17 +716,23 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 
 void TcpConnection::timedOut() {
 	CONNECTION_LOG_ERROR("Connection timed out.");
+	if (_socket) {
+		_socket->timedOut();
+	}
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = ProxyConnectionError::Timeout,
+		.mtproxyReason = _socket
+			? _socket->mtproxyTerminalReason()
+			: ProxyMtproxyTerminalReason::None,
+		.terminalUntil = _socket
+			? _socket->mtproxyTerminalUntil()
+			: 0,
 		.proxy = _proxy,
 		.transport = tag(),
 		.connectionId = _debugId,
 		.message = u"proxy connection timed out"_q,
 	});
-	if (_socket) {
-		_socket->timedOut();
-	}
 }
 
 bool TcpConnection::isConnected() const {

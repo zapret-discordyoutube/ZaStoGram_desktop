@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QMutex>
 
+#include <iterator>
 #include <map>
 
 namespace MTP::details {
@@ -37,19 +38,13 @@ QMutex AutoProfilesMutex;
 std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 
 [[nodiscard]] int AutoRotatePoolSize() {
-	auto result = 0;
-	for (const auto profile : kAutoRotateCandidatePool) {
-		if (IsClientHelloProfileValidated(profile)) {
-			++result;
-		}
-	}
-	return result ? result : 1;
+	return int(std::size(kAutoRotateCandidatePool));
 }
 
-[[nodiscard]] ProxyTlsProfile ValidatedClientHelloProfile(
+[[nodiscard]] ProxyTlsProfile KnownClientHelloProfile(
 		ProxyTlsProfile profile) {
 	const auto &info = ClientHelloProfile(profile);
-	return (info.validation == ClientHelloProfileValidation::Validated)
+	return (info.profile == profile)
 		? info.profile
 		: DefaultClientHelloProfile();
 }
@@ -57,17 +52,7 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 [[nodiscard]] ProxyTlsProfile AutoRotatePoolProfile(int index) {
 	const auto size = AutoRotatePoolSize();
 	const auto normalized = (index % size + size) % size;
-	auto position = 0;
-	for (const auto profile : kAutoRotateCandidatePool) {
-		if (!IsClientHelloProfileValidated(profile)) {
-			continue;
-		}
-		if (position == normalized) {
-			return profile;
-		}
-		++position;
-	}
-	return DefaultClientHelloProfile();
+	return KnownClientHelloProfile(kAutoRotateCandidatePool[normalized]);
 }
 
 [[nodiscard]] int AutoRotateInitialIndex(const QString &key) {
@@ -107,17 +92,17 @@ ProxyTlsProfile CompatibilityTlsProfile(
 		const auto candidate = (effective == ProxyTlsProfile::FirefoxAndroid)
 			? ProxyTlsProfile::AndroidChrome
 			: ProxyTlsProfile::FirefoxAndroid;
-		return ValidatedClientHelloProfile(candidate);
+		return KnownClientHelloProfile(candidate);
 	} else if (recipeLevel == 3) {
 		const auto candidate = (effective == ProxyTlsProfile::AndroidChrome)
 			? ProxyTlsProfile::Yandex
 			: ProxyTlsProfile::AndroidChrome;
-		return ValidatedClientHelloProfile(candidate);
+		return KnownClientHelloProfile(candidate);
 	}
 	const auto candidate = (effective == ProxyTlsProfile::Yandex)
 		? ProxyTlsProfile::Firefox
 		: ProxyTlsProfile::Yandex;
-	return ValidatedClientHelloProfile(candidate);
+	return KnownClientHelloProfile(candidate);
 }
 
 AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
