@@ -110,6 +110,10 @@ public:
 	[[nodiscard]] auto proxyConnectionStatusValue() const
 	-> rpl::producer<ProxyConnectionStatus>;
 	void setProxyConnectionStatus(ProxyConnectionStatus status);
+	[[nodiscard]] ConnectionNotice connectionNotice() const;
+	[[nodiscard]] auto connectionNoticeValue() const
+	-> rpl::producer<ConnectionNotice>;
+	void setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	[[nodiscard]] int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
@@ -248,6 +252,8 @@ private:
 	std::vector<std::unique_ptr<Session>> _sessionsToDestroy;
 	rpl::event_stream<ShiftedDcId> _restartsByTimeout;
 	rpl::variable<ProxyConnectionStatus> _proxyConnectionStatus;
+	base::flat_map<ShiftedDcId, ConnectionNotice> _connectionNotices;
+	rpl::variable<ConnectionNotice> _connectionNotice = ConnectionNotice::None;
 
 	std::unique_ptr<ConfigLoader> _configLoader;
 	std::unique_ptr<DomainResolver> _domainResolver;
@@ -377,6 +383,8 @@ Instance::Private::Private(
 		if (!_proxySettings.isEnabled()) {
 			setProxyConnectionStatus({});
 		}
+		_connectionNotices.clear();
+		setConnectionNotice(0, ConnectionNotice::None);
 	}, _lifetime);
 }
 
@@ -694,10 +702,39 @@ void Instance::Private::setProxyConnectionStatus(
 			return;
 		}
 	}
+	status = ApplyProxyConnectionStatusUpdate(
+		_proxyConnectionStatus.current(),
+		std::move(status));
 	if (status == _proxyConnectionStatus.current()) {
 		return;
 	}
 	_proxyConnectionStatus = status;
+}
+
+ConnectionNotice Instance::Private::connectionNotice() const {
+	return _connectionNotice.current();
+}
+
+auto Instance::Private::connectionNoticeValue() const
+-> rpl::producer<ConnectionNotice> {
+	return _connectionNotice.value();
+}
+
+void Instance::Private::setConnectionNotice(
+		ShiftedDcId shiftedDcId,
+		ConnectionNotice notice) {
+	if (notice == ConnectionNotice::None) {
+		_connectionNotices.remove(shiftedDcId);
+	} else {
+		_connectionNotices[shiftedDcId] = notice;
+	}
+	const auto current = _connectionNotices.empty()
+		? ConnectionNotice::None
+		: begin(_connectionNotices)->second;
+	if (current == _connectionNotice.current()) {
+		return;
+	}
+	_connectionNotice = current;
 }
 
 void Instance::Private::ping() {
@@ -2015,6 +2052,21 @@ auto Instance::proxyConnectionStatusValue() const
 
 void Instance::setProxyConnectionStatus(ProxyConnectionStatus status) {
 	_private->setProxyConnectionStatus(status);
+}
+
+ConnectionNotice Instance::connectionNotice() const {
+	return _private->connectionNotice();
+}
+
+auto Instance::connectionNoticeValue() const
+-> rpl::producer<ConnectionNotice> {
+	return _private->connectionNoticeValue();
+}
+
+void Instance::setConnectionNotice(
+		ShiftedDcId shiftedDcId,
+		ConnectionNotice notice) {
+	_private->setConnectionNotice(shiftedDcId, notice);
 }
 
 void Instance::ping() {

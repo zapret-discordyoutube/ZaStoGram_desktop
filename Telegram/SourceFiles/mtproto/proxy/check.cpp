@@ -59,23 +59,16 @@ std::shared_ptr<ProxyCheckConnection::Data> ProxyCheckConnection::state() const 
 }
 
 void ProxyCheckConnection::reset() {
-	releaseGate();
-	if (_data) {
-		_data->connection = nullptr;
-	}
-}
-
-void ProxyCheckConnection::releaseGate() {
 	if (_data) {
 		_data->handshakeGate.release();
+		_data->finished = true;
+		_data->connection = nullptr;
 	}
 }
 
 void ResetProxyCheckers(
 		ProxyCheckConnection &v4,
 		ProxyCheckConnection &v6) {
-	v4.releaseGate();
-	v6.releaseGate();
 	v4.reset();
 	v6.reset();
 }
@@ -85,10 +78,8 @@ void DropProxyChecker(
 		ProxyCheckConnection &v6,
 		not_null<Connection*> raw) {
 	if (v4.get() == raw) {
-		v4.releaseGate();
 		v4.reset();
 	} else if (v6.get() == raw) {
-		v6.releaseGate();
 		v6.reset();
 	}
 }
@@ -111,7 +102,6 @@ void StartProxyCheck(
 	using Variants = DcOptions::Variants;
 
 	ResetProxyCheckers(v4, v6);
-	const auto proxied = (proxy.type != ProxyData::Type::None);
 	const auto connType = (proxy.type == ProxyData::Type::Http)
 		? Variants::Http
 		: Variants::Tcp;
@@ -130,9 +120,7 @@ void StartProxyCheck(
 			ProxyCheckConnection &checker,
 			const bytes::vector &secret) {
 		const auto state = checker.state();
-		auto handshakeGate = proxied
-			? details::ReserveHandshakeGate()
-			: details::HandshakeGateLease();
+		auto handshakeGate = details::ReserveHandshakeGateForProxy(proxy);
 		state->connection = Connection::Create(
 			mtproto,
 			connType,
@@ -140,9 +128,33 @@ void StartProxyCheck(
 			secret,
 			proxy,
 			checkStealth);
+		state->finished = false;
 		state->handshakeGate = std::move(handshakeGate);
 		const auto raw = state->connection.get();
+		const auto finishWithFail = [=](ProxyConnectionError error) {
+			if (state->connection.get() != raw || state->finished) {
+				return;
+			}
+			state->finished = true;
+			state->handshakeGate.release();
+			ReportProxyEvent(mtproto, {
+				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
+				.severity = ProxyDiagnosticsSeverity::Error,
+				.error = error,
+				.proxy = proxy,
+				.dc = QString::number(dcId),
+				.connectionId = raw->debugId(),
+				.message = u"proxy check failed"_q,
+			});
+			if (fail) {
+				fail(raw);
+			}
+		};
 		raw->connect(raw, &Connection::connected, [=] {
+			if (state->connection.get() != raw || state->finished) {
+				return;
+			}
+			state->finished = true;
 			state->handshakeGate.release();
 			ReportProxyEvent(mtproto, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
@@ -155,22 +167,21 @@ void StartProxyCheck(
 				done(raw, raw->pingTime());
 			}
 		});
-		const auto failed = [=] {
-			state->handshakeGate.release();
-			ReportProxyEvent(mtproto, {
-				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
-				.severity = ProxyDiagnosticsSeverity::Error,
-				.proxy = proxy,
-				.dc = QString::number(dcId),
-				.connectionId = raw->debugId(),
-				.message = u"proxy check failed"_q,
-			});
-			if (fail) {
-				fail(raw);
+		raw->connect(raw, &Connection::disconnected, [=] {
+			finishWithFail(ProxyConnectionError::RemoteClosed);
+		});
+		raw->connect(raw, &Connection::error, [=] {
+			finishWithFail(ProxyConnectionError::Unknown);
+		});
+		const auto timeout = state->handshakeGate.delay()
+			+ raw->fullConnectTimeout();
+		QTimer::singleShot(int(timeout), raw, [=] {
+			if (state->connection.get() != raw || state->finished) {
+				return;
 			}
-		};
-		raw->connect(raw, &Connection::disconnected, failed);
-		raw->connect(raw, &Connection::error, failed);
+			raw->timedOut();
+			finishWithFail(ProxyConnectionError::Timeout);
+		});
 	};
 	const auto start = [&](
 			ProxyCheckConnection &checker,

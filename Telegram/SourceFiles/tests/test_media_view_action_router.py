@@ -122,6 +122,68 @@ def test_story_media_actions_keep_story_pause_state():
     assert "_stories->togglePaused(true)" in body
 
 
+def test_frame_step_uses_decoded_frame_seek_policy():
+    common = read("SourceFiles/media/streaming/media_streaming_common.h")
+    source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
+    body = function_body(source, "void OverlayWidget::flushPendingFrameStep()")
+
+    assert "enum class SeekFramePolicy" in common
+    assert "AtOrAfter" in common
+    assert "AtOrBefore" in common
+    assert "Nearest" in common
+    assert "seekFrameByDecodedPosition" in source
+    assert "SeekFramePolicy::AtOrAfter" in source
+    assert "SeekFramePolicy::AtOrBefore" in source
+    assert "fps" not in body
+    assert "kFrameStepFallbackFps" not in source
+    assert "seekRelativeTime(shift)" not in body
+
+
+def test_slider_seek_finished_snaps_to_nearest_decoded_frame():
+    source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
+    body = function_body(
+        source,
+        "void OverlayWidget::playbackControlsSeekFinished(crl::time position)")
+
+    assert "SeekFramePolicy::Nearest" in body
+    assert "restartAtSeekPosition(" in body
+
+
+def test_streaming_initial_seek_can_choose_previous_or_nearest_frame():
+    common = read("SourceFiles/media/streaming/media_streaming_common.h")
+    source = read("SourceFiles/media/streaming/media_streaming_video_track.cpp")
+
+    assert "SeekFramePolicy seekFramePolicy" in common
+    assert "selectInitialSeekFrame" in source
+    assert "SeekFramePolicy::AtOrBefore" in source
+    assert "SeekFramePolicy::Nearest" in source
+    assert "_initialSkippingFrame" in source
+
+
+def test_exact_frame_seek_is_buffer_gated():
+    source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
+    header = read("SourceFiles/media/view/media_view_overlay_widget.h")
+    exact_ready = function_body(
+        source,
+        "bool OverlayWidget::exactFrameSeekReady(crl::time position) const")
+    frame_step = function_body(
+        source,
+        "void OverlayWidget::seekFrameByDecodedPosition(int direction)")
+    seek_finished = function_body(
+        source,
+        "void OverlayWidget::playbackControlsSeekFinished(crl::time position)")
+
+    assert "exactFrameSeekReady(crl::time position) const" in header
+    assert "seekFramePolicyForPosition" in header
+    assert "state.receivedTill" in exact_ready
+    assert "_documentMedia->loaded()" in exact_ready
+    assert "kExactFrameSeekLoadAhead" in exact_ready
+    assert "SeekFramePolicy::AtOrAfter" in source
+    assert "seekFrameByApproximatePosition(direction)" in frame_step
+    assert "exactFrameSeekReady(position)" in frame_step
+    assert "seekFramePolicyForPosition(" in seek_finished
+
+
 def test_video_message_open_routing_uses_shared_helper():
     source = read("SourceFiles/history/view/media/history_view_gif.cpp")
     text_state = function_body(source, "TextState Gif::textState(")

@@ -23,6 +23,7 @@ struct AdaptiveRecipeInput {
 	QString lastDiagnostic;
 	int recipeLevel = 0;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
 	ProxyStealthOptions stealth;
 };
 
@@ -33,8 +34,8 @@ struct AdaptiveRecipeResult {
 
 // Escalates the stealth knobs in `input.stealth` according to the last
 // diagnostic and recipe level. The tlsProfile is only rotated when the
-// user's configured profile is Auto/AutoRotate (an explicit JA4 choice is
-// never overridden).
+// user's configured profile is Auto/AutoRotate (an explicit ClientHello
+// profile choice is never overridden).
 [[nodiscard]] AdaptiveRecipeResult ApplyAdaptiveRecipe(
 	const AdaptiveRecipeInput &input);
 
@@ -44,14 +45,14 @@ struct AdaptiveRecipeResult {
 	ProxyTlsProfile profile,
 	const QString &endpointKey);
 
-// Advances the per-endpoint rotation cursor on a JA4-relevant failure and
-// returns the next profile to try; returns `previous` unchanged otherwise.
+// Advances the per-endpoint rotation cursor on a ClientHello-relevant failure
+// and returns the next profile to try; returns `previous` unchanged otherwise.
 [[nodiscard]] ProxyTlsProfile RotateTlsProfileOnFailure(
 	const QString &endpointKey,
 	const QString &diagnostic,
 	ProxyTlsProfile previous);
 
-// Whether a diagnostic indicates the ClientHello/JA4 shape may be the cause
+// Whether a diagnostic indicates the ClientHello shape may be the cause
 // (and is therefore worth escalating the recipe / rotating the profile).
 [[nodiscard]] bool FailureNeedsRecipe(const QString &diagnostic);
 
@@ -59,17 +60,5 @@ struct AdaptiveRecipeResult {
 [[nodiscard]] ProxyTlsProfile CompatibilityTlsProfile(
 	ProxyTlsProfile effective,
 	int recipeLevel);
-
-// Per-endpoint recipe escalation state: advances (capped at 4) on a
-// JA4-relevant failure, resets when a working data path is reached.
-[[nodiscard]] int EndpointRecipeLevel(const QString &endpointKey);
-[[nodiscard]] QString EndpointLastDiagnostic(const QString &endpointKey);
-void NoteEndpointFailure(const QString &endpointKey, const QString &diagnostic);
-void NoteEndpointSuccess(const QString &endpointKey);
-
-// Diagnostic-aware endpoint cooldown duration in ms: longer for post-handshake
-// stalls / JA4-suspect failures, 10s default otherwise (matches the previous
-// fixed timeout when no diagnostic is recorded).
-[[nodiscard]] int CooldownMsForEndpoint(const QString &endpointKey);
 
 } // namespace MTP::details

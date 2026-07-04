@@ -42,3 +42,35 @@ set_target_properties(test_text PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINA
 add_dependencies(Telegram test_text)
 
 target_prepare_qrc(test_text)
+
+add_executable(test_mtproxy_client_hello WIN32)
+init_target(test_mtproxy_client_hello "(tests)")
+
+target_include_directories(test_mtproxy_client_hello PRIVATE ${src_loc})
+
+nice_target_sources(test_mtproxy_client_hello ${src_loc}
+PRIVATE
+    mtproto/proxy/mtproxy/client_hello_builder.cpp
+    mtproto/proxy/mtproxy/client_hello_builder.h
+    mtproto/proxy/mtproxy/client_hello_facts.cpp
+    mtproto/proxy/mtproxy/client_hello_facts.h
+    mtproto/proxy/mtproxy/client_hello_profile.cpp
+    mtproto/proxy/mtproxy/client_hello_profile.h
+    tests/test_mtproxy_client_hello.cpp
+)
+
+target_link_libraries(test_mtproxy_client_hello
+PRIVATE
+    tdesktop::td_scheme
+    desktop-app::lib_base
+    desktop-app::lib_crl
+    desktop-app::external_qt
+    desktop-app::external_openssl
+)
+
+set_target_properties(
+    test_mtproxy_client_hello
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_dependencies(Telegram test_mtproxy_client_hello)

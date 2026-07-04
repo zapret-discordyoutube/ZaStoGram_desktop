@@ -52,6 +52,7 @@ private:
 		bool updateReady = false;
 		int waitTillRetry = 0;
 		MTP::ProxyConnectionStatus proxyStatus;
+		MTP::ConnectionNotice connectionNotice;
 
 		bool operator==(const State &other) const;
 
@@ -60,6 +61,8 @@ private:
 		bool visible = false;
 		bool hasRetry = false;
 		bool proxyEnabled = false;
+		MTP::ProxyConnectionStatusSeverity proxySeverity
+			= MTP::ProxyConnectionStatusSeverity::None;
 		bool progressShown = false;
 		int contentWidth = 0;
 		QString text;

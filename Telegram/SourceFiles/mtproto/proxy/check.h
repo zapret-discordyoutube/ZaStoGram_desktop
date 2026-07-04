@@ -19,6 +19,7 @@ public:
 	struct Data {
 		details::ConnectionPointer connection;
 		details::HandshakeGateLease handshakeGate;
+		bool finished = false;
 	};
 
 	ProxyCheckConnection();
@@ -33,7 +34,6 @@ public:
 	[[nodiscard]] details::AbstractConnection *operator->() const;
 	[[nodiscard]] std::shared_ptr<Data> state() const;
 	void reset();
-	void releaseGate();
 
 private:
 	std::shared_ptr<Data> _data;

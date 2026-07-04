@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/transport_policy.h"
 
+#include "mtproto/proxy/wss/socket.h"
+
 namespace MTP {
 
 bool ProxyWssAllowed(
@@ -35,6 +37,31 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 		settings,
 		result.transport);
 	return result;
+}
+
+WssDcCoverage WssDcCoverageForDc(
+		const ProxyStealthOptions &stealth,
+		int16 protocolDcId,
+		bool protocolForFiles) {
+	if (details::WssCustomRoute(stealth)) {
+		return WssDcCoverage::Custom;
+	} else if (details::WssOfficialRoute(protocolDcId, protocolForFiles)) {
+		return WssDcCoverage::Official;
+	}
+	return WssDcCoverage::Unavailable;
+}
+
+bool WssNeedsProxyRecommendation(
+		const ProxyData &proxy,
+		const ProxyStealthOptions &stealth,
+		int16 protocolDcId,
+		bool protocolForFiles) {
+	return proxy.type == ProxyData::Type::None
+		&& stealth.transport == ProxyTransport::Wss
+		&& (WssDcCoverageForDc(
+			stealth,
+			protocolDcId,
+			protocolForFiles) == WssDcCoverage::Unavailable);
 }
 
 } // namespace MTP

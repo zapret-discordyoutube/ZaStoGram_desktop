@@ -27,6 +27,7 @@ constexpr auto kSendNextTimeout = crl::time(800);
 constexpr auto kMinTimeToLive = 10 * crl::time(1000);
 constexpr auto kMaxTimeToLive = 300 * crl::time(1000);
 constexpr auto kSystemDnsTimeToLive = 60 * crl::time(1000);
+constexpr auto kNegativeResolveTtl = crl::time(30 * 1000);
 
 } // namespace
 
@@ -414,9 +415,9 @@ void DomainResolver::pushResultIfResolveDone(const QString &domain) {
 	} else {
 		LOG(("Resolve Error: Could not resolve domain %1 "
 			"by system DNS or DNS over HTTPS.").arg(domain));
-		const auto now = _lastTimestamp;
+		const auto expireAt = _lastTimestamp + kNegativeResolveTtl;
 		InvokeQueued(this, [=] {
-			_callback(domain, QStringList(), now);
+			_callback(domain, QStringList(), expireAt);
 		});
 	}
 }

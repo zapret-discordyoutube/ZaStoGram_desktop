@@ -186,7 +186,10 @@ connectingRetryLink: LinkButton(defaultLinkButton) {
 	padding: margins(6px, 11px, 6px, 0px);
 }
 connectingProxyOff: icon {{ "proxy_off", menuIconFg }};
-connectingProxyOn: icon {{ "proxy_on", windowBgActive }};
+connectingProxyProgress: icon {{ "proxy_on", windowBgActive }};
+connectingProxySuccess: icon {{ "proxy_on", statisticsChartLineGreen }};
+connectingProxyWarning: icon {{ "proxy_on", statisticsChartLineOrange }};
+connectingProxyError: icon {{ "proxy_on", attentionButtonFg }};
 connectingDuration: 150;
 
 windowOutdatedDetails: FlatLabel(defaultFlatLabel) {

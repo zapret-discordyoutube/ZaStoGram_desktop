@@ -188,7 +188,8 @@ constexpr auto kPinchZoomStep = 0.25;
 constexpr auto kOverlayLoaderPriority = 2;
 constexpr auto kSeekTimeMs = 5 * crl::time(1000);
 constexpr auto kSeekTimeMsLong = 10 * crl::time(1000);
-constexpr auto kFrameStepFallbackFps = 30.;
+constexpr auto kApproximateFrameStepFallbackFps = 30.;
+constexpr auto kExactFrameSeekLoadAhead = crl::time(1000);
 constexpr auto kFrameStepThrottleMs = crl::time(150);
 
 // macOS OpenGL renderer fails to render larger texture
@@ -5338,13 +5339,13 @@ void OverlayWidget::flushPendingFrameStep() {
 		_frameStepThrottle.cancel();
 		return;
 	}
-	const auto fps = _streamed->instance.info().video.fps;
-	const auto stepMs = 1000.
-		/ ((fps > 0.) ? fps : kFrameStepFallbackFps);
-	const auto shift = crl::time(std::round(_frameStepPending * stepMs));
-	_frameStepPending = 0;
-	_streamingStartPaused = true;
-	seekRelativeTime(shift);
+	if (!_streamed->instance.ready()) {
+		_frameStepThrottle.callOnce(kFrameStepThrottleMs);
+		return;
+	}
+	const auto direction = (_frameStepPending > 0) ? 1 : -1;
+	_frameStepPending -= direction;
+	seekFrameByDecodedPosition(direction);
 	_frameStepThrottle.callOnce(kFrameStepThrottleMs);
 }
 
@@ -5358,6 +5359,65 @@ void OverlayWidget::seekRelativeTime(crl::time time) {
 	restartAtSeekPosition(newTime);
 }
 
+bool OverlayWidget::exactFrameSeekReady(crl::time position) const {
+	Expects(_streamed != nullptr);
+
+	const auto state = _streamed->instance.player().prepareLegacyState();
+	if (state.length <= 0
+		|| state.length == kTimeUnknown
+		|| state.receivedTill >= state.length) {
+		return true;
+	}
+	if (state.receivedTill <= 0) {
+		return !_document || !_documentMedia->loaded();
+	}
+	return position + kExactFrameSeekLoadAhead <= state.receivedTill;
+}
+
+Streaming::SeekFramePolicy OverlayWidget::seekFramePolicyForPosition(
+		crl::time position,
+		Streaming::SeekFramePolicy policy) const {
+	return (policy == Streaming::SeekFramePolicy::AtOrAfter
+		|| exactFrameSeekReady(position))
+		? policy
+		: Streaming::SeekFramePolicy::AtOrAfter;
+}
+
+void OverlayWidget::seekFrameByApproximatePosition(int direction) {
+	Expects(_streamed != nullptr);
+
+	const auto fps = _streamed->instance.info().video.fps;
+	const auto stepMs = 1000.
+		/ ((fps > 0.) ? fps : kApproximateFrameStepFallbackFps);
+	const auto shift = crl::time(std::round(direction * stepMs));
+	_streamingStartPaused = true;
+	seekRelativeTime(shift);
+}
+
+void OverlayWidget::seekFrameByDecodedPosition(int direction) {
+	Expects(_streamed != nullptr);
+
+	const auto &state = _streamed->instance.info().video.state;
+	if (state.position == kTimeUnknown
+		|| state.duration == kTimeUnknown
+		|| state.duration == kDurationUnavailable) {
+		return;
+	}
+	const auto forward = (direction > 0);
+	const auto position = forward
+		? std::min(state.position + crl::time(1), state.duration)
+		: ((state.position > 0) ? (state.position - crl::time(1)) : 0);
+	if (!exactFrameSeekReady(position)) {
+		seekFrameByApproximatePosition(direction);
+		return;
+	}
+	const auto policy = forward
+		? Streaming::SeekFramePolicy::AtOrAfter
+		: Streaming::SeekFramePolicy::AtOrBefore;
+	_streamingStartPaused = true;
+	restartAtSeekPosition(position, policy);
+}
+
 void OverlayWidget::restartAtProgress(float64 progress) {
 	Expects(_streamed != nullptr);
 
@@ -5366,6 +5426,12 @@ void OverlayWidget::restartAtProgress(float64 progress) {
 }
 
 void OverlayWidget::restartAtSeekPosition(crl::time position) {
+	restartAtSeekPosition(position, Streaming::SeekFramePolicy::AtOrAfter);
+}
+
+void OverlayWidget::restartAtSeekPosition(
+		crl::time position,
+		Streaming::SeekFramePolicy policy) {
 	Expects(_streamed != nullptr);
 
 	if (videoShown()) {
@@ -5379,6 +5445,7 @@ void OverlayWidget::restartAtSeekPosition(crl::time position) {
 		|| (_chosenQuality && _chosenQuality != _document);
 	auto options = Streaming::PlaybackOptions{
 		.position = position,
+		.seekFramePolicy = seekFramePolicyForPosition(position, policy),
 		.durationOverride = ((overrideDuration
 			&& _document
 			&& _document->hasDuration())
@@ -5428,7 +5495,11 @@ void OverlayWidget::playbackControlsSeekFinished(crl::time position) {
 
 	_streamingStartPaused = !_streamed->pausedBySeek
 		&& !_streamed->instance.player().finished();
-	restartAtSeekPosition(position);
+	restartAtSeekPosition(
+		position,
+		seekFramePolicyForPosition(
+			position,
+			Streaming::SeekFramePolicy::Nearest));
 	activateControls();
 }
 

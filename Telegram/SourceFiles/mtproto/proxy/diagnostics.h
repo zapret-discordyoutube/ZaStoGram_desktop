@@ -52,6 +52,10 @@ struct ProxyDiagnosticsEvent {
 	ProxyDiagnosticsPhase phase = ProxyDiagnosticsPhase::None;
 	ProxyDiagnosticsSeverity severity = ProxyDiagnosticsSeverity::Info;
 	ProxyConnectionError error = ProxyConnectionError::None;
+	ProxyMtproxyTerminalReason mtproxyReason
+		= ProxyMtproxyTerminalReason::None;
+	ProxyConnectionAttempt attempt;
+	crl::time terminalUntil = 0;
 	ProxyData proxy;
 	QString transport;
 	QString dc;
@@ -64,6 +68,10 @@ struct ProxyDiagnosticsEvent {
 struct ProxyEventReport {
 	ProxyDiagnosticsPhase phase = ProxyDiagnosticsPhase::None;
 	ProxyConnectionError error = ProxyConnectionError::None;
+	ProxyMtproxyTerminalReason mtproxyReason
+		= ProxyMtproxyTerminalReason::None;
+	ProxyConnectionAttempt attempt;
+	crl::time terminalUntil = 0;
 	std::optional<ProxyDiagnosticsSeverity> severity;
 	ProxyData proxy;
 	QString transport;

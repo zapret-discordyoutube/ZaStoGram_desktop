@@ -27,7 +27,7 @@ def test_story_streaming_is_seekable_and_has_controls():
     source = read("SourceFiles/media/view/media_view_overlay_widget.cpp")
     restart = function_body(
         source,
-        "void OverlayWidget::restartAtSeekPosition(crl::time position)")
+        "void OverlayWidget::restartAtSeekPosition(\n\t\tcrl::time position")
     create = function_body(
         source,
         "bool OverlayWidget::createStreamingObjects()")

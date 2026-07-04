@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
 
+#include "mtproto/proxy/mtproxy/client_hello_profile.h"
+#include "base/timer.h"
+
 #include <QtCore/QMutex>
 
 #include <map>
@@ -14,33 +17,66 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
-// Pool used for AutoRotate and for compatibility rotation cursors. Mirrors
-// the Android fork's autoRotatePoolProfile order.
-constexpr ProxyTlsProfile kAutoRotatePool[] = {
+constexpr ProxyTlsProfile kAutoRotateCandidatePool[] = {
 	ProxyTlsProfile::FirefoxAndroid,
+	ProxyTlsProfile::AndroidChrome,
 	ProxyTlsProfile::Yandex,
 	ProxyTlsProfile::ChromeModern,
 };
-constexpr auto kAutoRotatePoolSize = int(std::size(kAutoRotatePool));
+constexpr auto kAutoRotateFailureThreshold = 2;
+constexpr auto kAutoRotateMinDwell = crl::time(60 * 1000);
 
 struct AutoProfileState {
 	int profileIndex = -1;
 	uint32 failures = 0;
-	int recipeLevel = 0;
-	QString lastDiagnostic;
+	uint32 profileFailures = 0;
+	crl::time profileChangedAt = 0;
 };
 
 QMutex AutoProfilesMutex;
 std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 
+[[nodiscard]] int AutoRotatePoolSize() {
+	auto result = 0;
+	for (const auto profile : kAutoRotateCandidatePool) {
+		if (IsClientHelloProfileValidated(profile)) {
+			++result;
+		}
+	}
+	return result ? result : 1;
+}
+
+[[nodiscard]] ProxyTlsProfile ValidatedClientHelloProfile(
+		ProxyTlsProfile profile) {
+	const auto &info = ClientHelloProfile(profile);
+	return (info.validation == ClientHelloProfileValidation::Validated)
+		? info.profile
+		: DefaultClientHelloProfile();
+}
+
+[[nodiscard]] ProxyTlsProfile AutoRotatePoolProfile(int index) {
+	const auto size = AutoRotatePoolSize();
+	const auto normalized = (index % size + size) % size;
+	auto position = 0;
+	for (const auto profile : kAutoRotateCandidatePool) {
+		if (!IsClientHelloProfileValidated(profile)) {
+			continue;
+		}
+		if (position == normalized) {
+			return profile;
+		}
+		++position;
+	}
+	return DefaultClientHelloProfile();
+}
+
 [[nodiscard]] int AutoRotateInitialIndex(const QString &key) {
-	// FNV-1a over the endpoint key, deterministic per endpoint.
 	auto hash = quint64(0xcbf29ce484222325ULL);
 	for (const auto byte : key.toUtf8()) {
 		hash ^= quint8(byte);
 		hash *= 0x100000001b3ULL;
 	}
-	return int(hash % kAutoRotatePoolSize);
+	return int(hash % AutoRotatePoolSize());
 }
 
 [[nodiscard]] bool IsLightConnectionPattern(ProxyConnectionPattern pattern) {
@@ -53,7 +89,6 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 
 bool FailureNeedsRecipe(const QString &diagnostic) {
 	if (diagnostic == u"tcp_not_connected"_q) {
-		// ClientHello was not sent, so JA4 did not cause this failure.
 		return false;
 	}
 	return (diagnostic == u"client_hello_sent_no_server_hello"_q)
@@ -70,17 +105,20 @@ ProxyTlsProfile CompatibilityTlsProfile(
 	if (recipeLevel <= 1) {
 		return effective;
 	} else if (recipeLevel == 2) {
-		return (effective == ProxyTlsProfile::FirefoxAndroid)
+		const auto candidate = (effective == ProxyTlsProfile::FirefoxAndroid)
 			? ProxyTlsProfile::AndroidChrome
 			: ProxyTlsProfile::FirefoxAndroid;
+		return ValidatedClientHelloProfile(candidate);
 	} else if (recipeLevel == 3) {
-		return (effective == ProxyTlsProfile::AndroidChrome)
+		const auto candidate = (effective == ProxyTlsProfile::AndroidChrome)
 			? ProxyTlsProfile::Yandex
 			: ProxyTlsProfile::AndroidChrome;
+		return ValidatedClientHelloProfile(candidate);
 	}
-	return (effective == ProxyTlsProfile::Yandex)
+	const auto candidate = (effective == ProxyTlsProfile::Yandex)
 		? ProxyTlsProfile::Firefox
 		: ProxyTlsProfile::Yandex;
+	return ValidatedClientHelloProfile(candidate);
 }
 
 AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
@@ -94,14 +132,8 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 		|| (input.configuredTlsProfile == ProxyTlsProfile::AutoRotate);
 
 	if (input.lastDiagnostic == u"post_handshake_no_appdata"_q) {
-		// Handshake completed but no application data arrived: cover the
-		// post-handshake traffic shape rather than touching the JA4.
 		if (stealth.recordSizing == ProxyRecordSizing::Off) {
 			stealth.recordSizing = ProxyRecordSizing::Conservative;
-			result.changed = true;
-		}
-		if (stealth.timing == ProxyTiming::Off) {
-			stealth.timing = ProxyTiming::Gentle;
 			result.changed = true;
 		}
 		if (stealth.startupCover == ProxyStartupCover::Off) {
@@ -117,8 +149,6 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 		return result;
 	}
 
-	// Failures before/at the ServerHello stage: the ClientHello shape itself
-	// is suspect, so simplify it and rotate the profile.
 	if (input.recipeLevel >= 1
 		&& stealth.clientHelloFragmentation
 			!= ProxyClientHelloFragmentation::Off) {
@@ -128,7 +158,7 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 	if (input.recipeLevel >= 2 && autoProfile) {
 		const auto previous = stealth.tlsProfile;
 		stealth.tlsProfile = CompatibilityTlsProfile(
-			stealth.tlsProfile,
+			input.effectiveTlsProfile,
 			input.recipeLevel);
 		if (stealth.tlsProfile != previous) {
 			result.changed = true;
@@ -155,8 +185,9 @@ ProxyTlsProfile ResolveEffectiveTlsProfile(
 	auto &state = AutoProfiles[endpointKey];
 	if (state.profileIndex < 0) {
 		state.profileIndex = AutoRotateInitialIndex(endpointKey);
+		state.profileChangedAt = crl::now();
 	}
-	return kAutoRotatePool[state.profileIndex % kAutoRotatePoolSize];
+	return AutoRotatePoolProfile(state.profileIndex);
 }
 
 ProxyTlsProfile RotateTlsProfileOnFailure(
@@ -170,68 +201,20 @@ ProxyTlsProfile RotateTlsProfileOnFailure(
 	auto &state = AutoProfiles[endpointKey];
 	if (state.profileIndex < 0) {
 		state.profileIndex = AutoRotateInitialIndex(endpointKey);
+		state.profileChangedAt = crl::now();
 	}
-	state.profileIndex = (state.profileIndex + 1) % kAutoRotatePoolSize;
 	++state.failures;
-	return kAutoRotatePool[state.profileIndex];
-}
-
-int EndpointRecipeLevel(const QString &endpointKey) {
-	if (endpointKey.isEmpty()) {
-		return 0;
+	++state.profileFailures;
+	const auto now = crl::now();
+	if (state.profileFailures < kAutoRotateFailureThreshold
+		|| (state.profileChangedAt
+			&& now - state.profileChangedAt < kAutoRotateMinDwell)) {
+		return previous;
 	}
-	QMutexLocker lock(&AutoProfilesMutex);
-	const auto i = AutoProfiles.find(endpointKey);
-	return (i != AutoProfiles.end()) ? i->second.recipeLevel : 0;
-}
-
-QString EndpointLastDiagnostic(const QString &endpointKey) {
-	if (endpointKey.isEmpty()) {
-		return QString();
-	}
-	QMutexLocker lock(&AutoProfilesMutex);
-	const auto i = AutoProfiles.find(endpointKey);
-	return (i != AutoProfiles.end()) ? i->second.lastDiagnostic : QString();
-}
-
-void NoteEndpointFailure(
-		const QString &endpointKey,
-		const QString &diagnostic) {
-	if (endpointKey.isEmpty() || !FailureNeedsRecipe(diagnostic)) {
-		return;
-	}
-	QMutexLocker lock(&AutoProfilesMutex);
-	auto &state = AutoProfiles[endpointKey];
-	state.lastDiagnostic = diagnostic;
-	if (state.recipeLevel < 4) {
-		++state.recipeLevel;
-	}
-}
-
-void NoteEndpointSuccess(const QString &endpointKey) {
-	if (endpointKey.isEmpty()) {
-		return;
-	}
-	QMutexLocker lock(&AutoProfilesMutex);
-	const auto i = AutoProfiles.find(endpointKey);
-	if (i != AutoProfiles.end()) {
-		i->second.recipeLevel = 0;
-		i->second.lastDiagnostic.clear();
-	}
-}
-
-int CooldownMsForEndpoint(const QString &endpointKey) {
-	const auto diagnostic = EndpointLastDiagnostic(endpointKey);
-	if (diagnostic == u"post_handshake_no_appdata"_q) {
-		return 20000;
-	} else if (diagnostic == u"server_hello_hmac_mismatch"_q
-		|| diagnostic == u"client_hello_sent_no_server_hello"_q
-		|| diagnostic == u"tls_alert_after_client_hello"_q
-		|| diagnostic == u"short_tls_response_after_client_hello"_q
-		|| diagnostic == u"unrecognized_tls_response_after_client_hello"_q) {
-		return 15000;
-	}
-	return 10000;
+	state.profileFailures = 0;
+	state.profileChangedAt = now;
+	state.profileIndex = (state.profileIndex + 1) % AutoRotatePoolSize();
+	return AutoRotatePoolProfile(state.profileIndex);
 }
 
 } // namespace MTP::details

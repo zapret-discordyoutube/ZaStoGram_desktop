@@ -767,6 +767,8 @@ void TcpConnection::socketError(int errorCode) {
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = SocketProxyConnectionError(errorCode),
+		.mtproxyReason = _socket->mtproxyTerminalReason(),
+		.terminalUntil = _socket->mtproxyTerminalUntil(),
 		.proxy = _proxy,
 		.transport = tag(),
 		.connectionId = _debugId,

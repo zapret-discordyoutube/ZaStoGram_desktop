@@ -77,6 +77,7 @@ struct Information;
 struct Update;
 struct FrameWithInfo;
 enum class Error;
+enum class SeekFramePolicy;
 } // namespace Media::Streaming
 
 namespace Media::Stories {
@@ -439,6 +440,15 @@ private:
 	void seekRelativeTime(crl::time time);
 	void restartAtProgress(float64 progress);
 	void restartAtSeekPosition(crl::time position);
+	void restartAtSeekPosition(
+		crl::time position,
+		Streaming::SeekFramePolicy policy);
+	[[nodiscard]] bool exactFrameSeekReady(crl::time position) const;
+	[[nodiscard]] Streaming::SeekFramePolicy seekFramePolicyForPosition(
+		crl::time position,
+		Streaming::SeekFramePolicy policy) const;
+	void seekFrameByApproximatePosition(int direction);
+	void seekFrameByDecodedPosition(int direction);
 	void flushPendingFrameStep();
 
 	void refreshClipControllerGeometry();

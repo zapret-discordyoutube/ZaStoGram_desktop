@@ -83,7 +83,7 @@ WssSocket::WssSocket(
 , _route(std::move(route)) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
-	_socket.setPeerVerifyMode(QSslSocket::VerifyNone);
+	_socket.setPeerVerifyMode(QSslSocket::VerifyPeer);
 	if (protocolForFiles) {
 		_socket.setSocketOption(
 			QAbstractSocket::SendBufferSizeSocketOption,
@@ -120,8 +120,14 @@ void WssSocket::connectToHost(const QString &address, int port) {
 	// MTProto-over-WSS always connects to Telegram's web relay; the DC
 	// endpoint (address, port) is intentionally ignored - the relay routes
 	// to the right data center based on the SNI / Host domain.
+	connectToRelayHost();
+}
+
+void WssSocket::connectToRelayHost() {
+	const auto host = _usedFallback ? _route.relayHostFallback : _route.relayHost;
+	_socket.setPeerVerifyName(_route.domain);
 	_socket.connectToHostEncrypted(
-		_route.relayHost,
+		host,
 		quint16(_route.relayPort),
 		_route.domain);
 }
@@ -224,10 +230,7 @@ void WssSocket::handleError(int errorCode) {
 		_incoming = QByteArray();
 		_phase = HandshakePhase::None;
 		_socket.abort();
-		_socket.connectToHostEncrypted(
-			_route.relayHostFallback,
-			quint16(_route.relayPort),
-			_route.domain);
+		connectToRelayHost();
 		return;
 	}
 	logError(errorCode, _socket.errorString());

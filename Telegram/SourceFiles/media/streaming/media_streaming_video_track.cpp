@@ -137,6 +137,7 @@ private:
 	void fail(Error error);
 	[[nodiscard]] bool interrupted() const;
 	[[nodiscard]] bool tryReadFirstFrame(FFmpeg::Packet &&packet);
+	[[nodiscard]] bool selectInitialSeekFrame();
 	[[nodiscard]] bool fillStateFromFrame();
 	[[nodiscard]] bool processFirstFrame();
 	void queueReadFrames(crl::time delay = 0);
@@ -181,8 +182,8 @@ private:
 	bool _queued = false;
 	base::ConcurrentTimer _readFramesTimer;
 
-	// For initial frame skipping for an exact seek.
 	FFmpeg::FramePointer _initialSkippingFrame;
+	FFmpeg::FramePointer _initialNextFrame;
 
 };
 
@@ -364,6 +365,19 @@ crl::time VideoTrackObject::computeDuration() const {
 }
 
 auto VideoTrackObject::readFrame(not_null<Frame*> frame) -> FrameResult {
+	if (_initialNextFrame) {
+		const auto position = FramePosition(_stream, _initialNextFrame.get());
+		if (position == kTimeUnknown) {
+			fail(Error::InvalidData);
+			return FrameResult::Error;
+		}
+		frame->decoded = std::move(_initialNextFrame);
+		frame->transferred = nullptr;
+		frame->index = _frameIndex++;
+		frame->position = position;
+		frame->displayed = kTimeUnknown;
+		return FrameResult::Done;
+	}
 	if (const auto error = ReadNextFrame(_stream)) {
 		if (error.code() == AVERROR_EOF) {
 			if (!_options.loop) {
@@ -690,7 +704,7 @@ bool VideoTrackObject::tryReadFirstFrame(FFmpeg::Packet &&packet) {
 		} else if (!fillStateFromFrame()) {
 			return false;
 		} else if (_syncTimePoint.trackTime >= _options.position) {
-			return processFirstFrame();
+			return selectInitialSeekFrame();
 		}
 
 		// Seek was with AVSEEK_FLAG_BACKWARD so first we get old frames.
@@ -700,6 +714,37 @@ bool VideoTrackObject::tryReadFirstFrame(FFmpeg::Packet &&packet) {
 			_stream.decodedFrame = FFmpeg::MakeFramePointer();
 		}
 	}
+}
+
+bool VideoTrackObject::selectInitialSeekFrame() {
+	if (!_initialSkippingFrame) {
+		return processFirstFrame();
+	}
+	const auto currentPosition = _syncTimePoint.trackTime;
+	const auto previousPosition = FramePosition(
+		_stream,
+		_initialSkippingFrame.get());
+	if (previousPosition == kTimeUnknown) {
+		return processFirstFrame();
+	}
+	const auto usePrevious = [&] {
+		switch (_options.seekFramePolicy) {
+		case SeekFramePolicy::AtOrAfter:
+			return false;
+		case SeekFramePolicy::AtOrBefore:
+			return true;
+		case SeekFramePolicy::Nearest:
+			return (_options.position - previousPosition)
+				<= (currentPosition - _options.position);
+		}
+		Unexpected("SeekFramePolicy in selectInitialSeekFrame.");
+	}();
+	if (usePrevious) {
+		_initialNextFrame = std::move(_stream.decodedFrame);
+		_stream.decodedFrame = std::move(_initialSkippingFrame);
+		_syncTimePoint.trackTime = previousPosition;
+	}
+	return processFirstFrame();
 }
 
 bool VideoTrackObject::processFirstFrame() {

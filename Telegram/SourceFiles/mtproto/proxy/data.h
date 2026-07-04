@@ -101,7 +101,7 @@ struct ProxyStealthOptions {
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
 	ProxyTiming timing = ProxyTiming::Off;
-	ProxyStartupCover startupCover = ProxyStartupCover::Soft;
+	ProxyStartupCover startupCover = ProxyStartupCover::Off;
 	ProxyTransport transport = ProxyTransport::Wss;
 
 	// Expert-only custom WSS relay; used when transport == Wss and

@@ -20,20 +20,24 @@ constexpr auto kSkipInvalidDataPackets = 10;
 
 } // namespace
 
-crl::time FramePosition(const Stream &stream) {
-	const auto pts = !stream.decodedFrame
-		? AV_NOPTS_VALUE
-		: (stream.decodedFrame->best_effort_timestamp != AV_NOPTS_VALUE)
-		? stream.decodedFrame->best_effort_timestamp
-		: (stream.decodedFrame->pts != AV_NOPTS_VALUE)
-		? stream.decodedFrame->pts
-		: stream.decodedFrame->pkt_dts;
+crl::time FramePosition(const Stream &stream, not_null<AVFrame*> frame) {
+	const auto pts = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+		? frame->best_effort_timestamp
+		: (frame->pts != AV_NOPTS_VALUE)
+		? frame->pts
+		: frame->pkt_dts;
 	const auto result = FFmpeg::PtsToTime(pts, stream.timeBase);
 
 	// Sometimes the result here may be larger than the stream duration.
 	return (stream.duration == kDurationUnavailable)
 		? result
 		: std::min(result, stream.duration);
+}
+
+crl::time FramePosition(const Stream &stream) {
+	return stream.decodedFrame
+		? FramePosition(stream, stream.decodedFrame.get())
+		: kTimeUnknown;
 }
 
 FFmpeg::AvErrorWrap ProcessPacket(Stream &stream, FFmpeg::Packet &&packet) {

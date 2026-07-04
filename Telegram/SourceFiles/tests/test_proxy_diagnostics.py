@@ -35,6 +35,8 @@ def test_diagnostics_model_is_registered_and_bounded():
     assert "enum class ProxyDiagnosticsSource" in header
     assert "enum class ProxyDiagnosticsPhase" in header
     assert "struct ProxyDiagnosticsEvent" in header
+    assert "ProxyMtproxyTerminalReason mtproxyReason" in header
+    assert "ProxyConnectionAttempt attempt" in header
     assert "ProxyDiagnosticsEventsValue()" in header
     assert "ProxyDiagnosticsSnapshot()" in header
     assert "LoadProxyDiagnosticsTail(" in header
@@ -104,10 +106,14 @@ def test_proxy_reporting_is_centralized():
     proxy_check = read(PROXY_CHECK_CPP)
 
     assert "struct ProxyEventReport" in header
+    assert "ProxyMtproxyTerminalReason mtproxyReason" in header
+    assert "ProxyConnectionAttempt attempt" in header
     assert "void ReportProxyEvent(" in header
     assert "StatusPhaseFromDiagnostics" in diagnostics
     assert "SourceForProxy" in diagnostics
     assert "setProxyConnectionStatus" in diagnostics
+    assert "report.mtproxyReason" in diagnostics
+    assert "report.attempt" in diagnostics
     assert "crl::on_main" in diagnostics
 
     for transport in (resolving, tcp, http):

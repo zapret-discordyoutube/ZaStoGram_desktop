@@ -90,5 +90,11 @@ HandshakeGateLease ReserveHandshakeGate() {
 	return HandshakeGateLease(ComputeDelay(active));
 }
 
+HandshakeGateLease ReserveHandshakeGateForProxy(const ProxyData &proxy) {
+	return (proxy.type != ProxyData::Type::None)
+		? ReserveHandshakeGate()
+		: HandshakeGateLease();
+}
+
 } // namespace details
 } // namespace MTP

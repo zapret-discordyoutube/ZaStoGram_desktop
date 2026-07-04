@@ -100,6 +100,10 @@ public:
 	[[nodiscard]] auto proxyConnectionStatusValue() const
 	-> rpl::producer<ProxyConnectionStatus>;
 	void setProxyConnectionStatus(ProxyConnectionStatus status);
+	[[nodiscard]] ConnectionNotice connectionNotice() const;
+	[[nodiscard]] auto connectionNoticeValue() const
+	-> rpl::producer<ConnectionNotice>;
+	void setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms

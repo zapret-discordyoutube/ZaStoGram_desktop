@@ -140,6 +140,33 @@ rpl::variable<std::vector<ProxyDiagnosticsEvent>> Events;
 	return proxy.host + ':' + QString::number(proxy.port);
 }
 
+[[nodiscard]] QString MtproxyReasonText(
+		ProxyMtproxyTerminalReason reason) {
+	switch (reason) {
+	case ProxyMtproxyTerminalReason::None:
+		return QString();
+	case ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello:
+		return u"client_hello_sent_no_server_hello"_q;
+	case ProxyMtproxyTerminalReason::TlsAlertAfterClientHello:
+		return u"tls_alert_after_client_hello"_q;
+	case ProxyMtproxyTerminalReason::ShortTlsResponseAfterClientHello:
+		return u"short_tls_response_after_client_hello"_q;
+	case ProxyMtproxyTerminalReason::UnrecognizedTlsResponseAfterClientHello:
+		return u"unrecognized_tls_response_after_client_hello"_q;
+	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
+		return u"server_hello_hmac_mismatch"_q;
+	case ProxyMtproxyTerminalReason::PostHandshakeNoAppData:
+		return u"post_handshake_no_appdata"_q;
+	case ProxyMtproxyTerminalReason::DnsHostNotFound:
+		return u"host_not_found"_q;
+	case ProxyMtproxyTerminalReason::TcpNotConnected:
+		return u"tcp_not_connected"_q;
+	case ProxyMtproxyTerminalReason::Timeout:
+		return u"timeout"_q;
+	}
+	return QString();
+}
+
 [[nodiscard]] ProxyDiagnosticsSource SourceFromFileName(
 		const QString &name) {
 	if (name.startsWith(u"mtproxy"_q)) {
@@ -248,6 +275,15 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (!error.isEmpty()) {
 		parts.push_back(u"error=%1"_q.arg(error));
 	}
+	const auto mtproxyReason = MtproxyReasonText(safe.mtproxyReason);
+	if (!mtproxyReason.isEmpty()) {
+		parts.push_back(u"mtproxy_reason=%1"_q.arg(mtproxyReason));
+	}
+	if (safe.attempt.attemptId) {
+		parts.push_back(u"attempt=%1/%2"_q.arg(
+			safe.attempt.proxyEpoch
+		).arg(safe.attempt.attemptId));
+	}
 	if (!safe.message.isEmpty()) {
 		parts.push_back(u"message=%1"_q.arg(safe.message));
 	}
@@ -340,6 +376,9 @@ void ReportProxyEvent(
 		const auto status = ProxyConnectionStatus{
 			*phase,
 			report.error,
+			report.mtproxyReason,
+			report.attempt,
+			report.terminalUntil,
 			report.proxy,
 		};
 		InvokeQueued(instance, [=] {
@@ -354,6 +393,9 @@ void ReportProxyEvent(
 				? ProxyDiagnosticsSeverity::Info
 				: ProxyDiagnosticsSeverity::Error),
 		.error = report.error,
+		.mtproxyReason = report.mtproxyReason,
+		.attempt = report.attempt,
+		.terminalUntil = report.terminalUntil,
 		.proxy = std::move(report.proxy),
 		.transport = std::move(report.transport),
 		.dc = std::move(report.dc),

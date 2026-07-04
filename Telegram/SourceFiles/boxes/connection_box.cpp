@@ -1641,7 +1641,7 @@ void ProxiesBox::setupContent() {
 	right->add(
 		object_ptr<Ui::FlatLabel>(
 			right,
-			u"TLS fingerprint (JA4)"_q,
+			u"TLS ClientHello profile"_q,
 			st::boxDividerLabel),
 		st::proxySettingsRightAboutPadding);
 	{
@@ -1659,11 +1659,13 @@ void ProxiesBox::setupContent() {
 			radio->setAllowTextLines(2);
 		};
 		addTls(Profile::Auto, u"Auto (Chrome)"_q);
+		addTls(Profile::AutoRotate, u"Auto-rotate"_q);
+		addTls(Profile::ChromeModern, u"Chrome Modern"_q);
+		addTls(Profile::AndroidChrome, u"Android Chrome"_q);
 		addTls(Profile::Firefox, u"Firefox"_q);
 		addTls(Profile::FirefoxAndroid, u"Firefox Android"_q);
 		addTls(Profile::Yandex, u"Yandex"_q);
 		addTls(Profile::AndroidOkHttp, u"Android OkHttp"_q);
-		addTls(Profile::AutoRotate, u"Auto-rotate"_q);
 		tlsGroup->setChangedCallback([=](Profile value) {
 			auto o = Core::App().settings().proxyStealthOptions();
 			o.tlsProfile = value;

@@ -7,9 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
-#include "mtproto/proxy/mtproxy/policy.h"
+#include "base/algorithm.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
@@ -18,7 +19,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QMutex>
 #include <QtCore/QtEndian>
-#include <range/v3/algorithm/reverse.hpp>
 
 #include <map>
 #include <optional>
@@ -26,8 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
-constexpr auto kMaxGrease = 8;
-constexpr auto kClientHelloLimit = 4096;
 constexpr auto kHelloDigestLength = 32;
 constexpr auto kLengthSize = sizeof(uint16);
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
@@ -47,527 +45,6 @@ constexpr auto kSyntheticPskPoolSize = 3;
 constexpr auto kSyntheticPskMinLifetime = crl::time(2 * 60 * 60 * 1000);
 constexpr auto kSyntheticPskMaxLifetime = crl::time(8 * 60 * 60 * 1000);
 
-using BigNum = openssl::BigNum;
-using BigNumContext = openssl::Context;
-
-[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules(
-		ProxyTlsProfile profile) {
-	using Scope = QVector<MTPTlsBlock>;
-	using Permutation = std::vector<Scope>;
-	using StackElement = std::variant<Scope, Permutation>;
-	auto stack = std::vector<StackElement>();
-	const auto pushToBack = [&](MTPTlsBlock &&block) {
-		Expects(!stack.empty());
-
-		if (const auto scope = std::get_if<Scope>(&stack.back())) {
-			scope->push_back(std::move(block));
-		} else {
-			auto &permutation = v::get<Permutation>(stack.back());
-			Assert(!permutation.empty());
-			permutation.back().push_back(std::move(block));
-		}
-	};
-	const auto S = [&](QByteArray data) {
-		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
-	};
-	const auto Z = [&](int length) {
-		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
-	};
-	const auto G = [&](int seed) {
-		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
-	};
-	const auto R = [&](int length) {
-		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
-	};
-	const auto D = [&] {
-		pushToBack(MTP_tlsBlockDomain());
-	};
-	const auto K = [&] {
-		pushToBack(MTP_tlsBlockPublicKey());
-	};
-	const auto M = [&] {
-		pushToBack(MTP_tlsBlockM());
-	};
-	const auto E = [&] {
-		pushToBack(MTP_tlsBlockE());
-	};
-	const auto P = [&] {
-		pushToBack(MTP_tlsBlockPadding());
-	};
-	const auto OpenScope = [&] {
-		stack.emplace_back(Scope());
-	};
-	const auto CloseScope = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Scope>(stack.back()));
-
-		const auto blocks = std::move(v::get<Scope>(stack.back()));
-		stack.pop_back();
-		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
-	};
-	const auto OpenPermutation = [&] {
-		stack.emplace_back(Permutation());
-	};
-	const auto ClosePermutation = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Permutation>(stack.back()));
-
-		const auto list = std::move(v::get<Permutation>(stack.back()));
-		stack.pop_back();
-
-		const auto wrapped = list | ranges::views::transform([](
-				const QVector<MTPTlsBlock> &elements) {
-			return MTP_vector<MTPTlsBlock>(elements);
-		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
-
-		pushToBack(MTP_tlsBlockPermutation(
-			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
-	};
-	const auto StartPermutationElement = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Permutation>(stack.back()));
-
-		v::get<Permutation>(stack.back()).emplace_back();
-	};
-	const auto Finish = [&] {
-		Expects(stack.size() == 1);
-		Expects(v::is<Scope>(stack.back()));
-
-		return v::get<Scope>(stack.back());
-	};
-
-	stack.emplace_back(Scope());
-
-	switch (profile) {
-	case ProxyTlsProfile::Firefox: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x22"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
-			"\xc0\x30\xc0\x0a\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"_q);
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x17\x00\x00"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S("\x00\x0a\x00\x10\x00\x0e"_q);
-		G(2);
-		S("\x00\x1d\x00\x17\x00\x18\x00\x19\x01\x00\x01\x01"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S("\x00\x23\x00\x00"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
-		S("\x00\x33\x05\x2f\x05\x2d"_q);
-		S("\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		S("\x00\x17\x00\x41"_q);
-		R(65);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(4);
-		S("\x03\x04\x03\x03"_q);
-		S(""
-			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
-			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1c\x00\x02\x40\x01"_q);
-		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
-		S("\xfe\x0d\x01\x19"_q);
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		S("\x00\xef"_q);
-		R(239);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::FirefoxAndroid: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x22"_q);
-		S(""
-			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
-			"\xc0\x30\xc0\x0a\xc0\x09\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f"
-			"\x00\x35"_q);
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x17\x00\x00"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S(""
-			"\x00\x0a\x00\x10\x00\x0e\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19"
-			"\x01\x00\x01\x01"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
-		S("\x00\x33\x05\x2f\x05\x2d"_q);
-		S("\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		S("\x00\x17\x00\x41"_q);
-		R(65);
-		S("\x00\x2b\x00\x05\x04\x03\x04\x03\x03"_q);
-		S(""
-			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
-			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1c\x00\x02\x40\x01"_q);
-		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
-		S("\xfe\x0d\x01\xb9"_q);
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		S("\x01\x8f"_q);
-		R(399);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::AndroidOkHttp: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x0a\x00\x0a\x00\x08"_q);
-		G(4);
-		S("\x00\x1d\x00\x17\x00\x18"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S(""
-			"\x00\x0d\x00\x0e\x00\x0c\x04\x03\x05\x03\x04\x01\x05\x01\x02\x01"
-			"\x02\x03"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(6);
-		S("\x03\x04\x03\x03"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20"_q);
-		K();
-		G(3);
-		S("\x00\x01\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::Yandex: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		S("\x00\x17\x00\x00"_q);
-		S(""
-			"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05"
-			"\x05\x01\x08\x06\x06\x01"_q);
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1b\x00\x03\x02\x00\x02"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S("\x00\x23\x00\x00"_q);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(6);
-		S("\x03\x04\x03\x03"_q);
-		S("\x00\x12\x00\x00"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
-		S("\x00\x0a\x00\x0c\x00\x0a"_q);
-		G(4);
-		S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
-		S("\xfe\x0d"_q);
-		OpenScope();
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		OpenScope();
-		E();
-		CloseScope();
-		CloseScope();
-		S("\x00\x33\x04\xef\x04\xed"_q);
-		G(4);
-		S("\x00\x01\x00\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		G(3);
-		S("\x00\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	default: {
-	S("\x16\x03\x01"_q);
-	OpenScope();
-	S("\x01\x00"_q);
-	OpenScope();
-	S("\x03\x03"_q);
-	Z(32);
-	S("\x20"_q);
-	R(32);
-	S("\x00\x20"_q);
-	G(0);
-	S(""
-		"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-		"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"
-		""_q);
-	OpenScope();
-	G(2);
-	S("\x00\x00"_q);
-	OpenPermutation(); {
-		StartPermutationElement(); {
-			S("\x00\x00"_q);
-			OpenScope();
-			OpenScope();
-			S("\x00"_q);
-			OpenScope();
-			D();
-			CloseScope();
-			CloseScope();
-			CloseScope();
-		}
-		StartPermutationElement(); {
-			S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x0a\x00\x0c\x00\x0a"_q);
-			G(4);
-			S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x0b\x00\x02\x01\x00"_q);
-		}
-		StartPermutationElement(); {
-			S(""
-				"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03"
-				"\x08\x05\x05\x01\x08\x06\x06\x01"_q);
-		}
-		StartPermutationElement(); {
-			S(""
-				"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
-				"\x2f\x31\x2e\x31"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x12\x00\x00"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x17\x00\x00"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x1b\x00\x03\x02\x00\x02"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x23\x00\x00"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x2b\x00\x07\x06"_q);
-			G(6);
-			S("\x03\x04\x03\x03"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x2d\x00\x02\x01\x01"_q);
-		}
-		StartPermutationElement(); {
-			S("\x00\x33\x04\xef\x04\xed"_q);
-			G(4);
-			S("\x00\x01\x00\x11\xec\x04\xc0"_q);
-			M();
-			K();
-			S("\x00\x1d\x00\x20"_q);
-			K();
-		}
-		StartPermutationElement(); {
-			S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
-		}
-		StartPermutationElement(); {
-			S("\xfe\x0d"_q);
-			OpenScope();
-			S("\x00\x00\x01\x00\x01"_q);
-			R(1);
-			S("\x00\x20"_q);
-			R(32);
-			OpenScope();
-			E();
-			CloseScope();
-			CloseScope();
-		}
-		StartPermutationElement(); {
-			S("\xff\x01\x00\x01\x00"_q);
-		}
-	} ClosePermutation();
-	G(3);
-	S("\x00\x01\x00"_q);
-	P();
-	CloseScope();
-	CloseScope();
-	CloseScope();
-		break;
-	}
-	}
-
-	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
-}
-
-[[nodiscard]] bytes::vector PrepareGreases() {
-	auto result = bytes::vector(kMaxGrease);
-	bytes::set_random(result);
-	for (auto &byte : result) {
-		byte = bytes::type((uchar(byte) & 0xF0) + 0x0A);
-	}
-	static_assert(kMaxGrease % 2 == 0);
-	for (auto i = 0; i != kMaxGrease; i += 2) {
-		if (result[i] == result[i + 1]) {
-			result[i + 1] = bytes::type(uchar(result[i + 1]) ^ 0x10);
-		}
-	}
-	return result;
-}
-
-[[nodiscard]] bytes::vector GeneratePublicKey() {
-	const auto context = EVP_PKEY_CTX_new_id(NID_ED25519, nullptr);
-	if (!context) {
-		return {};
-	}
-	const auto guardContext = gsl::finally([&] {
-		EVP_PKEY_CTX_free(context);
-	});
-
-	if (EVP_PKEY_keygen_init(context) <= 0) {
-		return {};
-	}
-
-	auto key = (EVP_PKEY*)nullptr;
-	if (EVP_PKEY_keygen(context, &key) <= 0) {
-		return {};
-	}
-	const auto guardKey = gsl::finally([&] {
-		EVP_PKEY_free(key);
-	});
-
-	auto length = size_t(0);
-	if (!EVP_PKEY_get_raw_public_key(key, nullptr, &length)) {
-		return {};
-	}
-	Assert(length == 32);
-
-	auto result = bytes::vector(length);
-	const auto code = EVP_PKEY_get_raw_public_key(
-		key,
-		reinterpret_cast<unsigned char *>(result.data()),
-		&length);
-	if (!code) {
-		return {};
-	}
-	return result;
-}
-
-struct ClientHello {
-	QByteArray data;
-	QByteArray digest;
-};
-
-struct SyntheticPskOffer {
-	bytes::vector identity;
-	uint32 obfuscatedTicketAge = 0;
-	int binderLength = 0;
-};
-
 struct SyntheticPskTicket {
 	bytes::vector identity;
 	uint32 ticketAgeAdd = 0;
@@ -583,18 +60,6 @@ struct SyntheticPskCacheEntry {
 
 QMutex SyntheticPskCacheMutex;
 std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
-
-[[nodiscard]] bool ShouldPadBeforeSyntheticPsk(ProxyTlsProfile profile) {
-	switch (profile) {
-	case ProxyTlsProfile::Firefox:
-	case ProxyTlsProfile::FirefoxAndroid:
-	case ProxyTlsProfile::AndroidOkHttp:
-	case ProxyTlsProfile::Yandex:
-		return false;
-	default:
-		return true;
-	}
-}
 
 [[nodiscard]] uint32 RandomUint32() {
 	auto result = uint32();
@@ -673,9 +138,14 @@ void DropExpiredSyntheticPskTickets(
 		SyntheticPskCache.erase(i);
 		return std::nullopt;
 	}
-	auto &ticket = entry.tickets[entry.nextIndex];
-	const auto count = int(entry.tickets.size());
-	entry.nextIndex = (entry.nextIndex + 1) % count;
+	const auto index = entry.nextIndex;
+	const auto ticket = entry.tickets[index];
+	entry.tickets.erase(entry.tickets.begin() + index);
+	if (entry.tickets.empty()) {
+		SyntheticPskCache.erase(i);
+	} else if (entry.nextIndex >= int(entry.tickets.size())) {
+		entry.nextIndex = 0;
+	}
 	const auto age = std::max(crl::time(0), now - ticket.issuedAt);
 	return SyntheticPskOffer{
 		.identity = ticket.identity,
@@ -705,385 +175,6 @@ void NoteSyntheticPskHandshakeSuccess(
 	}
 }
 
-class Generator {
-public:
-	Generator(
-		const MTPTlsClientHello &rules,
-		bytes::const_span domain,
-		bytes::const_span key,
-		bool padBeforeSyntheticPsk,
-		std::optional<SyntheticPskOffer> pskOffer);
-	[[nodiscard]] ClientHello take();
-
-private:
-	class Part final {
-	public:
-		explicit Part(
-			bytes::const_span domain,
-			const bytes::vector &greases,
-			bool padBeforeSyntheticPsk,
-			const std::optional<SyntheticPskOffer> *pskOffer);
-
-		[[nodiscard]] bytes::span grow(int size);
-		void writeBlocks(const QVector<MTPTlsBlock> &blocks);
-		void writeBlock(const MTPTlsBlock &data);
-		void writeBlock(const MTPDtlsBlockString &data);
-		void writeBlock(const MTPDtlsBlockZero &data);
-		void writeBlock(const MTPDtlsBlockGrease &data);
-		void writeBlock(const MTPDtlsBlockRandom &data);
-		void writeBlock(const MTPDtlsBlockDomain &data);
-		void writeBlock(const MTPDtlsBlockPublicKey &data);
-		void writeBlock(const MTPDtlsBlockScope &data);
-		void writeBlock(const MTPDtlsBlockPermutation &data);
-		void writeBlock(const MTPDtlsBlockM &data);
-		void writeBlock(const MTPDtlsBlockE &data);
-		void writeBlock(const MTPDtlsBlockPadding &data);
-		void finalize(bytes::const_span key);
-		[[nodiscard]] QByteArray extractDigest() const;
-
-		[[nodiscard]] bool error() const;
-		[[nodiscard]] QByteArray take();
-
-	private:
-		void writeSyntheticPskExtension();
-		void writeDigest(bytes::const_span key);
-		void injectTimestamp();
-
-		bytes::const_span _domain;
-		const bytes::vector &_greases;
-		bool _padBeforeSyntheticPsk = false;
-		const std::optional<SyntheticPskOffer> *_pskOffer = nullptr;
-		QByteArray _result;
-		const char *_data = nullptr;
-		int _digestPosition = -1;
-		bool _error = false;
-
-	};
-
-	bytes::vector _greases;
-	std::optional<SyntheticPskOffer> _pskOffer;
-	bool _padBeforeSyntheticPsk = false;
-	Part _result;
-	QByteArray _digest;
-
-};
-
-Generator::Part::Part(
-	bytes::const_span domain,
-	const bytes::vector &greases,
-	bool padBeforeSyntheticPsk,
-	const std::optional<SyntheticPskOffer> *pskOffer)
-: _domain(domain)
-, _greases(greases)
-, _padBeforeSyntheticPsk(padBeforeSyntheticPsk)
-, _pskOffer(pskOffer) {
-	_result.reserve(kClientHelloLimit);
-	_data = _result.constData();
-}
-
-bool Generator::Part::error() const {
-	return _error;
-}
-
-QByteArray Generator::Part::take() {
-	Expects(_error || _result.constData() == _data);
-
-	return _error ? QByteArray() : std::move(_result);
-}
-
-bytes::span Generator::Part::grow(int size) {
-	if (_error
-		|| size <= 0
-		|| _result.size() + size > kClientHelloLimit) {
-		_error = true;
-		return bytes::span();
-	}
-
-	const auto offset = _result.size();
-	_result.resize(offset + size);
-	return bytes::make_detached_span(_result).subspan(offset);
-}
-
-void Generator::Part::writeBlocks(const QVector<MTPTlsBlock> &blocks) {
-	for (const auto &block : blocks) {
-		writeBlock(block);
-	}
-}
-
-void Generator::Part::writeBlock(const MTPTlsBlock &data) {
-	data.match([&](const auto &data) {
-		writeBlock(data);
-	});
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockString &data) {
-	const auto &bytes = data.vdata().v;
-	const auto storage = grow(bytes.size());
-	if (storage.empty()) {
-		return;
-	}
-	bytes::copy(storage, bytes::make_span(bytes));
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockZero &data) {
-	const auto length = data.vlength().v;
-	const auto already = _result.size();
-	const auto storage = grow(length);
-	if (storage.empty()) {
-		return;
-	}
-	if (length == kHelloDigestLength && _digestPosition < 0) {
-		_digestPosition = already;
-	}
-	bytes::set_with_const(storage, bytes::type(0));
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockGrease &data) {
-	const auto seed = data.vseed().v;
-	if (seed < 0 || seed >= _greases.size()) {
-		_error = true;
-		return;
-	}
-	const auto storage = grow(2);
-	if (storage.empty()) {
-		return;
-	}
-	bytes::set_with_const(storage, _greases[seed]);
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockRandom &data) {
-	const auto length = data.vlength().v;
-	const auto storage = grow(length);
-	if (storage.empty()) {
-		return;
-	}
-	bytes::set_random(storage);
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockDomain &data) {
-	const auto storage = grow(_domain.size());
-	if (storage.empty()) {
-		return;
-	}
-	bytes::copy(storage, _domain);
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockPublicKey &data) {
-	const auto key = GeneratePublicKey();
-	const auto storage = grow(key.size());
-	if (storage.empty()) {
-		return;
-	}
-	bytes::copy(storage, key);
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockScope &data) {
-	const auto storage = grow(kLengthSize);
-	if (storage.empty()) {
-		return;
-	}
-	const auto already = _result.size();
-	writeBlocks(data.ventries().v);
-	const auto length = qToBigEndian(uint16(_result.size() - already));
-	bytes::copy(storage, bytes::object_as_span(&length));
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockPermutation &data) {
-	auto list = std::vector<QByteArray>();
-	list.reserve(data.ventries().v.size());
-	for (const auto &inner : data.ventries().v) {
-		auto part = Part(
-			_domain,
-			_greases,
-			_padBeforeSyntheticPsk,
-			nullptr);
-		part.writeBlocks(inner.v);
-		if (part.error()) {
-			_error = true;
-			return;
-		}
-		list.push_back(part.take());
-	}
-	ranges::shuffle(list);
-	for (const auto &element : list) {
-		const auto storage = grow(element.size());
-		if (storage.empty()) {
-			return;
-		}
-		bytes::copy(storage, bytes::make_span(element));
-	}
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockM &data) {
-	constexpr auto kElements = 384;
-	constexpr auto kAdded = 32;
-
-	const auto storage = grow(kElements * 3 + kAdded);
-	if (storage.empty()) {
-		return;
-	}
-
-	auto random = bytes::vector(kElements * 8 + kAdded);
-	bytes::set_random(random);
-
-	auto chars = reinterpret_cast<char*>(storage.data());
-	const auto ints = reinterpret_cast<const uint32*>(random.data());
-	for (auto i = 0; i < kElements; ++i) {
-		const auto a = int(ints[i * 2] % 3329);
-		const auto b = int(ints[i * 2 + 1] % 3329);
-		*chars++ = (char)(a & 255);
-		*chars++ = (char)((a >> 8) + ((b & 15) << 4));
-		*chars++ = (char)(b >> 4);
-	}
-	bytes::set_random(storage.subspan(kElements * 3));
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockE &data) {
-	const auto lengths = std::array{ 144, 176, 208, 240 };
-	const auto length = lengths[base::RandomIndex(lengths.size())];
-	writeBlock(MTP_tlsBlockRandom(MTP_int(length)));
-}
-
-void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data) {
-	const auto length = int(_result.size());
-	if (_padBeforeSyntheticPsk && length < 513) {
-		const auto zero = MTP_tlsBlockZero(MTP_int(513 - length));
-		writeBlock(MTP_tlsBlockString(MTP_bytes("\x00\x15"_q)));
-		writeBlock(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(1, zero)));
-	}
-	writeSyntheticPskExtension();
-}
-
-void Generator::Part::writeSyntheticPskExtension() {
-	if (!_pskOffer || !*_pskOffer) {
-		return;
-	}
-	const auto &offer = **_pskOffer;
-	const auto binderLengths = std::array{ 32, 48 };
-	const auto identityLength = int(offer.identity.size());
-	const auto binderLength = offer.binderLength;
-	if (identityLength <= 0
-		|| (binderLength != binderLengths[0]
-			&& binderLength != binderLengths[1])) {
-		_error = true;
-		return;
-	}
-	const auto identitiesLength = identityLength + 6;
-	const auto bindersLength = binderLength + 1;
-	const auto extensionLength = identitiesLength + bindersLength + 4;
-	const auto write16 = [&](uint16 value) {
-		const auto big = qToBigEndian(value);
-		const auto storage = grow(sizeof(big));
-		if (storage.empty()) {
-			return;
-		}
-		bytes::copy(storage, bytes::object_as_span(&big));
-	};
-	const auto write32 = [&](uint32 value) {
-		const auto big = qToBigEndian(value);
-		const auto storage = grow(sizeof(big));
-		if (storage.empty()) {
-			return;
-		}
-		bytes::copy(storage, bytes::object_as_span(&big));
-	};
-	const auto random = [&](int length) {
-		const auto storage = grow(length);
-		if (storage.empty()) {
-			return;
-		}
-		bytes::set_random(storage);
-	};
-	write16(uint16(0x0029));
-	write16(uint16(extensionLength));
-	write16(uint16(identitiesLength));
-	write16(uint16(identityLength));
-	const auto identityStorage = grow(identityLength);
-	if (identityStorage.empty()) {
-		return;
-	}
-	bytes::copy(identityStorage, offer.identity);
-	write32(offer.obfuscatedTicketAge);
-	write16(uint16(bindersLength));
-	const auto binderPrefix = grow(1);
-	if (binderPrefix.empty()) {
-		return;
-	}
-	binderPrefix[0] = bytes::type(binderLength);
-	random(binderLength);
-}
-
-void Generator::Part::finalize(bytes::const_span key) {
-	if (_error) {
-		return;
-	} else if (_digestPosition < 0) {
-		_error = true;
-		return;
-	}
-	writeDigest(key);
-	injectTimestamp();
-}
-
-QByteArray Generator::Part::extractDigest() const {
-	if (_digestPosition < 0) {
-		return {};
-	}
-	return _result.mid(_digestPosition, kHelloDigestLength);
-}
-
-void Generator::Part::writeDigest(bytes::const_span key) {
-	Expects(_digestPosition >= 0);
-
-	bytes::copy(
-		bytes::make_detached_span(_result).subspan(_digestPosition),
-		openssl::HmacSha256(key, bytes::make_span(_result)));
-}
-
-void Generator::Part::injectTimestamp() {
-	Expects(_digestPosition >= 0);
-
-	const auto storage = bytes::make_detached_span(_result).subspan(
-		_digestPosition + kHelloDigestLength - sizeof(int32),
-		sizeof(int32));
-	auto already = int32();
-	bytes::copy(bytes::object_as_span(&already), storage);
-	already ^= qToLittleEndian(int32(base::unixtime::http_now()));
-	bytes::copy(storage, bytes::object_as_span(&already));
-}
-
-Generator::Generator(
-	const MTPTlsClientHello &rules,
-	bytes::const_span domain,
-	bytes::const_span key,
-	bool padBeforeSyntheticPsk,
-	std::optional<SyntheticPskOffer> pskOffer)
-: _greases(PrepareGreases())
-, _pskOffer(std::move(pskOffer))
-, _padBeforeSyntheticPsk(padBeforeSyntheticPsk)
-, _result(domain, _greases, _padBeforeSyntheticPsk, &_pskOffer) {
-	_result.writeBlocks(rules.data().vblocks().v);
-	_result.finalize(key);
-}
-
-ClientHello Generator::take() {
-	auto digest = _result.extractDigest();
-	return { _result.take(), std::move(digest) };
-}
-
-[[nodiscard]] ClientHello PrepareClientHello(
-		const MTPTlsClientHello &rules,
-		bytes::const_span domain,
-		bytes::const_span key,
-		ProxyTlsProfile profile,
-		std::optional<SyntheticPskOffer> pskOffer) {
-	return Generator(
-		rules,
-		domain,
-		key,
-		ShouldPadBeforeSyntheticPsk(profile),
-		std::move(pskOffer)).take();
-}
-
 [[nodiscard]] bool CheckPart(bytes::const_span data, QLatin1String check) {
 	if (data.size() < check.size()) {
 		return false;
@@ -1091,6 +182,12 @@ ClientHello Generator::take() {
 	return !bytes::compare(
 		data.subspan(0, check.size()),
 		bytes::make_span(check.data(), check.size()));
+}
+
+[[nodiscard]] bool IsTlsAlert(bytes::const_span data) {
+	return data.size() >= 2
+		&& data[0] == bytes::type(0x15)
+		&& data[1] == bytes::type(0x03);
 }
 
 [[nodiscard]] int ReadPartLength(bytes::const_span data, int offset) {
@@ -1114,10 +211,13 @@ TlsSocket::TlsSocket(
 	_recordSizing = RecordSizing(int(stealth.recordSizing));
 	_startupCover = StartupCover(int(stealth.startupCover));
 	_clientHelloFragmentation = stealth.clientHelloFragmentation;
+	_connectionPattern = stealth.connectionPattern;
 	_tlsProfile = stealth.tlsProfile;
 	_timing = stealth.timing;
 	_stealth = stealth;
 	_pacingTimer.setCallback([=] { sendOutgoing(); });
+	_clientHelloTimer.setCallback([=] { sendClientHello(); });
+	_clientHelloFragmentTimer.setCallback([=] { writeClientHelloTail(); });
 
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
@@ -1162,64 +262,89 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 }
 
 ProxyTlsProfile TlsSocket::effectiveTlsProfile() const {
-	// Per-endpoint AutoRotate cursor (see proxy/mtproxy/adaptive_policy);
-	// explicit profiles (and Auto) pass through unchanged.
+	if (_usePreparedTlsProfile) {
+		return _preparedTlsProfile;
+	}
 	return ResolveEffectiveTlsProfile(_tlsProfile, _endpointKey);
 }
 
-QString TlsSocket::failureDiagnostic() const {
+MtProxy::FailureReason TlsSocket::failureReason() const {
+	if (_failureReason != MtProxy::FailureReason::None) {
+		return _failureReason;
+	}
 	switch (_phase) {
 	case HandshakePhase::None:
 	case HandshakePhase::TcpConnected:
-		return u"tcp_not_connected"_q;
+		return MtProxy::FailureReason::TcpNotConnected;
 	case HandshakePhase::ClientHelloSent:
-		return u"client_hello_sent_no_server_hello"_q;
+		if (_incoming.size() > kHelloDigestLength) {
+			return MtProxy::FailureReason::ShortTlsResponseAfterClientHello;
+		}
+		return MtProxy::FailureReason::NoServerHelloAfterClientHello;
 	case HandshakePhase::ServerHelloOk:
-		return u"post_handshake_no_appdata"_q;
+		return MtProxy::FailureReason::PostHandshakeNoAppData;
 	case HandshakePhase::FirstDataReceived:
 		break;
 	}
-	return QString();
+	return MtProxy::FailureReason::None;
 }
 
 void TlsSocket::applyAdaptiveRecipe() {
-	const auto level = EndpointRecipeLevel(_endpointKey);
-	if (!level) {
+	const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+		_endpointId);
+	if (!snapshot.recipeLevel) {
 		return;
 	}
 	auto input = AdaptiveRecipeInput();
 	input.endpointKey = _endpointKey;
-	input.recipeLevel = level;
-	input.lastDiagnostic = EndpointLastDiagnostic(_endpointKey);
+	input.recipeLevel = snapshot.recipeLevel;
+	input.lastDiagnostic = snapshot.lastDiagnostic;
 	input.configuredTlsProfile = _tlsProfile;
+	input.effectiveTlsProfile = effectiveTlsProfile();
 	input.stealth = _stealth;
 	const auto recipe = ApplyAdaptiveRecipe(input);
 	if (!recipe.changed) {
 		return;
 	}
-	// Apply only the knobs TlsSocket owns; the TLS profile is escalated via
-	// effectiveTlsProfile()/RotateTlsProfileOnFailure and connectionPattern
-	// is a session-level concern, so neither is touched here.
 	_recordSizing = RecordSizing(int(recipe.stealth.recordSizing));
 	_startupCover = StartupCover(int(recipe.stealth.startupCover));
 	_clientHelloFragmentation = recipe.stealth.clientHelloFragmentation;
+	_connectionPattern = recipe.stealth.connectionPattern;
+	if (recipe.stealth.tlsProfile != input.effectiveTlsProfile) {
+		_preparedTlsProfile = recipe.stealth.tlsProfile;
+		_usePreparedTlsProfile = true;
+	}
 	_timing = recipe.stealth.timing;
 }
 
 void TlsSocket::writeClientHello(const QByteArray &data) {
-	const auto size = int(data.size());
-	if (_clientHelloFragmentation != ProxyClientHelloFragmentation::Soft
-		|| size < 384) {
+	_clientHelloFragmentTimer.cancel();
+	_clientHelloTail = QByteArray();
+	const auto plan = PrepareClientHelloFragmentation(
+		data,
+		_clientHelloFragmentation);
+	if (!plan) {
 		_socket.write(data);
 		return;
 	}
-	const auto maxFirst = std::min(768, size - 96);
-	const auto minFirst = std::min(224, maxFirst);
-	const auto range = (maxFirst > minFirst) ? (maxFirst - minFirst + 1) : 1;
-	const auto first = minFirst + base::RandomIndex(range);
-	_socket.write(data.constData(), first);
+	_socket.write(data.constData(), plan.firstSize);
 	_socket.flush();
-	_socket.write(data.constData() + first, size - first);
+	_clientHelloTail = data.mid(plan.firstSize);
+	if (plan.secondDelay > 0) {
+		_clientHelloFragmentTimer.callOnce(plan.secondDelay);
+	} else {
+		writeClientHelloTail();
+	}
+}
+
+void TlsSocket::writeClientHelloTail() {
+	const auto tail = base::take(_clientHelloTail);
+	if (tail.isEmpty()) {
+		return;
+	}
+	_socket.write(
+		tail.constData(),
+		tail.size());
 }
 
 void TlsSocket::plainConnected() {
@@ -1230,8 +355,22 @@ void TlsSocket::plainConnected() {
 	connectionProgress(_phase);
 
 	applyAdaptiveRecipe();
+	const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);
+	if (delay > 0) {
+		_clientHelloTimer.callOnce(delay);
+	} else {
+		sendClientHello();
+	}
+}
 
-	const auto profile = effectiveTlsProfile();
+void TlsSocket::sendClientHello() {
+	if (_state != State::Connecting) {
+		return;
+	}
+	const auto profile = _usePreparedTlsProfile
+		? _preparedTlsProfile
+		: effectiveTlsProfile();
+	_usePreparedTlsProfile = false;
 	_sentTlsProfile = profile;
 	const auto rules = PrepareClientHelloRules(profile);
 	auto pskOffer = PrepareSyntheticPskOffer(
@@ -1246,8 +385,7 @@ void TlsSocket::plainConnected() {
 		std::move(pskOffer));
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
-		_state = State::Error;
-		_error.fire_copy(AbstractConnection::kErrorCodeOther);
+		handleError(MtProxy::FailureReason::BadResponse);
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
@@ -1266,7 +404,12 @@ void TlsSocket::plainDisconnected() {
 	_outgoing = QByteArray();
 	_outgoingOffset = 0;
 	_clientPrefixSent = false;
+	_usePreparedTlsProfile = false;
+	_clientHelloTail = QByteArray();
+	_failureReason = MtProxy::FailureReason::None;
 	_pacingTimer.cancel();
+	_clientHelloTimer.cancel();
+	_clientHelloFragmentTimer.cancel();
 	_disconnected.fire({});
 }
 
@@ -1310,7 +453,9 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 			- kServerHelloPart1.size();
 		if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
 			logError(888, "Bad Server Hello part1.");
-			handleError();
+			handleError(IsTlsAlert(data.subspan(part1Offset))
+				? MtProxy::FailureReason::TlsAlertAfterClientHello
+				: MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello);
 			return;
 		}
 		_serverHelloLength = parts123Size;
@@ -1334,7 +479,8 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 			- kServerHelloPart3.size();
 		if (!CheckPart(data.subspan(part3Offset), kServerHelloPart3)) {
 			logError(888, "Bad Server Hello part.");
-			handleError();
+			handleError(
+				MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello);
 			return;
 		}
 		_serverHelloLength = full;
@@ -1358,7 +504,7 @@ void TlsSocket::checkHelloDigest() {
 	const auto check = openssl::HmacSha256(keyFromSecret(), fulldata);
 	if (bytes::compare(digestCopy, check) != 0) {
 		logError(888, "Bad Server Hello digest.");
-		handleError();
+		handleError(MtProxy::FailureReason::ServerHelloHmacMismatch);
 		return;
 	}
 	shiftIncomingBy(fulldata.size());
@@ -1419,7 +565,10 @@ bool TlsSocket::checkNextPacket() {
 			_incomingGoodDataLimit = length;
 			_phase = HandshakePhase::FirstDataReceived;
 			connectionProgress(_phase);
-			MtproxyNoteEndpointSuccess(_endpointKey);
+			MtProxy::EndpointHealth::Instance().reportSuccess({
+				.endpoint = _endpointId,
+				.use = MtProxy::EndpointUse::Main,
+			});
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -1445,6 +594,11 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 
 	_state = State::Connecting;
 	_endpointKey = address + u":%1"_q.arg(port);
+	_endpointId = MtProxy::EndpointIdFromAddress(
+		address,
+		port,
+		bytes::make_span(_secret),
+		_stealth.transport);
 	_socket.connectToHost(address, port);
 }
 
@@ -1645,18 +799,30 @@ HandshakePhase TlsSocket::handshakePhase() const {
 	return _phase;
 }
 
+ProxyMtproxyTerminalReason TlsSocket::mtproxyTerminalReason() const {
+	return MtProxy::ToProxyMtproxyTerminalReason(failureReason());
+}
+
+crl::time TlsSocket::mtproxyTerminalUntil() const {
+	return MtProxy::EndpointHealth::Instance().snapshot(
+		_endpointId).terminalUntil;
+}
+
+void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {
+	_failureReason = reason;
+	handleError(errorCode);
+}
+
 void TlsSocket::handleError(int errorCode) {
 	if (_state != State::Connected) {
 		_syncTimeRequests.fire({});
-		// A failure before the data path is up may be a JA4/ClientHello
-		// problem; record it to escalate the recipe and advance the
-		// per-endpoint AutoRotate cursor for the next attempt.
-		const auto diagnostic = failureDiagnostic();
-		MtproxyNoteEndpointFailure(_endpointKey, diagnostic);
-		(void)MtproxyRotateTlsProfileOnFailure(
-			_endpointKey,
-			diagnostic,
-			effectiveTlsProfile());
+		MtProxy::EndpointHealth::Instance().reportFailure({
+			.endpoint = _endpointId,
+			.use = MtProxy::EndpointUse::Main,
+			.reason = failureReason(),
+			.configuredTlsProfile = _tlsProfile,
+			.sentProfile = _sentTlsProfile,
+		});
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _socket.errorString());

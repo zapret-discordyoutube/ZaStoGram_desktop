@@ -1494,6 +1494,7 @@ PRIVATE
     mtproto/proxy/data.h
     mtproto/proxy/transport_policy.cpp
     mtproto/proxy/transport_policy.h
+    mtproto/proxy/status.cpp
     mtproto/proxy/status.h
     mtproto/proxy/resolving_connection.cpp
     mtproto/proxy/resolving_connection.h
@@ -1514,8 +1515,14 @@ PRIVATE
     mtproto/proxy/check.h
     mtproto/proxy/mtproxy/adaptive_policy.cpp
     mtproto/proxy/mtproxy/adaptive_policy.h
-    mtproto/proxy/mtproxy/policy.cpp
-    mtproto/proxy/mtproxy/policy.h
+    mtproto/proxy/mtproxy/client_hello_builder.cpp
+    mtproto/proxy/mtproxy/client_hello_builder.h
+    mtproto/proxy/mtproxy/client_hello_facts.cpp
+    mtproto/proxy/mtproxy/client_hello_facts.h
+    mtproto/proxy/mtproxy/client_hello_profile.cpp
+    mtproto/proxy/mtproxy/client_hello_profile.h
+    mtproto/proxy/mtproxy/endpoint_health.cpp
+    mtproto/proxy/mtproxy/endpoint_health.h
     mtproto/proxy/mtproxy/tls_socket.cpp
     mtproto/proxy/mtproxy/tls_socket.h
     mtproto/proxy/wss/socket.cpp

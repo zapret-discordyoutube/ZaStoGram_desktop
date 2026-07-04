@@ -32,6 +32,10 @@ ProxyRotationManager::ProxyRotationManager()
 		stopChecking();
 		reevaluate();
 	}, _lifetime);
+	MTP::details::MtProxy::EndpointHealth::Instance().changes(
+	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
+		handleEndpointHealthChanged(event);
+	}, _lifetime);
 }
 
 void ProxyRotationManager::settingsChanged() {
@@ -110,11 +114,25 @@ void ProxyRotationManager::reevaluate() {
 	const auto stateProj = [](not_null<Main::Account*> account) {
 		return account->mtp().dcstate();
 	};
-	if (ranges::contains(accounts, MTP::ConnectedState, stateProj)) {
+	if (!hasActiveHealthRotationRequest()
+		&& ranges::contains(accounts, MTP::ConnectedState, stateProj)) {
 		stopChecking();
 		return;
 	}
 	startChecking();
+}
+
+void ProxyRotationManager::handleEndpointHealthChanged(
+		MTP::details::MtProxy::EndpointEvent event) {
+	if (!event.rotationAllowed || event.terminalUntil <= crl::now()) {
+		return;
+	}
+	accumulate_max(_healthRotationRequestedUntil, event.terminalUntil);
+	reevaluate();
+}
+
+bool ProxyRotationManager::hasActiveHealthRotationRequest() const {
+	return _healthRotationRequestedUntil > crl::now();
 }
 
 void ProxyRotationManager::startChecking() {
@@ -136,6 +154,7 @@ void ProxyRotationManager::stopChecking() {
 	_checking = false;
 	_waitingToSwitch = false;
 	_switchStartedAt = 0;
+	_healthRotationRequestedUntil = 0;
 	_probeOrder.clear();
 	_nextCheckIndex = 0;
 	clearPendingChecks();
@@ -190,12 +209,13 @@ void ProxyRotationManager::runChecks() {
 	}
 	const auto accounts = productionAccounts();
 	if (accounts.empty()
-		|| ranges::contains(
+		|| (!hasActiveHealthRotationRequest()
+			&& ranges::contains(
 			accounts,
 			MTP::ConnectedState,
 			[](not_null<Main::Account*> account) {
 				return account->mtp().dcstate();
-			})) {
+			}))) {
 		stopChecking();
 		return;
 	}
@@ -349,12 +369,13 @@ bool ProxyRotationManager::shouldSwitchToAvailable() const {
 	}
 	const auto accounts = productionAccounts();
 	return !accounts.empty()
-		&& !ranges::contains(
+		&& (hasActiveHealthRotationRequest()
+			|| !ranges::contains(
 			accounts,
 			MTP::ConnectedState,
 			[](not_null<Main::Account*> account) {
 				return account->mtp().dcstate();
-			});
+			}));
 }
 
 } // namespace Core

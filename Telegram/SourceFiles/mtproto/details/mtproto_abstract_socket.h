@@ -80,6 +80,13 @@ public:
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const {
 		return HandshakePhase::None;
 	}
+	[[nodiscard]] virtual ProxyMtproxyTerminalReason mtproxyTerminalReason()
+			const {
+		return ProxyMtproxyTerminalReason::None;
+	}
+	[[nodiscard]] virtual crl::time mtproxyTerminalUntil() const {
+		return 0;
+	}
 
 protected:
 	static const int kFilesSendBufferSize = 2 * 1024 * 1024;

@@ -9,12 +9,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/mtp_instance.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 namespace MTP {
 namespace details {
 namespace {
 
 constexpr auto kOneConnectionTimeout = 4000;
+
+[[nodiscard]] MtProxy::EndpointId MtproxyEndpointIdForProxy(
+		const ProxyData &proxy) {
+	auto stealth = ProxyStealthOptions();
+	stealth.transport = ProxyTransport::Tcp;
+	return MtProxy::EndpointIdFromProxy(proxy, stealth);
+}
 
 } // namespace
 
@@ -27,7 +35,12 @@ ResolvingConnection::ResolvingConnection(
 , _instance(instance)
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
-	if (proxy.resolvedExpireAt < crl::now()) {
+	const auto cachedNegative = proxy.tryCustomResolve()
+		&& (proxy.resolvedExpireAt >= crl::now())
+		&& proxy.resolvedIPs.empty();
+	if (cachedNegative) {
+		_child = nullptr;
+	} else if (proxy.resolvedExpireAt < crl::now()) {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Resolving,
 			.proxy = _proxy,
@@ -99,12 +112,24 @@ void ResolvingConnection::domainResolved(
 	}
 	_proxy.resolvedExpireAt = expireAt;
 	if (ips.empty()) {
+		if (_proxy.type == ProxyData::Type::Mtproto) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = MtproxyEndpointIdForProxy(_proxy),
+				.reason = MtProxy::FailureReason::DnsHostNotFound,
+			});
+		}
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
+			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
+				? ProxyMtproxyTerminalReason::DnsHostNotFound
+				: ProxyMtproxyTerminalReason::None,
+			.terminalUntil = expireAt,
 			.proxy = _proxy,
 			.message = u"proxy host not found"_q,
 		});
+		emitError(kErrorCodeOther);
+		return;
 	} else {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Resolving,
@@ -233,9 +258,19 @@ void ResolvingConnection::connectToServer(
 		int16 protocolDcId,
 		bool protocolForFiles) {
 	if (!_child) {
+		if (_proxy.type == ProxyData::Type::Mtproto) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = MtproxyEndpointIdForProxy(_proxy),
+				.reason = MtProxy::FailureReason::DnsHostNotFound,
+			});
+		}
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
+			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
+				? ProxyMtproxyTerminalReason::DnsHostNotFound
+				: ProxyMtproxyTerminalReason::None,
+			.terminalUntil = _proxy.resolvedExpireAt,
 			.proxy = _proxy,
 			.message = u"proxy host not found"_q,
 		});

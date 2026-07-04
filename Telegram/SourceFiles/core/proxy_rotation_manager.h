@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "mtproto/proxy/check.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include <rpl/lifetime.h>
 #include <vector>
@@ -45,6 +46,9 @@ private:
 	[[nodiscard]] Entry &ensure(const MTP::ProxyData &proxy);
 
 	void reevaluate();
+	void handleEndpointHealthChanged(
+		MTP::details::MtProxy::EndpointEvent event);
+	[[nodiscard]] bool hasActiveHealthRotationRequest() const;
 	void startChecking();
 	void stopChecking();
 	void pruneRemovedEntries();
@@ -72,6 +76,7 @@ private:
 	int _nextCheckIndex = 0;
 	bool _checking = false;
 	bool _waitingToSwitch = false;
+	crl::time _healthRotationRequestedUntil = 0;
 	crl::time _switchStartedAt = 0;
 	rpl::lifetime _lifetime;
 

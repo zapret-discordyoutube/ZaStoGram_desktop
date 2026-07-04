@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "mtproto/proxy/data.h"
+
 #include <crl/crl_time.h>
 
 namespace MTP {
@@ -35,6 +37,8 @@ private:
 };
 
 [[nodiscard]] HandshakeGateLease ReserveHandshakeGate();
+[[nodiscard]] HandshakeGateLease ReserveHandshakeGateForProxy(
+	const ProxyData &proxy);
 
 } // namespace details
 } // namespace MTP

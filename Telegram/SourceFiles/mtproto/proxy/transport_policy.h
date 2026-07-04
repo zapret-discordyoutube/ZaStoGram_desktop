@@ -11,6 +11,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
+enum class WssDcCoverage {
+	Unavailable,
+	Official,
+	Custom,
+};
+
 [[nodiscard]] bool ProxyWssAllowed(
 	const ProxyData &proxy,
 	ProxyData::Settings settings);
@@ -24,5 +30,16 @@ namespace MTP {
 	const ProxyData &proxy,
 	ProxyData::Settings settings,
 	ProxyStealthOptions saved);
+
+[[nodiscard]] WssDcCoverage WssDcCoverageForDc(
+	const ProxyStealthOptions &stealth,
+	int16 protocolDcId,
+	bool protocolForFiles);
+
+[[nodiscard]] bool WssNeedsProxyRecommendation(
+	const ProxyData &proxy,
+	const ProxyStealthOptions &stealth,
+	int16 protocolDcId,
+	bool protocolForFiles);
 
 } // namespace MTP

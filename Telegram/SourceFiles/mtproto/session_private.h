@@ -13,7 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
-#include "mtproto/proxy/handshake_gate.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/status.h"
 #include "base/timer.h"
 
 namespace MTP {
@@ -58,7 +59,9 @@ private:
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
-		HandshakeGateLease handshakeGate;
+		MtProxy::EndpointId mtproxyEndpoint;
+		MtProxy::EndpointUse mtproxyUse = MtProxy::EndpointUse::Main;
+		MtProxy::EndpointAttemptLease mtproxyLease;
 	};
 	struct SentContainer {
 		crl::time sent = 0;
@@ -99,6 +102,7 @@ private:
 
 	void confirmBestConnection();
 	void removeTestConnection(not_null<AbstractConnection*> connection);
+	void setConnectionNotice(ConnectionNotice notice);
 	[[nodiscard]] int16 getProtocolDcId() const;
 
 	void checkSentRequests();
@@ -142,11 +146,12 @@ private:
 	// _sessionDataMutex must be locked for read.
 	bool setState(int state, int ifState = kUpdateStateAlways);
 
-	void appendTestConnection(
+	[[nodiscard]] bool appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
 		int port,
-		const bytes::vector &protocolSecret);
+		const bytes::vector &protocolSecret,
+		bool protocolForFiles);
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
 	bool requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info);
@@ -195,7 +200,6 @@ private:
 
 	ConnectionPointer _connection;
 	std::vector<TestConnection> _testConnections;
-	base::flat_map<QString, crl::time> _endpointCooldownUntil;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer

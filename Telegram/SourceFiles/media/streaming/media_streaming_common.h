@@ -39,9 +39,16 @@ enum class Mode {
 	Inspection,
 };
 
+enum class SeekFramePolicy {
+	AtOrAfter,
+	AtOrBefore,
+	Nearest,
+};
+
 struct PlaybackOptions {
 	Mode mode = Mode::Both;
 	crl::time position = 0;
+	SeekFramePolicy seekFramePolicy = SeekFramePolicy::AtOrAfter;
 	crl::time durationOverride = 0;
 	float64 speed = 1.; // Valid values between 0.5 and 2.
 	AudioMsgId audioId;

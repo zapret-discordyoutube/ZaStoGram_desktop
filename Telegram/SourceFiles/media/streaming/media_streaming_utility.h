@@ -46,6 +46,9 @@ struct Stream {
 };
 
 [[nodiscard]] crl::time FramePosition(const Stream &stream);
+[[nodiscard]] crl::time FramePosition(
+	const Stream &stream,
+	not_null<AVFrame*> frame);
 [[nodiscard]] FFmpeg::AvErrorWrap ProcessPacket(
 	Stream &stream,
 	FFmpeg::Packet &&packet);

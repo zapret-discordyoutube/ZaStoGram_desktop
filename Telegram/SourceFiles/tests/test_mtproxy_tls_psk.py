@@ -5,9 +5,14 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
+CLIENT_HELLO_BUILDER_CPP = MTPROXY_DIR / "client_hello_builder.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 TCP_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_tcp_socket.h"
+PROXY_DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
+CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
+README = SOURCE_DIR.parents[1] / "README.md"
 
 
 def test_mtproxy_transport_policy_files_live_in_proxy_module():
@@ -27,11 +32,18 @@ def test_qtcp_socket_members_have_direct_header_include():
         assert "QTcpSocket _socket;" in header
 
 
+def test_server_hello_length_uses_non_narrow_storage():
+    header = TLS_SOCKET_H.read_text(encoding="utf-8")
+
+    assert "int _serverHelloLength = 0;" in header
+    assert "int16 _serverHelloLength" not in header
+
+
 def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
     rules_body = function_body(
         source,
-        "MTPTlsClientHello PrepareClientHelloRules(\n\t\tProxyTlsProfile profile)")
+        "MTPTlsClientHello PrepareClientHelloRulesInternal(\n\t\tProxyTlsProfile profile)")
     padding_body = function_body(
         source,
         "void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data)")
@@ -46,7 +58,8 @@ def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
         "case ProxyTlsProfile::FirefoxAndroid: {",
         "case ProxyTlsProfile::AndroidOkHttp: {",
         "case ProxyTlsProfile::Yandex: {",
-        "default: {",
+        "case ProxyTlsProfile::ChromeModern: {",
+        "case ProxyTlsProfile::AndroidChrome:",
     ):
         profile_body = block_after(rules_body, marker)
         assert "P();" in profile_body
@@ -58,6 +71,8 @@ def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
 def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     plain_connected = function_body(source, "void TlsSocket::plainConnected()")
+    send_client_hello = function_body(source, "void TlsSocket::sendClientHello()")
+    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
     hello_digest = function_body(source, "void TlsSocket::checkHelloDigest()")
 
     assert "struct SyntheticPskTicket" in source
@@ -69,13 +84,14 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     assert "PrepareSyntheticPskOffer(" in source
     assert "NoteSyntheticPskHandshakeSuccess(" in source
 
-    assert "const auto profile = effectiveTlsProfile();" in plain_connected
-    assert "_sentTlsProfile = profile;" in plain_connected
-    assert "PrepareSyntheticPskOffer(" in plain_connected
-    assert "_endpointKey" in plain_connected
-    assert "domainFromSecret()" in plain_connected
-    assert "profile" in plain_connected
-    assert "std::move(pskOffer)" in plain_connected
+    assert "sendClientHello();" in plain_connected
+    assert "_sentTlsProfile = profile;" in send_client_hello
+    assert "PrepareSyntheticPskOffer(" in send_client_hello
+    assert "_endpointKey" in send_client_hello
+    assert "domainFromSecret()" in send_client_hello
+    assert "profile" in send_client_hello
+    assert "std::move(pskOffer)" in send_client_hello
+    assert "_sentTlsProfile" in error_body
 
     assert hello_digest.index("_phase = HandshakePhase::ServerHelloOk;") < (
         hello_digest.index("NoteSyntheticPskHandshakeSuccess("))
@@ -85,12 +101,13 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
 
 
 def test_synthetic_psk_uses_cached_identity_and_plausible_age():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     helper = function_body(
         source,
         "void Generator::Part::writeSyntheticPskExtension()")
     offer_body = function_body(
-        source,
+        tls_socket,
         "std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(")
 
     assert "const auto binderLengths = std::array{ 32, 48 };" in helper
@@ -107,15 +124,26 @@ def test_synthetic_psk_uses_cached_identity_and_plausible_age():
     assert "binderPrefix[0] = bytes::type(binderLength);" in helper
     assert "random(binderLength);" in helper
 
-    assert "ticketAgeAdd" in source
-    assert "issuedAt" in source
-    assert "expiresAt" in source
+    assert "ticketAgeAdd" in tls_socket
+    assert "issuedAt" in tls_socket
+    assert "expiresAt" in tls_socket
     assert "obfuscatedTicketAge" in offer_body
     assert "crl::now()" in offer_body
 
 
-def test_synthetic_psk_does_not_take_over_mtproxy_digest_slot():
+def test_synthetic_psk_ticket_is_consumed_after_offer():
     source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    offer_body = function_body(
+        source,
+        "std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(")
+
+    assert "const auto ticket = entry.tickets[index];" in offer_body
+    assert "entry.tickets.erase(" in offer_body
+    assert "entry.nextIndex = (entry.nextIndex + 1) % count;" not in offer_body
+
+
+def test_synthetic_psk_does_not_take_over_mtproxy_digest_slot():
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
     helper = function_body(
         source,
         "void Generator::Part::writeSyntheticPskExtension()")
@@ -131,6 +159,117 @@ def test_synthetic_psk_does_not_take_over_mtproxy_digest_slot():
     assert "length == kHelloDigestLength && _digestPosition < 0" in zero_body
     assert finalize_body.index("writeDigest(key);") < finalize_body.index(
         "injectTimestamp();")
+
+
+def test_client_hello_fragmentation_targets_sni_hostname():
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    builder_header = (
+        MTPROXY_DIR / "client_hello_builder.h").read_text(encoding="utf-8")
+    tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    header = TLS_SOCKET_H.read_text(encoding="utf-8")
+    split_body = function_body(source, "int ClientHelloFragmentSplit(")
+    plan_body = function_body(
+        source,
+        "ClientHelloFragmentationPlan PrepareClientHelloFragmentation(")
+    write_body = function_body(
+        tls_socket,
+        "void TlsSocket::writeClientHello(const QByteArray &data)")
+    disconnected_body = function_body(
+        tls_socket,
+        "void TlsSocket::plainDisconnected()")
+
+    assert "ClientHelloSniHostRange(" in source
+    assert "kClientHelloFragmentDelayMin" in source
+    assert "kClientHelloFragmentDelayMax" in source
+    assert "const auto range = ClientHelloSniHostRange(data);" in split_body
+    assert "range.offset + 1 + base::RandomIndex(range.length - 1)" in split_body
+    assert "base::RandomIndex(delayRange)" in plan_body
+    assert "secondDelay" in builder_header
+    assert "QByteArray _clientHelloTail;" in header
+    assert "base::Timer _clientHelloFragmentTimer;" in header
+    assert "PrepareClientHelloFragmentation(" in write_body
+    assert "plan.firstSize" in write_body
+    assert "_clientHelloFragmentTimer.callOnce(plan.secondDelay);" in write_body
+    assert "writeClientHelloTail();" in write_body
+    assert "_clientHelloTail = QByteArray();" in disconnected_body
+    assert "_clientHelloFragmentTimer.cancel();" in disconnected_body
+    assert "base::RandomIndex(range)" not in tls_socket
+
+
+def test_mtproxy_profile_wording_does_not_claim_ja4_validation():
+    box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+
+    assert 'u"TLS ClientHello profile"_q' in box
+    assert "TLS fingerprint (JA4)" not in box
+    assert "JA4" not in readme
+    assert "ClientHello" in readme
+
+
+def test_manual_tls_profiles_have_independent_transport_cases():
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
+    rules_body = function_body(
+        source,
+        "MTPTlsClientHello PrepareClientHelloRulesInternal(\n\t\tProxyTlsProfile profile)")
+
+    for profile, label in (
+        ("Auto", "Auto (Chrome)"),
+        ("AutoRotate", "Auto-rotate"),
+        ("ChromeModern", "Chrome Modern"),
+        ("AndroidChrome", "Android Chrome"),
+        ("Firefox", "Firefox"),
+        ("FirefoxAndroid", "Firefox Android"),
+        ("Yandex", "Yandex"),
+        ("AndroidOkHttp", "Android OkHttp"),
+    ):
+        assert f"case ProxyTlsProfile::{profile}: {{" in rules_body
+        assert f'addTls(Profile::{profile}, u"{label}"_q);' in box
+
+    assert "case ProxyTlsProfile::Auto:\n\tcase ProxyTlsProfile::AndroidChrome:" not in rules_body
+    assert "case ProxyTlsProfile::AndroidChrome:\n\tcase ProxyTlsProfile::AutoRotate:" not in rules_body
+
+
+def test_stealth_record_timing_and_startup_cover_default_off():
+    data = PROXY_DATA_H.read_text(encoding="utf-8")
+    settings = CORE_SETTINGS_CPP.read_text(encoding="utf-8")
+
+    assert "ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;" in data
+    assert "ProxyTiming timing = ProxyTiming::Off;" in data
+    assert "ProxyStartupCover startupCover = ProxyStartupCover::Off;" in data
+    assert 'read(\n\t\t"mtproxy/startupCover",\n\t\tint(result.startupCover),' in settings
+
+
+def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
+    header = TLS_SOCKET_H.read_text(encoding="utf-8")
+    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    adaptive_header = ADAPTIVE_POLICY_H.read_text(encoding="utf-8")
+    adaptive_source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
+    recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
+    connected_body = function_body(source, "void TlsSocket::plainConnected()")
+    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
+    parts12_body = function_body(source, "void TlsSocket::checkHelloParts12(int parts1Size)")
+    digest_body = function_body(source, "void TlsSocket::checkHelloDigest()")
+
+    assert "ProxyTlsProfile effectiveTlsProfile" in adaptive_header
+    assert "CompatibilityTlsProfile(\n\t\t\tinput.effectiveTlsProfile," in adaptive_source
+    assert "ProxyTlsProfile _preparedTlsProfile" in header
+    assert "bool _usePreparedTlsProfile" in header
+    assert "EndpointHealth::Instance().snapshot(" in recipe_body
+    assert "input.recipeLevel = snapshot.recipeLevel;" in recipe_body
+    assert "input.lastDiagnostic = snapshot.lastDiagnostic;" in recipe_body
+    assert "input.effectiveTlsProfile = effectiveTlsProfile();" in recipe_body
+    assert "_preparedTlsProfile = recipe.stealth.tlsProfile;" in recipe_body
+    assert "_connectionPattern = recipe.stealth.connectionPattern;" in recipe_body
+    assert "const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);" in connected_body
+    assert "_clientHelloTimer.callOnce(delay);" in connected_body
+    assert "_sentTlsProfile" in error_body
+    assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
+    assert (
+        "MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello"
+        in parts12_body
+    )
+    assert "MtProxy::FailureReason::ServerHelloHmacMismatch" in digest_body
 
 
 def function_body(text: str, signature: str) -> str:
@@ -161,7 +300,14 @@ def body_from_brace(text: str, brace: int) -> str:
 if __name__ == "__main__":
     test_mtproxy_transport_policy_files_live_in_proxy_module()
     test_qtcp_socket_members_have_direct_header_include()
+    test_server_hello_length_uses_non_narrow_storage()
     test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
     test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
     test_synthetic_psk_uses_cached_identity_and_plausible_age()
+    test_synthetic_psk_ticket_is_consumed_after_offer()
     test_synthetic_psk_does_not_take_over_mtproxy_digest_slot()
+    test_client_hello_fragmentation_targets_sni_hostname()
+    test_mtproxy_profile_wording_does_not_claim_ja4_validation()
+    test_manual_tls_profiles_have_independent_transport_cases()
+    test_stealth_record_timing_and_startup_cover_default_off()
+    test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics()

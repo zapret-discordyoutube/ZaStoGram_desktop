@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/mtproxy/policy.h"
+#include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_dc_options.h"
@@ -41,7 +41,6 @@ constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
-constexpr auto kEndpointCooldownPenalty = 8;
 constexpr auto kWaitForProxyTimeout = 2000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kPingDelayDisconnect = 60;
@@ -197,29 +196,48 @@ SessionPrivate::~SessionPrivate() {
 	Expects(_testConnections.empty());
 }
 
-void SessionPrivate::appendTestConnection(
+bool SessionPrivate::appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
 		int port,
-		const bytes::vector &protocolSecret) {
+		const bytes::vector &protocolSecret,
+		bool protocolForFiles) {
 	QWriteLocker lock(&_stateMutex);
 
 	const auto endpoint = ip.isEmpty()
 		? (_options->proxy.host + ':' + QString::number(_options->proxy.port))
 		: (ip + ':' + QString::number(port));
-	const auto cooled = [&] {
-		const auto i = _endpointCooldownUntil.find(endpoint);
-		return (i != end(_endpointCooldownUntil)) && (i->second > crl::now());
-	}();
 	const auto priority = (qthelp::is_ipv6(ip) ? (OptionPreferIPv6.value() ? 2 : 0) : 1)
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
-		+ (protocolSecret.empty() ? 0 : 1)
-		- (cooled ? kEndpointCooldownPenalty : 0);
+		+ (protocolSecret.empty() ? 0 : 1);
 	const auto proxied = (_options->proxy.type != ProxyData::Type::None);
-	auto handshakeGate = proxied
-		? ReserveHandshakeGate()
-		: HandshakeGateLease();
-	const auto gateDelay = handshakeGate.delay();
+	auto admission = MtProxy::Admission();
+	const auto mtproxy = (_options->proxy.type == ProxyData::Type::Mtproto);
+	const auto mtproxyUse = protocolForFiles
+		? MtProxy::EndpointUse::Media
+		: MtProxy::EndpointUse::Main;
+	const auto mtproxyEndpoint = mtproxy
+		? MtProxy::EndpointIdFromProxy(
+			_options->proxy,
+			_options->stealth,
+			ip,
+			port)
+		: MtProxy::EndpointId();
+	if (mtproxy) {
+		admission = MtProxy::EndpointHealth::Instance().admit({
+			.endpoint = mtproxyEndpoint,
+			.use = mtproxyUse,
+			.stealth = _options->stealth,
+			.configuredTlsProfile = _options->stealth.tlsProfile,
+		});
+		if (admission.action != MtProxy::AdmissionAction::StartNow) {
+			lock.unlock();
+			if (admission.retryAfter > 0) {
+				setState(-int(admission.retryAfter));
+			}
+			return false;
+		}
+	}
 	_testConnections.push_back({
 		AbstractConnection::Create(
 			_instance,
@@ -230,7 +248,9 @@ void SessionPrivate::appendTestConnection(
 			_options->stealth),
 		priority,
 		endpoint,
-		std::move(handshakeGate)
+		mtproxyEndpoint,
+		mtproxyUse,
+		std::move(admission.lease)
 	});
 	const auto weak = _testConnections.back().data.get();
 	connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -257,9 +277,6 @@ void SessionPrivate::appendTestConnection(
 		});
 	});
 
-	const auto protocolForFiles = isMediaClusterDcId(_shiftedDcId)
-		//|| isUploadDcId(_shiftedDcId)
-		|| (_realDcType == DcType::Cdn);
 	const auto protocolDcId = getProtocolDcId();
 	const auto start = [=] {
 		weak->connectToServer(
@@ -270,15 +287,22 @@ void SessionPrivate::appendTestConnection(
 			protocolForFiles);
 	};
 	const auto spacing = proxied
-		? MtproxyConnectionSpacing(_options->stealth.connectionPattern)
+		? MtProxy::ConnectionSpacing(_options->stealth.connectionPattern)
 		: crl::time(0);
-	const auto startDelay = spacing * (int(_testConnections.size()) - 1)
-		+ gateDelay;
+	const auto startDelay = spacing * (int(_testConnections.size()) - 1);
 	if (startDelay > 0) {
 		QTimer::singleShot(int(startDelay), weak, start);
 	} else {
 		InvokeQueued(_testConnections.back().data, start);
 	}
+	return true;
+}
+
+void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
+	const auto shiftedDcId = _shiftedDcId;
+	InvokeQueued(_instance, [=, instance = _instance] {
+		instance->setConnectionNotice(shiftedDcId, notice);
+	});
 }
 
 int16 SessionPrivate::getProtocolDcId() const {
@@ -1057,6 +1081,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	}
 
 	_options = std::make_unique<SessionOptions>(_sessionData->options());
+	setConnectionNotice(MTP::ConnectionNotice::None);
 
 	if (_options->proxy.type == ProxyData::Type::None
 		&& _options->stealth.transport != ProxyTransport::Wss) {
@@ -1075,9 +1100,26 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			return;
 		}
 	}
+	const auto protocolForFiles = isMediaClusterDcId(_shiftedDcId)
+		|| (_realDcType == DcType::Cdn);
+	const auto protocolDcId = getProtocolDcId();
+	setConnectionNotice(WssNeedsProxyRecommendation(
+		_options->proxy,
+		_options->stealth,
+		protocolDcId,
+		protocolForFiles)
+		? MTP::ConnectionNotice::WssDirectFallback
+		: MTP::ConnectionNotice::None);
 	if (_options->proxy.type == ProxyData::Type::Mtproto) {
 		// host, port, secret for mtproto proxy are taken from proxy.
-		appendTestConnection(DcOptions::Variants::Tcp, {}, 0, {});
+		if (!appendTestConnection(
+				DcOptions::Variants::Tcp,
+				{},
+				0,
+				{},
+				protocolForFiles)) {
+			return;
+		}
 	} else {
 		using Variants = DcOptions::Variants;
 		const auto special = (_currentDcType == DcType::Temporary);
@@ -1108,11 +1150,12 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 					continue;
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
-					appendTestConnection(
+					(void)appendTestConnection(
 						static_cast<Variants::Protocol>(protocol),
 						QString::fromStdString(endpoint.ip),
 						endpoint.port,
-						endpoint.secret);
+						endpoint.secret,
+						protocolForFiles);
 				}
 			}
 		}
@@ -1320,6 +1363,13 @@ void SessionPrivate::waitBetterFailed() {
 
 void SessionPrivate::connectingTimedOut() {
 	for (const auto &connection : _testConnections) {
+		if (!connection.mtproxyEndpoint.host.isEmpty()) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = connection.mtproxyEndpoint,
+				.use = connection.mtproxyUse,
+				.reason = MtProxy::FailureReason::Timeout,
+			});
+		}
 		connection.data->timedOut();
 	}
 	doDisconnect();
@@ -2390,8 +2440,7 @@ void SessionPrivate::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_testConnections));
-	i->handshakeGate.release();
-	_endpointCooldownUntil.remove(i->endpoint);
+	i->mtproxyLease.release();
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_testConnections,
@@ -2432,7 +2481,7 @@ void SessionPrivate::confirmBestConnection() {
 		[](const TestConnection &test) {
 			return test.data->isConnected()
 				? test.priority
-				: (-1 - kEndpointCooldownPenalty);
+				: -1;
 		});
 	Assert(i != end(_testConnections));
 	if (!i->data->isConnected()) {
@@ -2455,7 +2504,7 @@ void SessionPrivate::removeTestConnection(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	if (i != end(_testConnections)) {
-		i->handshakeGate.release();
+		i->mtproxyLease.release();
 		_testConnections.erase(i);
 	}
 }
@@ -2686,9 +2735,15 @@ void SessionPrivate::onError(
 		_testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	if (found != end(_testConnections) && !found->endpoint.isEmpty()) {
-		_endpointCooldownUntil[found->endpoint] = crl::now()
-			+ MtproxyEndpointCooldown(found->endpoint);
+	if (found != end(_testConnections)) {
+		if (!found->mtproxyEndpoint.host.isEmpty()) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = found->mtproxyEndpoint,
+				.use = found->mtproxyUse,
+				.reason = MtProxy::FailureReasonFromErrorCode(errorCode),
+				.lease = &found->mtproxyLease,
+			});
+		}
 	}
 	removeTestConnection(connection);
 

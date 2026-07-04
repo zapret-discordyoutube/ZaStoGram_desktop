@@ -34,6 +34,7 @@ def test_gate_lease_api_and_constants():
     assert "void release();" in header
     assert "~HandshakeGateLease();" in header
     assert "[[nodiscard]] HandshakeGateLease ReserveHandshakeGate();" in header
+    assert "[[nodiscard]] HandshakeGateLease ReserveHandshakeGateForProxy(" in header
     assert "std::atomic<int>" in source
     assert "kHandshakeGateCap = 3" in source
     assert "kHandshakeGateStep = crl::time(200)" in source
@@ -45,20 +46,15 @@ def test_gate_lease_api_and_constants():
     assert "_active = false" in source
 
 
-def test_session_private_uses_gate_for_proxied_test_connections():
+def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
     source = SESSION_CPP.read_text(encoding="utf-8")
 
-    assert '#include "mtproto/proxy/handshake_gate.h"' in header
-    assert "HandshakeGateLease handshakeGate;" in header
-    assert "const auto proxied = (_options->proxy.type != ProxyData::Type::None);" in source
-    assert "auto handshakeGate = proxied" in source
-    assert "? ReserveHandshakeGate()" in source
-    assert "const auto gateDelay = handshakeGate.delay();" in source
-    assert "std::move(handshakeGate)" in source
-    assert "const auto startDelay = spacing *" in source
-    assert "+ gateDelay;" in source
-    assert "i->handshakeGate.release();" in source
+    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in header
+    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
+    assert "ReserveHandshakeGateForProxy(_options->proxy)" not in source
+    assert "EndpointHealth::Instance().admit(" in source
+    assert "std::move(admission.lease)" in source
 
 
 def test_remove_connection_releases_before_erasing():
@@ -67,8 +63,8 @@ def test_remove_connection_releases_before_erasing():
         source,
         "void SessionPrivate::removeTestConnection")
 
-    assert "i->handshakeGate.release();" in body
-    assert body.index("i->handshakeGate.release();") < body.index(
+    assert "i->mtproxyLease.release();" in body
+    assert body.index("i->mtproxyLease.release();") < body.index(
         "_testConnections.erase(")
 
 
@@ -84,7 +80,7 @@ def test_proxy_check_connection_holds_gate_lease():
     assert "details::HandshakeGateLease handshakeGate;" in header
     assert "details::AbstractConnection *get() const;" in header
     assert "void reset();" in header
-    assert "void releaseGate();" in header
+    assert "void releaseGate();" not in header
     assert "~ProxyCheckConnection();" in header
 
 
@@ -106,9 +102,7 @@ def test_proxy_check_starts_are_soft_gated():
     start_body = body_after(proxy_check, "void StartProxyCheck")
 
     assert '#include <QtCore/QTimer>' in proxy_check
-    assert "const auto proxied = (proxy.type != ProxyData::Type::None);" in start_body
-    assert "auto handshakeGate = proxied" in start_body
-    assert "? details::ReserveHandshakeGate()" in start_body
+    assert "details::ReserveHandshakeGateForProxy(proxy)" in start_body
     assert "const auto state = checker.state();" in start_body
     assert "const auto gateDelay = state->handshakeGate.delay();" in start_body
     assert "QTimer::singleShot(int(gateDelay), raw, start);" in start_body
@@ -118,15 +112,29 @@ def test_proxy_check_starts_are_soft_gated():
 
 def test_proxy_check_release_paths_are_complete():
     proxy_check = PROXY_CHECK_CPP.read_text(encoding="utf-8")
+    reset_method = body_after(proxy_check, "void ProxyCheckConnection::reset")
     reset_body = body_after(proxy_check, "void ResetProxyCheckers")
     drop_body = body_after(proxy_check, "void DropProxyChecker")
     start_body = body_after(proxy_check, "void StartProxyCheck")
 
-    assert "v4.releaseGate();" in reset_body
-    assert "v6.releaseGate();" in reset_body
-    assert "v4.releaseGate();" in drop_body
-    assert "v6.releaseGate();" in drop_body
+    assert "_data->handshakeGate.release();" in reset_method
+    assert "releaseGate();" not in reset_body
+    assert "releaseGate();" not in drop_body
     assert start_body.count("state->handshakeGate.release();") >= 2
+
+
+def test_proxy_check_uses_connection_timeout_contract():
+    proxy_check = PROXY_CHECK_CPP.read_text(encoding="utf-8")
+    start_body = body_after(proxy_check, "void StartProxyCheck")
+
+    assert "kProxyCheckTimeout" not in proxy_check
+    assert "raw->fullConnectTimeout()" in start_body
+    assert "const auto timeout = state->handshakeGate.delay()" in start_body
+    assert "+ raw->fullConnectTimeout();" in start_body
+    assert "QTimer::singleShot(int(timeout), raw," in start_body
+    assert "ProxyConnectionError::Timeout" in start_body
+    assert "raw->timedOut();" in start_body
+    assert "fail(raw);" in start_body
 
 
 def test_proxy_check_call_sites_use_wrapper_type():
@@ -154,10 +162,11 @@ def body_after(text: str, signature: str) -> str:
 if __name__ == "__main__":
     test_gate_module_is_registered()
     test_gate_lease_api_and_constants()
-    test_session_private_uses_gate_for_proxied_test_connections()
+    test_session_private_uses_endpoint_health_for_live_mtproxy_attempts()
     test_remove_connection_releases_before_erasing()
     test_proxy_check_connection_holds_gate_lease()
     test_proxy_check_connection_raii_releases_gate()
     test_proxy_check_starts_are_soft_gated()
     test_proxy_check_release_paths_are_complete()
+    test_proxy_check_uses_connection_timeout_contract()
     test_proxy_check_call_sites_use_wrapper_type()

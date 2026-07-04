@@ -30,8 +30,7 @@ struct WssRoute {
 	bool protocolForFiles);
 
 // Expert-only user-configured relay (ProxyStealthOptions.wssCustom*), used
-// for any DC when set. Inherits the same VerifyNone camouflage as the
-// official route, so it is a MITM footgun unless the relay is trusted.
+// for any DC when set and verified against the configured relay domain.
 [[nodiscard]] std::optional<WssRoute> WssCustomRoute(
 	const ProxyStealthOptions &stealth);
 
@@ -62,6 +61,7 @@ public:
 
 private:
 	void handleError(int errorCode);
+	void connectToRelayHost();
 	void onEncrypted();
 	void onReadyRead();
 	void sendHttpUpgrade();

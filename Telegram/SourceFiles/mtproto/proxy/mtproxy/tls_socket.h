@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/data.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "base/timer.h"
 
 #include <QtNetwork/QTcpSocket>
@@ -35,6 +36,8 @@ public:
 	int32 debugState() override;
 	QString debugPostfix() const override;
 	HandshakePhase handshakePhase() const override;
+	ProxyMtproxyTerminalReason mtproxyTerminalReason() const override;
+	crl::time mtproxyTerminalUntil() const override;
 
 private:
 	enum class State {
@@ -62,6 +65,9 @@ private:
 	void plainDisconnected();
 	void plainReadyRead();
 	void handleError(int errorCode = AbstractConnection::kErrorCodeOther);
+	void handleError(
+		MtProxy::FailureReason reason,
+		int errorCode = AbstractConnection::kErrorCodeOther);
 	[[nodiscard]] bool requiredHelloPartReady() const;
 	void readHello();
 	void checkHelloParts12(int parts1Size);
@@ -74,35 +80,45 @@ private:
 	[[nodiscard]] bool startupCoverActive();
 	[[nodiscard]] int nextRecordPayloadSize();
 	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
-	[[nodiscard]] QString failureDiagnostic() const;
+	[[nodiscard]] MtProxy::FailureReason failureReason() const;
 	void applyAdaptiveRecipe();
 	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
+	void writeClientHelloTail();
+	void sendClientHello();
 	void sendOutgoing();
 
 	const bytes::vector _secret;
 	QString _endpointKey;
+	MtProxy::EndpointId _endpointId;
 	ProxyStealthOptions _stealth;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;
 	QByteArray _incoming;
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;
-	int16 _serverHelloLength = 0;
+	int _serverHelloLength = 0;
 	RecordSizing _recordSizing = RecordSizing::Off;
-	StartupCover _startupCover = StartupCover::Soft;
+	StartupCover _startupCover = StartupCover::Off;
 	crl::time _startupCoverStartedAt = 0;
 	int _startupCoverFrames = 0;
 	bool _firstAppDataSent = false;
 	ProxyClientHelloFragmentation _clientHelloFragmentation
 		= ProxyClientHelloFragmentation::Off;
+	ProxyConnectionPattern _connectionPattern = ProxyConnectionPattern::Off;
 	ProxyTlsProfile _tlsProfile = ProxyTlsProfile::Auto;
+	ProxyTlsProfile _preparedTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile _sentTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTiming _timing = ProxyTiming::Off;
 	QByteArray _outgoing;
 	int _outgoingOffset = 0;
 	bool _clientPrefixSent = false;
+	bool _usePreparedTlsProfile = false;
+	QByteArray _clientHelloTail;
 	base::Timer _pacingTimer;
+	base::Timer _clientHelloTimer;
+	base::Timer _clientHelloFragmentTimer;
+	MtProxy::FailureReason _failureReason = MtProxy::FailureReason::None;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };
