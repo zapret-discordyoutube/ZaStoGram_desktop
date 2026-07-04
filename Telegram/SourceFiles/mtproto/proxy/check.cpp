@@ -139,8 +139,8 @@ void StartProxyCheck(
 			state->handshakeGate.release();
 			ReportProxyEvent(mtproto, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
-				.severity = ProxyDiagnosticsSeverity::Error,
 				.error = error,
+				.severity = ProxyDiagnosticsSeverity::Error,
 				.proxy = proxy,
 				.dc = QString::number(dcId),
 				.connectionId = raw->debugId(),

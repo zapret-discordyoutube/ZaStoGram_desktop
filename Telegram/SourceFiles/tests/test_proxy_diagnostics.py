@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -23,6 +24,18 @@ SETTINGS_MAIN_CPP = SOURCE_DIR / "settings" / "sections" / "settings_main.cpp"
 def read(path):
     assert path.exists(), f"missing expected source file: {path}"
     return path.read_text(encoding="utf-8")
+
+
+def proxy_event_report_fields():
+    header = read(DIAGNOSTICS_H)
+    body = header.split("struct ProxyEventReport {", 1)[1].split("};", 1)[0]
+    fields = []
+    for statement in body.split(";"):
+        declaration = statement.split("=", 1)[0].strip()
+        if not declaration:
+            continue
+        fields.append(declaration.rsplit(None, 1)[1])
+    return fields
 
 
 def test_diagnostics_model_is_registered_and_bounded():
@@ -125,6 +138,29 @@ def test_proxy_reporting_is_centralized():
 
     assert "selected proxy status changed" not in instance
     assert "AddProxyDiagnosticsEvent" not in instance
+
+
+def test_proxy_event_report_designators_follow_declaration_order():
+    order = {
+        name: index
+        for index, name in enumerate(proxy_event_report_fields())
+    }
+
+    for path in (SOURCE_DIR / "mtproto").rglob("*.cpp"):
+        text = read(path)
+        for match in re.finditer(
+                r"ReportProxyEvent\([^;]*?\{(?P<body>.*?)\}\);",
+                text,
+                re.DOTALL):
+            designators = [
+                name
+                for name in re.findall(r"\.(\w+)\s*=", match.group("body"))
+                if name in order
+            ]
+            indexes = [order[name] for name in designators]
+            assert indexes == sorted(indexes), (
+                f"{path.relative_to(ROOT)} has out-of-order "
+                f"ProxyEventReport designators: {designators}")
 
 
 def test_proxy_logs_have_separate_settings_entry():

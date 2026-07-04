@@ -84,13 +84,20 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "TELEGRAM_BUILD_CACHE_VERSION: \"v1\"" in workflow
     assert "TELEGRAM_BUILD_CACHE_SCOPE=" in workflow
     assert "TELEGRAM_BUILD_CACHE_KEY=" in workflow
+    assert "TELEGRAM_BUILD_CACHE_RESTORE_KEY=" in workflow
+    assert "TELEGRAM_BUILD_CACHE_PROGRESS_KEY=" in workflow
     assert "uses: actions/cache/restore@v5" in workflow
     assert "uses: actions/cache/save@v5" in workflow
     assert "id: cache-telegram-build" in workflow
     assert "${{ env.TBUILD }}\\${{ env.REPO_NAME }}\\out" in workflow
     assert "!${{ env.TBUILD }}\\${{ env.REPO_NAME }}\\out\\Release\\Telegram.exe" in workflow
     assert "steps.cache-telegram-build.outputs.cache-hit != 'true'" in workflow
-    assert "key: ${{ steps.cache-telegram-build.outputs.cache-primary-key }}" in workflow
+    assert "steps.build-telegram.outcome == 'failure'" in workflow
+    assert "key: ${{ env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}" in workflow
+    assert "${{ env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}-progress-" in workflow
+    assert "${{ env.TELEGRAM_BUILD_CACHE_SCOPE }}-" in workflow
+    assert "env.TELEGRAM_BUILD_CACHE_PROGRESS_KEY" in workflow
+    assert "steps.cache-telegram-build.outputs.cache-primary-key" in workflow
     assert "steps.build-telegram.outcome != 'skipped'" in workflow
     assert "always()" in workflow[save_build_tree:move_artifact]
     assert "steps.cache-telegram-build.outputs.cache-matched-key != ''" in workflow
