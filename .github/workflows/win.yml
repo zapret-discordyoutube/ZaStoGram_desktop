@@ -127,10 +127,12 @@ jobs:
           } > TELEGRAM_BUILD_CACHE_KEY.txt
           TELEGRAM_BUILD_CACHE_KEY="$(sha256sum TELEGRAM_BUILD_CACHE_KEY.txt | awk '{ print $1 }')"
           TELEGRAM_BUILD_CACHE_RESTORE_KEY="$TELEGRAM_BUILD_CACHE_SCOPE-$TELEGRAM_BUILD_CACHE_KEY"
+          TELEGRAM_BUILD_CACHE_LOOKUP_KEY="${TELEGRAM_BUILD_CACHE_RESTORE_KEY}-lookup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           TELEGRAM_BUILD_CACHE_PROGRESS_KEY="${TELEGRAM_BUILD_CACHE_RESTORE_KEY}-progress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "TELEGRAM_BUILD_CACHE_SCOPE=$TELEGRAM_BUILD_CACHE_SCOPE" >> $GITHUB_ENV
           echo "TELEGRAM_BUILD_CACHE_KEY=$TELEGRAM_BUILD_CACHE_KEY" >> $GITHUB_ENV
           echo "TELEGRAM_BUILD_CACHE_RESTORE_KEY=$TELEGRAM_BUILD_CACHE_RESTORE_KEY" >> $GITHUB_ENV
+          echo "TELEGRAM_BUILD_CACHE_LOOKUP_KEY=$TELEGRAM_BUILD_CACHE_LOOKUP_KEY" >> $GITHUB_ENV
           echo "TELEGRAM_BUILD_CACHE_PROGRESS_KEY=$TELEGRAM_BUILD_CACHE_PROGRESS_KEY" >> $GITHUB_ENV
 
           echo "Configurate git for cherry-picks."
@@ -352,9 +354,10 @@ jobs:
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.pdb
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.lib
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.exp
-          key: ${{ env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}
+          key: ${{ env.TELEGRAM_BUILD_CACHE_LOOKUP_KEY }}
           restore-keys: |
             ${{ env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}-progress-
+            ${{ env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}
             ${{ env.TELEGRAM_BUILD_CACHE_SCOPE }}-
 
       - name: Normalize Telegram source mtimes.
@@ -558,7 +561,7 @@ jobs:
           && steps.build-telegram.outcome != 'skipped'
           && (
             steps.build-telegram.outcome == 'failure'
-            || steps.cache-telegram-build.outputs.cache-hit != 'true'
+            || steps.cache-telegram-build.outputs.cache-matched-key != env.TELEGRAM_BUILD_CACHE_RESTORE_KEY
           )
         continue-on-error: true
         uses: actions/cache/save@v5
@@ -569,7 +572,7 @@ jobs:
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Release\Telegram.pdb
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.lib
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.exp
-          key: ${{ steps.build-telegram.outcome == 'failure' && env.TELEGRAM_BUILD_CACHE_PROGRESS_KEY || steps.cache-telegram-build.outputs.cache-primary-key }}
+          key: ${{ steps.build-telegram.outcome == 'failure' && env.TELEGRAM_BUILD_CACHE_PROGRESS_KEY || env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}
 
       - name: sccache stats.
         if: always() && env.ONLY_CACHE == 'false'

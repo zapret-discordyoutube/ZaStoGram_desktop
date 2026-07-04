@@ -89,6 +89,10 @@ def test_client_hello_facts_module_parses_and_computes_ja4():
     assert "extension != 0x0010" in source
     assert "signatureAlgorithms" in source
     assert "supportedVersions" in source
+    assert "begin(values)" not in source
+    assert "end(values)" not in source
+    assert "begin(cleanVersions)" not in source
+    assert "end(cleanVersions)" not in source
 
 
 def test_chrome_modern_builder_template_matches_capture_ja4_facts():

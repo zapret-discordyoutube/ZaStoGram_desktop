@@ -73,7 +73,7 @@ namespace {
 
 [[nodiscard]] QString JoinHex(QVector<int> values, bool sort) {
 	if (sort) {
-		std::sort(begin(values), end(values));
+		std::sort(values.begin(), values.end());
 	}
 	auto result = QString();
 	for (const auto value : values) {
@@ -256,7 +256,7 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 	const auto cleanVersions = WithoutGrease(result.supportedVersions);
 	result.tlsVersion = cleanVersions.isEmpty()
 		? result.legacyVersion
-		: *std::max_element(begin(cleanVersions), end(cleanVersions));
+		: *std::max_element(cleanVersions.begin(), cleanVersions.end());
 	return result;
 }
 
