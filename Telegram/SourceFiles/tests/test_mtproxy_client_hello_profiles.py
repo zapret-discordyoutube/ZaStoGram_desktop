@@ -74,6 +74,16 @@ def test_client_hello_builder_owns_templates_and_fragmentation_plan():
     assert "PrepareClientHelloFragmentation(" in tls_socket
 
 
+def test_prepare_client_hello_has_external_linkage():
+    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    prepare = source.index("ClientHello PrepareClientHello(")
+    previous_open = source.rfind("namespace {", 0, prepare)
+    previous_close = source.rfind("} // namespace", 0, prepare)
+
+    assert previous_open >= 0
+    assert previous_close > previous_open
+
+
 def test_client_hello_facts_module_parses_and_computes_ja4():
     header = CLIENT_HELLO_FACTS_H.read_text(encoding="utf-8")
     source = CLIENT_HELLO_FACTS_CPP.read_text(encoding="utf-8")

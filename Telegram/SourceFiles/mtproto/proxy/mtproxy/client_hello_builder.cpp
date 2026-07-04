@@ -1086,22 +1086,6 @@ ClientHello Generator::take() {
 	return { _result.take(), std::move(digest) };
 }
 
-[[nodiscard]] ClientHello PrepareClientHello(
-		const MTPTlsClientHello &rules,
-		bytes::const_span domain,
-		bytes::const_span key,
-		ProxyTlsProfile profile,
-		std::optional<SyntheticPskOffer> pskOffer,
-		ClientHelloGenerationOptions options) {
-	return Generator(
-		rules,
-		domain,
-		key,
-		ShouldPadBeforeSyntheticPsk(profile),
-		std::move(pskOffer),
-		options).take();
-}
-
 [[nodiscard]] int ClientHelloRead16(const QByteArray &data, int offset) {
 	if (offset < 0 || offset + 2 > data.size()) {
 		return -1;
@@ -1222,6 +1206,22 @@ ClientHello Generator::take() {
 }
 
 } // namespace
+
+ClientHello PrepareClientHello(
+		const MTPTlsClientHello &rules,
+		bytes::const_span domain,
+		bytes::const_span key,
+		ProxyTlsProfile profile,
+		std::optional<SyntheticPskOffer> pskOffer,
+		ClientHelloGenerationOptions options) {
+	return Generator(
+		rules,
+		domain,
+		key,
+		ShouldPadBeforeSyntheticPsk(profile),
+		std::move(pskOffer),
+		options).take();
+}
 
 ClientHelloFragmentationPlan PrepareClientHelloFragmentation(
 		const QByteArray &data,
