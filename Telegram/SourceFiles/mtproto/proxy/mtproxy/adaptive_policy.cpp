@@ -80,8 +80,7 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 }
 
 [[nodiscard]] bool IsLightConnectionPattern(ProxyConnectionPattern pattern) {
-	return (pattern == ProxyConnectionPattern::Off)
-		|| (pattern == ProxyConnectionPattern::Soft)
+	return (pattern == ProxyConnectionPattern::Soft)
 		|| (pattern == ProxyConnectionPattern::Browser);
 }
 

@@ -91,6 +91,7 @@ private:
 	const bytes::vector _secret;
 	QString _endpointKey;
 	MtProxy::EndpointId _endpointId;
+	MtProxy::EndpointUse _endpointUse = MtProxy::EndpointUse::Main;
 	ProxyStealthOptions _stealth;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;

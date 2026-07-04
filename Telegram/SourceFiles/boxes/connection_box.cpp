@@ -1621,7 +1621,7 @@ void ProxiesBox::setupContent() {
 			[](bool on) {
 				auto o = Core::App().settings().proxyStealthOptions();
 				o.connectionPattern = on
-					? MTP::ProxyConnectionPattern::Soft
+					? MTP::ProxyConnectionPattern::Browser
 					: MTP::ProxyConnectionPattern::Off;
 				Core::App().settings().setProxyStealthOptions(o);
 			});

@@ -105,7 +105,8 @@ def test_proxy_check_starts_are_soft_gated():
     assert "details::ReserveHandshakeGateForProxy(proxy)" in start_body
     assert "const auto state = checker.state();" in start_body
     assert "const auto gateDelay = state->handshakeGate.delay();" in start_body
-    assert "QTimer::singleShot(int(gateDelay), raw, start);" in start_body
+    assert "const auto openDelay" in start_body
+    assert "QTimer::singleShot(int(openDelay), raw, start);" in start_body
     assert "state->handshakeGate.release();" in start_body
     assert "[=, &checker]" not in start_body
 

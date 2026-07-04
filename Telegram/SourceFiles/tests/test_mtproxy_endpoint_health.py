@@ -57,7 +57,8 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "kMaxCooldown = crl::time(120 * 1000)" in source
     assert "kDnsNegativeTtl = crl::time(30 * 1000)" in source
     assert "kColdActiveCap = 1" in source
-    assert "kHealthyActiveCap = 3" in source
+    assert "kHealthyActiveCap = 2" in source
+    assert "ActiveCap(state)" in source
 
 
 def test_session_private_admission_gates_before_socket_creation():
@@ -81,6 +82,18 @@ def test_session_private_admission_gates_before_socket_creation():
         append_body.index("AbstractConnection::Create("))
     assert "std::move(admission.lease)" in append_body
     assert "ReserveHandshakeGateForProxy(_options->proxy)" not in append_body
+
+
+def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
+    source = read(ENDPOINT_HEALTH_CPP)
+    body = function_body(source, "EndpointId EndpointIdFromProxy(")
+
+    assert "if (proxy.type == ProxyData::Type::Mtproto)" in body
+    assert "const auto secret = proxy.secretFromMtprotoPassword();" in body
+    assert "result.secretHash = HashBytes(secret);" in body
+    assert "result.domain = DomainFromSecret(secret);" in body
+    assert "result.secretHash = HashText(proxy.password);" in body
+    assert body.index("HashBytes(secret)") < body.index("HashText(proxy.password)")
 
 
 def test_session_private_reports_success_and_failure_to_endpoint_health():
@@ -111,6 +124,7 @@ def test_tls_socket_reports_typed_terminal_reasons():
 
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in header
     assert "MtProxy::FailureReason _failureReason" in header
+    assert "MtProxy::EndpointUse _endpointUse" in header
     assert "QString _failureDiagnostic" not in header
     assert "failureDiagnostic()" not in header
     assert "MtProxy::FailureReason::ServerHelloHmacMismatch" in digest_body
@@ -118,6 +132,9 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
     assert "MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello" in parts12_body
     assert "MtProxy::EndpointHealth::Instance().reportSuccess(" in source
+    assert "_endpointUse = protocolForFiles" in source
+    assert ".use = _endpointUse" in source
+    assert ".use = MtProxy::EndpointUse::Main" not in source
     assert "ToLegacyDiagnostic(FailureReason reason)" in read(ENDPOINT_HEALTH_CPP)
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in error_body
     assert "MtproxyNoteEndpointFailure(" not in source
@@ -186,6 +203,7 @@ def function_body(text: str, signature: str) -> str:
 if __name__ == "__main__":
     test_endpoint_health_module_is_registered_and_owns_state()
     test_session_private_admission_gates_before_socket_creation()
+    test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni()
     test_session_private_reports_success_and_failure_to_endpoint_health()
     test_tls_socket_reports_typed_terminal_reasons()
     test_adaptive_policy_no_longer_owns_endpoint_cooldown()

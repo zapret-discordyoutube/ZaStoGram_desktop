@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
@@ -286,12 +287,18 @@ bool SessionPrivate::appendTestConnection(
 			protocolDcId,
 			protocolForFiles);
 	};
-	const auto spacing = proxied
+	const auto localDelay = mtproxy
 		? MtProxy::ConnectionSpacing(_options->stealth.connectionPattern)
+			* (int(_testConnections.size()) - 1)
 		: crl::time(0);
-	const auto startDelay = spacing * (int(_testConnections.size()) - 1);
-	if (startDelay > 0) {
-		QTimer::singleShot(int(startDelay), weak, start);
+	const auto openDelay = mtproxy
+		? MtProxy::ReserveOpenSlot(
+			mtproxyEndpoint,
+			_options->stealth.connectionPattern,
+			localDelay)
+		: localDelay;
+	if (openDelay > 0) {
+		QTimer::singleShot(int(openDelay), weak, start);
 	} else {
 		InvokeQueued(_testConnections.back().data, start);
 	}

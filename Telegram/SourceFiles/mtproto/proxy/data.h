@@ -98,7 +98,7 @@ struct ProxyStealthOptions {
 	ProxyTlsProfile tlsProfile = ProxyTlsProfile::Auto;
 	ProxyClientHelloFragmentation clientHelloFragmentation
 		= ProxyClientHelloFragmentation::Off;
-	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
+	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Browser;
 	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
 	ProxyTiming timing = ProxyTiming::Off;
 	ProxyStartupCover startupCover = ProxyStartupCover::Off;

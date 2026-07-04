@@ -215,6 +215,9 @@ TlsSocket::TlsSocket(
 	_tlsProfile = stealth.tlsProfile;
 	_timing = stealth.timing;
 	_stealth = stealth;
+	_endpointUse = protocolForFiles
+		? MtProxy::EndpointUse::Media
+		: MtProxy::EndpointUse::Main;
 	_pacingTimer.setCallback([=] { sendOutgoing(); });
 	_clientHelloTimer.setCallback([=] { sendClientHello(); });
 	_clientHelloFragmentTimer.setCallback([=] { writeClientHelloTail(); });
@@ -567,7 +570,7 @@ bool TlsSocket::checkNextPacket() {
 			connectionProgress(_phase);
 			MtProxy::EndpointHealth::Instance().reportSuccess({
 				.endpoint = _endpointId,
-				.use = MtProxy::EndpointUse::Main,
+				.use = _endpointUse,
 			});
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
@@ -818,7 +821,7 @@ void TlsSocket::handleError(int errorCode) {
 		_syncTimeRequests.fire({});
 		MtProxy::EndpointHealth::Instance().reportFailure({
 			.endpoint = _endpointId,
-			.use = MtProxy::EndpointUse::Main,
+			.use = _endpointUse,
 			.reason = failureReason(),
 			.configuredTlsProfile = _tlsProfile,
 			.sentProfile = _sentTlsProfile,

@@ -27,7 +27,7 @@ constexpr auto kSecondCooldown = crl::time(45 * 1000);
 constexpr auto kMaxCooldown = crl::time(120 * 1000);
 constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
 constexpr auto kColdActiveCap = 1;
-constexpr auto kHealthyActiveCap = 3;
+constexpr auto kHealthyActiveCap = 2;
 
 struct EndpointState {
 	EndpointId endpoint;
@@ -348,6 +348,14 @@ EndpointId EndpointIdFromProxy(
 	result.host = address.isEmpty() ? proxy.host : address;
 	result.port = port ? port : int(proxy.port);
 	result.transport = stealth.transport;
+	if (proxy.type == ProxyData::Type::Mtproto) {
+		const auto secret = proxy.secretFromMtprotoPassword();
+		if (!secret.empty()) {
+			result.secretHash = HashBytes(secret);
+			result.domain = DomainFromSecret(secret);
+			return result;
+		}
+	}
 	result.secretHash = HashText(proxy.password);
 	return result;
 }

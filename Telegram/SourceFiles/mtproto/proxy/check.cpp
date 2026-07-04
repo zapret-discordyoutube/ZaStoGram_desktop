@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/transport_policy.h"
 
 #include <QtCore/QTimer>
@@ -19,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 using Connection = details::AbstractConnection;
+namespace MtProxy = details::MtProxy;
 
 ProxyCheckConnection::ProxyCheckConnection()
 : _data(std::make_shared<Data>()) {
@@ -191,6 +193,12 @@ void StartProxyCheck(
 		const auto state = checker.state();
 		const auto raw = state->connection.get();
 		const auto gateDelay = state->handshakeGate.delay();
+		const auto openDelay = (proxy.type == ProxyData::Type::Mtproto)
+			? MtProxy::ReserveOpenSlot(
+				MtProxy::EndpointIdFromProxy(proxy, checkStealth),
+				checkStealth.connectionPattern,
+				gateDelay)
+			: gateDelay;
 		const auto start = [=, secret = std::move(secret)] {
 			if (state->connection.get() != raw) {
 				return;
@@ -202,8 +210,8 @@ void StartProxyCheck(
 				dcId,
 				false);
 		};
-		if (gateDelay > 0) {
-			QTimer::singleShot(int(gateDelay), raw, start);
+		if (openDelay > 0) {
+			QTimer::singleShot(int(openDelay), raw, start);
 		} else {
 			start();
 		}
