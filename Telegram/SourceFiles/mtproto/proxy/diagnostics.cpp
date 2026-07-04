@@ -12,23 +12,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtp_instance.h"
 #include "settings.h"
 
-#include <QtCore/QDir>
-#include <QtCore/QFile>
-#include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QStringList>
 
-#include <rpl/variable.h>
-
-#include <algorithm>
-
 namespace MTP {
 namespace {
-
-constexpr auto kProxyDiagnosticsLimit = 2000;
-constexpr auto kProxyDiagnosticsFileTailBytes = 512 * 1024;
-
-rpl::variable<std::vector<ProxyDiagnosticsEvent>> Events;
 
 [[nodiscard]] QString SourceText(ProxyDiagnosticsSource source) {
 	switch (source) {
@@ -167,51 +155,6 @@ rpl::variable<std::vector<ProxyDiagnosticsEvent>> Events;
 	return QString();
 }
 
-[[nodiscard]] ProxyDiagnosticsSource SourceFromFileName(
-		const QString &name) {
-	if (name.startsWith(u"mtproxy"_q)) {
-		return ProxyDiagnosticsSource::MTProxy;
-	} else if (name.startsWith(u"mtp"_q)) {
-		return ProxyDiagnosticsSource::MTP;
-	}
-	return ProxyDiagnosticsSource::Network;
-}
-
-[[nodiscard]] ProxyDiagnosticsSeverity SeverityFromLine(
-		const QString &line) {
-	if (line.contains(u" error"_q, Qt::CaseInsensitive)
-		|| line.contains(u" failed"_q, Qt::CaseInsensitive)
-		|| line.contains(u" timeout"_q, Qt::CaseInsensitive)) {
-		return ProxyDiagnosticsSeverity::Error;
-	}
-	return ProxyDiagnosticsSeverity::Info;
-}
-
-[[nodiscard]] QStringList TailLines(
-		const QFileInfo &info,
-		int maxLines) {
-	auto file = QFile(info.absoluteFilePath());
-	if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-		return {};
-	}
-	const auto size = file.size();
-	const auto start = std::max<qint64>(
-		0,
-		size - kProxyDiagnosticsFileTailBytes);
-	if (start > 0) {
-		file.seek(start);
-		file.readLine();
-	}
-	auto result = QString::fromUtf8(file.readAll()).split('\n');
-	while (!result.isEmpty() && result.back().trimmed().isEmpty()) {
-		result.removeLast();
-	}
-	if (result.size() > maxLines) {
-		result = result.mid(result.size() - maxLines);
-	}
-	return result;
-}
-
 [[nodiscard]] auto StatusPhaseFromDiagnostics(ProxyDiagnosticsPhase phase)
 -> std::optional<ProxyConnectionPhase> {
 	switch (phase) {
@@ -290,79 +233,11 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	return parts.join(u" | "_q);
 }
 
-std::vector<ProxyDiagnosticsEvent> ProxyDiagnosticsSnapshot() {
-	return Events.current();
-}
-
-auto ProxyDiagnosticsEventsValue()
--> rpl::producer<std::vector<ProxyDiagnosticsEvent>> {
-	return Events.value();
-}
-
-std::vector<ProxyDiagnosticsEvent> LoadProxyDiagnosticsTail(int maxLines) {
-	auto result = std::vector<ProxyDiagnosticsEvent>();
-	if (maxLines <= 0) {
-		return result;
-	}
-	auto dir = QDir(cWorkingDir() + u"DebugLogs"_q);
-	if (!dir.exists()) {
-		return result;
-	}
-	auto files = QFileInfoList();
-	for (const auto &pattern : {
-			u"mtproxy*.txt"_q,
-			u"mtp*.txt"_q,
-			u"log*.txt"_q }) {
-		files.append(dir.entryInfoList(
-			{ pattern },
-			QDir::Files,
-			QDir::Time));
-	}
-	std::sort(files.begin(), files.end(), [](const auto &a, const auto &b) {
-		return a.lastModified() < b.lastModified();
-	});
-	for (const auto &info : files) {
-		for (const auto &line : TailLines(info, maxLines)) {
-			const auto message = line.trimmed();
-			if (message.isEmpty()) {
-				continue;
-			}
-			result.push_back({
-				.source = SourceFromFileName(info.fileName()),
-				.phase = ProxyDiagnosticsPhase::None,
-				.severity = SeverityFromLine(message),
-				.message = message,
-				.timestamp = info.lastModified(),
-			});
-		}
-		if (int(result.size()) > maxLines) {
-			result.erase(result.begin(), result.end() - maxLines);
-		}
-	}
-	return result;
-}
-
-void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event) {
-	event = RedactEvent(std::move(event));
-	if (!event.timestamp.isValid()) {
-		event.timestamp = QDateTime::currentDateTime();
-	}
-	crl::on_main([event = std::move(event)]() mutable {
-		auto copy = Events.current();
-		copy.push_back(std::move(event));
-		if (copy.size() > kProxyDiagnosticsLimit) {
-			copy.erase(copy.begin(), copy.end() - kProxyDiagnosticsLimit);
-		}
-		Events.force_assign(std::move(copy));
-	});
-}
-
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
 	if (!event.timestamp.isValid()) {
 		event.timestamp = QDateTime::currentDateTime();
 	}
 	const auto line = FormatProxyDiagnosticsEvent(event);
-	AddProxyDiagnosticsEvent(std::move(event));
 	Logs::writeMtproxy(line);
 }
 
@@ -385,7 +260,7 @@ void ReportProxyEvent(
 			instance->setProxyConnectionStatus(status);
 		});
 	}
-	AddProxyDiagnosticsEvent({
+	WriteProxyDiagnosticsLine({
 		.source = SourceForProxy(report.proxy),
 		.phase = report.phase,
 		.severity = report.severity.value_or(

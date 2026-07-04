@@ -468,15 +468,6 @@ void BuildSectionButtons(SectionBuilder &builder) {
 		.keywords = { u"translate"_q, u"localization"_q, u"language"_q },
 	});
 
-	builder.addButton({
-		.id = u"main/proxy_logs"_q,
-		.title = tr::lng_proxy_logs_tab(),
-		.icon = { &st::menuIconGroupLog },
-		.onClick = [=] {
-			controller->show(ProxiesBoxController::CreateLogsBox());
-		},
-		.keywords = { u"proxy"_q, u"logs"_q, u"diagnostics"_q, u"network"_q },
-	});
 }
 
 void BuildInterfaceScale(SectionBuilder &builder) {

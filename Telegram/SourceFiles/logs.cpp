@@ -7,11 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "logs.h"
 
+#include <crl/crl_time.h>
+
 #include "platform/platform_specific.h"
 #include "core/crash_reports.h"
 #include "core/launcher.h"
 #include "core/version.h"
 #include "mtproto/facade.h"
+
+#include <QtCore/QCoreApplication>
 
 namespace {
 
@@ -27,6 +31,9 @@ public:
 		WritingEntryFlag = false;
 	}
 };
+
+constexpr auto kDebugLogRetentionDays = 7;
+constexpr auto kDebugLogRetentionCheckPeriod = crl::time(24 * 60 * 60 * 1000);
 
 } // namespace
 
@@ -65,6 +72,44 @@ bool AlwaysWriteLogData(LogDataType type) {
 	return (type == LogDataMain) || (type == LogDataMtproxy);
 }
 
+bool IsDebugLogData(LogDataType type) {
+	return (type == LogDataDebug)
+		|| (type == LogDataMtp)
+		|| (type == LogDataMtproxy);
+}
+
+QString DebugLogPrefix(LogDataType type) {
+	switch (type) {
+	case LogDataDebug:
+		return u"log"_q;
+	case LogDataMtp:
+		return u"mtp"_q;
+	case LogDataMtproxy:
+		return u"mtproxy"_q;
+	case LogDataMain:
+		break;
+	}
+	return u"log"_q;
+}
+
+QString MakeDebugLogRunId() {
+	const auto now = QDateTime::currentDateTime();
+	return now.toString(u"yyyyMMdd_hhmmss_zzz"_q)
+		+ '_'
+		+ QString::number(QCoreApplication::applicationPid());
+}
+
+QString RunScopedDebugLogPath(
+		LogDataType type,
+		const QString &debugLogRunId) {
+	return cWorkingDir()
+		+ u"DebugLogs/"_q
+		+ DebugLogPrefix(type)
+		+ '_'
+		+ debugLogRunId
+		+ u".txt"_q;
+}
+
 int32 LogsStartIndexChosen = -1;
 QString _logsEntryStart() {
 	static thread_local auto threadId = ThreadCounter++;
@@ -81,6 +126,48 @@ public:
 	LogsDataFields() {
 		for (int32 i = 0; i < LogDataCount; ++i) {
 			files[i].reset(new QFile());
+		}
+	}
+
+	void CleanOldDebugLogs() {
+		const auto now = crl::now();
+		if (lastDebugLogCleanup
+			&& now - lastDebugLogCleanup < kDebugLogRetentionCheckPeriod) {
+			return;
+		}
+		lastDebugLogCleanup = now;
+
+		auto dir = QDir(cWorkingDir() + u"DebugLogs"_q);
+		if (!dir.exists()) {
+			return;
+		}
+
+		auto opened = QStringList();
+		for (auto i = 0; i != LogDataCount; ++i) {
+			const auto file = files[i].get();
+			if (file && file->isOpen()) {
+				opened.push_back(QFileInfo(file->fileName()).absoluteFilePath());
+			}
+		}
+
+		const auto cutoff = QDateTime::currentDateTime().addDays(
+			-kDebugLogRetentionDays);
+		const auto patterns = QStringList{
+			u"log*.txt"_q,
+			u"mtp*.txt"_q,
+			u"mtproxy*.txt"_q,
+		};
+		const auto old = dir.entryInfoList(patterns, QDir::Files);
+		for (const auto &info : old) {
+			const auto path = info.absoluteFilePath();
+			if (opened.contains(path) || info.lastModified() >= cutoff) {
+				continue;
+			}
+			auto file = QFile(path);
+			if (!file.remove()) {
+				LOG(("Could not delete old debug log '%1': %2"
+					).arg(path, file.errorString()));
+			}
 		}
 	}
 
@@ -119,8 +206,8 @@ public:
 		QMutexLocker lock(_logsMutex(type));
 		WritingEntryScope scope;
 
-		if (type != LogDataMain) {
-			reopenDebug();
+		if (IsDebugLogData(type)) {
+			ensureDebugLogOpen(type);
 		}
 		const auto file = files[type].get();
 		if (!file || !file->isOpen()) {
@@ -133,7 +220,9 @@ public:
 private:
 	std::unique_ptr<QFile> files[LogDataCount];
 
-	int32 part = -1;
+	QString debugLogRunId = MakeDebugLogRunId();
+	bool debugLogOpened[LogDataCount] = {};
+	crl::time lastDebugLogCleanup = 0;
 
 	bool reopen(LogDataType type, int32 dayIndex, const QString &postfix) {
 		if (files[type] && files[type]->isOpen()) {
@@ -242,28 +331,37 @@ NEW LOGGING INSTANCE STARTED!!!\n\
 
 			return true;
 		} else if (type != LogDataMain) {
-			LOG(("Could not open debug log '%1': %2").arg(files[type]->fileName(), files[type]->errorString()));
+			LOG(("Could not open debug log '%1': %2"
+				).arg(files[type]->fileName(), files[type]->errorString()));
 		}
 		return false;
 	}
 
-	void reopenDebug() {
-		time_t t = time(NULL);
-		struct tm tm;
-		mylocaltime(&tm, &t);
+	void ensureDebugLogOpen(LogDataType type) {
+		Expects(IsDebugLogData(type));
 
-		static const int switchEach = 15; // minutes
-		int32 newPart = (tm.tm_min + tm.tm_hour * 60) / switchEach;
-		if (newPart == part) return;
-
-		part = newPart;
-
-		int32 dayIndex = (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday;
-		QString postfix = QString("_%4_%5").arg((part * switchEach) / 60, 2, 10, QChar('0')).arg((part * switchEach) % 60, 2, 10, QChar('0'));
-
-		reopen(LogDataDebug, dayIndex, postfix);
-		reopen(LogDataMtp, dayIndex, postfix);
-		reopen(LogDataMtproxy, dayIndex, postfix);
+		const auto file = files[type].get();
+		if (file && file->isOpen()) {
+			return;
+		}
+		CleanOldDebugLogs();
+		QDir().mkpath(cWorkingDir() + u"DebugLogs"_q);
+		file->setFileName(RunScopedDebugLogPath(type, debugLogRunId));
+		if (!file->open(
+				QIODevice::WriteOnly | QIODevice::Text | QIODevice::Append)) {
+			LOG(("Could not open debug log '%1': %2"
+				).arg(file->fileName(), file->errorString()));
+			return;
+		}
+		if (!debugLogOpened[type]) {
+			file->write(qsl("run=%1\n").arg(debugLogRunId).toUtf8());
+			file->write(qsl("\
+----------------------------------------------------------------\n\
+NEW LOGGING INSTANCE STARTED!!!\n\
+----------------------------------------------------------------\n").toUtf8());
+			file->flush();
+			debugLogOpened[type] = true;
+		}
 	}
 
 };
@@ -434,6 +532,7 @@ void start() {
 	}
 
 	LOG(("Logs started"));
+	LogsData->CleanOldDebugLogs();
 }
 
 void finish() {

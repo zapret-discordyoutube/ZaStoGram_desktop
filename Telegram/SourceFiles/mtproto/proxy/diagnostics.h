@@ -12,10 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QDateTime>
 #include <QtCore/QString>
 
-#include <rpl/producer.h>
-
 #include <optional>
-#include <vector>
 
 namespace MTP {
 
@@ -82,13 +79,7 @@ struct ProxyEventReport {
 
 [[nodiscard]] QString FormatProxyDiagnosticsEvent(
 	const ProxyDiagnosticsEvent &event);
-[[nodiscard]] std::vector<ProxyDiagnosticsEvent> ProxyDiagnosticsSnapshot();
-[[nodiscard]] auto ProxyDiagnosticsEventsValue()
--> rpl::producer<std::vector<ProxyDiagnosticsEvent>>;
-[[nodiscard]] std::vector<ProxyDiagnosticsEvent> LoadProxyDiagnosticsTail(
-	int maxLines);
 
-void AddProxyDiagnosticsEvent(ProxyDiagnosticsEvent event);
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event);
 void ReportProxyEvent(not_null<Instance*> instance, ProxyEventReport report);
 

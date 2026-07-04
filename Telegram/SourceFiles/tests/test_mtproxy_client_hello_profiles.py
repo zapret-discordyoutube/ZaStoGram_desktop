@@ -159,6 +159,21 @@ def test_auto_rotate_policy_uses_known_template_pool():
     assert "IsClientHelloProfileValidated(profile)" not in pool_body
 
 
+def test_auto_rotate_starts_with_default_profile_before_rotation():
+    source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
+    resolve_body = function_body(
+        source,
+        "ProxyTlsProfile ResolveEffectiveTlsProfile(")
+    rotate_body = function_body(
+        source,
+        "ProxyTlsProfile RotateTlsProfileOnFailure(")
+
+    assert "DefaultAutoRotateProfileIndex()" in source
+    assert "AutoRotateInitialIndex(" not in source
+    assert "state.profileIndex = DefaultAutoRotateProfileIndex();" in resolve_body
+    assert "state.profileIndex = DefaultAutoRotateProfileIndex();" in rotate_body
+
+
 def test_new_client_hello_sources_are_registered_for_build():
     cmake = (ROOT_DIR / "Telegram" / "CMakeLists.txt").read_text(encoding="utf-8")
 
@@ -519,5 +534,6 @@ if __name__ == "__main__":
     test_chrome_modern_builder_template_matches_capture_ja4_facts()
     test_chrome_modern_builder_matches_capture_extension_payloads()
     test_auto_rotate_policy_uses_known_template_pool()
+    test_auto_rotate_starts_with_default_profile_before_rotation()
     test_new_client_hello_sources_are_registered_for_build()
     test_cpp_smoke_invokes_deterministic_builder_and_ja4_facts()

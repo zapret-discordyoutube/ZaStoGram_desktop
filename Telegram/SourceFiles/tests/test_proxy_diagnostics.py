@@ -38,7 +38,7 @@ def proxy_event_report_fields():
     return fields
 
 
-def test_diagnostics_model_is_registered_and_bounded():
+def test_diagnostics_model_is_disk_only():
     cmake = read(CMAKE)
     header = read(DIAGNOSTICS_H)
     source = read(DIAGNOSTICS_CPP)
@@ -50,29 +50,34 @@ def test_diagnostics_model_is_registered_and_bounded():
     assert "struct ProxyDiagnosticsEvent" in header
     assert "ProxyMtproxyTerminalReason mtproxyReason" in header
     assert "ProxyConnectionAttempt attempt" in header
-    assert "ProxyDiagnosticsEventsValue()" in header
-    assert "ProxyDiagnosticsSnapshot()" in header
-    assert "LoadProxyDiagnosticsTail(" in header
-    assert "constexpr auto kProxyDiagnosticsLimit" in source
-    assert "if (copy.size() > kProxyDiagnosticsLimit)" in source
-    assert "copy.erase(copy.begin(), copy.end() - kProxyDiagnosticsLimit);" in source
-    assert "while (copy.size() > kProxyDiagnosticsLimit)" not in source
+    assert "WriteProxyDiagnosticsLine(" in header
+    assert "Logs::writeMtproxy(line);" in source
+    assert "ProxyDiagnosticsEventsValue" not in header
+    assert "ProxyDiagnosticsSnapshot" not in header
+    assert "LoadProxyDiagnosticsTail(" not in header
+    assert "AddProxyDiagnosticsEvent" not in header
+    assert "rpl::variable" not in source
+    assert "Events.current()" not in source
 
 
-def test_diagnostics_event_stream_does_not_require_event_equality():
+def test_diagnostics_has_no_in_memory_event_stream():
     source = read(DIAGNOSTICS_CPP)
 
-    assert "Events.force_assign(std::move(copy));" in source
-    assert "Events = std::move(copy);" not in source
+    assert "Events.force_assign" not in source
+    assert "Events.value()" not in source
+    assert "std::vector<ProxyDiagnosticsEvent>" not in source
 
 
-def test_diagnostics_tail_trimming_is_linear():
+def test_diagnostics_does_not_read_back_log_files():
     source = read(DIAGNOSTICS_CPP)
 
+    assert "TailLines(" not in source
+    assert "SourceFromFileName(" not in source
+    assert "SeverityFromLine(" not in source
     assert "removeFirst()" not in source
     assert "result.erase(begin(result));" not in source
-    assert "result = result.mid(result.size() - maxLines);" in source
-    assert "result.erase(result.begin(), result.end() - maxLines);" in source
+    assert "result = result.mid(result.size() - maxLines);" not in source
+    assert "result.erase(result.begin(), result.end() - maxLines);" not in source
 
 
 def test_diagnostics_redacts_secret_material():
@@ -125,9 +130,10 @@ def test_proxy_reporting_is_centralized():
     assert "StatusPhaseFromDiagnostics" in diagnostics
     assert "SourceForProxy" in diagnostics
     assert "setProxyConnectionStatus" in diagnostics
+    assert "WriteProxyDiagnosticsLine({" in diagnostics
     assert "report.mtproxyReason" in diagnostics
     assert "report.attempt" in diagnostics
-    assert "crl::on_main" in diagnostics
+    assert "InvokeQueued(instance" in diagnostics
 
     for transport in (resolving, tcp, http):
         assert "ReportProxyEvent(_instance, {" in transport
@@ -163,7 +169,7 @@ def test_proxy_event_report_designators_follow_declaration_order():
                 f"ProxyEventReport designators: {designators}")
 
 
-def test_proxy_logs_have_separate_settings_entry():
+def test_proxy_logs_have_no_separate_settings_entry():
     lang = read(LANG)
     box = read(CONNECTION_BOX_CPP)
     header = read(CONNECTION_BOX_H)
@@ -182,73 +188,35 @@ def test_proxy_logs_have_separate_settings_entry():
         "lng_proxy_logs_empty",
         "lng_proxy_logs_file_error",
     ):
-        assert f'"{key}' in lang
+        assert f'"{key}' not in lang
 
-    assert "class ProxyLogsBox final : public Ui::BoxContent" in box
-    assert "ProxiesBoxController::CreateLogsBox()" in box
-    assert "static object_ptr<Ui::BoxContent> CreateLogsBox();" in header
-    assert 'id = u"main/proxy_logs"_q' in settings
-    assert "tr::lng_proxy_logs_tab()" in settings
-    assert "ProxiesBoxController::CreateLogsBox()" in settings
-    assert "setupLogsSection" not in box
-    assert "ProxyDiagnosticsEventsValue(" in box
-    assert "LoadProxyDiagnosticsTail(" in box
-    assert "File::ShowInFolder(cWorkingDir() + u\"DebugLogs\"" in box
-    assert "TextUtilities::SetClipboardText" in box
-    assert "Ui::SettingsSlider" in box
-    assert "_logsSearch" in box
-    assert "_logsSearchQuery" in box
+    assert "class ProxyLogsBox final : public Ui::BoxContent" not in box
+    assert "class ProxyLogsView" not in box
+    assert "ProxiesBoxController::CreateLogsBox()" not in box
+    assert "static object_ptr<Ui::BoxContent> CreateLogsBox();" not in header
+    assert 'id = u"main/proxy_logs"_q' not in settings
+    assert "tr::lng_proxy_logs_tab()" not in settings
+    assert "ProxyDiagnosticsEventsValue(" not in box
+    assert "LoadProxyDiagnosticsTail(" not in box
+    assert "_logsSearch" not in box
+    assert "_logsSearchQuery" not in box
 
 
-def test_proxy_logs_file_tail_load_is_user_triggered():
-    box = read(CONNECTION_BOX_CPP)
-    setup_start = box.index("void ProxyLogsBox::setupContent()")
-    refresh_button = box.index(
-        "const auto refresh = Settings::AddButtonWithIcon",
-        setup_start)
-    open_button = box.index("const auto open = Settings::AddButtonWithIcon")
-    initial_setup = box[setup_start:refresh_button]
-    refresh_block = box[refresh_button:open_button]
-
-    assert "_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();" in initial_setup
-    assert "LoadProxyDiagnosticsTail(" not in initial_setup
-    assert "LoadProxyDiagnosticsTail(" in refresh_block
-
-
-def test_proxy_logs_initial_snapshot_is_rendered_once():
-    box = read(CONNECTION_BOX_CPP)
-    setup = box[
-        box.index("void ProxyLogsBox::setupContent()"):
-        box.index("void ProxyLogsBox::refreshLogsView()")]
-
-    assert "_logsSnapshot = MTP::ProxyDiagnosticsSnapshot();" in setup
-    assert "ProxyDiagnosticsEventsValue(\n\t) | rpl::skip(1)" in setup
-    assert "refreshLogsView();\n\n\tinner->resizeToWidth" in setup
-
-
-def test_logs_view_renders_one_text_string_per_line():
+def test_proxy_logs_ui_does_not_render_log_memory():
     box = read(CONNECTION_BOX_CPP)
 
-    # Ui::Text::String stores block positions as uint16 (64K chars max),
-    # so feeding the whole joined log tail into one FlatLabel overflows
-    # them and asserts in lib_ui text.cpp:590 (crash on opening the
-    # proxy diagnostics logs). The logs view must keep one Text::String per
-    # log line, with a defensive per-line length cap.
-    assert "class ProxyLogsView" in box
-    assert "QPointer<ProxyLogsView> _logsView" in box
-    assert "_logsView->setLines(" in box
-    assert "constexpr auto kMaxLineLength" in box
-    assert "QPointer<Ui::FlatLabel> _logsView" not in box
+    assert "ProxyDiagnosticsSnapshot" not in box
+    assert "_logsSnapshot" not in box
+    assert "_logsVisibleText" not in box
+    assert "QPointer<ProxyLogsView> _logsView" not in box
 
 
 if __name__ == "__main__":
-    test_diagnostics_model_is_registered_and_bounded()
-    test_diagnostics_event_stream_does_not_require_event_equality()
-    test_diagnostics_tail_trimming_is_linear()
+    test_diagnostics_model_is_disk_only()
+    test_diagnostics_has_no_in_memory_event_stream()
+    test_diagnostics_does_not_read_back_log_files()
     test_diagnostics_redacts_secret_material()
     test_transport_paths_emit_diagnostics()
     test_proxy_reporting_is_centralized()
-    test_proxy_logs_have_separate_settings_entry()
-    test_proxy_logs_file_tail_load_is_user_triggered()
-    test_proxy_logs_initial_snapshot_is_rendered_once()
-    test_logs_view_renders_one_text_string_per_line()
+    test_proxy_logs_have_no_separate_settings_entry()
+    test_proxy_logs_ui_does_not_render_log_memory()

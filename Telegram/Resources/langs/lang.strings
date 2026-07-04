@@ -1309,17 +1309,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_edit_share_qr_box_title" = "Share proxy with QR code";
 "lng_proxy_edit_share_list_button" = "Share Proxy List";
 "lng_proxy_edit_share_list_toast" = "Proxy List copied to clipboard.";
-"lng_proxy_logs_tab" = "Diagnostic logs";
-"lng_proxy_logs_filter_all" = "All";
-"lng_proxy_logs_filter_mtproxy" = "MTProxy";
-"lng_proxy_logs_filter_network" = "Network";
-"lng_proxy_logs_search" = "Search logs";
-"lng_proxy_logs_copy" = "Copy visible logs";
-"lng_proxy_logs_refresh" = "Refresh from files";
-"lng_proxy_logs_open_folder" = "Open log folder";
-"lng_proxy_logs_clear" = "Clear visible history";
-"lng_proxy_logs_empty" = "No proxy diagnostics yet.";
-"lng_proxy_logs_file_error" = "Could not read proxy log files.";
 "lng_proxy_address_label" = "Socket address";
 "lng_proxy_credentials_optional" = "Credentials (optional)";
 "lng_proxy_credentials" = "Credentials";

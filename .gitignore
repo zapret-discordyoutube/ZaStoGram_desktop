@@ -74,3 +74,4 @@ settings.local.json
 /Telegram/SourceFiles/tests/__pycache__
 cmake
 /docs
+Telegram/SourceFiles/mtproto.zip

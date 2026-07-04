@@ -55,13 +55,14 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 	return KnownClientHelloProfile(kAutoRotateCandidatePool[normalized]);
 }
 
-[[nodiscard]] int AutoRotateInitialIndex(const QString &key) {
-	auto hash = quint64(0xcbf29ce484222325ULL);
-	for (const auto byte : key.toUtf8()) {
-		hash ^= quint8(byte);
-		hash *= 0x100000001b3ULL;
+[[nodiscard]] int DefaultAutoRotateProfileIndex() {
+	const auto size = AutoRotatePoolSize();
+	for (auto i = 0; i != size; ++i) {
+		if (AutoRotatePoolProfile(i) == DefaultClientHelloProfile()) {
+			return i;
+		}
 	}
-	return int(hash % AutoRotatePoolSize());
+	return 0;
 }
 
 [[nodiscard]] bool IsLightConnectionPattern(ProxyConnectionPattern pattern) {
@@ -168,7 +169,7 @@ ProxyTlsProfile ResolveEffectiveTlsProfile(
 	QMutexLocker lock(&AutoProfilesMutex);
 	auto &state = AutoProfiles[endpointKey];
 	if (state.profileIndex < 0) {
-		state.profileIndex = AutoRotateInitialIndex(endpointKey);
+		state.profileIndex = DefaultAutoRotateProfileIndex();
 		state.profileChangedAt = crl::now();
 	}
 	return AutoRotatePoolProfile(state.profileIndex);
@@ -184,7 +185,7 @@ ProxyTlsProfile RotateTlsProfileOnFailure(
 	QMutexLocker lock(&AutoProfilesMutex);
 	auto &state = AutoProfiles[endpointKey];
 	if (state.profileIndex < 0) {
-		state.profileIndex = AutoRotateInitialIndex(endpointKey);
+		state.profileIndex = DefaultAutoRotateProfileIndex();
 		state.profileChangedAt = crl::now();
 	}
 	++state.failures;

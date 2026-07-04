@@ -130,6 +130,27 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
     assert "follow_symlinks" not in workflow
 
 
+def test_windows_sccache_server_is_started_and_cleaned_up():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    install_sccache = workflow.index("- name: sccache.")
+    start_sccache = workflow.index("- name: Start sccache server.")
+    telegram_build = workflow.index("- name: Telegram Desktop build.")
+    sccache_stats = workflow.index("- name: sccache stats.")
+    stop_sccache = workflow.index("- name: Stop sccache server.")
+    move_artifact = workflow.index("- name: Move artifact.")
+
+    assert install_sccache < start_sccache < telegram_build
+    assert sccache_stats < stop_sccache < move_artifact
+    assert "disable_annotations: \"true\"" in workflow
+    assert "SCCACHE_IDLE_TIMEOUT: \"600\"" in workflow
+    assert "SCCACHE_SERVER_PORT=$SCCACHE_SERVER_PORT" in workflow
+    assert "${SCCACHE_PATH:-sccache} --start-server" in workflow
+    assert "${SCCACHE_PATH:-sccache} --zero-stats" in workflow
+    assert "${SCCACHE_PATH:-sccache} --stop-server || true" in workflow
+    assert "SCCACHE_IDLE_TIMEOUT: \"0\"" not in workflow
+
+
 def test_windows_ffmpeg_links_static_dav1d_dependency():
     prepare = PREPARE_PY.read_text(encoding="utf-8")
     cmake = ROOT_CMAKE.read_text(encoding="utf-8")
@@ -153,7 +174,6 @@ def test_mtproxy_logs_have_release_visible_stream():
     logs_cpp = LOGS_CPP.read_text(encoding="utf-8")
     abstract_connection = ABSTRACT_CONNECTION_CPP.read_text(encoding="utf-8")
     abstract_socket = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
-    diagnostics_header = DIAGNOSTICS_H.read_text(encoding="utf-8")
     diagnostics_source = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
 
     assert "void writeMtproxy(const QString &v);" in logs_h
@@ -162,9 +182,24 @@ def test_mtproxy_logs_have_release_visible_stream():
     assert "AlwaysWriteLogData(type)" in logs_cpp
     assert "WriteProxyDiagnosticsLine(" in abstract_connection
     assert "WriteProxyDiagnosticsLine(" in abstract_socket
-    assert "WriteProxyDiagnosticsLine(" in diagnostics_header
     assert "Logs::writeMtproxy(" in diagnostics_source
-    assert "LoadProxyDiagnosticsTail(" in diagnostics_header
+    assert "AddProxyDiagnosticsEvent" not in diagnostics_source
+    assert "ProxyDiagnosticsEventsValue" not in diagnostics_source
+    assert "LoadProxyDiagnosticsTail" not in diagnostics_source
+
+
+def test_debug_logs_use_one_run_file_with_weekly_retention():
+    logs_cpp = LOGS_CPP.read_text(encoding="utf-8")
+
+    assert "RunScopedDebugLogPath(" in logs_cpp
+    assert "CleanOldDebugLogs(" in logs_cpp
+    assert "kDebugLogRetentionDays = 7" in logs_cpp
+    assert "kDebugLogRetentionCheckPeriod = crl::time(24 * 60 * 60 * 1000)" in logs_cpp
+    assert "debugLogRunId" in logs_cpp
+    assert "debugLogOpened" in logs_cpp
+    assert "reopenDebug()" not in logs_cpp
+    assert "switchEach = 15" not in logs_cpp
+    assert "reopen(LogDataMtproxy, dayIndex, postfix)" not in logs_cpp
 
 
 def test_mtproxy_progress_errors_and_success_are_reported():
@@ -194,6 +229,7 @@ if __name__ == "__main__":
     test_windows_ci_prepares_release_dependencies_only()
     test_windows_dependency_caches_save_before_compile()
     test_windows_telegram_build_tree_cache_survives_compile_failures()
+    test_windows_sccache_server_is_started_and_cleaned_up()
     test_windows_ffmpeg_links_static_dav1d_dependency()
     test_wss_route_toggle_refresh_captures_proxy_box()
     test_mtproxy_logs_have_release_visible_stream()
