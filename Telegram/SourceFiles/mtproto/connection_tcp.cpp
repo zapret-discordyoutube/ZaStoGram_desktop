@@ -771,14 +771,15 @@ void TcpConnection::socketError(int errorCode) {
 	}
 
 	CONNECTION_LOG_ERROR(u"Socket error %1."_q.arg(errorCode));
-	const auto error = SocketProxyConnectionError(errorCode);
+	const auto proxyError = SocketProxyConnectionError(errorCode);
 	const auto transport = _socket->transportName();
-	if (transport == u"WSS"_q && error == ProxyConnectionError::RemoteClosed) {
+	if (transport == u"WSS"_q
+		&& proxyError == ProxyConnectionError::RemoteClosed) {
 		NoteProxyWssRemoteClosed(_proxy);
 	}
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Failed,
-		.error = error,
+		.error = proxyError,
 		.mtproxyReason = _socket->mtproxyTerminalReason(),
 		.terminalUntil = _socket->mtproxyTerminalUntil(),
 		.proxy = _proxy,

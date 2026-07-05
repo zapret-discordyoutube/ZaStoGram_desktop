@@ -251,11 +251,15 @@ def test_wss_remote_closed_forbids_wss_for_that_proxy():
     error_body = function_body(source, "void TcpConnection::socketError(")
 
     assert '#include "mtproto/proxy/transport_policy.h"' in source
-    assert "const auto error = SocketProxyConnectionError(errorCode);" in error_body
+    # The local must not shadow AbstractConnection::error(qint32) which is
+    # called at the end of socketError().
+    assert "const auto proxyError = SocketProxyConnectionError(errorCode);" in error_body
+    assert "const auto error = " not in error_body
     assert "const auto transport = _socket->transportName();" in error_body
     assert "transport == u\"WSS\"_q" in error_body
-    assert "error == ProxyConnectionError::RemoteClosed" in error_body
+    assert "proxyError == ProxyConnectionError::RemoteClosed" in error_body
     assert "NoteProxyWssRemoteClosed(_proxy);" in error_body
+    assert "error(errorCode);" in error_body
     assert ".transport = (transport == u\"WSS\"_q) ? transport : tag()," in error_body
 
 
