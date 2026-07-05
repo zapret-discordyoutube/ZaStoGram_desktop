@@ -62,10 +62,10 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Telegram FZ-LLC"
             VALUE "FileDescription", "ZaStoGram"
-            VALUE "FileVersion", "6.9.3.0"
+            VALUE "FileVersion", "6.9.4.0"
             VALUE "LegalCopyright", "Copyright (C) 2014-2026"
             VALUE "ProductName", "ZaStoGram"
-            VALUE "ProductVersion", "6.9.3.0"
+            VALUE "ProductVersion", "6.9.4.0"
         END
     END
     BLOCK "VarFileInfo"
