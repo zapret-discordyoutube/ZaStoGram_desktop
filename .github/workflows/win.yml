@@ -48,7 +48,7 @@ jobs:
 
   windows:
     name: Windows
-    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
 
     strategy:
       matrix:
@@ -65,7 +65,7 @@ jobs:
       # once for changes that are NOT auto-detected — the disk-trim filter or the
       # cache path lists below, and as a safety net for a toolset bump.
       CACHE_VERSION: "v1"
-      TELEGRAM_BUILD_CACHE_VERSION: "v1"
+      TELEGRAM_BUILD_CACHE_VERSION: "v2"
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SCCACHE_IDLE_TIMEOUT: "600"
@@ -522,6 +522,26 @@ jobs:
               print("mtime: CMake graph changed, configure will run")
           PY
 
+      - name: Prepare update signing keys.
+        if: env.ONLY_CACHE == 'false'
+        shell: bash
+        env:
+          PACKER_PRIVATE_H: ${{ secrets.PACKER_PRIVATE_H }}
+        run: |
+          mkdir -p "$TBUILD/DesktopPrivate"
+          if [ -n "$PACKER_PRIVATE_H" ]; then
+            printf '%s' "$PACKER_PRIVATE_H" > "$TBUILD/DesktopPrivate/packer_private.h"
+            echo "Using real update signing key from secrets."
+          else
+            {
+              echo '// Placeholder: real keys come from the PACKER_PRIVATE_H secret.'
+              echo 'const char *PrivateKey = "";'
+              echo 'const char *PrivateBetaKey = "";'
+            } > "$TBUILD/DesktopPrivate/packer_private.h"
+            echo "PACKER_PRIVATE_H secret is not set, Packer will not be able to sign."
+          fi
+          echo 'static const char *AlphaPrivateKey = "";' > "$TBUILD/DesktopPrivate/alpha_private.h"
+
       - name: Telegram Desktop build.
         id: build-telegram
         if: env.ONLY_CACHE == 'false'
@@ -542,13 +562,14 @@ jobs:
             -D CMAKE_CXX_COMPILER_LAUNCHER=sccache ^
             -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
             -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
-            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D ZASTOGRAM_PACKER=ON ^
             -D DESKTOP_APP_DISABLE_QT_PLUGINS=ON ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
             %TDESKTOP_BUILD_DEFINE%
           )
 
-          cmake --build ..\out --config Release --target Telegram --parallel
+          cmake --build ..\out --config Release --target Telegram Packer --parallel
 
       - name: Telegram build cache metadata.
         if: >-
@@ -605,12 +626,30 @@ jobs:
         shell: bash
         run: ${SCCACHE_PATH:-sccache} --stop-server || true
 
+      - name: Pack signed update.
+        if: env.ONLY_CACHE == 'false' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          cd "$TBUILD/$REPO_NAME/out/Release"
+          VERSION=$(awk '$1 == "AppVersion" { print $2 }' "$TBUILD/$REPO_NAME/Telegram/build/version")
+          case "${{ matrix.arch }}" in
+            x64) TARGET="-target win64" ;;
+            arm64) TARGET="-target winarm" ;;
+            *) TARGET="" ;;
+          esac
+          ./Packer.exe -path Telegram.exe -path Updater.exe -version "$VERSION" $TARGET
+          ls -la t*upd*
+
       - name: Move artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
         run: |
           set OUT=%TBUILD%\%REPO_NAME%\out\Release
           mkdir artifact
           move %OUT%\Telegram.exe artifact/
+          move %OUT%\Updater.exe artifact/
+          if exist %OUT%\tupdate* move %OUT%\tupdate* artifact/
+          if exist %OUT%\tx64upd* move %OUT%\tx64upd* artifact/
+          if exist %OUT%\tarm64upd* move %OUT%\tarm64upd* artifact/
       - uses: actions/upload-artifact@v7
         name: Upload artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
@@ -637,15 +676,48 @@ jobs:
             name="$(basename "$d")"
             arch="$(echo "$name" | sed 's/^Telegram //; s/ qt6//; s/ /_/g')"
             [ -f "$d/Telegram.exe" ] && cp "$d/Telegram.exe" "release/ZaStoGram-$arch.exe"
+            if [ -f "$d/Telegram.exe" ] && [ -f "$d/Updater.exe" ]; then
+              (cd "$d" && zip -j "$GITHUB_WORKSPACE/release/ZaStoGram-portable-$arch.zip" Telegram.exe Updater.exe)
+            fi
+            cp "$d"/tupdate* "$d"/tx64upd* "$d"/tarm64upd* release/ 2>/dev/null || true
           done
           ls -la release
-      - name: Publish pre-release.
+      - name: Generate update map (current4).
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver=""
+          for f in release/tupdate* release/tx64upd* release/tarm64upd*; do
+            [ -e "$f" ] || continue
+            ver="$(basename "$f" | grep -oE '[0-9]+$')"
+          done
+          if [ -z "$ver" ]; then
+            echo "No signed update packages found, cannot generate current4!"
+            exit 1
+          fi
+          current='{}'
+          add() {
+            current="$(echo "$current" | jq --arg k "$1" --arg v "$ver" --arg l "$2" \
+              '. + {($k): {stable: {released: $v, link: $l}}}')"
+          }
+          [ -e "release/tupdate$ver" ] && add win "/tupdate{version}"
+          [ -e "release/tx64upd$ver" ] && add win64 "/tx64upd{version}"
+          [ -e "release/tarm64upd$ver" ] && add winarm "/tarm64upd{version}"
+          echo "$current" | tee release/current4
+      - name: Publish release.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "dev-${{ github.run_number }}" release/* \
-            --repo "${{ github.repository }}" \
-            --target "${{ github.sha }}" \
-            --title "ZaStoGram dev ${{ github.run_number }}" \
-            --notes "Automated pre-release from ${{ github.sha }}." \
-            --prerelease
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            gh release create "${{ github.ref_name }}" release/* \
+              --repo "${{ github.repository }}" \
+              --title "ZaStoGram ${{ github.ref_name }}" \
+              --generate-notes \
+              --latest
+          else
+            gh release create "dev-${{ github.run_number }}" release/* \
+              --repo "${{ github.repository }}" \
+              --target "${{ github.sha }}" \
+              --title "ZaStoGram dev ${{ github.run_number }}" \
+              --notes "Automated pre-release from ${{ github.sha }}." \
+              --prerelease
+          fi

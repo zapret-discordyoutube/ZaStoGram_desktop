@@ -2394,11 +2394,13 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
         )
     endif()
 
-    if (DESKTOP_APP_SPECIAL_TARGET)
+    if (DESKTOP_APP_SPECIAL_TARGET OR ZASTOGRAM_PACKER)
         add_executable(Packer)
         init_target(Packer)
 
-        add_dependencies(Telegram Packer)
+        if (DESKTOP_APP_SPECIAL_TARGET)
+            add_dependencies(Telegram Packer)
+        endif()
 
         nice_target_sources(Packer ${src_loc}
         PRIVATE
