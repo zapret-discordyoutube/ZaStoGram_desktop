@@ -440,7 +440,14 @@ const AVCodec *FindDecoder(not_null<AVCodecContext*> context) {
 
 void ConfigureDecoderThreads(not_null<AVCodecContext*> context) {
 	if (context->codec_type == AVMEDIA_TYPE_VIDEO) {
-		context->thread_count = kMaxSoftwareVideoDecoderThreads;
+		// Keep the conservative capped default unless the user explicitly
+		// tuned the experimental options.
+		const auto count = OptionFFmpegThreadCount.value();
+		context->thread_count = (count > 0)
+			? count
+			: OptionFFmpegMultiThread.value()
+			? kMaxSoftwareVideoDecoderThreads
+			: 1;
 		context->thread_type = FF_THREAD_FRAME;
 	}
 }

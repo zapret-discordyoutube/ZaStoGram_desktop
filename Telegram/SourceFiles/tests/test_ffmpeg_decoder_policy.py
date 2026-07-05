@@ -32,8 +32,14 @@ def test_ffmpeg_decoder_threads_have_shared_policy():
 
     assert "ConfigureDecoderThreads(not_null<AVCodecContext*> context);" in header
     assert "kMaxSoftwareVideoDecoderThreads = 2" in ffmpeg
-    assert "context->thread_count = kMaxSoftwareVideoDecoderThreads;" in ffmpeg
     assert "\"threads\", \"auto\"" not in ffmpeg
+
+    # The capped default applies unless the experimental options are tuned.
+    configure = body_after(FFMPEG_SOURCE, "void ConfigureDecoderThreads")
+    assert "OptionFFmpegThreadCount.value()" in configure
+    assert "OptionFFmpegMultiThread.value()" in configure
+    assert "kMaxSoftwareVideoDecoderThreads" in configure
+    assert "FF_THREAD_FRAME" in configure
     assert "ConfigureDecoderThreads(context);" in make_codec
     assert (
         make_codec.index("ConfigureDecoderThreads(context);")
