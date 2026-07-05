@@ -1,7 +1,9 @@
+# ZaStoGram ships stable-only releases: keep BetaChannel 0 and no ".beta"
+# suffix in AppVersionOriginal, even after merging upstream beta version bumps.
 AppVersion         6009004
 AppVersionStrMajor 6.9
 AppVersionStrSmall 6.9.4
 AppVersionStr      6.9.4
-BetaChannel        1
+BetaChannel        0
 AlphaVersion       0
-AppVersionOriginal 6.9.4.beta
+AppVersionOriginal 6.9.4
