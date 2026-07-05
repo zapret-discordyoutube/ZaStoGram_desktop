@@ -875,6 +875,8 @@ PRIVATE
     history/view/controls/history_view_draft_options.h
     history/view/controls/history_view_forward_panel.cpp
     history/view/controls/history_view_forward_panel.h
+    history/view/controls/history_view_rich_draft_preview.cpp
+    history/view/controls/history_view_rich_draft_preview.h
     history/view/controls/history_view_suggest_options.cpp
     history/view/controls/history_view_suggest_options.h
     history/view/controls/history_view_ttl_button.cpp
@@ -1009,6 +1011,8 @@ PRIVATE
     history/view/history_view_group_members_widget.cpp
     history/view/history_view_group_members_widget.h
     history/view/history_view_item_preview.h
+    history/view/history_view_keyboard_text_selection.cpp
+    history/view/history_view_keyboard_text_selection.h
     history/view/history_view_list_widget.cpp
     history/view/history_view_list_widget.h
     history/view/history_view_message.cpp
@@ -1303,8 +1307,8 @@ PRIVATE
     intro/intro_widget.h
     iv/iv_cached_media.cpp
     iv/iv_cached_media.h
-#    iv/editor/iv_editor_session.cpp
-#    iv/editor/iv_editor_session.h
+    iv/editor/iv_editor_session.cpp
+    iv/editor/iv_editor_session.h
     iv/iv_delegate_impl.cpp
     iv/iv_delegate_impl.h
     iv/iv_instance.cpp
@@ -1928,6 +1932,8 @@ PRIVATE
     ui/item_text_options.cpp
     ui/item_text_options.h
     ui/resize_area.h
+    ui/rows_scroll_cache.cpp
+    ui/rows_scroll_cache.h
     ui/top_background_gradient.cpp
     ui/top_background_gradient.h
     ui/unread_badge.cpp
@@ -2184,13 +2190,6 @@ else()
     generate_dbus(Telegram org.freedesktop.portal. XdpBackground ${third_party_loc}/xdg-desktop-portal/data/org.freedesktop.portal.Background.xml)
     generate_dbus(Telegram org.freedesktop.portal. FlatpakPortal ${src_loc}/platform/linux/org.freedesktop.portal.Flatpak.xml)
     generate_dbus(Telegram org.freedesktop. XdgNotifications ${src_loc}/platform/linux/org.freedesktop.Notifications.xml)
-
-    if (NOT DESKTOP_APP_DISABLE_X11_INTEGRATION)
-        target_link_libraries(Telegram
-        PRIVATE
-            desktop-app::external_xcb
-        )
-    endif()
 endif()
 
 if (build_macstore)

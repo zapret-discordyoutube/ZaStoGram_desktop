@@ -532,6 +532,7 @@ TabbedSelector::TabbedSelector(
 	}
 	if (hasEmojiTab()) {
 		emoji()->refreshEmoji();
+		setSearchRightReserved(descriptor.searchRightReserved);
 	}
 	setAttribute(Qt::WA_OpaquePaintEvent, false);
 	showAll();
@@ -1338,6 +1339,10 @@ void TabbedSelector::switchTab() {
 		session().settings().setSelectorTab(_currentTabType);
 		session().saveSettingsDelayed();
 	}
+}
+
+void TabbedSelector::setSearchRightReserved(int value) {
+	emoji()->setSearchRightReserved(value);
 }
 
 not_null<EmojiListWidget*> TabbedSelector::emoji() const {

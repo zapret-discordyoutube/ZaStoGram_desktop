@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ffmpeg/ffmpeg_utility.h"
 
 #include "base/algorithm.h"
+#include "base/options.h"
 #include "logs.h"
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
@@ -52,6 +53,20 @@ constexpr auto kMaxPixelsFixedPadding = 64 * 1024;
 constexpr auto kMaxSoftwareVideoDecoderThreads = 2;
 constexpr auto kTimeUnknown = std::numeric_limits<crl::time>::min();
 constexpr auto kDurationMax = crl::time(std::numeric_limits<int>::max());
+
+base::options::toggle OptionFFmpegMultiThread({
+	.id = kOptionFFmpegMultiThread,
+	.name = "Multi-thread video decoding",
+	.description = "Allow FFmpeg to use a thread pool for decoding,"
+		" typically a thread per CPU thread.",
+	.defaultValue = true,
+});
+
+base::options::option<int> OptionFFmpegThreadCount({
+	.id = kOptionFFmpegThreadCount,
+	.name = "Video decoding thread count",
+	.description = "Override FFmpeg's thread pool thread count.",
+});
 
 using GetFormatMethod = enum AVPixelFormat(*)(
 	struct AVCodecContext *s,
@@ -275,6 +290,9 @@ enum AVPixelFormat GetFormatImplementation(
 }
 
 } // namespace
+
+const char kOptionFFmpegMultiThread[] = "ffmpeg-multithread";
+const char kOptionFFmpegThreadCount[] = "ffmpeg-thread-count";
 
 IOPointer MakeIOPointer(
 		void *opaque,
