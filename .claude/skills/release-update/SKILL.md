@@ -39,20 +39,23 @@ without a version bump reaches nobody.
    `Telegram/SourceFiles/core/version.h` now show the new version.
 
 4. **Commit, push, tag.** Commit as `Version <X.Y.Z>`, push `dev`, then
-   `git tag v<X.Y.Z> && git push origin v<X.Y.Z>`. The tag build runs in its
-   own concurrency group, so tagging immediately is fine. Note: any push to
-   `dev` cancels the in-progress dev build for that branch — that is expected.
+   `git tag zsg-<X.Y.Z> && git push origin zsg-<X.Y.Z>`. The `zsg-` prefix is
+   required: plain `v<X.Y.Z>` tags collide with upstream Telegram's tags that
+   came along with the fork (v6.9.3 etc. already exist and point at official
+   commits). The tag build runs in its own concurrency group, so tagging
+   immediately is fine. Note: any push to `dev` cancels the in-progress dev
+   build for that branch — that is expected.
 
 5. **Watch the tag build.** Find the run:
    `gh run list --repo youtubediscord/ZaStoGram_desktop --workflow win.yml --json databaseId,headBranch,status`
    (the tag run has `headBranch` = the tag name). Poll with a background
    Monitor every ~90s until it completes; a full build takes 1–3 hours. If it
    fails, read `gh run view <id> --log-failed`, fix the cause, then redo the
-   tag: `git tag -d v<X.Y.Z>`, `git push origin :refs/tags/v<X.Y.Z>`, delete
-   the half-made release if any (`gh release delete v<X.Y.Z> --yes`), and
-   re-tag the fixed commit.
+   tag: `git tag -d zsg-<X.Y.Z>`, `git push origin :refs/tags/zsg-<X.Y.Z>`,
+   delete the half-made release if any (`gh release delete zsg-<X.Y.Z> --yes`),
+   and re-tag the fixed commit.
 
-6. **Verify the release.** `gh release view v<X.Y.Z> --json assets,isLatest,isPrerelease`
+6. **Verify the release.** `gh release view zsg-<X.Y.Z> --json assets,isLatest,isPrerelease`
    must show `isLatest: true`, `isPrerelease: false`, and assets including
    `current4`, `tupdate<AppVersion>`, `tx64upd<AppVersion>` plus the
    user-facing exe/zip files. Then confirm the update endpoint serves the new
