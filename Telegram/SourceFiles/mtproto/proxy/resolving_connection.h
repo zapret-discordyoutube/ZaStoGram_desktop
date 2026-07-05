@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_abstract.h"
 #include "base/timer.h"
 
+#include <vector>
+
 namespace MTP {
 namespace details {
 
@@ -42,29 +44,47 @@ public:
 	QString tag() const override;
 
 private:
-	void setChild(ConnectionPointer &&child);
-	bool refreshChild();
+	struct RouteAttempt {
+		ConnectionPointer child;
+		int ipIndex = -1;
+	};
+
+	void startRouteAttempts();
+	void startNextRouteAttempt();
+	void scheduleRouteRace();
+	void refreshAttemptTimeout();
+	void handleRouteAttemptTimeout();
+	[[nodiscard]] int activeRouteAttempts() const;
+	[[nodiscard]] std::vector<int> routeOrder() const;
+	[[nodiscard]] RouteAttempt *findRouteAttempt(AbstractConnection *child);
+	void removeRouteAttempt(AbstractConnection *child);
+	void addRouteAttempt(int ipIndex);
+	void promoteRouteAttempt(AbstractConnection *child);
 	void emitError(int errorCode);
 
 	void domainResolved(
 		const QString &host,
 		const QStringList &ips,
 		qint64 expireAt);
-	void handleError(int errorCode);
-	void handleConnected();
-	void handleDisconnected();
-	void handleReceivedData();
+	void handleError(AbstractConnection *child, int errorCode);
+	void handleConnected(AbstractConnection *child);
+	void handleDisconnected(AbstractConnection *child);
+	void handleReceivedData(AbstractConnection *child);
 
 	not_null<Instance*> _instance;
 	ConnectionPointer _child;
+	std::vector<RouteAttempt> _routeAttempts;
+	std::vector<int> _routeOrder;
 	bool _connected = false;
 	int _ipIndex = -1;
+	int _nextRoutePosition = 0;
 	QString _address;
 	int _port = 0;
 	bytes::vector _protocolSecret;
 	int16 _protocolDcId = 0;
 	bool _protocolForFiles = false;
 	base::Timer _timeoutTimer;
+	base::Timer _routeRaceTimer;
 
 };
 

@@ -21,6 +21,8 @@ enum class WssDcCoverage {
 	const ProxyData &proxy,
 	ProxyData::Settings settings);
 
+void NoteProxyWssRemoteClosed(const ProxyData &proxy);
+
 [[nodiscard]] ProxyTransport EffectiveProxyTransport(
 	const ProxyData &proxy,
 	ProxyData::Settings settings,

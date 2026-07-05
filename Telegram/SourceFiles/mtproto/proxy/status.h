@@ -36,16 +36,15 @@ enum class ProxyConnectionError {
 
 enum class ProxyMtproxyTerminalReason {
 	None,
+	DnsFailed,
+	TcpConnectTimeout,
+	TcpConnectedNoClientHelloWrite,
 	ClientHelloSentNoServerHello,
 	TlsAlertAfterClientHello,
-	ShortTlsResponseAfterClientHello,
-	UnrecognizedTlsResponseAfterClientHello,
 	ServerHelloHmacMismatch,
-	PostHandshakeNoAppData,
-	DnsHostNotFound,
-	TcpNotConnected,
-	Timeout,
-	RemoteClosed,
+	ServerHelloOkNoAppData,
+	AppDataRemoteClosed,
+	ProxyProtocolBadResponse,
 };
 
 enum class ConnectionNotice {
@@ -69,15 +68,15 @@ enum class ProxyConnectionStatusKind {
 	Network,
 	BadResponse,
 	Failed,
+	MtproxyDnsFailed,
+	MtproxyTcpConnectTimeout,
+	MtproxyTcpConnectedNoClientHelloWrite,
 	MtproxyNoServerHello,
 	MtproxyTlsAlert,
-	MtproxyShortResponse,
-	MtproxyUnrecognizedResponse,
 	MtproxyServerHelloHmacMismatch,
-	MtproxyPostHandshakeNoAppData,
-	MtproxyDnsHostNotFound,
-	MtproxyTcpNotConnected,
-	MtproxyTimeout,
+	MtproxyServerHelloOkNoAppData,
+	MtproxyAppDataRemoteClosed,
+	MtproxyProxyProtocolBadResponse,
 };
 
 enum class ProxyConnectionStatusSeverity {
@@ -86,6 +85,21 @@ enum class ProxyConnectionStatusSeverity {
 	Success,
 	Warning,
 	Error,
+};
+
+enum class ProxyConnectionStatusTone {
+	None,
+	Progress,
+	Success,
+	Warning,
+	Error,
+	ErrorDns,
+	ErrorTimeout,
+	ErrorNetwork,
+	ErrorProtocol,
+	ErrorAuth,
+	ErrorHandshake,
+	ErrorData,
 };
 
 struct ProxyConnectionAttempt {
@@ -127,6 +141,10 @@ struct ProxyConnectionStatus {
 [[nodiscard]] ProxyConnectionStatusSeverity ProxyConnectionStatusSeverityFor(
 	ProxyConnectionStatusKind kind);
 [[nodiscard]] ProxyConnectionStatusSeverity ProxyConnectionStatusSeverityFor(
+	const ProxyConnectionStatus &status);
+[[nodiscard]] ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
+	ProxyConnectionStatusKind kind);
+[[nodiscard]] ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 	const ProxyConnectionStatus &status);
 [[nodiscard]] ProxyConnectionStatus ApplyProxyConnectionStatusUpdate(
 	const ProxyConnectionStatus &current,

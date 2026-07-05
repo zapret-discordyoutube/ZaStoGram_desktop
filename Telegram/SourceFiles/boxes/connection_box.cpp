@@ -1309,57 +1309,22 @@ void ProxiesBox::setupContent() {
 	};
 	{
 		const auto saved = Core::App().settings().proxyStealthOptions();
-		addStealthToggle(
-			u"Mask MTProxy start (anti-DPI)"_q,
-			(saved.startupCover != MTP::ProxyStartupCover::Off),
-			[](bool on) {
-				auto o = Core::App().settings().proxyStealthOptions();
-				o.startupCover = on
-					? MTP::ProxyStartupCover::Soft
-					: MTP::ProxyStartupCover::Off;
-				Core::App().settings().setProxyStealthOptions(o);
-			});
-		addStealthToggle(
-			u"Fragment ClientHello"_q,
-			(saved.clientHelloFragmentation
-				!= MTP::ProxyClientHelloFragmentation::Off),
-			[](bool on) {
-				auto o = Core::App().settings().proxyStealthOptions();
-				o.clientHelloFragmentation = on
-					? MTP::ProxyClientHelloFragmentation::Soft
-					: MTP::ProxyClientHelloFragmentation::Off;
-				Core::App().settings().setProxyStealthOptions(o);
-			});
-		addStealthToggle(
-			u"Vary TLS record sizes"_q,
-			(saved.recordSizing != MTP::ProxyRecordSizing::Off),
-			[](bool on) {
-				auto o = Core::App().settings().proxyStealthOptions();
-				o.recordSizing = on
-					? MTP::ProxyRecordSizing::Conservative
-					: MTP::ProxyRecordSizing::Off;
-				Core::App().settings().setProxyStealthOptions(o);
-			});
-		addStealthToggle(
-			u"Pace MTProxy traffic"_q,
-			(saved.timing != MTP::ProxyTiming::Off),
-			[](bool on) {
-				auto o = Core::App().settings().proxyStealthOptions();
-				o.timing = on
-					? MTP::ProxyTiming::Gentle
-					: MTP::ProxyTiming::Off;
-				Core::App().settings().setProxyStealthOptions(o);
-			});
-		addStealthToggle(
-			u"Spread connection attempts"_q,
-			(saved.connectionPattern != MTP::ProxyConnectionPattern::Off),
-			[](bool on) {
-				auto o = Core::App().settings().proxyStealthOptions();
-				o.connectionPattern = on
-					? MTP::ProxyConnectionPattern::Browser
-					: MTP::ProxyConnectionPattern::Off;
-				Core::App().settings().setProxyStealthOptions(o);
-			});
+		const auto addStealthHeader = [&](const QString &text) {
+			right->add(
+				object_ptr<Ui::FlatLabel>(
+					right,
+					text,
+					st::boxDividerLabel),
+				st::proxySettingsRightAboutPadding);
+		};
+		const auto raiseLevel = [](
+				MTP::ProxyStealthOptions &options,
+				MTP::ProxyStealthLevel level) {
+			if (int(options.level) < int(level)) {
+				options.level = level;
+			}
+		};
+		addStealthHeader(u"Transport compatibility"_q);
 		_routeViaWss = addStealthToggle(
 			u"Route via WSS (web, DC2/DC4 only)"_q,
 			(saved.transport == MTP::ProxyTransport::Wss),
@@ -1370,6 +1335,86 @@ void ProxiesBox::setupContent() {
 					: MTP::ProxyTransport::Tcp;
 				Core::App().settings().setProxyStealthOptions(o);
 				refreshRouteViaWss();
+			});
+		addStealthHeader(u"Handshake compatibility"_q);
+		addStealthToggle(
+			u"Spread connection attempts (soft)"_q,
+			(saved.connectionPattern != MTP::ProxyConnectionPattern::Off),
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.connectionPattern = on
+					? MTP::ProxyConnectionPattern::Soft
+					: MTP::ProxyConnectionPattern::Off;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveHandshake);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthHeader(u"Data-phase shaping"_q);
+		addStealthToggle(
+			u"Mask MTProxy start (anti-DPI)"_q,
+			(saved.startupCover != MTP::ProxyStartupCover::Off),
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.startupCover = on
+					? MTP::ProxyStartupCover::Soft
+					: MTP::ProxyStartupCover::Off;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Vary TLS record sizes (conservative)"_q,
+			(saved.recordSizing != MTP::ProxyRecordSizing::Off),
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.recordSizing = on
+					? MTP::ProxyRecordSizing::Conservative
+					: MTP::ProxyRecordSizing::Off;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Pace MTProxy traffic (gentle)"_q,
+			(saved.timing != MTP::ProxyTiming::Off),
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.timing = on
+					? MTP::ProxyTiming::Gentle
+					: MTP::ProxyTiming::Off;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthHeader(u"Experimental MTProxy handshake"_q);
+		addStealthToggle(
+			u"Fragment ClientHello (experimental)"_q,
+			(saved.clientHelloFragmentation
+				!= MTP::ProxyClientHelloFragmentation::Off),
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.clientHelloFragmentation = on
+					? MTP::ProxyClientHelloFragmentation::Soft
+					: MTP::ProxyClientHelloFragmentation::Off;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::Experimental);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
+			});
+		addStealthToggle(
+			u"Synthetic PSK tickets (experimental)"_q,
+			saved.syntheticPsk,
+			[=](bool on) {
+				auto o = Core::App().settings().proxyStealthOptions();
+				o.syntheticPsk = on;
+				if (on) {
+					raiseLevel(o, MTP::ProxyStealthLevel::Experimental);
+				}
+				Core::App().settings().setProxyStealthOptions(o);
 			});
 	}
 

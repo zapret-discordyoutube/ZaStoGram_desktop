@@ -1284,12 +1284,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_status_connecting" = "Connecting to proxy...";
 "lng_proxy_status_handshake" = "Checking proxy handshake...";
 "lng_proxy_status_checking" = "Checking Telegram through proxy...";
+"lng_proxy_status_mtproxy_dns_failed" = "MTProxy DNS failed";
+"lng_proxy_status_mtproxy_tcp_timeout" = "MTProxy TCP route timed out";
+"lng_proxy_status_mtproxy_tcp_no_client_hello" = "MTProxy TCP connected, ClientHello was not sent";
 "lng_proxy_status_mtproxy_no_server_hello" = "MTProxy FakeTLS failed: no Server Hello";
 "lng_proxy_status_mtproxy_tls_alert" = "MTProxy FakeTLS failed: TLS alert after ClientHello";
 "lng_proxy_status_mtproxy_short_response" = "MTProxy FakeTLS failed: short Server Hello";
 "lng_proxy_status_mtproxy_unrecognized_response" = "MTProxy FakeTLS failed: unrecognized Server Hello";
 "lng_proxy_status_mtproxy_hmac_mismatch" = "MTProxy FakeTLS failed: bad Server Hello digest";
 "lng_proxy_status_mtproxy_no_appdata" = "MTProxy FakeTLS connected, but Telegram data did not arrive";
+"lng_proxy_status_mtproxy_appdata_closed" = "MTProxy app data stream was closed";
+"lng_proxy_status_mtproxy_bad_response" = "MTProxy protocol response was invalid";
 "lng_proxy_status_connected" = "Proxy connected";
 "lng_proxy_status_timeout" = "Proxy timeout";
 "lng_proxy_status_refused" = "Proxy connection refused";

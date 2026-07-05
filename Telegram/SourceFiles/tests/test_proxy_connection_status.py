@@ -17,6 +17,20 @@ CONNECTING_WIDGET_H = SOURCE_DIR / "window" / "window_connecting_widget.h"
 CONNECTING_WIDGET = SOURCE_DIR / "window" / "window_connecting_widget.cpp"
 
 
+def function_body(source, signature):
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    for i in range(brace, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:i + 1]
+    raise AssertionError(f"function body not found: {signature}")
+
+
 def test_proxy_status_model_is_exposed_to_ui():
     status_header = STATUS_H.read_text(encoding="utf-8")
     instance_header = INSTANCE_H.read_text(encoding="utf-8")
@@ -35,7 +49,10 @@ def test_proxy_status_model_is_exposed_to_ui():
     assert "crl::time terminalUntil" in status_header
     assert "ApplyProxyConnectionStatusUpdate(" in status_header
     assert "struct ProxyConnectionStatus" not in abstract_connection
-    assert '#include "mtproto/proxy/status.h"' in instance_header
+    assert '#include "mtproto/proxy/status.h"' not in instance_header
+    assert "struct ProxyConnectionStatus;" in instance_header
+    assert "enum class ConnectionNotice;" in instance_header
+    assert '#include "mtproto/proxy/status.h"' in source
     assert '#include "mtproto/proxy/status.h"' in widget_header
     assert "proxyConnectionStatusValue()" in instance_header
     assert "setProxyConnectionStatus(ProxyConnectionStatus status)" in instance_header
@@ -109,18 +126,29 @@ def test_proxy_status_kind_and_severity_are_centralized():
 
     assert "enum class ProxyConnectionStatusKind" in status_header
     assert "enum class ProxyConnectionStatusSeverity" in status_header
+    assert "enum class ProxyConnectionStatusTone" in status_header
     assert "ProxyConnectionStatusKindFor(" in status_header
     assert "ProxyConnectionStatusSeverityFor(" in status_header
+    assert "ProxyConnectionStatusToneFor(" in status_header
     assert "ProxyConnectionStatusKindFor(status)" in widget
     assert "ProxyConnectionStatusKindText(" in widget
     assert "ProxyConnectionStatusSeverityFor(status)" in widget
+    assert "ProxyConnectionStatusToneFor(status)" in widget
     assert "ProxyConnectionStatusSeverity::Warning" in status_source
     assert "ProxyConnectionStatusSeverity::Error" in status_source
     assert "ProxyConnectionStatusSeverity::Success" in status_source
+    assert "ProxyConnectionStatusTone::ErrorTimeout" in status_source
+    assert "ProxyConnectionStatusTone::ErrorDns" in status_source
+    assert "ProxyConnectionStatusTone::ErrorAuth" in status_source
+    assert "ProxyConnectionStatusTone::ErrorHandshake" in status_source
+    assert "ProxyConnectionStatusTone::ErrorData" in status_source
     assert "ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch" in (
         status_source)
-    assert "ProxyConnectionStatusKind::MtproxyPostHandshakeNoAppData" in (
+    assert "ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData" in (
         status_source)
+    assert "ProxyConnectionStatusKind::MtproxyTcpConnectTimeout" in (
+        status_source)
+    assert "ProxyConnectionStatusKind::MtproxyDnsFailed" in status_source
     assert "ProxyConnectionStatusKind::HostNotFound" in status_source
     assert "ProxyConnectionStatusKind::Timeout" in status_source
     assert "status.mtproxyReason" not in widget
@@ -130,6 +158,63 @@ def test_proxy_status_kind_and_severity_are_centralized():
     assert "connectingProxySuccess" in style
     assert "connectingProxyWarning" in style
     assert "connectingProxyError" in style
+
+
+def test_proxy_shield_uses_status_tones():
+    status_source = STATUS_CPP.read_text(encoding="utf-8")
+    widget_header = CONNECTING_WIDGET_H.read_text(encoding="utf-8")
+    widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
+    style = (SOURCE_DIR / "window" / "window.style").read_text(
+        encoding="utf-8")
+    cache_body = function_body(
+        widget,
+        "const QPixmap &ConnectionState::Widget::ProxyIcon::cache() const")
+
+    assert "MTP::ProxyConnectionStatusTone proxyTone" in widget_header
+    assert "MTP::ProxyConnectionStatusTone tone" in widget
+    assert "ProxyConnectionStatusTone::ErrorTimeout" in cache_body
+    assert "ProxyConnectionStatusTone::ErrorDns" in cache_body
+    assert "ProxyConnectionStatusTone::ErrorAuth" in cache_body
+    assert "ProxyConnectionStatusTone::ErrorHandshake" in cache_body
+    assert "ProxyConnectionStatusTone::ErrorData" in cache_body
+    assert "case ProxyConnectionStatusKind::Timeout:" in status_source
+    assert "return ProxyConnectionStatusTone::ErrorTimeout;" in status_source
+    assert "case ProxyConnectionStatusKind::HostNotFound:" in status_source
+    assert "return ProxyConnectionStatusTone::ErrorDns;" in status_source
+    assert "case ProxyConnectionStatusKind::Authentication:" in status_source
+    assert "return ProxyConnectionStatusTone::ErrorAuth;" in status_source
+    assert "case ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch:" in (
+        status_source)
+    assert "return ProxyConnectionStatusTone::ErrorHandshake;" in status_source
+    assert "case ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed:" in (
+        status_source)
+    assert "return ProxyConnectionStatusTone::ErrorData;" in status_source
+    for style_name in (
+        "connectingProxyErrorDns",
+        "connectingProxyErrorTimeout",
+        "connectingProxyErrorNetwork",
+        "connectingProxyErrorProtocol",
+        "connectingProxyErrorAuth",
+        "connectingProxyErrorHandshake",
+        "connectingProxyErrorData",
+    ):
+        assert style_name in style
+
+
+def test_proxy_shield_replaces_left_spinner():
+    widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
+    resize_body = function_body(
+        widget,
+        "void ConnectionState::Widget::resizeEvent(")
+    visibility_body = function_body(
+        widget,
+        "void ConnectionState::Widget::setProgressVisibility(")
+
+    assert "_proxyIcon->moveToLeft(xShift, yShift);" in resize_body
+    assert "_proxyIcon->moveToRight(" not in resize_body
+    assert "visible && !_currentLayout.proxyEnabled" in visibility_body
+    assert "_proxyIcon->setVisible(_currentLayout.proxyEnabled);" in (
+        visibility_body)
 
 
 def test_visible_proxy_phrases_exist():
@@ -169,5 +254,7 @@ if __name__ == "__main__":
     test_proxy_status_tracks_phases_and_socket_errors()
     test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success()
     test_proxy_status_kind_and_severity_are_centralized()
+    test_proxy_shield_uses_status_tones()
+    test_proxy_shield_replaces_left_spinner()
     test_visible_proxy_phrases_exist()
     test_proxy_retry_with_error_uses_generated_argument_order()

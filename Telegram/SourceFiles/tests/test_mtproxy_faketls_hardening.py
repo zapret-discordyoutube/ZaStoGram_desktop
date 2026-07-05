@@ -25,30 +25,47 @@ def test_auto_rotate_profile_changes_are_hysteresis_gated():
 
 def test_adaptive_policy_does_not_enable_pacing_as_a_recovery_recipe():
     source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-    post_handshake = block_after(
+    recipe_body = function_body(
         source,
-        'if (input.lastDiagnostic == u"post_handshake_no_appdata"_q) {')
+        "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
 
-    assert "ProxyTiming::Gentle" not in post_handshake
-    assert "stealth.timing =" not in post_handshake
+    assert "ProxyStealthLevelForRecipeLevel(" in source
+    assert "ApplyProxyStealthLevel(" in recipe_body
+    assert "ProxyStealthLevel::Experimental" not in function_body(
+        source,
+        "ProxyStealthLevel ProxyStealthLevelForRecipeLevel(")
 
 
-def test_post_handshake_recipe_keeps_first_retry_close_to_configured_shape():
+def test_adaptive_recipe_ladder_keeps_experimental_flags_manual():
     source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-    post_handshake = block_after(
+    data = (SOURCE_DIR / "mtproto" / "proxy" / "data.cpp").read_text(
+        encoding="utf-8")
+    box = (SOURCE_DIR / "boxes" / "connection_box.cpp").read_text(
+        encoding="utf-8")
+    recipe_body = function_body(
         source,
-        'if (input.lastDiagnostic == u"post_handshake_no_appdata"_q) {')
+        "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
+    level_body = function_body(
+        source,
+        "ProxyStealthLevel ProxyStealthLevelForRecipeLevel(")
+    apply_level = function_body(
+        data,
+        "ProxyStealthOptions ApplyProxyStealthLevel(")
 
-    record_index = post_handshake.index(
-        "stealth.recordSizing = ProxyRecordSizing::Conservative;")
-    startup_index = post_handshake.index(
-        "stealth.startupCover = ProxyStartupCover::Soft;")
-    quiet_index = post_handshake.index(
-        "stealth.connectionPattern = ProxyConnectionPattern::Quiet;")
-
-    assert post_handshake.rfind("input.recipeLevel >= 2", 0, record_index) >= 0
-    assert post_handshake.rfind("input.recipeLevel >= 3", 0, startup_index) >= 0
-    assert post_handshake.rfind("input.recipeLevel >= 4", 0, quiet_index) >= 0
+    assert "recipeLevel <= 0" in level_body
+    assert "ProxyStealthLevel::CompatStrict" in level_body
+    assert "ProxyStealthLevel::CompatModern" in level_body
+    assert "ProxyStealthLevel::DpiAdaptiveHandshake" in level_body
+    assert "ProxyStealthLevel::DpiAdaptiveData" in level_body
+    assert "ProxyStealthLevel::Experimental" not in level_body
+    assert "result.syntheticPsk = false;" in apply_level
+    assert "result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;" in (
+        apply_level)
+    assert "case ProxyStealthLevel::Experimental:" in apply_level
+    assert "ApplyProxyStealthLevel(input.stealth, level)" in recipe_body
+    assert "Synthetic PSK tickets (experimental)" in box
+    assert "Experimental MTProxy handshake" in box
+    assert "Data-phase shaping" in box
 
 
 def test_post_handshake_failure_does_not_rotate_client_hello_profile():
@@ -67,7 +84,7 @@ def test_post_handshake_failure_does_not_rotate_client_hello_profile():
 
     assert "FailureNeedsTlsProfileRotation(" in header
     assert "FailureNeedsTlsProfileRotation(diagnostic)" in rotation_body
-    assert 'u"post_handshake_no_appdata"_q' not in predicate_body
+    assert 'u"server_hello_ok_no_appdata"_q' not in predicate_body
     assert "RotateTlsProfileOnFailure(" in report_failure
 
 
@@ -88,19 +105,26 @@ def test_prepared_adaptive_profile_is_used_for_client_hello():
     assert "_usePreparedTlsProfile = false;" in disconnect_body
 
 
-def test_mtproxy_admission_delays_are_logged_before_skipping_start():
+def test_mtproxy_admission_delays_are_logged_as_queued_status():
     source = SESSION_PRIVATE_CPP.read_text(encoding="utf-8")
+    broker = (SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp").read_text(
+        encoding="utf-8")
     append_body = function_body(
         source,
         "bool SessionPrivate::appendTestConnection(")
-    blocked_branch = block_after(
-        append_body,
-        "if (admission.action != MtProxy::AdmissionAction::StartNow) {")
 
-    assert "ReportProxyEvent(" in blocked_branch
-    assert "ProxyDiagnosticsPhase::Failed" in blocked_branch
-    assert "admission.blockedBy" in blocked_branch
-    assert "mtproxy admission delayed" in blocked_branch
+    assert "ConnectionBroker::Instance().request({" in append_body
+    assert ".status = [=](ConnectionBrokerDecision)" in append_body
+    assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
+    assert "ProxyDiagnosticsPhase::Connecting" not in function_body(
+        broker,
+        "void ConnectionBroker::notify(")
+    assert "ProxyDiagnosticsSeverity::Warning" in broker
+    assert ".error = " not in function_body(
+        broker,
+        "void ConnectionBroker::reportAdmissionEvent(")
+    assert "mtproxy admission queued" in broker
+    assert "setState(-int(admission.retryAfter));" not in append_body
 
 
 def test_adaptive_recipe_ignores_non_recipe_diagnostic_with_stale_level():
@@ -115,7 +139,7 @@ def test_adaptive_recipe_ignores_non_recipe_diagnostic_with_stale_level():
 
     assert guard in recipe_body
     assert recipe_body.index(guard) < recipe_body.index(
-        "if (input.recipeLevel >= 1")
+        "ApplyProxyStealthLevel(")
 
 
 def function_body(text: str, signature: str) -> str:
@@ -146,8 +170,8 @@ def body_from_brace(text: str, brace: int) -> str:
 if __name__ == "__main__":
     test_auto_rotate_profile_changes_are_hysteresis_gated()
     test_adaptive_policy_does_not_enable_pacing_as_a_recovery_recipe()
-    test_post_handshake_recipe_keeps_first_retry_close_to_configured_shape()
+    test_adaptive_recipe_ladder_keeps_experimental_flags_manual()
     test_post_handshake_failure_does_not_rotate_client_hello_profile()
     test_prepared_adaptive_profile_is_used_for_client_hello()
-    test_mtproxy_admission_delays_are_logged_before_skipping_start()
+    test_mtproxy_admission_delays_are_logged_as_queued_status()
     test_adaptive_recipe_ignores_non_recipe_diagnostic_with_stale_level()

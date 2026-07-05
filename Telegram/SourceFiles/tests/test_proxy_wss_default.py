@@ -3,6 +3,7 @@ from pathlib import Path
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 PROXY_DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+PROXY_DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 WSS_SOCKET_H = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.h"
 WSS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.cpp"
 CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
@@ -16,6 +17,7 @@ TRANSPORT_POLICY_H = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.h"
 TRANSPORT_POLICY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session.cpp"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 CMAKE_LISTS = SOURCE_DIR.parent / "CMakeLists.txt"
 
 
@@ -77,13 +79,89 @@ def test_wss_transport_policy_is_the_single_effective_entrypoint():
 
     assert '#include "mtproto/proxy/data.h"' in header
     assert "[[nodiscard]] bool ProxyWssAllowed(" in header
+    assert "void NoteProxyWssRemoteClosed(" in header
     assert "[[nodiscard]] ProxyTransport EffectiveProxyTransport(" in header
     assert "[[nodiscard]] ProxyStealthOptions EffectiveProxyStealthOptions(" in header
-    assert "proxy.type != ProxyData::Type::Mtproto" in source
+    assert "proxy.type == ProxyData::Type::None" in source
+    assert "proxy.type != ProxyData::Type::Socks5" in source
+    assert "proxy.type == ProxyData::Type::Mtproto" in source
+    assert "proxy.type != ProxyData::Type::Mtproto" not in source
     assert "settings != ProxyData::Settings::Enabled" in source
     assert "result.transport = EffectiveProxyTransport(" in source
+    assert "CompatStrictProxyStealthOptions(" in source
     assert "mtproto/proxy/transport_policy.cpp" in cmake
     assert "mtproto/proxy/transport_policy.h" in cmake
+
+
+def test_wss_policy_allows_only_direct_or_nonlocal_socks_until_forbidden():
+    source = TRANSPORT_POLICY_CPP.read_text(encoding="utf-8")
+    allowed_body = function_body(source, "bool ProxyWssAllowed(")
+
+    assert "settings != ProxyData::Settings::Enabled" in allowed_body
+    assert "proxy.type == ProxyData::Type::None" in allowed_body
+    assert "proxy.type != ProxyData::Type::Socks5" in allowed_body
+    assert "IsLocalProxyEndpoint(proxy)" in allowed_body
+    assert "ProxyCapabilityCache::Instance().wssAllowed(proxy)" in allowed_body
+    assert "ProxyWssForbidden(proxy)" not in allowed_body
+    assert "ProxyData::Type::Http" not in allowed_body
+
+
+def test_compat_strict_disables_stealth_for_mtproxy_and_local_tunnels():
+    header = PROXY_DATA_H.read_text(encoding="utf-8")
+    data = PROXY_DATA_CPP.read_text(encoding="utf-8")
+    source = TRANSPORT_POLICY_CPP.read_text(encoding="utf-8")
+    strict_body = function_body(
+        data,
+        "ProxyStealthOptions CompatStrictProxyStealthOptions(")
+    level_body = function_body(
+        data,
+        "ProxyStealthOptions ApplyProxyStealthLevel(")
+    effective_body = function_body(
+        source,
+        "ProxyStealthOptions EffectiveProxyStealthOptions(")
+
+    assert "enum class ProxyStealthLevel" in header
+    assert "CompatStrict" in header
+    assert "CompatModern" in header
+    assert "DpiAdaptiveHandshake" in header
+    assert "DpiAdaptiveData" in header
+    assert "Experimental" in header
+    assert "ProxyStealthLevel level" in header
+    assert "bool syntheticPsk = false;" in header
+    assert "ApplyProxyStealthLevel(" in header
+    assert "CompatStrictProxyStealthOptions(" in header
+    assert "result.transport = ProxyTransport::Tcp;" in strict_body
+    assert (
+        "result.clientHelloFragmentation = "
+        "ProxyClientHelloFragmentation::Off;" in strict_body)
+    assert "result.recordSizing = ProxyRecordSizing::Off;" in strict_body
+    assert "result.timing = ProxyTiming::Off;" in strict_body
+    assert "result.startupCover = ProxyStartupCover::Off;" in strict_body
+    assert "result.syntheticPsk = false;" in strict_body
+    assert "result.connectionPattern = ProxyConnectionPattern::Off;" in strict_body
+    assert "result.tlsProfile = ProxyTlsProfile::Auto;" in strict_body
+    assert "case ProxyStealthLevel::CompatStrict:" in level_body
+    assert "case ProxyStealthLevel::CompatModern:" in level_body
+    assert "case ProxyStealthLevel::DpiAdaptiveHandshake:" in level_body
+    assert "case ProxyStealthLevel::DpiAdaptiveData:" in level_body
+    assert "case ProxyStealthLevel::Experimental:" in level_body
+    assert "result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;" in level_body
+    assert "result.syntheticPsk = false;" in level_body
+    assert "result.recordSizing = ProxyRecordSizing::Conservative;" in level_body
+    assert "result.timing = ProxyTiming::Gentle;" in level_body
+    assert "result.startupCover = ProxyStartupCover::Soft;" in level_body
+    assert "proxy.type == ProxyData::Type::Mtproto" in effective_body
+    assert "result.transport = ProxyTransport::Tcp;" in effective_body
+    mtproxy_branch = effective_body.split(
+        "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
+        "if (settings == ProxyData::Settings::Enabled", 1)[0]
+    assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
+    assert "ApplyProxyStealthLevel(" not in mtproxy_branch
+    assert "capability.syntheticPskAllowed" not in mtproxy_branch
+    assert "capability.fragmentationAllowed" not in mtproxy_branch
+    assert "IsLocalProxyEndpoint(proxy)" in effective_body
+    assert "!ProxyWssAllowed(proxy, settings)" in effective_body
+    assert "return CompatStrictProxyStealthOptions(std::move(result));" in effective_body
 
 
 def test_persisted_transport_is_raw_and_not_mtproxy_clamped():
@@ -92,7 +170,11 @@ def test_persisted_transport_is_raw_and_not_mtproxy_clamped():
     assert "mtprotoProxyEnabled" not in source
     assert "result.transport = MTP::ProxyTransport::Tcp;" not in source
     assert "copy.transport = MTP::ProxyTransport::Tcp;" not in source
+    assert '"mtproxy/stealthLevel"' in source
+    assert '"mtproxy/syntheticPsk"' in source
     assert 'write("mtproxy/transport", int(value.transport));' in source
+    assert 'write("mtproxy/stealthLevel", int(value.level));' in source
+    assert 'write("mtproxy/syntheticPsk", value.syntheticPsk ? 1 : 0);' in source
 
 
 def test_enabling_mtproxy_does_not_rewrite_saved_transport():
@@ -164,6 +246,34 @@ def test_wss_direct_fallback_requests_proxy_without_blocking():
     assert "kWaitForProxyTimeout" in session
 
 
+def test_wss_remote_closed_forbids_wss_for_that_proxy():
+    source = CONNECTION_TCP_CPP.read_text(encoding="utf-8")
+    error_body = function_body(source, "void TcpConnection::socketError(")
+
+    assert '#include "mtproto/proxy/transport_policy.h"' in source
+    assert "const auto error = SocketProxyConnectionError(errorCode);" in error_body
+    assert "const auto transport = _socket->transportName();" in error_body
+    assert "transport == u\"WSS\"_q" in error_body
+    assert "error == ProxyConnectionError::RemoteClosed" in error_body
+    assert "NoteProxyWssRemoteClosed(_proxy);" in error_body
+    assert ".transport = (transport == u\"WSS\"_q) ? transport : tag()," in error_body
+
+
+def function_body(text: str, signature: str) -> str:
+    start = text.index(signature)
+    brace = text.index(" {\n", start) + 1
+    depth = 0
+    for index in range(brace, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+    raise AssertionError(f"body not found for {signature}")
+
+
 if __name__ == "__main__":
     test_wss_transport_is_the_stealth_default()
     test_wss_transport_lives_in_proxy_module()
@@ -172,9 +282,12 @@ if __name__ == "__main__":
     test_route_via_wss_toggle_uses_transport_setting()
     test_default_local_proxy_port_matches_documented_telegram_proxy()
     test_wss_transport_policy_is_the_single_effective_entrypoint()
+    test_wss_policy_allows_only_direct_or_nonlocal_socks_until_forbidden()
+    test_compat_strict_disables_stealth_for_mtproxy_and_local_tunnels()
     test_persisted_transport_is_raw_and_not_mtproxy_clamped()
     test_enabling_mtproxy_does_not_rewrite_saved_transport()
     test_route_via_wss_checkbox_refreshes_after_proxy_change()
     test_runtime_consumers_use_effective_transport_policy()
     test_wss_dc_coverage_policy_is_centralized_and_soft()
     test_wss_direct_fallback_requests_proxy_without_blocking()
+    test_wss_remote_closed_forbids_wss_for_that_proxy()

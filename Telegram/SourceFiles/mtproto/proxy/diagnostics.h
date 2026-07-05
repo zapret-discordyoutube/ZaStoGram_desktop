@@ -36,6 +36,15 @@ enum class ProxyDiagnosticsPhase {
 	Failed,
 	ProxyCheckStarted,
 	ProxyCheckFinished,
+	AdmissionQueued,
+	AdmissionStarted,
+	AdmissionCancelled,
+	RouteSelected,
+	RouteFailed,
+	CanonicalDegraded,
+	CanonicalRecovered,
+	StealthRecipeApplied,
+	TransportFallbackApplied,
 };
 
 enum class ProxyDiagnosticsSeverity {
@@ -59,6 +68,17 @@ struct ProxyDiagnosticsEvent {
 	QString connectionId;
 	QString socketId;
 	QString message;
+	QString canonical;
+	QString route;
+	QString proxyKeyHash;
+	QString profile;
+	int recipeLevel = 0;
+	bool pskOffered = false;
+	bool pskOfferedKnown = false;
+	bool fragmentedClientHello = false;
+	bool fragmentedClientHelloKnown = false;
+	QString phaseAtFailure;
+	crl::time queueMs = 0;
 	QDateTime timestamp;
 };
 
@@ -75,7 +95,28 @@ struct ProxyEventReport {
 	QString dc;
 	QString connectionId;
 	QString message;
+	QString canonical;
+	QString route;
+	QString proxyKeyHash;
+	QString profile;
+	int recipeLevel = 0;
+	bool pskOffered = false;
+	bool pskOfferedKnown = false;
+	bool fragmentedClientHello = false;
+	bool fragmentedClientHelloKnown = false;
+	QString phaseAtFailure;
+	crl::time queueMs = 0;
 };
+
+[[nodiscard]] QString ProxyDiagnosticsKeyHash(const QString &key);
+[[nodiscard]] QString ProxyDiagnosticsEndpointText(
+	const QString &host,
+	int port);
+[[nodiscard]] QString ProxyDiagnosticsTransportName(
+	ProxyData::Type proxyType,
+	ProxyTransport transport);
+[[nodiscard]] QString ProxyDiagnosticsTlsProfileName(
+	ProxyTlsProfile profile);
 
 [[nodiscard]] QString FormatProxyDiagnosticsEvent(
 	const ProxyDiagnosticsEvent &event);

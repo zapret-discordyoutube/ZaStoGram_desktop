@@ -21,7 +21,7 @@ public:
 	TlsSocket(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
-		const QNetworkProxy &proxy,
+		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth);
 
@@ -81,6 +81,8 @@ private:
 	[[nodiscard]] int nextRecordPayloadSize();
 	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
 	[[nodiscard]] MtProxy::FailureReason failureReason() const;
+	[[nodiscard]] bool clearSyntheticPskOnFailure(
+		MtProxy::FailureReason reason);
 	void applyAdaptiveRecipe();
 	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
@@ -89,8 +91,8 @@ private:
 	void sendOutgoing();
 
 	const bytes::vector _secret;
-	QString _endpointKey;
 	MtProxy::EndpointId _endpointId;
+	QString _endpointKey;
 	MtProxy::EndpointUse _endpointUse = MtProxy::EndpointUse::Main;
 	ProxyStealthOptions _stealth;
 	QTcpSocket _socket;
@@ -115,6 +117,9 @@ private:
 	int _outgoingOffset = 0;
 	bool _clientPrefixSent = false;
 	bool _usePreparedTlsProfile = false;
+	bool _syntheticPskOffered = false;
+	bool _clientHelloFragmented = false;
+	bool _firstAppDataReceived = false;
 	QByteArray _clientHelloTail;
 	base::Timer _pacingTimer;
 	base::Timer _clientHelloTimer;

@@ -13,8 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
@@ -25,7 +25,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/openssl_help.h"
 #include "base/unixtime.h"
 
-#include <QtCore/QTimer>
 #include "base/platform/base_platform_info.h"
 
 #include <ksandbox.h>
@@ -206,113 +205,116 @@ bool SessionPrivate::appendTestConnection(
 		bool protocolForFiles) {
 	QWriteLocker lock(&_stateMutex);
 
+	const auto proxy = _options->proxy;
+	const auto stealth = _options->stealth;
 	const auto endpoint = ip.isEmpty()
-		? (_options->proxy.host + ':' + QString::number(_options->proxy.port))
+		? (proxy.host + ':' + QString::number(proxy.port))
 		: (ip + ':' + QString::number(port));
 	const auto priority = (qthelp::is_ipv6(ip) ? (OptionPreferIPv6.value() ? 2 : 0) : 1)
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
 		+ (protocolSecret.empty() ? 0 : 1);
-	auto admission = MtProxy::Admission();
-	const auto mtproxy = (_options->proxy.type == ProxyData::Type::Mtproto);
+	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = protocolForFiles
 		? MtProxy::EndpointUse::Media
 		: MtProxy::EndpointUse::Main;
 	const auto mtproxyEndpoint = mtproxy
 		? MtProxy::EndpointIdFromProxy(
-			_options->proxy,
-			_options->stealth,
+			proxy,
+			stealth,
 			ip,
 			port)
 		: MtProxy::EndpointId();
-	if (mtproxy) {
-		admission = MtProxy::EndpointHealth::Instance().admit({
-			.endpoint = mtproxyEndpoint,
-			.use = mtproxyUse,
-			.stealth = _options->stealth,
-			.configuredTlsProfile = _options->stealth.tlsProfile,
+	const auto protocolDcId = getProtocolDcId();
+	const auto appendStartedConnection = [=, this](
+			MtProxy::EndpointId startEndpoint,
+			MtProxy::EndpointUse startUse,
+			MtProxy::EndpointAttemptLease startLease,
+			ProxyStealthOptions startStealth) mutable {
+		QWriteLocker lock(&_stateMutex);
+		_testConnections.push_back({
+			AbstractConnection::Create(
+				_instance,
+				protocol,
+				thread(),
+				protocolSecret,
+				proxy,
+				startStealth),
+			priority,
+			endpoint,
+			std::move(startEndpoint),
+			startUse,
+			std::move(startLease)
 		});
-		if (admission.action != MtProxy::AdmissionAction::StartNow) {
-			lock.unlock();
-			ReportProxyEvent(_instance, {
-				.phase = ProxyDiagnosticsPhase::Failed,
-				.error = MtProxy::ToProxyConnectionError(admission.blockedBy),
-				.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
-					admission.blockedBy),
-				.terminalUntil = admission.retryAfter > 0
-					? (crl::now() + admission.retryAfter)
-					: 0,
-				.proxy = _options->proxy,
-				.message = u"mtproxy admission delayed"_q,
+		const auto weak = _testConnections.back().data.get();
+		connect(weak, &AbstractConnection::error, [=](int errorCode) {
+			onError(weak, errorCode);
+		});
+		connect(weak, &AbstractConnection::receivedSome, [=] {
+			onReceivedSome();
+		});
+		_firstSentAt = 0;
+		if (_oldConnection) {
+			_oldConnection = false;
+			DEBUG_LOG(("This connection marked as not old!"));
+		}
+		_oldConnectionTimer.callOnce(kMarkConnectionOldTimeout);
+		connect(weak, &AbstractConnection::connected, [=] {
+			onConnected(weak);
+		});
+		connect(weak, &AbstractConnection::disconnected, [=] {
+			onDisconnected(weak);
+		});
+		connect(weak, &AbstractConnection::syncTimeRequest, [=] {
+			InvokeQueued(_instance, [instance = _instance] {
+				instance->syncHttpUnixtime();
 			});
-			if (admission.retryAfter > 0) {
-				setState(-int(admission.retryAfter));
-			}
+		});
+		const auto start = [=] {
+			weak->connectToServer(
+				ip,
+				port,
+				protocolSecret,
+				protocolDcId,
+				protocolForFiles);
+		};
+		InvokeQueued(_testConnections.back().data, start);
+		armWaitForConnectedTimer();
+	};
+
+	if (mtproxy) {
+		auto ticket = ConnectionBroker::Instance().request({
+			.endpoint = mtproxyEndpoint,
+			.proxy = proxy,
+			.use = mtproxyUse,
+			.stealth = stealth,
+			.configuredTlsProfile = stealth.tlsProfile,
+			.connectionPattern = stealth.connectionPattern,
+			.instance = _instance,
+			.context = this,
+			.start = [=](ConnectionStart start) mutable {
+				removeConnectionBrokerTicket(start.ticketId);
+				appendStartedConnection(
+					std::move(start.endpoint),
+					start.use,
+					std::move(start.lease),
+					start.stealth);
+			},
+			.status = [=](ConnectionBrokerDecision) {
+			},
+		});
+		if (!ticket) {
 			return false;
 		}
+		_connectionBrokerTickets.push_back(std::move(ticket));
+		return true;
 	}
-	_testConnections.push_back({
-		AbstractConnection::Create(
-			_instance,
-			protocol,
-			thread(),
-			protocolSecret,
-			_options->proxy,
-			_options->stealth),
-		priority,
-		endpoint,
-		mtproxyEndpoint,
-		mtproxyUse,
-		std::move(admission.lease)
-	});
-	const auto weak = _testConnections.back().data.get();
-	connect(weak, &AbstractConnection::error, [=](int errorCode) {
-		onError(weak, errorCode);
-	});
-	connect(weak, &AbstractConnection::receivedSome, [=] {
-		onReceivedSome();
-	});
-	_firstSentAt = 0;
-	if (_oldConnection) {
-		_oldConnection = false;
-		DEBUG_LOG(("This connection marked as not old!"));
-	}
-	_oldConnectionTimer.callOnce(kMarkConnectionOldTimeout);
-	connect(weak, &AbstractConnection::connected, [=] {
-		onConnected(weak);
-	});
-	connect(weak, &AbstractConnection::disconnected, [=] {
-		onDisconnected(weak);
-	});
-	connect(weak, &AbstractConnection::syncTimeRequest, [=] {
-		InvokeQueued(_instance, [instance = _instance] {
-			instance->syncHttpUnixtime();
-		});
-	});
 
-	const auto protocolDcId = getProtocolDcId();
-	const auto start = [=] {
-		weak->connectToServer(
-			ip,
-			port,
-			protocolSecret,
-			protocolDcId,
-			protocolForFiles);
-	};
-	const auto localDelay = mtproxy
-		? MtProxy::ConnectionSpacing(_options->stealth.connectionPattern)
-			* (int(_testConnections.size()) - 1)
-		: crl::time(0);
-	const auto openDelay = mtproxy
-		? MtProxy::ReserveOpenSlot(
-			mtproxyEndpoint,
-			_options->stealth.connectionPattern,
-			localDelay)
-		: localDelay;
-	if (openDelay > 0) {
-		QTimer::singleShot(int(openDelay), weak, start);
-	} else {
-		InvokeQueued(_testConnections.back().data, start);
-	}
+	lock.unlock();
+	appendStartedConnection(
+		MtProxy::EndpointId(),
+		MtProxy::EndpointUse::Main,
+		MtProxy::EndpointAttemptLease(),
+		stealth);
 	return true;
 }
 
@@ -412,10 +414,27 @@ void SessionPrivate::destroyAllConnections() {
 	_waitForBetterTimer.cancel();
 	_waitForReceivedTimer.cancel();
 	_waitForConnectedTimer.cancel();
+	_connectionBrokerTickets.clear();
 	_testConnections.clear();
 	_connectionMtproxyEndpoint = MtProxy::EndpointId();
 	_connectionMtproxyUse = MtProxy::EndpointUse::Main;
 	_connection = nullptr;
+}
+
+void SessionPrivate::removeConnectionBrokerTicket(ConnectionTicketId id) {
+	const auto i = ranges::find(
+		_connectionBrokerTickets,
+		id,
+		[](const ConnectionTicket &ticket) { return ticket.id(); });
+	if (i != end(_connectionBrokerTickets)) {
+		_connectionBrokerTickets.erase(i);
+	}
+}
+
+void SessionPrivate::armWaitForConnectedTimer() {
+	if (!_waitForConnectedTimer.isActive()) {
+		_waitForConnectedTimer.callOnce(_waitForConnected);
+	}
 }
 
 void SessionPrivate::cdnConfigChanged() {
@@ -1180,7 +1199,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			}
 		}
 	}
-	if (_testConnections.empty()) {
+	if (_testConnections.empty() && _connectionBrokerTickets.empty()) {
 		if (_instance->isKeysDestroyer()) {
 			LOG(("MTP Error: DC %1 options for not found for auth key destruction!").arg(_shiftedDcId));
 			_instance->keyWasPossiblyDestroyed(_shiftedDcId);
@@ -1216,7 +1235,9 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	_pingId = _pingMsgId = _pingIdToSend = _pingSendAt = 0;
 	_pingSender.cancel();
 
-	_waitForConnectedTimer.callOnce(_waitForConnected);
+	if (!_testConnections.empty()) {
+		armWaitForConnectedTimer();
+	}
 }
 
 void SessionPrivate::restart() {
@@ -1383,13 +1404,13 @@ void SessionPrivate::waitBetterFailed() {
 
 void SessionPrivate::connectingTimedOut() {
 	for (const auto &connection : _testConnections) {
-		if (!connection.mtproxyEndpoint.host.isEmpty()
-			&& connection.mtproxyEndpoint.domain.isEmpty()) {
-			MtProxy::EndpointHealth::Instance().reportFailure({
-				.endpoint = connection.mtproxyEndpoint,
-				.use = connection.mtproxyUse,
-				.reason = MtProxy::FailureReason::Timeout,
-			});
+		if (!MtProxy::EndpointEmpty(connection.mtproxyEndpoint)
+			&& connection.mtproxyEndpoint.canonical.domainFromSecret.isEmpty()) {
+				MtProxy::EndpointHealth::Instance().reportFailure({
+					.endpoint = connection.mtproxyEndpoint,
+					.use = connection.mtproxyUse,
+					.reason = MtProxy::FailureReason::TcpConnectTimeout,
+				});
 		}
 		connection.data->timedOut();
 	}
@@ -2477,6 +2498,7 @@ void SessionPrivate::onConnected(
 		_connectionMtproxyEndpoint = i->mtproxyEndpoint;
 		_connectionMtproxyUse = i->mtproxyUse;
 		_connection = std::move(i->data);
+		_connectionBrokerTickets.clear();
 		_testConnections.clear();
 		checkAuthKey();
 	}
@@ -2486,10 +2508,10 @@ void SessionPrivate::onDisconnected(
 		not_null<AbstractConnection*> connection) {
 	removeTestConnection(connection);
 
-	if (_testConnections.empty()) {
+	if (_testConnections.empty() && _connectionBrokerTickets.empty()) {
 		destroyAllConnections();
 		restart();
-	} else {
+	} else if (!_testConnections.empty()) {
 		confirmBestConnection();
 	}
 }
@@ -2517,6 +2539,7 @@ void SessionPrivate::confirmBestConnection() {
 	_connectionMtproxyEndpoint = i->mtproxyEndpoint;
 	_connectionMtproxyUse = i->mtproxyUse;
 	_connection = std::move(i->data);
+	_connectionBrokerTickets.clear();
 	_testConnections.clear();
 
 	checkAuthKey();
@@ -2761,7 +2784,7 @@ void SessionPrivate::onError(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	if (found != end(_testConnections)) {
-		if (!found->mtproxyEndpoint.host.isEmpty()) {
+		if (!MtProxy::EndpointEmpty(found->mtproxyEndpoint)) {
 			MtProxy::EndpointHealth::Instance().reportFailure({
 				.endpoint = found->mtproxyEndpoint,
 				.use = found->mtproxyUse,
@@ -2770,21 +2793,29 @@ void SessionPrivate::onError(
 			});
 		}
 	} else if (_connection.get() == connection.get()
-		&& !_connectionMtproxyEndpoint.host.isEmpty()) {
+		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
 		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
 		if (reason != MtProxy::FailureReason::None) {
-			MtProxy::EndpointHealth::Instance().reportFailure({
-				.endpoint = _connectionMtproxyEndpoint,
-				.use = _connectionMtproxyUse,
-				.reason = reason,
-			});
+			const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+				_connectionMtproxyEndpoint);
+			const auto ignoreRemoteClosed = (reason
+					== MtProxy::FailureReason::AppDataRemoteClosed)
+				&& snapshot.healthy
+				&& !snapshot.halfOpen;
+			if (!ignoreRemoteClosed) {
+				MtProxy::EndpointHealth::Instance().reportFailure({
+					.endpoint = _connectionMtproxyEndpoint,
+					.use = _connectionMtproxyUse,
+					.reason = reason,
+				});
+			}
 		}
 	}
 	removeTestConnection(connection);
 
-	if (_testConnections.empty()) {
+	if (_testConnections.empty() && _connectionBrokerTickets.empty()) {
 		handleError(errorCode);
-	} else {
+	} else if (!_testConnections.empty()) {
 		confirmBestConnection();
 	}
 }

@@ -50,11 +50,12 @@ def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
     source = SESSION_CPP.read_text(encoding="utf-8")
 
-    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in header
+    assert '#include "mtproto/proxy/connection_broker.h"' in header
     assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
     assert "ReserveHandshakeGateForProxy(_options->proxy)" not in source
-    assert "EndpointHealth::Instance().admit(" in source
-    assert "std::move(admission.lease)" in source
+    assert "EndpointHealth::Instance().admit(" not in source
+    assert "ConnectionBroker::Instance().request({" in source
+    assert "std::move(start.lease)" in source
 
 
 def test_remove_connection_releases_before_erasing():
@@ -105,8 +106,9 @@ def test_proxy_check_starts_are_soft_gated():
     assert "details::ReserveHandshakeGateForProxy(proxy)" in start_body
     assert "const auto state = checker.state();" in start_body
     assert "const auto gateDelay = state->handshakeGate.delay();" in start_body
-    assert "const auto openDelay" in start_body
-    assert "QTimer::singleShot(int(openDelay), raw, start);" in start_body
+    assert "details::ConnectionBroker::Instance().request({" in start_body
+    assert ".notBefore = gateDelay" in start_body
+    assert "MtProxy::EndpointUse::ProxyCheck" in start_body
     assert "state->handshakeGate.release();" in start_body
     assert "[=, &checker]" not in start_body
 
@@ -119,6 +121,8 @@ def test_proxy_check_release_paths_are_complete():
     start_body = body_after(proxy_check, "void StartProxyCheck")
 
     assert "_data->handshakeGate.release();" in reset_method
+    assert "_data->connectionTicket.cancel();" in reset_method
+    assert "_data->mtproxyLease.release();" in reset_method
     assert "releaseGate();" not in reset_body
     assert "releaseGate();" not in drop_body
     assert start_body.count("state->handshakeGate.release();") >= 2
@@ -130,9 +134,8 @@ def test_proxy_check_uses_connection_timeout_contract():
 
     assert "kProxyCheckTimeout" not in proxy_check
     assert "raw->fullConnectTimeout()" in start_body
-    assert "const auto timeout = state->handshakeGate.delay()" in start_body
-    assert "+ raw->fullConnectTimeout();" in start_body
-    assert "QTimer::singleShot(int(timeout), raw," in start_body
+    assert ".notBefore = gateDelay" in start_body
+    assert "QTimer::singleShot(int(raw->fullConnectTimeout()), raw," in start_body
     assert "ProxyConnectionError::Timeout" in start_body
     assert "raw->timedOut();" in start_body
     assert "fail(raw);" in start_body

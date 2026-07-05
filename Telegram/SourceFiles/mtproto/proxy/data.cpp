@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "base/qt/qt_string_view.h"
 
+#include <utility>
+
 namespace MTP {
 namespace {
 
@@ -220,13 +222,14 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
 		|| ipIndex >= proxy.resolvedIPs.size()) {
 		return proxy;
 	}
-	return {
-		proxy.type,
-		proxy.resolvedIPs[ipIndex],
-		proxy.port,
-		proxy.user,
-		proxy.password
-	};
+	auto result = proxy;
+	result.host = proxy.resolvedIPs[ipIndex];
+	result.originalHost = proxy.originalHost.isEmpty()
+		? proxy.host
+		: proxy.originalHost;
+	result.resolvedIPs.clear();
+	result.resolvedExpireAt = 0;
+	return result;
 }
 
 QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
@@ -243,6 +246,59 @@ QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
 		proxy.port,
 		proxy.user,
 		proxy.password);
+}
+
+ProxyStealthOptions CompatStrictProxyStealthOptions(
+		ProxyStealthOptions result) {
+	result.level = ProxyStealthLevel::CompatStrict;
+	result.transport = ProxyTransport::Tcp;
+	result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;
+	result.recordSizing = ProxyRecordSizing::Off;
+	result.timing = ProxyTiming::Off;
+	result.startupCover = ProxyStartupCover::Off;
+	result.syntheticPsk = false;
+	result.connectionPattern = ProxyConnectionPattern::Off;
+	result.tlsProfile = ProxyTlsProfile::Auto;
+	return result;
+}
+
+ProxyStealthOptions ApplyProxyStealthLevel(
+		ProxyStealthOptions result,
+		ProxyStealthLevel level) {
+	result.level = level;
+	switch (level) {
+	case ProxyStealthLevel::CompatStrict:
+		return CompatStrictProxyStealthOptions(std::move(result));
+	case ProxyStealthLevel::CompatModern:
+		result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;
+		result.recordSizing = ProxyRecordSizing::Off;
+		result.timing = ProxyTiming::Off;
+		result.startupCover = ProxyStartupCover::Off;
+		result.syntheticPsk = false;
+		result.connectionPattern = ProxyConnectionPattern::Off;
+		return result;
+	case ProxyStealthLevel::DpiAdaptiveHandshake:
+		result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;
+		result.recordSizing = ProxyRecordSizing::Off;
+		result.timing = ProxyTiming::Off;
+		result.startupCover = ProxyStartupCover::Off;
+		result.syntheticPsk = false;
+		result.connectionPattern = ProxyConnectionPattern::Soft;
+		return result;
+	case ProxyStealthLevel::DpiAdaptiveData:
+		result.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;
+		result.recordSizing = ProxyRecordSizing::Conservative;
+		result.timing = ProxyTiming::Gentle;
+		result.startupCover = ProxyStartupCover::Soft;
+		result.syntheticPsk = false;
+		if (result.connectionPattern == ProxyConnectionPattern::Off) {
+			result.connectionPattern = ProxyConnectionPattern::Soft;
+		}
+		return result;
+	case ProxyStealthLevel::Experimental:
+		return result;
+	}
+	return result;
 }
 
 } // namespace MTP

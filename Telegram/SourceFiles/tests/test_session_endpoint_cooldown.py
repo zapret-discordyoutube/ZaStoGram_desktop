@@ -5,6 +5,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 SESSION_PRIVATE_H = SOURCE_DIR / "mtproto" / "session_private.h"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 TLS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp"
+CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 
 
 def test_session_uses_endpoint_health_admission_instead_of_local_cooldown():
@@ -20,9 +21,14 @@ def test_session_uses_endpoint_health_admission_instead_of_local_cooldown():
     assert "noteTestConnectionFailure" not in source
     assert "kEndpointCooldownPenalty" not in source
     assert "MtproxyEndpointCooldown(" not in source
-    assert "EndpointHealth::Instance().admit(" in append_body
-    assert append_body.index("EndpointHealth::Instance().admit(") < (
-        append_body.index("AbstractConnection::Create("))
+    assert "EndpointHealth::Instance().admit(" not in append_body
+    assert "ConnectionBroker::Instance().request({" in append_body
+    assert ".status = [=](ConnectionBrokerDecision)" in append_body
+    assert "ConnectionBrokerAction::Queued" in CONNECTION_BROKER_CPP.read_text(
+        encoding="utf-8")
+    assert "ProxyDiagnosticsPhase::AdmissionQueued" in CONNECTION_BROKER_CPP.read_text(
+        encoding="utf-8")
+    assert "setState(-int(admission.retryAfter));" not in append_body
 
 
 def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
@@ -30,7 +36,8 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     source = SESSION_PRIVATE_CPP.read_text(encoding="utf-8")
 
     assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
-    assert "std::move(admission.lease)" in source
+    assert "std::move(start.lease)" in source
+    assert "std::vector<ConnectionTicket> _connectionBrokerTickets;" in header
     assert "i->mtproxyLease.release();" in source
     assert "reportFailure(" in source
     assert "reportSuccess(" in TLS_SOCKET_CPP.read_text(encoding="utf-8")

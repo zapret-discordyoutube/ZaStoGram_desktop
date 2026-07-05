@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/transport_policy.h"
 
 #include <QtCore/QTimer>
@@ -21,6 +20,28 @@ namespace MTP {
 
 using Connection = details::AbstractConnection;
 namespace MtProxy = details::MtProxy;
+
+[[nodiscard]] MtProxy::FailureReason ProxyCheckFailureReason(
+		ProxyConnectionError error) {
+	switch (error) {
+	case ProxyConnectionError::HostNotFound:
+		return MtProxy::FailureReason::DnsFailed;
+	case ProxyConnectionError::Timeout:
+		return MtProxy::FailureReason::TcpConnectTimeout;
+	case ProxyConnectionError::RemoteClosed:
+		return MtProxy::FailureReason::AppDataRemoteClosed;
+	case ProxyConnectionError::Network:
+		return MtProxy::FailureReason::Network;
+	case ProxyConnectionError::ConnectionRefused:
+	case ProxyConnectionError::Authentication:
+	case ProxyConnectionError::ProxyProtocol:
+	case ProxyConnectionError::BadResponse:
+	case ProxyConnectionError::Unknown:
+	case ProxyConnectionError::None:
+		return MtProxy::FailureReason::ProxyProtocolBadResponse;
+	}
+	return MtProxy::FailureReason::ProxyProtocolBadResponse;
+}
 
 ProxyCheckConnection::ProxyCheckConnection()
 : _data(std::make_shared<Data>()) {
@@ -62,7 +83,10 @@ std::shared_ptr<ProxyCheckConnection::Data> ProxyCheckConnection::state() const 
 
 void ProxyCheckConnection::reset() {
 	if (_data) {
+		_data->connectionTicket.cancel();
 		_data->handshakeGate.release();
+		_data->mtproxyLease.release();
+		_data->mtproxyEndpoint = MtProxy::EndpointId();
 		_data->finished = true;
 		_data->connection = nullptr;
 	}
@@ -138,7 +162,16 @@ void StartProxyCheck(
 				return;
 			}
 			state->finished = true;
+			state->connectionTicket.cancel();
 			state->handshakeGate.release();
+			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
+				MtProxy::EndpointHealth::Instance().reportFailure({
+					.endpoint = state->mtproxyEndpoint,
+					.use = MtProxy::EndpointUse::ProxyCheck,
+					.reason = ProxyCheckFailureReason(error),
+					.lease = &state->mtproxyLease,
+				});
+			}
 			ReportProxyEvent(mtproto, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 				.error = error,
@@ -157,7 +190,15 @@ void StartProxyCheck(
 				return;
 			}
 			state->finished = true;
+			state->connectionTicket.cancel();
 			state->handshakeGate.release();
+			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
+				MtProxy::EndpointHealth::Instance().reportSuccess({
+					.endpoint = state->mtproxyEndpoint,
+					.use = MtProxy::EndpointUse::ProxyCheck,
+					.lease = &state->mtproxyLease,
+				});
+			}
 			ReportProxyEvent(mtproto, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 				.proxy = proxy,
@@ -175,15 +216,6 @@ void StartProxyCheck(
 		raw->connect(raw, &Connection::error, [=] {
 			finishWithFail(ProxyConnectionError::Unknown);
 		});
-		const auto timeout = state->handshakeGate.delay()
-			+ raw->fullConnectTimeout();
-		QTimer::singleShot(int(timeout), raw, [=] {
-			if (state->connection.get() != raw || state->finished) {
-				return;
-			}
-			raw->timedOut();
-			finishWithFail(ProxyConnectionError::Timeout);
-		});
 	};
 	const auto start = [&](
 			ProxyCheckConnection &checker,
@@ -193,28 +225,39 @@ void StartProxyCheck(
 		const auto state = checker.state();
 		const auto raw = state->connection.get();
 		const auto gateDelay = state->handshakeGate.delay();
-		const auto openDelay = (proxy.type == ProxyData::Type::Mtproto)
-			? MtProxy::ReserveOpenSlot(
-				MtProxy::EndpointIdFromProxy(proxy, checkStealth),
-				checkStealth.connectionPattern,
-				gateDelay)
-			: gateDelay;
-		const auto start = [=, secret = std::move(secret)] {
-			if (state->connection.get() != raw) {
-				return;
-			}
-			raw->connectToServer(
-				address,
-				port,
-				secret,
-				dcId,
-				false);
-		};
-		if (openDelay > 0) {
-			QTimer::singleShot(int(openDelay), raw, start);
-		} else {
-			start();
-		}
+		const auto endpoint = (proxy.type == ProxyData::Type::Mtproto)
+			? MtProxy::EndpointIdFromProxy(proxy, checkStealth)
+			: MtProxy::EndpointId();
+		state->connectionTicket = details::ConnectionBroker::Instance().request({
+			.endpoint = endpoint,
+			.use = MtProxy::EndpointUse::ProxyCheck,
+			.stealth = checkStealth,
+			.configuredTlsProfile = checkStealth.tlsProfile,
+			.connectionPattern = checkStealth.connectionPattern,
+			.notBefore = gateDelay,
+			.context = raw,
+			.start = [=, secret = std::move(secret)](
+					details::ConnectionStart start) mutable {
+				if (state->connection.get() != raw) {
+					return;
+				}
+				state->mtproxyEndpoint = start.endpoint;
+				state->mtproxyLease = std::move(start.lease);
+				raw->connectToServer(
+					address,
+					port,
+					secret,
+					dcId,
+					false);
+				QTimer::singleShot(int(raw->fullConnectTimeout()), raw, [=] {
+					if (state->connection.get() != raw || state->finished) {
+						return;
+					}
+					raw->timedOut();
+					finishWithFail(ProxyConnectionError::Timeout);
+				});
+			},
+		});
 	};
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto secret = proxy.secretFromMtprotoPassword();

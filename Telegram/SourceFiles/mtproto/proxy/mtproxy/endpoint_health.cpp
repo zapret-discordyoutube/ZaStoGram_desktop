@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include "mtproto/connection_abstract.h"
+#include "mtproto/proxy/capabilities.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "base/algorithm.h"
 #include "base/timer.h"
@@ -15,9 +17,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QMutex>
 #include <QtNetwork/QAbstractSocket>
+#include <QtNetwork/QHostAddress>
 #include <rpl/event_stream.h>
 
 #include <map>
+#include <set>
 
 namespace MTP::details::MtProxy {
 namespace {
@@ -27,24 +31,44 @@ constexpr auto kSecondCooldown = crl::time(45 * 1000);
 constexpr auto kMaxCooldown = crl::time(120 * 1000);
 constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
 constexpr auto kColdActiveCap = 1;
-constexpr auto kHealthyActiveCap = 2;
+constexpr auto kUnknownActiveCap = kColdActiveCap;
+constexpr auto kDpiFailureActiveCap = 1;
+constexpr auto kHealthyActiveCap = 3;
+constexpr auto kHealthyHandshakeSpacing = crl::time(150);
+constexpr auto kQueuedRetry = crl::time(1000);
 
 struct EndpointState {
 	EndpointId endpoint;
+	std::set<QString> routeKeys;
 	FailureReason lastFailure = FailureReason::None;
 	QString lastDiagnostic;
 	crl::time terminalUntil = 0;
 	int active = 0;
 	int consecutiveFailures = 0;
 	int recipeLevel = 0;
+	crl::time nextHandshakeAt = 0;
 	bool healthy = false;
 	bool halfOpen = false;
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
 };
 
+struct RouteState {
+	RouteEndpoint route;
+	FailureReason lastFailure = FailureReason::None;
+	bool healthy = false;
+};
+
+struct EndpointConcurrencyPolicy {
+	int activeCap = kUnknownActiveCap;
+	crl::time handshakeSpacing = 0;
+	crl::time retryAfter = kQueuedRetry;
+	bool recipeEscalationAllowed = false;
+};
+
 QMutex StatesMutex;
 std::map<QString, EndpointState> States;
+std::map<QString, RouteState> Routes;
 rpl::event_stream<EndpointEvent> Events;
 
 [[nodiscard]] QByteArray BytesToQByteArray(bytes::const_span data) {
@@ -77,22 +101,135 @@ rpl::event_stream<EndpointEvent> Events;
 	return QString::fromUtf8(BytesToQByteArray(secret.subspan(17)));
 }
 
+[[nodiscard]] QString ProxyIdentityHost(const ProxyData &proxy) {
+	return proxy.originalHost.isEmpty()
+		? proxy.host
+		: proxy.originalHost;
+}
+
+[[nodiscard]] RouteAddressFamily AddressFamilyFor(const QString &address) {
+	if (address.isEmpty()) {
+		return RouteAddressFamily::Unknown;
+	}
+	const auto parsed = QHostAddress(address);
+	switch (parsed.protocol()) {
+	case QAbstractSocket::IPv4Protocol:
+		return RouteAddressFamily::IPv4;
+	case QAbstractSocket::IPv6Protocol:
+		return RouteAddressFamily::IPv6;
+	default:
+		return RouteAddressFamily::Host;
+	}
+}
+
+void NoteRouteFailure(
+		EndpointState &state,
+		const RouteEndpoint &route,
+		FailureReason reason) {
+	const auto routeKey = RouteKey(route);
+	if (routeKey.isEmpty()) {
+		return;
+	}
+	state.routeKeys.insert(routeKey);
+	auto &routeState = Routes[routeKey];
+	routeState.route = route;
+	routeState.lastFailure = reason;
+	routeState.healthy = false;
+}
+
+void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
+	const auto routeKey = RouteKey(route);
+	if (routeKey.isEmpty()) {
+		return;
+	}
+	state.routeKeys.insert(routeKey);
+	auto &routeState = Routes[routeKey];
+	routeState.route = route;
+	routeState.lastFailure = FailureReason::None;
+	routeState.healthy = true;
+}
+
+[[nodiscard]] bool HasHealthyRoute(const EndpointState &state) {
+	for (const auto &routeKey : state.routeKeys) {
+		const auto i = Routes.find(routeKey);
+		if (i != end(Routes) && i->second.healthy) {
+			return true;
+		}
+	}
+	return false;
+}
+
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason) {
 	switch (reason) {
-	case FailureReason::NoServerHelloAfterClientHello:
+	case FailureReason::DnsFailed:
+	case FailureReason::ClientHelloSentNoServerHello:
 	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ShortTlsResponseAfterClientHello:
-	case FailureReason::UnrecognizedTlsResponseAfterClientHello:
 	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::PostHandshakeNoAppData:
-	case FailureReason::DnsHostNotFound:
-	case FailureReason::Timeout:
-	case FailureReason::RemoteClosed:
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::ProxyProtocolBadResponse:
 		return true;
 	case FailureReason::None:
-	case FailureReason::TcpNotConnected:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::AppDataRemoteClosed:
 	case FailureReason::Network:
-	case FailureReason::BadResponse:
+		return false;
+	}
+	return false;
+}
+
+[[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
+	switch (reason) {
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::ServerHelloOkNoAppData:
+		return true;
+	case FailureReason::None:
+	case FailureReason::DnsFailed:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::Network:
+	case FailureReason::ProxyProtocolBadResponse:
+		return false;
+	}
+	return false;
+}
+
+[[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason) {
+	switch (reason) {
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+		return true;
+	case FailureReason::None:
+	case FailureReason::DnsFailed:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::Network:
+	case FailureReason::ProxyProtocolBadResponse:
+		return false;
+	}
+	return false;
+}
+
+[[nodiscard]] bool FailureIsRouteOnly(FailureReason reason) {
+	switch (reason) {
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+		return true;
+	case FailureReason::None:
+	case FailureReason::DnsFailed:
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::Network:
+	case FailureReason::ProxyProtocolBadResponse:
 		return false;
 	}
 	return false;
@@ -101,8 +238,11 @@ rpl::event_stream<EndpointEvent> Events;
 [[nodiscard]] crl::time CooldownFor(
 		FailureReason reason,
 		int consecutiveFailures) {
-	if (reason == FailureReason::DnsHostNotFound) {
+	if (reason == FailureReason::DnsFailed) {
 		return kDnsNegativeTtl;
+	}
+	if (reason == FailureReason::ClientHelloSentNoServerHello) {
+		return kFirstCooldown;
 	}
 	if (consecutiveFailures <= 1) {
 		return kFirstCooldown;
@@ -112,12 +252,38 @@ rpl::event_stream<EndpointEvent> Events;
 	return kMaxCooldown;
 }
 
-[[nodiscard]] int ActiveCap(const EndpointState &state) {
-	return state.healthy ? kHealthyActiveCap : kColdActiveCap;
-}
-
-[[nodiscard]] bool IsInteractive(EndpointUse use) {
-	return use == EndpointUse::Main || use == EndpointUse::ProxyCheck;
+[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
+		const EndpointState &state) {
+	auto policy = EndpointConcurrencyPolicy();
+	if (FailureNeedsRecipeEscalation(state.lastFailure)) {
+		policy.activeCap = kDpiFailureActiveCap;
+		policy.retryAfter = kQueuedRetry;
+		policy.recipeEscalationAllowed = true;
+		return policy;
+	}
+	switch (state.lastFailure) {
+	case FailureReason::None:
+	case FailureReason::DnsFailed:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::Network:
+	case FailureReason::ProxyProtocolBadResponse:
+		break;
+	}
+	if (state.healthy) {
+		policy.activeCap = kHealthyActiveCap;
+		policy.handshakeSpacing = kHealthyHandshakeSpacing;
+		policy.retryAfter = kHealthyHandshakeSpacing;
+	} else {
+		policy.activeCap = kUnknownActiveCap;
+		policy.retryAfter = kQueuedRetry;
+	}
+	return policy;
 }
 
 [[nodiscard]] Snapshot MakeSnapshot(const EndpointState &state) {
@@ -133,6 +299,45 @@ rpl::event_stream<EndpointEvent> Events;
 		.halfOpen = state.halfOpen,
 		.proxyEpoch = state.proxyEpoch,
 		.attemptId = state.lastAttemptId,
+	};
+}
+
+[[nodiscard]] QString CanonicalText(const EndpointId &endpoint) {
+	return ProxyDiagnosticsEndpointText(
+		endpoint.canonical.originalHost,
+		endpoint.canonical.port);
+}
+
+[[nodiscard]] QString RouteText(const EndpointId &endpoint) {
+	return ProxyDiagnosticsEndpointText(
+		endpoint.route.address,
+		endpoint.route.port);
+}
+
+[[nodiscard]] ProxyDiagnosticsEvent CanonicalDiagnosticsEvent(
+		ProxyDiagnosticsPhase phase,
+		const EndpointState &state,
+		FailureReason reason,
+		const QString &message) {
+	return {
+		.source = ProxyDiagnosticsSource::MTProxy,
+		.phase = phase,
+		.severity = (phase == ProxyDiagnosticsPhase::CanonicalRecovered)
+			? ProxyDiagnosticsSeverity::Info
+			: ProxyDiagnosticsSeverity::Warning,
+		.error = ToProxyConnectionError(reason),
+		.mtproxyReason = ToProxyMtproxyTerminalReason(reason),
+		.terminalUntil = state.terminalUntil,
+		.transport = ProxyDiagnosticsTransportName(
+			state.endpoint.canonical.proxyKind,
+			state.endpoint.route.transport),
+		.message = message,
+		.canonical = CanonicalText(state.endpoint),
+		.route = RouteText(state.endpoint),
+		.proxyKeyHash = ProxyDiagnosticsKeyHash(
+			EndpointKey(state.endpoint.canonical)),
+		.recipeLevel = state.recipeLevel,
+		.phaseAtFailure = ToLegacyDiagnostic(reason),
 	};
 }
 
@@ -221,30 +426,30 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		key);
 	result.proxyEpoch = state.proxyEpoch;
 	if (state.terminalUntil > now) {
-		result.action = IsInteractive(request.use)
-			? AdmissionAction::StartAfter
-			: AdmissionAction::SkipCooldown;
+		result.action = AdmissionAction::StartAfter;
 		result.retryAfter = state.terminalUntil - now;
 		result.blockedBy = state.lastFailure;
 		return result;
 	}
-	if (state.halfOpen && !IsInteractive(request.use)) {
-		result.action = AdmissionAction::SkipCooldown;
+	const auto policy = EndpointConcurrencyPolicyFor(state);
+	if (state.active >= policy.activeCap) {
+		result.action = AdmissionAction::StartAfter;
+		result.retryAfter = policy.retryAfter;
 		result.blockedBy = state.lastFailure;
 		return result;
 	}
-	const auto cap = (state.halfOpen || !state.healthy)
-		? kColdActiveCap
-		: ActiveCap(state);
-	if (state.active >= cap) {
-		result.action = IsInteractive(request.use)
-			? AdmissionAction::StartAfter
-			: AdmissionAction::SkipCooldown;
-		result.retryAfter = crl::time(1000);
+	if (policy.handshakeSpacing > 0
+		&& state.active > 0
+		&& state.nextHandshakeAt > now) {
+		result.action = AdmissionAction::StartAfter;
+		result.retryAfter = state.nextHandshakeAt - now;
 		result.blockedBy = state.lastFailure;
 		return result;
 	}
 	++state.active;
+	if (policy.handshakeSpacing > 0) {
+		state.nextHandshakeAt = now + policy.handshakeSpacing;
+	}
 	result.attemptId = ++state.lastAttemptId;
 	result.proxyEpoch = state.proxyEpoch;
 	result.lease = EndpointAttemptLease(key, result.attemptId, state.proxyEpoch);
@@ -259,18 +464,32 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		return;
 	}
 	const auto key = EndpointKey(report.endpoint);
+	const auto routeKey = RouteKey(report.endpoint.route);
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
 	auto event = EndpointEvent();
+	ProxyCapabilityCache::Instance().noteMtproxyFailure(
+		EndpointKey(report.endpoint.canonical),
+		RouteKey(report.endpoint.route),
+		diagnostic);
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
 	state.endpoint = report.endpoint;
+	NoteRouteFailure(state, report.endpoint.route, report.reason);
+	if (FailureIsRouteOnly(report.reason)) {
+		return;
+	}
+	if (!routeKey.isEmpty() && HasHealthyRoute(state)) {
+		return;
+	}
 	state.lastFailure = report.reason;
 	state.lastDiagnostic = diagnostic;
-	if (FailureNeedsRecipe(diagnostic) && state.recipeLevel < 4) {
+	const auto policy = EndpointConcurrencyPolicyFor(state);
+	if (policy.recipeEscalationAllowed && state.recipeLevel < 4) {
 		++state.recipeLevel;
 	}
-	if (report.configuredTlsProfile == ProxyTlsProfile::AutoRotate) {
+	if (report.configuredTlsProfile == ProxyTlsProfile::AutoRotate
+		&& FailureNeedsTlsRotation(report.reason)) {
 		(void)RotateTlsProfileOnFailure(
 			key,
 			diagnostic,
@@ -290,7 +509,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		.terminalUntil = state.terminalUntil,
 		.rotationAllowed = FailureNeedsCooldown(report.reason),
 	};
+	auto diagnosticsEvent = CanonicalDiagnosticsEvent(
+		ProxyDiagnosticsPhase::CanonicalDegraded,
+		state,
+		report.reason,
+		u"mtproxy canonical endpoint degraded"_q);
 	lock.unlock();
+	WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
 	Events.fire(std::move(event));
 }
 
@@ -299,9 +524,21 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		report.lease->release();
 	}
 	const auto key = EndpointKey(report.endpoint);
+	const auto routeKey = RouteKey(report.endpoint.route);
+	ProxyCapabilityCache::Instance().noteMtproxySuccess(
+		EndpointKey(report.endpoint.canonical),
+		RouteKey(report.endpoint.route),
+		report.sentProfile,
+		report.stealth);
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
 	state.endpoint = report.endpoint;
+	const auto wasDegraded = (state.lastFailure != FailureReason::None)
+		|| (state.terminalUntil > 0)
+		|| state.halfOpen;
+	if (!routeKey.isEmpty()) {
+		NoteRouteSuccess(state, report.endpoint.route);
+	}
 	state.lastFailure = FailureReason::None;
 	state.lastDiagnostic.clear();
 	state.terminalUntil = 0;
@@ -309,6 +546,15 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	state.recipeLevel = 0;
 	state.healthy = true;
 	state.halfOpen = false;
+	if (wasDegraded) {
+		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
+			ProxyDiagnosticsPhase::CanonicalRecovered,
+			state,
+			FailureReason::None,
+			u"mtproxy canonical endpoint recovered"_q);
+		lock.unlock();
+		WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
+	}
 }
 
 Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {
@@ -345,18 +591,24 @@ EndpointId EndpointIdFromProxy(
 		const QString &address,
 		int port) {
 	auto result = EndpointId();
-	result.host = address.isEmpty() ? proxy.host : address;
-	result.port = port ? port : int(proxy.port);
-	result.transport = stealth.transport;
+	result.canonical.type = proxy.type;
+	result.canonical.originalHost = ProxyIdentityHost(proxy);
+	result.canonical.port = int(proxy.port);
+	result.canonical.proxyKind = proxy.type;
+	result.route = RouteEndpointFromAddress(
+		address.isEmpty() ? result.canonical.originalHost : address,
+		port ? port : int(proxy.port),
+		stealth.transport,
+		address.isEmpty() ? QString() : result.canonical.originalHost);
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto secret = proxy.secretFromMtprotoPassword();
 		if (!secret.empty()) {
-			result.secretHash = HashBytes(secret);
-			result.domain = DomainFromSecret(secret);
+			result.canonical.secretHash = HashBytes(secret);
+			result.canonical.domainFromSecret = DomainFromSecret(secret);
 			return result;
 		}
 	}
-	result.secretHash = HashText(proxy.password);
+	result.canonical.secretHash = HashText(proxy.password);
 	return result;
 }
 
@@ -366,50 +618,96 @@ EndpointId EndpointIdFromAddress(
 		bytes::const_span secret,
 		ProxyTransport transport) {
 	auto result = EndpointId();
-	result.host = address;
-	result.port = port;
-	result.transport = transport;
-	result.secretHash = HashBytes(secret);
-	result.domain = DomainFromSecret(secret);
+	result.canonical.type = ProxyData::Type::Mtproto;
+	result.canonical.originalHost = address;
+	result.canonical.port = port;
+	result.canonical.secretHash = HashBytes(secret);
+	result.canonical.domainFromSecret = DomainFromSecret(secret);
+	result.canonical.proxyKind = ProxyData::Type::Mtproto;
+	result.route = RouteEndpointFromAddress(address, port, transport);
 	return result;
 }
 
-QString EndpointKey(const EndpointId &endpoint) {
-	return endpoint.host
+RouteEndpoint RouteEndpointFromAddress(
+		const QString &address,
+		int port,
+		ProxyTransport transport,
+		const QString &resolvedFromHost) {
+	return {
+		.address = address,
+		.port = port,
+		.addressFamily = AddressFamilyFor(address),
+		.transport = transport,
+		.resolvedFromHost = resolvedFromHost,
+	};
+}
+
+bool EndpointEmpty(const CanonicalProxyEndpoint &endpoint) {
+	return endpoint.originalHost.isEmpty() || endpoint.port <= 0;
+}
+
+bool EndpointEmpty(const EndpointId &endpoint) {
+	return EndpointEmpty(endpoint.canonical);
+}
+
+QString EndpointKey(const CanonicalProxyEndpoint &endpoint) {
+	if (EndpointEmpty(endpoint)) {
+		return QString();
+	}
+	return endpoint.originalHost
 		+ u":%1:"_q.arg(endpoint.port)
-		+ QString::number(int(endpoint.transport))
+		+ QString::number(int(endpoint.type))
+		+ ':'
+		+ QString::number(int(endpoint.proxyKind))
 		+ ':'
 		+ endpoint.secretHash
 		+ ':'
-		+ endpoint.domain;
+		+ endpoint.domainFromSecret;
+}
+
+QString EndpointKey(const EndpointId &endpoint) {
+	return EndpointKey(endpoint.canonical);
+}
+
+QString RouteKey(const RouteEndpoint &route) {
+	if (route.address.isEmpty() || route.port <= 0) {
+		return QString();
+	}
+	return route.address
+		+ u":%1:"_q.arg(route.port)
+		+ QString::number(int(route.addressFamily))
+		+ ':'
+		+ QString::number(int(route.transport))
+		+ ':'
+		+ route.resolvedFromHost;
+}
+
+QString RouteKey(const EndpointId &endpoint) {
+	return RouteKey(endpoint.route);
 }
 
 QString ToLegacyDiagnostic(FailureReason reason) {
 	switch (reason) {
-	case FailureReason::TcpNotConnected:
-		return u"tcp_not_connected"_q;
-	case FailureReason::NoServerHelloAfterClientHello:
+	case FailureReason::DnsFailed:
+		return u"dns_failed"_q;
+	case FailureReason::TcpConnectTimeout:
+		return u"tcp_connect_timeout"_q;
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+		return u"tcp_connected_no_client_hello_write"_q;
+	case FailureReason::ClientHelloSentNoServerHello:
 		return u"client_hello_sent_no_server_hello"_q;
 	case FailureReason::TlsAlertAfterClientHello:
 		return u"tls_alert_after_client_hello"_q;
-	case FailureReason::ShortTlsResponseAfterClientHello:
-		return u"short_tls_response_after_client_hello"_q;
-	case FailureReason::UnrecognizedTlsResponseAfterClientHello:
-		return u"unrecognized_tls_response_after_client_hello"_q;
 	case FailureReason::ServerHelloHmacMismatch:
 		return u"server_hello_hmac_mismatch"_q;
-	case FailureReason::PostHandshakeNoAppData:
-		return u"post_handshake_no_appdata"_q;
-	case FailureReason::DnsHostNotFound:
-		return u"host_not_found"_q;
-	case FailureReason::Timeout:
-		return u"timeout"_q;
-	case FailureReason::RemoteClosed:
-		return u"remote_closed"_q;
+	case FailureReason::ServerHelloOkNoAppData:
+		return u"server_hello_ok_no_appdata"_q;
+	case FailureReason::AppDataRemoteClosed:
+		return u"appdata_remote_closed"_q;
 	case FailureReason::Network:
 		return u"network_error"_q;
-	case FailureReason::BadResponse:
-		return u"bad_response"_q;
+	case FailureReason::ProxyProtocolBadResponse:
+		return u"proxy_protocol_bad_response"_q;
 	case FailureReason::None:
 		return QString();
 	}
@@ -423,13 +721,13 @@ FailureReason FailureReasonFromErrorCode(int errorCode) {
 	switch (errorCode) {
 	case QAbstractSocket::HostNotFoundError:
 	case QAbstractSocket::ProxyNotFoundError:
-		return FailureReason::DnsHostNotFound;
+		return FailureReason::DnsFailed;
 	case QAbstractSocket::SocketTimeoutError:
 	case QAbstractSocket::ProxyConnectionTimeoutError:
-		return FailureReason::Timeout;
+		return FailureReason::TcpConnectTimeout;
 	case QAbstractSocket::RemoteHostClosedError:
 	case QAbstractSocket::ProxyConnectionClosedError:
-		return FailureReason::RemoteClosed;
+		return FailureReason::AppDataRemoteClosed;
 	case QAbstractSocket::NetworkError:
 		return FailureReason::Network;
 	}
@@ -438,24 +736,22 @@ FailureReason FailureReasonFromErrorCode(int errorCode) {
 
 ProxyConnectionError ToProxyConnectionError(FailureReason reason) {
 	switch (reason) {
-	case FailureReason::DnsHostNotFound:
+	case FailureReason::DnsFailed:
 		return ProxyConnectionError::HostNotFound;
-	case FailureReason::Timeout:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
 		return ProxyConnectionError::Timeout;
-	case FailureReason::RemoteClosed:
+	case FailureReason::AppDataRemoteClosed:
 		return ProxyConnectionError::RemoteClosed;
 	case FailureReason::Network:
 		return ProxyConnectionError::Network;
-	case FailureReason::BadResponse:
-	case FailureReason::NoServerHelloAfterClientHello:
+	case FailureReason::ProxyProtocolBadResponse:
+	case FailureReason::ClientHelloSentNoServerHello:
 	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ShortTlsResponseAfterClientHello:
-	case FailureReason::UnrecognizedTlsResponseAfterClientHello:
 	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::PostHandshakeNoAppData:
+	case FailureReason::ServerHelloOkNoAppData:
 		return ProxyConnectionError::BadResponse;
 	case FailureReason::None:
-	case FailureReason::TcpNotConnected:
 		return ProxyConnectionError::None;
 	}
 	return ProxyConnectionError::Unknown;
@@ -464,29 +760,26 @@ ProxyConnectionError ToProxyConnectionError(FailureReason reason) {
 ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 		FailureReason reason) {
 	switch (reason) {
-	case FailureReason::TcpNotConnected:
-		return ProxyMtproxyTerminalReason::TcpNotConnected;
-	case FailureReason::NoServerHelloAfterClientHello:
+	case FailureReason::DnsFailed:
+		return ProxyMtproxyTerminalReason::DnsFailed;
+	case FailureReason::TcpConnectTimeout:
+		return ProxyMtproxyTerminalReason::TcpConnectTimeout;
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+		return ProxyMtproxyTerminalReason::TcpConnectedNoClientHelloWrite;
+	case FailureReason::ClientHelloSentNoServerHello:
 		return ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello;
 	case FailureReason::TlsAlertAfterClientHello:
 		return ProxyMtproxyTerminalReason::TlsAlertAfterClientHello;
-	case FailureReason::ShortTlsResponseAfterClientHello:
-		return ProxyMtproxyTerminalReason::ShortTlsResponseAfterClientHello;
-	case FailureReason::UnrecognizedTlsResponseAfterClientHello:
-		return ProxyMtproxyTerminalReason::UnrecognizedTlsResponseAfterClientHello;
 	case FailureReason::ServerHelloHmacMismatch:
 		return ProxyMtproxyTerminalReason::ServerHelloHmacMismatch;
-	case FailureReason::PostHandshakeNoAppData:
-		return ProxyMtproxyTerminalReason::PostHandshakeNoAppData;
-	case FailureReason::DnsHostNotFound:
-		return ProxyMtproxyTerminalReason::DnsHostNotFound;
-	case FailureReason::Timeout:
-		return ProxyMtproxyTerminalReason::Timeout;
-	case FailureReason::RemoteClosed:
-		return ProxyMtproxyTerminalReason::RemoteClosed;
+	case FailureReason::ServerHelloOkNoAppData:
+		return ProxyMtproxyTerminalReason::ServerHelloOkNoAppData;
+	case FailureReason::AppDataRemoteClosed:
+		return ProxyMtproxyTerminalReason::AppDataRemoteClosed;
+	case FailureReason::ProxyProtocolBadResponse:
+		return ProxyMtproxyTerminalReason::ProxyProtocolBadResponse;
 	case FailureReason::None:
 	case FailureReason::Network:
-	case FailureReason::BadResponse:
 		return ProxyMtproxyTerminalReason::None;
 	}
 	return ProxyMtproxyTerminalReason::None;

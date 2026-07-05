@@ -65,24 +65,24 @@ constexpr auto kMinimalWaitingStateDuration = crl::time(4000);
 		return tr::lng_proxy_status_bad_response(tr::now);
 	case MTP::ProxyConnectionStatusKind::Failed:
 		return tr::lng_proxy_status_failed(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyDnsFailed:
+		return tr::lng_proxy_status_mtproxy_dns_failed(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyTcpConnectTimeout:
+		return tr::lng_proxy_status_mtproxy_tcp_timeout(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyTcpConnectedNoClientHelloWrite:
+		return tr::lng_proxy_status_mtproxy_tcp_no_client_hello(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyNoServerHello:
 		return tr::lng_proxy_status_mtproxy_no_server_hello(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyTlsAlert:
 		return tr::lng_proxy_status_mtproxy_tls_alert(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyShortResponse:
-		return tr::lng_proxy_status_mtproxy_short_response(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyUnrecognizedResponse:
-		return tr::lng_proxy_status_mtproxy_unrecognized_response(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch:
 		return tr::lng_proxy_status_mtproxy_hmac_mismatch(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyPostHandshakeNoAppData:
+	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData:
 		return tr::lng_proxy_status_mtproxy_no_appdata(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyDnsHostNotFound:
-		return tr::lng_proxy_status_host_not_found(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyTcpNotConnected:
-		return tr::lng_proxy_status_network(tr::now);
-	case MTP::ProxyConnectionStatusKind::MtproxyTimeout:
-		return tr::lng_proxy_status_timeout(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed:
+		return tr::lng_proxy_status_mtproxy_appdata_closed(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyProxyProtocolBadResponse:
+		return tr::lng_proxy_status_mtproxy_bad_response(tr::now);
 	}
 	return QString();
 }
@@ -198,7 +198,7 @@ public:
 
 	void setStatus(
 		bool enabled,
-		MTP::ProxyConnectionStatusSeverity severity);
+		MTP::ProxyConnectionStatusTone tone);
 	void setOpacity(float64 opacity);
 
 protected:
@@ -214,9 +214,16 @@ private:
 	QPixmap _cacheSuccess;
 	QPixmap _cacheWarning;
 	QPixmap _cacheError;
+	QPixmap _cacheErrorDns;
+	QPixmap _cacheErrorTimeout;
+	QPixmap _cacheErrorNetwork;
+	QPixmap _cacheErrorProtocol;
+	QPixmap _cacheErrorAuth;
+	QPixmap _cacheErrorHandshake;
+	QPixmap _cacheErrorData;
 	bool _enabled = true;
-	MTP::ProxyConnectionStatusSeverity _severity
-		= MTP::ProxyConnectionStatusSeverity::Progress;
+	MTP::ProxyConnectionStatusTone _tone
+		= MTP::ProxyConnectionStatusTone::Progress;
 
 };
 
@@ -259,14 +266,21 @@ void ConnectionState::Widget::ProxyIcon::refreshCacheImages() {
 	_cacheSuccess = prepareCache(st::connectingProxySuccess);
 	_cacheWarning = prepareCache(st::connectingProxyWarning);
 	_cacheError = prepareCache(st::connectingProxyError);
+	_cacheErrorDns = prepareCache(st::connectingProxyErrorDns);
+	_cacheErrorTimeout = prepareCache(st::connectingProxyErrorTimeout);
+	_cacheErrorNetwork = prepareCache(st::connectingProxyErrorNetwork);
+	_cacheErrorProtocol = prepareCache(st::connectingProxyErrorProtocol);
+	_cacheErrorAuth = prepareCache(st::connectingProxyErrorAuth);
+	_cacheErrorHandshake = prepareCache(st::connectingProxyErrorHandshake);
+	_cacheErrorData = prepareCache(st::connectingProxyErrorData);
 }
 
 void ConnectionState::Widget::ProxyIcon::setStatus(
 		bool enabled,
-		MTP::ProxyConnectionStatusSeverity severity) {
-	if (_enabled != enabled || _severity != severity) {
+		MTP::ProxyConnectionStatusTone tone) {
+	if (_enabled != enabled || _tone != tone) {
 		_enabled = enabled;
-		_severity = severity;
+		_tone = tone;
 		update();
 	}
 }
@@ -291,16 +305,30 @@ const QPixmap &ConnectionState::Widget::ProxyIcon::cache() const {
 	if (!_enabled) {
 		return _cacheOff;
 	}
-	switch (_severity) {
-	case MTP::ProxyConnectionStatusSeverity::None:
-	case MTP::ProxyConnectionStatusSeverity::Progress:
+	switch (_tone) {
+	case MTP::ProxyConnectionStatusTone::None:
+	case MTP::ProxyConnectionStatusTone::Progress:
 		return _cacheProgress;
-	case MTP::ProxyConnectionStatusSeverity::Success:
+	case MTP::ProxyConnectionStatusTone::Success:
 		return _cacheSuccess;
-	case MTP::ProxyConnectionStatusSeverity::Warning:
+	case MTP::ProxyConnectionStatusTone::Warning:
 		return _cacheWarning;
-	case MTP::ProxyConnectionStatusSeverity::Error:
+	case MTP::ProxyConnectionStatusTone::Error:
 		return _cacheError;
+	case MTP::ProxyConnectionStatusTone::ErrorDns:
+		return _cacheErrorDns;
+	case MTP::ProxyConnectionStatusTone::ErrorTimeout:
+		return _cacheErrorTimeout;
+	case MTP::ProxyConnectionStatusTone::ErrorNetwork:
+		return _cacheErrorNetwork;
+	case MTP::ProxyConnectionStatusTone::ErrorProtocol:
+		return _cacheErrorProtocol;
+	case MTP::ProxyConnectionStatusTone::ErrorAuth:
+		return _cacheErrorAuth;
+	case MTP::ProxyConnectionStatusTone::ErrorHandshake:
+		return _cacheErrorHandshake;
+	case MTP::ProxyConnectionStatusTone::ErrorData:
+		return _cacheErrorData;
 	}
 	return _cacheProgress;
 }
@@ -579,6 +607,7 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 	if (state.useProxy) {
 		const auto status = state.proxyStatus;
 		result.proxySeverity = MTP::ProxyConnectionStatusSeverityFor(status);
+		result.proxyTone = MTP::ProxyConnectionStatusToneFor(status);
 	}
 	result.progressShown = (state.type != State::Type::Connected);
 	result.visible = state.exposed
@@ -682,6 +711,9 @@ ConnectionState::Widget::Widget(
 	) | rpl::on_next([=] {
 		_refreshStateRequests.fire({});
 	}, _progress->lifetime());
+
+	setLayout(_currentLayout);
+	setProgressVisibility(_currentLayout.progressShown);
 }
 
 void ConnectionState::Widget::onStateChanged(
@@ -764,7 +796,7 @@ void ConnectionState::Widget::resizeEvent(QResizeEvent *e) {
 	{
 		const auto xShift = (height() - _proxyIcon->width()) / 2;
 		const auto yShift = (height() - _proxyIcon->height()) / 2;
-		_proxyIcon->moveToRight(xShift, yShift);
+		_proxyIcon->moveToLeft(xShift, yShift);
 	}
 	updateRetryGeometry();
 }
@@ -792,15 +824,17 @@ void ConnectionState::Widget::setLayout(const Layout &layout) {
 	_currentLayout = layout;
 	_proxyIcon->setStatus(
 		_currentLayout.proxyEnabled,
-		_currentLayout.proxySeverity);
+		_currentLayout.proxyTone);
 	refreshRetryLink(_currentLayout.hasRetry);
 	setAccessibleName(_currentLayout.text);
 }
 
 void ConnectionState::Widget::setProgressVisibility(bool visible) {
-	if (_progress->isHidden() == visible) {
-		_progress->setVisible(visible);
+	const auto progressVisible = visible && !_currentLayout.proxyEnabled;
+	if (_progress->isHidden() == progressVisible) {
+		_progress->setVisible(progressVisible);
 	}
+	_proxyIcon->setVisible(_currentLayout.proxyEnabled);
 }
 
 void ConnectionState::Widget::refreshRetryLink(bool hasRetry) {

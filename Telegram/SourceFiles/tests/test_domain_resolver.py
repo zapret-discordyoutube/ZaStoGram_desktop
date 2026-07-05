@@ -4,7 +4,7 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 RESOLVER_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_domain_resolver.h"
 RESOLVER_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_domain_resolver.cpp"
-RESOLVING_CPP = SOURCE_DIR / "mtproto" / "connection_resolving.cpp"
+RESOLVING_CPP = SOURCE_DIR / "mtproto" / "proxy" / "resolving_connection.cpp"
 
 
 def read(path):
@@ -55,7 +55,8 @@ def test_total_resolve_failure_is_reported_to_callback():
 
     push = source.split("void DomainResolver::pushResultIfResolveDone")[1]
     push = push.split("\n}\n")[0]
-    assert "_callback(domain, QStringList(), now);" in push
+    assert "kNegativeResolveTtl" in source
+    assert "_callback(domain, QStringList(), expireAt);" in push
 
 
 def test_system_lookups_are_aborted_on_destruction():
@@ -72,9 +73,22 @@ def test_resolve_outcome_reaches_proxy_diagnostics():
     assert "proxy host resolved" in source
 
 
+def test_cached_negative_dns_does_not_disable_mtproxy_child():
+    source = read(RESOLVING_CPP)
+    constructor = source.split("ResolvingConnection::ResolvingConnection(")[1]
+    constructor = constructor.split("\n}\n")[0]
+
+    assert "cachedNegative" not in constructor
+    assert "_child = nullptr" not in constructor
+    assert "proxy.resolvedIPs.empty()" in constructor
+    assert "DnsResolverCache::Instance().request(" in constructor
+    assert "instance->resolveProxyDomain(host);" not in constructor
+
+
 if __name__ == "__main__":
     test_system_dns_is_tried_before_doh()
     test_doh_failure_does_not_block_retries_forever()
     test_total_resolve_failure_is_reported_to_callback()
     test_system_lookups_are_aborted_on_destruction()
     test_resolve_outcome_reaches_proxy_diagnostics()
+    test_cached_negative_dns_does_not_disable_mtproxy_child()

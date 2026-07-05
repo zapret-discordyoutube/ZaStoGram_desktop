@@ -1,0 +1,119 @@
+from pathlib import Path
+
+
+SOURCE_DIR = Path(__file__).resolve().parents[1]
+MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
+ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
+CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+
+
+def read(path):
+    assert path.exists(), f"missing expected source file: {path}"
+    return path.read_text(encoding="utf-8")
+
+
+def function_body(source, signature):
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    for i in range(brace, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:i + 1]
+    raise AssertionError(f"function body not found: {signature}")
+
+
+def test_endpoint_identity_is_split_into_canonical_and_route():
+    header = read(ENDPOINT_HEALTH_H)
+
+    assert "struct CanonicalProxyEndpoint" in header
+    assert "ProxyData::Type type" in header
+    assert "QString originalHost;" in header
+    assert "QString secretHash;" in header
+    assert "QString domainFromSecret;" in header
+    assert "ProxyData::Type proxyKind" in header
+    assert "enum class RouteAddressFamily" in header
+    assert "struct RouteEndpoint" in header
+    assert "QString address;" in header
+    assert "RouteAddressFamily addressFamily" in header
+    assert "ProxyTransport transport" in header
+    assert "QString resolvedFromHost;" in header
+    assert "CanonicalProxyEndpoint canonical;" in header
+    assert "RouteEndpoint route;" in header
+    assert "QString resolvedHost;" not in header
+    assert "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)" in header
+    assert "QString RouteKey(const RouteEndpoint &route)" in header
+    assert "bool EndpointEmpty(const EndpointId &endpoint)" in header
+
+
+def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
+    source = read(ENDPOINT_HEALTH_CPP)
+    body = function_body(source, "EndpointId EndpointIdFromProxy(")
+    canonical_key = function_body(
+        source,
+        "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)")
+    route_key = function_body(source, "QString RouteKey(const RouteEndpoint &route)")
+
+    assert "result.canonical.originalHost = ProxyIdentityHost(proxy);" in body
+    assert "result.canonical.port = int(proxy.port);" in body
+    assert "result.route = RouteEndpointFromAddress(" in body
+    assert "result.canonical.originalHost" in body
+    assert "result.canonical.secretHash = HashBytes(secret);" in body
+    assert "result.canonical.domainFromSecret = DomainFromSecret(secret);" in body
+    assert "result.canonical.secretHash = HashText(proxy.password);" in body
+    assert "route.address" not in canonical_key
+    assert "route.resolvedFromHost" not in canonical_key
+    assert "endpoint.originalHost" in canonical_key
+    assert "endpoint.secretHash" in canonical_key
+    assert "endpoint.domainFromSecret" in canonical_key
+    assert "route.address" in route_key
+    assert "route.resolvedFromHost" in route_key
+    assert "route.transport" in route_key
+    assert "route.addressFamily" in route_key
+
+
+def test_route_success_promotes_to_canonical_but_route_failure_stays_local():
+    source = read(ENDPOINT_HEALTH_CPP)
+    failure = function_body(source, "void EndpointHealth::reportFailure(")
+    success = function_body(source, "void EndpointHealth::reportSuccess(")
+
+    assert "std::map<QString, RouteState> Routes;" in source
+    assert "std::set<QString> routeKeys;" in source
+    assert "RouteKey(report.endpoint.route)" in failure
+    assert "NoteRouteFailure(" in failure
+    assert "HasHealthyRoute(" in failure
+    assert "return;" in failure.split("HasHealthyRoute(")[1]
+    assert "RouteKey(report.endpoint.route)" in success
+    assert "NoteRouteSuccess(" in success
+    assert "state.healthy = true;" in success
+    assert "state.lastFailure = FailureReason::None;" in success
+
+
+def test_consumers_treat_endpoint_empty_as_canonical_empty():
+    broker = read(CONNECTION_BROKER_CPP)
+    check = read(CHECK_CPP)
+    session = read(SESSION_CPP)
+    tls = read(TLS_SOCKET_CPP)
+
+    assert "MtProxy::EndpointEmpty(state->request.endpoint)" in broker
+    assert "MtProxy::EndpointEmpty(state->mtproxyEndpoint)" in check
+    assert "MtProxy::EndpointEmpty(connection.mtproxyEndpoint)" in session
+    assert "MtProxy::EndpointEmpty(found->mtproxyEndpoint)" in session
+    assert "MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)" in session
+    assert ".canonical.domainFromSecret.isEmpty()" in session
+    assert "_endpointId.route = MtProxy::RouteEndpointFromAddress(" in tls
+    assert "MtProxy::EndpointKey(_endpointId.canonical)" in tls
+
+
+if __name__ == "__main__":
+    test_endpoint_identity_is_split_into_canonical_and_route()
+    test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity()
+    test_route_success_promotes_to_canonical_but_route_failure_stays_local()
+    test_consumers_treat_endpoint_empty_as_canonical_empty()

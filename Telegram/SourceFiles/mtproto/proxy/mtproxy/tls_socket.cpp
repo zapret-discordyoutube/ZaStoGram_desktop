@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/details/mtproto_tcp_socket.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "base/algorithm.h"
 #include "base/openssl_help.h"
@@ -208,16 +209,46 @@ void NoteSyntheticPskDataPathSuccess(
 		*reinterpret_cast<const uint16*>(storage.data()));
 }
 
+[[nodiscard]] QString HandshakePhaseText(HandshakePhase phase) {
+	switch (phase) {
+	case HandshakePhase::None:
+		return u"tcp_not_connected"_q;
+	case HandshakePhase::TcpConnected:
+		return u"tcp_connected"_q;
+	case HandshakePhase::ClientHelloSent:
+		return u"client_hello_sent_no_server_hello"_q;
+	case HandshakePhase::ServerHelloOk:
+		return u"server_hello_ok_no_appdata"_q;
+	case HandshakePhase::FirstDataReceived:
+		return u"appdata_remote_closed"_q;
+	}
+	return u"unknown"_q;
+}
+
+[[nodiscard]] QString CanonicalText(const MtProxy::EndpointId &endpoint) {
+	return ProxyDiagnosticsEndpointText(
+		endpoint.canonical.originalHost,
+		endpoint.canonical.port);
+}
+
+[[nodiscard]] QString RouteText(const MtProxy::EndpointId &endpoint) {
+	return ProxyDiagnosticsEndpointText(
+		endpoint.route.address,
+		endpoint.route.port);
+}
+
 } // namespace
 
 TlsSocket::TlsSocket(
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
-	const QNetworkProxy &proxy,
+	const ProxyData &proxy,
 	bool protocolForFiles,
 	const ProxyStealthOptions &stealth)
-: AbstractSocket(thread)
-, _secret(secret) {
+	: AbstractSocket(thread)
+	, _secret(secret)
+	, _endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))
+	, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical)) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
 
 	_recordSizing = RecordSizing(int(stealth.recordSizing));
@@ -235,7 +266,7 @@ TlsSocket::TlsSocket(
 	_clientHelloFragmentTimer.setCallback([=] { writeClientHelloTail(); });
 
 	_socket.moveToThread(thread);
-	_socket.setProxy(proxy);
+	_socket.setProxy(ToNetworkProxy(proxy));
 	if (protocolForFiles) {
 		_socket.setSocketOption(
 			QAbstractSocket::SendBufferSizeSocketOption,
@@ -289,19 +320,44 @@ MtProxy::FailureReason TlsSocket::failureReason() const {
 	}
 	switch (_phase) {
 	case HandshakePhase::None:
+		return MtProxy::FailureReason::TcpConnectTimeout;
 	case HandshakePhase::TcpConnected:
-		return MtProxy::FailureReason::TcpNotConnected;
+		return MtProxy::FailureReason::TcpConnectedNoClientHelloWrite;
 	case HandshakePhase::ClientHelloSent:
-		if (_incoming.size() > kHelloDigestLength) {
-			return MtProxy::FailureReason::ShortTlsResponseAfterClientHello;
-		}
-		return MtProxy::FailureReason::NoServerHelloAfterClientHello;
+		return MtProxy::FailureReason::ClientHelloSentNoServerHello;
 	case HandshakePhase::ServerHelloOk:
-		return MtProxy::FailureReason::PostHandshakeNoAppData;
+		return MtProxy::FailureReason::ServerHelloOkNoAppData;
 	case HandshakePhase::FirstDataReceived:
 		break;
 	}
 	return MtProxy::FailureReason::None;
+}
+
+bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
+	if (!_syntheticPskOffered) {
+		return false;
+	}
+	switch (reason) {
+	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
+	case MtProxy::FailureReason::TlsAlertAfterClientHello:
+	case MtProxy::FailureReason::ServerHelloHmacMismatch:
+	case MtProxy::FailureReason::ServerHelloOkNoAppData:
+		ClearSyntheticPskTickets(
+			MtProxy::EndpointKey(_endpointId.canonical),
+			domainFromSecret(),
+			_sentTlsProfile);
+		_syntheticPskOffered = false;
+		return true;
+	case MtProxy::FailureReason::None:
+	case MtProxy::FailureReason::DnsFailed:
+	case MtProxy::FailureReason::TcpConnectTimeout:
+	case MtProxy::FailureReason::TcpConnectedNoClientHelloWrite:
+	case MtProxy::FailureReason::AppDataRemoteClosed:
+	case MtProxy::FailureReason::Network:
+	case MtProxy::FailureReason::ProxyProtocolBadResponse:
+		break;
+	}
+	return false;
 }
 
 void TlsSocket::applyAdaptiveRecipe() {
@@ -330,6 +386,32 @@ void TlsSocket::applyAdaptiveRecipe() {
 		_usePreparedTlsProfile = true;
 	}
 	_timing = recipe.stealth.timing;
+	_stealth = recipe.stealth;
+	WriteProxyDiagnosticsLine({
+		.source = ProxyDiagnosticsSource::MTProxy,
+		.phase = ProxyDiagnosticsPhase::StealthRecipeApplied,
+		.severity = ProxyDiagnosticsSeverity::Info,
+		.transport = ProxyDiagnosticsTransportName(
+			ProxyData::Type::Mtproto,
+			_stealth.transport),
+		.message = u"mtproxy stealth recipe applied"_q,
+		.canonical = CanonicalText(_endpointId),
+		.route = RouteText(_endpointId),
+		.proxyKeyHash = ProxyDiagnosticsKeyHash(
+			MtProxy::EndpointKey(_endpointId.canonical)),
+		.profile = ProxyDiagnosticsTlsProfileName(
+			_usePreparedTlsProfile
+				? _preparedTlsProfile
+				: input.effectiveTlsProfile),
+		.recipeLevel = snapshot.recipeLevel,
+		.pskOffered = _syntheticPskOffered,
+		.pskOfferedKnown = true,
+		.fragmentedClientHello = _clientHelloFragmented,
+		.fragmentedClientHelloKnown = true,
+		.phaseAtFailure = input.lastDiagnostic.isEmpty()
+			? HandshakePhaseText(_phase)
+			: input.lastDiagnostic,
+	});
 }
 
 void TlsSocket::writeClientHello(const QByteArray &data) {
@@ -342,6 +424,7 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 		_socket.write(data);
 		return;
 	}
+	_clientHelloFragmented = true;
 	_socket.write(data.constData(), plan.firstSize);
 	_socket.flush();
 	_clientHelloTail = data.mid(plan.firstSize);
@@ -388,10 +471,15 @@ void TlsSocket::sendClientHello() {
 	_usePreparedTlsProfile = false;
 	_sentTlsProfile = profile;
 	const auto rules = PrepareClientHelloRules(profile);
-	auto pskOffer = PrepareSyntheticPskOffer(
-		MtProxy::EndpointKey(_endpointId),
-		domainFromSecret(),
-		profile);
+	auto pskOffer = std::optional<SyntheticPskOffer>();
+	_clientHelloFragmented = false;
+	if (_stealth.syntheticPsk) {
+		pskOffer = PrepareSyntheticPskOffer(
+			MtProxy::EndpointKey(_endpointId.canonical),
+			domainFromSecret(),
+			profile);
+	}
+	_syntheticPskOffered = pskOffer.has_value();
 	const auto hello = PrepareClientHello(
 		rules,
 		domainFromSecret(),
@@ -400,7 +488,7 @@ void TlsSocket::sendClientHello() {
 		std::move(pskOffer));
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
-		handleError(MtProxy::FailureReason::BadResponse);
+		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
@@ -422,6 +510,9 @@ void TlsSocket::plainDisconnected() {
 	_usePreparedTlsProfile = false;
 	_clientHelloTail = QByteArray();
 	_failureReason = MtProxy::FailureReason::None;
+	_syntheticPskOffered = false;
+	_clientHelloFragmented = false;
+	_firstAppDataReceived = false;
 	_pacingTimer.cancel();
 	_clientHelloTimer.cancel();
 	_clientHelloFragmentTimer.cancel();
@@ -470,7 +561,7 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 			logError(888, "Bad Server Hello part1.");
 			handleError(IsTlsAlert(data.subspan(part1Offset))
 				? MtProxy::FailureReason::TlsAlertAfterClientHello
-				: MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello);
+				: MtProxy::FailureReason::ProxyProtocolBadResponse);
 			return;
 		}
 		_serverHelloLength = parts123Size;
@@ -495,7 +586,7 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 		if (!CheckPart(data.subspan(part3Offset), kServerHelloPart3)) {
 			logError(888, "Bad Server Hello part.");
 			handleError(
-				MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello);
+				MtProxy::FailureReason::ProxyProtocolBadResponse);
 			return;
 		}
 		_serverHelloLength = full;
@@ -574,14 +665,17 @@ bool TlsSocket::checkNextPacket() {
 			}
 			_incomingGoodDataOffset = fullHeader;
 			_incomingGoodDataLimit = length;
+			_firstAppDataReceived = true;
 			_phase = HandshakePhase::FirstDataReceived;
 			connectionProgress(_phase);
 			MtProxy::EndpointHealth::Instance().reportSuccess({
 				.endpoint = _endpointId,
 				.use = _endpointUse,
+				.stealth = _stealth,
+				.sentProfile = _sentTlsProfile,
 			});
 			NoteSyntheticPskDataPathSuccess(
-				MtProxy::EndpointKey(_endpointId),
+				MtProxy::EndpointKey(_endpointId.canonical),
 				domainFromSecret(),
 				_sentTlsProfile);
 		} else {
@@ -608,12 +702,11 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	Expects(_state == State::NotConnected);
 
 	_state = State::Connecting;
-	_endpointKey = address + u":%1"_q.arg(port);
-	_endpointId = MtProxy::EndpointIdFromAddress(
+	_endpointId.route = MtProxy::RouteEndpointFromAddress(
 		address,
 		port,
-		bytes::make_span(_secret),
-		_stealth.transport);
+		_stealth.transport,
+		_endpointId.canonical.originalHost);
 	_socket.connectToHost(address, port);
 }
 
@@ -627,12 +720,8 @@ void TlsSocket::timedOut() {
 		return;
 	}
 	const auto reason = failureReason();
-	if (reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
-		ClearSyntheticPskTickets(
-			MtProxy::EndpointKey(_endpointId),
-			domainFromSecret(),
-			_sentTlsProfile);
-	}
+	_failureReason = reason;
+	clearSyntheticPskOnFailure(reason);
 	MtProxy::EndpointHealth::Instance().reportFailure({
 		.endpoint = _endpointId,
 		.use = _endpointUse,
@@ -847,15 +936,15 @@ void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {
 }
 
 void TlsSocket::handleError(int errorCode) {
-	const auto reason = failureReason();
-	if (reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
-		ClearSyntheticPskTickets(
-			MtProxy::EndpointKey(_endpointId),
-			domainFromSecret(),
-			_sentTlsProfile);
+	auto reason = failureReason();
+	if (reason == MtProxy::FailureReason::None && _firstAppDataReceived) {
+		reason = MtProxy::FailureReason::AppDataRemoteClosed;
 	}
+	_failureReason = reason;
+	clearSyntheticPskOnFailure(reason);
 	if (_state != State::Connected
-		|| reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
+		|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
+		|| reason == MtProxy::FailureReason::AppDataRemoteClosed) {
 		_syncTimeRequests.fire({});
 		MtProxy::EndpointHealth::Instance().reportFailure({
 			.endpoint = _endpointId,

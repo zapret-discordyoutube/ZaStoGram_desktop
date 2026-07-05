@@ -20,10 +20,11 @@ namespace MTP::details {
 std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
-		const QNetworkProxy &proxy,
+		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
 		int16 protocolDcId) {
+	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {
 		auto route = WssCustomRoute(stealth);
 		if (!route) {
@@ -32,7 +33,7 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		if (route) {
 			return std::make_unique<WssSocket>(
 				thread,
-				proxy,
+				networkProxy,
 				protocolForFiles,
 				std::move(*route));
 		}
@@ -45,7 +46,10 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 			protocolForFiles,
 			stealth);
 	} else {
-		return std::make_unique<TcpSocket>(thread, proxy, protocolForFiles);
+		return std::make_unique<TcpSocket>(
+			thread,
+			networkProxy,
+			protocolForFiles);
 	}
 }
 

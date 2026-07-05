@@ -63,6 +63,8 @@ private:
 		bool proxyEnabled = false;
 		MTP::ProxyConnectionStatusSeverity proxySeverity
 			= MTP::ProxyConnectionStatusSeverity::None;
+		MTP::ProxyConnectionStatusTone proxyTone
+			= MTP::ProxyConnectionStatusTone::None;
 		bool progressShown = false;
 		int contentWidth = 0;
 		QString text;

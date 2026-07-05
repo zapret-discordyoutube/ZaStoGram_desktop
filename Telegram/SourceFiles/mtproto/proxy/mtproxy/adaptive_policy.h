@@ -57,6 +57,9 @@ struct AdaptiveRecipeResult {
 
 [[nodiscard]] bool FailureNeedsTlsProfileRotation(const QString &diagnostic);
 
+[[nodiscard]] ProxyStealthLevel ProxyStealthLevelForRecipeLevel(
+	int recipeLevel);
+
 // Per-level compatibility rotation between known-good profiles.
 [[nodiscard]] ProxyTlsProfile CompatibilityTlsProfile(
 	ProxyTlsProfile effective,

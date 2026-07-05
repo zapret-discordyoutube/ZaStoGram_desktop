@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/status.h"
 #include "base/timer.h"
 
@@ -99,6 +99,8 @@ private:
 	void markConnectionOld();
 	void sendPingByTimer();
 	void destroyAllConnections();
+	void removeConnectionBrokerTicket(ConnectionTicketId id);
+	void armWaitForConnectedTimer();
 
 	void confirmBestConnection();
 	void removeTestConnection(not_null<AbstractConnection*> connection);
@@ -202,6 +204,7 @@ private:
 	MtProxy::EndpointId _connectionMtproxyEndpoint;
 	MtProxy::EndpointUse _connectionMtproxyUse = MtProxy::EndpointUse::Main;
 	std::vector<TestConnection> _testConnections;
+	std::vector<ConnectionTicket> _connectionBrokerTickets;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer

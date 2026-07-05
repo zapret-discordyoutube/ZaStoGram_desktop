@@ -1261,6 +1261,10 @@ MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
 		return fallback;
 	};
 	auto result = MTP::ProxyStealthOptions();
+	result.level = MTP::ProxyStealthLevel(read(
+		"mtproxy/stealthLevel",
+		int(result.level),
+		int(MTP::ProxyStealthLevel::Experimental)));
 	result.tlsProfile = MTP::ProxyTlsProfile(read(
 		"mtproxy/tlsProfile",
 		int(result.tlsProfile),
@@ -1285,6 +1289,10 @@ MTP::ProxyStealthOptions Settings::proxyStealthOptions() {
 		"mtproxy/startupCover",
 		int(result.startupCover),
 		int(MTP::ProxyStartupCover::Strict)));
+	result.syntheticPsk = (read(
+		"mtproxy/syntheticPsk",
+		result.syntheticPsk ? 1 : 0,
+		1) != 0);
 	result.transport = MTP::ProxyTransport(read(
 		"mtproxy/transport",
 		int(result.transport),
@@ -1312,6 +1320,8 @@ void Settings::setProxyStealthOptions(const MTP::ProxyStealthOptions &value) {
 	write("mtproxy/recordSizing", int(value.recordSizing));
 	write("mtproxy/timing", int(value.timing));
 	write("mtproxy/startupCover", int(value.startupCover));
+	write("mtproxy/stealthLevel", int(value.level));
+	write("mtproxy/syntheticPsk", value.syntheticPsk ? 1 : 0);
 	write("mtproxy/transport", int(value.transport));
 	writePrefGeneric("mtproxy/wssHost", value.wssCustomHost.toUtf8());
 	write("mtproxy/wssPort", value.wssCustomPort);

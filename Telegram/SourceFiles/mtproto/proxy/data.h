@@ -34,6 +34,7 @@ struct ProxyData {
 	QString host;
 	uint32 port = 0;
 	QString user, password;
+	QString originalHost;
 
 	std::vector<QString> resolvedIPs;
 	crl::time resolvedExpireAt = 0;
@@ -93,8 +94,16 @@ enum class ProxyTransport {
 	Tcp,
 	Wss,
 };
+enum class ProxyStealthLevel {
+	CompatStrict,
+	CompatModern,
+	DpiAdaptiveHandshake,
+	DpiAdaptiveData,
+	Experimental,
+};
 
 struct ProxyStealthOptions {
+	ProxyStealthLevel level = ProxyStealthLevel::DpiAdaptiveData;
 	ProxyTlsProfile tlsProfile = ProxyTlsProfile::Auto;
 	ProxyClientHelloFragmentation clientHelloFragmentation
 		= ProxyClientHelloFragmentation::Off;
@@ -102,6 +111,7 @@ struct ProxyStealthOptions {
 	ProxyRecordSizing recordSizing = ProxyRecordSizing::Off;
 	ProxyTiming timing = ProxyTiming::Off;
 	ProxyStartupCover startupCover = ProxyStartupCover::Off;
+	bool syntheticPsk = false;
 	ProxyTransport transport = ProxyTransport::Wss;
 
 	// Expert-only custom WSS relay; used when transport == Wss and
@@ -120,5 +130,10 @@ struct ProxyStealthOptions {
 	const ProxyData &proxy,
 	int ipIndex = 0);
 [[nodiscard]] QNetworkProxy ToNetworkProxy(const ProxyData &proxy);
+[[nodiscard]] ProxyStealthOptions CompatStrictProxyStealthOptions(
+	ProxyStealthOptions result);
+[[nodiscard]] ProxyStealthOptions ApplyProxyStealthLevel(
+	ProxyStealthOptions result,
+	ProxyStealthLevel level);
 
 } // namespace MTP

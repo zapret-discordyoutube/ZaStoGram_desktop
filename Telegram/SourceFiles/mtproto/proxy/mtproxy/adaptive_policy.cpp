@@ -65,30 +65,18 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 	return 0;
 }
 
-[[nodiscard]] bool IsLightConnectionPattern(ProxyConnectionPattern pattern) {
-	return (pattern == ProxyConnectionPattern::Soft)
-		|| (pattern == ProxyConnectionPattern::Browser);
-}
-
 } // namespace
 
 bool FailureNeedsRecipe(const QString &diagnostic) {
-	if (diagnostic == u"tcp_not_connected"_q) {
-		return false;
-	}
 	return (diagnostic == u"client_hello_sent_no_server_hello"_q)
 		|| (diagnostic == u"tls_alert_after_client_hello"_q)
-		|| (diagnostic == u"short_tls_response_after_client_hello"_q)
-		|| (diagnostic == u"unrecognized_tls_response_after_client_hello"_q)
 		|| (diagnostic == u"server_hello_hmac_mismatch"_q)
-		|| (diagnostic == u"post_handshake_no_appdata"_q);
+		|| (diagnostic == u"server_hello_ok_no_appdata"_q);
 }
 
 bool FailureNeedsTlsProfileRotation(const QString &diagnostic) {
 	return (diagnostic == u"client_hello_sent_no_server_hello"_q)
 		|| (diagnostic == u"tls_alert_after_client_hello"_q)
-		|| (diagnostic == u"short_tls_response_after_client_hello"_q)
-		|| (diagnostic == u"unrecognized_tls_response_after_client_hello"_q)
 		|| (diagnostic == u"server_hello_hmac_mismatch"_q);
 }
 
@@ -114,6 +102,17 @@ ProxyTlsProfile CompatibilityTlsProfile(
 	return KnownClientHelloProfile(candidate);
 }
 
+ProxyStealthLevel ProxyStealthLevelForRecipeLevel(int recipeLevel) {
+	if (recipeLevel <= 0) {
+		return ProxyStealthLevel::CompatStrict;
+	} else if (recipeLevel == 1) {
+		return ProxyStealthLevel::CompatModern;
+	} else if (recipeLevel == 2) {
+		return ProxyStealthLevel::DpiAdaptiveHandshake;
+	}
+	return ProxyStealthLevel::DpiAdaptiveData;
+}
+
 AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 	auto result = AdaptiveRecipeResult();
 	result.stealth = input.stealth;
@@ -124,35 +123,15 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 	const auto autoProfile = (input.configuredTlsProfile == ProxyTlsProfile::Auto)
 		|| (input.configuredTlsProfile == ProxyTlsProfile::AutoRotate);
 
-	if (input.lastDiagnostic == u"post_handshake_no_appdata"_q) {
-		if (input.recipeLevel >= 2
-			&& stealth.recordSizing == ProxyRecordSizing::Off) {
-			stealth.recordSizing = ProxyRecordSizing::Conservative;
-			result.changed = true;
-		}
-		if (input.recipeLevel >= 3
-			&& stealth.startupCover == ProxyStartupCover::Off) {
-			stealth.startupCover = ProxyStartupCover::Soft;
-			result.changed = true;
-		}
-		if (input.recipeLevel >= 4
-			&& stealth.connectionPattern != ProxyConnectionPattern::Strict
-			&& IsLightConnectionPattern(stealth.connectionPattern)) {
-			stealth.connectionPattern = ProxyConnectionPattern::Quiet;
-			result.changed = true;
-		}
-		return result;
-	}
-
 	if (!FailureNeedsRecipe(input.lastDiagnostic)) {
 		return result;
 	}
 
-	if (input.recipeLevel >= 1
-		&& stealth.clientHelloFragmentation
-			!= ProxyClientHelloFragmentation::Off) {
-		stealth.clientHelloFragmentation = ProxyClientHelloFragmentation::Off;
-		result.changed = true;
+	const auto level = ProxyStealthLevelForRecipeLevel(input.recipeLevel);
+	stealth = ApplyProxyStealthLevel(input.stealth, level);
+	result.changed = (stealth != input.stealth);
+	if (input.lastDiagnostic == u"server_hello_ok_no_appdata"_q) {
+		return result;
 	}
 	if (input.recipeLevel >= 2 && autoProfile) {
 		const auto previous = stealth.tlsProfile;
@@ -162,12 +141,6 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 		if (stealth.tlsProfile != previous) {
 			result.changed = true;
 		}
-	}
-	if (input.recipeLevel >= 4
-		&& stealth.connectionPattern != ProxyConnectionPattern::Strict
-		&& IsLightConnectionPattern(stealth.connectionPattern)) {
-		stealth.connectionPattern = ProxyConnectionPattern::Quiet;
-		result.changed = true;
 	}
 	return result;
 }

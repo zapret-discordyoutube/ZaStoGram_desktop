@@ -9,6 +9,7 @@ POLICY_CPP = MTPROXY_DIR / "policy.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 CMAKE = ROOT_DIR / "Telegram" / "CMakeLists.txt"
 TD_MTPROTO_CMAKE = ROOT_DIR / "Telegram" / "cmake" / "td_mtproto.cmake"
@@ -19,6 +20,7 @@ def test_legacy_mtproxy_policy_module_is_removed():
     tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     endpoint_header = ENDPOINT_HEALTH_H.read_text(encoding="utf-8")
     endpoint_source = ENDPOINT_HEALTH_CPP.read_text(encoding="utf-8")
+    broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
 
     assert not POLICY_H.exists()
@@ -33,7 +35,8 @@ def test_legacy_mtproxy_policy_module_is_removed():
     assert "ConnectionSpacing(" in endpoint_source
     assert "ProxyPatternSpacing(" not in session
     assert "CooldownMsForEndpoint(" not in session
-    assert "MtProxy::ConnectionSpacing(" in session
+    assert "MtProxy::ConnectionSpacing(" not in session
+    assert "MtProxy::ReserveOpenSlot(" in broker
     assert "MtProxy::ConnectionSpacing(" in tls_socket
     assert "MtproxyEndpointCooldown(" not in session
 
@@ -63,6 +66,8 @@ def test_proxy_module_sources_are_registered_for_build():
     for path in (
         "mtproto/proxy/data.cpp",
         "mtproto/proxy/data.h",
+        "mtproto/proxy/connection_broker.cpp",
+        "mtproto/proxy/connection_broker.h",
         "mtproto/proxy/status.h",
         "mtproto/proxy/mtproxy/adaptive_policy.cpp",
         "mtproto/proxy/mtproxy/adaptive_policy.h",

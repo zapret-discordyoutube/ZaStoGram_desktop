@@ -190,6 +190,13 @@ connectingProxyProgress: icon {{ "proxy_on", windowBgActive }};
 connectingProxySuccess: icon {{ "proxy_on", statisticsChartLineGreen }};
 connectingProxyWarning: icon {{ "proxy_on", statisticsChartLineOrange }};
 connectingProxyError: icon {{ "proxy_on", attentionButtonFg }};
+connectingProxyErrorDns: icon {{ "proxy_on", statisticsChartLineGolden }};
+connectingProxyErrorTimeout: icon {{ "proxy_on", historyPeer8NameFg }};
+connectingProxyErrorNetwork: icon {{ "proxy_on", statisticsChartLineRed }};
+connectingProxyErrorProtocol: icon {{ "proxy_on", historyPeer1NameFg }};
+connectingProxyErrorAuth: icon {{ "proxy_on", historyPeer6NameFg }};
+connectingProxyErrorHandshake: icon {{ "proxy_on", statisticsChartLineIndigo }};
+connectingProxyErrorData: icon {{ "proxy_on", boxTextFgError }};
 connectingDuration: 150;
 
 windowOutdatedDetails: FlatLabel(defaultFlatLabel) {

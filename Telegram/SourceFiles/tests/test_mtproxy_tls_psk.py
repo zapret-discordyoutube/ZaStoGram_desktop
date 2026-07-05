@@ -87,8 +87,9 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
 
     assert "sendClientHello();" in plain_connected
     assert "_sentTlsProfile = profile;" in send_client_hello
+    assert "if (_stealth.syntheticPsk)" in send_client_hello
     assert "PrepareSyntheticPskOffer(" in send_client_hello
-    assert "MtProxy::EndpointKey(_endpointId)" in send_client_hello
+    assert "MtProxy::EndpointKey(_endpointId.canonical)" in send_client_hello
     assert "domainFromSecret()" in send_client_hello
     assert "profile" in send_client_hello
     assert "std::move(pskOffer)" in send_client_hello
@@ -115,9 +116,34 @@ def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
     timeout_body = function_body(source, "void TlsSocket::timedOut()")
 
     for body in (error_body, timeout_body):
-        assert "const auto reason = failureReason();" in body
-        assert "MtProxy::FailureReason::PostHandshakeNoAppData" in body
-        assert "ClearSyntheticPskTickets(" in body
+        assert "reason = failureReason();" in body
+        assert "clearSyntheticPskOnFailure(reason)" in body
+
+
+def test_synthetic_psk_offer_failures_clear_remaining_tickets():
+    header = TLS_SOCKET_H.read_text(encoding="utf-8")
+    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    send_client_hello = function_body(source, "void TlsSocket::sendClientHello()")
+    disconnected_body = function_body(source, "void TlsSocket::plainDisconnected()")
+    clear_helper = function_body(source, "bool TlsSocket::clearSyntheticPskOnFailure(")
+    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
+    timeout_body = function_body(source, "void TlsSocket::timedOut()")
+
+    assert "bool _syntheticPskOffered = false;" in header
+    assert "_syntheticPskOffered = pskOffer.has_value();" in send_client_hello
+    assert "_syntheticPskOffered = false;" in disconnected_body
+    assert "clearSyntheticPskOnFailure(reason)" in error_body
+    assert "clearSyntheticPskOnFailure(reason)" in timeout_body
+    assert "if (!_syntheticPskOffered)" in clear_helper
+    for reason in (
+        "ClientHelloSentNoServerHello",
+        "TlsAlertAfterClientHello",
+        "ServerHelloHmacMismatch",
+        "ServerHelloOkNoAppData",
+    ):
+        assert f"case MtProxy::FailureReason::{reason}:" in clear_helper
+    assert "ClearSyntheticPskTickets(" in clear_helper
+    assert "_syntheticPskOffered = false;" in clear_helper
 
 
 def test_synthetic_psk_uses_cached_identity_and_plausible_age():
@@ -285,10 +311,7 @@ def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
     assert "_clientHelloTimer.callOnce(delay);" in connected_body
     assert "_sentTlsProfile" in error_body
     assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
-    assert (
-        "MtProxy::FailureReason::UnrecognizedTlsResponseAfterClientHello"
-        in parts12_body
-    )
+    assert "MtProxy::FailureReason::ProxyProtocolBadResponse" in parts12_body
     assert "MtProxy::FailureReason::ServerHelloHmacMismatch" in digest_body
 
 

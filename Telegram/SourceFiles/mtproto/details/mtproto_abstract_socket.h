@@ -27,7 +27,7 @@ public:
 	static std::unique_ptr<AbstractSocket> Create(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
-		const QNetworkProxy &proxy,
+		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
 		int16 protocolDcId = 0);

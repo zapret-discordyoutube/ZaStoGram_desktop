@@ -8,20 +8,84 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/resolving_connection.h"
 
 #include "mtproto/mtp_instance.h"
+#include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/dns_resolver_cache.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+
+#include <algorithm>
 
 namespace MTP {
 namespace details {
 namespace {
 
-constexpr auto kOneConnectionTimeout = 4000;
+constexpr auto kRouteAttemptTimeout = crl::time(4000);
+constexpr auto kRouteRaceDelay = crl::time(300);
+constexpr auto kMaxParallelRouteAttempts = 2;
 
 [[nodiscard]] MtProxy::EndpointId MtproxyEndpointIdForProxy(
 		const ProxyData &proxy) {
 	auto stealth = ProxyStealthOptions();
 	stealth.transport = ProxyTransport::Tcp;
 	return MtProxy::EndpointIdFromProxy(proxy, stealth);
+}
+
+[[nodiscard]] MtProxy::EndpointId MtproxyEndpointIdForRoute(
+		const ProxyData &proxy,
+		int ipIndex) {
+	auto stealth = ProxyStealthOptions();
+	stealth.transport = ProxyTransport::Tcp;
+	const auto address = (ipIndex >= 0 && ipIndex < proxy.resolvedIPs.size())
+		? proxy.resolvedIPs[ipIndex]
+		: QString();
+	return MtProxy::EndpointIdFromProxy(
+		proxy,
+		stealth,
+		address,
+		int(proxy.port));
+}
+
+void ReportRouteEvent(
+		not_null<Instance*> instance,
+		const ProxyData &proxy,
+		int ipIndex,
+		ProxyDiagnosticsPhase phase,
+		MtProxy::FailureReason reason = MtProxy::FailureReason::None) {
+	if (proxy.type != ProxyData::Type::Mtproto) {
+		return;
+	}
+	const auto endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex);
+	const auto routeKey = MtProxy::RouteKey(endpoint.route);
+	const auto routeText = ProxyDiagnosticsEndpointText(
+		endpoint.route.address,
+		endpoint.route.port);
+	const auto failurePhase = MtProxy::ToLegacyDiagnostic(reason);
+	ReportProxyEvent(instance, {
+		.phase = phase,
+		.error = MtProxy::ToProxyConnectionError(reason),
+		.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(reason),
+		.severity = (phase == ProxyDiagnosticsPhase::RouteFailed)
+			? ProxyDiagnosticsSeverity::Warning
+			: ProxyDiagnosticsSeverity::Info,
+		.proxy = proxy,
+		.transport = ProxyDiagnosticsTransportName(
+			proxy.type,
+			ProxyTransport::Tcp),
+		.message = (phase == ProxyDiagnosticsPhase::RouteFailed)
+			? u"mtproxy route failed"_q
+			: u"mtproxy route selected"_q,
+		.canonical = ProxyDiagnosticsEndpointText(
+			endpoint.canonical.originalHost,
+			endpoint.canonical.port),
+		.route = routeText.isEmpty() ? routeKey : routeText,
+		.proxyKeyHash = ProxyDiagnosticsKeyHash(
+			MtProxy::EndpointKey(endpoint.canonical)),
+		.phaseAtFailure = (phase == ProxyDiagnosticsPhase::RouteFailed)
+			? (failurePhase.isEmpty()
+				? u"tcp_not_connected"_q
+				: failurePhase)
+			: QString(),
+	});
 }
 
 } // namespace
@@ -33,32 +97,26 @@ ResolvingConnection::ResolvingConnection(
 	ConnectionPointer &&child)
 : AbstractConnection(thread, proxy)
 , _instance(instance)
-, _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
-	setChild(std::move(child));
-	const auto cachedNegative = proxy.tryCustomResolve()
-		&& (proxy.resolvedExpireAt >= crl::now())
-		&& proxy.resolvedIPs.empty();
-	if (cachedNegative) {
-		_child = nullptr;
-	} else if (proxy.resolvedExpireAt < crl::now()) {
+, _child(std::move(child))
+, _timeoutTimer([=] { handleRouteAttemptTimeout(); })
+, _routeRaceTimer([=] { startNextRouteAttempt(); }) {
+	if (proxy.resolvedIPs.empty() || proxy.resolvedExpireAt < crl::now()) {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Resolving,
 			.proxy = _proxy,
 			.message = u"resolving proxy host"_q,
 		});
 		const auto host = proxy.host;
-		connect(
+		DnsResolverCache::Instance().request(
 			instance,
-			&Instance::proxyDomainResolved,
 			this,
-			&ResolvingConnection::domainResolved,
-			Qt::QueuedConnection);
-		InvokeQueued(instance, [=] {
-			instance->resolveProxyDomain(host);
-		});
+			host,
+			[=](QString host, QStringList ips, qint64 expireAt) {
+				domainResolved(host, ips, expireAt);
+			});
 	}
 	if (!proxy.resolvedIPs.empty()) {
-		refreshChild();
+		startRouteAttempts();
 	}
 }
 
@@ -66,41 +124,194 @@ ConnectionPointer ResolvingConnection::clone(const ProxyData &proxy) {
 	Unexpected("ResolvingConnection::clone call.");
 }
 
-void ResolvingConnection::setChild(ConnectionPointer &&child) {
-	_child = std::move(child);
+void ResolvingConnection::addRouteAttempt(int ipIndex) {
+	if (!_child
+		|| ipIndex < 0
+		|| ipIndex >= int(_proxy.resolvedIPs.size())) {
+		return;
+	}
+	auto attempt = RouteAttempt();
+	attempt.ipIndex = ipIndex;
+	attempt.child = _child->clone(ToDirectIpProxy(_proxy, ipIndex));
+	const auto raw = attempt.child.get();
 	connect(
-		_child,
+		raw,
 		&AbstractConnection::receivedData,
 		this,
-		&ResolvingConnection::handleReceivedData);
+		[=] { handleReceivedData(raw); });
 	connect(
-		_child,
+		raw,
 		&AbstractConnection::receivedSome,
 		this,
 		&ResolvingConnection::receivedSome);
 	connect(
-		_child,
+		raw,
 		&AbstractConnection::error,
 		this,
-		&ResolvingConnection::handleError);
-	connect(_child,
+		[=](int errorCode) { handleError(raw, errorCode); });
+	connect(raw,
 		&AbstractConnection::connected,
 		this,
-		&ResolvingConnection::handleConnected);
-	connect(_child,
+		[=] { handleConnected(raw); });
+	connect(raw,
 		&AbstractConnection::disconnected,
 		this,
-		&ResolvingConnection::handleDisconnected);
+		[=] { handleDisconnected(raw); });
 	if (_protocolDcId) {
-		_child->connectToServer(
+		attempt.child->connectToServer(
 			_address,
 			_port,
 			_protocolSecret,
 			_protocolDcId,
 			_protocolForFiles);
 		CONNECTION_LOG_INFO("Resolving connected a new child: "
-			+ _child->debugId());
+			+ attempt.child->debugId());
 	}
+	_routeAttempts.push_back(std::move(attempt));
+	ReportRouteEvent(
+		_instance,
+		_proxy,
+		ipIndex,
+		ProxyDiagnosticsPhase::RouteSelected);
+	refreshAttemptTimeout();
+}
+
+std::vector<int> ResolvingConnection::routeOrder() const {
+	auto result = std::vector<int>();
+	result.reserve(_proxy.resolvedIPs.size());
+	const auto append = [&](int index) {
+		if (std::find(begin(result), end(result), index) == end(result)) {
+			result.push_back(index);
+		}
+	};
+	if (_proxy.type == ProxyData::Type::Mtproto) {
+		const auto capability = ProxyCapabilityCache::Instance().lookup(_proxy);
+		for (const auto &goodRoute : capability.goodRoutes) {
+			for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
+				const auto route = MtProxy::RouteEndpointFromAddress(
+					_proxy.resolvedIPs[index],
+					int(_proxy.port),
+					ProxyTransport::Tcp,
+					_proxy.originalHost.isEmpty()
+						? _proxy.host
+						: _proxy.originalHost);
+				if (MtProxy::RouteKey(route) == goodRoute) {
+					result.push_back(index);
+				}
+			}
+		}
+	}
+	for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
+		append(index);
+	}
+	return result;
+}
+
+int ResolvingConnection::activeRouteAttempts() const {
+	return int(_routeAttempts.size());
+}
+
+ResolvingConnection::RouteAttempt *ResolvingConnection::findRouteAttempt(
+		AbstractConnection *child) {
+	const auto i = std::find_if(
+		begin(_routeAttempts),
+		end(_routeAttempts),
+		[&](const RouteAttempt &attempt) {
+			return attempt.child.get() == child;
+		});
+	return (i == end(_routeAttempts)) ? nullptr : &*i;
+}
+
+void ResolvingConnection::removeRouteAttempt(AbstractConnection *child) {
+	const auto i = std::find_if(
+		begin(_routeAttempts),
+		end(_routeAttempts),
+		[&](const RouteAttempt &attempt) {
+			return attempt.child.get() == child;
+		});
+	if (i != end(_routeAttempts)) {
+		_routeAttempts.erase(i);
+	}
+	refreshAttemptTimeout();
+}
+
+void ResolvingConnection::startRouteAttempts() {
+	if (_connected || _protocolDcId == 0 || _proxy.resolvedIPs.empty()) {
+		return;
+	}
+	if (_routeOrder.empty()) {
+		_routeOrder = routeOrder();
+		_nextRoutePosition = 0;
+	}
+	if (_routeAttempts.empty()) {
+		startNextRouteAttempt();
+	} else {
+		scheduleRouteRace();
+	}
+}
+
+void ResolvingConnection::startNextRouteAttempt() {
+	_routeRaceTimer.cancel();
+	if (_connected
+		|| _protocolDcId == 0
+		|| activeRouteAttempts() >= kMaxParallelRouteAttempts) {
+		return;
+	}
+	if (_routeOrder.empty()) {
+		_routeOrder = routeOrder();
+		_nextRoutePosition = 0;
+	}
+	while (_nextRoutePosition < int(_routeOrder.size())) {
+		const auto ipIndex = _routeOrder[_nextRoutePosition++];
+		const auto alreadyStarted = std::find_if(
+			begin(_routeAttempts),
+			end(_routeAttempts),
+			[&](const RouteAttempt &attempt) {
+				return attempt.ipIndex == ipIndex;
+			}) != end(_routeAttempts);
+		if (!alreadyStarted) {
+			addRouteAttempt(ipIndex);
+			break;
+		}
+	}
+	scheduleRouteRace();
+}
+
+void ResolvingConnection::scheduleRouteRace() {
+	if (_connected
+		|| _routeRaceTimer.isActive()
+		|| _nextRoutePosition >= int(_routeOrder.size())
+		|| activeRouteAttempts() >= kMaxParallelRouteAttempts) {
+		return;
+	}
+	_routeRaceTimer.callOnce(kRouteRaceDelay);
+}
+
+void ResolvingConnection::refreshAttemptTimeout() {
+	if (_connected || _routeAttempts.empty()) {
+		_timeoutTimer.cancel();
+		return;
+	}
+	_timeoutTimer.callOnce(kRouteAttemptTimeout);
+}
+
+void ResolvingConnection::handleRouteAttemptTimeout() {
+	if (_connected || _routeAttempts.empty()) {
+		return;
+	}
+	ReportRouteEvent(
+		_instance,
+		_proxy,
+		_routeAttempts.front().ipIndex,
+		ProxyDiagnosticsPhase::RouteFailed,
+		MtProxy::FailureReason::TcpConnectTimeout);
+	_routeAttempts.erase(begin(_routeAttempts));
+	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
+		emitError(kErrorCodeOther);
+		return;
+	}
+	startNextRouteAttempt();
+	refreshAttemptTimeout();
 }
 
 void ResolvingConnection::domainResolved(
@@ -115,14 +326,14 @@ void ResolvingConnection::domainResolved(
 		if (_proxy.type == ProxyData::Type::Mtproto) {
 			MtProxy::EndpointHealth::Instance().reportFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
-				.reason = MtProxy::FailureReason::DnsHostNotFound,
+				.reason = MtProxy::FailureReason::DnsFailed,
 			});
 		}
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
-				? ProxyMtproxyTerminalReason::DnsHostNotFound
+				? ProxyMtproxyTerminalReason::DnsFailed
 				: ProxyMtproxyTerminalReason::None,
 			.terminalUntil = expireAt,
 			.proxy = _proxy,
@@ -130,79 +341,83 @@ void ResolvingConnection::domainResolved(
 		});
 		emitError(kErrorCodeOther);
 		return;
-	} else {
-		ReportProxyEvent(_instance, {
-			.phase = ProxyDiagnosticsPhase::Resolving,
-			.proxy = _proxy,
-			.message = u"proxy host resolved (%1 addresses)"_q.arg(
-				ips.size()),
-		});
 	}
-
-	auto index = 0;
+	ReportProxyEvent(_instance, {
+		.phase = ProxyDiagnosticsPhase::Resolving,
+		.proxy = _proxy,
+		.message = u"proxy host resolved (%1 addresses)"_q.arg(
+			ips.size()),
+	});
+	_proxy.resolvedIPs.clear();
+	_proxy.resolvedIPs.reserve(ips.size());
 	for (const auto &ip : ips) {
-		if (index >= _proxy.resolvedIPs.size()) {
-			_proxy.resolvedIPs.push_back(ip);
-		} else if (_proxy.resolvedIPs[index] != ip) {
-			_proxy.resolvedIPs[index] = ip;
-			if (_ipIndex >= index) {
-				_ipIndex = index - 1;
-				refreshChild();
-			}
-		}
-		++index;
+		_proxy.resolvedIPs.push_back(ip);
 	}
-	if (index < _proxy.resolvedIPs.size()) {
-		_proxy.resolvedIPs.resize(index);
-		if (_ipIndex >= index) {
-			emitError(kErrorCodeOther);
-		}
-	}
-	if (_ipIndex < 0) {
-		refreshChild();
-	}
-}
-
-bool ResolvingConnection::refreshChild() {
-	if (!_child) {
-		return true;
-	} else if (++_ipIndex >= _proxy.resolvedIPs.size()) {
-		return false;
-	}
-	setChild(_child->clone(ToDirectIpProxy(_proxy, _ipIndex)));
-	_timeoutTimer.callOnce(kOneConnectionTimeout);
-	return true;
+	_routeOrder = routeOrder();
+	_nextRoutePosition = 0;
+	startRouteAttempts();
 }
 
 void ResolvingConnection::emitError(int errorCode) {
 	_ipIndex = -1;
+	_routeRaceTimer.cancel();
+	_timeoutTimer.cancel();
+	_routeAttempts.clear();
 	_child = nullptr;
 	error(errorCode);
 }
 
-void ResolvingConnection::handleError(int errorCode) {
-	if (_connected) {
+void ResolvingConnection::handleError(
+		AbstractConnection *child,
+		int errorCode) {
+	if (_connected && _child.get() == child) {
 		emitError(errorCode);
-	} else if (!_proxy.resolvedIPs.empty()) {
-		if (!refreshChild()) {
-			emitError(errorCode);
+	} else if (_connected) {
+		return;
+	}
+	if (const auto attempt = findRouteAttempt(child)) {
+		auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
+		if (reason == MtProxy::FailureReason::None) {
+			reason = MtProxy::FailureReason::TcpConnectTimeout;
 		}
+		ReportRouteEvent(
+			_instance,
+			_proxy,
+			attempt->ipIndex,
+			ProxyDiagnosticsPhase::RouteFailed,
+			reason);
+	}
+	removeRouteAttempt(child);
+	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
+		emitError(errorCode);
+	} else if (_routeAttempts.empty()) {
+		startNextRouteAttempt();
 	} else {
-		// Wait for the domain to be resolved.
+		scheduleRouteRace();
 	}
 }
 
-void ResolvingConnection::handleDisconnected() {
-	if (_connected) {
+void ResolvingConnection::handleDisconnected(AbstractConnection *child) {
+	if (_connected && _child.get() == child) {
 		disconnected();
-	} else {
-		handleError(kErrorCodeOther);
+	} else if (!_connected) {
+		handleError(child, kErrorCodeOther);
 	}
 }
 
-void ResolvingConnection::handleReceivedData() {
+void ResolvingConnection::handleReceivedData(AbstractConnection *child) {
+	if (_connected && _child.get() != child) {
+		return;
+	}
+	const auto attempt = findRouteAttempt(child);
+	const auto source = _connected ? _child.get() : (attempt
+		? attempt->child.get()
+		: nullptr);
+	if (!source) {
+		return;
+	}
 	auto &my = received();
-	auto &his = _child->received();
+	auto &his = source->received();
 	for (auto &item : his) {
 		my.push_back(std::move(item));
 	}
@@ -210,9 +425,37 @@ void ResolvingConnection::handleReceivedData() {
 	receivedData();
 }
 
-void ResolvingConnection::handleConnected() {
+void ResolvingConnection::promoteRouteAttempt(AbstractConnection *child) {
+	auto winner = ConnectionPointer();
+	auto winnerIpIndex = -1;
+	for (auto &attempt : _routeAttempts) {
+		if (attempt.child.get() == child) {
+			winner = std::move(attempt.child);
+			winnerIpIndex = attempt.ipIndex;
+		} else if (attempt.child) {
+			attempt.child->disconnectFromServer();
+		}
+	}
+	_routeAttempts.clear();
+	if (!winner) {
+		return;
+	}
+	_child = std::move(winner);
+	_ipIndex = winnerIpIndex;
+}
+
+void ResolvingConnection::handleConnected(AbstractConnection *child) {
+	if (_connected) {
+		return;
+	}
 	_connected = true;
+	promoteRouteAttempt(child);
+	if (!_child) {
+		_connected = false;
+		return;
+	}
 	_timeoutTimer.cancel();
+	_routeRaceTimer.cancel();
 	if (_ipIndex >= 0) {
 		const auto host = _proxy.host;
 		const auto good = _proxy.resolvedIPs[_ipIndex];
@@ -231,7 +474,7 @@ crl::time ResolvingConnection::pingTime() const {
 }
 
 crl::time ResolvingConnection::fullConnectTimeout() const {
-	return kOneConnectionTimeout * qMax(int(_proxy.resolvedIPs.size()), 1);
+	return kRouteAttemptTimeout + kRouteRaceDelay * kMaxParallelRouteAttempts;
 }
 
 void ResolvingConnection::sendData(mtpBuffer &&buffer) {
@@ -245,6 +488,14 @@ void ResolvingConnection::disconnectFromServer() {
 	_port = 0;
 	_protocolSecret = bytes::vector();
 	_protocolDcId = 0;
+	_routeRaceTimer.cancel();
+	_timeoutTimer.cancel();
+	for (auto &attempt : _routeAttempts) {
+		if (attempt.child) {
+			attempt.child->disconnectFromServer();
+		}
+	}
+	_routeAttempts.clear();
 	if (!_child) {
 		return;
 	}
@@ -261,14 +512,14 @@ void ResolvingConnection::connectToServer(
 		if (_proxy.type == ProxyData::Type::Mtproto) {
 			MtProxy::EndpointHealth::Instance().reportFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
-				.reason = MtProxy::FailureReason::DnsHostNotFound,
+				.reason = MtProxy::FailureReason::DnsFailed,
 			});
 		}
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
-				? ProxyMtproxyTerminalReason::DnsHostNotFound
+				? ProxyMtproxyTerminalReason::DnsFailed
 				: ProxyMtproxyTerminalReason::None,
 			.terminalUntil = _proxy.resolvedExpireAt,
 			.proxy = _proxy,
@@ -282,13 +533,9 @@ void ResolvingConnection::connectToServer(
 	_protocolSecret = protocolSecret;
 	_protocolDcId = protocolDcId;
 	_protocolForFiles = protocolForFiles;
-	_child->connectToServer(
-		address,
-		port,
-		protocolSecret,
-		protocolDcId,
-		protocolForFiles);
-	CONNECTION_LOG_INFO("Resolving connected a child: " + _child->debugId());
+	if (!_proxy.resolvedIPs.empty()) {
+		startRouteAttempts();
+	}
 }
 
 bool ResolvingConnection::isConnected() const {
@@ -296,14 +543,23 @@ bool ResolvingConnection::isConnected() const {
 }
 
 int32 ResolvingConnection::debugState() const {
+	if (!_connected && !_routeAttempts.empty()) {
+		return _routeAttempts.front().child->debugState();
+	}
 	return _child ? _child->debugState() : -1;
 }
 
 QString ResolvingConnection::transport() const {
+	if (!_connected && !_routeAttempts.empty()) {
+		return _routeAttempts.front().child->transport();
+	}
 	return _child ? _child->transport() : QString();
 }
 
 QString ResolvingConnection::tag() const {
+	if (!_connected && !_routeAttempts.empty()) {
+		return _routeAttempts.front().child->tag();
+	}
 	return _child ? _child->tag() : QString();
 }
 

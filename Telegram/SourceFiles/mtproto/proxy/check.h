@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/connection_abstract.h"
+#include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/handshake_gate.h"
 
 #include <memory>
@@ -18,7 +19,10 @@ class ProxyCheckConnection final {
 public:
 	struct Data {
 		details::ConnectionPointer connection;
+		details::ConnectionTicket connectionTicket;
 		details::HandshakeGateLease handshakeGate;
+		details::MtProxy::EndpointId mtproxyEndpoint;
+		details::MtProxy::EndpointAttemptLease mtproxyLease;
 		bool finished = false;
 	};
 

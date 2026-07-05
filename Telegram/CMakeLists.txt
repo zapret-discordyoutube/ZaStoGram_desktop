@@ -1494,8 +1494,14 @@ PRIVATE
     mtproto/connection_abstract.h
     mtproto/connection_http.cpp
     mtproto/connection_http.h
+    mtproto/proxy/connection_broker.cpp
+    mtproto/proxy/connection_broker.h
+    mtproto/proxy/capabilities.cpp
+    mtproto/proxy/capabilities.h
     mtproto/proxy/data.cpp
     mtproto/proxy/data.h
+    mtproto/proxy/dns_resolver_cache.cpp
+    mtproto/proxy/dns_resolver_cache.h
     mtproto/proxy/transport_policy.cpp
     mtproto/proxy/transport_policy.h
     mtproto/proxy/status.cpp

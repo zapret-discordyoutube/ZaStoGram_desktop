@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/transport_policy.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
@@ -579,7 +580,7 @@ void TcpConnection::connectToServer(
 	_socket = AbstractSocket::Create(
 		thread(),
 		secret,
-		ToNetworkProxy(_proxy),
+		_proxy,
 		protocolForFiles,
 		_stealth,
 		protocolDcId);
@@ -770,13 +771,18 @@ void TcpConnection::socketError(int errorCode) {
 	}
 
 	CONNECTION_LOG_ERROR(u"Socket error %1."_q.arg(errorCode));
+	const auto error = SocketProxyConnectionError(errorCode);
+	const auto transport = _socket->transportName();
+	if (transport == u"WSS"_q && error == ProxyConnectionError::RemoteClosed) {
+		NoteProxyWssRemoteClosed(_proxy);
+	}
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Failed,
-		.error = SocketProxyConnectionError(errorCode),
+		.error = error,
 		.mtproxyReason = _socket->mtproxyTerminalReason(),
 		.terminalUntil = _socket->mtproxyTerminalUntil(),
 		.proxy = _proxy,
-		.transport = tag(),
+		.transport = (transport == u"WSS"_q) ? transport : tag(),
 		.connectionId = _debugId,
 		.message = u"proxy socket error"_q,
 	});
