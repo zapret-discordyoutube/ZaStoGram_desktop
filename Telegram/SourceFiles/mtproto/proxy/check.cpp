@@ -142,6 +142,37 @@ void StartProxyCheck(
 		.dc = QString::number(dcId),
 		.message = u"proxy check started"_q,
 	});
+	const auto finishWithFail = [=](
+			const auto &state,
+			Connection *raw,
+			ProxyConnectionError error) {
+		if (state->connection.get() != raw || state->finished) {
+			return;
+		}
+		state->finished = true;
+		state->connectionTicket.cancel();
+		state->handshakeGate.release();
+		if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = state->mtproxyEndpoint,
+				.use = MtProxy::EndpointUse::ProxyCheck,
+				.reason = ProxyCheckFailureReason(error),
+				.lease = &state->mtproxyLease,
+			});
+		}
+		ReportProxyEvent(mtproto, {
+			.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
+			.error = error,
+			.severity = ProxyDiagnosticsSeverity::Error,
+			.proxy = proxy,
+			.dc = QString::number(dcId),
+			.connectionId = raw->debugId(),
+			.message = u"proxy check failed"_q,
+		});
+		if (fail) {
+			fail(raw);
+		}
+	};
 	const auto setup = [&](
 			ProxyCheckConnection &checker,
 			const bytes::vector &secret) {
@@ -157,34 +188,6 @@ void StartProxyCheck(
 		state->finished = false;
 		state->handshakeGate = std::move(handshakeGate);
 		const auto raw = state->connection.get();
-		const auto finishWithFail = [=](ProxyConnectionError error) {
-			if (state->connection.get() != raw || state->finished) {
-				return;
-			}
-			state->finished = true;
-			state->connectionTicket.cancel();
-			state->handshakeGate.release();
-			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
-				MtProxy::EndpointHealth::Instance().reportFailure({
-					.endpoint = state->mtproxyEndpoint,
-					.use = MtProxy::EndpointUse::ProxyCheck,
-					.reason = ProxyCheckFailureReason(error),
-					.lease = &state->mtproxyLease,
-				});
-			}
-			ReportProxyEvent(mtproto, {
-				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
-				.error = error,
-				.severity = ProxyDiagnosticsSeverity::Error,
-				.proxy = proxy,
-				.dc = QString::number(dcId),
-				.connectionId = raw->debugId(),
-				.message = u"proxy check failed"_q,
-			});
-			if (fail) {
-				fail(raw);
-			}
-		};
 		raw->connect(raw, &Connection::connected, [=] {
 			if (state->connection.get() != raw || state->finished) {
 				return;
@@ -211,10 +214,10 @@ void StartProxyCheck(
 			}
 		});
 		raw->connect(raw, &Connection::disconnected, [=] {
-			finishWithFail(ProxyConnectionError::RemoteClosed);
+			finishWithFail(state, raw, ProxyConnectionError::RemoteClosed);
 		});
 		raw->connect(raw, &Connection::error, [=] {
-			finishWithFail(ProxyConnectionError::Unknown);
+			finishWithFail(state, raw, ProxyConnectionError::Unknown);
 		});
 	};
 	const auto start = [&](
@@ -254,7 +257,7 @@ void StartProxyCheck(
 						return;
 					}
 					raw->timedOut();
-					finishWithFail(ProxyConnectionError::Timeout);
+					finishWithFail(state, raw, ProxyConnectionError::Timeout);
 				});
 			},
 		});
