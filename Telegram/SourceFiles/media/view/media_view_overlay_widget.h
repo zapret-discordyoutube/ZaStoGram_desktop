@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_web_page.h"
 #include "data/data_cloud_themes.h" // Data::CloudTheme.
 #include "media/stories/media_stories_delegate.h"
+#include "media/streaming/media_streaming_common.h"
 #include "media/view/media_view_playback_controls.h"
 #include "media/view/media_view_open_common.h"
 #include "media/view/media_view_recognition_selection.h"
