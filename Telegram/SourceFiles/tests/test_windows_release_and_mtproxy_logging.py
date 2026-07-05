@@ -23,12 +23,13 @@ def test_windows_artifact_uses_release_configuration():
 
     assert "-D CMAKE_CONFIGURATION_TYPES=Release" in workflow
     assert "DESKTOP_APP_ENABLE_LTO=${{" in workflow
-    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=ON" in workflow
-    assert "cmake --build ..\\out --config Release --target Telegram --parallel" in workflow
+    # Self-hosted auto-updates: the fork builds with autoupdate enabled.
+    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF" in workflow
+    assert "cmake --build ..\\out --config Release --target Telegram Packer --parallel" in workflow
     assert "set OUT=%TBUILD%\\%REPO_NAME%\\out\\Release" in workflow
     assert "%TBUILD%\\%REPO_NAME%\\Telegram\\build\\prepare\\win.bat skip-release" not in workflow
-    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF" not in workflow
-    assert "move %OUT%\\Updater.exe artifact/" not in workflow
+    assert "-D DESKTOP_APP_DISABLE_AUTOUPDATE=ON" not in workflow
+    assert "move %OUT%\\Updater.exe artifact/" in workflow
     assert "release/Updater-$arch.exe" not in workflow
     assert "-D CMAKE_CONFIGURATION_TYPES=Debug" not in workflow
     assert "cmake --build ..\\out --config Debug" not in workflow
@@ -81,7 +82,7 @@ def test_windows_telegram_build_tree_cache_survives_compile_failures():
 
     assert restore_build_tree < normalize_mtimes < telegram_build
     assert telegram_build < cache_metadata < save_build_tree < move_artifact
-    assert "TELEGRAM_BUILD_CACHE_VERSION: \"v1\"" in workflow
+    assert "TELEGRAM_BUILD_CACHE_VERSION: \"v2\"" in workflow
     assert "TELEGRAM_BUILD_CACHE_SCOPE=" in workflow
     assert "TELEGRAM_BUILD_CACHE_KEY=" in workflow
     assert "TELEGRAM_BUILD_CACHE_RESTORE_KEY=" in workflow
