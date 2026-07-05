@@ -229,7 +229,7 @@ bool SessionPrivate::appendTestConnection(
 			MtProxy::EndpointId startEndpoint,
 			MtProxy::EndpointUse startUse,
 			MtProxy::EndpointAttemptLease startLease,
-			ProxyStealthOptions startStealth) mutable {
+			ProxyStealthOptions startStealth) {
 		QWriteLocker lock(&_stateMutex);
 		_testConnections.push_back({
 			AbstractConnection::Create(

@@ -81,8 +81,7 @@ private:
 	[[nodiscard]] int nextRecordPayloadSize();
 	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
 	[[nodiscard]] MtProxy::FailureReason failureReason() const;
-	[[nodiscard]] bool clearSyntheticPskOnFailure(
-		MtProxy::FailureReason reason);
+	bool clearSyntheticPskOnFailure(MtProxy::FailureReason reason);
 	void applyAdaptiveRecipe();
 	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
