@@ -8,12 +8,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/details/mtproto_serialized_request.h"
-#include "mtproto/proxy/status.h"
+// Not used here directly, but almost every TU gets ProxyData through this
+// header (via sender.h / facade.h / main_account.h) — keep until those
+// includers are cleaned up to include it themselves.
+#include "mtproto/proxy/data.h"
 #include "mtproto/mtproto_response.h"
 
 #include <QtCore/QObject>
 
 namespace MTP {
+
+// Deliberately not including mtproto/proxy/status.h: it changes often and
+// this header reaches almost every TU. Include it where the values are used.
+enum class ConnectionNotice;
+struct ProxyConnectionStatus;
+
 namespace details {
 
 class Dcenter;

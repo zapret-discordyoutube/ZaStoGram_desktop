@@ -50,6 +50,10 @@ jobs:
     name: Windows
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
 
+    permissions:
+      contents: read
+      actions: write   # prune superseded cache entries
+
     strategy:
       matrix:
         arch: [x64_x86, x64]
@@ -591,6 +595,7 @@ jobs:
       # primary key; failed builds save a unique progress key, restored first
       # on the next run so late compile failures keep the completed .obj files.
       - name: Telegram build cache (save).
+        id: save-telegram-build
         if: >-
           always()
           && !cancelled()
@@ -610,6 +615,59 @@ jobs:
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.lib
             !${{ env.TBUILD }}\${{ env.REPO_NAME }}\out\Telegram\Release\Telegram.exp
           key: ${{ steps.build-telegram.outcome == 'failure' && env.TELEGRAM_BUILD_CACHE_PROGRESS_KEY || env.TELEGRAM_BUILD_CACHE_RESTORE_KEY }}
+
+      # Cache entries are immutable and the repo budget is 10 GB. Every push
+      # saves a fresh ~1.1-1.3 GB out/ snapshot per arch, so superseded
+      # generations would push the repo over budget within a day and LRU
+      # eviction would silently drop sccache objects and even the freshest
+      # build caches (observed: a run finding NO telegram-build cache at all).
+      # After a successful save keep, per arch, only:
+      #   - the entry just saved (or the exact-key entry we restored from),
+      #   - entries of the sibling lto/nolto scope with the SAME recipe hash
+      #     (those are pruned by their own lto/nolto runs).
+      # Older generations, rotated scopes and -progress- leftovers are deleted
+      # here instead of waiting for the age-based nightly cleanup. Runs only on
+      # build success: after a failure the restored-from entry must survive.
+      - name: Prune superseded build caches.
+        if: >-
+          always()
+          && !cancelled()
+          && env.ONLY_CACHE == 'false'
+          && steps.build-telegram.outcome == 'success'
+          && (
+            steps.save-telegram-build.outcome == 'success'
+            || steps.cache-telegram-build.outputs.cache-matched-key == env.TELEGRAM_BUILD_CACHE_RESTORE_KEY
+          )
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREFIX="${{ runner.OS }}-${{ matrix.arch }}-telegram-build-"
+          case "$TELEGRAM_BUILD_CACHE_SCOPE" in
+            *-nolto-*) SIBLING="${TELEGRAM_BUILD_CACHE_SCOPE/-nolto-/-lto-}" ;;
+            *) SIBLING="${TELEGRAM_BUILD_CACHE_SCOPE/-lto-/-nolto-}" ;;
+          esac
+          if ! rows=$(gh cache list -R "$GITHUB_REPOSITORY" --key "$PREFIX" \
+              --limit 200 --json id,key --jq '.[] | "\(.id)\t\(.key)"'); then
+            echo "warn: gh cache list failed, skipping prune" >&2
+            exit 0
+          fi
+          deleted=0
+          while IFS=$'\t' read -r id key; do
+            [ -n "$id" ] || continue
+            [ "$key" = "$TELEGRAM_BUILD_CACHE_RESTORE_KEY" ] && continue
+            case "$key" in
+              "$SIBLING"*) continue ;;
+            esac
+            if gh cache delete -R "$GITHUB_REPOSITORY" "$id"; then
+              echo "pruned: $key"
+              deleted=$((deleted+1))
+            else
+              echo "warn: failed to delete cache $id ($key)" >&2
+            fi
+          done <<< "$rows"
+          echo "Pruned $deleted superseded cache entrie(s)."
 
       - name: sccache stats.
         if: always() && env.ONLY_CACHE == 'false'

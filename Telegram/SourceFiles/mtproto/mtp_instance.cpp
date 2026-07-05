@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/status.h"
 #include "mtproto/special_config_request.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_config.h"
