@@ -45,6 +45,7 @@ enum class ProxyMtproxyTerminalReason {
 	DnsHostNotFound,
 	TcpNotConnected,
 	Timeout,
+	RemoteClosed,
 };
 
 enum class ConnectionNotice {

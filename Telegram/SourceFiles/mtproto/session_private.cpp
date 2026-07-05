@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session.h"
@@ -232,6 +233,17 @@ bool SessionPrivate::appendTestConnection(
 		});
 		if (admission.action != MtProxy::AdmissionAction::StartNow) {
 			lock.unlock();
+			ReportProxyEvent(_instance, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = MtProxy::ToProxyConnectionError(admission.blockedBy),
+				.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
+					admission.blockedBy),
+				.terminalUntil = admission.retryAfter > 0
+					? (crl::now() + admission.retryAfter)
+					: 0,
+				.proxy = _options->proxy,
+				.message = u"mtproxy admission delayed"_q,
+			});
 			if (admission.retryAfter > 0) {
 				setState(-int(admission.retryAfter));
 			}
@@ -401,6 +413,8 @@ void SessionPrivate::destroyAllConnections() {
 	_waitForReceivedTimer.cancel();
 	_waitForConnectedTimer.cancel();
 	_testConnections.clear();
+	_connectionMtproxyEndpoint = MtProxy::EndpointId();
+	_connectionMtproxyUse = MtProxy::EndpointUse::Main;
 	_connection = nullptr;
 }
 
@@ -2460,6 +2474,8 @@ void SessionPrivate::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_waitForBetterTimer.cancel();
+		_connectionMtproxyEndpoint = i->mtproxyEndpoint;
+		_connectionMtproxyUse = i->mtproxyUse;
 		_connection = std::move(i->data);
 		_testConnections.clear();
 		checkAuthKey();
@@ -2498,6 +2514,8 @@ void SessionPrivate::confirmBestConnection() {
 	DEBUG_LOG(("MTP Info: can't connect through better, using %1."
 		).arg(i->data->tag()));
 
+	_connectionMtproxyEndpoint = i->mtproxyEndpoint;
+	_connectionMtproxyUse = i->mtproxyUse;
 	_connection = std::move(i->data);
 	_testConnections.clear();
 
@@ -2749,6 +2767,16 @@ void SessionPrivate::onError(
 				.use = found->mtproxyUse,
 				.reason = MtProxy::FailureReasonFromErrorCode(errorCode),
 				.lease = &found->mtproxyLease,
+			});
+		}
+	} else if (_connection.get() == connection.get()
+		&& !_connectionMtproxyEndpoint.host.isEmpty()) {
+		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
+		if (reason != MtProxy::FailureReason::None) {
+			MtProxy::EndpointHealth::Instance().reportFailure({
+				.endpoint = _connectionMtproxyEndpoint,
+				.use = _connectionMtproxyUse,
+				.reason = reason,
 			});
 		}
 	}

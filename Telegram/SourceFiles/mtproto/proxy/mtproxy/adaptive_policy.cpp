@@ -84,6 +84,14 @@ bool FailureNeedsRecipe(const QString &diagnostic) {
 		|| (diagnostic == u"post_handshake_no_appdata"_q);
 }
 
+bool FailureNeedsTlsProfileRotation(const QString &diagnostic) {
+	return (diagnostic == u"client_hello_sent_no_server_hello"_q)
+		|| (diagnostic == u"tls_alert_after_client_hello"_q)
+		|| (diagnostic == u"short_tls_response_after_client_hello"_q)
+		|| (diagnostic == u"unrecognized_tls_response_after_client_hello"_q)
+		|| (diagnostic == u"server_hello_hmac_mismatch"_q);
+}
+
 ProxyTlsProfile CompatibilityTlsProfile(
 		ProxyTlsProfile effective,
 		int recipeLevel) {
@@ -117,20 +125,26 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 		|| (input.configuredTlsProfile == ProxyTlsProfile::AutoRotate);
 
 	if (input.lastDiagnostic == u"post_handshake_no_appdata"_q) {
-		if (stealth.recordSizing == ProxyRecordSizing::Off) {
+		if (input.recipeLevel >= 2
+			&& stealth.recordSizing == ProxyRecordSizing::Off) {
 			stealth.recordSizing = ProxyRecordSizing::Conservative;
 			result.changed = true;
 		}
-		if (stealth.startupCover == ProxyStartupCover::Off) {
+		if (input.recipeLevel >= 3
+			&& stealth.startupCover == ProxyStartupCover::Off) {
 			stealth.startupCover = ProxyStartupCover::Soft;
 			result.changed = true;
 		}
-		if (input.recipeLevel >= 2
+		if (input.recipeLevel >= 4
 			&& stealth.connectionPattern != ProxyConnectionPattern::Strict
 			&& IsLightConnectionPattern(stealth.connectionPattern)) {
 			stealth.connectionPattern = ProxyConnectionPattern::Quiet;
 			result.changed = true;
 		}
+		return result;
+	}
+
+	if (!FailureNeedsRecipe(input.lastDiagnostic)) {
 		return result;
 	}
 
@@ -179,7 +193,7 @@ ProxyTlsProfile RotateTlsProfileOnFailure(
 		const QString &endpointKey,
 		const QString &diagnostic,
 		ProxyTlsProfile previous) {
-	if (endpointKey.isEmpty() || !FailureNeedsRecipe(diagnostic)) {
+	if (endpointKey.isEmpty() || !FailureNeedsTlsProfileRotation(diagnostic)) {
 		return previous;
 	}
 	QMutexLocker lock(&AutoProfilesMutex);

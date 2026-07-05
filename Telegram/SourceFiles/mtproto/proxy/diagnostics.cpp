@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/diagnostics.h"
 
 #include "base/invoke_queued.h"
+#include "base/unixtime.h"
 #include "logs.h"
 #include "mtproto/mtp_instance.h"
 #include "settings.h"
@@ -151,6 +152,8 @@ namespace {
 		return u"tcp_not_connected"_q;
 	case ProxyMtproxyTerminalReason::Timeout:
 		return u"timeout"_q;
+	case ProxyMtproxyTerminalReason::RemoteClosed:
+		return u"remote_closed"_q;
 	}
 	return QString();
 }
@@ -221,6 +224,10 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	const auto mtproxyReason = MtproxyReasonText(safe.mtproxyReason);
 	if (!mtproxyReason.isEmpty()) {
 		parts.push_back(u"mtproxy_reason=%1"_q.arg(mtproxyReason));
+	}
+	const auto cooldownMs = safe.terminalUntil - crl::now();
+	if (cooldownMs > 0) {
+		parts.push_back(u"cooldown_ms=%1"_q.arg(cooldownMs));
 	}
 	if (safe.attempt.attemptId) {
 		parts.push_back(u"attempt=%1/%2"_q.arg(

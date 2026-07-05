@@ -60,6 +60,8 @@ ProxyConnectionStatusKind ProxyConnectionStatusKindFor(
 		return ProxyConnectionStatusKind::MtproxyTcpNotConnected;
 	case ProxyMtproxyTerminalReason::Timeout:
 		return ProxyConnectionStatusKind::MtproxyTimeout;
+	case ProxyMtproxyTerminalReason::RemoteClosed:
+		return ProxyConnectionStatusKind::RemoteClosed;
 	}
 	switch (status.error) {
 	case ProxyConnectionError::None:

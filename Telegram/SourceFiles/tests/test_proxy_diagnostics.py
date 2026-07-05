@@ -146,6 +146,18 @@ def test_proxy_reporting_is_centralized():
     assert "AddProxyDiagnosticsEvent" not in instance
 
 
+def test_proxy_log_lines_include_cooldown_ms():
+    diagnostics = read(DIAGNOSTICS_CPP)
+    format_body = function_body(
+        diagnostics,
+        "QString FormatProxyDiagnosticsEvent(")
+
+    assert "safe.terminalUntil" in format_body
+    assert "cooldown_ms=%1" in format_body
+    assert format_body.index("MtproxyReasonText(") < (
+        format_body.index("cooldown_ms=%1"))
+
+
 def test_proxy_event_report_designators_follow_declaration_order():
     order = {
         name: index
@@ -211,6 +223,21 @@ def test_proxy_logs_ui_does_not_render_log_memory():
     assert "QPointer<ProxyLogsView> _logsView" not in box
 
 
+def function_body(text: str, signature: str) -> str:
+    start = text.index(signature)
+    brace = text.index(" {\n", start) + 1
+    depth = 0
+    for index in range(brace, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+    raise AssertionError(f"body not found for {signature}")
+
+
 if __name__ == "__main__":
     test_diagnostics_model_is_disk_only()
     test_diagnostics_has_no_in_memory_event_stream()
@@ -218,5 +245,6 @@ if __name__ == "__main__":
     test_diagnostics_redacts_secret_material()
     test_transport_paths_emit_diagnostics()
     test_proxy_reporting_is_centralized()
+    test_proxy_log_lines_include_cooldown_ms()
     test_proxy_logs_have_no_separate_settings_entry()
     test_proxy_logs_ui_does_not_render_log_memory()

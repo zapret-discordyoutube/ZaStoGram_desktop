@@ -155,7 +155,19 @@ void DropExpiredSyntheticPskTickets(
 	};
 }
 
-void NoteSyntheticPskHandshakeSuccess(
+void ClearSyntheticPskTickets(
+		const QString &endpointKey,
+		bytes::const_span domain,
+		ProxyTlsProfile profile) {
+	if (endpointKey.isEmpty() || domain.empty()) {
+		return;
+	}
+	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&SyntheticPskCacheMutex);
+	SyntheticPskCache.erase(key);
+}
+
+void NoteSyntheticPskDataPathSuccess(
 		const QString &endpointKey,
 		bytes::const_span domain,
 		ProxyTlsProfile profile) {
@@ -377,7 +389,7 @@ void TlsSocket::sendClientHello() {
 	_sentTlsProfile = profile;
 	const auto rules = PrepareClientHelloRules(profile);
 	auto pskOffer = PrepareSyntheticPskOffer(
-		_endpointKey,
+		MtProxy::EndpointKey(_endpointId),
 		domainFromSecret(),
 		profile);
 	const auto hello = PrepareClientHello(
@@ -521,10 +533,6 @@ void TlsSocket::checkHelloDigest() {
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
 	_state = State::Connected;
 	_phase = HandshakePhase::ServerHelloOk;
-	NoteSyntheticPskHandshakeSuccess(
-		_endpointKey,
-		domainFromSecret(),
-		_sentTlsProfile);
 	connectionProgress(_phase);
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();
@@ -572,6 +580,10 @@ bool TlsSocket::checkNextPacket() {
 				.endpoint = _endpointId,
 				.use = _endpointUse,
 			});
+			NoteSyntheticPskDataPathSuccess(
+				MtProxy::EndpointKey(_endpointId),
+				domainFromSecret(),
+				_sentTlsProfile);
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}
@@ -614,10 +626,17 @@ void TlsSocket::timedOut() {
 	if (_state == State::Error) {
 		return;
 	}
+	const auto reason = failureReason();
+	if (reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
+		ClearSyntheticPskTickets(
+			MtProxy::EndpointKey(_endpointId),
+			domainFromSecret(),
+			_sentTlsProfile);
+	}
 	MtProxy::EndpointHealth::Instance().reportFailure({
 		.endpoint = _endpointId,
 		.use = _endpointUse,
-		.reason = failureReason(),
+		.reason = reason,
 		.configuredTlsProfile = _tlsProfile,
 		.sentProfile = _sentTlsProfile,
 	});
@@ -828,12 +847,20 @@ void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {
 }
 
 void TlsSocket::handleError(int errorCode) {
-	if (_state != State::Connected) {
+	const auto reason = failureReason();
+	if (reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
+		ClearSyntheticPskTickets(
+			MtProxy::EndpointKey(_endpointId),
+			domainFromSecret(),
+			_sentTlsProfile);
+	}
+	if (_state != State::Connected
+		|| reason == MtProxy::FailureReason::PostHandshakeNoAppData) {
 		_syncTimeRequests.fire({});
 		MtProxy::EndpointHealth::Instance().reportFailure({
 			.endpoint = _endpointId,
 			.use = _endpointUse,
-			.reason = failureReason(),
+			.reason = reason,
 			.configuredTlsProfile = _tlsProfile,
 			.sentProfile = _sentTlsProfile,
 		});

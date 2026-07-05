@@ -199,6 +199,8 @@ private:
 	bool _needSessionReset = false;
 
 	ConnectionPointer _connection;
+	MtProxy::EndpointId _connectionMtproxyEndpoint;
+	MtProxy::EndpointUse _connectionMtproxyUse = MtProxy::EndpointUse::Main;
 	std::vector<TestConnection> _testConnections;
 	crl::time _startedConnectingAt = 0;
 

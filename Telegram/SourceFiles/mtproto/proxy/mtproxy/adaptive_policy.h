@@ -52,9 +52,10 @@ struct AdaptiveRecipeResult {
 	const QString &diagnostic,
 	ProxyTlsProfile previous);
 
-// Whether a diagnostic indicates the ClientHello shape may be the cause
-// (and is therefore worth escalating the recipe / rotating the profile).
+// Whether a diagnostic should escalate the adaptive recipe.
 [[nodiscard]] bool FailureNeedsRecipe(const QString &diagnostic);
+
+[[nodiscard]] bool FailureNeedsTlsProfileRotation(const QString &diagnostic);
 
 // Per-level compatibility rotation between known-good profiles.
 [[nodiscard]] ProxyTlsProfile CompatibilityTlsProfile(

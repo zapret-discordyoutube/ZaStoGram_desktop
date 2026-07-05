@@ -100,16 +100,29 @@ def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
 
 def test_session_private_reports_success_and_failure_to_endpoint_health():
     source = read(SESSION_CPP)
+    header = read(SESSION_H)
     timeout_body = function_body(source, "void SessionPrivate::connectingTimedOut()")
     connected_body = function_body(source, "void SessionPrivate::onConnected(")
+    confirm_body = function_body(source, "void SessionPrivate::confirmBestConnection()")
     error_body = function_body(source, "void SessionPrivate::onError(")
     remove_body = function_body(source, "void SessionPrivate::removeTestConnection(")
+    destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
 
+    assert "MtProxy::EndpointId _connectionMtproxyEndpoint;" in header
+    assert "MtProxy::EndpointUse _connectionMtproxyUse" in header
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in timeout_body
     assert "MtProxy::FailureReason::Timeout" in timeout_body
     assert "connection.mtproxyEndpoint.domain.isEmpty()" in timeout_body
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in error_body
     assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in error_body
+    assert "_connection.get() == connection.get()" in error_body
+    assert "_connectionMtproxyEndpoint.host.isEmpty()" in error_body
+    assert "endpoint = _connectionMtproxyEndpoint" in error_body
+    assert "_connectionMtproxyEndpoint = i->mtproxyEndpoint;" in connected_body
+    assert "_connectionMtproxyUse = i->mtproxyUse;" in connected_body
+    assert "_connectionMtproxyEndpoint = i->mtproxyEndpoint;" in confirm_body
+    assert "_connectionMtproxyUse = i->mtproxyUse;" in confirm_body
+    assert "_connectionMtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
     assert "i->mtproxyLease.release();" in connected_body
     assert "MtProxy::EndpointHealth::Instance().reportSuccess(" in read(
         TLS_SOCKET_CPP)
@@ -146,8 +159,9 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in error_body
     assert "MtproxyNoteEndpointFailure(" not in source
     assert "MtproxyNoteEndpointSuccess(" not in source
+    assert "const auto reason = failureReason();" in timeout_body
     assert "MtProxy::EndpointHealth::Instance().reportFailure(" in timeout_body
-    assert ".reason = failureReason()" in timeout_body
+    assert ".reason = reason" in timeout_body
     assert ".configuredTlsProfile = _tlsProfile" in timeout_body
     assert ".sentProfile = _sentTlsProfile" in timeout_body
     assert "MtProxy::FailureReason::Timeout" not in timeout_body
@@ -174,6 +188,25 @@ def test_adaptive_policy_no_longer_owns_endpoint_cooldown():
     assert "EndpointLastDiagnostic" not in header
     assert "RotateTlsProfileOnFailure(" in header
     assert "FailureNeedsRecipe(" in header
+
+
+def test_remote_closed_is_mtproxy_terminal_and_cooldown_worthy():
+    status_header = read(SOURCE_DIR / "mtproto" / "proxy" / "status.h")
+    status_source = read(SOURCE_DIR / "mtproto" / "proxy" / "status.cpp")
+    diagnostics = read(SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp")
+    source = read(ENDPOINT_HEALTH_CPP)
+    cooldown_body = function_body(source, "bool FailureNeedsCooldown(")
+    terminal_body = function_body(
+        source,
+        "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
+
+    assert "RemoteClosed," in status_header
+    assert "ProxyMtproxyTerminalReason::RemoteClosed" in status_source
+    assert 'u"remote_closed"_q' in diagnostics
+    assert "case FailureReason::RemoteClosed:" in cooldown_body
+    assert cooldown_body.index("case FailureReason::RemoteClosed:") < (
+        cooldown_body.index("return true;"))
+    assert "return ProxyMtproxyTerminalReason::RemoteClosed;" in terminal_body
 
 
 def test_dns_negative_result_is_ttl_cached_and_reported_to_health():
@@ -225,5 +258,6 @@ if __name__ == "__main__":
     test_session_private_reports_success_and_failure_to_endpoint_health()
     test_tls_socket_reports_typed_terminal_reasons()
     test_adaptive_policy_no_longer_owns_endpoint_cooldown()
+    test_remote_closed_is_mtproxy_terminal_and_cooldown_worthy()
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()
     test_rotation_manager_is_endpoint_health_aware()

@@ -82,22 +82,42 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     assert "kSyntheticPskMinLifetime" in source
     assert "kSyntheticPskMaxLifetime" in source
     assert "PrepareSyntheticPskOffer(" in source
-    assert "NoteSyntheticPskHandshakeSuccess(" in source
+    assert "NoteSyntheticPskDataPathSuccess(" in source
+    assert "ClearSyntheticPskTickets(" in source
 
     assert "sendClientHello();" in plain_connected
     assert "_sentTlsProfile = profile;" in send_client_hello
     assert "PrepareSyntheticPskOffer(" in send_client_hello
-    assert "_endpointKey" in send_client_hello
+    assert "MtProxy::EndpointKey(_endpointId)" in send_client_hello
     assert "domainFromSecret()" in send_client_hello
     assert "profile" in send_client_hello
     assert "std::move(pskOffer)" in send_client_hello
     assert "_sentTlsProfile" in error_body
 
-    assert hello_digest.index("_phase = HandshakePhase::ServerHelloOk;") < (
-        hello_digest.index("NoteSyntheticPskHandshakeSuccess("))
-    assert "_endpointKey" in hello_digest
-    assert "domainFromSecret()" in hello_digest
-    assert "_sentTlsProfile" in hello_digest
+    assert "NoteSyntheticPskHandshakeSuccess(" not in hello_digest
+    assert "NoteSyntheticPskDataPathSuccess(" not in hello_digest
+
+
+def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
+    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    packet_body = function_body(source, "bool TlsSocket::checkNextPacket()")
+
+    assert "NoteSyntheticPskDataPathSuccess(" in source
+    assert packet_body.index("_phase = HandshakePhase::FirstDataReceived;") < (
+        packet_body.index("NoteSyntheticPskDataPathSuccess("))
+    assert packet_body.index("reportSuccess({") < (
+        packet_body.index("NoteSyntheticPskDataPathSuccess("))
+
+
+def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
+    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
+    timeout_body = function_body(source, "void TlsSocket::timedOut()")
+
+    for body in (error_body, timeout_body):
+        assert "const auto reason = failureReason();" in body
+        assert "MtProxy::FailureReason::PostHandshakeNoAppData" in body
+        assert "ClearSyntheticPskTickets(" in body
 
 
 def test_synthetic_psk_uses_cached_identity_and_plausible_age():
@@ -303,6 +323,8 @@ if __name__ == "__main__":
     test_server_hello_length_uses_non_narrow_storage()
     test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
     test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
+    test_synthetic_psk_cache_is_armed_only_after_data_path_success()
+    test_synthetic_psk_cache_is_cleared_on_post_handshake_failure()
     test_synthetic_psk_uses_cached_identity_and_plausible_age()
     test_synthetic_psk_ticket_is_consumed_after_offer()
     test_synthetic_psk_does_not_take_over_mtproxy_digest_slot()

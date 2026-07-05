@@ -87,10 +87,10 @@ rpl::event_stream<EndpointEvent> Events;
 	case FailureReason::PostHandshakeNoAppData:
 	case FailureReason::DnsHostNotFound:
 	case FailureReason::Timeout:
+	case FailureReason::RemoteClosed:
 		return true;
 	case FailureReason::None:
 	case FailureReason::TcpNotConnected:
-	case FailureReason::RemoteClosed:
 	case FailureReason::Network:
 	case FailureReason::BadResponse:
 		return false;
@@ -482,8 +482,9 @@ ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 		return ProxyMtproxyTerminalReason::DnsHostNotFound;
 	case FailureReason::Timeout:
 		return ProxyMtproxyTerminalReason::Timeout;
-	case FailureReason::None:
 	case FailureReason::RemoteClosed:
+		return ProxyMtproxyTerminalReason::RemoteClosed;
+	case FailureReason::None:
 	case FailureReason::Network:
 	case FailureReason::BadResponse:
 		return ProxyMtproxyTerminalReason::None;
