@@ -156,6 +156,18 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
         TLS_SOCKET_CPP)
     assert "i->mtproxyLease.release();" in remove_body
 
+    # Success must also be reported for non-FakeTLS (plain obfuscated)
+    # mtproxy connections, which have no TlsSocket first-app-data hook.
+    # Otherwise the endpoint stays "unknown" forever: throttled to
+    # activeCap 1 and unable to ignore benign remote_closed.
+    usable_body = function_body(
+        source,
+        "void SessionPrivate::reportMtproxyConnectionUsable(")
+    assert "MtProxy::EndpointHealth::Instance().reportSuccess(" in usable_body
+    assert "snapshot.healthy && !snapshot.halfOpen" in usable_body
+    assert "reportMtproxyConnectionUsable(*i);" in connected_body
+    assert "reportMtproxyConnectionUsable(*i);" in confirm_body
+
 
 def test_session_does_not_punish_remote_closed_after_usable_success():
     source = read(SESSION_CPP)

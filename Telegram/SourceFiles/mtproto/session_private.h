@@ -100,6 +100,7 @@ private:
 	void markConnectionOld();
 	void sendPingByTimer();
 	void destroyAllConnections();
+	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	void removeConnectionBrokerTicket(ConnectionTicketId id);
 	void armWaitForConnectedTimer();
 

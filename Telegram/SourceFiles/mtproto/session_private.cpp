@@ -429,6 +429,29 @@ void SessionPrivate::destroyAllConnections() {
 	_connection = nullptr;
 }
 
+void SessionPrivate::reportMtproxyConnectionUsable(
+		const TestConnection &connection) {
+	// EndpointHealth only learns an endpoint is healthy from TlsSocket's
+	// first-app-data on the FakeTLS path; plain-obfuscated (dd-secret)
+	// mtproxy sockets have no such hook, so without this they stay forever
+	// "unknown" - throttled to activeCap 1 and never able to ignore a
+	// benign remote_closed. Report success here for every transport once a
+	// connection is actually usable. Skip if already healthy to avoid
+	// redundant capability-cache writes on the FakeTLS path.
+	if (MtProxy::EndpointEmpty(connection.mtproxyEndpoint)) {
+		return;
+	}
+	const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+		connection.mtproxyEndpoint);
+	if (snapshot.healthy && !snapshot.halfOpen) {
+		return;
+	}
+	MtProxy::EndpointHealth::Instance().reportSuccess({
+		.endpoint = connection.mtproxyEndpoint,
+		.use = connection.mtproxyUse,
+	});
+}
+
 void SessionPrivate::removeConnectionBrokerTicket(ConnectionTicketId id) {
 	const auto i = ranges::find(
 		_connectionBrokerTickets,
@@ -1119,7 +1142,14 @@ void SessionPrivate::restartNow() {
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {
-	if (afterConfig && (!_testConnections.empty() || _connection)) {
+	if (afterConfig
+		&& (!_testConnections.empty()
+			|| !_connectionBrokerTickets.empty()
+			|| _connection)) {
+		// A queued broker ticket means this session is already mid-connect
+		// (mtproxy sessions sit with empty _testConnections while waiting on
+		// admission); an afterConfig re-entry must not tear it down and lose
+		// its place in the broker queue.
 		return;
 	}
 
@@ -2518,6 +2548,7 @@ void SessionPrivate::onConnected(
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_testConnections));
 	i->mtproxyLease.release();
+	reportMtproxyConnectionUsable(*i);
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_testConnections,
@@ -2571,6 +2602,7 @@ void SessionPrivate::confirmBestConnection() {
 	DEBUG_LOG(("MTP Info: can't connect through better, using %1."
 		).arg(i->data->tag()));
 
+	reportMtproxyConnectionUsable(*i);
 	_connectionMtproxyEndpoint = i->mtproxyEndpoint;
 	_connectionMtproxyUse = i->mtproxyUse;
 	_connection = std::move(i->data);

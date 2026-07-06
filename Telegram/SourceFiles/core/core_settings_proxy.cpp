@@ -339,7 +339,12 @@ int SettingsProxy::proxyRotationTimeout() const {
 }
 
 void SettingsProxy::setProxyRotationTimeout(int value) {
-	_proxyRotationTimeout = (value > 0)
+	// Clamp to the smallest offered dwell: a corrupt/legacy sub-minimum
+	// value would let the rotator switch proxies faster than the broker can
+	// admit all sessions on the new one, restarting every session in a
+	// self-reinforcing churn loop that never lets any of them connect.
+	const auto minimum = kProxyRotationTimeouts.front();
+	_proxyRotationTimeout = (value >= minimum)
 		? value
 		: kDefaultProxyRotationTimeout;
 }

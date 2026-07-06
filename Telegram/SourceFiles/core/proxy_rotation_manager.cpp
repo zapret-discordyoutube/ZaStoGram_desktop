@@ -133,8 +133,41 @@ void ProxyRotationManager::handleEndpointHealthChanged(
 	if (!event.rotationAllowed || event.terminalUntil <= crl::now()) {
 		return;
 	}
+	// Admission starvation fires for every endpoint going through the
+	// broker, including candidates we are probing ourselves - only the
+	// selected proxy may request rotation, otherwise a starving candidate
+	// would keep extending the health window and pin checking forever.
+	if (!isSelectedProxyEndpoint(event.endpoint)) {
+		return;
+	}
 	accumulate_max(_healthRotationRequestedUntil, event.terminalUntil);
+	const auto wasChecking = _checking;
 	reevaluate();
+	if (!wasChecking || !_checking || _waitingToSwitch) {
+		return;
+	}
+	// Checks were already running, so startChecking() won't re-arm the
+	// switch timer. The selected proxy has been starving for a while now,
+	// switch right away if some candidate already passed its probe. With
+	// no verified candidate (e.g. a total network outage) this changes
+	// nothing - the switch timer and checkDone() keep their normal flow.
+	if (shouldSwitchToAvailable()) {
+		(void)switchToAvailable();
+	}
+}
+
+bool ProxyRotationManager::isSelectedProxyEndpoint(
+		const MTP::details::MtProxy::EndpointId &endpoint) const {
+	const auto &settings = App().settings().proxy();
+	if (!settings.isEnabled()) {
+		return false;
+	}
+	const auto selected = MTP::details::MtProxy::EndpointIdFromProxy(
+		settings.selected(),
+		App().settings().proxyStealthOptions());
+	const auto key = MTP::details::MtProxy::EndpointKey(selected);
+	return !key.isEmpty()
+		&& (key == MTP::details::MtProxy::EndpointKey(endpoint));
 }
 
 bool ProxyRotationManager::hasActiveHealthRotationRequest() const {

@@ -49,6 +49,8 @@ private:
 	void reevaluate();
 	void handleEndpointHealthChanged(
 		MTP::details::MtProxy::EndpointEvent event);
+	[[nodiscard]] bool isSelectedProxyEndpoint(
+		const MTP::details::MtProxy::EndpointId &endpoint) const;
 	[[nodiscard]] bool hasActiveHealthRotationRequest() const;
 	void startChecking();
 	void stopChecking();

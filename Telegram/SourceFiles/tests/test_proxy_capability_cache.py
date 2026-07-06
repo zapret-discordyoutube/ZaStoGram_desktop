@@ -127,9 +127,9 @@ def test_mtproxy_success_and_failure_update_capability_routes():
     assert '#include "mtproto/proxy/capabilities.h"' in health
     assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in failure
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
-    assert "EndpointKey(report.endpoint.canonical)" in failure
+    assert "CapabilityProxyKey(report.endpoint.canonical)" in failure
     assert "RouteKey(report.endpoint.route)" in failure
-    assert "EndpointKey(report.endpoint.canonical)" in success
+    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert ".stealth = _stealth" in packet_body
     assert ".sentProfile = _sentTlsProfile" in packet_body

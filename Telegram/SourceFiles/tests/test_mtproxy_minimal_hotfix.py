@@ -81,7 +81,7 @@ def test_route_success_updates_canonical_capability_and_health():
     packet = function_body(tls, "bool TlsSocket::checkNextPacket()")
 
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
-    assert "EndpointKey(report.endpoint.canonical)" in success
+    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.healthy = true;" in success

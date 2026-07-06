@@ -532,7 +532,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto now = crl::now();
 	auto event = EndpointEvent();
 	ProxyCapabilityCache::Instance().noteMtproxyFailure(
-		EndpointKey(report.endpoint.canonical),
+		CapabilityProxyKey(report.endpoint.canonical),
 		RouteKey(report.endpoint.route),
 		diagnostic);
 	QMutexLocker lock(&StatesMutex);
@@ -589,7 +589,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
 	ProxyCapabilityCache::Instance().noteMtproxySuccess(
-		EndpointKey(report.endpoint.canonical),
+		CapabilityProxyKey(report.endpoint.canonical),
 		RouteKey(report.endpoint.route),
 		report.sentProfile,
 		report.stealth);
@@ -731,6 +731,24 @@ QString EndpointKey(const CanonicalProxyEndpoint &endpoint) {
 
 QString EndpointKey(const EndpointId &endpoint) {
 	return EndpointKey(endpoint.canonical);
+}
+
+QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint) {
+	// Must produce exactly the key ProxyCapabilityKey(proxy) produces for
+	// the same proxy, or ProxyCapabilityCache lookups never find the cards
+	// written here: host:port:type:secretHash:domain, no proxyKind segment.
+	if (EndpointEmpty(endpoint)) {
+		return QString();
+	}
+	return endpoint.originalHost
+		+ ':'
+		+ QString::number(endpoint.port)
+		+ ':'
+		+ QString::number(int(endpoint.type))
+		+ ':'
+		+ endpoint.secretHash
+		+ ':'
+		+ endpoint.domainFromSecret;
 }
 
 QString RouteKey(const RouteEndpoint &route) {

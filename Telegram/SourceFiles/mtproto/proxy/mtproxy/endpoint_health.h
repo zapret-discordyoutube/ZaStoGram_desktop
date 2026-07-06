@@ -215,6 +215,12 @@ private:
 [[nodiscard]] bool EndpointEmpty(const EndpointId &endpoint);
 [[nodiscard]] QString EndpointKey(const CanonicalProxyEndpoint &endpoint);
 [[nodiscard]] QString EndpointKey(const EndpointId &endpoint);
+
+// Key for ProxyCapabilityCache cards, matching ProxyCapabilityKey(proxy)
+// so that cards written from endpoint health reports are found by
+// ProxyCapabilityCache::lookup(proxy). Distinct from EndpointKey, which
+// keys the in-memory health state and diagnostics.
+[[nodiscard]] QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint);
 [[nodiscard]] QString RouteKey(const RouteEndpoint &route);
 [[nodiscard]] QString RouteKey(const EndpointId &endpoint);
 [[nodiscard]] QString ToLegacyDiagnostic(FailureReason reason);

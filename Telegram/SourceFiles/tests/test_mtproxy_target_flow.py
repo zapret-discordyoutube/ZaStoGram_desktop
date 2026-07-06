@@ -154,7 +154,7 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert failure.index("HasHealthyRoute(state)") < (
         failure.index("state.lastFailure = report.reason;"))
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
-    assert "EndpointKey(report.endpoint.canonical)" in success
+    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "NoteRouteSuccess(state, report.endpoint.route);" in success
     assert "state.lastFailure = FailureReason::None;" in success
