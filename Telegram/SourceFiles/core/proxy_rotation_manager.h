@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/timer.h"
+#include "base/weak_ptr.h"
 #include "mtproto/proxy/check.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
@@ -20,7 +21,7 @@ class Account;
 
 namespace Core {
 
-class ProxyRotationManager final {
+class ProxyRotationManager final : public base::has_weak_ptr {
 public:
 	ProxyRotationManager();
 

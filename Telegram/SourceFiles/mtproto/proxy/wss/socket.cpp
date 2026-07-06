@@ -10,16 +10,86 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 
+#include <crl/crl_time.h>
+
 #include <cstring>
 #include <algorithm>
+#include <map>
 
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QMutex>
 
 namespace MTP::details {
 namespace {
 
 constexpr auto kWssMaxFrame = 2 * 1024 * 1024;
 constexpr auto kWssHeaderLimit = 32 * 1024;
+
+// How long to remember that only the fallback (domain) relay host works.
+constexpr auto kRelayFallbackPreferenceTtl = 30 * 60 * crl::time(1000);
+
+// Which relay host actually works is remembered across sockets: a blocked
+// primary relay IP would otherwise be retried first by EVERY new socket,
+// and the session-level connect watchdog (1s on the first attempt) kills
+// the socket before errorOccurred fires, so the in-socket fallback never
+// gets a chance and each reconnect repeats the dead-host dance.
+struct RelayPreference {
+	bool preferFallback = false;
+	crl::time until = 0;
+};
+
+QMutex RelayPreferencesMutex;
+std::map<QString, RelayPreference> RelayPreferences;
+
+[[nodiscard]] QString RelayPreferenceKey(const WssRoute &route) {
+	return route.relayHost + u":"_q + QString::number(route.relayPort);
+}
+
+[[nodiscard]] bool HasRelayFallback(const WssRoute &route) {
+	return !route.relayHostFallback.isEmpty()
+		&& (route.relayHostFallback != route.relayHost);
+}
+
+[[nodiscard]] bool PreferRelayFallback(const WssRoute &route) {
+	if (!HasRelayFallback(route)) {
+		return false;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto i = RelayPreferences.find(RelayPreferenceKey(route));
+	return (i != end(RelayPreferences))
+		&& i->second.preferFallback
+		&& (i->second.until > crl::now());
+}
+
+void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
+	if (!HasRelayFallback(route)) {
+		return;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	if (viaFallback) {
+		RelayPreferences.erase(RelayPreferenceKey(route));
+	} else {
+		RelayPreferences[RelayPreferenceKey(route)] = {
+			.preferFallback = true,
+			.until = crl::now() + kRelayFallbackPreferenceTtl,
+		};
+	}
+}
+
+void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
+	if (!HasRelayFallback(route)) {
+		return;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	if (viaFallback) {
+		RelayPreferences[RelayPreferenceKey(route)] = {
+			.preferFallback = true,
+			.until = crl::now() + kRelayFallbackPreferenceTtl,
+		};
+	} else {
+		RelayPreferences.erase(RelayPreferenceKey(route));
+	}
+}
 
 [[nodiscard]] QByteArray RandomBytes(int count) {
 	auto result = QByteArray(count, char(0));
@@ -120,6 +190,7 @@ void WssSocket::connectToHost(const QString &address, int port) {
 	// MTProto-over-WSS always connects to Telegram's web relay; the DC
 	// endpoint (address, port) is intentionally ignored - the relay routes
 	// to the right data center based on the SNI / Host domain.
+	_usedFallback = PreferRelayFallback(_route);
 	connectToRelayHost();
 }
 
@@ -158,6 +229,12 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void WssSocket::timedOut() {
+	// The session watchdog is killing this socket before any socket error
+	// arrived. Remember which relay host stalled so the next socket starts
+	// from the other one instead of repeating the same dead-host attempt.
+	if (!_upgraded && !_hostFlipped) {
+		NoteRelayAttemptFailed(_route, _usedFallback);
+	}
 }
 
 bool WssSocket::isConnected() {
@@ -219,19 +296,22 @@ QString WssSocket::transportName() const {
 }
 
 void WssSocket::handleError(int errorCode) {
-	// On a connect/handshake failure to the primary relay host, retry once
-	// via the fallback (the domain) before giving up, so a blocked or stale
-	// relay IP does not kill DC2/DC4 connectivity.
-	if (!_upgraded
-		&& !_usedFallback
-		&& !_route.relayHostFallback.isEmpty()
-		&& (_route.relayHostFallback != _route.relayHost)) {
-		_usedFallback = true;
+	// On a connect/handshake failure, retry once via the other relay host
+	// (hardcoded IP <-> domain) before giving up, so a blocked or stale
+	// relay IP does not kill DC2/DC4 connectivity. The failure is recorded
+	// so the next socket starts from the host that still may work.
+	if (!_upgraded && !_hostFlipped && HasRelayFallback(_route)) {
+		NoteRelayAttemptFailed(_route, _usedFallback);
+		_hostFlipped = true;
+		_usedFallback = !_usedFallback;
 		_incoming = QByteArray();
 		_phase = HandshakePhase::None;
 		_socket.abort();
 		connectToRelayHost();
 		return;
+	}
+	if (!_upgraded && !_hostFlipped) {
+		NoteRelayAttemptFailed(_route, _usedFallback);
 	}
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);
@@ -289,6 +369,7 @@ bool WssSocket::tryFinishUpgrade() {
 		return false;
 	}
 	_upgraded = true;
+	NoteRelayUpgraded(_route, _usedFallback);
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
 	_connected.fire({});

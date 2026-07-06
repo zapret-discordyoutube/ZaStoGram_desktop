@@ -94,6 +94,7 @@ private:
 
 	void retryByTimer();
 	void waitConnectedFailed();
+	void brokerQueueDeadlineFired();
 	void waitReceivedFailed();
 	void waitBetterFailed();
 	void markConnectionOld();
@@ -217,6 +218,7 @@ private:
 	base::Timer _waitForConnectedTimer;
 	base::Timer _waitForReceivedTimer;
 	base::Timer _waitForBetterTimer;
+	base::Timer _brokerQueueDeadlineTimer;
 	crl::time _waitForReceived = 0;
 	crl::time _waitForConnected = 0;
 	crl::time _firstSentAt = -1;

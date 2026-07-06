@@ -191,88 +191,87 @@ ConnectionBroker::EndpointQueue &ConnectionBroker::queueFor(
 }
 
 void ConnectionBroker::drain() {
-	while (true) {
-		auto state = std::shared_ptr<RequestState>();
-		auto use = MtProxy::EndpointUse::Main;
-		{
-			QMutexLocker lock(&_mutex);
-			for (const auto candidateUse : kQueuePriorityOrder) {
-				auto &queue = queueFor(candidateUse);
-				while (!queue.pending.empty()) {
-					const auto &front = queue.pending.front();
-					if (front->active && front->request.context) {
-						state = front;
-						use = candidateUse;
-						break;
-					}
-					front->active = false;
-					queue.pending.pop_front();
-				}
-				if (state) {
-					break;
-				}
-			}
-			if (!state || state->admission || state->startScheduled) {
-				return;
-			}
-		}
+	// Each queue is drained independently: a Main request waiting out an
+	// admission cooldown must not starve Media/Upload requests whose
+	// endpoints are ready to start.
+	for (const auto use : kQueuePriorityOrder) {
+		drainQueue(use);
+	}
+}
 
-		if (MtProxy::EndpointEmpty(state->request.endpoint)) {
-			scheduleStart(state, state->request.notBefore);
+void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
+	auto state = std::shared_ptr<RequestState>();
+	{
+		QMutexLocker lock(&_mutex);
+		auto &queue = queueFor(use);
+		while (!queue.pending.empty()) {
+			const auto &front = queue.pending.front();
+			if (front->active && front->request.context) {
+				state = front;
+				break;
+			}
+			front->active = false;
+			queue.pending.pop_front();
+		}
+		if (!state || state->admission || state->startScheduled) {
 			return;
 		}
+	}
 
-		auto admission = MtProxy::EndpointHealth::Instance().admit({
-			.endpoint = state->request.endpoint,
-			.use = state->request.use,
-			.stealth = state->request.stealth,
-			.configuredTlsProfile = state->request.configuredTlsProfile,
-		});
-		if (admission.action == MtProxy::AdmissionAction::StartNow) {
-			const auto openDelay = MtProxy::ReserveOpenSlot(
-				state->request.endpoint,
-				state->request.connectionPattern,
-				state->request.notBefore);
-			auto keepAdmission = false;
-			{
-				QMutexLocker lock(&_mutex);
-				const auto &queue = queueFor(use);
-				keepAdmission = !queue.pending.empty()
-					&& queue.pending.front() == state
-					&& state->active
-					&& state->request.context;
-				if (keepAdmission) {
-					state->admission = std::move(admission);
-				}
-			}
-			if (!keepAdmission) {
-				return;
-			}
-			if (openDelay > 0 && !state->startAfterNotified) {
-				state->startAfterNotified = true;
-				notify(state, {
-					.action = ConnectionBrokerAction::StartAfter,
-					.retryAfter = openDelay,
-				});
-			}
-			scheduleStart(state, openDelay);
-			return;
-		}
-
-		const auto delay = admission.retryAfter > 0
-			? admission.retryAfter
-			: kFallbackQueuedRetry;
-		if (!state->queuedNotified) {
-			state->queuedNotified = true;
-			notify(state, {
-				.action = ConnectionBrokerAction::Queued,
-				.retryAfter = delay,
-				.blockedBy = admission.blockedBy,
-			});
-		}
-		scheduleDrain(state, delay);
+	if (MtProxy::EndpointEmpty(state->request.endpoint)) {
+		scheduleStart(state, state->request.notBefore);
 		return;
 	}
+
+	auto admission = MtProxy::EndpointHealth::Instance().admit({
+		.endpoint = state->request.endpoint,
+		.use = state->request.use,
+		.stealth = state->request.stealth,
+		.configuredTlsProfile = state->request.configuredTlsProfile,
+	});
+	if (admission.action == MtProxy::AdmissionAction::StartNow) {
+		const auto openDelay = MtProxy::ReserveOpenSlot(
+			state->request.endpoint,
+			state->request.connectionPattern,
+			state->request.notBefore);
+		auto keepAdmission = false;
+		{
+			QMutexLocker lock(&_mutex);
+			const auto &queue = queueFor(use);
+			keepAdmission = !queue.pending.empty()
+				&& queue.pending.front() == state
+				&& state->active
+				&& state->request.context;
+			if (keepAdmission) {
+				state->admission = std::move(admission);
+			}
+		}
+		if (!keepAdmission) {
+			return;
+		}
+		if (openDelay > 0 && !state->startAfterNotified) {
+			state->startAfterNotified = true;
+			notify(state, {
+				.action = ConnectionBrokerAction::StartAfter,
+				.retryAfter = openDelay,
+			});
+		}
+		scheduleStart(state, openDelay);
+		return;
+	}
+
+	const auto delay = admission.retryAfter > 0
+		? admission.retryAfter
+		: kFallbackQueuedRetry;
+	if (!state->queuedNotified) {
+		state->queuedNotified = true;
+		notify(state, {
+			.action = ConnectionBrokerAction::Queued,
+			.retryAfter = delay,
+			.blockedBy = admission.blockedBy,
+		});
+	}
+	scheduleDrain(state, delay);
 }
 
 void ConnectionBroker::scheduleDrain(

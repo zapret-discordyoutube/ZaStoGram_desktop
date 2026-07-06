@@ -56,6 +56,12 @@ constexpr auto kFastRequestDuration = crl::time(500);
 // If we can't connect for this time we will ask _instance to update config.
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
 
+// Hard upper bound for waiting on a queued ConnectionBroker ticket.
+// Queued admission is not a failure and must not churn the retry loop,
+// but a ticket that never starts can't be allowed to hang the session
+// forever either - tear down and reconnect with fresh options instead.
+constexpr auto kBrokerQueueHardDeadline = 90 * crl::time(1000);
+
 // Don't try to handle messages larger than this size.
 constexpr auto kMaxMessageLength = 16 * 1024 * 1024;
 
@@ -173,6 +179,7 @@ SessionPrivate::SessionPrivate(
 , _waitForConnectedTimer(thread, [=] { waitConnectedFailed(); })
 , _waitForReceivedTimer(thread, [=] { waitReceivedFailed(); })
 , _waitForBetterTimer(thread, [=] { waitBetterFailed(); })
+, _brokerQueueDeadlineTimer(thread, [=] { brokerQueueDeadlineFired(); })
 , _waitForReceived(kMinReceiveTimeout)
 , _waitForConnected(kMinConnectedTimeout)
 , _pingSender(thread, [=] { sendPingByTimer(); })
@@ -414,6 +421,7 @@ void SessionPrivate::destroyAllConnections() {
 	_waitForBetterTimer.cancel();
 	_waitForReceivedTimer.cancel();
 	_waitForConnectedTimer.cancel();
+	_brokerQueueDeadlineTimer.cancel();
 	_connectionBrokerTickets.clear();
 	_testConnections.clear();
 	_connectionMtproxyEndpoint = MtProxy::EndpointId();
@@ -428,6 +436,9 @@ void SessionPrivate::removeConnectionBrokerTicket(ConnectionTicketId id) {
 		[](const ConnectionTicket &ticket) { return ticket.id(); });
 	if (i != end(_connectionBrokerTickets)) {
 		_connectionBrokerTickets.erase(i);
+	}
+	if (_connectionBrokerTickets.empty()) {
+		_brokerQueueDeadlineTimer.cancel();
 	}
 }
 
@@ -1238,6 +1249,9 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	if (!_testConnections.empty()) {
 		armWaitForConnectedTimer();
 	}
+	if (!_connectionBrokerTickets.empty()) {
+		_brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);
+	}
 }
 
 void SessionPrivate::restart() {
@@ -1394,6 +1408,27 @@ void SessionPrivate::waitConnectedFailed() {
 		setState(-_retryTimeout);
 	} else {
 		DEBUG_LOG(("MTP Info: immediate restart!"));
+		InvokeQueued(this, [=] { connectToServer(); });
+	}
+}
+
+void SessionPrivate::brokerQueueDeadlineFired() {
+	if (_connectionBrokerTickets.empty() || !_testConnections.empty()) {
+		return;
+	}
+	DEBUG_LOG(("MTP Info: broker ticket not started in %1ms, reconnecting"
+		).arg(kBrokerQueueHardDeadline));
+
+	doDisconnect();
+
+	if (_options
+		&& (_options->proxy.type != ProxyData::Type::None)
+		&& !_retryTimer.isActive()) {
+		if (_retryTimeout < kProxyReconnectMinTimeout) {
+			_retryTimeout = kProxyReconnectMinTimeout;
+		}
+		setState(-_retryTimeout);
+	} else if (!_retryTimer.isActive()) {
 		InvokeQueued(this, [=] { connectToServer(); });
 	}
 }

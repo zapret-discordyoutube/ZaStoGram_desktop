@@ -308,6 +308,30 @@ def test_half_open_media_can_probe_after_cooldown():
         "state.active >= policy.activeCap")
 
 
+def test_active_slots_expire_and_sustained_denial_requests_rotation():
+    source = read(ENDPOINT_HEALTH_CPP)
+    admit_body = function_body(source, "Admission EndpointHealth::admit(")
+    release_body = function_body(
+        source,
+        "void EndpointHealth::releaseAttempt(")
+
+    # A leaked lease must not pin the endpoint at its active cap forever:
+    # attempts have a hard TTL, pruned on every admit.
+    assert "kAttemptHardTtl = crl::time(120 * 1000)" in source
+    assert "PruneExpiredAttempts(state, now);" in admit_body
+    assert "state.attemptStarts.emplace(result.attemptId, now);" in admit_body
+    assert "attemptStarts.erase(attemptId);" in release_body
+
+    # Sustained denial (no grant for kDeniedRotationAfter) fires a
+    # rotation-allowed event so ProxyRotationManager can switch proxies
+    # even while the main DC session looks connected.
+    assert "kDeniedRotationAfter = crl::time(20 * 1000)" in source
+    assert "state.deniedSince" in admit_body
+    assert ".rotationAllowed = true," in admit_body
+    assert "Events.fire(std::move(*rotationEvent));" in admit_body
+    assert "mtproxy admission starving, requesting rotation" in admit_body
+
+
 def test_rotation_manager_is_endpoint_health_aware():
     header = read(ROTATION_MANAGER_H)
     source = read(ROTATION_MANAGER_CPP)
@@ -349,4 +373,5 @@ if __name__ == "__main__":
     test_appdata_remote_closed_is_mtproxy_terminal_reason()
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()
     test_half_open_media_can_probe_after_cooldown()
+    test_active_slots_expire_and_sustained_denial_requests_rotation()
     test_rotation_manager_is_endpoint_health_aware()

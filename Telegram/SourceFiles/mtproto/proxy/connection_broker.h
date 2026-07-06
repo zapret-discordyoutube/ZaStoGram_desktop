@@ -102,6 +102,7 @@ private:
 
 	[[nodiscard]] EndpointQueue &queueFor(MtProxy::EndpointUse use);
 	void drain();
+	void drainQueue(MtProxy::EndpointUse use);
 	void scheduleDrain(
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay);

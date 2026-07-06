@@ -109,7 +109,8 @@ def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
 
 def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
     broker = read(CONNECTION_BROKER_CPP)
-    drain = function_body(broker, "void ConnectionBroker::drain(")
+    drain = function_body(broker, "void ConnectionBroker::drain()")
+    drain_queue = function_body(broker, "void ConnectionBroker::drainQueue(")
     notify = function_body(broker, "void ConnectionBroker::notify(")
     event = function_body(
         broker,
@@ -119,8 +120,12 @@ def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
     assert "MtProxy::EndpointUse::ProxyCheck" in broker
     assert "MtProxy::EndpointUse::Media" in broker
     assert "MtProxy::EndpointUse::Upload" in broker
-    assert "MtProxy::EndpointHealth::Instance().admit({" in drain
-    assert "MtProxy::ReserveOpenSlot(" in drain
+    # Every queue is drained on each pass: a Main request waiting out a
+    # cooldown must not starve Media/Upload queues (head-of-line blocking).
+    assert "for (const auto use : kQueuePriorityOrder)" in drain
+    assert "drainQueue(use);" in drain
+    assert "MtProxy::EndpointHealth::Instance().admit({" in drain_queue
+    assert "MtProxy::ReserveOpenSlot(" in drain_queue
     assert "ConnectionBrokerAction::Queued" in notify
     assert "ConnectionBrokerAction::StartAfter" in notify
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in notify

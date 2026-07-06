@@ -71,7 +71,7 @@ def test_adaptive_recipe_uses_ladder_for_spacing():
 
 def test_connection_broker_reserves_global_open_slot_before_start():
     broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
-    drain_body = body_after(broker, "void ConnectionBroker::drain(")
+    drain_body = body_after(broker, "void ConnectionBroker::drainQueue(")
 
     assert '#include "mtproto/proxy/mtproxy/open_scheduler.h"' in broker
     assert "MtProxy::EndpointHealth::Instance().admit({" in drain_body

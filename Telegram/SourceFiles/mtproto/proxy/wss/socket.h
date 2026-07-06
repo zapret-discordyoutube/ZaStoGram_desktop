@@ -77,6 +77,7 @@ private:
 	QByteArray _readBuffer;
 	bool _upgraded = false;
 	bool _usedFallback = false;
+	bool _hostFlipped = false;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };

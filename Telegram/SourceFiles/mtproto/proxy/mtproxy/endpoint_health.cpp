@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <rpl/event_stream.h>
 
 #include <map>
+#include <optional>
 #include <set>
 
 namespace MTP::details::MtProxy {
@@ -37,6 +38,16 @@ constexpr auto kHealthyActiveCap = 3;
 constexpr auto kHealthyHandshakeSpacing = crl::time(150);
 constexpr auto kQueuedRetry = crl::time(1000);
 
+// No single connect attempt may hold an active slot longer than this.
+// A leaked lease (hung socket, lost owner) would otherwise pin the
+// endpoint at its active cap and deny admission forever.
+constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
+
+// If every admission request for an endpoint has been denied for this
+// long without a single grant, ask the rotation manager to look for
+// another proxy instead of spinning on this one.
+constexpr auto kDeniedRotationAfter = crl::time(20 * 1000);
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
@@ -51,6 +62,9 @@ struct EndpointState {
 	bool halfOpen = false;
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
+	std::map<uint64, crl::time> attemptStarts;
+	crl::time deniedSince = 0;
+	crl::time lastDenialRotationSignal = 0;
 };
 
 struct RouteState {
@@ -235,6 +249,17 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	return false;
 }
 
+void PruneExpiredAttempts(EndpointState &state, crl::time now) {
+	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
+		if (now - i->second > kAttemptHardTtl) {
+			i = state.attemptStarts.erase(i);
+		} else {
+			++i;
+		}
+	}
+	state.active = int(state.attemptStarts.size());
+}
+
 [[nodiscard]] crl::time CooldownFor(
 		FailureReason reason,
 		int consecutiveFailures) {
@@ -416,43 +441,81 @@ EndpointHealth &EndpointHealth::Instance() {
 Admission EndpointHealth::admit(const AdmissionRequest &request) {
 	const auto key = EndpointKey(request.endpoint);
 	const auto now = crl::now();
-	QMutexLocker lock(&StatesMutex);
-	auto &state = States[key];
-	state.endpoint = request.endpoint;
 	auto result = Admission();
-	result.stealth = request.stealth;
-	result.effectiveTlsProfile = ResolveEffectiveTlsProfile(
-		request.configuredTlsProfile,
-		key);
-	result.proxyEpoch = state.proxyEpoch;
-	if (state.terminalUntil > now) {
-		result.action = AdmissionAction::StartAfter;
-		result.retryAfter = state.terminalUntil - now;
-		result.blockedBy = state.lastFailure;
-		return result;
+	auto rotationEvent = std::optional<EndpointEvent>();
+	auto starvationDiagnostics = std::optional<ProxyDiagnosticsEvent>();
+	{
+		QMutexLocker lock(&StatesMutex);
+		auto &state = States[key];
+		state.endpoint = request.endpoint;
+		PruneExpiredAttempts(state, now);
+		result.stealth = request.stealth;
+		result.effectiveTlsProfile = ResolveEffectiveTlsProfile(
+			request.configuredTlsProfile,
+			key);
+		result.proxyEpoch = state.proxyEpoch;
+		const auto policy = EndpointConcurrencyPolicyFor(state);
+		const auto denied = [&] {
+			if (state.terminalUntil > now) {
+				result.retryAfter = state.terminalUntil - now;
+				return true;
+			}
+			if (state.active >= policy.activeCap) {
+				result.retryAfter = policy.retryAfter;
+				return true;
+			}
+			if (policy.handshakeSpacing > 0
+				&& state.active > 0
+				&& state.nextHandshakeAt > now) {
+				result.retryAfter = state.nextHandshakeAt - now;
+				return true;
+			}
+			return false;
+		}();
+		if (denied) {
+			result.action = AdmissionAction::StartAfter;
+			result.blockedBy = state.lastFailure;
+			if (!state.deniedSince) {
+				state.deniedSince = now;
+			} else if (now - state.deniedSince >= kDeniedRotationAfter
+				&& (now - state.lastDenialRotationSignal
+					>= kDeniedRotationAfter)) {
+				state.lastDenialRotationSignal = now;
+				rotationEvent = EndpointEvent{
+					.endpoint = state.endpoint,
+					.reason = state.lastFailure,
+					.terminalUntil = now + kDeniedRotationAfter,
+					.rotationAllowed = true,
+				};
+				starvationDiagnostics = CanonicalDiagnosticsEvent(
+					ProxyDiagnosticsPhase::CanonicalDegraded,
+					state,
+					state.lastFailure,
+					u"mtproxy admission starving, requesting rotation"_q);
+			}
+		} else {
+			state.deniedSince = 0;
+			state.lastDenialRotationSignal = 0;
+			const auto policy = EndpointConcurrencyPolicyFor(state);
+			if (policy.handshakeSpacing > 0) {
+				state.nextHandshakeAt = now + policy.handshakeSpacing;
+			}
+			result.attemptId = ++state.lastAttemptId;
+			state.attemptStarts.emplace(result.attemptId, now);
+			state.active = int(state.attemptStarts.size());
+			result.proxyEpoch = state.proxyEpoch;
+			result.lease = EndpointAttemptLease(
+				key,
+				result.attemptId,
+				state.proxyEpoch);
+		}
 	}
-	const auto policy = EndpointConcurrencyPolicyFor(state);
-	if (state.active >= policy.activeCap) {
-		result.action = AdmissionAction::StartAfter;
-		result.retryAfter = policy.retryAfter;
-		result.blockedBy = state.lastFailure;
-		return result;
+	if (starvationDiagnostics) {
+		WriteProxyDiagnosticsLine(std::move(*starvationDiagnostics));
 	}
-	if (policy.handshakeSpacing > 0
-		&& state.active > 0
-		&& state.nextHandshakeAt > now) {
-		result.action = AdmissionAction::StartAfter;
-		result.retryAfter = state.nextHandshakeAt - now;
-		result.blockedBy = state.lastFailure;
-		return result;
+	if (rotationEvent) {
+		Events.fire(std::move(*rotationEvent));
 	}
-	++state.active;
-	if (policy.handshakeSpacing > 0) {
-		state.nextHandshakeAt = now + policy.handshakeSpacing;
-	}
-	result.attemptId = ++state.lastAttemptId;
-	result.proxyEpoch = state.proxyEpoch;
-	result.lease = EndpointAttemptLease(key, result.attemptId, state.proxyEpoch);
 	return result;
 }
 
@@ -579,10 +642,11 @@ void EndpointHealth::releaseAttempt(
 		uint64 attemptId) {
 	QMutexLocker lock(&StatesMutex);
 	const auto i = States.find(key);
-	if (i == end(States) || !attemptId || i->second.active <= 0) {
+	if (i == end(States) || !attemptId) {
 		return;
 	}
-	--i->second.active;
+	i->second.attemptStarts.erase(attemptId);
+	i->second.active = int(i->second.attemptStarts.size());
 }
 
 EndpointId EndpointIdFromProxy(

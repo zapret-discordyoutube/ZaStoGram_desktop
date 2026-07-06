@@ -109,9 +109,12 @@ def test_connection_broker_drains_by_priority_not_request_queue_only():
 
     assert "void ConnectionBroker::drain()" in source
     assert "void ConnectionBroker::drain(MtProxy::EndpointUse use)" not in source
-    assert "for (const auto candidateUse : kQueuePriorityOrder)" in source
+    assert "for (const auto use : kQueuePriorityOrder)" in source
+    assert "drainQueue(use);" in source
+    assert "void ConnectionBroker::drainQueue(MtProxy::EndpointUse use)" in source
     assert "drain();" in source
     assert "drain(request.use);" not in source
+    assert "drainQueue(request.use);" not in source
 
 
 if __name__ == "__main__":

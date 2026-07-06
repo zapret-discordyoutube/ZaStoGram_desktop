@@ -246,6 +246,30 @@ def test_wss_direct_fallback_requests_proxy_without_blocking():
     assert "kWaitForProxyTimeout" in session
 
 
+def test_wss_remembers_working_relay_host_across_sockets():
+    header = WSS_SOCKET_H.read_text(encoding="utf-8")
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    connect_body = function_body(
+        source,
+        "void WssSocket::connectToHost(")
+    timed_out_body = function_body(source, "void WssSocket::timedOut()")
+    error_body = function_body(source, "void WssSocket::handleError(")
+    upgrade_body = function_body(source, "bool WssSocket::tryFinishUpgrade()")
+
+    # A blocked primary relay IP must not be re-tried first by every new
+    # socket: the working host is remembered process-wide with a TTL, the
+    # in-socket retry flips between hosts in both directions, and the
+    # session-level connect watchdog (which kills the socket before
+    # errorOccurred fires) records the stalled host too.
+    assert "bool _hostFlipped = false;" in header
+    assert "kRelayFallbackPreferenceTtl" in source
+    assert "_usedFallback = PreferRelayFallback(_route);" in connect_body
+    assert "NoteRelayAttemptFailed(_route, _usedFallback);" in timed_out_body
+    assert "NoteRelayAttemptFailed(_route, _usedFallback);" in error_body
+    assert "_usedFallback = !_usedFallback;" in error_body
+    assert "NoteRelayUpgraded(_route, _usedFallback);" in upgrade_body
+
+
 def test_wss_remote_closed_forbids_wss_for_that_proxy():
     source = CONNECTION_TCP_CPP.read_text(encoding="utf-8")
     error_body = function_body(source, "void TcpConnection::socketError(")
@@ -294,4 +318,5 @@ if __name__ == "__main__":
     test_runtime_consumers_use_effective_transport_policy()
     test_wss_dc_coverage_policy_is_centralized_and_soft()
     test_wss_direct_fallback_requests_proxy_without_blocking()
+    test_wss_remembers_working_relay_host_across_sockets()
     test_wss_remote_closed_forbids_wss_for_that_proxy()

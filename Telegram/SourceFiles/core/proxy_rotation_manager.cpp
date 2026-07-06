@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "mtproto/facade.h"
 
+#include <crl/crl_on_main.h>
+
 #include <algorithm>
 
 namespace Core {
@@ -34,7 +36,11 @@ ProxyRotationManager::ProxyRotationManager()
 	}, _lifetime);
 	MTP::details::MtProxy::EndpointHealth::Instance().changes(
 	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
-		handleEndpointHealthChanged(event);
+		// Health events fire from session/network threads, while the
+		// manager works with App() settings and accounts - marshal.
+		crl::on_main(base::make_weak(this), [=] {
+			handleEndpointHealthChanged(event);
+		});
 	}, _lifetime);
 }
 
