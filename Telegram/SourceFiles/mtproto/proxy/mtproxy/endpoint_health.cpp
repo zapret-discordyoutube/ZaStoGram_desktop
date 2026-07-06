@@ -56,6 +56,15 @@ constexpr auto kDeniedRotationAfter = crl::time(20 * 1000);
 // never succeeded degrades on the first (fast dead-proxy detection).
 constexpr auto kExhaustedStrikesAfterSuccess = 3;
 
+// A DPI that kills only some handshakes leaves the endpoint flapping:
+// connected for seconds, then a full cooldown on the first killed
+// handshake. If the endpoint served a connection this recently, probe
+// again quickly with the escalated recipe instead of blocking every
+// new connection for the full cooldown - the adaptive open pacing
+// keeps the probe rate down.
+constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
+constexpr auto kThrottledRetryCooldown = crl::time(3000);
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
@@ -597,9 +606,16 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		++state.consecutiveFailures;
 		state.healthy = false;
 		state.halfOpen = true;
-		state.terminalUntil = now + CooldownFor(
+		auto cooldown = CooldownFor(
 			report.reason,
 			state.consecutiveFailures);
+		const auto recentSuccess = state.lastSuccessAt
+			&& (now - state.lastSuccessAt < kRecentSuccessWindow);
+		if (recentSuccess && FailureNeedsRecipeEscalation(report.reason)) {
+			cooldown = std::min(cooldown, kThrottledRetryCooldown);
+			NoteConnectTimeout(report.endpoint);
+		}
+		state.terminalUntil = now + cooldown;
 	}
 	event = {
 		.endpoint = state.endpoint,

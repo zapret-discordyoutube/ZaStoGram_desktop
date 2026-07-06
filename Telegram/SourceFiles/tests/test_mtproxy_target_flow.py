@@ -168,6 +168,13 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "state.lastSuccessAt" in failure
     assert "state.lastSuccessAt = crl::now();" in success
     assert "state.exhaustedSinceSuccess = 0;" in success
+    # A recently-working endpoint whose handshake gets killed probes
+    # again quickly with the escalated recipe instead of sitting out
+    # the full cooldown; pacing growth keeps the probe rate down.
+    assert "kThrottledRetryCooldown" in failure
+    assert ("if (recentSuccess"
+        " && FailureNeedsRecipeEscalation(report.reason)) {") in failure
+    assert "cooldown = std::min(cooldown, kThrottledRetryCooldown);" in failure
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
