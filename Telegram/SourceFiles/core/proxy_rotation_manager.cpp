@@ -24,6 +24,13 @@ constexpr auto kProxyRotationCheckInterval = 2 * crl::time(1000);
 constexpr auto kProxyRotationCheckLifetime = 20 * crl::time(1000);
 constexpr auto kProxyRotationMaxActiveChecks = 2;
 
+// When the selected proxy degrades, keep the rotation window open at
+// least this long regardless of how short the per-failure cooldown is.
+// A proxy that flaps under DPI (connects, dies, connects again within
+// seconds) otherwise keeps returning to ConnectedState and resetting
+// rotation before it can probe a stable candidate and switch to it.
+constexpr auto kSelectedDegradedObserveWindow = 25 * crl::time(1000);
+
 } // namespace
 
 ProxyRotationManager::ProxyRotationManager()
@@ -140,7 +147,15 @@ void ProxyRotationManager::handleEndpointHealthChanged(
 	if (!isSelectedProxyEndpoint(event.endpoint)) {
 		return;
 	}
-	accumulate_max(_healthRotationRequestedUntil, event.terminalUntil);
+	// Hold the observation window open long enough to probe a candidate
+	// and switch, decoupled from the (possibly very short) per-failure
+	// cooldown: a flapping proxy must not reset rotation on every brief
+	// recovery before a stable alternative has been found.
+	accumulate_max(
+		_healthRotationRequestedUntil,
+		std::max(
+			event.terminalUntil,
+			crl::now() + kSelectedDegradedObserveWindow));
 	const auto wasChecking = _checking;
 	reevaluate();
 	if (!wasChecking || !_checking || _waitingToSwitch) {

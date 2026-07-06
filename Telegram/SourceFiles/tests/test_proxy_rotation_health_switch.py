@@ -43,8 +43,21 @@ def test_health_events_are_filtered_to_the_selected_proxy():
     assert "bool isSelectedProxyEndpoint(" in header
     assert "isSelectedProxyEndpoint(event.endpoint)" in body
     filter_at = body.index("isSelectedProxyEndpoint(event.endpoint)")
-    bump_at = body.index("accumulate_max(_healthRotationRequestedUntil")
+    bump_at = body.index("accumulate_max(")
     assert filter_at < bump_at, "filter must run before the window is bumped"
+
+
+def test_degraded_window_is_decoupled_from_the_short_cooldown():
+    source = read(ROTATION_MANAGER_CPP)
+    body = handler_body()
+
+    # A proxy that flaps under DPI briefly returns to ConnectedState
+    # between failures. If the rotation window only lasted as long as the
+    # (now possibly 3s) per-failure cooldown, reevaluate() would stop
+    # checking on each brief recovery and rotation could never converge
+    # on a stable candidate. Hold the window open a fixed minimum.
+    assert "kSelectedDegradedObserveWindow" in source
+    assert "crl::now() + kSelectedDegradedObserveWindow" in body
 
 
 def test_selected_endpoint_match_uses_canonical_endpoint_key():
