@@ -383,8 +383,6 @@ QString ProxyCapabilityKey(const ProxyData &proxy) {
 		+ ':'
 		+ QString::number(int(proxy.type))
 		+ ':'
-		+ QString::number(int(proxy.type))
-		+ ':'
 		+ ProxyCapabilitySecretHash(proxy)
 		+ ':'
 		+ ProxyCapabilityDomain(proxy);

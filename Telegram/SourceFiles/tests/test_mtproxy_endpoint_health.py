@@ -20,6 +20,7 @@ ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 DOMAIN_RESOLVER_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_domain_resolver.cpp"
 RESOLVING_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "proxy" / "resolving_connection.cpp"
+DNS_CACHE_CPP = SOURCE_DIR / "mtproto" / "proxy" / "dns_resolver_cache.cpp"
 ROTATION_MANAGER_H = SOURCE_DIR / "core" / "proxy_rotation_manager.h"
 ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
 
@@ -308,6 +309,25 @@ def test_half_open_media_can_probe_after_cooldown():
         "state.active >= policy.activeCap")
 
 
+def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
+    source = read(DNS_CACHE_CPP)
+    request_body = function_body(source, "void DnsResolverCache::request(")
+    connect_body = function_body(
+        source,
+        "void DnsResolverCache::connectInstance(")
+
+    # An in-flight resolve whose Instance died never fires
+    # proxyDomainResolved; without an age check the host would stay
+    # "resolving" forever and every request would queue silently.
+    assert "kInflightRetryTimeout = 30 * crl::time(1000)" in source
+    assert "crl::time inflightSince = 0;" in source
+    assert "now - entry.inflightSince > kInflightRetryTimeout" in request_body
+    # A destroyed Instance must leave ConnectedInstances, otherwise a new
+    # Instance recycled at the same address is never connected.
+    assert "&QObject::destroyed" in connect_body
+    assert "ConnectedInstances.erase(instance);" in connect_body
+
+
 def test_active_slots_expire_and_sustained_denial_requests_rotation():
     source = read(ENDPOINT_HEALTH_CPP)
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
@@ -373,5 +393,6 @@ if __name__ == "__main__":
     test_appdata_remote_closed_is_mtproxy_terminal_reason()
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()
     test_half_open_media_can_probe_after_cooldown()
+    test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances()
     test_active_slots_expire_and_sustained_denial_requests_rotation()
     test_rotation_manager_is_endpoint_health_aware()

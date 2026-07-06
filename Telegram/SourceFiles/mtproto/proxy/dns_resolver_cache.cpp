@@ -21,6 +21,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
+// An in-flight resolve older than this is considered lost (the resolving
+// Instance may have been destroyed before firing proxyDomainResolved) and
+// is restarted by the next request, otherwise the host would stay
+// "resolving" forever and every connection through it would hang.
+constexpr auto kInflightRetryTimeout = 30 * crl::time(1000);
+
 struct DnsResolverSubscriber {
 	QPointer<QObject> receiver;
 	DnsResolverCache::Callback callback;
@@ -30,6 +36,7 @@ struct DnsResolverEntry {
 	DnsResolverCacheState state = DnsResolverCacheState::Expired;
 	QStringList ips;
 	qint64 expireAt = 0;
+	crl::time inflightSince = 0;
 	std::vector<DnsResolverSubscriber> subscribers;
 };
 
@@ -85,9 +92,16 @@ void DnsResolverCache::request(
 			cachedExpireAt = entry.expireAt;
 			useCached = true;
 		} else {
-			if (entry.state != DnsResolverCacheState::Inflight) {
+			const auto inflight = (entry.state
+				== DnsResolverCacheState::Inflight);
+			const auto lost = inflight
+				&& (now - entry.inflightSince > kInflightRetryTimeout);
+			if (!inflight) {
 				entry = DnsResolverEntry();
+			}
+			if (!inflight || lost) {
 				entry.state = DnsResolverCacheState::Inflight;
+				entry.inflightSince = now;
 				startResolve = true;
 			}
 			entry.subscribers.push_back({
@@ -148,6 +162,14 @@ void DnsResolverCache::connectInstance(MTP::Instance *instance) {
 			DnsResolverCache::Instance().resolved(host, ips, expireAt);
 		},
 		Qt::QueuedConnection);
+
+	// A destroyed Instance (e.g. a keys-destroyer one) must be forgotten,
+	// otherwise a new Instance allocated at the same address would be
+	// skipped above and its resolutions would never reach the cache.
+	QObject::connect(instance, &QObject::destroyed, [=] {
+		QMutexLocker lock(&EntriesMutex);
+		ConnectedInstances.erase(instance);
+	});
 }
 
 } // namespace MTP::details
