@@ -665,19 +665,21 @@ bool TlsSocket::checkNextPacket() {
 			}
 			_incomingGoodDataOffset = fullHeader;
 			_incomingGoodDataLimit = length;
-			_firstAppDataReceived = true;
-			_phase = HandshakePhase::FirstDataReceived;
-			connectionProgress(_phase);
-			MtProxy::EndpointHealth::Instance().reportSuccess({
-				.endpoint = _endpointId,
-				.use = _endpointUse,
-				.stealth = _stealth,
-				.sentProfile = _sentTlsProfile,
-			});
-			NoteSyntheticPskDataPathSuccess(
-				MtProxy::EndpointKey(_endpointId.canonical),
-				domainFromSecret(),
-				_sentTlsProfile);
+			if (!_firstAppDataReceived) {
+				_firstAppDataReceived = true;
+				_phase = HandshakePhase::FirstDataReceived;
+				connectionProgress(_phase);
+				MtProxy::EndpointHealth::Instance().reportSuccess({
+					.endpoint = _endpointId,
+					.use = _endpointUse,
+					.stealth = _stealth,
+					.sentProfile = _sentTlsProfile,
+				});
+				NoteSyntheticPskDataPathSuccess(
+					MtProxy::EndpointKey(_endpointId.canonical),
+					domainFromSecret(),
+					_sentTlsProfile);
+			}
 		} else {
 			offset += kServerHeader.size() + kLengthSize + length;
 		}

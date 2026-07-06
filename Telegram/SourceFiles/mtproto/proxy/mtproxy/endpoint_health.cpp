@@ -539,10 +539,18 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto &state = States[key];
 	state.endpoint = report.endpoint;
 	NoteRouteFailure(state, report.endpoint.route, report.reason);
-	if (FailureIsRouteOnly(report.reason)) {
+	if (FailureIsRouteOnly(report.reason) && !report.routesExhausted) {
 		return;
 	}
-	if (!routeKey.isEmpty() && HasHealthyRoute(state)) {
+	if (report.routesExhausted && state.terminalUntil > now) {
+		// The canonical endpoint is already cooling down, likely from the
+		// socket-level report of the same connect cycle - don't escalate
+		// consecutiveFailures twice for one failure.
+		return;
+	}
+	if (!routeKey.isEmpty()
+		&& HasHealthyRoute(state)
+		&& !report.routesExhausted) {
 		return;
 	}
 	state.lastFailure = report.reason;
@@ -558,7 +566,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			diagnostic,
 			report.sentProfile);
 	}
-	if (FailureNeedsCooldown(report.reason)) {
+	const auto needsCooldown = FailureNeedsCooldown(report.reason)
+		|| report.routesExhausted;
+	if (needsCooldown) {
 		++state.consecutiveFailures;
 		state.healthy = false;
 		state.halfOpen = true;
@@ -570,7 +580,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		.endpoint = state.endpoint,
 		.reason = state.lastFailure,
 		.terminalUntil = state.terminalUntil,
-		.rotationAllowed = FailureNeedsCooldown(report.reason),
+		.rotationAllowed = needsCooldown,
 	};
 	auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 		ProxyDiagnosticsPhase::CanonicalDegraded,

@@ -149,6 +149,13 @@ struct FailureReport {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+
+	// Every resolved route of the endpoint has been tried and failed.
+	// Route-only reasons (e.g. tcp connect timeout) normally leave the
+	// canonical endpoint untouched so other routes can be tried, but with
+	// no routes left the canonical must degrade or a fully blackholed
+	// proxy never gets a cooldown and never triggers rotation.
+	bool routesExhausted = false;
 };
 
 struct SuccessReport {

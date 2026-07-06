@@ -45,6 +45,34 @@ constexpr auto kMaxParallelRouteAttempts = 2;
 		int(proxy.port));
 }
 
+// A route attempt destroyed by our own timeout never produces a socket
+// error, so nothing else reports it to EndpointHealth - do it here.
+void ReportRouteFailureToHealth(
+		const ProxyData &proxy,
+		int ipIndex,
+		MtProxy::FailureReason reason) {
+	if (proxy.type != ProxyData::Type::Mtproto) {
+		return;
+	}
+	MtProxy::EndpointHealth::Instance().reportFailure({
+		.endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex),
+		.reason = reason,
+	});
+}
+
+void ReportAllRoutesFailed(
+		const ProxyData &proxy,
+		MtProxy::FailureReason reason) {
+	if (proxy.type != ProxyData::Type::Mtproto) {
+		return;
+	}
+	MtProxy::EndpointHealth::Instance().reportFailure({
+		.endpoint = MtproxyEndpointIdForProxy(proxy),
+		.reason = reason,
+		.routesExhausted = true,
+	});
+}
+
 void ReportRouteEvent(
 		not_null<Instance*> instance,
 		const ProxyData &proxy,
@@ -299,14 +327,22 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	if (_connected || _routeAttempts.empty()) {
 		return;
 	}
+	const auto ipIndex = _routeAttempts.front().ipIndex;
 	ReportRouteEvent(
 		_instance,
 		_proxy,
-		_routeAttempts.front().ipIndex,
+		ipIndex,
 		ProxyDiagnosticsPhase::RouteFailed,
+		MtProxy::FailureReason::TcpConnectTimeout);
+	ReportRouteFailureToHealth(
+		_proxy,
+		ipIndex,
 		MtProxy::FailureReason::TcpConnectTimeout);
 	_routeAttempts.erase(begin(_routeAttempts));
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
+		ReportAllRoutesFailed(
+			_proxy,
+			MtProxy::FailureReason::TcpConnectTimeout);
 		emitError(kErrorCodeOther);
 		return;
 	}
@@ -389,6 +425,19 @@ void ResolvingConnection::handleError(
 	}
 	removeRouteAttempt(child);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
+		// The child socket reported its own failure to EndpointHealth,
+		// but route-only reasons leave the canonical endpoint untouched.
+		// This was the last route - degrade the canonical so admission
+		// gets a cooldown and rotation can kick in. reportFailure() skips
+		// the escalation if a cooldown is already running. An error on an
+		// already established connection is not route exhaustion.
+		if (!_connected) {
+			auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
+			if (reason == MtProxy::FailureReason::None) {
+				reason = MtProxy::FailureReason::TcpConnectTimeout;
+			}
+			ReportAllRoutesFailed(_proxy, reason);
+		}
 		emitError(errorCode);
 	} else if (_routeAttempts.empty()) {
 		startNextRouteAttempt();
@@ -540,6 +589,21 @@ void ResolvingConnection::connectToServer(
 
 bool ResolvingConnection::isConnected() const {
 	return _child ? _child->isConnected() : false;
+}
+
+void ResolvingConnection::timedOut() {
+	// The owner (session or proxy check) times out on this wrapper, but
+	// the sockets doing the actual work live in the route attempts - a
+	// TlsSocket that is never told about the timeout never reports its
+	// failure to EndpointHealth, so domain proxies never degraded.
+	for (const auto &attempt : _routeAttempts) {
+		if (attempt.child) {
+			attempt.child->timedOut();
+		}
+	}
+	if (_child) {
+		_child->timedOut();
+	}
 }
 
 int32 ResolvingConnection::debugState() const {

@@ -149,10 +149,17 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "NoteRouteFailure(state, report.endpoint.route, report.reason);" in failure
     assert failure.index("NoteRouteFailure(") < (
         failure.index("FailureIsRouteOnly(report.reason)"))
-    assert "if (FailureIsRouteOnly(report.reason))" in failure
-    assert "if (!routeKey.isEmpty() && HasHealthyRoute(state))" in failure
+    assert ("if (FailureIsRouteOnly(report.reason)"
+        " && !report.routesExhausted)") in failure
+    assert "HasHealthyRoute(state)" in failure
+    assert "!report.routesExhausted" in failure
     assert failure.index("HasHealthyRoute(state)") < (
         failure.index("state.lastFailure = report.reason;"))
+    # With every route tried and failed the canonical endpoint must
+    # degrade: cooldown applied and rotation allowed.
+    assert "const auto needsCooldown = FailureNeedsCooldown(report.reason)" in failure
+    assert "|| report.routesExhausted;" in failure
+    assert ".rotationAllowed = needsCooldown," in failure
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
@@ -220,3 +227,51 @@ if __name__ == "__main__":
     test_route_failure_stays_route_level_and_success_recovers_canonical()
     test_stealth_escalates_after_phase_failures_before_any_wss_fallback()
     test_logs_and_left_proxy_shield_expose_target_flow_state()
+
+
+def test_first_app_data_reported_once_per_tls_socket():
+    tls = read(TLS_SOCKET_CPP)
+    body = function_body(tls, "bool TlsSocket::checkNextPacket(")
+
+    # FirstDataReceived progress and the health success report must fire
+    # once per socket, not on every incoming TLS record: repeated reports
+    # knock the proxy status from Connected back to CheckingTelegram.
+    guard = body.index("if (!_firstAppDataReceived) {")
+    assert guard < body.index("_firstAppDataReceived = true;")
+    assert guard < body.index("connectionProgress(_phase);")
+    assert guard < body.index("reportSuccess({")
+
+
+def test_route_timeouts_and_exhaustion_reach_endpoint_health():
+    resolving = read(RESOLVING_CPP)
+    timeout = function_body(
+        resolving,
+        "void ResolvingConnection::handleRouteAttemptTimeout(")
+    error = function_body(
+        resolving,
+        "void ResolvingConnection::handleError(")
+    exhausted = function_body(resolving, "void ReportAllRoutesFailed(")
+
+    # A route attempt killed by our own timeout produces no socket error,
+    # so its failure must be reported to EndpointHealth explicitly.
+    assert "ReportRouteFailureToHealth(" in timeout
+    # Once the last route fails the canonical endpoint must degrade so a
+    # fully blackholed proxy gets a cooldown and can trigger rotation.
+    assert "ReportAllRoutesFailed(" in timeout
+    assert "ReportAllRoutesFailed(_proxy, reason);" in error
+    # An error on an established connection is not route exhaustion.
+    assert "if (!_connected) {" in error
+    assert ".routesExhausted = true," in exhausted
+
+
+def test_resolving_connection_forwards_timeout_to_route_attempts():
+    resolving = read(RESOLVING_CPP)
+    timed_out = function_body(
+        resolving,
+        "void ResolvingConnection::timedOut(")
+
+    # The owner times out on the ResolvingConnection wrapper; without
+    # forwarding, the TlsSocket doing the actual connect never reports
+    # its failure to EndpointHealth and domain proxies never degrade.
+    assert "attempt.child->timedOut();" in timed_out
+    assert "_child->timedOut();" in timed_out
