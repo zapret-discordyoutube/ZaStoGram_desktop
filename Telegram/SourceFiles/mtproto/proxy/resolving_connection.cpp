@@ -23,6 +23,12 @@ constexpr auto kRouteAttemptTimeout = crl::time(4000);
 constexpr auto kRouteRaceDelay = crl::time(300);
 constexpr auto kMaxParallelRouteAttempts = 2;
 
+// When the running attempt is the last route available there is nothing
+// to race it against - killing it at the short timeout only burns a
+// handshake and reconnects. Give TCP time to retransmit SYN instead: a
+// proxy that throttles new connects often accepts on a later try.
+constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
+
 [[nodiscard]] MtProxy::EndpointId MtproxyEndpointIdForProxy(
 		const ProxyData &proxy) {
 	auto stealth = ProxyStealthOptions();
@@ -320,7 +326,11 @@ void ResolvingConnection::refreshAttemptTimeout() {
 		_timeoutTimer.cancel();
 		return;
 	}
-	_timeoutTimer.callOnce(kRouteAttemptTimeout);
+	const auto lastRoute = (_routeAttempts.size() == 1)
+		&& (_nextRoutePosition >= int(_routeOrder.size()));
+	_timeoutTimer.callOnce(lastRoute
+		? kOnlyRouteAttemptTimeout
+		: kRouteAttemptTimeout);
 }
 
 void ResolvingConnection::handleRouteAttemptTimeout() {
@@ -523,7 +533,8 @@ crl::time ResolvingConnection::pingTime() const {
 }
 
 crl::time ResolvingConnection::fullConnectTimeout() const {
-	return kRouteAttemptTimeout + kRouteRaceDelay * kMaxParallelRouteAttempts;
+	return kOnlyRouteAttemptTimeout
+		+ kRouteRaceDelay * kMaxParallelRouteAttempts;
 }
 
 void ResolvingConnection::sendData(mtpBuffer &&buffer) {

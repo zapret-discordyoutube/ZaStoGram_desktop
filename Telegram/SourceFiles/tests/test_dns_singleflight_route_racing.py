@@ -96,7 +96,9 @@ def test_full_connect_timeout_no_longer_scales_linearly_by_ip_count():
     body = function_body(source, "crl::time ResolvingConnection::fullConnectTimeout() const")
 
     assert "qMax(int(_proxy.resolvedIPs.size()), 1)" not in body
-    assert "kRouteAttemptTimeout" in body
+    # The budget covers the patient last-route attempt, not a linear
+    # multiple of the resolved IP count.
+    assert "kOnlyRouteAttemptTimeout" in body
     assert "kRouteRaceDelay" in body
 
 

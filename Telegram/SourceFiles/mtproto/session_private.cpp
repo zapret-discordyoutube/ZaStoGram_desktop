@@ -466,6 +466,18 @@ void SessionPrivate::removeConnectionBrokerTicket(ConnectionTicketId id) {
 }
 
 void SessionPrivate::armWaitForConnectedTimer() {
+	// A proxied connect needs its whole budget (tcp connect with SYN
+	// retransmits plus the FakeTLS handshake) - killing it after
+	// kMinConnectedTimeout only burns a handshake against the DPI and
+	// reconnects, and repeated fresh handshakes are exactly what gets
+	// proxies throttled. Direct connections keep the short first wait.
+	if (_options && (_options->proxy.type != ProxyData::Type::None)) {
+		auto minWait = crl::time(0);
+		for (const auto &connection : _testConnections) {
+			accumulate_max(minWait, connection.data->fullConnectTimeout());
+		}
+		accumulate_max(_waitForConnected, minWait);
+	}
 	if (!_waitForConnectedTimer.isActive()) {
 		_waitForConnectedTimer.callOnce(_waitForConnected);
 	}

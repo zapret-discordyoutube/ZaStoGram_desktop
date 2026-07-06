@@ -283,3 +283,31 @@ def test_resolving_connection_forwards_timeout_to_route_attempts():
     # its failure to EndpointHealth and domain proxies never degrade.
     assert "attempt.child->timedOut();" in timed_out
     assert "_child->timedOut();" in timed_out
+
+
+def test_proxied_connects_get_their_full_time_budget():
+    session = read(SESSION_PRIVATE_CPP)
+    resolving = read(RESOLVING_CPP)
+    health = read(ENDPOINT_HEALTH_CPP)
+    arm = function_body(
+        session,
+        "void SessionPrivate::armWaitForConnectedTimer(")
+    refresh = function_body(
+        resolving,
+        "void ResolvingConnection::refreshAttemptTimeout(")
+    failure = function_body(health, "void EndpointHealth::reportFailure(")
+    success = function_body(health, "void EndpointHealth::reportSuccess(")
+
+    # The session must not kill a proxied connect before its own route
+    # budget elapses - every premature kill burns a FakeTLS handshake
+    # and reconnects, which is what gets proxies throttled.
+    assert "_options->proxy.type != ProxyData::Type::None" in arm
+    assert "fullConnectTimeout()" in arm
+    assert "accumulate_max(_waitForConnected, minWait);" in arm
+    # The last remaining route gets the patient timeout: there is
+    # nothing to race it against, so let TCP retransmit SYN.
+    assert "kOnlyRouteAttemptTimeout" in refresh
+    assert "_nextRoutePosition >= int(_routeOrder.size())" in refresh
+    # Health reports feed the adaptive open pacing.
+    assert "NoteConnectTimeout(report.endpoint);" in failure
+    assert "NoteConnectSuccess(report.endpoint);" in success

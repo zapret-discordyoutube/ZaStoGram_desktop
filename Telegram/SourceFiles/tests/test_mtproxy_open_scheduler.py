@@ -133,3 +133,20 @@ if __name__ == "__main__":
     test_connection_broker_reserves_global_open_slot_before_start()
     test_live_mtproxy_connects_through_connection_broker_before_syn()
     test_proxy_check_uses_same_connection_broker_before_syn()
+
+
+def test_scheduler_paces_adaptively_on_connect_timeouts():
+    header = SCHEDULER_H.read_text(encoding="utf-8")
+    source = SCHEDULER_CPP.read_text(encoding="utf-8")
+
+    # Failure-driven pacing is independent of the stealth pattern: with
+    # the pattern Off a throttling proxy must still get a growing gap
+    # between new opens, and successes must shrink it back to zero.
+    assert "void NoteConnectTimeout(const EndpointId &endpoint);" in header
+    assert "void NoteConnectSuccess(const EndpointId &endpoint);" in header
+    assert "constexpr auto kAdaptiveSpacingMin = crl::time(500)" in source
+    assert "constexpr auto kAdaptiveSpacingMax = crl::time(6000)" in source
+    assert "crl::time adaptiveSpacing = 0;" in source
+    assert "std::max(patternSpacing, state.adaptiveSpacing)" in source
+    assert "state.adaptiveSpacing * 2" in source
+    assert "state.adaptiveSpacing / 2" in source

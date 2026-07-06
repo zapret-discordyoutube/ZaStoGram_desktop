@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
+#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "base/algorithm.h"
 #include "base/timer.h"
 
@@ -549,6 +550,10 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	state.endpoint = report.endpoint;
 	NoteRouteFailure(state, report.endpoint.route, report.reason);
 	if (FailureIsRouteOnly(report.reason) && !report.routesExhausted) {
+		// Feed the open scheduler: connect timeouts slow down the pace
+		// of new opens to this endpoint. The exhausted follow-up report
+		// describes the same failed cycle, so it does not count again.
+		NoteConnectTimeout(report.endpoint);
 		return;
 	}
 	if (report.routesExhausted && state.terminalUntil > now) {
@@ -618,6 +623,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
+	NoteConnectSuccess(report.endpoint);
 	ProxyCapabilityCache::Instance().noteMtproxySuccess(
 		CapabilityProxyKey(report.endpoint.canonical),
 		RouteKey(report.endpoint.route),
