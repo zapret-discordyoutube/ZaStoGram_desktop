@@ -48,6 +48,13 @@ constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
 // another proxy instead of spinning on this one.
 constexpr auto kDeniedRotationAfter = crl::time(20 * 1000);
 
+// A proxy that throttles new TCP connects while serving established
+// connections fine looks like "all routes failed" on every unlucky
+// reconnect. An endpoint that has succeeded before only degrades after
+// this many exhaustions in a row with no success in between; one that
+// never succeeded degrades on the first (fast dead-proxy detection).
+constexpr auto kExhaustedStrikesAfterSuccess = 3;
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
@@ -65,6 +72,8 @@ struct EndpointState {
 	std::map<uint64, crl::time> attemptStarts;
 	crl::time deniedSince = 0;
 	crl::time lastDenialRotationSignal = 0;
+	crl::time lastSuccessAt = 0;
+	int exhaustedSinceSuccess = 0;
 };
 
 struct RouteState {
@@ -548,6 +557,17 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		// consecutiveFailures twice for one failure.
 		return;
 	}
+	if (report.routesExhausted) {
+		++state.exhaustedSinceSuccess;
+		if (state.lastSuccessAt
+			&& state.exhaustedSinceSuccess < kExhaustedStrikesAfterSuccess
+			&& FailureIsRouteOnly(report.reason)) {
+			// The proxy served connections before and this is likely
+			// per-connect throttling - keep it route-level for now so
+			// working connections and retries are not locked out.
+			return;
+		}
+	}
 	if (!routeKey.isEmpty()
 		&& HasHealthyRoute(state)
 		&& !report.routesExhausted) {
@@ -619,6 +639,8 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	state.recipeLevel = 0;
 	state.healthy = true;
 	state.halfOpen = false;
+	state.lastSuccessAt = crl::now();
+	state.exhaustedSinceSuccess = 0;
 	if (wasDegraded) {
 		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 			ProxyDiagnosticsPhase::CanonicalRecovered,

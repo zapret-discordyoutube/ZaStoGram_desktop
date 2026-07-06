@@ -160,6 +160,14 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "const auto needsCooldown = FailureNeedsCooldown(report.reason)" in failure
     assert "|| report.routesExhausted;" in failure
     assert ".rotationAllowed = needsCooldown," in failure
+    # A proxy that served connections before only degrades after several
+    # exhaustions in a row (per-connect throttling must not lock out a
+    # working proxy); one that never succeeded degrades on the first.
+    assert "++state.exhaustedSinceSuccess;" in failure
+    assert "state.exhaustedSinceSuccess < kExhaustedStrikesAfterSuccess" in failure
+    assert "state.lastSuccessAt" in failure
+    assert "state.lastSuccessAt = crl::now();" in success
+    assert "state.exhaustedSinceSuccess = 0;" in success
     assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
