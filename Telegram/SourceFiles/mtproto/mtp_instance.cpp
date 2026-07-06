@@ -115,6 +115,9 @@ public:
 	[[nodiscard]] auto connectionNoticeValue() const
 	-> rpl::producer<ConnectionNotice>;
 	void setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice);
+	[[nodiscard]] crl::time pingTime() const;
+	[[nodiscard]] rpl::producer<crl::time> pingTimeValue() const;
+	void setSessionPingTime(ShiftedDcId shiftedDcId, crl::time time);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	[[nodiscard]] int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
@@ -255,6 +258,7 @@ private:
 	rpl::variable<ProxyConnectionStatus> _proxyConnectionStatus;
 	base::flat_map<ShiftedDcId, ConnectionNotice> _connectionNotices;
 	rpl::variable<ConnectionNotice> _connectionNotice = ConnectionNotice::None;
+	rpl::variable<crl::time> _pingTime = 0;
 
 	std::unique_ptr<ConfigLoader> _configLoader;
 	std::unique_ptr<DomainResolver> _domainResolver;
@@ -506,6 +510,7 @@ void Instance::Private::setMainDcId(DcId mainDcId) {
 		scheduleSessionDestroy(oldMainDcId);
 		scheduleSessionDestroy(mainDcId);
 		_mainSession = startSession(mainDcId);
+		_pingTime = 0;
 	}
 	_mainDcId = mainDcId;
 	_writeKeysRequests.fire({});
@@ -736,6 +741,22 @@ void Instance::Private::setConnectionNotice(
 		return;
 	}
 	_connectionNotice = current;
+}
+
+crl::time Instance::Private::pingTime() const {
+	return _pingTime.current();
+}
+
+rpl::producer<crl::time> Instance::Private::pingTimeValue() const {
+	return _pingTime.value();
+}
+
+void Instance::Private::setSessionPingTime(
+		ShiftedDcId shiftedDcId,
+		crl::time time) {
+	if (shiftedDcId == _mainDcId.current()) {
+		_pingTime = time;
+	}
 }
 
 void Instance::Private::ping() {
@@ -2068,6 +2089,18 @@ void Instance::setConnectionNotice(
 		ShiftedDcId shiftedDcId,
 		ConnectionNotice notice) {
 	_private->setConnectionNotice(shiftedDcId, notice);
+}
+
+crl::time Instance::pingTime() const {
+	return _private->pingTime();
+}
+
+rpl::producer<crl::time> Instance::pingTimeValue() const {
+	return _private->pingTimeValue();
+}
+
+void Instance::setSessionPingTime(ShiftedDcId shiftedDcId, crl::time time) {
+	_private->setSessionPingTime(shiftedDcId, time);
 }
 
 void Instance::ping() {

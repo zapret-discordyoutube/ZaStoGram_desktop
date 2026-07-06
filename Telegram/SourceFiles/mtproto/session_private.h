@@ -107,6 +107,7 @@ private:
 	void confirmBestConnection();
 	void removeTestConnection(not_null<AbstractConnection*> connection);
 	void setConnectionNotice(ConnectionNotice notice);
+	void reportPingTime(crl::time time);
 	[[nodiscard]] int16 getProtocolDcId() const;
 
 	void checkSentRequests();
@@ -227,6 +228,7 @@ private:
 	mtpPingId _pingId = 0;
 	mtpPingId _pingIdToSend = 0;
 	crl::time _pingSendAt = 0;
+	crl::time _pingSentTime = 0;
 	mtpMsgId _pingMsgId = 0;
 	base::Timer _pingSender;
 	base::Timer _checkSentRequestsTimer;

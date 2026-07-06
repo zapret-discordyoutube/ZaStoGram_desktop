@@ -332,6 +332,13 @@ void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
 	});
 }
 
+void SessionPrivate::reportPingTime(crl::time time) {
+	const auto shiftedDcId = _shiftedDcId;
+	InvokeQueued(_instance, [=, instance = _instance] {
+		instance->setSessionPingTime(shiftedDcId, time);
+	});
+}
+
 int16 SessionPrivate::getProtocolDcId() const {
 	const auto dcId = BareDcId(_shiftedDcId);
 	const auto simpleDcId = isTemporaryDcId(dcId)
@@ -765,6 +772,7 @@ void SessionPrivate::tryToSend() {
 		}
 		_pingSendAt = pingRequest->lastSentTime + kPingSendAfter;
 		_pingId = base::take(_pingIdToSend);
+		_pingSentTime = crl::now();
 	} else if (!sendAll) {
 		DEBUG_LOG(("MTP Info: dc %1 sending only service or bind."
 			).arg(_shiftedDcId));
@@ -1286,6 +1294,8 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 
 	_bindMsgId = 0;
 	_pingId = _pingMsgId = _pingIdToSend = _pingSendAt = 0;
+	_pingSentTime = 0;
+	reportPingTime(0);
 	_pingSender.cancel();
 
 	if (!_testConnections.empty()) {
@@ -2182,6 +2192,9 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 			return HandleResult::Ignored;
 		}
 		if (data.vping_id().v == _pingId) {
+			if (_pingSentTime) {
+				reportPingTime(crl::now() - base::take(_pingSentTime));
+			}
 			_pingId = 0;
 		} else {
 			DEBUG_LOG(("Message Info: just pong..."));
@@ -2480,6 +2493,7 @@ void SessionPrivate::clearSpecialMsgId(mtpMsgId msgId) {
 	if (msgId == _pingMsgId) {
 		_pingMsgId = 0;
 		_pingId = 0;
+		_pingSentTime = 0;
 	} else if (msgId == _bindMsgId) {
 		_bindMsgId = 0;
 	}

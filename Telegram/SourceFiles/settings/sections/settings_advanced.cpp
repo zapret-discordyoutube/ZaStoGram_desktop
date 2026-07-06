@@ -107,14 +107,29 @@ void BuildDataStorageSection(SectionBuilder &builder) {
 
 	const auto connectionType = [=] {
 		const auto transport = account->mtp().dctransport();
+		const auto ping = account->mtp().pingTime();
 		if (!Core::App().settings().proxy().isEnabled()) {
 			return transport.isEmpty()
 				? tr::lng_connection_auto_connecting(tr::now)
-				: tr::lng_connection_auto(tr::now, lt_transport, transport);
+				: !ping
+				? tr::lng_connection_auto(tr::now, lt_transport, transport)
+				: tr::lng_connection_auto_ping(
+					tr::now,
+					lt_transport,
+					transport,
+					lt_ping,
+					QString::number(ping));
 		} else {
 			return transport.isEmpty()
 				? tr::lng_connection_proxy_connecting(tr::now)
-				: tr::lng_connection_proxy(tr::now, lt_transport, transport);
+				: !ping
+				? tr::lng_connection_proxy(tr::now, lt_transport, transport)
+				: tr::lng_connection_proxy_ping(
+					tr::now,
+					lt_transport,
+					transport,
+					lt_ping,
+					QString::number(ping));
 		}
 	};
 
@@ -124,6 +139,7 @@ void BuildDataStorageSection(SectionBuilder &builder) {
 		.icon = { &st::menuIconNetwork },
 		.label = rpl::merge(
 			Core::App().settings().proxy().connectionTypeChanges(),
+			account->mtp().pingTimeValue() | rpl::to_empty,
 			tr::lng_connection_auto_connecting() | rpl::to_empty
 		) | rpl::map(connectionType),
 		.onClick = [=] {
@@ -1318,14 +1334,29 @@ void SetupConnectionType(
 		not_null<Ui::VerticalLayout*> container) {
 	const auto connectionType = [=] {
 		const auto transport = account->mtp().dctransport();
+		const auto ping = account->mtp().pingTime();
 		if (!Core::App().settings().proxy().isEnabled()) {
 			return transport.isEmpty()
 				? tr::lng_connection_auto_connecting(tr::now)
-				: tr::lng_connection_auto(tr::now, lt_transport, transport);
+				: !ping
+				? tr::lng_connection_auto(tr::now, lt_transport, transport)
+				: tr::lng_connection_auto_ping(
+					tr::now,
+					lt_transport,
+					transport,
+					lt_ping,
+					QString::number(ping));
 		} else {
 			return transport.isEmpty()
 				? tr::lng_connection_proxy_connecting(tr::now)
-				: tr::lng_connection_proxy(tr::now, lt_transport, transport);
+				: !ping
+				? tr::lng_connection_proxy(tr::now, lt_transport, transport)
+				: tr::lng_connection_proxy_ping(
+					tr::now,
+					lt_transport,
+					transport,
+					lt_ping,
+					QString::number(ping));
 		}
 	};
 	const auto button = AddButtonWithLabel(
@@ -1333,6 +1364,7 @@ void SetupConnectionType(
 		tr::lng_settings_connection_type(),
 		rpl::merge(
 			Core::App().settings().proxy().connectionTypeChanges(),
+			account->mtp().pingTimeValue() | rpl::to_empty,
 			tr::lng_connection_auto_connecting() | rpl::to_empty
 		) | rpl::map([=] { return connectionType(); }),
 		st::settingsButton,

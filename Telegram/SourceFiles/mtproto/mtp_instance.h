@@ -113,6 +113,9 @@ public:
 	[[nodiscard]] auto connectionNoticeValue() const
 	-> rpl::producer<ConnectionNotice>;
 	void setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice);
+	[[nodiscard]] crl::time pingTime() const;
+	[[nodiscard]] rpl::producer<crl::time> pingTimeValue() const;
+	void setSessionPingTime(ShiftedDcId shiftedDcId, crl::time time);
 	void ping();
 	void cancel(mtpRequestId requestId);
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms

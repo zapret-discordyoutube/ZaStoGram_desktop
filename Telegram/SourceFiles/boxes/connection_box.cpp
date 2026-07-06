@@ -940,7 +940,12 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 		case State::Connecting:
 			return tr::lng_proxy_connecting(tr::now);
 		case State::Online:
-			return tr::lng_proxy_online(tr::now);
+			return _view.ping
+				? tr::lng_proxy_online_ping(
+					tr::now,
+					lt_ping,
+					QString::number(_view.ping))
+				: tr::lng_proxy_online(tr::now);
 		case State::Unavailable:
 			return tr::lng_proxy_unavailable(tr::now);
 		}
@@ -2083,6 +2088,16 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 		}
 	}, _lifetime);
 
+	_account->mtp().pingTimeValue(
+	) | rpl::skip(1) | rpl::on_next([=] {
+		const auto i = findByProxy(_settings.selected());
+		if (i != end(_list)) {
+			updateView(*i);
+		}
+	}, _lifetime);
+
+	_account->mtp().ping();
+
 }
 
 void ProxiesBoxController::ShowApplyConfirmation(
@@ -2758,6 +2773,9 @@ void ProxiesBoxController::updateView(const Item &item) {
 		}
 		return ItemState::Connecting;
 	}();
+	const auto ping = (state == ItemState::Online)
+		? int(_account->mtp().pingTime())
+		: item.ping;
 	const auto supportsShare = ProxyDataIsShareable(item.data);
 	const auto supportsCalls = item.data.supportsCalls();
 	_views.fire({
@@ -2765,7 +2783,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		type,
 		item.data.host,
 		item.data.port,
-		item.ping,
+		ping,
 		!deleted && selected,
 		deleted,
 		!deleted && supportsShare,
