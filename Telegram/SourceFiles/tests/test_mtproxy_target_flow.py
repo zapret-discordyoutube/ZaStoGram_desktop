@@ -317,3 +317,25 @@ def test_proxied_connects_get_their_full_time_budget():
     # Health reports feed the adaptive open pacing.
     assert "NoteConnectTimeout(report.endpoint);" in failure
     assert "NoteConnectSuccess(report.endpoint);" in success
+
+
+def test_stealth_option_changes_restart_proxy_connections():
+    app = read(SOURCE_DIR / "core" / "application.cpp")
+    box = read(SOURCE_DIR / "boxes" / "connection_box.cpp")
+    apply_body = function_body(
+        app,
+        "void Application::applyProxyStealthOptions(")
+    restart_body = function_body(
+        app,
+        "void Application::restartProxyConnections(")
+
+    # Sessions read stealth options only when (re)connecting: writing
+    # the setting without restarting MTP leaves e.g. a WSS transport
+    # switch inert until something else (like toggling IPv6) restarts
+    # connections.
+    assert "setProxyStealthOptions(options);" in apply_body
+    assert "_proxyRestartTimer" in apply_body
+    assert "_proxyChanges.fire" in restart_body
+    assert "Core::App().settings().setProxyStealthOptions(" not in box
+    assert "Core::App().applyProxyStealthOptions(o);" in box
+    assert "Core::App().restartProxyConnections();" in box

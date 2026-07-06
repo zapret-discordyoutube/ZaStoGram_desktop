@@ -1333,7 +1333,7 @@ void ProxiesBox::setupContent() {
 				o.transport = on
 					? MTP::ProxyTransport::Wss
 					: MTP::ProxyTransport::Tcp;
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 				refreshRouteViaWss();
 			});
 		addStealthHeader(u"Handshake compatibility"_q);
@@ -1348,7 +1348,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveHandshake);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 		addStealthHeader(u"Data-phase shaping"_q);
 		addStealthToggle(
@@ -1362,7 +1362,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 		addStealthToggle(
 			u"Vary TLS record sizes (conservative)"_q,
@@ -1375,7 +1375,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 		addStealthToggle(
 			u"Pace MTProxy traffic (gentle)"_q,
@@ -1388,7 +1388,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::DpiAdaptiveData);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 		addStealthHeader(u"Experimental MTProxy handshake"_q);
 		addStealthToggle(
@@ -1403,7 +1403,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::Experimental);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 		addStealthToggle(
 			u"Synthetic PSK tickets (experimental)"_q,
@@ -1414,7 +1414,7 @@ void ProxiesBox::setupContent() {
 				if (on) {
 					raiseLevel(o, MTP::ProxyStealthLevel::Experimental);
 				}
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			});
 	}
 
@@ -1449,7 +1449,7 @@ void ProxiesBox::setupContent() {
 		tlsGroup->setChangedCallback([=](Profile value) {
 			auto o = Core::App().settings().proxyStealthOptions();
 			o.tlsProfile = value;
-			Core::App().settings().setProxyStealthOptions(o);
+			Core::App().applyProxyStealthOptions(o);
 		});
 	}
 
@@ -1483,7 +1483,7 @@ void ProxiesBox::setupContent() {
 				const auto value = field->getLastText().trimmed();
 				auto o = Core::App().settings().proxyStealthOptions();
 				apply(o, value);
-				Core::App().settings().setProxyStealthOptions(o);
+				Core::App().applyProxyStealthOptions(o);
 			}, field->lifetime());
 		};
 		addWssField(
@@ -2711,7 +2711,8 @@ void ProxiesBoxController::setTryIPv6(bool enabled) {
 		return;
 	}
 	Core::App().settings().proxy().setTryIPv6(enabled);
-	_account->mtp().restart();
+	// Restart every account's connections, not only the active one.
+	Core::App().restartProxyConnections();
 	_settings.connectionTypeChangesNotify();
 	saveDelayed();
 }

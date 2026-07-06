@@ -108,6 +108,7 @@ namespace {
 constexpr auto kQuitPreventTimeoutMs = crl::time(1500);
 constexpr auto kAutoLockTimeoutLateMs = crl::time(3000);
 constexpr auto kClearEmojiImageSourceTimeout = 10 * crl::time(1000);
+constexpr auto kProxyStealthRestartDelay = crl::time(1500);
 
 LaunchState GlobalLaunchState/* = LaunchState::Running*/;
 
@@ -844,6 +845,30 @@ void Application::setCurrentProxy(
 	proxyRotationSettingsChanged();
 }
 
+void Application::applyProxyStealthOptions(
+		const MTP::ProxyStealthOptions &options) {
+	_private->settings.setProxyStealthOptions(options);
+	saveSettingsDelayed();
+	// Sessions read stealth options only when (re)connecting, so a
+	// changed transport (e.g. WSS) never applies until something else
+	// restarts MTP. Restart all accounts, debounced so typing in the
+	// custom WSS relay fields does not restart on every keystroke.
+	if (_proxyRestartTimer) {
+		_proxyRestartTimer->callOnce(kProxyStealthRestartDelay);
+	}
+}
+
+void Application::restartProxyConnections() {
+	if (_proxyRestartTimer) {
+		_proxyRestartTimer->cancel();
+	}
+	auto &my = _private->settings.proxy();
+	const auto current = my.isEnabled()
+		? my.selected()
+		: MTP::ProxyData();
+	_proxyChanges.fire({ current, current });
+}
+
 void Application::proxyRotationSettingsChanged() {
 	_private->proxyRotation->settingsChanged();
 }
@@ -878,6 +903,7 @@ void Application::startLocalStorage() {
 	Ui::GL::DetectLastCheckCrash();
 	Local::start();
 	_saveSettingsTimer.emplace([=] { saveSettings(); });
+	_proxyRestartTimer.emplace([=] { restartProxyConnections(); });
 	settings().saveDelayedRequests() | rpl::on_next([=] {
 		saveSettingsDelayed();
 	}, _lifetime);
