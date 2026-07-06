@@ -75,8 +75,12 @@ crl::time ReserveOpenSlot(
 		&& state.recentOpens.front() <= now - kOpenBurstWindow) {
 		state.recentOpens.pop_front();
 	}
-	const auto burstSpacing = (int(state.recentOpens.size())
-		>= kOpenBurstCount)
+	// Only rate-limit bursts once this endpoint has actually timed out
+	// recently (adaptiveSpacing > 0). A healthy proxy gets Android-like
+	// immediate concurrency - the client's own parallel media/download
+	// connections are legitimate, not a scan to be throttled.
+	const auto burstSpacing = (state.adaptiveSpacing > 0
+		&& int(state.recentOpens.size()) >= kOpenBurstCount)
 		? kOpenBurstSpacing
 		: crl::time(0);
 	const auto spacing = std::max({

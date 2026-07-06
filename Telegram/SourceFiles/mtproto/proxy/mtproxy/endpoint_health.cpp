@@ -32,11 +32,19 @@ constexpr auto kFirstCooldown = crl::time(15 * 1000);
 constexpr auto kSecondCooldown = crl::time(45 * 1000);
 constexpr auto kMaxCooldown = crl::time(120 * 1000);
 constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
-constexpr auto kColdActiveCap = 1;
+// A proven-good proxy must allow browser-like concurrency: opening a
+// chat full of photos fans out ~10 media/download connections at once,
+// all sharing this one endpoint. Capping healthy concurrency too low
+// (the whole point of the Android client, which has no such cap, is
+// that it just works) queues those connections behind a trickle,
+// sessions time out waiting, cancel and retry - a self-inflicted storm
+// that looks exactly like a throttled proxy. Stay generous while
+// healthy; the low caps below only engage once failures prove trouble.
+constexpr auto kColdActiveCap = 2;
 constexpr auto kUnknownActiveCap = kColdActiveCap;
 constexpr auto kDpiFailureActiveCap = 1;
-constexpr auto kHealthyActiveCap = 3;
-constexpr auto kHealthyHandshakeSpacing = crl::time(150);
+constexpr auto kHealthyActiveCap = 8;
+constexpr auto kHealthyHandshakeSpacing = crl::time(50);
 constexpr auto kQueuedRetry = crl::time(1000);
 
 // No single connect attempt may hold an active slot longer than this.

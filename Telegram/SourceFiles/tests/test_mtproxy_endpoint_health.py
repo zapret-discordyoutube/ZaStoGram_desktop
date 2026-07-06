@@ -61,9 +61,9 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "kSecondCooldown = crl::time(45 * 1000)" in source
     assert "kMaxCooldown = crl::time(120 * 1000)" in source
     assert "kDnsNegativeTtl = crl::time(30 * 1000)" in source
-    assert "kColdActiveCap = 1" in source
-    assert "kHealthyActiveCap = 3" in source
-    assert "kHealthyHandshakeSpacing = crl::time(150)" in source
+    assert "kColdActiveCap = 2" in source
+    assert "kHealthyActiveCap = 8" in source
+    assert "kHealthyHandshakeSpacing = crl::time(50)" in source
     assert "EndpointConcurrencyPolicyFor(state)" in source
 
 

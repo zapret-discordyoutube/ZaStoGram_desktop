@@ -163,3 +163,5 @@ def test_scheduler_limits_open_bursts_per_endpoint():
     assert "std::deque<crl::time> recentOpens;" in source
     assert "state.recentOpens.pop_front();" in source
     assert "burstSpacing" in source
+    # Burst pacing only engages after a real timeout, not preemptively.
+    assert "state.adaptiveSpacing > 0" in source

@@ -37,8 +37,8 @@ def test_endpoint_health_has_named_concurrency_policy():
     assert "struct EndpointConcurrencyPolicy" in source
     assert "kUnknownActiveCap = kColdActiveCap" in source
     assert "kDpiFailureActiveCap = 1" in source
-    assert "kHealthyActiveCap = 3" in source
-    assert "kHealthyHandshakeSpacing = crl::time(150)" in source
+    assert "kHealthyActiveCap = 8" in source
+    assert "kHealthyHandshakeSpacing = crl::time(50)" in source
     assert "nextHandshakeAt" in source
     assert "EndpointConcurrencyPolicyFor(" in source
     assert "SkipCooldown" in header
