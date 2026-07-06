@@ -263,6 +263,12 @@ def test_route_timeouts_and_exhaustion_reach_endpoint_health():
     # A route attempt killed by our own timeout produces no socket error,
     # so its failure must be reported to EndpointHealth explicitly.
     assert "ReportRouteFailureToHealth(" in timeout
+    # The dying attempt reports its own phase first: FakeTLS-ok-but-no-
+    # telegram-data must land as server_hello_ok_no_appdata (recipe
+    # escalation), not as a generic tcp connect timeout.
+    assert "child->timedOut();" in timeout
+    assert timeout.index("child->timedOut();") < timeout.index(
+        "_routeAttempts.erase(begin(_routeAttempts));")
     # Once the last route fails the canonical endpoint must degrade so a
     # fully blackholed proxy gets a cooldown and can trigger rotation.
     assert "ReportAllRoutesFailed(" in timeout

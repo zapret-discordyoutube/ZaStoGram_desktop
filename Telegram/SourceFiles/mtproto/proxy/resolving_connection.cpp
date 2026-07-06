@@ -348,6 +348,14 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		_proxy,
 		ipIndex,
 		MtProxy::FailureReason::TcpConnectTimeout);
+	// Let the attempt report its own failure before it is destroyed: the
+	// socket knows which handshake phase actually stalled. A proxy that
+	// completes FakeTLS but never relays telegram data must be recorded
+	// as server_hello_ok_no_appdata (triggering recipe escalation and
+	// TLS profile rotation), not as a generic tcp connect timeout.
+	if (const auto child = _routeAttempts.front().child.get()) {
+		child->timedOut();
+	}
 	_routeAttempts.erase(begin(_routeAttempts));
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
 		ReportAllRoutesFailed(

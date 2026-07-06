@@ -147,6 +147,19 @@ def test_scheduler_paces_adaptively_on_connect_timeouts():
     assert "constexpr auto kAdaptiveSpacingMin = crl::time(500)" in source
     assert "constexpr auto kAdaptiveSpacingMax = crl::time(6000)" in source
     assert "crl::time adaptiveSpacing = 0;" in source
-    assert "std::max(patternSpacing, state.adaptiveSpacing)" in source
     assert "state.adaptiveSpacing * 2" in source
     assert "state.adaptiveSpacing / 2" in source
+
+
+def test_scheduler_limits_open_bursts_per_endpoint():
+    source = SCHEDULER_CPP.read_text(encoding="utf-8")
+
+    # A cold start with several accounts/sessions may fire a rapid run
+    # of fresh handshakes at one endpoint - the scan-like pattern that
+    # makes proxies throttle. Beyond a small burst, opens are spaced.
+    assert "constexpr auto kOpenBurstCount = 3;" in source
+    assert "constexpr auto kOpenBurstWindow = crl::time(10 * 1000);" in source
+    assert "constexpr auto kOpenBurstSpacing = crl::time(2500);" in source
+    assert "std::deque<crl::time> recentOpens;" in source
+    assert "state.recentOpens.pop_front();" in source
+    assert "burstSpacing" in source
