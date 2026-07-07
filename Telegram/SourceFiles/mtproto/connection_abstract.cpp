@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/connection_tcp.h"
 #include "mtproto/connection_http.h"
+#include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/resolving_connection.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/session.h"
@@ -60,6 +61,7 @@ void ConnectionPointer::reset(AbstractConnection *value) {
 		};
 		disconnect(&AbstractConnection::receivedData);
 		disconnect(&AbstractConnection::receivedSome);
+		disconnect(&AbstractConnection::handshakeProgress);
 		disconnect(&AbstractConnection::error);
 		disconnect(&AbstractConnection::connected);
 		disconnect(&AbstractConnection::disconnected);
@@ -173,6 +175,10 @@ AbstractConnection::AbstractConnection(
 : _proxy(proxy)
 , _debugId(QString::number(++GlobalConnectionCounter)) {
 	moveToThread(thread);
+}
+
+HandshakePhase AbstractConnection::handshakePhase() const {
+	return HandshakePhase::None;
 }
 
 ConnectionPointer AbstractConnection::Create(

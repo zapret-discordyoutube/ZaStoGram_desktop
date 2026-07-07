@@ -224,12 +224,19 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	case FailureReason::ClientHelloSentNoServerHello:
 	case FailureReason::TlsAlertAfterClientHello:
 	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
 		return true;
+	// ServerHelloOkNoAppData means the server accepted our ClientHello
+	// (HMAC verified) and the stall is downstream - the proxy's own link
+	// to the DC. Mutating the ClientHello cannot fix that; escalated
+	// recipes (fragmentation, pacing, spacing) only add latency and can
+	// break a FakeTLS front that was answering fine, turning a slow
+	// relay into client_hello_sent_no_server_hello. Escalate only on
+	// failures that actually implicate the handshake fingerprint.
 	case FailureReason::None:
 	case FailureReason::DnsFailed:
 	case FailureReason::TcpConnectTimeout:
 	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::AppDataRemoteClosed:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
@@ -295,6 +302,16 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 	}
 	if (reason == FailureReason::ClientHelloSentNoServerHello) {
 		return kFirstCooldown;
+	}
+	if (reason == FailureReason::ServerHelloOkNoAppData) {
+		// The proxy is alive and validated our handshake - it just did
+		// not relay telegram data in time. That is often transient (the
+		// proxy warming up its DC link) - retry quickly instead of the
+		// full ladder, capping at the first cooldown so a genuinely
+		// broken relay still backs off.
+		return (consecutiveFailures <= 2)
+			? kThrottledRetryCooldown
+			: kFirstCooldown;
 	}
 	if (consecutiveFailures <= 1) {
 		return kFirstCooldown;
@@ -600,6 +617,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto policy = EndpointConcurrencyPolicyFor(state);
 	if (policy.recipeEscalationAllowed && state.recipeLevel < 4) {
 		++state.recipeLevel;
+	} else if (report.reason == FailureReason::ServerHelloOkNoAppData
+		&& state.recipeLevel > 0) {
+		// The server accepted this ClientHello, so whatever recipe level
+		// earlier handshake failures ratcheted up is not what is failing
+		// now - walk it back towards the plain profile instead of keeping
+		// handshake mutations that only add latency to the relay wait.
+		--state.recipeLevel;
 	}
 	if (report.configuredTlsProfile == ProxyTlsProfile::AutoRotate
 		&& FailureNeedsTlsRotation(report.reason)) {

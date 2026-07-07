@@ -736,6 +736,10 @@ void TcpConnection::timedOut() {
 	});
 }
 
+HandshakePhase TcpConnection::handshakePhase() const {
+	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
+}
+
 bool TcpConnection::isConnected() const {
 	return (_status == Status::Ready);
 }
@@ -791,6 +795,9 @@ void TcpConnection::socketError(int errorCode) {
 }
 
 void TcpConnection::socketProgress(HandshakePhase phase) {
+	if (phase != HandshakePhase::None) {
+		handshakeProgress();
+	}
 	switch (phase) {
 	case HandshakePhase::None:
 		return;

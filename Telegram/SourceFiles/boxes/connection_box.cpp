@@ -51,6 +51,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/table_layout.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/wrap/vertical_layout_reorder.h"
 #include "ui/vertical_list.h"
 #include "ui/ui_utility.h"
 #include "boxes/abstract_box.h" // Ui::show().
@@ -696,6 +697,7 @@ private:
 	void refreshProxyForCalls();
 	void refreshProxyRotation();
 	void refreshRouteViaWss();
+	void refreshReorder();
 
 	not_null<ProxiesBoxController*> _controller;
 	Core::SettingsProxy &_settings;
@@ -713,6 +715,8 @@ private:
 	int _currentProxySupportsCallsId = 0;
 
 	base::flat_map<int, base::unique_qptr<ProxyRow>> _rows;
+	std::unique_ptr<Ui::VerticalLayoutReorder> _reorder;
+	int _reordering = 0;
 
 	QPointer<Ui::RpWidget> _addProxyButton;
 	QPointer<Ui::RpWidget> _shareListButton;
@@ -1533,6 +1537,25 @@ void ProxiesBox::setupContent() {
 		left,
 		st::proxyRowPadding.bottom()));
 
+	_reorder = std::make_unique<Ui::VerticalLayoutReorder>(_wrap);
+	_reorder->updates(
+	) | rpl::on_next([=](Ui::VerticalLayoutReorder::Single data) {
+		using State = Ui::VerticalLayoutReorder::State;
+		if (data.state == State::Started) {
+			++_reordering;
+		} else {
+			Ui::PostponeCall(_wrap.data(), [=] {
+				--_reordering;
+			});
+			if (data.state == State::Applied) {
+				_controller->reorderItems(
+					data.oldPosition,
+					data.newPosition);
+			}
+		}
+	}, _wrap->lifetime());
+	_reorder->start();
+
 	_proxySettings->setChangedCallback([=](ProxyData::Settings value) {
 		if (!_controller->setProxySettings(value)) {
 			_proxySettings->setValue(_settings.settings());
@@ -1715,15 +1738,30 @@ void ProxiesBox::applyView(View &&view) {
 		}
 		if (!_initializingRows) {
 			wrap->resizeToWidth(st::proxySettingsListColumnWidth);
+			refreshReorder();
 		}
 	} else if (view.host.isEmpty()) {
 		_rows.erase(i);
+		refreshReorder();
 	} else {
 		i->second->updateFields(std::move(view));
 	}
 	if (!_initializingRows) {
 		refreshProxyRotation();
 	}
+}
+
+void ProxiesBox::refreshReorder() {
+	if (!_reorder) {
+		return;
+	}
+	_reorder->cancel();
+	Ui::PostponeCall(this, [=] {
+		if (_reorder) {
+			_reorder->cancel();
+			_reorder->start();
+		}
+	});
 }
 
 void ProxiesBox::createNoRowsLabel() {
@@ -1778,7 +1816,9 @@ void ProxiesBox::setupButtons(int id, not_null<ProxyRow*> button) {
 
 	button->clicks(
 	) | rpl::on_next([=] {
-		_controller->applyItem(id);
+		if (!_reordering) {
+			_controller->applyItem(id);
+		}
 	}, button->lifetime());
 }
 
@@ -2535,6 +2575,35 @@ void ProxiesBoxController::applyItem(int id) {
 	if (old != end(_list) && old->id != id) {
 		updateView(*old);
 	}
+}
+
+void ProxiesBoxController::reorderItems(int oldPosition, int newPosition) {
+	const auto count = int(_list.size());
+	const auto listIndexFromRowIndex = [&](int rowIndex) {
+		return count - 1 - rowIndex;
+	};
+	const auto from = listIndexFromRowIndex(oldPosition);
+	const auto to = listIndexFromRowIndex(newPosition);
+	if (from < 0 || from >= count || to < 0 || to >= count || from == to) {
+		return;
+	}
+	const auto data = _list[from].data;
+	const auto deleted = _list[from].deleted;
+	base::reorder(_list, from, to);
+
+	if (!deleted) {
+		const auto settingsFrom = _settings.indexInList(data);
+		auto settingsTo = 0;
+		for (auto i = 0; i != to; ++i) {
+			if (!_list[i].deleted) {
+				++settingsTo;
+			}
+		}
+		if (settingsFrom >= 0) {
+			_settings.moveInList(settingsFrom, settingsTo);
+		}
+	}
+	saveDelayed();
 }
 
 void ProxiesBoxController::setDeleted(int id, bool deleted) {

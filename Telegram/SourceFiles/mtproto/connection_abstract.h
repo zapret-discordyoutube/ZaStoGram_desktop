@@ -25,6 +25,7 @@ namespace details {
 struct ConnectionOptions;
 
 class AbstractConnection;
+enum class HandshakePhase;
 
 inline constexpr auto kTestModeDcIdShift = 10000;
 
@@ -90,6 +91,7 @@ public:
 		bool protocolForFiles) = 0;
 	virtual void timedOut() {
 	}
+	[[nodiscard]] virtual HandshakePhase handshakePhase() const;
 	[[nodiscard]] virtual bool isConnected() const = 0;
 	[[nodiscard]] virtual bool usingHttpWait() {
 		return false;
@@ -151,6 +153,7 @@ public:
 Q_SIGNALS:
 	void receivedData();
 	void receivedSome(); // to stop restart timer
+	void handshakeProgress();
 
 	void error(qint32 errorCode);
 

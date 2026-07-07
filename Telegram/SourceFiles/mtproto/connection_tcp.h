@@ -37,6 +37,7 @@ public:
 		int16 protocolDcId,
 		bool protocolForFiles) override;
 	void timedOut() override;
+	HandshakePhase handshakePhase() const override;
 	bool isConnected() const override;
 
 	int32 debugState() const override;

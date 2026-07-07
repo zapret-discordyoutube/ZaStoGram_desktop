@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/resolving_connection.h"
 
 #include "mtproto/mtp_instance.h"
+#include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
@@ -28,6 +29,32 @@ constexpr auto kMaxParallelRouteAttempts = 2;
 // handshake and reconnects. Give TCP time to retransmit SYN instead: a
 // proxy that throttles new connects often accepts on a later try.
 constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
+
+// The route attempt timer knows nothing about handshakes by itself, so
+// when it fires the failure must be attributed from the phase the child
+// socket actually reached - reporting a generic tcp_connect_timeout for
+// a connection that completed TCP (or even the whole TLS handshake)
+// corrupts diagnostics and feeds the wrong signal into EndpointHealth.
+[[nodiscard]] MtProxy::FailureReason RouteTimeoutReason(
+		HandshakePhase phase) {
+	switch (phase) {
+	case HandshakePhase::None:
+		return MtProxy::FailureReason::TcpConnectTimeout;
+	case HandshakePhase::TcpConnected:
+		return MtProxy::FailureReason::TcpConnectedNoClientHelloWrite;
+	case HandshakePhase::ClientHelloSent:
+		return MtProxy::FailureReason::ClientHelloSentNoServerHello;
+	case HandshakePhase::ServerHelloOk:
+	case HandshakePhase::FirstDataReceived:
+		return MtProxy::FailureReason::ServerHelloOkNoAppData;
+	}
+	return MtProxy::FailureReason::TcpConnectTimeout;
+}
+
+[[nodiscard]] HandshakePhase ChildHandshakePhase(
+		AbstractConnection *child) {
+	return child ? child->handshakePhase() : HandshakePhase::None;
+}
 
 [[nodiscard]] MtProxy::EndpointId MtproxyEndpointIdForProxy(
 		const ProxyData &proxy) {
@@ -180,6 +207,11 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 		&ResolvingConnection::receivedSome);
 	connect(
 		raw,
+		&AbstractConnection::handshakeProgress,
+		this,
+		[=] { refreshAttemptTimeout(); });
+	connect(
+		raw,
 		&AbstractConnection::error,
 		this,
 		[=](int errorCode) { handleError(raw, errorCode); });
@@ -328,7 +360,22 @@ void ResolvingConnection::refreshAttemptTimeout() {
 	}
 	const auto lastRoute = (_routeAttempts.size() == 1)
 		&& (_nextRoutePosition >= int(_routeOrder.size()));
-	_timeoutTimer.callOnce(lastRoute
+	// An attempt that passed the TLS handshake is waiting for the proxy
+	// to relay telegram data - that includes the proxy's own connect to
+	// the DC, which racing another route cannot speed up. Do not kill a
+	// route that already proved itself at the short racing timeout just
+	// because a sibling attempt exists; the timer is also restarted on
+	// every handshakeProgress() so each phase gets a fresh budget
+	// instead of whatever was left over from TCP connect.
+	const auto handshakeDone = std::any_of(
+		begin(_routeAttempts),
+		end(_routeAttempts),
+		[](const RouteAttempt &attempt) {
+			const auto phase = ChildHandshakePhase(attempt.child.get());
+			return (phase == HandshakePhase::ServerHelloOk)
+				|| (phase == HandshakePhase::FirstDataReceived);
+		});
+	_timeoutTimer.callOnce((lastRoute || handshakeDone)
 		? kOnlyRouteAttemptTimeout
 		: kRouteAttemptTimeout);
 }
@@ -337,30 +384,44 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	if (_connected || _routeAttempts.empty()) {
 		return;
 	}
-	const auto ipIndex = _routeAttempts.front().ipIndex;
+	// The short timeout exists to race stalled routes, so kill the least
+	// progressed attempt - the one that got the furthest is exactly the
+	// route worth keeping alive.
+	const auto victim = std::min_element(
+		begin(_routeAttempts),
+		end(_routeAttempts),
+		[](const RouteAttempt &a, const RouteAttempt &b) {
+			return int(ChildHandshakePhase(a.child.get()))
+				< int(ChildHandshakePhase(b.child.get()));
+		});
+	const auto ipIndex = victim->ipIndex;
+	const auto reason = RouteTimeoutReason(
+		ChildHandshakePhase(victim->child.get()));
 	ReportRouteEvent(
 		_instance,
 		_proxy,
 		ipIndex,
 		ProxyDiagnosticsPhase::RouteFailed,
-		MtProxy::FailureReason::TcpConnectTimeout);
-	ReportRouteFailureToHealth(
-		_proxy,
-		ipIndex,
-		MtProxy::FailureReason::TcpConnectTimeout);
+		reason);
+	if (reason == MtProxy::FailureReason::TcpConnectTimeout
+		|| reason == MtProxy::FailureReason::TcpConnectedNoClientHelloWrite) {
+		// Route-only failures pace the open scheduler and are otherwise
+		// never reported for an attempt destroyed by our own timer. The
+		// later phases are reported precisely by the socket itself from
+		// timedOut() below - reporting them here as well would degrade
+		// the canonical endpoint twice for one failed cycle.
+		ReportRouteFailureToHealth(_proxy, ipIndex, reason);
+	}
 	// Let the attempt report its own failure before it is destroyed: the
 	// socket knows which handshake phase actually stalled. A proxy that
 	// completes FakeTLS but never relays telegram data must be recorded
-	// as server_hello_ok_no_appdata (triggering recipe escalation and
-	// TLS profile rotation), not as a generic tcp connect timeout.
-	if (const auto child = _routeAttempts.front().child.get()) {
+	// as server_hello_ok_no_appdata, not as a generic tcp connect timeout.
+	if (const auto child = victim->child.get()) {
 		child->timedOut();
 	}
-	_routeAttempts.erase(begin(_routeAttempts));
+	_routeAttempts.erase(victim);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
-		ReportAllRoutesFailed(
-			_proxy,
-			MtProxy::FailureReason::TcpConnectTimeout);
+		ReportAllRoutesFailed(_proxy, reason);
 		emitError(kErrorCodeOther);
 		return;
 	}
@@ -541,7 +602,13 @@ crl::time ResolvingConnection::pingTime() const {
 }
 
 crl::time ResolvingConnection::fullConnectTimeout() const {
-	return kOnlyRouteAttemptTimeout
+	// Worst honest cycle: the TLS handshake may use up the short racing
+	// budget, then the wait for the proxy to relay telegram data gets a
+	// fresh single-route budget (see refreshAttemptTimeout()). The
+	// session-level connect timer must not fire before that budget is
+	// spent, or a slow-but-working relay is killed from above.
+	return kRouteAttemptTimeout
+		+ kOnlyRouteAttemptTimeout
 		+ kRouteRaceDelay * kMaxParallelRouteAttempts;
 }
 

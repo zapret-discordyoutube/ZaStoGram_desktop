@@ -84,6 +84,7 @@ public:
 	void shareItems();
 	void checkItem(int id);
 	void applyItem(int id);
+	void reorderItems(int oldPosition, int newPosition);
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();
 	bool setProxySettings(ProxyData::Settings value);

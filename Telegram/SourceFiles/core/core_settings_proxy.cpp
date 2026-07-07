@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/core_settings_proxy.h"
 
+#include "base/algorithm.h"
 #include "base/platform/base_platform_info.h"
 #include "storage/serialize_common.h"
 
@@ -390,6 +391,17 @@ void SettingsProxy::insertToList(int index, MTP::ProxyData value) {
 		}
 	}
 	_list.insert(begin(_list) + index, std::move(value));
+}
+
+void SettingsProxy::moveInList(int from, int to) {
+	const auto count = int(_list.size());
+	if (from < 0 || from >= count || to < 0 || to >= count || from == to) {
+		return;
+	}
+	base::reorder(_list, from, to);
+	for (auto &existing : _proxyRotationPreferredIndices) {
+		existing = base::reorder_index(existing, from, to);
+	}
 }
 
 bool SettingsProxy::removeFromList(const MTP::ProxyData &value) {
