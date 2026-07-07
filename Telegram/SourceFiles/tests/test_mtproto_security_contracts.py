@@ -108,6 +108,15 @@ def test_dc_key_creator_crypto_helpers_are_split_and_registered():
     assert "FactorizeSmallPQ(" not in creator
 
 
+def test_dc_key_crypto_includes_auth_key_for_raw_aes_helpers():
+    source = DC_KEY_CRYPTO_CPP.read_text(encoding="utf-8")
+    header = AUTH_KEY_H.read_text(encoding="utf-8")
+
+    assert "aesIgeEncryptRaw(" in source
+    assert "void aesIgeEncryptRaw(" in header
+    assert '#include "mtproto/auth/mtproto_auth_key.h"' in source
+
+
 def test_dh_intermediate_secret_bytes_are_raii_cleansed():
     header = DH_UTILS_H.read_text(encoding="utf-8")
     source = DH_UTILS_CPP.read_text(encoding="utf-8")

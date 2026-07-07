@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/openssl_help.h"
 #include "base/random.h"
 #include "logs.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 
 #include <algorithm>
 #include <cmath>
