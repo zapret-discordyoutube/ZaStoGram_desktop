@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -236,13 +237,13 @@ def test_wss_dc_coverage_policy_is_centralized_and_soft():
 
 
 def test_wss_direct_fallback_requests_proxy_without_blocking():
-    session = SESSION_PRIVATE_CPP.read_text(encoding="utf-8")
+    session = read_session_private_sources()
 
     assert '#include "mtproto/proxy/transport_policy.h"' in session
     assert "WssNeedsProxyRecommendation(" in session
     assert "MTP::ConnectionNotice::WssDirectFallback" in session
     assert "setConnectionNotice(MTP::ConnectionNotice::None)" in session
-    assert "_options->stealth.transport != ProxyTransport::Wss" in session
+    assert "_sessionState.options->stealth.transport != ProxyTransport::Wss" in session
     assert "kWaitForProxyTimeout" in session
 
 
@@ -263,6 +264,8 @@ def test_wss_remembers_working_relay_host_across_sockets():
     # errorOccurred fires) records the stalled host too.
     assert "bool _hostFlipped = false;" in header
     assert "kRelayFallbackPreferenceTtl" in source
+    assert "Q_UNUSED(address);" in connect_body
+    assert "Q_UNUSED(port);" in connect_body
     assert "_usedFallback = PreferRelayFallback(_route);" in connect_body
     assert "NoteRelayAttemptFailed(_route, _usedFallback);" in timed_out_body
     assert "NoteRelayAttemptFailed(_route, _usedFallback);" in error_body

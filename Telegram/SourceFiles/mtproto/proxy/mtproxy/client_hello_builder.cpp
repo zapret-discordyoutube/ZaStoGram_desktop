@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/proxy/mtproxy/client_hello_profile.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
@@ -932,14 +933,18 @@ void Generator::Part::writeBlock(const MTPDtlsBlockM &data) {
 	auto random = bytes::vector(kElements * 8 + kAdded);
 	bytes::set_random(random);
 
-	auto chars = reinterpret_cast<char*>(storage.data());
-	const auto ints = reinterpret_cast<const uint32*>(random.data());
+	auto out = storage;
 	for (auto i = 0; i < kElements; ++i) {
-		const auto a = int(ints[i * 2] % 3329);
-		const auto b = int(ints[i * 2 + 1] % 3329);
-		*chars++ = (char)(a & 255);
-		*chars++ = (char)((a >> 8) + ((b & 15) << 4));
-		*chars++ = (char)(b >> 4);
+		const auto a = int(binary::ReadAt<uint32>(
+			bytes::make_span(random),
+			i * 2 * int(sizeof(uint32))) % 3329);
+		const auto b = int(binary::ReadAt<uint32>(
+			bytes::make_span(random),
+			(i * 2 + 1) * int(sizeof(uint32))) % 3329);
+		out[0] = bytes::type(uchar(a & 255));
+		out[1] = bytes::type(uchar((a >> 8) + ((b & 15) << 4)));
+		out[2] = bytes::type(uchar(b >> 4));
+		out = out.subspan(3);
 	}
 	bytes::set_random(storage.subspan(kElements * 3));
 }

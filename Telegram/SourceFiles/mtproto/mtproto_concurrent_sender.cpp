@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
-#include "mtproto/facade.h"
 
 namespace MTP {
 
@@ -182,7 +181,8 @@ void ConcurrentSender::senderRequestCancel(mtpRequestId requestId) {
 }
 
 void ConcurrentSender::senderRequestCancelAll() {
-	auto list = std::vector<mtpRequestId>(_requests.size());
+	auto list = std::vector<mtpRequestId>();
+	list.reserve(_requests.size());
 	for (const auto &pair : base::take(_requests)) {
 		list.push_back(pair.first);
 	}

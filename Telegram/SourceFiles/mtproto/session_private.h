@@ -12,10 +12,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/connection_abstract.h"
-#include "mtproto/facade.h"
 #include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/status.h"
+#include "mtproto/session_state.h"
 #include "base/timer.h"
 
 namespace MTP {
@@ -24,6 +24,7 @@ class BoundKeyCreator;
 } // namespace details
 
 class Instance;
+struct RuntimeEnvironment;
 
 namespace details {
 
@@ -135,6 +136,10 @@ private:
 	mtpMsgId replaceMsgId(
 		SerializedRequest &request,
 		mtpMsgId newId);
+	mtpMsgId RegisterSentRequest(
+		base::flat_map<mtpMsgId, SerializedRequest> &haveSent,
+		SerializedRequest &request,
+		mtpMsgId msgId);
 
 	bool sendSecureRequest(
 		SerializedRequest &&request,
@@ -148,6 +153,71 @@ private:
 		bool badTime = false;
 	};
 	[[nodiscard]] HandleResult handleOneReceived(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleGzipPacked(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgContainer(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgsAck(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleBadMsgNotification(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleBadServerSalt(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgsStateInfo(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgsAllInfo(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgDetailedInfo(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleMsgNewDetailedInfo(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleRpcResult(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleNewSessionCreated(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handlePong(
+		const mtpPrime *from,
+		const mtpPrime *end,
+		uint64 msgId,
+		OuterInfo info);
+	[[nodiscard]] HandleResult handleUpdates(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -203,7 +273,78 @@ private:
 	[[nodiscard]] bool realDcTypeChanged();
 	[[nodiscard]] MTPVector<MTPJSONObjectValue> prepareInitParams();
 
+	struct ConnectionState {
+		ConnectionPointer connection;
+		MtProxy::EndpointId mtproxyEndpoint;
+		MtProxy::EndpointUse mtproxyUse = MtProxy::EndpointUse::Main;
+		ProxyConnectionAttempt mtproxyAttempt;
+		crl::time mtproxyAttemptStartedAt = 0;
+		uint64 proxyGeneration = 0;
+		bool proxyMigrationSuspended = false;
+		bool proxyMigrationScout = false;
+		bool mtprotoDataReceived = false;
+		int mtprotoSilentTimeouts = 0;
+		std::vector<TestConnection> testConnections;
+		std::vector<ConnectionTicket> brokerTickets;
+		crl::time startedConnectingAt = 0;
+	};
+	struct TimingState {
+		TimingState(
+			not_null<QThread*> thread,
+			not_null<SessionPrivate*> owner);
+
+		base::Timer retryTimer;
+		int retryTimeout = 1;
+		qint64 retryWillFinish = 0;
+		base::Timer oldConnectionTimer;
+		bool oldConnection = true;
+		base::Timer waitForConnectedTimer;
+		base::Timer waitForReceivedTimer;
+		base::Timer waitForBetterTimer;
+		base::Timer brokerQueueDeadlineTimer;
+		crl::time waitForReceived = 0;
+		crl::time waitForConnected = 0;
+		crl::time firstSentAt = -1;
+		base::Timer pingSender;
+		base::Timer checkSentRequestsTimer;
+		base::Timer clearOldContainersTimer;
+	};
+	struct RequestState {
+		mtpPingId pingId = 0;
+		mtpPingId pingIdToSend = 0;
+		crl::time pingSendAt = 0;
+		crl::time pingSentTime = 0;
+		mtpMsgId pingMsgId = 0;
+		QVector<MTPlong> ackData;
+		QVector<MTPlong> resendData;
+		base::flat_set<mtpMsgId> stateData;
+		ReceivedIdsManager receivedIds;
+		base::flat_map<mtpMsgId, mtpRequestId> resendingIds;
+		base::flat_map<mtpMsgId, mtpRequestId> ackedIds;
+		base::flat_map<mtpMsgId, SerializedRequest> stateAndResendRequests;
+		base::flat_map<mtpMsgId, SentContainer> sentContainers;
+	};
+	struct SessionState {
+		explicit SessionState(std::shared_ptr<SessionData> data);
+
+		std::shared_ptr<SessionData> data;
+		std::unique_ptr<SessionOptions> options;
+		AuthKeyPtr encryptionKey;
+		uint64 keyId = 0;
+		uint64 sessionId = 0;
+		uint64 sessionSalt = 0;
+		uint32 messagesCounter = 0;
+		bool markedAsStarted = false;
+		bool needReset = false;
+	};
+	struct AuthState {
+		std::unique_ptr<BoundKeyCreator> keyCreator;
+		mtpMsgId bindMsgId = 0;
+		crl::time bindMessageSent = 0;
+	};
+
 	const not_null<Instance*> _instance;
+	const not_null<RuntimeEnvironment*> _runtime;
 	const ShiftedDcId _shiftedDcId = 0;
 	DcType _realDcType = DcType();
 	DcType _currentDcType = DcType();
@@ -211,67 +352,11 @@ private:
 	mutable QReadWriteLock _stateMutex;
 	int _state = DisconnectedState;
 
-	bool _needSessionReset = false;
-
-	ConnectionPointer _connection;
-	MtProxy::EndpointId _connectionMtproxyEndpoint;
-	MtProxy::EndpointUse _connectionMtproxyUse = MtProxy::EndpointUse::Main;
-	ProxyConnectionAttempt _connectionMtproxyAttempt;
-	crl::time _connectionMtproxyAttemptStartedAt = 0;
-	uint64 _proxyGeneration = 0;
-	bool _proxyMigrationSuspended = false;
-	bool _proxyMigrationScout = false;
-	bool _mtprotoDataReceived = false;
-	int _mtprotoSilentTimeouts = 0;
-	std::vector<TestConnection> _testConnections;
-	std::vector<ConnectionTicket> _connectionBrokerTickets;
-	crl::time _startedConnectingAt = 0;
-
-	base::Timer _retryTimer; // exp retry timer
-	int _retryTimeout = 1;
-	qint64 _retryWillFinish = 0;
-
-	base::Timer _oldConnectionTimer;
-	bool _oldConnection = true;
-
-	base::Timer _waitForConnectedTimer;
-	base::Timer _waitForReceivedTimer;
-	base::Timer _waitForBetterTimer;
-	base::Timer _brokerQueueDeadlineTimer;
-	crl::time _waitForReceived = 0;
-	crl::time _waitForConnected = 0;
-	crl::time _firstSentAt = -1;
-
-	mtpPingId _pingId = 0;
-	mtpPingId _pingIdToSend = 0;
-	crl::time _pingSendAt = 0;
-	crl::time _pingSentTime = 0;
-	mtpMsgId _pingMsgId = 0;
-	base::Timer _pingSender;
-	base::Timer _checkSentRequestsTimer;
-	base::Timer _clearOldContainersTimer;
-
-	std::shared_ptr<SessionData> _sessionData;
-	std::unique_ptr<SessionOptions> _options;
-	AuthKeyPtr _encryptionKey;
-	uint64 _keyId = 0;
-	uint64 _sessionId = 0;
-	uint64 _sessionSalt = 0;
-	uint32 _messagesCounter = 0;
-	bool _sessionMarkedAsStarted = false;
-
-	QVector<MTPlong> _ackRequestData;
-	QVector<MTPlong> _resendRequestData;
-	base::flat_set<mtpMsgId> _stateRequestData;
-	ReceivedIdsManager _receivedMessageIds;
-	base::flat_map<mtpMsgId, mtpRequestId> _resendingIds;
-	base::flat_map<mtpMsgId, mtpRequestId> _ackedIds;
-	base::flat_map<mtpMsgId, SerializedRequest> _stateAndResendRequests;
-	base::flat_map<mtpMsgId, SentContainer> _sentContainers;
-
-	std::unique_ptr<BoundKeyCreator> _keyCreator;
-	mtpMsgId _bindMsgId = 0;
-	crl::time _bindMessageSent = 0;
+	ConnectionState _connectionState;
+	TimingState _timing;
+	RequestState _requestState;
+	SessionState _sessionState;
+	AuthState _authState;
 
 };
 

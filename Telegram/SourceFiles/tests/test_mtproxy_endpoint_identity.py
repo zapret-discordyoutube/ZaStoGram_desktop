@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -115,14 +116,14 @@ def test_route_success_promotes_to_canonical_but_route_failure_stays_local():
 def test_consumers_treat_endpoint_empty_as_canonical_empty():
     broker = read(CONNECTION_BROKER_CPP)
     check = read(CHECK_CPP)
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     tls = read(TLS_SOCKET_CPP)
 
     assert "MtProxy::EndpointEmpty(state->request.endpoint)" in broker
     assert "MtProxy::EndpointEmpty(state->mtproxyEndpoint)" in check
     assert "MtProxy::EndpointEmpty(connection.mtproxyEndpoint)" in session
     assert "MtProxy::EndpointEmpty(found->mtproxyEndpoint)" in session
-    assert "MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)" in session
+    assert "MtProxy::EndpointEmpty(_connectionState.mtproxyEndpoint)" in session
     assert ".canonical.domainFromSecret.isEmpty()" in session
     assert "_endpointId.route = MtProxy::RouteEndpointFromAddress(" in tls
     assert "MtProxy::EndpointKey(_endpointId.canonical)" in tls

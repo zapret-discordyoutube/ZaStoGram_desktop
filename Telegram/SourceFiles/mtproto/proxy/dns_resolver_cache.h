@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
-class Instance;
+struct RuntimeEnvironment;
 
 namespace details {
 
@@ -32,7 +32,7 @@ public:
 	[[nodiscard]] static DnsResolverCache &Instance();
 
 	void request(
-		MTP::Instance *instance,
+		RuntimeEnvironment *runtime,
 		QObject *receiver,
 		const QString &host,
 		Callback callback);
@@ -42,7 +42,7 @@ public:
 		qint64 expireAt);
 
 private:
-	void connectInstance(MTP::Instance *instance);
+	void connectRuntime(RuntimeEnvironment *runtime);
 };
 
 } // namespace details

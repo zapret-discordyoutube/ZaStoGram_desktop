@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/invoke_queued.h"
 #include "base/timer.h"
-#include "mtproto/mtp_instance.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/runtime_environment.h"
 
 namespace MTP {
 namespace {
@@ -179,8 +179,10 @@ void NormalizeMtproxyTerminalReason(
 		: ProxyDiagnosticsSource::Network;
 }
 
-void LogShadowedFact(const ProxyFact &fact) {
-	WriteProxyDiagnosticsLine({
+void LogShadowedFact(
+		not_null<RuntimeEnvironment*> runtime,
+		const ProxyFact &fact) {
+	WriteProxyDiagnosticsLine(runtime, {
 		.source = SourceForProxy(fact.status.proxy),
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.severity = ProxyDiagnosticsSeverity::Info,
@@ -401,21 +403,25 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 }
 
 void ProxyControlPlane::SubmitFact(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyEventReport &report) {
 	auto fact = FactFromReport(report);
 	if (EmptyFact(fact)) {
 		return;
 	}
-	InvokeQueued(instance, [=] {
-		const auto current = instance->proxyConnectionStatus();
+	InvokeQueued(runtime, [=] {
+		const auto current = runtime->proxyConnectionStatus
+			? runtime->proxyConnectionStatus()
+			: ProxyConnectionStatus();
 		auto normalized = fact;
 		NormalizeMtproxyTerminalReason(current, normalized.status);
 		if (ShadowedByFreshRelaySuccess(current, normalized)) {
-			LogShadowedFact(normalized);
+			LogShadowedFact(runtime, normalized);
 		}
-		instance->setProxyConnectionStatus(
-			ProxyControlPlane::Reduce(current, normalized));
+		if (runtime->setProxyConnectionStatus) {
+			runtime->setProxyConnectionStatus(
+				ProxyControlPlane::Reduce(current, normalized));
+		}
 	});
 }
 

@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_common.h"
 #include "base/timer.h"
 #include "base/weak_ptr.h"
-#include "mtproto/facade.h"
 
 class ApiWrap;
 struct FilePrepareResult;

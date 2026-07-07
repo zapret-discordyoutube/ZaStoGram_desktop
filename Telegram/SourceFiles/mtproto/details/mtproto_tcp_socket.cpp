@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/details/mtproto_tcp_socket.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "base/invoke_queued.h"
 
 namespace MTP::details {
@@ -57,10 +58,9 @@ void TcpSocket::connectToHost(const QString &address, int port) {
 bool TcpSocket::isGoodStartNonce(bytes::const_span nonce) {
 	Expects(nonce.size() >= 2 * sizeof(uint32));
 
-	const auto bytes = nonce.data();
-	const auto zero = *reinterpret_cast<const uchar*>(bytes);
-	const auto first = *reinterpret_cast<const uint32*>(bytes);
-	const auto second = *(reinterpret_cast<const uint32*>(bytes) + 1);
+	const auto zero = binary::Read<uchar>(nonce);
+	const auto first = binary::Read<uint32>(nonce);
+	const auto second = binary::ReadAt<uint32>(nonce, sizeof(uint32));
 	const auto reserved01 = 0x000000EFU;
 	const auto reserved11 = 0x44414548U;
 	const auto reserved12 = 0x54534F50U;

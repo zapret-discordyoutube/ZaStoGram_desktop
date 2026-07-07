@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "main/main_session.h"
 #include "mtproto/mtproto_config.h"
+#include "mtproto/session_state.h"
 #include "lang/lang_keys.h"
 #include "core/shortcuts.h"
 #include "core/application.h"

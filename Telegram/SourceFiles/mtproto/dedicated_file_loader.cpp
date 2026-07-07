@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/dedicated_file_loader.h"
 
-#include "mtproto/facade.h"
+#include "mtproto/dc_id.h"
 #include "main/main_account.h" // Account::sessionChanges.
 #include "main/main_session.h" // Session::account.
 #include "core/application.h"

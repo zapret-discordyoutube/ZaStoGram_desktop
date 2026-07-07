@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -48,25 +49,25 @@ def test_gate_lease_api_and_constants():
 
 def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
-    source = SESSION_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
 
     assert '#include "mtproto/proxy/connection_broker.h"' in header
     assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
-    assert "ReserveHandshakeGateForProxy(_options->proxy)" not in source
+    assert "ReserveHandshakeGateForProxy(_sessionState.options->proxy)" not in source
     assert "EndpointHealth::Instance().admit(" not in source
     assert "ConnectionBroker::Instance().request({" in source
     assert "std::move(start.lease)" in source
 
 
 def test_remove_connection_releases_before_erasing():
-    source = SESSION_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
     body = body_after(
         source,
         "void SessionPrivate::removeTestConnection")
 
     assert "i->mtproxyLease.release();" in body
     assert body.index("i->mtproxyLease.release();") < body.index(
-        "_testConnections.erase(")
+        "_connectionState.testConnections.erase(")
 
 
 def test_proxy_check_connection_holds_gate_lease():

@@ -11,6 +11,7 @@ STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.h"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
@@ -97,8 +98,8 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     assert "rpl::producer<HandshakePhase> progress() const" in abstract_socket_h
     assert "ProxyAuthenticationRequiredError" in abstract_socket_cpp
     assert "ProxyConnectionError::Authentication" in abstract_socket_cpp
-    assert "ReportProxyEvent(_instance, {" in tcp_connection
-    assert "ProxyControlPlane::SubmitFact(instance, report);" in diagnostics
+    assert "ReportProxyEvent(_runtime, {" in tcp_connection
+    assert "runtime->reportProxyEvent" in diagnostics
     assert "ProxyConnectionPhase::CheckingTelegram" in control
 
 
@@ -108,6 +109,7 @@ def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():
     instance = INSTANCE_CPP.read_text(encoding="utf-8")
     control = CONTROL_CPP.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
+    runtime = RUNTIME_CPP.read_text(encoding="utf-8")
     sink = function_body(instance, "void Instance::Private::setProxyConnectionStatus(")
 
     assert "ServerHelloHmacMismatch" in status_header
@@ -118,8 +120,8 @@ def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():
     assert "ApplyProxyConnectionStatusUpdate(" not in status_header
     assert "ApplyProxyConnectionStatusUpdate(" not in STATUS_CPP.read_text(
         encoding="utf-8")
-    assert "report.mtproxyReason" in diagnostics
-    assert "report.attempt" in diagnostics
+    assert "report.mtproxyReason" in runtime
+    assert "report.attempt" in runtime
     assert "ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch" in widget
     assert "lng_proxy_status_mtproxy_hmac_mismatch" in LANG.read_text(
         encoding="utf-8")

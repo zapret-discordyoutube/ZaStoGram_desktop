@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -27,7 +28,7 @@ def test_every_mtp_phase_is_declared_emitted_and_formatted():
     # (or never named in the formatter) is a silent hole - exactly how
     # mtp_key_destroyed was missing while the enum value existed.
     assert len(phases) >= 12
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     diagnostics = read(DIAGNOSTICS_CPP)
     for phase in phases:
         assert f"ProxyDiagnosticsPhase::{phase}" in session, (
@@ -37,7 +38,7 @@ def test_every_mtp_phase_is_declared_emitted_and_formatted():
 
 
 def test_mtp_events_use_the_dedicated_source_channel():
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     start = session.index("void SessionPrivate::logMtprotoEvent(")
     body = session[start:session.index("}", start) + 1]
     # MTP lifecycle events must land on the MTP source so they are on in
@@ -48,7 +49,7 @@ def test_mtp_events_use_the_dedicated_source_channel():
 
 
 def test_key_lifecycle_events_are_logged():
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
 
     def body(signature):
         start = session.index(signature)

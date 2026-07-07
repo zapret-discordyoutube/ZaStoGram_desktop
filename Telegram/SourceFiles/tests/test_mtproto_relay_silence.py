@@ -1,8 +1,11 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
+ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
@@ -33,20 +36,20 @@ def function_body(source, signature):
 
 
 def test_relay_silence_reason_is_wired_through_all_mappings():
-    header = read(ENDPOINT_HEALTH_H)
-    health = read(ENDPOINT_HEALTH_CPP)
+    identity_h = read(ENDPOINT_IDENTITY_H)
+    identity = read(ENDPOINT_IDENTITY_CPP)
     status_h = read(STATUS_H)
     status_cpp = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
 
-    assert "ConnectedNoMtprotoData," in header
+    assert "ConnectedNoMtprotoData," in identity_h
     assert "ConnectedNoMtprotoData," in status_h
 
-    legacy = function_body(health, "QString ToLegacyDiagnostic(")
+    legacy = function_body(identity, "QString ToLegacyDiagnostic(")
     assert "connected_no_mtproto_data" in legacy
 
     terminal = function_body(
-        health, "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
+        identity, "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
     assert ("return ProxyMtproxyTerminalReason::ConnectedNoMtprotoData;"
         in terminal)
 
@@ -116,16 +119,16 @@ def test_handshake_success_does_not_clear_relay_silence_cooldown():
 
 
 def test_session_reports_silence_and_recovers_temporary_key():
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     header = read(SESSION_H)
     wait_received = function_body(
         session, "void SessionPrivate::waitReceivedFailed(")
     destroy_all = function_body(
         session, "void SessionPrivate::destroyAllConnections(")
 
-    assert "bool _mtprotoDataReceived = false;" in header
-    assert "int _mtprotoSilentTimeouts = 0;" in header
-    assert "_mtprotoDataReceived = false;" in destroy_all
+    assert "bool mtprotoDataReceived = false;" in header
+    assert "int mtprotoSilentTimeouts = 0;" in header
+    assert "_connectionState.mtprotoDataReceived = false;" in destroy_all
 
     # A connection that connects (even passing the plaintext fake-pq
     # check) but never delivers an MTProto payload reports relay silence,
@@ -141,14 +144,14 @@ def test_session_reports_silence_and_recovers_temporary_key():
     # Only a handled MTProto message counts as relay proof; it resets the
     # silence counter and reports relay-scope success.
     assert "SuccessScope::Relay" in session
-    assert session.index("_retryTimeout = 1;") < session.index(
+    assert session.index("_timing.retryTimeout = 1;") < session.index(
         "SuccessScope::Relay")
 
 
 def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     health = read(ENDPOINT_HEALTH_CPP)
     header = read(ENDPOINT_HEALTH_H)
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     policy = function_body(
         health, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
@@ -178,11 +181,11 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     assert "FailureFromStaleAttempt(staleReport, state)" in stall
     assert "terminalUntil" not in stall
     assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
-    assert ".proxyGeneration = _connectionMtproxyAttempt.proxyGeneration" in (
+    assert ".proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration" in (
         wait_received)
-    assert ".attemptId = _connectionMtproxyAttempt.attemptId" in wait_received
-    assert ".proxyEpoch = _connectionMtproxyAttempt.proxyEpoch" in wait_received
-    assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in (
+    assert ".attemptId = _connectionState.mtproxyAttempt.attemptId" in wait_received
+    assert ".proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch" in wait_received
+    assert ".attemptStartedAt = _connectionState.mtproxyAttemptStartedAt" in (
         wait_received)
 
 

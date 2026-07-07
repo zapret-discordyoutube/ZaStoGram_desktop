@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/facade.h"
+#include "mtproto/dc_id.h"
 #include "mtproto/connection_tcp.h"
 #include "storage/serialize_common.h"
 
@@ -21,6 +21,10 @@ namespace {
 constexpr auto kVersion = 2;
 
 using namespace details;
+
+bool IsCdnDc(MTPDdcOption::Flags flags) {
+	return (flags & MTPDdcOption::Flag::f_cdn);
+}
 
 struct BuiltInDc {
 	int id;
@@ -121,12 +125,13 @@ DcOptions::DcOptions(Environment environment)
 }
 
 DcOptions::DcOptions(const DcOptions &other)
-: _environment(other._environment)
-, _data(other._data)
-, _cdnDcIds(other._cdnDcIds)
-, _publicKeys(other._publicKeys)
-, _cdnPublicKeys(other._cdnPublicKeys)
-, _immutable(other._immutable) {
+: _environment(other._environment) {
+	ReadLocker lock(&other);
+	_data = other._data;
+	_cdnDcIds = other._cdnDcIds;
+	_publicKeys = other._publicKeys;
+	_cdnPublicKeys = other._cdnPublicKeys;
+	_immutable = other._immutable;
 }
 
 DcOptions::~DcOptions() = default;
@@ -585,7 +590,7 @@ std::vector<DcId> DcOptions::configEnumDcIds() const {
 		for (auto &item : _data) {
 			const auto dcId = item.first;
 			Assert(!item.second.empty());
-			if (!isCdnDc(item.second.front().flags)
+			if (!IsCdnDc(item.second.front().flags)
 				&& !isTemporaryDcId(dcId)) {
 				result.push_back(dcId);
 			}

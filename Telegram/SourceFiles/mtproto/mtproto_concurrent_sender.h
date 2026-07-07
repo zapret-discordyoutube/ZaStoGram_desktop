@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_qptr.h"
 #include "base/flat_map.h"
 #include "mtproto/core_types.h"
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/details/mtproto_serialized_request.h"
 
 #include <QtCore/QPointer>
@@ -198,8 +199,10 @@ void ConcurrentSender::RequestBuilder::setDoneHandler(
 	_handlers.done = [handler = std::move(invoke)](
 			mtpRequestId requestId,
 			bytes::const_span result) mutable {
-		auto from = reinterpret_cast<const mtpPrime*>(result.data());
-		const auto end = from + result.size() / sizeof(mtpPrime);
+		auto aligned = mtpBuffer(result.size() / sizeof(mtpPrime));
+		details::binary::Copy(bytes::make_span(aligned), result);
+		auto from = aligned.constData();
+		const auto end = from + aligned.size();
 		Result data;
 		if (!data.read(from, end)) {
 			return false;

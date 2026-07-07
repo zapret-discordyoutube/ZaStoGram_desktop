@@ -18,7 +18,7 @@ namespace details {
 class HttpConnection : public AbstractConnection {
 public:
 	HttpConnection(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		QThread *thread,
 		const ProxyData &proxy);
 
@@ -26,7 +26,7 @@ public:
 
 	crl::time pingTime() const override;
 	crl::time fullConnectTimeout() const override;
-	void sendData(mtpBuffer &&buffer) override;
+	void sendData(mtpBuffer &&buffer, SendDataContext context) override;
 	void disconnectFromServer() override;
 	void connectToServer(
 		const QString &address,
@@ -38,8 +38,9 @@ public:
 		ProxyConnectionAttempt attempt,
 		crl::time startedAt) override;
 	bool isConnected() const override;
-	bool usingHttpWait() override;
-	bool needHttpWait() override;
+	[[nodiscard]] TransportServiceRequest serviceRequest() const override;
+	[[nodiscard]] bool serviceRequestNeeded(
+		TransportServiceRequest request) const override;
 
 	int32 debugState() const override;
 
@@ -53,8 +54,6 @@ private:
 	QUrl url() const;
 
 	void requestFinished(QNetworkReply *reply);
-
-	const not_null<Instance*> _instance;
 
 	enum class Status {
 		Waiting = 0,

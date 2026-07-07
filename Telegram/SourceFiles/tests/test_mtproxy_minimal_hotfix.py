@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -82,7 +83,7 @@ def test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe():
 
 
 def test_admission_delay_is_queued_not_failed_or_backoff():
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     broker = read(CONNECTION_BROKER_CPP)
     append = function_body(session, "bool SessionPrivate::appendTestConnection(")
     notify = function_body(broker, "void ConnectionBroker::notify(")

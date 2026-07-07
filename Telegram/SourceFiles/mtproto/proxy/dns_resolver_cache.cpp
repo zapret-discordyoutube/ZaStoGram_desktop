@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/dns_resolver_cache.h"
 
-#include "mtproto/mtp_instance.h"
+#include "mtproto/runtime_environment.h"
 #include "base/invoke_queued.h"
 #include "base/timer.h"
 
@@ -42,7 +42,7 @@ struct DnsResolverEntry {
 
 QMutex EntriesMutex;
 std::map<QString, DnsResolverEntry> Entries;
-std::set<MTP::Instance*> ConnectedInstances;
+std::set<RuntimeEnvironment*> ConnectedRuntimes;
 
 void PushResult(
 		QPointer<QObject> receiver,
@@ -68,14 +68,14 @@ DnsResolverCache &DnsResolverCache::Instance() {
 }
 
 void DnsResolverCache::request(
-		MTP::Instance *instance,
+		RuntimeEnvironment *runtime,
 		QObject *receiver,
 		const QString &host,
 		Callback callback) {
-	if (!instance || !receiver || host.isEmpty()) {
+	if (!runtime || !receiver || host.isEmpty()) {
 		return;
 	}
-	connectInstance(instance);
+	connectRuntime(runtime);
 
 	auto cachedIps = QStringList();
 	auto cachedExpireAt = qint64(0);
@@ -113,8 +113,10 @@ void DnsResolverCache::request(
 	if (useCached) {
 		PushResult(receiver, std::move(callback), host, cachedIps, cachedExpireAt);
 	} else if (startResolve) {
-		InvokeQueued(instance, [=] {
-			instance->resolveProxyDomain(host);
+		InvokeQueued(runtime, [=] {
+			if (runtime->resolveProxyDomain) {
+				runtime->resolveProxyDomain(host);
+			}
 		});
 	}
 }
@@ -145,30 +147,22 @@ void DnsResolverCache::resolved(
 	}
 }
 
-void DnsResolverCache::connectInstance(MTP::Instance *instance) {
+void DnsResolverCache::connectRuntime(RuntimeEnvironment *runtime) {
 	auto shouldConnect = false;
 	{
 		QMutexLocker lock(&EntriesMutex);
-		shouldConnect = ConnectedInstances.insert(instance).second;
+		shouldConnect = ConnectedRuntimes.insert(runtime).second;
 	}
 	if (!shouldConnect) {
 		return;
 	}
-	QObject::connect(
-		instance,
-		&MTP::Instance::proxyDomainResolved,
-		instance,
-		[=](QString host, QStringList ips, qint64 expireAt) {
-			DnsResolverCache::Instance().resolved(host, ips, expireAt);
-		},
-		Qt::QueuedConnection);
 
-	// A destroyed Instance (e.g. a keys-destroyer one) must be forgotten,
-	// otherwise a new Instance allocated at the same address would be
+	// A destroyed runtime (e.g. a keys-destroyer one) must be forgotten,
+	// otherwise a new runtime allocated at the same address would be
 	// skipped above and its resolutions would never reach the cache.
-	QObject::connect(instance, &QObject::destroyed, [=] {
+	QObject::connect(runtime, &QObject::destroyed, [=] {
 		QMutexLocker lock(&EntriesMutex);
-		ConnectedInstances.erase(instance);
+		ConnectedRuntimes.erase(runtime);
 	});
 }
 

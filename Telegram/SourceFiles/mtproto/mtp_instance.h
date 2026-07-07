@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_serialized_request.h"
 // Not used here directly, but almost every TU gets ProxyData through this
-// header (via sender.h / facade.h / main_account.h) — keep until those
-// includers are cleaned up to include it themselves.
+// header (via sender.h / main_account.h) — keep until those includers are
+// cleaned up to include it themselves.
 #include "mtproto/proxy/data.h"
 #include "mtproto/mtproto_response.h"
 
@@ -22,7 +22,6 @@ namespace MTP {
 // this header reaches almost every TU. Include it where the values are used.
 enum class ConnectionNotice;
 struct ProxyConnectionStatus;
-class ProxyControlPlane;
 
 namespace details {
 
@@ -37,6 +36,7 @@ class DcOptions;
 class Config;
 struct ConfigFields;
 class AuthKey;
+struct RuntimeEnvironment;
 using AuthKeyPtr = std::shared_ptr<AuthKey>;
 using AuthKeysList = std::vector<AuthKeyPtr>;
 enum class Environment : uchar;
@@ -54,9 +54,10 @@ public:
 		static constexpr auto kNoneMainDc = -1;
 		static constexpr auto kNotSetMainDc = 0;
 		static constexpr auto kDefaultMainDc = 2;
-		static constexpr auto kTemporaryMainDc = 1000;
+		static constexpr auto kTemporaryMainDc = kTemporaryMainDcId;
 
 		std::unique_ptr<Config> config;
+		std::shared_ptr<RuntimeEnvironment> runtimeEnvironment;
 		DcId mainDcId = kNotSetMainDc;
 		AuthKeysList keys;
 		QString deviceModel;
@@ -92,6 +93,7 @@ public:
 	[[nodiscard]] DcOptions &dcOptions() const;
 	[[nodiscard]] Environment environment() const;
 	[[nodiscard]] bool isTestMode() const;
+	[[nodiscard]] RuntimeEnvironment &runtimeEnvironment() const;
 	[[nodiscard]] QString deviceModel() const;
 	[[nodiscard]] QString systemVersion() const;
 
@@ -255,8 +257,6 @@ Q_SIGNALS:
 		qint64 expireAt);
 
 private:
-	friend class ProxyControlPlane;
-
 	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	void sendRequest(
 		mtpRequestId requestId,

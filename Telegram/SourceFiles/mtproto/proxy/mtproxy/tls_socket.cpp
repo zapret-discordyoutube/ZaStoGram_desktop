@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/proxy/control_plane.h"
@@ -207,8 +208,7 @@ void NoteSyntheticPskDataPathSuccess(
 
 [[nodiscard]] int ReadPartLength(bytes::const_span data, int offset) {
 	const auto storage = data.subspan(offset, kLengthSize);
-	return qFromBigEndian(
-		*reinterpret_cast<const uint16*>(storage.data()));
+	return qFromBigEndian(binary::Read<uint16>(storage));
 }
 
 [[nodiscard]] QString HandshakePhaseText(HandshakePhase phase) {

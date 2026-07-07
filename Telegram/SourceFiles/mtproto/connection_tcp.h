@@ -19,7 +19,7 @@ enum class HandshakePhase;
 class TcpConnection : public AbstractConnection {
 public:
 	TcpConnection(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		QThread *thread,
 		const ProxyData &proxy,
 		const ProxyStealthOptions &stealth);
@@ -28,7 +28,7 @@ public:
 
 	crl::time pingTime() const override;
 	crl::time fullConnectTimeout() const override;
-	void sendData(mtpBuffer &&buffer) override;
+	void sendData(mtpBuffer &&buffer, SendDataContext context) override;
 	void disconnectFromServer() override;
 	void connectToServer(
 		const QString &address,
@@ -71,10 +71,9 @@ private:
 	void ensureAvailableInBuffer(int amount);
 	static uint32 fourCharsToUInt(char ch1, char ch2, char ch3, char ch4) {
 		char ch[4] = { ch1, ch2, ch3, ch4 };
-		return *reinterpret_cast<uint32*>(ch);
+		return binary::Read<uint32>(bytes::make_span(ch));
 	}
 
-	const not_null<Instance*> _instance;
 	const ProxyStealthOptions _stealth;
 	ProxyConnectionAttempt _mtproxyAttempt;
 	crl::time _mtproxyAttemptStartedAt = 0;

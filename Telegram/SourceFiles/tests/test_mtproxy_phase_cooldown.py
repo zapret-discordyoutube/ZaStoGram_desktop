@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -259,7 +260,7 @@ def test_logs_and_proxy_status_use_phase_specific_names():
 
 
 def test_proxy_check_and_session_timeout_use_phase_reasons():
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
     check = read(CHECK_CPP)
     timeout_body = function_body(session, "void SessionPrivate::connectingTimedOut()")
     check_reason = function_body(check, "MtProxy::FailureReason ProxyCheckFailureReason(")

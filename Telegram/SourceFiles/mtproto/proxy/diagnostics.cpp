@@ -8,10 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/diagnostics.h"
 
 #include "base/unixtime.h"
-#include "logs.h"
-#include "mtproto/mtp_instance.h"
-#include "mtproto/proxy/control_plane.h"
-#include "settings.h"
+#include "mtproto/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QRegularExpression>
@@ -283,14 +280,13 @@ namespace {
 		: ProxyDiagnosticsSource::Network;
 }
 
-[[nodiscard]] ProxyDiagnosticsSource SourceForReport(
-		const ProxyEventReport &report) {
+} // namespace
+
+ProxyDiagnosticsSource SourceForReport(const ProxyEventReport &report) {
 	return IsMtpDiagnosticsPhase(report.phase)
 		? ProxyDiagnosticsSource::MTP
 		: SourceForProxy(report.proxy);
 }
-
-} // namespace
 
 QString ProxyDiagnosticsKeyHash(const QString &key) {
 	if (key.isEmpty()) {
@@ -442,49 +438,36 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	return parts.join(u" | "_q);
 }
 
-void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
+void WriteProxyDiagnosticsLine(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyDiagnosticsEvent event) {
 	if (!event.timestamp.isValid()) {
 		event.timestamp = QDateTime::currentDateTime();
 	}
-	const auto line = FormatProxyDiagnosticsEvent(event);
-	Logs::writeMtproxy(line);
+	if (runtime->writeProxyDiagnosticsLine) {
+		runtime->writeProxyDiagnosticsLine(std::move(event));
+	}
+}
+
+void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
+	WriteProxyDiagnosticsLine(
+		DefaultRuntimeEnvironment(),
+		std::move(event));
 }
 
 void ReportProxyEvent(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		ProxyEventReport report) {
 	if (report.proxy.type == ProxyData::Type::None) {
 		return;
 	}
-	ProxyControlPlane::SubmitFact(instance, report);
-	WriteProxyDiagnosticsLine({
-		.source = SourceForReport(report),
-		.phase = report.phase,
-		.severity = report.severity.value_or(
-			(report.error == ProxyConnectionError::None)
-				? ProxyDiagnosticsSeverity::Info
-				: ProxyDiagnosticsSeverity::Error),
-		.error = report.error,
-		.mtproxyReason = report.mtproxyReason,
-		.attempt = report.attempt,
-		.terminalUntil = report.terminalUntil,
-		.proxy = std::move(report.proxy),
-		.transport = std::move(report.transport),
-		.dc = std::move(report.dc),
-		.connectionId = std::move(report.connectionId),
-		.message = std::move(report.message),
-		.canonical = std::move(report.canonical),
-		.route = std::move(report.route),
-		.proxyKeyHash = std::move(report.proxyKeyHash),
-		.profile = std::move(report.profile),
-		.recipeLevel = report.recipeLevel,
-		.pskOffered = report.pskOffered,
-		.pskOfferedKnown = report.pskOfferedKnown,
-		.fragmentedClientHello = report.fragmentedClientHello,
-		.fragmentedClientHelloKnown = report.fragmentedClientHelloKnown,
-		.phaseAtFailure = std::move(report.phaseAtFailure),
-		.queueMs = report.queueMs,
-	});
+	if (runtime->reportProxyEvent) {
+		runtime->reportProxyEvent(std::move(report));
+	}
+}
+
+void ReportProxyEvent(ProxyEventReport report) {
+	ReportProxyEvent(DefaultRuntimeEnvironment(), std::move(report));
 }
 
 } // namespace MTP

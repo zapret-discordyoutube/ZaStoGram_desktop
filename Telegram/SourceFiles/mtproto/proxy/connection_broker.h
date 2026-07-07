@@ -17,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
-class Instance;
+struct RuntimeEnvironment;
 enum class ProxyDiagnosticsPhase;
 
 namespace details {
@@ -61,7 +61,7 @@ struct ConnectionRequest {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	crl::time notBefore = 0;
-	MTP::Instance *instance = nullptr;
+	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
@@ -96,7 +96,7 @@ public:
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
 	void cancel(ConnectionTicketId id);
-	void cancelByProxyGeneration(MTP::Instance *instance, uint64 generation);
+	void cancelByProxyGeneration(RuntimeEnvironment *runtime, uint64 generation);
 
 private:
 	struct RequestState;

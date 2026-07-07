@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/wss/socket.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 
@@ -93,9 +94,7 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 
 [[nodiscard]] QByteArray RandomBytes(int count) {
 	auto result = QByteArray(count, char(0));
-	bytes::set_random(bytes::make_span(
-		reinterpret_cast<bytes::type*>(result.data()),
-		count));
+	bytes::set_random(bytes::make_detached_span(result));
 	return result;
 }
 
@@ -187,7 +186,9 @@ WssSocket::WssSocket(
 }
 
 void WssSocket::connectToHost(const QString &address, int port) {
-	// MTProto-over-WSS always connects to Telegram's web relay; the DC
+	Q_UNUSED(address);
+	Q_UNUSED(port);
+	// MTProto-over-WSS always connects to the relay route; the DC
 	// endpoint (address, port) is intentionally ignored - the relay routes
 	// to the right data center based on the SNI / Host domain.
 	_usedFallback = PreferRelayFallback(_route);
@@ -206,10 +207,9 @@ void WssSocket::connectToRelayHost() {
 bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 	Expects(nonce.size() >= 2 * sizeof(uint32));
 
-	const auto data = nonce.data();
-	const auto zero = *reinterpret_cast<const uchar*>(data);
-	const auto first = *reinterpret_cast<const uint32*>(data);
-	const auto second = *(reinterpret_cast<const uint32*>(data) + 1);
+	const auto zero = binary::Read<uchar>(nonce);
+	const auto first = binary::Read<uint32>(nonce);
+	const auto second = binary::ReadAt<uint32>(nonce, sizeof(uint32));
 	const auto reserved01 = 0x000000EFU;
 	const auto reserved11 = 0x44414548U;
 	const auto reserved12 = 0x54534F50U;
@@ -253,7 +253,9 @@ int64 WssSocket::read(bytes::span buffer) {
 	if (count <= 0) {
 		return 0;
 	}
-	memcpy(buffer.data(), _readBuffer.constData(), count);
+	binary::Copy(
+		buffer,
+		bytes::make_span(_readBuffer.constData(), count));
 	_readBuffer.remove(0, int(count));
 	return count;
 }
@@ -262,21 +264,14 @@ void WssSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	Expects(!buffer.empty());
 
 	if (prefix.empty()) {
-		sendFrame(
-			0x2,
-			reinterpret_cast<const char*>(buffer.data()),
-			int(buffer.size()));
+		sendFrame(0x2, buffer);
 		return;
 	}
-	auto combined = QByteArray();
-	combined.reserve(int(prefix.size() + buffer.size()));
-	combined.append(
-		reinterpret_cast<const char*>(prefix.data()),
-		int(prefix.size()));
-	combined.append(
-		reinterpret_cast<const char*>(buffer.data()),
-		int(buffer.size()));
-	sendFrame(0x2, combined.constData(), int(combined.size()));
+	auto combined = bytes::vector(prefix.size() + buffer.size());
+	auto combinedBytes = bytes::make_span(combined);
+	binary::Copy(combinedBytes, prefix);
+	binary::Copy(combinedBytes.subspan(prefix.size()), buffer);
+	sendFrame(0x2, bytes::make_span(combined));
 }
 
 int32 WssSocket::debugState() {
@@ -409,19 +404,22 @@ void WssSocket::onReadyRead() {
 void WssSocket::parseFrames() {
 	auto produced = false;
 	auto offset = 0;
-	const auto data = reinterpret_cast<const uchar*>(_incoming.constData());
 	const auto total = int(_incoming.size());
+	const auto data = bytes::make_span(_incoming.constData(), total);
+	const auto byteAt = [&](int index) {
+		return gsl::to_integer<quint8>(data[index]);
+	};
 	while (total - offset >= 2) {
-		const auto p = data + offset;
-		const auto opcode = (p[0] & 0x0f);
-		const auto masked = ((p[1] & 0x80) != 0);
-		auto length = quint64(p[1] & 0x7f);
+		const auto opcode = (byteAt(offset) & 0x0f);
+		const auto masked = ((byteAt(offset + 1) & 0x80) != 0);
+		auto length = quint64(byteAt(offset + 1) & 0x7f);
 		auto headerLen = 2;
 		if (length == 126) {
 			if (total - offset < 4) {
 				break;
 			}
-			length = (quint64(p[2]) << 8) | quint64(p[3]);
+			length = (quint64(byteAt(offset + 2)) << 8)
+				| quint64(byteAt(offset + 3));
 			headerLen = 4;
 		} else if (length == 127) {
 			if (total - offset < 10) {
@@ -429,7 +427,7 @@ void WssSocket::parseFrames() {
 			}
 			length = 0;
 			for (auto i = 0; i != 8; ++i) {
-				length = (length << 8) | quint64(p[2 + i]);
+				length = (length << 8) | quint64(byteAt(offset + 2 + i));
 			}
 			headerLen = 10;
 		}
@@ -443,29 +441,30 @@ void WssSocket::parseFrames() {
 		if (quint64(total - offset) < frameLen) {
 			break;
 		}
-		const auto mask = p + headerLen;
-		const auto payload = p + headerLen + maskLen;
+		const auto mask = data.subspan(offset + headerLen, maskLen);
+		const auto payload = data.subspan(
+			offset + headerLen + maskLen,
+			int(length));
 		if (opcode == 0x8) { // close
 			logError(0, u"WSS close frame received"_q);
 			_error.fire_copy(AbstractConnection::kErrorCodeOther);
 			return;
 		} else if (opcode == 0x9) { // ping -> pong
-			sendFrame(
-				0xA,
-				reinterpret_cast<const char*>(payload),
-				int(length));
+			sendFrame(0xA, payload);
 		} else if (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
 			if (length > 0) {
 				const auto at = int(_readBuffer.size());
-				_readBuffer.resize(at + int(length));
-				const auto out = reinterpret_cast<uchar*>(
-					_readBuffer.data()) + at;
+				const auto count = int(length);
+				_readBuffer.resize(at + count);
+				auto out = bytes::make_detached_span(_readBuffer).subspan(at);
 				if (masked) {
-					for (auto i = quint64(0); i != length; ++i) {
-						out[i] = payload[i] ^ mask[i % 4];
+					for (auto i = 0; i != count; ++i) {
+						out[i] = bytes::type(
+							byteAt(offset + headerLen + maskLen + i)
+							^ gsl::to_integer<quint8>(mask[i % 4]));
 					}
 				} else {
-					memcpy(out, payload, int(length));
+					binary::Copy(out, payload);
 				}
 				produced = true;
 			}
@@ -484,7 +483,8 @@ void WssSocket::parseFrames() {
 	}
 }
 
-void WssSocket::sendFrame(quint8 opcode, const char *data, int size) {
+void WssSocket::sendFrame(quint8 opcode, bytes::const_span data) {
+	const auto size = int(data.size());
 	auto frame = QByteArray();
 	frame.reserve(size + 14);
 	frame.append(char(0x80 | opcode));
@@ -502,13 +502,14 @@ void WssSocket::sendFrame(quint8 opcode, const char *data, int size) {
 	}
 	const auto mask = RandomBytes(4);
 	frame.append(mask);
-	const auto maskPtr = reinterpret_cast<const uchar*>(mask.constData());
+	const auto maskBytes = bytes::make_span(mask);
 	const auto base = int(frame.size());
 	frame.resize(base + size);
-	const auto out = reinterpret_cast<uchar*>(frame.data()) + base;
-	const auto in = reinterpret_cast<const uchar*>(data);
+	auto out = bytes::make_detached_span(frame).subspan(base);
 	for (auto i = 0; i != size; ++i) {
-		out[i] = in[i] ^ maskPtr[i % 4];
+		out[i] = bytes::type(
+			gsl::to_integer<quint8>(data[i])
+			^ gsl::to_integer<quint8>(maskBytes[i % 4]));
 	}
 	_socket.write(frame);
 }

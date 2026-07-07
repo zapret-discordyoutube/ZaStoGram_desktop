@@ -1494,6 +1494,8 @@ PRIVATE
     mtproto/connection_abstract.h
     mtproto/connection_http.cpp
     mtproto/connection_http.h
+    mtproto/runtime_environment.cpp
+    mtproto/runtime_environment.h
     mtproto/proxy/connection_broker.cpp
     mtproto/proxy/connection_broker.h
     mtproto/proxy/control_plane.cpp
@@ -1513,10 +1515,11 @@ PRIVATE
     mtproto/connection_tcp.cpp
     mtproto/connection_tcp.h
     mtproto/core_types.h
+    mtproto/dc_id.h
     mtproto/dedicated_file_loader.cpp
     mtproto/dedicated_file_loader.h
-    mtproto/facade.cpp
-    mtproto/facade.h
+    mtproto/pause_state.cpp
+    mtproto/pause_state.h
     mtproto/proxy/handshake_gate.cpp
     mtproto/proxy/handshake_gate.h
     mtproto/mtp_instance.cpp
@@ -1546,7 +1549,12 @@ PRIVATE
     mtproto/sender.h
     mtproto/session.cpp
     mtproto/session.h
+    mtproto/session_state.h
+    mtproto/session_private/auth.cpp
+    mtproto/session_private/connection.cpp
     mtproto/session_private.cpp
+    mtproto/session_private/receive.cpp
+    mtproto/session_private/send.cpp
     mtproto/session_private.h
     mtproto/special_config_request.cpp
     mtproto/special_config_request.h

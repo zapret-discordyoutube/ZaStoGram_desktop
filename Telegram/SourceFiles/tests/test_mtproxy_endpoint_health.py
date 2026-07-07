@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -81,14 +82,14 @@ def test_endpoint_health_module_is_registered_and_owns_state():
 
 def test_session_private_admission_gates_before_socket_creation():
     header = read(SESSION_H)
-    source = read(SESSION_CPP)
+    source = read_session_private_sources()
     append_body = function_body(
         source,
         "bool SessionPrivate::appendTestConnection(")
 
     assert '#include "mtproto/proxy/connection_broker.h"' in header
     assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
-    assert "std::vector<ConnectionTicket> _connectionBrokerTickets;" in header
+    assert "std::vector<ConnectionTicket> brokerTickets;" in header
     assert "base::flat_map<QString, crl::time> _endpointCooldownUntil" not in header
     assert "noteTestConnectionFailure(" not in header
     assert "kEndpointCooldownPenalty" not in source
@@ -102,7 +103,7 @@ def test_session_private_admission_gates_before_socket_creation():
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in read(
         SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp")
     assert "std::move(start.lease)" in append_body
-    assert "ReserveHandshakeGateForProxy(_options->proxy)" not in append_body
+    assert "ReserveHandshakeGateForProxy(_sessionState.options->proxy)" not in append_body
     assert "const auto proxied =" not in append_body
 
 
@@ -137,7 +138,7 @@ def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
 
 
 def test_session_private_reports_success_and_failure_to_endpoint_health():
-    source = read(SESSION_CPP)
+    source = read_session_private_sources()
     header = read(SESSION_H)
     timeout_body = function_body(source, "void SessionPrivate::connectingTimedOut()")
     connected_body = function_body(source, "void SessionPrivate::onConnected(")
@@ -146,8 +147,8 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     remove_body = function_body(source, "void SessionPrivate::removeTestConnection(")
     destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
 
-    assert "MtProxy::EndpointId _connectionMtproxyEndpoint;" in header
-    assert "MtProxy::EndpointUse _connectionMtproxyUse" in header
+    assert "MtProxy::EndpointId mtproxyEndpoint;" in header
+    assert "MtProxy::EndpointUse mtproxyUse" in header
     assert "ProxyControlPlane::ReportMtproxyFailure(" in timeout_body
     assert "MtProxy::FailureReason::TcpConnectTimeout" in timeout_body
     assert (
@@ -155,14 +156,14 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
         in timeout_body)
     assert "ProxyControlPlane::ReportMtproxyFailure(" in error_body
     assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in error_body
-    assert "_connection.get() == connection.get()" in error_body
-    assert "MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)" in error_body
-    assert "endpoint = _connectionMtproxyEndpoint" in error_body
-    assert "_connectionMtproxyEndpoint = i->mtproxyEndpoint;" in connected_body
-    assert "_connectionMtproxyUse = i->mtproxyUse;" in connected_body
-    assert "_connectionMtproxyEndpoint = i->mtproxyEndpoint;" in confirm_body
-    assert "_connectionMtproxyUse = i->mtproxyUse;" in confirm_body
-    assert "_connectionMtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
+    assert "_connectionState.connection.get() == connection.get()" in error_body
+    assert "MtProxy::EndpointEmpty(_connectionState.mtproxyEndpoint)" in error_body
+    assert "endpoint = _connectionState.mtproxyEndpoint" in error_body
+    assert "_connectionState.mtproxyEndpoint = i->mtproxyEndpoint;" in connected_body
+    assert "_connectionState.mtproxyUse = i->mtproxyUse;" in connected_body
+    assert "_connectionState.mtproxyEndpoint = i->mtproxyEndpoint;" in confirm_body
+    assert "_connectionState.mtproxyUse = i->mtproxyUse;" in confirm_body
+    assert "_connectionState.mtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
     assert "i->mtproxyLease.release();" in connected_body
     assert "ProxyControlPlane::ReportMtproxySuccess(" in read(
         TLS_SOCKET_CPP)
@@ -192,7 +193,7 @@ def test_relay_success_shadows_older_attempt_failures():
     resolving = read(RESOLVING_CONNECTION_CPP)
     tls_h = read(TLS_SOCKET_H)
     tls = read(TLS_SOCKET_CPP)
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
 
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
     report_success = function_body(source, "void EndpointHealth::reportSuccess(")
@@ -268,19 +269,19 @@ def test_relay_success_shadows_older_attempt_failures():
     assert ".proxyGeneration = _mtproxyAttempt.proxyGeneration" in tls_packet
     assert ".successEpoch = _mtproxyAttempt.successEpoch" in tls_packet
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_packet
-    assert ".attemptId = _connectionMtproxyAttempt.attemptId" in session
-    assert ".proxyGeneration = _connectionMtproxyAttempt.proxyGeneration" in session
-    assert ".successEpoch = _connectionMtproxyAttempt.successEpoch" in session
-    assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in session
+    assert ".attemptId = _connectionState.mtproxyAttempt.attemptId" in session
+    assert ".proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration" in session
+    assert ".successEpoch = _connectionState.mtproxyAttempt.successEpoch" in session
+    assert ".attemptStartedAt = _connectionState.mtproxyAttemptStartedAt" in session
     assert "ProxyControlPlane::ReportMtproxySuccess({" in handle_received
-    assert ".attemptId = _connectionMtproxyAttempt.attemptId" in handle_received
-    assert ".proxyEpoch = _connectionMtproxyAttempt.proxyEpoch" in (
+    assert ".attemptId = _connectionState.mtproxyAttempt.attemptId" in handle_received
+    assert ".proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch" in (
         handle_received)
-    assert ".successEpoch = _connectionMtproxyAttempt.successEpoch" in (
+    assert ".successEpoch = _connectionState.mtproxyAttempt.successEpoch" in (
         handle_received)
-    assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in (
+    assert ".attemptStartedAt = _connectionState.mtproxyAttemptStartedAt" in (
         handle_received)
-    assert "_connectionMtproxyAttemptStartedAt = mtproxyAttemptStartedAt;" in (
+    assert "_connectionState.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;" in (
         session_connected)
 
     assert "state.lastRelaySuccessAt = now;" in report_success
@@ -431,13 +432,13 @@ def test_serverhello_ok_no_appdata_is_warning_not_fatal():
 
 
 def test_session_does_not_punish_remote_closed_after_usable_success():
-    source = read(SESSION_CPP)
+    source = read_session_private_sources()
     error_body = function_body(source, "void SessionPrivate::onError(")
-    active_body = error_body.split("_connection.get() == connection.get()")[1]
+    active_body = error_body.split("_connectionState.connection.get() == connection.get()")[1]
 
     assert "const auto snapshot =" in active_body
     assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in active_body
-    assert "_connectionMtproxyEndpoint" in active_body
+    assert "_connectionState.mtproxyEndpoint" in active_body
     assert "MtProxy::FailureReason::AppDataRemoteClosed" in active_body
     assert "snapshot.healthy" in active_body
     assert "!snapshot.halfOpen" in active_body
@@ -589,7 +590,7 @@ def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
     request_body = function_body(source, "void DnsResolverCache::request(")
     connect_body = function_body(
         source,
-        "void DnsResolverCache::connectInstance(")
+        "void DnsResolverCache::connectRuntime(")
 
     # An in-flight resolve whose Instance died never fires
     # proxyDomainResolved; without an age check the host would stay
@@ -597,10 +598,10 @@ def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
     assert "kInflightRetryTimeout = 30 * crl::time(1000)" in source
     assert "crl::time inflightSince = 0;" in source
     assert "now - entry.inflightSince > kInflightRetryTimeout" in request_body
-    # A destroyed Instance must leave ConnectedInstances, otherwise a new
-    # Instance recycled at the same address is never connected.
+    # A destroyed runtime must leave ConnectedRuntimes, otherwise a new
+    # runtime recycled at the same address is never connected.
     assert "&QObject::destroyed" in connect_body
-    assert "ConnectedInstances.erase(instance);" in connect_body
+    assert "ConnectedRuntimes.erase(runtime);" in connect_body
 
 
 def test_active_slots_expire_and_sustained_denial_requests_rotation():

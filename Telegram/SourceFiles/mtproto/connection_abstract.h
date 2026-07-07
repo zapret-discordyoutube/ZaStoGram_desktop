@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/proxy/status.h"
@@ -20,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 class Instance;
+struct RuntimeEnvironment;
 
 namespace details {
 
@@ -64,14 +66,26 @@ class AbstractConnection : public QObject {
 	Q_OBJECT
 
 public:
-	AbstractConnection(QThread *thread, const ProxyData &proxy);
+	struct SendDataContext {
+		uint64 keyId = 0;
+	};
+
+	enum class TransportServiceRequest {
+		None,
+		HttpWait,
+	};
+
+	AbstractConnection(
+		not_null<RuntimeEnvironment*> runtime,
+		QThread *thread,
+		const ProxyData &proxy);
 	AbstractConnection(const AbstractConnection &other) = delete;
 	AbstractConnection &operator=(const AbstractConnection &other) = delete;
 	virtual ~AbstractConnection() = default;
 
 	// virtual constructor
 	[[nodiscard]] static ConnectionPointer Create(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		DcOptions::Variants::Protocol protocol,
 		QThread *thread,
 		const bytes::vector &secret,
@@ -82,7 +96,10 @@ public:
 
 	[[nodiscard]] virtual crl::time pingTime() const = 0;
 	[[nodiscard]] virtual crl::time fullConnectTimeout() const = 0;
-	virtual void sendData(mtpBuffer &&buffer) = 0;
+	virtual void sendData(mtpBuffer &&buffer, SendDataContext context) = 0;
+	void sendData(mtpBuffer &&buffer) {
+		sendData(std::move(buffer), {});
+	}
 	virtual void disconnectFromServer() = 0;
 	virtual void connectToServer(
 		const QString &ip,
@@ -97,24 +114,16 @@ public:
 		ProxyConnectionAttempt attempt,
 		crl::time startedAt);
 	[[nodiscard]] virtual bool isConnected() const = 0;
-	[[nodiscard]] virtual bool usingHttpWait() {
-		return false;
+	[[nodiscard]] virtual TransportServiceRequest serviceRequest() const {
+		return TransportServiceRequest::None;
 	}
-	[[nodiscard]] virtual bool needHttpWait() {
-		return false;
-	}
+	[[nodiscard]] virtual bool serviceRequestNeeded(
+		TransportServiceRequest request) const;
 
 	[[nodiscard]] virtual int32 debugState() const = 0;
 
 	[[nodiscard]] virtual QString transport() const = 0;
 	[[nodiscard]] virtual QString tag() const = 0;
-
-	void setSentEncryptedWithKeyId(uint64 keyId) {
-		_sentEncryptedWithKeyId = keyId;
-	}
-	[[nodiscard]] uint64 sentEncryptedWithKeyId() const {
-		return _sentEncryptedWithKeyId;
-	}
 
 	using BuffersQueue = std::deque<mtpBuffer>;
 	[[nodiscard]] BuffersQueue &received() {
@@ -167,6 +176,7 @@ Q_SIGNALS:
 	void syncTimeRequest();
 
 protected:
+	const not_null<RuntimeEnvironment*> _runtime;
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet
 	int _pingTime = 0;
 	ProxyData _proxy;
@@ -182,8 +192,6 @@ protected:
 
 private:
 	[[nodiscard]] uint32 extendedNotSecurePadding() const;
-
-	uint64 _sentEncryptedWithKeyId = 0;
 
 };
 
@@ -209,7 +217,9 @@ mtpBuffer AbstractConnection::prepareNotSecurePacket(
 	result.resize(kPrefixInts);
 
 	const auto messageId = &result[kTcpPrefixInts + kAuthKeyIdInts];
-	*reinterpret_cast<mtpMsgId*>(messageId) = newId;
+	details::binary::Write<mtpMsgId>(
+		bytes::make_span(messageId, kMessageIdInts),
+		newId);
 
 	request.write(result);
 

@@ -19,7 +19,7 @@ namespace details {
 class ResolvingConnection : public AbstractConnection {
 public:
 	ResolvingConnection(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		QThread *thread,
 		const ProxyData &proxy,
 		ConnectionPointer &&child);
@@ -28,7 +28,7 @@ public:
 
 	crl::time pingTime() const override;
 	crl::time fullConnectTimeout() const override;
-	void sendData(mtpBuffer &&buffer) override;
+	void sendData(mtpBuffer &&buffer, SendDataContext context) override;
 	void disconnectFromServer() override;
 	void connectToServer(
 		const QString &address,
@@ -75,7 +75,6 @@ private:
 	void handleDisconnected(AbstractConnection *child);
 	void handleReceivedData(AbstractConnection *child);
 
-	not_null<Instance*> _instance;
 	ConnectionPointer _child;
 	std::vector<RouteAttempt> _routeAttempts;
 	std::vector<int> _routeOrder;

@@ -7,10 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/session.h"
 
+#include "mtproto/dc_id.h"
 #include "mtproto/details/mtproto_dcenter.h"
+#include "mtproto/pause_state.h"
 #include "mtproto/session_private.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/session_state.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "base/unixtime.h"
@@ -51,12 +54,11 @@ void SessionData::withSession(Callback &&callback) {
 }
 
 void SessionData::notifyConnectionInited(const SessionOptions &options) {
-	// #TODO race
 	const auto current = this->options();
-	if (current.cloudLangCode == _options.cloudLangCode
-		&& current.systemLangCode == _options.systemLangCode
-		&& current.langPackName == _options.langPackName
-		&& current.proxy == _options.proxy) {
+	if (current.cloudLangCode == options.cloudLangCode
+		&& current.systemLangCode == options.systemLangCode
+		&& current.langPackName == options.langPackName
+		&& current.proxy == options.proxy) {
 		QMutexLocker lock(&_ownerMutex);
 		if (_owner) {
 			_owner->notifyDcConnectionInited();
@@ -459,9 +461,10 @@ void Session::sendPrepared(
 		).arg(msCanWait));
 	{
 		QWriteLocker locker(_data->toSendMutex());
-		_data->toSendMap().emplace(request->requestId, request);
-		*(mtpMsgId*)(request->data() + 4) = 0;
-		*(request->data() + 6) = 0;
+		auto queued = request;
+		_data->toSendMap().emplace(queued->requestId, queued);
+		queued.setMsgId(0);
+		queued.setSeqNo(0);
 	}
 
 	DEBUG_LOG(("MTP Info: added, requestId %1").arg(request->requestId));

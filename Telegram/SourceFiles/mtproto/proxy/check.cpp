@@ -7,13 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/check.h"
 
-#include "mtproto/mtp_instance.h"
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime_environment.h"
 
 #include <QtCore/QHash>
 #include <QtCore/QTimer>
@@ -93,7 +93,7 @@ void SetProxyCheckProgress(
 }
 
 [[nodiscard]] bool ActiveSessionProvesProxy(
-		not_null<Instance*> mtproto,
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		const ProxyStealthOptions &stealth) {
 	if (proxy.type == ProxyData::Type::Mtproto) {
@@ -107,7 +107,9 @@ void SetProxyCheckProgress(
 			&& (crl::now() - snapshot.lastRelaySuccessAt
 				< kProxyCheckActiveSessionWindow);
 	}
-	const auto status = mtproto->proxyConnectionStatus();
+	const auto status = runtime->proxyConnectionStatus
+		? runtime->proxyConnectionStatus()
+		: ProxyConnectionStatus();
 	return (status.phase == ProxyConnectionPhase::Connected)
 		&& (status.proxy == proxy);
 }
@@ -216,7 +218,7 @@ bool HasProxyCheckers(
 }
 
 void StartProxyCheck(
-		not_null<Instance*> mtproto,
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		bool tryIPv6,
 		const ProxyStealthOptions &stealth,
@@ -230,7 +232,7 @@ void StartProxyCheck(
 	const auto connType = (proxy.type == ProxyData::Type::Http)
 		? Variants::Http
 		: Variants::Tcp;
-	const auto dcId = mtproto->mainDcId();
+	const auto dcId = runtime->mainDcId ? runtime->mainDcId() : DcId();
 	const auto checkStealth = MTP::EffectiveProxyStealthOptions(
 		proxy,
 		ProxyData::Settings::Enabled,
@@ -246,12 +248,12 @@ void StartProxyCheck(
 		progress(ProxyCheckStatus::WaitingForConnectionSlot);
 		return;
 	}
-	if (progress && ActiveSessionProvesProxy(mtproto, proxy, checkStealth)) {
+	if (progress && ActiveSessionProvesProxy(runtime, proxy, checkStealth)) {
 		progress(ProxyCheckStatus::ConnectedByActiveSession);
 		return;
 	}
 	ResetProxyCheckers(v4, v6);
-	ReportProxyEvent(mtproto, {
+	ReportProxyEvent(runtime, {
 		.phase = ProxyDiagnosticsPhase::ProxyCheckStarted,
 		.proxy = proxy,
 		.dc = QString::number(dcId),
@@ -276,7 +278,7 @@ void StartProxyCheck(
 				.lease = &state->mtproxyLease,
 			});
 		}
-		ReportProxyEvent(mtproto, {
+		ReportProxyEvent(runtime, {
 			.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 			.error = error,
 			.severity = ProxyDiagnosticsSeverity::Error,
@@ -300,7 +302,7 @@ void StartProxyCheck(
 		state->networkStarted = false;
 		auto handshakeGate = details::ReserveHandshakeGateForProxy(proxy);
 		state->connection = Connection::Create(
-			mtproto,
+			runtime,
 			connType,
 			QThread::currentThread(),
 			secret,
@@ -330,7 +332,7 @@ void StartProxyCheck(
 					.scope = MtProxy::SuccessScope::Relay,
 				});
 			}
-			ReportProxyEvent(mtproto, {
+			ReportProxyEvent(runtime, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 				.proxy = proxy,
 				.dc = QString::number(dcId),
@@ -375,7 +377,7 @@ void StartProxyCheck(
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.connectionPattern = checkStealth.connectionPattern,
 			.notBefore = gateDelay,
-			.instance = mtproto,
+			.runtime = runtime,
 			.context = raw,
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
@@ -446,10 +448,10 @@ void StartProxyCheck(
 			secret);
 		return;
 	}
-	const auto options = mtproto->dcOptions().lookup(
-		dcId,
-		DcType::Regular,
-		true);
+	if (!runtime->dcOptionsLookup) {
+		return;
+	}
+	const auto options = runtime->dcOptionsLookup(dcId, DcType::Regular, true);
 	const auto tryConnect = [&](
 			ProxyCheckConnection &checker,
 			Variants::Address address) {

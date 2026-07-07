@@ -52,6 +52,7 @@ constexpr auto kMaxMediaDcCount = 0x10;
 constexpr auto kBaseDownloadDcShift = 0x10;
 constexpr auto kBaseUploadDcShift = 0x20;
 constexpr auto kDestroyKeyStartDcShift = 0x100;
+constexpr auto kTemporaryMainDcId = DcId(1000);
 
 constexpr DcId BareDcId(ShiftedDcId shiftedDcId) {
 	return (shiftedDcId % kDcShift);
@@ -267,12 +268,14 @@ struct Reader;
 
 template <>
 struct Writer<mtpBuffer> {
-	static void PutBytes(mtpBuffer &to, const void *bytes, uint32 count) {
+	static void PutBytes(mtpBuffer &to, const void *data, uint32 count) {
 		constexpr auto kPrime = sizeof(uint32);
 		const auto primes = (count / kPrime) + (count % kPrime ? 1 : 0);
 		const auto size = to.size();
 		to.resize(size + primes);
-		memcpy(to.data() + size, bytes, count);
+		bytes::copy(
+			bytes::make_span(to).subspan(size * sizeof(mtpPrime)),
+			bytes::make_span(static_cast<const bytes::type*>(data), count));
 	}
 	static void Put(mtpBuffer &to, uint32 value) {
 		to.push_back(mtpPrime(value));
@@ -290,7 +293,7 @@ struct Reader<mtpPrime> final {
 		return (end - from) >= primes;
 	}
 	static void GetBytes(
-			void *bytes,
+			void *data,
 			uint32 count,
 			const mtpPrime *&from,
 			const mtpPrime *end) {
@@ -298,7 +301,11 @@ struct Reader<mtpPrime> final {
 
 		constexpr auto kPrime = sizeof(uint32);
 		const auto primes = (count / kPrime) + (count % kPrime ? 1 : 0);
-		memcpy(bytes, from, count);
+		bytes::copy(
+			bytes::make_span(
+				static_cast<bytes::type*>(data),
+				count),
+			bytes::make_span(from, primes).subspan(0, count));
 		from += primes;
 	}
 	[[nodiscard]] static bool Has(

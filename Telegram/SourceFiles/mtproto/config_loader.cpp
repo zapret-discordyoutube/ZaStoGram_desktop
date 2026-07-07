@@ -8,8 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/config_loader.h"
 
 #include "base/random.h"
+#include "mtproto/dc_id.h"
 #include "mtproto/special_config_request.h"
-#include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtp_instance.h"

@@ -13,8 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
-class Instance;
 struct ProxyEventReport;
+struct RuntimeEnvironment;
 
 enum class ProxyControlPlaneSuccessScope {
 	None,
@@ -93,7 +93,7 @@ public:
 	[[nodiscard]] static auto MtproxyEndpointChanges()
 	-> rpl::producer<details::MtProxy::EndpointEvent>;
 	static void SubmitFact(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyEventReport &report);
 
 private:

@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_editing.h"
 #include "api/api_send_progress.h"
+#include "mtproto/dc_id.h"
 #include "storage/localimageloader.h"
 #include "storage/file_download.h"
 #include "data/data_document.h"

@@ -29,6 +29,7 @@ public:
 
 	static constexpr auto kSaltInts = 2;
 	static constexpr auto kSessionIdInts = 2;
+	static constexpr auto kSessionIdPosition = kSaltInts;
 	static constexpr auto kMessageIdPosition = kSaltInts + kSessionIdInts;
 	static constexpr auto kMessageIdInts = 2;
 	static constexpr auto kSeqNoPosition = kMessageIdPosition
@@ -61,12 +62,18 @@ public:
 
 	void setMsgId(mtpMsgId msgId);
 	[[nodiscard]] mtpMsgId getMsgId() const;
+	void setSalt(uint64 salt);
+	void setSessionId(uint64 sessionId);
 
 	void setSeqNo(uint32 seqNo);
 	[[nodiscard]] uint32 getSeqNo() const;
 
 	void addPadding(bool forAuthKeyInner);
 	[[nodiscard]] uint32 messageSize() const;
+	[[nodiscard]] gsl::span<const mtpPrime> innerMessagePrimes() const;
+	[[nodiscard]] gsl::span<const mtpPrime> bodyPrimes() const;
+	void appendInnerMessageFrom(const SerializedRequest &from);
+	void appendBodyFrom(const SerializedRequest &from);
 
 	[[nodiscard]] bool needAck() const;
 

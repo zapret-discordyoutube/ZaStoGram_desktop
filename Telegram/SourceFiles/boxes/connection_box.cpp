@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
-#include "mtproto/facade.h"
+#include "mtproto/session_state.h"
 #include "mtproto/mtproto_config.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/check.h"
@@ -2397,7 +2397,7 @@ void ProxiesBoxController::ShowApplyConfirmation(
 					ProxyCheckStatusColor(state->progressStatus)->c);
 				relayout();
 				MTP::StartProxyCheck(
-					&account->mtp(),
+					&account->mtp().runtimeEnvironment(),
 					proxy,
 					Core::App().settings().proxy().tryIPv6(),
 					Core::App().settings().proxyStealthOptions(),
@@ -2523,7 +2523,7 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 	updateView(item);
 	const auto id = item.id;
 	MTP::StartProxyCheck(
-		&_account->mtp(),
+		&_account->mtp().runtimeEnvironment(),
 		item.data,
 		Core::App().settings().proxy().tryIPv6(),
 		Core::App().settings().proxyStealthOptions(),

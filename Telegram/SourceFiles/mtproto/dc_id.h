@@ -7,35 +7,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/type_utils.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/core_types.h"
 
 namespace MTP {
-namespace details {
 
-[[nodiscard]] bool paused();
-void pause();
-void unpause();
-[[nodiscard]] rpl::producer<> unpaused();
-
-} // namespace details
-
-// send(MTPhelp_GetConfig(), MTP::configDcId(dc)) - for dc enumeration
 constexpr ShiftedDcId configDcId(DcId dcId) {
 	return ShiftDcId(dcId, kConfigDcShift);
 }
 
-// send(MTPauth_LogOut(), MTP::logoutDcId(dc)) - for logout of guest dcs enumeration
 constexpr ShiftedDcId logoutDcId(DcId dcId) {
 	return ShiftDcId(dcId, kLogoutDcShift);
 }
 
-// send(MTPupload_GetFile(), MTP::updaterDcId(dc)) - for autoupdater
 constexpr ShiftedDcId updaterDcId(DcId dcId) {
 	return ShiftDcId(dcId, kUpdaterDcShift);
 }
 
-// send(MTPupload_GetFile(), MTP::groupCallStreamDcId(dc)) - for group call stream
 constexpr ShiftedDcId groupCallStreamDcId(DcId dcId) {
 	return ShiftDcId(dcId, kGroupCallStreamDcShift);
 }
@@ -50,7 +37,6 @@ constexpr ShiftedDcId downloadDcId(DcId dcId, int index) {
 
 } // namespace details
 
-// send(req, callbacks, MTP::downloadDcId(dc, index)) - for download shifted dc id
 inline ShiftedDcId downloadDcId(DcId dcId, int index) {
 	return details::downloadDcId(dcId, index);
 }
@@ -68,23 +54,19 @@ inline constexpr bool isMediaClusterDcId(ShiftedDcId shiftedDcId) {
 		|| (shift == kUpdaterDcShift);
 }
 
-inline bool isCdnDc(MTPDdcOption::Flags flags) {
-	return (flags & MTPDdcOption::Flag::f_cdn);
-}
-
 inline bool isTemporaryDcId(ShiftedDcId shiftedDcId) {
 	auto dcId = BareDcId(shiftedDcId);
-	return (dcId >= Instance::Fields::kTemporaryMainDc);
+	return (dcId >= kTemporaryMainDcId);
 }
 
 inline DcId getRealIdFromTemporaryDcId(ShiftedDcId shiftedDcId) {
 	auto dcId = BareDcId(shiftedDcId);
-	return (dcId >= Instance::Fields::kTemporaryMainDc) ? (dcId - Instance::Fields::kTemporaryMainDc) : 0;
+	return (dcId >= kTemporaryMainDcId) ? (dcId - kTemporaryMainDcId) : 0;
 }
 
 inline DcId getTemporaryIdFromRealDcId(ShiftedDcId shiftedDcId) {
 	auto dcId = BareDcId(shiftedDcId);
-	return (dcId < Instance::Fields::kTemporaryMainDc) ? (dcId + Instance::Fields::kTemporaryMainDc) : 0;
+	return (dcId < kTemporaryMainDcId) ? (dcId + kTemporaryMainDcId) : 0;
 }
 
 namespace details {
@@ -95,8 +77,6 @@ constexpr ShiftedDcId uploadDcId(DcId dcId, int index) {
 
 } // namespace details
 
-// send(req, callbacks, MTP::uploadDcId(index)) - for upload shifted dc id
-// uploading always to the main dc so BareDcId(result) == 0
 inline ShiftedDcId uploadDcId(int index) {
 	Expects(index >= 0 && index < kMaxMediaDcCount);
 
@@ -112,17 +92,5 @@ inline ShiftedDcId destroyKeyNextDcId(ShiftedDcId shiftedDcId) {
 	const auto shift = GetDcIdShift(shiftedDcId);
 	return ShiftDcId(BareDcId(shiftedDcId), shift ? (shift + 1) : kDestroyKeyStartDcShift);
 }
-
-enum {
-	DisconnectedState = 0,
-	ConnectingState = 1,
-	ConnectedState = 2,
-};
-
-enum {
-	RequestSent = 0,
-	RequestConnecting = 1,
-	RequestSending = 2
-};
 
 } // namespace MTP

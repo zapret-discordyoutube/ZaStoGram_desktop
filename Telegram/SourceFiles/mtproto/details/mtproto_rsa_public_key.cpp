@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_rsa_public_key.h"
 
 #include "base/openssl_help.h"
+#include "mtproto/details/mtproto_binary.h"
 
 namespace MTP::details {
 namespace {
@@ -151,7 +152,7 @@ bytes::vector RSAPublicKey::Private::decrypt(bytes::const_span data) const {
 	auto res = RSA_public_decrypt(kDecryptSize, reinterpret_cast<const unsigned char*>(data.data()), reinterpret_cast<unsigned char*>(result.data()), _rsa, RSA_NO_PADDING);
 	if (res < 0 || res > kDecryptSize) {
 		OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CRYPTO_STRINGS, nullptr);
-		LOG(("RSA Error: RSA_public_encrypt failed, key fp: %1, result: %2, error: %3").arg(fingerprint()).arg(res).arg(ERR_error_string(ERR_get_error(), 0)));
+		LOG(("RSA Error: RSA_public_decrypt failed, key fp: %1, result: %2, error: %3").arg(fingerprint()).arg(res).arg(ERR_error_string(ERR_get_error(), 0)));
 		return {};
 	} else if (auto zeroBytes = kDecryptSize - res) {
 		auto resultBytes = gsl::make_span(result);
@@ -200,7 +201,7 @@ void RSAPublicKey::Private::computeFingerprint() {
 
 	bytes::array<20> sha1Buffer;
 	openssl::Sha1To(sha1Buffer, bytes::make_span(string));
-	_fingerprint = *(uint64*)(sha1Buffer.data() + 12);
+	_fingerprint = binary::ReadAt<uint64>(bytes::make_span(sha1Buffer), 12);
 }
 
 bytes::vector RSAPublicKey::Private::ToBytes(const BIGNUM *number) {

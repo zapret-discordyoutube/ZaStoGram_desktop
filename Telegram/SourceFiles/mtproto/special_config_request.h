@@ -38,7 +38,6 @@ private:
 		Mozilla,
 		Google,
 		RemoteConfig,
-		Realtime,
 		FireStore,
 	};
 	struct Attempt {

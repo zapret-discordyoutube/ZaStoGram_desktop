@@ -7,16 +7,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/mtp_instance.h"
 
+#include "mtproto/dc_id.h"
 #include "mtproto/details/mtproto_dcenter.h"
+#include "mtproto/pause_state.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/status.h"
+#include "mtproto/runtime_environment.h"
 #include "mtproto/special_config_request.h"
 #include "mtproto/session.h"
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/config_loader.h"
 #include "mtproto/sender.h"
+#include "mtproto/session_state.h"
 #include "storage/localstorage.h"
 #include "calls/calls_instance.h"
 #include "main/main_account.h" // Account::configUpdated.
@@ -86,6 +90,7 @@ public:
 	[[nodiscard]] rpl::producer<> allKeysDestroyed() const;
 
 	// Thread safe.
+	[[nodiscard]] RuntimeEnvironment &runtimeEnvironment() const;
 	[[nodiscard]] QString deviceModel() const;
 	[[nodiscard]] QString systemVersion() const;
 
@@ -236,6 +241,7 @@ private:
 	const not_null<Instance*> _instance;
 	const Instance::Mode _mode = Instance::Mode::Normal;
 	const std::unique_ptr<Config> _config;
+	const std::shared_ptr<RuntimeEnvironment> _runtime;
 	const std::shared_ptr<base::NetworkReachability> _networkReachability;
 
 	std::unique_ptr<QThread> _mainSessionThread;
@@ -334,9 +340,48 @@ Instance::Private::Private(
 , _instance(instance)
 , _mode(mode)
 , _config(std::move(fields.config))
+, _runtime(fields.runtimeEnvironment
+	? std::move(fields.runtimeEnvironment)
+	: CreateRuntimeEnvironment())
 , _networkReachability(base::NetworkReachability::Instance())
 , _proxySettings(Core::App().settings().proxy()) {
 	Expects(_config != nullptr);
+	Expects(_runtime != nullptr);
+
+	_runtime->proxyConnectionStatus = [=] {
+		return proxyConnectionStatus();
+	};
+	_runtime->setProxyConnectionStatus = [=](ProxyConnectionStatus status) {
+		setProxyConnectionStatus(std::move(status));
+	};
+	_runtime->mainDcId = [=] {
+		return mainDcId();
+	};
+	_runtime->dcOptionsLookup = [=](
+			DcId dcId,
+			DcType type,
+			bool throughProxy) {
+		return dcOptions().lookup(dcId, type, throughProxy);
+	};
+	_runtime->resolveProxyDomain = [=](QString host) {
+		resolveProxyDomain(std::move(host));
+	};
+	_runtime->setGoodProxyDomain = [=](QString host, QString ip) {
+		setGoodProxyDomain(std::move(host), std::move(ip));
+	};
+	_runtime->proxyDomainResolved = [=](
+			QString host,
+			QStringList ips,
+			qint64 expireAt) {
+		details::DnsResolverCache::Instance().resolved(host, ips, expireAt);
+		_instance->proxyDomainResolved(
+			std::move(host),
+			std::move(ips),
+			expireAt);
+	};
+	_runtime->syncHttpUnixtime = [=] {
+		syncHttpUnixtime();
+	};
 
 	const auto idealThreadPoolSize = QThread::idealThreadCount();
 	_fileSessionThreads.resize(2 * std::max(idealThreadPoolSize / 2, 1));
@@ -465,7 +510,9 @@ void Instance::Private::applyDomainIps(
 			session->refreshOptions();
 		}
 	}
-	_instance->proxyDomainResolved(host, ips, expireAt);
+	if (_runtime->proxyDomainResolved) {
+		_runtime->proxyDomainResolved(host, ips, expireAt);
+	}
 }
 
 void Instance::Private::setGoodProxyDomain(
@@ -650,7 +697,7 @@ void Instance::Private::migrateProxy() {
 			: ProxyData(),
 	});
 	ConnectionBroker::Instance().cancelByProxyGeneration(
-		_instance,
+		_runtime.get(),
 		_proxyGeneration);
 	for (const auto &[shiftedDcId, session] : _sessions) {
 		session->migrateProxy(
@@ -809,7 +856,7 @@ void Instance::Private::cancel(mtpRequestId requestId) {
 		QWriteLocker locker(&_requestMapLock);
 		auto it = _requestMap.find(requestId);
 		if (it != _requestMap.end()) {
-			msgId = *(mtpMsgId*)(it->second->constData() + 4);
+			msgId = it->second.getMsgId();
 			_requestMap.erase(it);
 		}
 	}
@@ -1042,6 +1089,10 @@ Environment Instance::Private::environment() const {
 
 bool Instance::Private::isTestMode() const {
 	return _config->isTestMode();
+}
+
+RuntimeEnvironment &Instance::Private::runtimeEnvironment() const {
+	return *_runtime;
 }
 
 QString Instance::Private::deviceModel() const {
@@ -2218,6 +2269,10 @@ Environment Instance::environment() const {
 
 bool Instance::isTestMode() const {
 	return _private->isTestMode();
+}
+
+RuntimeEnvironment &Instance::runtimeEnvironment() const {
+	return _private->runtimeEnvironment();
 }
 
 QString Instance::deviceModel() const {

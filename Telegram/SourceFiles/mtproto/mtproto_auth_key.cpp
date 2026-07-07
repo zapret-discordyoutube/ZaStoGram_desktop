@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_auth_key.h"
 
 #include "base/openssl_help.h"
+#include "mtproto/details/mtproto_binary.h"
 
 #include <QtCore/QDataStream>
 
@@ -27,6 +28,10 @@ AuthKey::AuthKey(const Data &data) : _type(Type::Local), _key(data) {
 	countKeyId();
 }
 
+AuthKey::~AuthKey() {
+	OPENSSL_cleanse(_key.data(), _key.size());
+}
+
 AuthKey::Type AuthKey::type() const {
 	return _type;
 }
@@ -44,35 +49,49 @@ void AuthKey::prepareAES_oldmtp(const MTPint128 &msgKey, MTPint256 &aesKey, MTPi
 
 	bytes::array<20> sha1_a, sha1_b, sha1_c, sha1_d;
 	bytes::array<16 + 32> data_a;
-	memcpy(data_a.data(), &msgKey, 16);
-	memcpy(data_a.data() + 16, _key.data() + x, 32);
+	binary::Copy(bytes::make_span(data_a), binary::AsBytes(&msgKey));
+	binary::Copy(
+		bytes::make_span(data_a).subspan(16),
+		bytes::make_span(_key).subspan(x, 32));
 	openssl::Sha1To(sha1_a, data_a);
 
 	bytes::array<16 + 16 + 16> data_b;
-	memcpy(data_b.data(), _key.data() + 32 + x, 16);
-	memcpy(data_b.data() + 16, &msgKey, 16);
-	memcpy(data_b.data() + 32, _key.data() + 48 + x, 16);
+	binary::Copy(
+		bytes::make_span(data_b),
+		bytes::make_span(_key).subspan(32 + x, 16));
+	binary::Copy(
+		bytes::make_span(data_b).subspan(16),
+		binary::AsBytes(&msgKey));
+	binary::Copy(
+		bytes::make_span(data_b).subspan(32),
+		bytes::make_span(_key).subspan(48 + x, 16));
 	openssl::Sha1To(sha1_b, data_b);
 
 	bytes::array<32 + 16> data_c;
-	memcpy(data_c.data(), _key.data() + 64 + x, 32);
-	memcpy(data_c.data() + 32, &msgKey, 16);
+	binary::Copy(
+		bytes::make_span(data_c),
+		bytes::make_span(_key).subspan(64 + x, 32));
+	binary::Copy(
+		bytes::make_span(data_c).subspan(32),
+		binary::AsBytes(&msgKey));
 	openssl::Sha1To(sha1_c, data_c);
 
 	bytes::array<16 + 32> data_d;
-	memcpy(data_d.data(), &msgKey, 16);
-	memcpy(data_d.data() + 16, _key.data() + 96 + x, 32);
+	binary::Copy(bytes::make_span(data_d), binary::AsBytes(&msgKey));
+	binary::Copy(
+		bytes::make_span(data_d).subspan(16),
+		bytes::make_span(_key).subspan(96 + x, 32));
 	openssl::Sha1To(sha1_d, data_d);
 
-	auto key = reinterpret_cast<bytes::type*>(&aesKey);
-	auto iv = reinterpret_cast<bytes::type*>(&aesIV);
-	memcpy(key, sha1_a.data(), 8);
-	memcpy(key + 8, sha1_b.data() + 8, 12);
-	memcpy(key + 8 + 12, sha1_c.data() + 4, 12);
-	memcpy(iv, sha1_a.data() + 8, 12);
-	memcpy(iv + 12, sha1_b.data(), 8);
-	memcpy(iv + 12 + 8, sha1_c.data() + 16, 4);
-	memcpy(iv + 12 + 8 + 4, sha1_d.data(), 8);
+	auto key = binary::AsBytes(&aesKey);
+	auto iv = binary::AsBytes(&aesIV);
+	binary::Copy(key, bytes::make_span(sha1_a).subspan(0, 8));
+	binary::Copy(key.subspan(8), bytes::make_span(sha1_b).subspan(8, 12));
+	binary::Copy(key.subspan(20), bytes::make_span(sha1_c).subspan(4, 12));
+	binary::Copy(iv, bytes::make_span(sha1_a).subspan(8, 12));
+	binary::Copy(iv.subspan(12), bytes::make_span(sha1_b).subspan(0, 8));
+	binary::Copy(iv.subspan(20), bytes::make_span(sha1_c).subspan(16, 4));
+	binary::Copy(iv.subspan(24), bytes::make_span(sha1_d).subspan(0, 8));
 }
 
 void AuthKey::prepareAES(const MTPint128 &msgKey, MTPint256 &aesKey, MTPint256 &aesIV, bool send) const {
@@ -80,23 +99,29 @@ void AuthKey::prepareAES(const MTPint128 &msgKey, MTPint256 &aesKey, MTPint256 &
 
 	bytes::array<32> sha256_a, sha256_b;
 	bytes::array<16 + 36> data_a;
-	memcpy(data_a.data(), &msgKey, 16);
-	memcpy(data_a.data() + 16, _key.data() + x, 36);
+	binary::Copy(bytes::make_span(data_a), binary::AsBytes(&msgKey));
+	binary::Copy(
+		bytes::make_span(data_a).subspan(16),
+		bytes::make_span(_key).subspan(x, 36));
 	openssl::Sha256To(sha256_a, data_a);
 
 	bytes::array<36 + 16> data_b;
-	memcpy(data_b.data(), _key.data() + 40 + x, 36);
-	memcpy(data_b.data() + 36, &msgKey, 16);
+	binary::Copy(
+		bytes::make_span(data_b),
+		bytes::make_span(_key).subspan(40 + x, 36));
+	binary::Copy(
+		bytes::make_span(data_b).subspan(36),
+		binary::AsBytes(&msgKey));
 	openssl::Sha256To(sha256_b, data_b);
 
-	auto key = reinterpret_cast<uchar*>(&aesKey);
-	auto iv = reinterpret_cast<uchar*>(&aesIV);
-	memcpy(key, sha256_a.data(), 8);
-	memcpy(key + 8, sha256_b.data() + 8, 16);
-	memcpy(key + 8 + 16, sha256_a.data() + 24, 8);
-	memcpy(iv, sha256_b.data(), 8);
-	memcpy(iv + 8, sha256_a.data() + 8, 16);
-	memcpy(iv + 8 + 16, sha256_b.data() + 24, 8);
+	auto key = binary::AsBytes(&aesKey);
+	auto iv = binary::AsBytes(&aesIV);
+	binary::Copy(key, bytes::make_span(sha256_a).subspan(0, 8));
+	binary::Copy(key.subspan(8), bytes::make_span(sha256_b).subspan(8, 16));
+	binary::Copy(key.subspan(24), bytes::make_span(sha256_a).subspan(24, 8));
+	binary::Copy(iv, bytes::make_span(sha256_b).subspan(0, 8));
+	binary::Copy(iv.subspan(8), bytes::make_span(sha256_a).subspan(8, 16));
+	binary::Copy(iv.subspan(24), bytes::make_span(sha256_b).subspan(24, 8));
 }
 
 const void *AuthKey::partForMsgKey(bool send) const {
@@ -112,7 +137,8 @@ bytes::const_span AuthKey::data() const {
 }
 
 bool AuthKey::equals(const std::shared_ptr<AuthKey> &other) const {
-	return other ? (_key == other->_key) : false;
+	return other
+		&& (CRYPTO_memcmp(_key.data(), other->_key.data(), _key.size()) == 0);
 }
 
 crl::time AuthKey::creationTime() const {
@@ -145,13 +171,13 @@ void AuthKey::countKeyId() {
 	const auto hash = openssl::Sha1(_key);
 
 	// Lower 64 bits = 8 bytes of 20 byte SHA1 hash.
-	_keyId = *reinterpret_cast<const KeyId*>(hash.data() + 12);
+	_keyId = binary::ReadAt<KeyId>(bytes::make_span(hash), 12);
 }
 
 void aesIgeEncryptRaw(const void *src, void *dst, uint32 len, const void *key, const void *iv) {
 	uchar aes_key[32], aes_iv[32];
-	memcpy(aes_key, key, 32);
-	memcpy(aes_iv, iv, 32);
+	binary::Copy(bytes::make_span(aes_key), key, 32);
+	binary::Copy(bytes::make_span(aes_iv), iv, 32);
 
 	AES_KEY aes;
 	AES_set_encrypt_key(aes_key, 256, &aes);
@@ -160,8 +186,8 @@ void aesIgeEncryptRaw(const void *src, void *dst, uint32 len, const void *key, c
 
 void aesIgeDecryptRaw(const void *src, void *dst, uint32 len, const void *key, const void *iv) {
 	uchar aes_key[32], aes_iv[32];
-	memcpy(aes_key, key, 32);
-	memcpy(aes_iv, iv, 32);
+	binary::Copy(bytes::make_span(aes_key), key, 32);
+	binary::Copy(bytes::make_span(aes_iv), iv, 32);
 
 	AES_KEY aes;
 	AES_set_decrypt_key(aes_key, 256, &aes);

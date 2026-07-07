@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/qt/qt_string_view.h"
-#include "settings.h"
+#include "mtproto/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -86,9 +86,10 @@ constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
 }
 
 [[nodiscard]] QString CapabilitiesPath() {
-	const auto dir = cWorkingDir() + u"tdata/"_q;
-	QDir().mkpath(dir);
-	return dir + u"proxy-capabilities.json"_q;
+	const auto runtime = DefaultRuntimeEnvironment();
+	return runtime->proxyCapabilitiesPath
+		? runtime->proxyCapabilitiesPath()
+		: QString();
 }
 
 [[nodiscard]] QString TransportName(ProxyCapabilityTransport value) {

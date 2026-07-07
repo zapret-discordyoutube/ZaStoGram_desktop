@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "media/audio/media_audio.h"
 #include "mtproto/mtproto_config.h"
+#include "mtproto/runtime_environment.h"
 #include "mainwidget.h"
 #include "api/api_updates.h"
 #include "ui/ui_utility.h"
@@ -409,6 +410,7 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 
 	auto fields = base::take(_mtpFields);
 	fields.config = std::move(config);
+	fields.runtimeEnvironment = MTP::CreateRuntimeEnvironment();
 	fields.deviceModel = Platform::DeviceModelPretty();
 	fields.systemVersion = Platform::SystemVersionPretty();
 	_mtp = std::make_unique<MTP::Instance>(
@@ -555,6 +557,7 @@ void Account::destroyMtpKeys(MTP::AuthKeysList &&keys) {
 
 	destroyFields.mainDcId = MTP::Instance::Fields::kNoneMainDc;
 	destroyFields.config = std::make_unique<MTP::Config>(_mtp->config());
+	destroyFields.runtimeEnvironment = MTP::CreateRuntimeEnvironment();
 	destroyFields.keys = std::move(keys);
 	destroyFields.deviceModel = Platform::DeviceModelPretty();
 	destroyFields.systemVersion = Platform::SystemVersionPretty();

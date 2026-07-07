@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -64,7 +65,7 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
 
 def test_session_proxy_switch_suspends_old_generation_silently():
     header = read(SESSION_PRIVATE_H)
-    source = read(SESSION_PRIVATE_CPP)
+    source = read_session_private_sources()
     switch_body = function_body(source, "void SessionPrivate::migrateProxy(")
     release_body = function_body(source, "void SessionPrivate::releaseProxyMigration(")
     append_body = function_body(source, "bool SessionPrivate::appendTestConnection(")
@@ -75,32 +76,32 @@ def test_session_proxy_switch_suspends_old_generation_silently():
 
     assert "void migrateProxy(uint64 generation, bool scout);" in header
     assert "void releaseProxyMigration(uint64 generation);" in header
-    assert "uint64 _proxyGeneration = 0;" in header
-    assert "bool _proxyMigrationSuspended = false;" in header
-    assert "bool _proxyMigrationScout = false;" in header
+    assert "uint64 proxyGeneration = 0;" in header
+    assert "bool proxyMigrationSuspended = false;" in header
+    assert "bool proxyMigrationScout = false;" in header
     assert "destroyAllConnections();" in switch_body
-    assert "_retryTimer.cancel();" in switch_body
+    assert "_timing.retryTimer.cancel();" in switch_body
     assert "suspended_by_proxy_switch" in switch_body
     assert "if (!scout) {" in switch_body
     assert "connectToServer();" in switch_body
     assert "ProxyControlPlane::ReportMtproxyFailure" not in switch_body
     assert "restart();" not in switch_body
-    assert "setState(-_retryTimeout)" not in switch_body
-    assert "if (_proxyMigrationSuspended) {" in connect_body
-    assert "_proxyMigrationScout" in append_body
-    assert "_connectionBrokerTickets.empty()" in append_body
-    assert ".proxyGeneration = _proxyGeneration" in append_body
-    assert "_instance->proxyMigrationSucceeded(_proxyGeneration);" in received_body
-    assert "_proxyMigrationScout = false;" in received_body
-    assert "_proxyMigrationSuspended = false;" in release_body
+    assert "setState(-_timing.retryTimeout)" not in switch_body
+    assert "if (_connectionState.proxyMigrationSuspended) {" in connect_body
+    assert "_connectionState.proxyMigrationScout" in append_body
+    assert "_connectionState.brokerTickets.empty()" in append_body
+    assert ".proxyGeneration = _connectionState.proxyGeneration" in append_body
+    assert "_instance->proxyMigrationSucceeded(_connectionState.proxyGeneration);" in received_body
+    assert "_connectionState.proxyMigrationScout = false;" in received_body
+    assert "_connectionState.proxyMigrationSuspended = false;" in release_body
     assert "connectToServer();" in release_body
-    assert "found == end(_testConnections)" in disconnected_body
-    assert "_connection.get() != connection.get()" in disconnected_body
-    assert disconnected_body.index("_connection.get() != connection.get()") < (
+    assert "found == end(_connectionState.testConnections)" in disconnected_body
+    assert "_connectionState.connection.get() != connection.get()" in disconnected_body
+    assert disconnected_body.index("_connectionState.connection.get() != connection.get()") < (
         disconnected_body.index("restart();"))
-    assert "found == end(_testConnections)" in error_body
-    assert "_connection.get() != connection.get()" in error_body
-    assert error_body.index("_connection.get() != connection.get()") < (
+    assert "found == end(_connectionState.testConnections)" in error_body
+    assert "_connectionState.connection.get() != connection.get()" in error_body
+    assert error_body.index("_connectionState.connection.get() != connection.get()") < (
         error_body.index("handleError(errorCode);"))
 
 
@@ -115,7 +116,7 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "void cancelByProxyGeneration(" in header
     assert "uint64 proxyGeneration = 0;" in request_state
     assert "state->proxyGeneration = state->request.proxyGeneration;" in source
-    assert "state->request.instance == instance" in cancel_body
+    assert "state->request.runtime == runtime" in cancel_body
     assert "state->proxyGeneration < generation" in cancel_body
     assert "state->active = false;" in cancel_body
     assert "AdmissionCancelled" in cancel_body

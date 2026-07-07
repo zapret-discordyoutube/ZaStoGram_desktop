@@ -8,9 +8,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_tcp.h"
 
 #include "mtproto/details/mtproto_abstract_socket.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime_environment.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
@@ -90,16 +91,16 @@ bytes::span TcpConnection::Protocol::Version0::finalizePacket(
 
 	const auto intsSize = uint32(buffer.size() - 2);
 	const auto bytesSize = intsSize * sizeof(mtpPrime);
-	const auto data = reinterpret_cast<uchar*>(&buffer[0]);
+	auto data = bytes::make_span(buffer);
 	const auto added = [&] {
 		if (intsSize < 0x7F) {
-			data[7] = uchar(intsSize);
+			data[7] = bytes::type(uchar(intsSize));
 			return 1;
 		}
-		data[4] = uchar(0x7F);
-		data[5] = uchar(intsSize & 0xFF);
-		data[6] = uchar((intsSize >> 8) & 0xFF);
-		data[7] = uchar((intsSize >> 16) & 0xFF);
+		data[4] = bytes::type(uchar(0x7F));
+		data[5] = bytes::type(uchar(intsSize & 0xFF));
+		data[6] = bytes::type(uchar((intsSize >> 8) & 0xFF));
+		data[7] = bytes::type(uchar((intsSize >> 16) & 0xFF));
 		return 4;
 	}();
 	return bytes::make_span(buffer).subspan(8 - added, added + bytesSize);
@@ -213,7 +214,7 @@ int TcpConnection::Protocol::VersionD::readPacketLength(
 	if (bytes.size() < 4) {
 		return kUnknownSize;
 	}
-	const auto value = *reinterpret_cast<const uint32*>(bytes.data()) + 4;
+	const auto value = binary::Read<uint32>(bytes) + 4;
 	return (value >= 8 && value < kPacketSizeMax)
 		? int(value)
 		: kInvalidSize;
@@ -249,19 +250,18 @@ auto TcpConnection::Protocol::Create(bytes::const_span secret)
 }
 
 TcpConnection::TcpConnection(
-	not_null<Instance*> instance,
+	not_null<RuntimeEnvironment*> runtime,
 	QThread *thread,
 	const ProxyData &proxy,
 	const ProxyStealthOptions &stealth)
-: AbstractConnection(thread, proxy)
-, _instance(instance)
+: AbstractConnection(runtime, thread, proxy)
 , _stealth(stealth)
 , _checkNonce(base::RandomValue<MTPint128>()) {
 }
 
 ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
 	return ConnectionPointer::New<TcpConnection>(
-		_instance,
+		_runtime,
 		thread(),
 		proxy,
 		_stealth);
@@ -300,7 +300,7 @@ void TcpConnection::socketRead() {
 
 	if (!_socket || !_socket->isConnected()) {
 		CONNECTION_LOG_ERROR("Socket not connected in socketRead()");
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::BadResponse,
 			.attempt = _mtproxyAttempt,
@@ -363,7 +363,7 @@ void TcpConnection::socketRead() {
 						CONNECTION_LOG_ERROR(
 							u"Bad packet size in 4 bytes: %1"_q
 							.arg(packetSize));
-						ReportProxyEvent(_instance, {
+						ReportProxyEvent(_runtime, {
 							.phase = ProxyDiagnosticsPhase::Failed,
 							.error = ProxyConnectionError::BadResponse,
 							.attempt = _mtproxyAttempt,
@@ -404,7 +404,7 @@ void TcpConnection::socketRead() {
 			}
 		} else if (readCount < 0) {
 			CONNECTION_LOG_ERROR(u"Socket read return %1."_q.arg(readCount));
-			ReportProxyEvent(_instance, {
+			ReportProxyEvent(_runtime, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
 				.attempt = _mtproxyAttempt,
@@ -428,20 +428,19 @@ void TcpConnection::socketRead() {
 mtpBuffer TcpConnection::parsePacket(bytes::const_span bytes) {
 	const auto packet = _protocol->readPacket(bytes);
 	CONNECTION_LOG_INFO(u"Packet received, size = %1."_q.arg(packet.size()));
-	const auto ints = gsl::make_span(
-		reinterpret_cast<const mtpPrime*>(packet.data()),
-		packet.size() / sizeof(mtpPrime));
-	Assert(!ints.empty());
-	if (ints.size() < 3) {
+	const auto primes = packet.size() / sizeof(mtpPrime);
+	Assert(primes > 0);
+	if (primes < 3) {
 		// nop or error or new quickack, latter is not yet supported.
-		if (ints[0] != 0) {
+		const auto first = binary::Read<mtpPrime>(packet);
+		if (first != 0) {
 			CONNECTION_LOG_ERROR(u"Error packet received, code = %1"_q
-				.arg(ints[0]));
+				.arg(first));
 		}
-		return mtpBuffer(1, ints[0]);
+		return mtpBuffer(1, first);
 	}
-	auto result = mtpBuffer(ints.size());
-	memcpy(result.data(), ints.data(), ints.size() * sizeof(mtpPrime));
+	auto result = mtpBuffer(primes);
+	binary::Copy(bytes::make_span(result), packet);
 	return result;
 }
 
@@ -451,7 +450,7 @@ void TcpConnection::socketConnected() {
 	auto buffer = preparePQFake(_checkNonce);
 
 	CONNECTION_LOG_INFO("Socket connected; sending fake req_pq.");
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::TelegramCheck,
 		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
@@ -461,7 +460,7 @@ void TcpConnection::socketConnected() {
 	});
 
 	_pingTime = crl::now();
-	sendData(std::move(buffer));
+	sendData(std::move(buffer), {});
 }
 
 void TcpConnection::socketDisconnected() {
@@ -471,7 +470,7 @@ void TcpConnection::socketDisconnected() {
 	}
 }
 
-void TcpConnection::sendData(mtpBuffer &&buffer) {
+void TcpConnection::sendData(mtpBuffer &&buffer, SendDataContext) {
 	Expects(buffer.size() > 2);
 
 	if (!_socket) {
@@ -526,11 +525,8 @@ bytes::const_span TcpConnection::prepareConnectionStartPrefix(
 		bytes::make_span(_receiveState.ivec),
 		reversed.subspan(CTRState::KeySize, CTRState::IvecSize));
 
-	// write protocol and dc ids
-	const auto protocol = reinterpret_cast<uint32*>(nonce.data() + 56);
-	*protocol = _protocol->id();
-	const auto dcId = reinterpret_cast<int16*>(nonce.data() + 60);
-	*dcId = _protocolDcId;
+	binary::WriteAt<uint32>(nonce, 56, _protocol->id());
+	binary::WriteAt<int16>(nonce, 60, _protocolDcId);
 
 	bytes::copy(buffer, nonce.subspan(0, 56));
 	aesCtrEncrypt(nonce, _sendKey, &_sendState);
@@ -604,7 +600,7 @@ void TcpConnection::connectToServer(
 	_socket->setDebugId(_debugId);
 
 	CONNECTION_LOG_INFO("Connecting...");
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Connecting,
 		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
@@ -661,7 +657,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 	const auto data = parsePacket(bytes);
 	if (data.size() == 1) {
 		if (data[0] != 0) {
-			ReportProxyEvent(_instance, {
+			ReportProxyEvent(_runtime, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
 				.attempt = _mtproxyAttempt,
@@ -687,7 +683,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 				_status = Status::Ready;
 				_connectedLifetime.destroy();
 				_pingTime = (crl::now() - _pingTime);
-				ReportProxyEvent(_instance, {
+				ReportProxyEvent(_runtime, {
 					.phase = ProxyDiagnosticsPhase::Connected,
 					.attempt = _mtproxyAttempt,
 					.proxy = _proxy,
@@ -699,7 +695,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Wrong nonce received in TCP fake pq-responce");
-				ReportProxyEvent(_instance, {
+				ReportProxyEvent(_runtime, {
 					.phase = ProxyDiagnosticsPhase::Failed,
 					.error = ProxyConnectionError::BadResponse,
 					.attempt = _mtproxyAttempt,
@@ -712,7 +708,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 			}
 		} else {
 			CONNECTION_LOG_ERROR("Could not parse TCP fake pq-responce");
-			ReportProxyEvent(_instance, {
+			ReportProxyEvent(_runtime, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
 				.attempt = _mtproxyAttempt,
@@ -731,7 +727,7 @@ void TcpConnection::timedOut() {
 	if (_socket) {
 		_socket->timedOut();
 	}
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = ProxyConnectionError::Timeout,
 		.mtproxyReason = _socket
@@ -800,7 +796,7 @@ void TcpConnection::socketError(int errorCode) {
 		&& proxyError == ProxyConnectionError::RemoteClosed) {
 		NoteProxyWssRemoteClosed(_proxy);
 	}
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = proxyError,
 		.mtproxyReason = _socket->mtproxyTerminalReason(),
@@ -824,7 +820,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 
 	case HandshakePhase::TcpConnected:
 		CONNECTION_LOG_INFO("mtproxy tcp_connected");
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::TcpConnected,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
@@ -836,7 +832,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 
 	case HandshakePhase::ClientHelloSent:
 		CONNECTION_LOG_INFO("mtproxy client_hello_sent");
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::ClientHelloSent,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
@@ -848,7 +844,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 
 	case HandshakePhase::ServerHelloOk:
 		CONNECTION_LOG_INFO("mtproxy server_hello_hmac_ok");
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::ServerHelloOk,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
@@ -860,7 +856,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 
 	case HandshakePhase::FirstDataReceived:
 		CONNECTION_LOG_INFO("mtproxy first_tls_app_recv");
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::TelegramCheck,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/special_config_request.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/mtproto_auth_key.h"
@@ -123,15 +124,6 @@ QByteArray ParseFireStoreResponse(const QByteArray &bytes) {
 	).toObject().value(
 		"stringValue"
 	).toString().toLatin1();
-}
-
-QByteArray ParseRealtimeResponse(const QByteArray &bytes) {
-	if (bytes.size() < 2
-		|| bytes[0] != '"'
-		|| bytes[bytes.size() - 1] != '"') {
-		return QByteArray();
-	}
-	return bytes.mid(1, bytes.size() - 2);
 }
 
 [[nodiscard]] QDateTime ParseHttpDate(const QString &date) {
@@ -315,10 +307,6 @@ void SpecialConfigRequest::performRequest(const Attempt &attempt) {
 			InstanceId()).toLatin1();
 		request.setRawHeader("Content-Type", "application/json");
 	} break;
-	case Type::Realtime: {
-		url.setHost(kFireProject + u".%1"_q.arg(attempt.data));
-		url.setPath(u"/%1%2.json"_q.arg(kConfigKey, kConfigSubKey));
-	} break;
 	case Type::FireStore: {
 		url.setHost(attempt.host.isEmpty()
 			? ApiDomain(attempt.data)
@@ -392,9 +380,6 @@ void SpecialConfigRequest::requestFinished(
 	} break;
 	case Type::RemoteConfig: {
 		handleResponse(ParseRemoteConfigResponse(result));
-	} break;
-	case Type::Realtime: {
-		handleResponse(ParseRealtimeResponse(result));
 	} break;
 	case Type::FireStore: {
 		handleResponse(ParseFireStoreResponse(result));
@@ -515,7 +500,8 @@ void SpecialConfigRequest::handleResponse(const QByteArray &bytes) {
 		const auto dcId = data.vdc_id().v;
 		for (const auto &address : data.vips().v) {
 			const auto parseIp = [](const MTPint &ipv4) {
-				const auto ip = *reinterpret_cast<const uint32*>(&ipv4.v);
+				const auto ip = details::binary::Read<uint32>(
+					details::binary::AsBytes(&ipv4.v));
 				return (u"%1.%2.%3.%4"_q
 				).arg((ip >> 24) & 0xFF
 				).arg((ip >> 16) & 0xFF

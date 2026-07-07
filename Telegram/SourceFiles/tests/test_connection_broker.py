@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ def test_connection_broker_is_registered_owner_seam():
 
 def test_session_private_queues_admission_without_retry_backoff():
     header = SESSION_H.read_text(encoding="utf-8")
-    source = SESSION_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
     broker = BROKER_CPP.read_text(encoding="utf-8")
     append_body = function_body(
         source,
@@ -50,7 +51,7 @@ def test_session_private_queues_admission_without_retry_backoff():
         "void ConnectionBroker::reportAdmissionEvent(")
 
     assert '#include "mtproto/proxy/connection_broker.h"' in source
-    assert "std::vector<ConnectionTicket> _connectionBrokerTickets;" in header
+    assert "std::vector<ConnectionTicket> brokerTickets;" in header
     assert "ConnectionBroker::Instance().request({" in append_body
     assert "EndpointHealth::Instance().admit(" not in append_body
     assert "EndpointHealth::Instance().admit(" not in broker
@@ -70,22 +71,22 @@ def test_session_private_queues_admission_without_retry_backoff():
 
 def test_session_pending_broker_tickets_keep_connecting_without_timeout_loop():
     header = SESSION_H.read_text(encoding="utf-8")
-    source = SESSION_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
     connect_body = function_body(source, "void SessionPrivate::connectToServer(")
     destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
 
     assert "void removeConnectionBrokerTicket(ConnectionTicketId id);" in header
     assert "void armWaitForConnectedTimer();" in header
-    assert "_testConnections.empty() && _connectionBrokerTickets.empty()" in connect_body
-    assert "if (!_testConnections.empty()) {\n\t\tarmWaitForConnectedTimer();" in connect_body
-    assert "_connectionBrokerTickets.clear();" in destroy_body
+    assert "_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()" in connect_body
+    assert "if (!_connectionState.testConnections.empty()) {\n\t\tarmWaitForConnectedTimer();" in connect_body
+    assert "_connectionState.brokerTickets.clear();" in destroy_body
     assert "removeConnectionBrokerTicket(start.ticketId);" in source
     assert "armWaitForConnectedTimer();" in source
 
 
 def test_session_queued_broker_tickets_have_hard_deadline():
     header = SESSION_H.read_text(encoding="utf-8")
-    source = SESSION_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
     connect_body = function_body(source, "void SessionPrivate::connectToServer(")
     destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
     remove_body = function_body(
@@ -99,14 +100,14 @@ def test_session_queued_broker_tickets_have_hard_deadline():
     # but it may not hang the session forever either: arm a generous hard
     # deadline while only broker tickets are pending, tear down and retry
     # with fresh options (picking up a rotated proxy) when it fires.
-    assert "base::Timer _brokerQueueDeadlineTimer;" in header
+    assert "base::Timer brokerQueueDeadlineTimer;" in header
     assert "void brokerQueueDeadlineFired();" in header
     assert "kBrokerQueueHardDeadline = 90 * crl::time(1000)" in source
     assert (
-        "_brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);"
+        "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);"
         in connect_body)
-    assert "_brokerQueueDeadlineTimer.cancel();" in destroy_body
-    assert "_brokerQueueDeadlineTimer.cancel();" in remove_body
+    assert "_timing.brokerQueueDeadlineTimer.cancel();" in destroy_body
+    assert "_timing.brokerQueueDeadlineTimer.cancel();" in remove_body
     assert "doDisconnect();" in deadline_body
     assert "kProxyReconnectMinTimeout" in deadline_body
 

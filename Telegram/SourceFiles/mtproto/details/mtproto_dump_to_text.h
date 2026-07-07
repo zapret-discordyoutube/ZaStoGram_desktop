@@ -36,7 +36,9 @@ struct DumpToTextBuffer {
 		if (!len) return (*this);
 
 		ensureLength(len);
-		memcpy(p + size, data, len);
+		bytes::copy(
+			bytes::make_span(p + size, len),
+			bytes::make_span(data, len));
 		size += len;
 		return (*this);
 	}
@@ -65,7 +67,9 @@ struct DumpToTextBuffer {
 			newsize += kBufferSize - (newsize % kBufferSize);
 		}
 		char *b = new char[newsize];
-		memcpy(b, p, size);
+		bytes::copy(
+			bytes::make_span(b, size),
+			bytes::make_span(p, size));
 		alloced = newsize;
 		delete[] p;
 		p = b;

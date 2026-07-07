@@ -22,7 +22,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "editor/scene/scene.h"
 #include "media/audio/media_audio.h"
 #include "media/clip/media_clip_reader.h"
-#include "mtproto/facade.h"
 #include "lottie/lottie_animation.h"
 #include "history/history.h"
 #include "history/history_item.h"

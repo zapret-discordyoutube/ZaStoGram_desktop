@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -63,7 +64,7 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
 
 
 def test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session():
-    session = read(SESSION_PRIVATE_CPP)
+    session = read_session_private_sources()
     append = function_body(session, "bool SessionPrivate::appendTestConnection(")
     mtproxy_part = append.split("if (mtproxy) {", 1)[1]
 
@@ -283,7 +284,7 @@ def test_route_timeouts_and_exhaustion_reach_endpoint_health():
     # Once the last route fails the canonical endpoint must degrade so a
     # fully blackholed proxy gets a cooldown and can trigger rotation.
     assert "ReportAllRoutesFailed(" in timeout
-    assert "ReportAllRoutesFailed(_proxy, reason);" in error
+    assert "ReportAllRoutesFailed(" in error
     # An error on an established connection is not route exhaustion.
     assert "if (!_connected) {" in error
     assert ".routesExhausted = true," in exhausted
@@ -303,7 +304,7 @@ def test_resolving_connection_forwards_timeout_to_route_attempts():
 
 
 def test_proxied_connects_get_their_full_time_budget():
-    session = read(SESSION_PRIVATE_CPP)
+    session = read_session_private_sources()
     resolving = read(RESOLVING_CPP)
     health = read(ENDPOINT_HEALTH_CPP)
     arm = function_body(
@@ -318,9 +319,9 @@ def test_proxied_connects_get_their_full_time_budget():
     # The session must not kill a proxied connect before its own route
     # budget elapses - every premature kill burns a FakeTLS handshake
     # and reconnects, which is what gets proxies throttled.
-    assert "_options->proxy.type != ProxyData::Type::None" in arm
+    assert "_sessionState.options->proxy.type != ProxyData::Type::None" in arm
     assert "fullConnectTimeout()" in arm
-    assert "accumulate_max(_waitForConnected, minWait);" in arm
+    assert "accumulate_max(_timing.waitForConnected, minWait);" in arm
     # The last remaining route gets the patient timeout: there is
     # nothing to race it against, so let TCP retransmit SYN.
     assert "kOnlyRouteAttemptTimeout" in refresh

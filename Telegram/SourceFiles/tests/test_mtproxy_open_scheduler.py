@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -85,17 +86,19 @@ def test_connection_broker_reserves_global_open_slot_before_start():
         "scheduleStart(state, openDelay)")
 
 
-def test_connection_broker_qualifies_mtp_instance_inside_class_scope():
+def test_connection_broker_cancels_by_runtime_environment():
     broker = CONNECTION_BROKER_H.read_text(encoding="utf-8")
 
+    assert "struct RuntimeEnvironment;" in broker
     assert (
         "void cancelByProxyGeneration("
-        "MTP::Instance *instance, uint64 generation);"
+        "RuntimeEnvironment *runtime, uint64 generation);"
     ) in broker
+    assert "MTP::Instance" not in broker
 
 
 def test_live_mtproxy_connects_through_connection_broker_before_syn():
-    session = SESSION_CPP.read_text(encoding="utf-8")
+    session = read_session_private_sources()
     append_body = body_after(session, "bool SessionPrivate::appendTestConnection")
 
     assert '#include "mtproto/proxy/connection_broker.h"' in session

@@ -7,8 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/connection_http.h"
 
-#include "mtproto/mtp_instance.h"
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/runtime_environment.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
@@ -60,21 +61,20 @@ ProxyConnectionError ReplyProxyConnectionError(
 } // namespace
 
 HttpConnection::HttpConnection(
-	not_null<Instance*> instance,
+	not_null<RuntimeEnvironment*> runtime,
 	QThread *thread,
 	const ProxyData &proxy)
-: AbstractConnection(thread, proxy)
-, _instance(instance)
+: AbstractConnection(runtime, thread, proxy)
 , _checkNonce(base::RandomValue<MTPint128>()) {
 	_manager.moveToThread(thread);
 	_manager.setProxy(ToNetworkProxy(proxy));
 }
 
 ConnectionPointer HttpConnection::clone(const ProxyData &proxy) {
-	return ConnectionPointer::New<HttpConnection>(_instance, thread(), proxy);
+	return ConnectionPointer::New<HttpConnection>(_runtime, thread(), proxy);
 }
 
-void HttpConnection::sendData(mtpBuffer &&buffer) {
+void HttpConnection::sendData(mtpBuffer &&buffer, SendDataContext) {
 	Expects(buffer.size() > 2);
 
 	if (_status == Status::Finished) {
@@ -92,7 +92,11 @@ void HttpConnection::sendData(mtpBuffer &&buffer) {
 		QVariant(u"application/x-www-form-urlencoded"_q));
 
 	CONNECTION_LOG_INFO(u"Sending %1 len request."_q.arg(requestSize));
-	_requests.insert(_manager.post(request, QByteArray((const char*)(&buffer[2]), requestSize)));
+	auto payload = QByteArray(requestSize, Qt::Uninitialized);
+	binary::Copy(
+		bytes::make_detached_span(payload),
+		bytes::make_span(buffer).subspan(2 * sizeof(mtpPrime), requestSize));
+	_requests.insert(_manager.post(request, payload));
 }
 
 void HttpConnection::disconnectFromServer() {
@@ -133,7 +137,7 @@ void HttpConnection::connectToServer(
 			.arg(ProtocolDcDebugId(protocolDcId), url().toDisplayString());
 	}
 
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Connecting,
 		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
@@ -142,7 +146,7 @@ void HttpConnection::connectToServer(
 		.message = u"connecting to proxy"_q,
 	});
 	_pingTime = crl::now();
-	sendData(std::move(buffer));
+	sendData(std::move(buffer), {});
 }
 
 mtpBuffer HttpConnection::handleResponse(QNetworkReply *reply) {
@@ -157,7 +161,9 @@ mtpBuffer HttpConnection::handleResponse(QNetworkReply *reply) {
 	}
 
 	mtpBuffer data(response.size() >> 2);
-	memcpy(data.data(), response.constData(), response.size());
+	binary::Copy(
+		bytes::make_span(data),
+		bytes::make_span(response.constData(), response.size()));
 
 	return data;
 }
@@ -251,7 +257,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 	reply->deleteLater();
 	if (reply->error() == QNetworkReply::NoError) {
 		_requests.remove(reply);
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::TelegramCheck,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
@@ -262,7 +268,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 
 		mtpBuffer data = handleResponse(reply);
 		if (data.size() == 1) {
-			ReportProxyEvent(_instance, {
+			ReportProxyEvent(_runtime, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
 				.attempt = _mtproxyAttempt,
@@ -283,7 +289,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 						"HTTP-transport connected by pq-response.");
 					_status = Status::Ready;
 					_pingTime = crl::now() - _pingTime;
-					ReportProxyEvent(_instance, {
+					ReportProxyEvent(_runtime, {
 						.phase = ProxyDiagnosticsPhase::Connected,
 						.attempt = _mtproxyAttempt,
 						.proxy = _proxy,
@@ -295,7 +301,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 				} else {
 					CONNECTION_LOG_ERROR(
 						"Wrong nonce in HTTP fake pq-response.");
-					ReportProxyEvent(_instance, {
+					ReportProxyEvent(_runtime, {
 						.phase = ProxyDiagnosticsPhase::Failed,
 						.error = ProxyConnectionError::BadResponse,
 						.attempt = _mtproxyAttempt,
@@ -309,7 +315,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			} else {
 				CONNECTION_LOG_ERROR(
 					"Could not parse HTTP fake pq-response.");
-				ReportProxyEvent(_instance, {
+				ReportProxyEvent(_runtime, {
 					.phase = ProxyDiagnosticsPhase::Failed,
 					.error = ProxyConnectionError::BadResponse,
 					.attempt = _mtproxyAttempt,
@@ -326,7 +332,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			return;
 		}
 
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ReplyProxyConnectionError(reply->error()),
 			.attempt = _mtproxyAttempt,
@@ -353,12 +359,14 @@ crl::time HttpConnection::fullConnectTimeout() const {
 	return kFullConnectionTimeout;
 }
 
-bool HttpConnection::usingHttpWait() {
-	return true;
+auto HttpConnection::serviceRequest() const -> TransportServiceRequest {
+	return TransportServiceRequest::HttpWait;
 }
 
-bool HttpConnection::needHttpWait() {
-	return _requests.isEmpty();
+bool HttpConnection::serviceRequestNeeded(
+		TransportServiceRequest request) const {
+	return (request == TransportServiceRequest::HttpWait)
+		&& _requests.isEmpty();
 }
 
 int32 HttpConnection::debugState() const {

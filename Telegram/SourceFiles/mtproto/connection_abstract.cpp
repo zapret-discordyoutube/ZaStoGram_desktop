@@ -10,8 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_tcp.h"
 #include "mtproto/connection_http.h"
 #include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/proxy/resolving_connection.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/runtime_environment.h"
 #include "mtproto/session.h"
 #include "logs.h"
 #include "base/unixtime.h"
@@ -108,8 +110,14 @@ mtpBuffer AbstractConnection::prepareSecurePacket(
 	constexpr auto kTcpPostfixInts = 4;
 	result.reserve(kPrefixInts + size + kTcpPostfixInts);
 	result.resize(kPrefixInts);
-	*reinterpret_cast<uint64*>(&result[kAuthKeyIdPosition]) = keyId;
-	*reinterpret_cast<MTPint128*>(&result[kMessageKeyPosition]) = msgKey;
+	binary::WriteAt<uint64>(
+		bytes::make_span(result),
+		kAuthKeyIdPosition * sizeof(mtpPrime),
+		keyId);
+	binary::WriteAt<MTPint128>(
+		bytes::make_span(result),
+		kMessageKeyPosition * sizeof(mtpPrime),
+		msgKey);
 	return result;
 }
 
@@ -170,9 +178,11 @@ std::optional<MTPResPQ> AbstractConnection::readPQFakeReply(
 }
 
 AbstractConnection::AbstractConnection(
+	not_null<RuntimeEnvironment*> runtime,
 	QThread *thread,
 	const ProxyData &proxy)
-: _proxy(proxy)
+: _runtime(runtime)
+, _proxy(proxy)
 , _debugId(QString::number(++GlobalConnectionCounter)) {
 	moveToThread(thread);
 }
@@ -186,8 +196,13 @@ void AbstractConnection::setMtproxyAttempt(
 		crl::time) {
 }
 
+bool AbstractConnection::serviceRequestNeeded(
+		TransportServiceRequest request) const {
+	return serviceRequest() == request;
+}
+
 ConnectionPointer AbstractConnection::Create(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		DcOptions::Variants::Protocol protocol,
 		QThread *thread,
 		const bytes::vector &secret,
@@ -196,20 +211,20 @@ ConnectionPointer AbstractConnection::Create(
 	auto result = [&] {
 		if (protocol == DcOptions::Variants::Tcp) {
 			return ConnectionPointer::New<TcpConnection>(
-				instance,
+				runtime,
 				thread,
 				proxy,
 				stealth);
 		} else {
 			return ConnectionPointer::New<HttpConnection>(
-				instance,
+				runtime,
 				thread,
 				proxy);
 		}
 	}();
 	if (proxy.tryCustomResolve()) {
 		return ConnectionPointer::New<ResolvingConnection>(
-			instance,
+			runtime,
 			thread,
 			proxy,
 			std::move(result));
@@ -230,7 +245,7 @@ QString AbstractConnection::ProtocolDcDebugId(int16 protocolDcId) {
 void AbstractConnection::logInfo(const QString &message) {
 	const auto full = QString("Connection %1 Info: ").arg(_debugId) + message;
 	if (IsMtproxyTransport(_transport)) {
-		WriteProxyDiagnosticsLine({
+		WriteProxyDiagnosticsLine(_runtime, {
 			.source = ProxyDiagnosticsSource::MTProxy,
 			.phase = ProxyDiagnosticsPhase::None,
 			.severity = ProxyDiagnosticsSeverity::Info,
@@ -247,7 +262,7 @@ void AbstractConnection::logInfo(const QString &message) {
 void AbstractConnection::logError(const QString &message) {
 	const auto full = QString("Connection %1 Error: ").arg(_debugId) + message;
 	if (IsMtproxyTransport(_transport)) {
-		WriteProxyDiagnosticsLine({
+		WriteProxyDiagnosticsLine(_runtime, {
 			.source = ProxyDiagnosticsSource::MTProxy,
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.severity = ProxyDiagnosticsSeverity::Error,

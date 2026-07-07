@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -97,13 +98,14 @@ def test_diagnostics_declares_structured_proxy_events_and_context():
 
 def test_admission_queue_and_start_are_logged_not_failed():
     broker = read(CONNECTION_BROKER_CPP)
-    session = read(SESSION_CPP)
+    session = read_session_private_sources()
 
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
     assert "ProxyDiagnosticsPhase::AdmissionStarted" in broker
     assert "ProxyDiagnosticsPhase::AdmissionCancelled" in broker
     assert "queueMs =" in broker
-    assert "request.instance" in broker
+    assert "request.runtime" in broker
+    assert "request.instance" not in broker
 
     append_body = function_body(session, "bool SessionPrivate::appendTestConnection(")
     status_body = append_body.split(".status = [=](ConnectionBrokerDecision")[1]

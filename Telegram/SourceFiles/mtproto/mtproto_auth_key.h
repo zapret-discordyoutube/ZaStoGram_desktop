@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/bytes.h"
+#include "mtproto/details/mtproto_binary.h"
 #include <array>
 #include <memory>
 
@@ -27,6 +28,7 @@ public:
 	};
 	AuthKey(Type type, DcId dcId, const Data &data);
 	explicit AuthKey(const Data &data);
+	~AuthKey();
 
 	AuthKey(const AuthKey &other) = delete;
 	AuthKey &operator=(const AuthKey &other) = delete;
@@ -84,7 +86,11 @@ inline void aesIgeEncrypt(const void *src, void *dst, uint32 len, const AuthKeyP
 
 inline void aesEncryptLocal(const void *src, void *dst, uint32 len, const AuthKeyPtr &authKey, const void *key128) {
 	MTPint256 aesKey, aesIV;
-	authKey->prepareAES_oldmtp(*(const MTPint128*)key128, aesKey, aesIV, false);
+	authKey->prepareAES_oldmtp(
+		details::binary::Read<MTPint128>(key128),
+		aesKey,
+		aesIV,
+		false);
 
 	return aesIgeEncryptRaw(src, dst, len, static_cast<const void*>(&aesKey), static_cast<const void*>(&aesIV));
 }
@@ -105,7 +111,11 @@ inline void aesIgeDecrypt(const void *src, void *dst, uint32 len, const AuthKeyP
 
 inline void aesDecryptLocal(const void *src, void *dst, uint32 len, const AuthKeyPtr &authKey, const void *key128) {
 	MTPint256 aesKey, aesIV;
-	authKey->prepareAES_oldmtp(*(const MTPint128*)key128, aesKey, aesIV, false);
+	authKey->prepareAES_oldmtp(
+		details::binary::Read<MTPint128>(key128),
+		aesKey,
+		aesIV,
+		false);
 
 	return aesIgeDecryptRaw(src, dst, len, static_cast<const void*>(&aesKey), static_cast<const void*>(&aesIV));
 }

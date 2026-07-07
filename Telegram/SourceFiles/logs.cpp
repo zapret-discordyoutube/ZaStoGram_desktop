@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/crash_reports.h"
 #include "core/launcher.h"
 #include "core/version.h"
-#include "mtproto/facade.h"
+#include "mtproto/dc_id.h"
 
 #include <QtCore/QCoreApplication>
 

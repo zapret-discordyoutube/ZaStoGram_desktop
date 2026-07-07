@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/runtime_environment.h"
 #include "base/algorithm.h"
 
 #include <QtCore/QTimer>
@@ -182,7 +183,7 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 }
 
 void ConnectionBroker::cancelByProxyGeneration(
-		MTP::Instance *instance,
+		RuntimeEnvironment *runtime,
 		uint64 generation) {
 	auto cancelled = std::vector<std::shared_ptr<RequestState>>();
 	{
@@ -194,7 +195,7 @@ void ConnectionBroker::cancelByProxyGeneration(
 				_uploadQueue.get() }) {
 			for (auto i = begin(queue->pending); i != end(queue->pending);) {
 				const auto &state = *i;
-				if (state->request.instance == instance
+				if (state->request.runtime == runtime
 					&& state->proxyGeneration < generation) {
 					state->active = false;
 					cancelled.push_back(state);
@@ -480,13 +481,13 @@ void ConnectionBroker::reportAdmissionEvent(
 		ProxyDiagnosticsPhase phase,
 		ConnectionBrokerDecision decision,
 		const QString &message) {
-	if (!state->request.instance || !state->request.proxy) {
+	if (!state->request.runtime || !state->request.proxy) {
 		return;
 	}
 	const auto profile = state->admission
 		? state->admission->effectiveTlsProfile
 		: state->request.configuredTlsProfile;
-	ReportProxyEvent(not_null<MTP::Instance*>(state->request.instance), {
+	ReportProxyEvent(not_null<RuntimeEnvironment*>(state->request.runtime), {
 		.phase = phase,
 		.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
 			decision.blockedBy),

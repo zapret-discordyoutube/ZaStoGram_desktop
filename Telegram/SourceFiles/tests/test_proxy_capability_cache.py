@@ -7,6 +7,7 @@ CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CAPABILITIES_H = PROXY_DIR / "capabilities.h"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
@@ -34,6 +35,7 @@ def function_body(source, signature):
 def test_capability_cache_module_is_file_backed_and_registered():
     header = read(CAPABILITIES_H)
     source = read(CAPABILITIES_CPP)
+    runtime = read(RUNTIME_CPP)
     cmake = read(CMAKE)
 
     assert "mtproto/proxy/capabilities.cpp" in cmake
@@ -43,9 +45,10 @@ def test_capability_cache_module_is_file_backed_and_registered():
     assert "ProxyCapabilityCache &Instance()" in header
     assert "QJsonDocument" in source
     assert "QSaveFile" in source
-    assert 'u"proxy-capabilities.json"_q' in source
-    assert "cWorkingDir() + u\"tdata/\"_q" in source
-    assert "QDir().mkpath(" in source
+    assert 'u"proxy-capabilities.json"_q' in runtime
+    assert "cWorkingDir() + u\"tdata/\"_q" in runtime
+    assert "QDir().mkpath(" in runtime
+    assert "runtime->proxyCapabilitiesPath" in source
     assert "load()" in source
     assert "save()" in source
 

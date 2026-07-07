@@ -62,17 +62,15 @@ private:
 		Ready,
 	};
 	struct Data {
-		Data()
-		: new_nonce(*(MTPint256*)((uchar*)new_nonce_buf.data()))
-		, auth_key_aux_hash(*(MTPlong*)((uchar*)new_nonce_buf.data() + 33)) {
-		}
+		void refreshNewNonceBuffer(bytes::type checkByte);
+
 		MTPint128 nonce, server_nonce;
 
 		// 32 bytes new_nonce + 1 check byte + 8 bytes of auth_key_aux_hash.
 		bytes::array<41> new_nonce_buf{};
 
-		MTPint256 &new_nonce;
-		MTPlong &auth_key_aux_hash;
+		MTPint256 new_nonce;
+		MTPlong auth_key_aux_hash;
 
 		MTPlong retry_id;
 

@@ -146,7 +146,7 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
     assert request.index(".proxy = proxy") < request.index(
         ".use = MtProxy::EndpointUse::ProxyCheck")
     assert request.index(".notBefore = gateDelay") < request.index(
-        ".instance = mtproto")
+        ".runtime = runtime")
     assert "raw->setMtproxyAttempt({" in start
     assert ".proxyGeneration = start.proxyGeneration" in start
     assert ".proxyEpoch = start.proxyEpoch" in start

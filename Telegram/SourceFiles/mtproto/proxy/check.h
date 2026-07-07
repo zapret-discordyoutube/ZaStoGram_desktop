@@ -73,7 +73,7 @@ void DropProxyChecker(
 	const ProxyCheckConnection &v4,
 	const ProxyCheckConnection &v6);
 void StartProxyCheck(
-	not_null<Instance*> mtproto,
+	not_null<RuntimeEnvironment*> runtime,
 	const ProxyData &proxy,
 	bool tryIPv6,
 	const ProxyStealthOptions &stealth,

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/details/mtproto_dc_key_binder.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtp_instance.h"
 #include "base/unixtime.h"
@@ -58,9 +59,12 @@ namespace {
 	constexpr auto kMessageKeyBytes = 4 * sizeof(mtpPrime);
 	constexpr auto kPrefix = (kAuthKeyIdBytes + kMessageKeyBytes);
 	auto encrypted = QByteArray(kPrefix + sizeInBytes, Qt::Uninitialized);
-	*reinterpret_cast<uint64*>(encrypted.data()) = persistentKey->keyId();
-	*reinterpret_cast<MTPint128*>(encrypted.data() + kMessageKeyPosition)
-		= msgKey;
+	auto encryptedBytes = bytes::make_detached_span(encrypted);
+	binary::Write<uint64>(encryptedBytes, persistentKey->keyId());
+	binary::WriteAt<MTPint128>(
+		encryptedBytes,
+		kMessageKeyPosition,
+		msgKey);
 
 	aesIgeEncrypt_oldmtp(
 		serialized->constData(),

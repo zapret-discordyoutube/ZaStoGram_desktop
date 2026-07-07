@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/details/mtproto_serialized_request.h"
 
+#include "mtproto/details/mtproto_binary.h"
 #include "base/random.h"
 
 namespace MTP::details {
@@ -74,14 +75,39 @@ void SerializedRequest::setMsgId(mtpMsgId msgId) {
 	Expects(_data != nullptr);
 	Expects(_data->size() > kMessageBodyPosition);
 
-	memcpy(_data->data() + kMessageIdPosition, &msgId, sizeof(mtpMsgId));
+	binary::WriteAt<mtpMsgId>(
+		bytes::make_span(*_data),
+		kMessageIdPosition * sizeof(mtpPrime),
+		msgId);
 }
 
 mtpMsgId SerializedRequest::getMsgId() const {
 	Expects(_data != nullptr);
 	Expects(_data->size() > kMessageBodyPosition);
 
-	return *(mtpMsgId*)(_data->constData() + kMessageIdPosition);
+	return binary::ReadAt<mtpMsgId>(
+		bytes::make_span(*_data),
+		kMessageIdPosition * sizeof(mtpPrime));
+}
+
+void SerializedRequest::setSalt(uint64 salt) {
+	Expects(_data != nullptr);
+	Expects(_data->size() > kMessageBodyPosition);
+
+	binary::WriteAt<uint64>(
+		bytes::make_span(*_data),
+		0,
+		salt);
+}
+
+void SerializedRequest::setSessionId(uint64 sessionId) {
+	Expects(_data != nullptr);
+	Expects(_data->size() > kMessageBodyPosition);
+
+	binary::WriteAt<uint64>(
+		bytes::make_span(*_data),
+		kSessionIdPosition * sizeof(mtpPrime),
+		sessionId);
 }
 
 void SerializedRequest::setSeqNo(uint32 seqNo) {
@@ -122,6 +148,37 @@ uint32 SerializedRequest::messageSize() const {
 
 	const auto ints = (tl::count_length(*this) >> 2);
 	return kMessageIdInts + kSeqNoInts + kMessageLengthInts + ints;
+}
+
+gsl::span<const mtpPrime> SerializedRequest::innerMessagePrimes() const {
+	Expects(_data != nullptr);
+	Expects(_data->size() > kMessageBodyPosition);
+
+	return gsl::make_span(
+		_data->constData() + kMessageIdPosition,
+		messageSize());
+}
+
+gsl::span<const mtpPrime> SerializedRequest::bodyPrimes() const {
+	Expects(_data != nullptr);
+	Expects(_data->size() > kMessageBodyPosition);
+
+	return gsl::make_span(
+		_data->constData() + kMessageBodyPosition,
+		tl::count_length(*this) >> 2);
+}
+
+void SerializedRequest::appendInnerMessageFrom(
+		const SerializedRequest &from) {
+	Expects(_data != nullptr);
+
+	binary::AppendPrimes(*_data, from.innerMessagePrimes());
+}
+
+void SerializedRequest::appendBodyFrom(const SerializedRequest &from) {
+	Expects(_data != nullptr);
+
+	binary::AppendPrimes(*_data, from.bodyPrimes());
 }
 
 bool SerializedRequest::needAck() const {

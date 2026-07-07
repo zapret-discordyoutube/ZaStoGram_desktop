@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "mtproto/mtp_instance.h"
-#include "mtproto/facade.h"
+#include "mtproto/session_state.h"
 #include "main/main_account.h"
 #include "core/application.h"
 #include "core/core_settings.h"

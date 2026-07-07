@@ -16,7 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
-class Instance;
+struct RuntimeEnvironment;
 
 enum class ProxyDiagnosticsSource {
 	MTProxy,
@@ -133,8 +133,16 @@ struct ProxyEventReport {
 
 [[nodiscard]] QString FormatProxyDiagnosticsEvent(
 	const ProxyDiagnosticsEvent &event);
+[[nodiscard]] ProxyDiagnosticsSource SourceForReport(
+	const ProxyEventReport &report);
 
+void WriteProxyDiagnosticsLine(
+	not_null<RuntimeEnvironment*> runtime,
+	ProxyDiagnosticsEvent event);
 void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event);
-void ReportProxyEvent(not_null<Instance*> instance, ProxyEventReport report);
+void ReportProxyEvent(
+	not_null<RuntimeEnvironment*> runtime,
+	ProxyEventReport report);
+void ReportProxyEvent(ProxyEventReport report);
 
 } // namespace MTP

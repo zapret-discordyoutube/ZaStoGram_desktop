@@ -68,7 +68,7 @@ private:
 	[[nodiscard]] bool tryFinishUpgrade();
 	[[nodiscard]] bool checkUpgradeAccept(const QByteArray &header) const;
 	void parseFrames();
-	void sendFrame(quint8 opcode, const char *data, int size);
+	void sendFrame(quint8 opcode, bytes::const_span data);
 
 	QSslSocket _socket;
 	WssRoute _route;

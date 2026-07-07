@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -106,7 +107,7 @@ def test_prepared_adaptive_profile_is_used_for_client_hello():
 
 
 def test_mtproxy_admission_delays_are_logged_as_queued_status():
-    source = SESSION_PRIVATE_CPP.read_text(encoding="utf-8")
+    source = read_session_private_sources()
     broker = (SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp").read_text(
         encoding="utf-8")
     append_body = function_body(

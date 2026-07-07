@@ -13,6 +13,7 @@ nice_target_sources(td_mtproto ${src_loc}
 PRIVATE
     mtproto/details/mtproto_abstract_socket.cpp
     mtproto/details/mtproto_abstract_socket.h
+    mtproto/details/mtproto_binary.h
     mtproto/details/mtproto_bound_key_creator.cpp
     mtproto/details/mtproto_bound_key_creator.h
     mtproto/details/mtproto_dc_key_binder.cpp

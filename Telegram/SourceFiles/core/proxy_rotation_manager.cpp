@@ -11,8 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/core_settings.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
-#include "mtproto/facade.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/session_state.h"
 
 #include <crl/crl_on_main.h>
 
@@ -335,7 +335,7 @@ void ProxyRotationManager::startNextCheck() {
 		entry.checking = true;
 		entry.startedAt = crl::now();
 		MTP::StartProxyCheck(
-			&accountForChecks()->mtp(),
+			&accountForChecks()->mtp().runtimeEnvironment(),
 			proxy,
 			settings.tryIPv6(),
 			App().settings().proxyStealthOptions(),

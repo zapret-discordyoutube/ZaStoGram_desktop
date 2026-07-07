@@ -1,4 +1,5 @@
 from pathlib import Path
+from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
@@ -16,7 +17,7 @@ TD_MTPROTO_CMAKE = ROOT_DIR / "Telegram" / "cmake" / "td_mtproto.cmake"
 
 
 def test_legacy_mtproxy_policy_module_is_removed():
-    session = SESSION_CPP.read_text(encoding="utf-8")
+    session = read_session_private_sources()
     tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     endpoint_header = ENDPOINT_HEALTH_H.read_text(encoding="utf-8")
     endpoint_source = ENDPOINT_HEALTH_CPP.read_text(encoding="utf-8")

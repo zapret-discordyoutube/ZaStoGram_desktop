@@ -7,12 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/resolving_connection.h"
 
-#include "mtproto/mtp_instance.h"
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
+#include "mtproto/runtime_environment.h"
 
 #include <algorithm>
 
@@ -121,7 +121,7 @@ void ReportAllRoutesFailed(
 }
 
 void ReportRouteEvent(
-		not_null<Instance*> instance,
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		int ipIndex,
 		ProxyDiagnosticsPhase phase,
@@ -135,7 +135,7 @@ void ReportRouteEvent(
 		endpoint.route.address,
 		endpoint.route.port);
 	const auto failurePhase = MtProxy::ToLegacyDiagnostic(reason);
-	ReportProxyEvent(instance, {
+	ReportProxyEvent(runtime, {
 		.phase = phase,
 		.error = MtProxy::ToProxyConnectionError(reason),
 		.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(reason),
@@ -166,17 +166,16 @@ void ReportRouteEvent(
 } // namespace
 
 ResolvingConnection::ResolvingConnection(
-	not_null<Instance*> instance,
+	not_null<RuntimeEnvironment*> runtime,
 	QThread *thread,
 	const ProxyData &proxy,
 	ConnectionPointer &&child)
-: AbstractConnection(thread, proxy)
-, _instance(instance)
+: AbstractConnection(runtime, thread, proxy)
 , _child(std::move(child))
 , _timeoutTimer([=] { handleRouteAttemptTimeout(); })
 , _routeRaceTimer([=] { startNextRouteAttempt(); }) {
 	if (proxy.resolvedIPs.empty() || proxy.resolvedExpireAt < crl::now()) {
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Resolving,
 			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
@@ -184,7 +183,7 @@ ResolvingConnection::ResolvingConnection(
 		});
 		const auto host = proxy.host;
 		DnsResolverCache::Instance().request(
-			instance,
+			runtime,
 			this,
 			host,
 			[=](QString host, QStringList ips, qint64 expireAt) {
@@ -253,7 +252,7 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 	}
 	_routeAttempts.push_back(std::move(attempt));
 	ReportRouteEvent(
-		_instance,
+		_runtime,
 		_proxy,
 		ipIndex,
 		ProxyDiagnosticsPhase::RouteSelected);
@@ -429,7 +428,7 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	const auto reason = RouteTimeoutReason(
 		ChildHandshakePhase(victim->child.get()));
 	ReportRouteEvent(
-		_instance,
+		_runtime,
 		_proxy,
 		ipIndex,
 		ProxyDiagnosticsPhase::RouteFailed,
@@ -489,7 +488,7 @@ void ResolvingConnection::domainResolved(
 					.attemptStartedAt = _mtproxyAttemptStartedAt,
 				});
 		}
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
@@ -503,7 +502,7 @@ void ResolvingConnection::domainResolved(
 		emitError(kErrorCodeOther);
 		return;
 	}
-	ReportProxyEvent(_instance, {
+	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Resolving,
 		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
@@ -543,7 +542,7 @@ void ResolvingConnection::handleError(
 			reason = MtProxy::FailureReason::TcpConnectTimeout;
 		}
 		ReportRouteEvent(
-			_instance,
+			_runtime,
 			_proxy,
 			attempt->ipIndex,
 			ProxyDiagnosticsPhase::RouteFailed,
@@ -638,9 +637,11 @@ void ResolvingConnection::handleConnected(AbstractConnection *child) {
 	if (_ipIndex >= 0) {
 		const auto host = _proxy.host;
 		const auto good = _proxy.resolvedIPs[_ipIndex];
-		const auto instance = _instance;
-		InvokeQueued(_instance, [=] {
-			instance->setGoodProxyDomain(host, good);
+		const auto runtime = _runtime;
+		InvokeQueued(runtime, [=] {
+			if (runtime->setGoodProxyDomain) {
+				runtime->setGoodProxyDomain(host, good);
+			}
 		});
 	}
 	connected();
@@ -663,10 +664,12 @@ crl::time ResolvingConnection::fullConnectTimeout() const {
 		+ kRouteRaceDelay * kMaxParallelRouteAttempts;
 }
 
-void ResolvingConnection::sendData(mtpBuffer &&buffer) {
+void ResolvingConnection::sendData(
+		mtpBuffer &&buffer,
+		SendDataContext context) {
 	Expects(_child != nullptr);
 
-	_child->sendData(std::move(buffer));
+	_child->sendData(std::move(buffer), context);
 }
 
 void ResolvingConnection::disconnectFromServer() {
@@ -706,7 +709,7 @@ void ResolvingConnection::connectToServer(
 				.attemptStartedAt = _mtproxyAttemptStartedAt,
 			});
 		}
-		ReportProxyEvent(_instance, {
+		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::HostNotFound,
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)

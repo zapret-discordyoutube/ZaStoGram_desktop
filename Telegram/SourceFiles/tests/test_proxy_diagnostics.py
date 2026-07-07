@@ -11,6 +11,7 @@ DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
 CONTROL_H = PROXY_DIR / "control_plane.h"
 CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
 ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
@@ -44,6 +45,7 @@ def test_diagnostics_model_is_disk_only():
     cmake = read(CMAKE)
     header = read(DIAGNOSTICS_H)
     source = read(DIAGNOSTICS_CPP)
+    runtime = read(RUNTIME_CPP)
 
     assert "mtproto/proxy/diagnostics.cpp" in cmake
     assert "mtproto/proxy/diagnostics.h" in cmake
@@ -53,7 +55,7 @@ def test_diagnostics_model_is_disk_only():
     assert "ProxyMtproxyTerminalReason mtproxyReason" in header
     assert "ProxyConnectionAttempt attempt" in header
     assert "WriteProxyDiagnosticsLine(" in header
-    assert "Logs::writeMtproxy(line);" in source
+    assert "Logs::writeMtproxy(FormatProxyDiagnosticsEvent(event));" in runtime
     assert "ProxyDiagnosticsEventsValue" not in header
     assert "ProxyDiagnosticsSnapshot" not in header
     assert "LoadProxyDiagnosticsTail(" not in header
@@ -121,6 +123,7 @@ def test_proxy_reporting_is_centralized():
     diagnostics = read(DIAGNOSTICS_CPP)
     control_header = read(CONTROL_H)
     control_source = read(CONTROL_CPP)
+    runtime = read(RUNTIME_CPP)
     instance = read(INSTANCE_CPP)
     resolving = read(RESOLVING_CPP)
     tcp = read(TCP_CPP)
@@ -135,18 +138,19 @@ def test_proxy_reporting_is_centralized():
     assert "ProxyControlPlane::FactFromReport(" in control_source
     assert "StatusPhaseFromDiagnostics" not in diagnostics
     assert "SourceForProxy" in diagnostics
-    assert '#include "mtproto/proxy/control_plane.h"' in diagnostics
-    assert "ProxyControlPlane::SubmitFact(instance, report);" in diagnostics
+    assert '#include "mtproto/proxy/control_plane.h"' in runtime
+    assert "ProxyControlPlane::SubmitFact(runtime, report);" in runtime
     assert "setProxyConnectionStatus" not in diagnostics
-    assert "WriteProxyDiagnosticsLine({" in diagnostics
-    assert "report.mtproxyReason" in diagnostics
-    assert "report.attempt" in diagnostics
+    assert "runtime->reportProxyEvent" in diagnostics
+    assert "WriteProxyDiagnosticsLine(runtime, {" in runtime
+    assert "report.mtproxyReason" in runtime
+    assert "report.attempt" in runtime
 
     for transport in (resolving, tcp, http):
-        assert "ReportProxyEvent(_instance, {" in transport
+        assert "ReportProxyEvent(_runtime, {" in transport
         assert "SetProxyConnectionStatus" not in transport
         assert "AddProxyDiagnosticsEvent" not in transport
-    assert "ReportProxyEvent(mtproto, {" in proxy_check
+    assert "ReportProxyEvent(runtime, {" in proxy_check
     assert "AddProxyDiagnosticsEvent" not in proxy_check
 
     assert "selected proxy status changed" not in instance
