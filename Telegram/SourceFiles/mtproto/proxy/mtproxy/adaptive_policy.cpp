@@ -70,8 +70,7 @@ std::map<QString, AutoProfileState> AutoProfiles; // Guarded by the mutex.
 bool FailureNeedsRecipe(const QString &diagnostic) {
 	return (diagnostic == u"client_hello_sent_no_server_hello"_q)
 		|| (diagnostic == u"tls_alert_after_client_hello"_q)
-		|| (diagnostic == u"server_hello_hmac_mismatch"_q)
-		|| (diagnostic == u"server_hello_ok_no_appdata"_q);
+		|| (diagnostic == u"server_hello_hmac_mismatch"_q);
 }
 
 bool FailureNeedsTlsProfileRotation(const QString &diagnostic) {
@@ -119,6 +118,9 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 	if (input.endpointKey.isEmpty() || input.recipeLevel <= 0) {
 		return result;
 	}
+	if (input.stealth.level == ProxyStealthLevel::CompatStrict) {
+		return result;
+	}
 	auto &stealth = result.stealth;
 	const auto autoProfile = (input.configuredTlsProfile == ProxyTlsProfile::Auto)
 		|| (input.configuredTlsProfile == ProxyTlsProfile::AutoRotate);
@@ -130,9 +132,6 @@ AdaptiveRecipeResult ApplyAdaptiveRecipe(const AdaptiveRecipeInput &input) {
 	const auto level = ProxyStealthLevelForRecipeLevel(input.recipeLevel);
 	stealth = ApplyProxyStealthLevel(input.stealth, level);
 	result.changed = (stealth != input.stealth);
-	if (input.lastDiagnostic == u"server_hello_ok_no_appdata"_q) {
-		return result;
-	}
 	if (input.recipeLevel >= 2 && autoProfile) {
 		const auto previous = stealth.tlsProfile;
 		stealth.tlsProfile = CompatibilityTlsProfile(

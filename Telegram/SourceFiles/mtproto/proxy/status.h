@@ -43,8 +43,10 @@ enum class ProxyMtproxyTerminalReason {
 	TlsAlertAfterClientHello,
 	ServerHelloHmacMismatch,
 	ServerHelloOkNoAppData,
+	ServerHelloOkNoMtprotoData,
 	AppDataRemoteClosed,
 	ConnectedNoMtprotoData,
+	MtpReceiveTimeoutAfterData,
 	ProxyProtocolBadResponse,
 };
 
@@ -76,7 +78,9 @@ enum class ProxyConnectionStatusKind {
 	MtproxyTlsAlert,
 	MtproxyServerHelloHmacMismatch,
 	MtproxyServerHelloOkNoAppData,
+	MtproxyConnectedNoMtprotoData,
 	MtproxyAppDataRemoteClosed,
+	MtproxyMtpReceiveTimeoutAfterData,
 	MtproxyProxyProtocolBadResponse,
 };
 
@@ -104,14 +108,18 @@ enum class ProxyConnectionStatusTone {
 };
 
 struct ProxyConnectionAttempt {
+	uint64 proxyGeneration = 0;
 	uint64 proxyEpoch = 0;
 	uint64 attemptId = 0;
 	QString connectionId;
+	bool probe = false;
 
 	bool operator==(const ProxyConnectionAttempt &other) const {
-		return (proxyEpoch == other.proxyEpoch)
+		return (proxyGeneration == other.proxyGeneration)
+			&& (proxyEpoch == other.proxyEpoch)
 			&& (attemptId == other.attemptId)
-			&& (connectionId == other.connectionId);
+			&& (connectionId == other.connectionId)
+			&& (probe == other.probe);
 	}
 };
 
@@ -122,6 +130,7 @@ struct ProxyConnectionStatus {
 		= ProxyMtproxyTerminalReason::None;
 	ProxyConnectionAttempt attempt;
 	crl::time terminalUntil = 0;
+	crl::time successUntil = 0;
 	ProxyData proxy;
 
 	bool operator==(const ProxyConnectionStatus &other) const {
@@ -130,6 +139,7 @@ struct ProxyConnectionStatus {
 			&& (mtproxyReason == other.mtproxyReason)
 			&& (attempt == other.attempt)
 			&& (terminalUntil == other.terminalUntil)
+			&& (successUntil == other.successUntil)
 			&& (proxy == other.proxy);
 	}
 

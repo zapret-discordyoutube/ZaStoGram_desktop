@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/status.h"
 #include "mtproto/special_config_request.h"
 #include "mtproto/session.h"
@@ -105,6 +106,8 @@ public:
 
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
+	void migrateProxy();
+	void proxyMigrationSucceeded(uint64 generation);
 	[[nodiscard]] int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] QString dctransport(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;
@@ -308,6 +311,8 @@ private:
 	base::Timer _checkDelayedTimer;
 
 	Core::SettingsProxy &_proxySettings;
+	uint64 _proxyGeneration = 0;
+	bool _proxyMigrationActive = false;
 
 	rpl::lifetime _lifetime;
 
@@ -629,6 +634,40 @@ void Instance::Private::requestCDNConfig() {
 void Instance::Private::restart() {
 	for (const auto &[shiftedDcId, session] : _sessions) {
 		session->restart();
+	}
+}
+
+void Instance::Private::migrateProxy() {
+	if (isKeysDestroyer()) {
+		return restart();
+	}
+	++_proxyGeneration;
+	_proxyMigrationActive = true;
+	setProxyConnectionStatus({
+		.attempt = { .proxyGeneration = _proxyGeneration },
+		.proxy = _proxySettings.isEnabled()
+			? _proxySettings.selected()
+			: ProxyData(),
+	});
+	ConnectionBroker::Instance().cancelByProxyGeneration(
+		_instance,
+		_proxyGeneration);
+	for (const auto &[shiftedDcId, session] : _sessions) {
+		session->migrateProxy(
+			_proxyGeneration,
+			session.get() == _mainSession);
+	}
+}
+
+void Instance::Private::proxyMigrationSucceeded(uint64 generation) {
+	if (!_proxyMigrationActive || generation != _proxyGeneration) {
+		return;
+	}
+	_proxyMigrationActive = false;
+	for (const auto &[shiftedDcId, session] : _sessions) {
+		if (session.get() != _mainSession) {
+			session->releaseProxyMigration(generation);
+		}
 	}
 }
 
@@ -1747,6 +1786,9 @@ not_null<Session*> Instance::Private::startSession(ShiftedDcId shiftedDcId) {
 		shiftedDcId,
 		std::make_unique<Session>(_instance, thread, shiftedDcId, dc)
 	).first->second.get();
+	if (_proxyMigrationActive && result != _mainSession) {
+		result->migrateProxy(_proxyGeneration, false);
+	}
 	if (isKeysDestroyer()) {
 		scheduleKeyDestroy(shiftedDcId);
 	}
@@ -2053,6 +2095,14 @@ void Instance::restart() {
 
 void Instance::restart(ShiftedDcId shiftedDcId) {
 	_private->restart(shiftedDcId);
+}
+
+void Instance::migrateProxy() {
+	_private->migrateProxy();
+}
+
+void Instance::proxyMigrationSucceeded(uint64 generation) {
+	_private->proxyMigrationSucceeded(generation);
 }
 
 int32 Instance::dcstate(ShiftedDcId shiftedDcId) {

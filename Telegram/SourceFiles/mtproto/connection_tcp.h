@@ -38,6 +38,9 @@ public:
 		bool protocolForFiles) override;
 	void timedOut() override;
 	HandshakePhase handshakePhase() const override;
+	void setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) override;
 	bool isConnected() const override;
 
 	int32 debugState() const override;
@@ -73,6 +76,8 @@ private:
 
 	const not_null<Instance*> _instance;
 	const ProxyStealthOptions _stealth;
+	ProxyConnectionAttempt _mtproxyAttempt;
+	crl::time _mtproxyAttemptStartedAt = 0;
 	std::unique_ptr<AbstractSocket> _socket;
 	bool _connectionStarted = false;
 

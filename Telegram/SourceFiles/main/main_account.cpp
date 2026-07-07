@@ -95,17 +95,9 @@ void Account::watchProxyChanges() {
 	using ProxyChange = Core::Application::ProxyChange;
 
 	Core::App().proxyChanges(
-	) | rpl::on_next([=](const ProxyChange &change) {
-		const auto key = [&](const MTP::ProxyData &proxy) {
-			return (proxy.type == MTP::ProxyData::Type::Mtproto)
-				? std::make_pair(proxy.host, proxy.port)
-				: std::make_pair(QString(), uint32(0));
-		};
+	) | rpl::on_next([=](const ProxyChange &) {
 		if (_mtp) {
-			_mtp->restart();
-			if (key(change.was) != key(change.now)) {
-				_mtp->reInitConnection(_mtp->mainDcId());
-			}
+			_mtp->migrateProxy();
 		}
 		if (_mtpForKeysDestroy) {
 			_mtpForKeysDestroy->restart();

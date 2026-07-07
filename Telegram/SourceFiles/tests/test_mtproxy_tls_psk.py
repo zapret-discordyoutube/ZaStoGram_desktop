@@ -106,7 +106,7 @@ def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
     assert "NoteSyntheticPskDataPathSuccess(" in source
     assert packet_body.index("_phase = HandshakePhase::FirstDataReceived;") < (
         packet_body.index("NoteSyntheticPskDataPathSuccess("))
-    assert packet_body.index("reportSuccess({") < (
+    assert packet_body.index("ReportMtproxySuccess({") < (
         packet_body.index("NoteSyntheticPskDataPathSuccess("))
 
 
@@ -301,7 +301,7 @@ def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
     assert "CompatibilityTlsProfile(\n\t\t\tinput.effectiveTlsProfile," in adaptive_source
     assert "ProxyTlsProfile _preparedTlsProfile" in header
     assert "bool _usePreparedTlsProfile" in header
-    assert "EndpointHealth::Instance().snapshot(" in recipe_body
+    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in recipe_body
     assert "input.recipeLevel = snapshot.recipeLevel;" in recipe_body
     assert "input.lastDiagnostic = snapshot.lastDiagnostic;" in recipe_body
     assert "input.effectiveTlsProfile = effectiveTlsProfile();" in recipe_body

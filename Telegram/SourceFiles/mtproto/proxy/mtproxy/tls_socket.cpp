@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/details/mtproto_tcp_socket.h"
+#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "base/algorithm.h"
@@ -245,11 +246,15 @@ TlsSocket::TlsSocket(
 	const bytes::vector &secret,
 	const ProxyData &proxy,
 	bool protocolForFiles,
-	const ProxyStealthOptions &stealth)
+	const ProxyStealthOptions &stealth,
+	ProxyConnectionAttempt mtproxyAttempt,
+	crl::time mtproxyAttemptStartedAt)
 	: AbstractSocket(thread)
 	, _secret(secret)
 	, _endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))
-	, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical)) {
+	, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical))
+	, _mtproxyAttempt(mtproxyAttempt)
+	, _mtproxyAttemptStartedAt(mtproxyAttemptStartedAt) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
 
 	_recordSizing = RecordSizing(int(stealth.recordSizing));
@@ -355,6 +360,8 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 	case MtProxy::FailureReason::TcpConnectedNoClientHelloWrite:
 	case MtProxy::FailureReason::AppDataRemoteClosed:
 	case MtProxy::FailureReason::ConnectedNoMtprotoData:
+	case MtProxy::FailureReason::ServerHelloOkNoMtprotoData:
+	case MtProxy::FailureReason::MtpReceiveTimeoutAfterData:
 	case MtProxy::FailureReason::Network:
 	case MtProxy::FailureReason::ProxyProtocolBadResponse:
 		break;
@@ -363,7 +370,7 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 }
 
 void TlsSocket::applyAdaptiveRecipe() {
-	const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+	const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
 		_endpointId);
 	if (!snapshot.recipeLevel) {
 		return;
@@ -672,12 +679,15 @@ bool TlsSocket::checkNextPacket() {
 				_firstAppDataAt = crl::now();
 				_phase = HandshakePhase::FirstDataReceived;
 				connectionProgress(_phase);
-				MtProxy::EndpointHealth::Instance().reportSuccess({
+				ProxyControlPlane::ReportMtproxySuccess({
 					.endpoint = _endpointId,
 					.use = _endpointUse,
 					.stealth = _stealth,
 					.sentProfile = _sentTlsProfile,
-					.scope = MtProxy::SuccessScope::Handshake,
+					.attemptId = _mtproxyAttempt.attemptId,
+					.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+					.attemptStartedAt = _mtproxyAttemptStartedAt,
+					.scope = MtProxy::SuccessScope::Relay,
 				});
 				NoteSyntheticPskDataPathSuccess(
 					MtProxy::EndpointKey(_endpointId.canonical),
@@ -728,12 +738,15 @@ void TlsSocket::timedOut() {
 	const auto reason = failureReason();
 	_failureReason = reason;
 	clearSyntheticPskOnFailure(reason);
-	MtProxy::EndpointHealth::Instance().reportFailure({
+	ProxyControlPlane::ReportMtproxyFailure({
 		.endpoint = _endpointId,
 		.use = _endpointUse,
 		.reason = reason,
 		.configuredTlsProfile = _tlsProfile,
 		.sentProfile = _sentTlsProfile,
+		.attemptId = _mtproxyAttempt.attemptId,
+		.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+		.attemptStartedAt = _mtproxyAttemptStartedAt,
 	});
 	_state = State::Error;
 }
@@ -932,7 +945,7 @@ ProxyMtproxyTerminalReason TlsSocket::mtproxyTerminalReason() const {
 }
 
 crl::time TlsSocket::mtproxyTerminalUntil() const {
-	return MtProxy::EndpointHealth::Instance().snapshot(
+	return ProxyControlPlane::MtproxyEndpointSnapshot(
 		_endpointId).terminalUntil;
 }
 
@@ -966,12 +979,15 @@ void TlsSocket::handleError(int errorCode) {
 			|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
 			|| reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
 		_syncTimeRequests.fire({});
-		MtProxy::EndpointHealth::Instance().reportFailure({
+		ProxyControlPlane::ReportMtproxyFailure({
 			.endpoint = _endpointId,
 			.use = _endpointUse,
 			.reason = reason,
 			.configuredTlsProfile = _tlsProfile,
 			.sentProfile = _sentTlsProfile,
+			.attemptId = _mtproxyAttempt.attemptId,
+			.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+			.attemptStartedAt = _mtproxyAttemptStartedAt,
 		});
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {

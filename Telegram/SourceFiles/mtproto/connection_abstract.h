@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/proxy/data.h"
+#include "mtproto/proxy/status.h"
 #include "base/bytes.h"
 
 #include <QtCore/QObject>
@@ -92,6 +93,9 @@ public:
 	virtual void timedOut() {
 	}
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const;
+	virtual void setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt);
 	[[nodiscard]] virtual bool isConnected() const = 0;
 	[[nodiscard]] virtual bool usingHttpWait() {
 		return false;

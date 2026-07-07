@@ -103,6 +103,8 @@ public:
 
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
+	void migrateProxy();
+	void proxyMigrationSucceeded(uint64 generation);
 	int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	QString dctransport(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;

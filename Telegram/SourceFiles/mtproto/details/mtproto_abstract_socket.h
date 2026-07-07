@@ -30,7 +30,9 @@ public:
 		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
-		int16 protocolDcId = 0);
+		int16 protocolDcId = 0,
+		ProxyConnectionAttempt mtproxyAttempt = {},
+		crl::time mtproxyAttemptStartedAt = 0);
 
 	void setDebugId(const QString &id) {
 		_debugId = id;

@@ -79,8 +79,14 @@ constexpr auto kMinimalWaitingStateDuration = crl::time(4000);
 		return tr::lng_proxy_status_mtproxy_hmac_mismatch(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData:
 		return tr::lng_proxy_status_mtproxy_no_appdata(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData:
+		return tr::lng_proxy_status_mtproxy_connected_no_mtproto_data(
+			tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed:
 		return tr::lng_proxy_status_mtproxy_appdata_closed(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyMtpReceiveTimeoutAfterData:
+		return tr::lng_proxy_status_mtproxy_mtp_timeout_after_data(
+			tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyProxyProtocolBadResponse:
 		return tr::lng_proxy_status_mtproxy_bad_response(tr::now);
 	}

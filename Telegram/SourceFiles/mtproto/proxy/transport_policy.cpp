@@ -56,6 +56,14 @@ QSet<QString> transportFallbackLogged;
 		|| proxy.port == kDefaultTelegramProxyPort;
 }
 
+[[nodiscard]] ProxyStealthOptions BoringMtproxyStealthOptions(
+		ProxyStealthOptions result,
+		ProxyTlsProfile profile = ProxyTlsProfile::ChromeModern) {
+	result = CompatStrictProxyStealthOptions(std::move(result));
+	result.tlsProfile = profile;
+	return result;
+}
+
 void LogTransportFallback(
 		const ProxyData &proxy,
 		ProxyTransport saved,
@@ -156,12 +164,15 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 		const auto capability = ProxyCapabilityCache::Instance().lookup(proxy);
 		if (capability.lastGoodTransport
 				== ProxyCapabilityTransport::MtproxyFakeTlsTcp
+			&& capability.relayProven
+			&& capability.lastGoodRecipeLevel == 0
+			&& !capability.autoRotateAllowed
 			&& capability.lastGoodProfile != ProxyTlsProfile::Auto) {
-			result = CompatStrictProxyStealthOptions(std::move(result));
-			result.tlsProfile = capability.lastGoodProfile;
-			return result;
+			return BoringMtproxyStealthOptions(
+				std::move(result),
+				capability.lastGoodProfile);
 		}
-		return CompatStrictProxyStealthOptions(std::move(result));
+		return BoringMtproxyStealthOptions(std::move(result));
 	}
 	if (settings == ProxyData::Settings::Enabled
 		&& (IsLocalProxyEndpoint(proxy)

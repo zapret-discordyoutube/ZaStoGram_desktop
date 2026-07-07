@@ -23,7 +23,9 @@ public:
 		const bytes::vector &secret,
 		const ProxyData &proxy,
 		bool protocolForFiles,
-		const ProxyStealthOptions &stealth);
+		const ProxyStealthOptions &stealth,
+		ProxyConnectionAttempt mtproxyAttempt,
+		crl::time mtproxyAttemptStartedAt);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -93,6 +95,8 @@ private:
 	MtProxy::EndpointId _endpointId;
 	QString _endpointKey;
 	MtProxy::EndpointUse _endpointUse = MtProxy::EndpointUse::Main;
+	ProxyConnectionAttempt _mtproxyAttempt;
+	crl::time _mtproxyAttemptStartedAt = 0;
 	ProxyStealthOptions _stealth;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;

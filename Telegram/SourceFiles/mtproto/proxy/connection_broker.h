@@ -40,6 +40,7 @@ struct ConnectionBrokerDecision {
 
 struct ConnectionStart {
 	ConnectionTicketId ticketId = 0;
+	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
 	ProxyStealthOptions stealth;
@@ -47,9 +48,11 @@ struct ConnectionStart {
 	MtProxy::EndpointAttemptLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	crl::time attemptStartedAt = 0;
 };
 
 struct ConnectionRequest {
+	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	ProxyData proxy;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
@@ -92,6 +95,7 @@ public:
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
 	void cancel(ConnectionTicketId id);
+	void cancelByProxyGeneration(Instance *instance, uint64 generation);
 
 private:
 	struct RequestState;

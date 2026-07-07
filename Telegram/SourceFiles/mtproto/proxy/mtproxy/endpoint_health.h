@@ -24,8 +24,10 @@ enum class FailureReason {
 	TlsAlertAfterClientHello,
 	ServerHelloHmacMismatch,
 	ServerHelloOkNoAppData,
+	ServerHelloOkNoMtprotoData,
 	AppDataRemoteClosed,
 	ConnectedNoMtprotoData,
+	MtpReceiveTimeoutAfterData,
 	Network,
 	ProxyProtocolBadResponse,
 };
@@ -110,6 +112,7 @@ public:
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyEpoch() const;
+	[[nodiscard]] crl::time startedAt() const;
 
 private:
 	friend class EndpointHealth;
@@ -117,11 +120,13 @@ private:
 	EndpointAttemptLease(
 		QString key,
 		uint64 attemptId,
-		uint64 proxyEpoch);
+		uint64 proxyEpoch,
+		crl::time startedAt);
 
 	QString _key;
 	uint64 _attemptId = 0;
 	uint64 _proxyEpoch = 0;
+	crl::time _startedAt = 0;
 	bool _active = false;
 };
 
@@ -141,6 +146,7 @@ struct Admission {
 	EndpointAttemptLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	crl::time attemptStartedAt = 0;
 };
 
 struct FailureReport {
@@ -150,6 +156,9 @@ struct FailureReport {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+	uint64 attemptId = 0;
+	uint64 proxyEpoch = 0;
+	crl::time attemptStartedAt = 0;
 
 	// Every resolved route of the endpoint has been tried and failed.
 	// Route-only reasons (e.g. tcp connect timeout) normally leave the
@@ -179,6 +188,9 @@ struct SuccessReport {
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+	uint64 attemptId = 0;
+	uint64 proxyEpoch = 0;
+	crl::time attemptStartedAt = 0;
 	SuccessScope scope = SuccessScope::Handshake;
 };
 
@@ -192,6 +204,10 @@ struct Snapshot {
 	int recipeLevel = 0;
 	bool healthy = false;
 	bool halfOpen = false;
+	uint64 successEpoch = 0;
+	crl::time lastRelaySuccessAt = 0;
+	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
+	RouteEndpoint lastGoodRoute;
 	uint64 proxyEpoch = 0;
 	uint64 attemptId = 0;
 };

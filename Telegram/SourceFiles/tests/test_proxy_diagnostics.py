@@ -9,6 +9,8 @@ LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
+CONTROL_H = PROXY_DIR / "control_plane.h"
+CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
 ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
@@ -117,6 +119,8 @@ def test_transport_paths_emit_diagnostics():
 def test_proxy_reporting_is_centralized():
     header = read(DIAGNOSTICS_H)
     diagnostics = read(DIAGNOSTICS_CPP)
+    control_header = read(CONTROL_H)
+    control_source = read(CONTROL_CPP)
     instance = read(INSTANCE_CPP)
     resolving = read(RESOLVING_CPP)
     tcp = read(TCP_CPP)
@@ -127,13 +131,16 @@ def test_proxy_reporting_is_centralized():
     assert "ProxyMtproxyTerminalReason mtproxyReason" in header
     assert "ProxyConnectionAttempt attempt" in header
     assert "void ReportProxyEvent(" in header
-    assert "StatusPhaseFromDiagnostics" in diagnostics
+    assert "class ProxyControlPlane final" in control_header
+    assert "ProxyControlPlane::FactFromReport(" in control_source
+    assert "StatusPhaseFromDiagnostics" not in diagnostics
     assert "SourceForProxy" in diagnostics
-    assert "setProxyConnectionStatus" in diagnostics
+    assert '#include "mtproto/proxy/control_plane.h"' in diagnostics
+    assert "ProxyControlPlane::SubmitFact(instance, report);" in diagnostics
+    assert "setProxyConnectionStatus" not in diagnostics
     assert "WriteProxyDiagnosticsLine({" in diagnostics
     assert "report.mtproxyReason" in diagnostics
     assert "report.attempt" in diagnostics
-    assert "InvokeQueued(instance" in diagnostics
 
     for transport in (resolving, tcp, http):
         assert "ReportProxyEvent(_instance, {" in transport
@@ -167,7 +174,7 @@ def test_proxy_event_report_designators_follow_declaration_order():
     for path in (SOURCE_DIR / "mtproto").rglob("*.cpp"):
         text = read(path)
         for match in re.finditer(
-                r"ReportProxyEvent\([^;]*?\{(?P<body>.*?)\}\);",
+                r"ReportProxyEvent\([^;{}]*?,\s*\{(?P<body>.*?)\}\);",
                 text,
                 re.DOTALL):
             designators = [

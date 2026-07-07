@@ -74,7 +74,8 @@ def test_connection_broker_reserves_global_open_slot_before_start():
     drain_body = body_after(broker, "void ConnectionBroker::drainQueue(")
 
     assert '#include "mtproto/proxy/mtproxy/open_scheduler.h"' in broker
-    assert "MtProxy::EndpointHealth::Instance().admit({" in drain_body
+    assert '#include "mtproto/proxy/control_plane.h"' in broker
+    assert "ProxyControlPlane::Admit({" in drain_body
     assert "MtProxy::ReserveOpenSlot(" in drain_body
     assert "state->request.connectionPattern" in drain_body
     assert "state->request.notBefore" in drain_body

@@ -303,6 +303,7 @@ void TcpConnection::socketRead() {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ProxyConnectionError::BadResponse,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = tag(),
 			.connectionId = _debugId,
@@ -365,6 +366,7 @@ void TcpConnection::socketRead() {
 						ReportProxyEvent(_instance, {
 							.phase = ProxyDiagnosticsPhase::Failed,
 							.error = ProxyConnectionError::BadResponse,
+							.attempt = _mtproxyAttempt,
 							.proxy = _proxy,
 							.transport = tag(),
 							.connectionId = _debugId,
@@ -405,6 +407,7 @@ void TcpConnection::socketRead() {
 			ReportProxyEvent(_instance, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
 				.proxy = _proxy,
 				.transport = tag(),
 				.connectionId = _debugId,
@@ -450,6 +453,7 @@ void TcpConnection::socketConnected() {
 	CONNECTION_LOG_INFO("Socket connected; sending fake req_pq.");
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::TelegramCheck,
+		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
 		.transport = tag(),
 		.connectionId = _debugId,
@@ -583,7 +587,9 @@ void TcpConnection::connectToServer(
 		_proxy,
 		protocolForFiles,
 		_stealth,
-		protocolDcId);
+		protocolDcId,
+		_mtproxyAttempt,
+		_mtproxyAttemptStartedAt);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();
@@ -600,6 +606,7 @@ void TcpConnection::connectToServer(
 	CONNECTION_LOG_INFO("Connecting...");
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Connecting,
+		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
 		.transport = tag(),
 		.connectionId = _debugId,
@@ -657,6 +664,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 			ReportProxyEvent(_instance, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
 				.proxy = _proxy,
 				.transport = tag(),
 				.connectionId = _debugId,
@@ -681,6 +689,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 				_pingTime = (crl::now() - _pingTime);
 				ReportProxyEvent(_instance, {
 					.phase = ProxyDiagnosticsPhase::Connected,
+					.attempt = _mtproxyAttempt,
 					.proxy = _proxy,
 					.transport = tag(),
 					.connectionId = _debugId,
@@ -693,6 +702,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 				ReportProxyEvent(_instance, {
 					.phase = ProxyDiagnosticsPhase::Failed,
 					.error = ProxyConnectionError::BadResponse,
+					.attempt = _mtproxyAttempt,
 					.proxy = _proxy,
 					.transport = tag(),
 					.connectionId = _debugId,
@@ -705,6 +715,7 @@ void TcpConnection::socketPacket(bytes::const_span bytes) {
 			ReportProxyEvent(_instance, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
 				.proxy = _proxy,
 				.transport = tag(),
 				.connectionId = _debugId,
@@ -726,6 +737,7 @@ void TcpConnection::timedOut() {
 		.mtproxyReason = _socket
 			? _socket->mtproxyTerminalReason()
 			: ProxyMtproxyTerminalReason::None,
+		.attempt = _mtproxyAttempt,
 		.terminalUntil = _socket
 			? _socket->mtproxyTerminalUntil()
 			: 0,
@@ -738,6 +750,13 @@ void TcpConnection::timedOut() {
 
 HandshakePhase TcpConnection::handshakePhase() const {
 	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
+}
+
+void TcpConnection::setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) {
+	_mtproxyAttempt = attempt;
+	_mtproxyAttemptStartedAt = startedAt;
 }
 
 bool TcpConnection::isConnected() const {
@@ -785,6 +804,7 @@ void TcpConnection::socketError(int errorCode) {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = proxyError,
 		.mtproxyReason = _socket->mtproxyTerminalReason(),
+		.attempt = _mtproxyAttempt,
 		.terminalUntil = _socket->mtproxyTerminalUntil(),
 		.proxy = _proxy,
 		.transport = (transport == u"WSS"_q) ? transport : tag(),
@@ -806,6 +826,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		CONNECTION_LOG_INFO("mtproxy tcp_connected");
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::TcpConnected,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = tag(),
 			.connectionId = _debugId,
@@ -817,6 +838,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		CONNECTION_LOG_INFO("mtproxy client_hello_sent");
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::ClientHelloSent,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = tag(),
 			.connectionId = _debugId,
@@ -828,6 +850,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		CONNECTION_LOG_INFO("mtproxy server_hello_hmac_ok");
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::ServerHelloOk,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = tag(),
 			.connectionId = _debugId,
@@ -839,6 +862,7 @@ void TcpConnection::socketProgress(HandshakePhase phase) {
 		CONNECTION_LOG_INFO("mtproxy first_tls_app_recv");
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::TelegramCheck,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = tag(),
 			.connectionId = _debugId,

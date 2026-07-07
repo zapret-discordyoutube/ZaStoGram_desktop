@@ -7,10 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/diagnostics.h"
 
-#include "base/invoke_queued.h"
 #include "base/unixtime.h"
 #include "logs.h"
 #include "mtproto/mtp_instance.h"
+#include "mtproto/proxy/control_plane.h"
 #include "settings.h"
 
 #include <QtCore/QCryptographicHash>
@@ -222,46 +222,22 @@ namespace {
 		return u"server_hello_hmac_mismatch"_q;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
 		return u"server_hello_ok_no_appdata"_q;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:
+		return u"server_hello_ok_no_mtproto_data"_q;
 	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
 		return u"appdata_remote_closed"_q;
 	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
 		return u"connected_no_mtproto_data"_q;
+	case ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData:
+		return u"mtp_receive_timeout_after_data"_q;
 	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
 		return u"proxy_protocol_bad_response"_q;
 	}
 	return QString();
 }
 
-[[nodiscard]] auto StatusPhaseFromDiagnostics(ProxyDiagnosticsPhase phase)
--> std::optional<ProxyConnectionPhase> {
+[[nodiscard]] bool IsMtpDiagnosticsPhase(ProxyDiagnosticsPhase phase) {
 	switch (phase) {
-	case ProxyDiagnosticsPhase::Resolving:
-		return ProxyConnectionPhase::Resolving;
-	case ProxyDiagnosticsPhase::Connecting:
-	case ProxyDiagnosticsPhase::TcpConnected:
-		return ProxyConnectionPhase::Connecting;
-	case ProxyDiagnosticsPhase::ClientHelloSent:
-		return ProxyConnectionPhase::Handshake;
-	case ProxyDiagnosticsPhase::ServerHelloOk:
-	case ProxyDiagnosticsPhase::TelegramCheck:
-		return ProxyConnectionPhase::CheckingTelegram;
-	case ProxyDiagnosticsPhase::Connected:
-		return ProxyConnectionPhase::Connected;
-	case ProxyDiagnosticsPhase::Failed:
-		return ProxyConnectionPhase::Failed;
-	case ProxyDiagnosticsPhase::None:
-	case ProxyDiagnosticsPhase::ProxyCheckStarted:
-	case ProxyDiagnosticsPhase::ProxyCheckFinished:
-	case ProxyDiagnosticsPhase::AdmissionQueued:
-	case ProxyDiagnosticsPhase::AdmissionStarted:
-	case ProxyDiagnosticsPhase::AdmissionCancelled:
-	case ProxyDiagnosticsPhase::RouteSelected:
-	case ProxyDiagnosticsPhase::RouteFailed:
-	case ProxyDiagnosticsPhase::CanonicalDegraded:
-	case ProxyDiagnosticsPhase::CanonicalRecovered:
-	case ProxyDiagnosticsPhase::StealthRecipeApplied:
-	case ProxyDiagnosticsPhase::TransportFallbackApplied:
-	case ProxyDiagnosticsPhase::RotationSwitched:
 	case ProxyDiagnosticsPhase::MtpConnecting:
 	case ProxyDiagnosticsPhase::MtpTransportReady:
 	case ProxyDiagnosticsPhase::MtpKeyCreating:
@@ -274,15 +250,44 @@ namespace {
 	case ProxyDiagnosticsPhase::MtpBindFailed:
 	case ProxyDiagnosticsPhase::MtpKeyDestroyed:
 	case ProxyDiagnosticsPhase::MtpRestart:
-		return std::nullopt;
+		return true;
+	case ProxyDiagnosticsPhase::None:
+	case ProxyDiagnosticsPhase::Resolving:
+	case ProxyDiagnosticsPhase::Connecting:
+	case ProxyDiagnosticsPhase::TcpConnected:
+	case ProxyDiagnosticsPhase::ClientHelloSent:
+	case ProxyDiagnosticsPhase::ServerHelloOk:
+	case ProxyDiagnosticsPhase::TelegramCheck:
+	case ProxyDiagnosticsPhase::Connected:
+	case ProxyDiagnosticsPhase::Failed:
+	case ProxyDiagnosticsPhase::ProxyCheckStarted:
+	case ProxyDiagnosticsPhase::ProxyCheckFinished:
+	case ProxyDiagnosticsPhase::AdmissionQueued:
+	case ProxyDiagnosticsPhase::AdmissionStarted:
+	case ProxyDiagnosticsPhase::AdmissionCancelled:
+	case ProxyDiagnosticsPhase::RouteSelected:
+	case ProxyDiagnosticsPhase::RouteFailed:
+	case ProxyDiagnosticsPhase::CanonicalDegraded:
+	case ProxyDiagnosticsPhase::CanonicalRecovered:
+	case ProxyDiagnosticsPhase::StealthRecipeApplied:
+	case ProxyDiagnosticsPhase::TransportFallbackApplied:
+	case ProxyDiagnosticsPhase::RotationSwitched:
+		return false;
 	}
-	return std::nullopt;
+	return false;
 }
 
 [[nodiscard]] ProxyDiagnosticsSource SourceForProxy(const ProxyData &proxy) {
 	return (proxy.type == ProxyData::Type::Mtproto)
 		? ProxyDiagnosticsSource::MTProxy
 		: ProxyDiagnosticsSource::Network;
+}
+
+[[nodiscard]] ProxyDiagnosticsSource SourceForReport(
+		const ProxyEventReport &report) {
+	return IsMtpDiagnosticsPhase(report.phase)
+		? ProxyDiagnosticsSource::MTP
+		: SourceForProxy(report.proxy);
 }
 
 } // namespace
@@ -422,6 +427,10 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (cooldownMs > 0) {
 		parts.push_back(u"cooldown_ms=%1"_q.arg(cooldownMs));
 	}
+	if (safe.attempt.proxyGeneration) {
+		parts.push_back(u"generation=%1"_q.arg(
+			safe.attempt.proxyGeneration));
+	}
 	if (safe.attempt.attemptId) {
 		parts.push_back(u"attempt=%1/%2"_q.arg(
 			safe.attempt.proxyEpoch
@@ -447,21 +456,9 @@ void ReportProxyEvent(
 	if (report.proxy.type == ProxyData::Type::None) {
 		return;
 	}
-	if (const auto phase = StatusPhaseFromDiagnostics(report.phase)) {
-		const auto status = ProxyConnectionStatus{
-			*phase,
-			report.error,
-			report.mtproxyReason,
-			report.attempt,
-			report.terminalUntil,
-			report.proxy,
-		};
-		InvokeQueued(instance, [=] {
-			instance->setProxyConnectionStatus(status);
-		});
-	}
+	ProxyControlPlane::SubmitFact(instance, report);
 	WriteProxyDiagnosticsLine({
-		.source = SourceForProxy(report.proxy),
+		.source = SourceForReport(report),
 		.phase = report.phase,
 		.severity = report.severity.value_or(
 			(report.error == ProxyConnectionError::None)

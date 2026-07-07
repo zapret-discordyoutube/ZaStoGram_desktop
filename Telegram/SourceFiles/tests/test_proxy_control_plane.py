@@ -1,0 +1,332 @@
+from pathlib import Path
+
+
+SOURCE_DIR = Path(__file__).resolve().parents[1]
+ROOT = SOURCE_DIR.parents[1]
+CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
+PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
+CONTROL_H = PROXY_DIR / "control_plane.h"
+CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
+STATUS_H = PROXY_DIR / "status.h"
+STATUS_CPP = PROXY_DIR / "status.cpp"
+DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
+ADAPTIVE_POLICY_CPP = PROXY_DIR / "mtproxy" / "adaptive_policy.cpp"
+CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
+ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
+RESOLVING_CONNECTION_CPP = PROXY_DIR / "resolving_connection.cpp"
+CONNECTING_WIDGET = SOURCE_DIR / "window" / "window_connecting_widget.cpp"
+LANG = ROOT / "Telegram" / "Resources" / "langs" / "lang.strings"
+
+
+def read(path):
+    assert path.exists(), f"missing expected source file: {path}"
+    return path.read_text(encoding="utf-8")
+
+
+def function_body(source, signature):
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:index + 1]
+    raise AssertionError(f"function body not found: {signature}")
+
+
+def test_control_plane_is_the_proxy_publication_path():
+    cmake = read(CMAKE)
+    header = read(CONTROL_H)
+    source = read(CONTROL_CPP)
+    diagnostics = read(DIAGNOSTICS_CPP)
+    report_body = function_body(diagnostics, "void ReportProxyEvent(")
+
+    assert "mtproto/proxy/control_plane.cpp" in cmake
+    assert "mtproto/proxy/control_plane.h" in cmake
+    assert "class ProxyControlPlane final" in header
+    assert "submitFact(ProxyFact fact)" in header
+    assert "admit(ProxyAdmissionRequest request)" in header
+    assert "selectedStatus() const" in header
+    assert "endpointSnapshot() const" in header
+    assert '#include "mtproto/proxy/control_plane.h"' in diagnostics
+    assert "ProxyControlPlane::SubmitFact(instance, report);" in report_body
+    assert "setProxyConnectionStatus(status)" not in report_body
+    assert "StatusPhaseFromDiagnostics" not in diagnostics
+    assert "WriteProxyDiagnosticsLine({" in diagnostics
+    assert "ProxyControlPlane::FactFromReport(" in source
+
+
+def test_mtp_first_data_is_relay_success_fact():
+    source = read(CONTROL_CPP)
+    fact_body = function_body(
+        source,
+        "ProxyFact ProxyControlPlane::FactFromReport(")
+
+    assert "ProxyControlPlaneSuccessScope::Relay" in source
+    assert "ProxyDiagnosticsPhase::MtpFirstDataReceived" in fact_body
+    assert "fact.successScope = ProxyControlPlaneSuccessScope::Relay;" in (
+        fact_body)
+    assert "fact.status.phase = ProxyConnectionPhase::Connected;" in fact_body
+    assert "kFreshRelaySuccessWindow" in source
+    assert "successUntil" in read(STATUS_H)
+
+
+def test_fresh_relay_success_shadows_late_sibling_failures():
+    source = read(CONTROL_CPP)
+    status = read(STATUS_CPP)
+    reducer = function_body(
+        source,
+        "ProxyConnectionStatus ProxyControlPlane::Reduce(")
+    shadow_helper = function_body(source, "bool ShadowedByFreshRelaySuccess(")
+
+    assert "ShadowedByFreshRelaySuccess(current, fact)" in reducer
+    assert "RelaySuccessIsFresh(current)" in shadow_helper
+    assert "IsTerminalFailure(fact.status)" in shadow_helper
+    assert "IsNewerProxyEpoch(current.attempt, fact.status.attempt)" in (
+        shadow_helper)
+    assert "return current;" in reducer.split(
+        "ShadowedByFreshRelaySuccess(current, fact)", 1)[1]
+    assert "FreshRelaySuccess" in source
+    assert "shadowed_by_fresh_success" in source
+    assert "successUntil" in status
+
+
+def test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source():
+    status = read(STATUS_CPP)
+    control = read(CONTROL_CPP)
+    adaptive = read(ADAPTIVE_POLICY_CPP)
+    recipe_body = function_body(adaptive, "bool FailureNeedsRecipe(")
+    rotation_body = function_body(
+        adaptive,
+        "bool FailureNeedsTlsProfileRotation(")
+
+    assert "ProxyMtproxyTerminalReason::ServerHelloOkNoAppData" in status
+    assert "ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData" in status
+    assert "MtproxyNoServerHello" not in status.split(
+        "case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:", 1)[1].split(
+            "case ProxyMtproxyTerminalReason::AppDataRemoteClosed:", 1)[0]
+    assert "ProxyMtproxyTerminalReason::ServerHelloOkNoAppData" in control
+    assert 'u"server_hello_ok_no_appdata"_q' not in recipe_body
+    assert 'u"server_hello_ok_no_appdata"_q' not in rotation_body
+
+
+def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
+    status_h = read(STATUS_H)
+    status = read(STATUS_CPP)
+    diagnostics = read(DIAGNOSTICS_CPP)
+    health_h = read(ENDPOINT_HEALTH_H)
+    health = read(ENDPOINT_HEALTH_CPP)
+    widget = read(CONNECTING_WIDGET)
+    lang = read(LANG)
+    kind_body = function_body(
+        status,
+        "ProxyConnectionStatusKind ProxyConnectionStatusKindFor(")
+    reason_text = function_body(
+        diagnostics,
+        "QString MtproxyReasonText(")
+    legacy = function_body(health, "QString ToLegacyDiagnostic(")
+    terminal = function_body(
+        health, "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
+
+    for reason in (
+        "ClientHelloSentNoServerHello",
+        "ServerHelloOkNoAppData",
+        "ServerHelloOkNoMtprotoData",
+        "MtpReceiveTimeoutAfterData",
+    ):
+        assert reason in status_h
+        assert reason in health_h
+
+    no_appdata_block = kind_body.split(
+        "case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:", 1)[1].split(
+            "case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:", 1)[0]
+    assert "ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData" in (
+        no_appdata_block)
+    assert "MtproxyNoServerHello" not in no_appdata_block
+
+    no_mtproto_block = kind_body.split(
+        "case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:", 1)[1].split(
+            "case ProxyMtproxyTerminalReason::AppDataRemoteClosed:", 1)[0]
+    assert "ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData" in (
+        no_mtproto_block)
+    assert "MtproxyServerHelloOkNoAppData" not in no_mtproto_block
+
+    receive_after_data_block = kind_body.split(
+        "case ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData:", 1)[1].split(
+            "case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:", 1)[0]
+    assert "ProxyConnectionStatusKind::MtproxyMtpReceiveTimeoutAfterData" in (
+        receive_after_data_block)
+
+    for diagnostic in (
+        "server_hello_ok_no_appdata",
+        "server_hello_ok_no_mtproto_data",
+        "connected_no_mtproto_data",
+        "mtp_receive_timeout_after_data",
+    ):
+        assert diagnostic in reason_text
+        assert diagnostic in legacy
+
+    assert (
+        "return ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData;"
+        in terminal)
+    assert (
+        "return ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData;"
+        in terminal)
+
+    for kind in (
+        "MtproxyNoServerHello",
+        "MtproxyServerHelloOkNoAppData",
+        "MtproxyConnectedNoMtprotoData",
+        "MtproxyMtpReceiveTimeoutAfterData",
+    ):
+        assert f"ProxyConnectionStatusKind::{kind}" in widget
+
+    assert (
+        '"lng_proxy_status_mtproxy_no_server_hello" = '
+        '"MTProxy FakeTLS failed: no ServerHello";'
+    ) in lang
+    assert (
+        '"lng_proxy_status_mtproxy_no_appdata" = '
+        '"MTProxy FakeTLS handshake OK, but no Telegram data";'
+    ) in lang
+    assert (
+        '"lng_proxy_status_mtproxy_connected_no_mtproto_data" = '
+        '"Proxy connected, MTProto data stalled";'
+    ) in lang
+
+
+def test_serverhello_progress_prevents_no_serverhello_terminal_repaint():
+    control = read(CONTROL_CPP)
+    tls = read(TLS_SOCKET_CPP)
+    resolving = read(RESOLVING_CONNECTION_CPP)
+    reducer = function_body(
+        control,
+        "ProxyConnectionStatus ProxyControlPlane::Reduce(")
+    normalize = function_body(control, "void NormalizeMtproxyTerminalReason(")
+    tls_failure = function_body(
+        tls,
+        "MtProxy::FailureReason TlsSocket::failureReason() const")
+    route_timeout = function_body(
+        resolving,
+        "MtProxy::FailureReason RouteTimeoutReason(")
+
+    assert "NormalizeMtproxyTerminalReason(current, fact.status);" in reducer
+    assert "ProxyConnectionPhase::CheckingTelegram" in normalize
+    assert "ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello" in (
+        normalize)
+    assert "ProxyMtproxyTerminalReason::ServerHelloOkNoAppData" in normalize
+
+    after_serverhello = tls_failure.split(
+        "case HandshakePhase::ServerHelloOk:", 1)[1].split(
+            "case HandshakePhase::FirstDataReceived:", 1)[0]
+    assert "ServerHelloOkNoAppData" in after_serverhello
+    assert "ClientHelloSentNoServerHello" not in after_serverhello
+
+    route_after_serverhello = route_timeout.split(
+        "case HandshakePhase::ServerHelloOk:", 1)[1].split(
+            "return MtProxy::FailureReason::ServerHelloOkNoAppData;", 1)[0]
+    assert "ClientHelloSentNoServerHello" not in route_after_serverhello
+
+
+def test_session_receive_timeout_reports_stage_specific_terminal_status():
+    session = read(SESSION_CPP)
+    wait_received = function_body(
+        session,
+        "void SessionPrivate::waitReceivedFailed(")
+
+    assert "ProxyDiagnosticsPhase::MtpReceiveTimeout" in wait_received
+    assert "ProxyDiagnosticsPhase::Failed" in wait_received
+    assert "ProxyConnectionError::Timeout" in wait_received
+    assert "ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData" in (
+        wait_received)
+    assert "ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData" in (
+        wait_received)
+    assert "MtProxy::FailureReason::ServerHelloOkNoMtprotoData" in (
+        wait_received)
+    assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
+
+
+def test_admission_keeps_scouts_until_relay_proof():
+    header = read(CONTROL_H)
+    control = read(CONTROL_CPP)
+    broker = read(CONNECTION_BROKER_CPP)
+    health = read(ENDPOINT_HEALTH_CPP)
+    admit_body = function_body(
+        control,
+        "ProxyAdmissionDecision ProxyControlPlane::admit(")
+
+    assert "struct ProxyAdmissionRequest" in header
+    assert "struct ProxyAdmissionDecision" in header
+    assert "ProxyAdmissionDecision admit(" in header
+    assert "static ProxyAdmissionDecision Admit(" in header
+    assert '#include "mtproto/proxy/control_plane.h"' in broker
+    assert "ProxyControlPlane::Admit({" in broker
+    assert "EndpointHealth::Instance().admit" not in broker
+    assert "EndpointHealth::Instance().admit" in control
+    assert "return Admit(std::move(request));" in admit_body
+    assert "MtProxy::EndpointAttemptLease lease" in header
+    assert "MtProxy::FailureReason blockedBy" in header
+    assert "effectiveTlsProfile" in header
+    assert "proxyEpoch" in header
+    assert "EndpointConcurrencyPolicyFor" in health
+    assert "relayProven" in health
+    assert "kUnknownActiveCap" in health
+    assert "kColdActiveCap" in health
+
+
+def test_proxy_restart_backoff_is_not_one_ms_herd():
+    session = read(SESSION_CPP)
+    restart_body = function_body(session, "void SessionPrivate::restart(")
+
+    assert "_options->proxy.type != ProxyData::Type::None" in restart_body
+    assert "_retryTimeout < kProxyReconnectMinTimeout" in restart_body
+    assert "_retryTimeout = kProxyReconnectMinTimeout;" in restart_body
+    assert restart_body.index("kProxyReconnectMinTimeout") < (
+        restart_body.index("ProxyDiagnosticsPhase::MtpRestart"))
+
+
+def test_mtproxy_health_policy_is_control_plane_owned():
+    header = read(CONTROL_H)
+    control = read(CONTROL_CPP)
+
+    for name in (
+        "ReportMtproxyFailure(",
+        "ReportMtproxySuccess(",
+        "NoteMtproxyRelayStall(",
+        "MtproxyEndpointSnapshot(",
+    ):
+        assert name in header
+        assert f"ProxyControlPlane::{name}" in control
+
+    for source in (SOURCE_DIR / "mtproto").rglob("*.cpp"):
+        relative = source.relative_to(SOURCE_DIR)
+        if relative in (
+                Path("mtproto/proxy/control_plane.cpp"),
+                Path("mtproto/proxy/mtproxy/endpoint_health.cpp")):
+            continue
+        text = source.read_text(encoding="utf-8")
+        for call in (
+                "EndpointHealth::Instance().reportFailure(",
+                "EndpointHealth::Instance().reportSuccess(",
+                "EndpointHealth::Instance().noteRelayStall(",
+                "EndpointHealth::Instance().snapshot("):
+            assert call not in text, f"{relative} bypasses ProxyControlPlane"
+
+
+if __name__ == "__main__":
+    test_control_plane_is_the_proxy_publication_path()
+    test_mtp_first_data_is_relay_success_fact()
+    test_fresh_relay_success_shadows_late_sibling_failures()
+    test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source()
+    test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct()
+    test_serverhello_progress_prevents_no_serverhello_terminal_repaint()
+    test_session_receive_timeout_reports_stage_specific_terminal_status()
+    test_admission_keeps_scouts_until_relay_proof()
+    test_proxy_restart_backoff_is_not_one_ms_herd()
+    test_mtproxy_health_policy_is_control_plane_owned()

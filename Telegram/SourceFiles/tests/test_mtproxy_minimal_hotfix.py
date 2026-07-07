@@ -42,7 +42,7 @@ def test_mtproxy_effective_policy_is_always_conservative_tcp():
         "if (settings == ProxyData::Settings::Enabled", 1)[0]
 
     assert "result.transport = ProxyTransport::Tcp;" in mtproxy_branch
-    assert "CompatStrictProxyStealthOptions(std::move(result))" in mtproxy_branch
+    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
     assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
     assert "ApplyProxyStealthLevel(" not in mtproxy_branch
     assert "capability.syntheticPskAllowed" not in mtproxy_branch
@@ -58,6 +58,27 @@ def test_mtproxy_effective_policy_is_always_conservative_tcp():
         "result.connectionPattern = ProxyConnectionPattern::Off;",
     ):
         assert contract in strict
+
+
+def test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe():
+    policy = read(TRANSPORT_POLICY_CPP)
+    adaptive = read(MTPROXY_DIR / "adaptive_policy.cpp")
+    effective = function_body(policy, "ProxyStealthOptions EffectiveProxyStealthOptions(")
+    recipe = function_body(adaptive, "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
+    mtproxy_branch = effective.split(
+        "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
+        "if (settings == ProxyData::Settings::Enabled", 1)[0]
+
+    assert "BoringMtproxyStealthOptions(" in policy
+    assert "ProxyTlsProfile::ChromeModern" in policy
+    assert "result.tlsProfile = profile;" in policy
+    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
+    assert "ProxyTlsProfile::AutoRotate" not in mtproxy_branch
+    assert "ResolveEffectiveTlsProfile(" not in mtproxy_branch
+    assert "input.stealth.level == ProxyStealthLevel::CompatStrict" in recipe
+    assert recipe.index(
+        "input.stealth.level == ProxyStealthLevel::CompatStrict") < (
+            recipe.index("ApplyProxyStealthLevel("))
 
 
 def test_admission_delay_is_queued_not_failed_or_backoff():
@@ -85,7 +106,7 @@ def test_route_success_updates_canonical_capability_and_health():
     assert "RouteKey(report.endpoint.route)" in success
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.healthy = true;" in success
-    assert "MtProxy::EndpointHealth::Instance().reportSuccess({" in packet
+    assert "ProxyControlPlane::ReportMtproxySuccess({" in packet
 
 
 def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
@@ -121,6 +142,7 @@ def test_pre_clienthello_timeouts_do_not_rotate_or_escalate_recipes():
 
 if __name__ == "__main__":
     test_mtproxy_effective_policy_is_always_conservative_tcp()
+    test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe()
     test_admission_delay_is_queued_not_failed_or_backoff()
     test_route_success_updates_canonical_capability_and_health()
     test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key()

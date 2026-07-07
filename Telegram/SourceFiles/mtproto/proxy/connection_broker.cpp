@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/connection_broker.h"
 
+#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "base/algorithm.h"
@@ -18,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <deque>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace MTP::details {
 namespace {
@@ -41,8 +43,9 @@ constexpr auto kQueuePriorityOrder = std::array{
 
 struct ConnectionBroker::RequestState {
 	ConnectionTicketId id = 0;
+	uint64 proxyGeneration = 0;
 	ConnectionRequest request;
-	std::optional<MtProxy::Admission> admission;
+	std::optional<ProxyAdmissionDecision> admission;
 	crl::time createdAt = 0;
 	bool active = true;
 	bool queuedNotified = false;
@@ -134,6 +137,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		state->id = ++_lastTicketId;
 		state->createdAt = crl::now();
 		state->request = std::move(request);
+		state->proxyGeneration = state->request.proxyGeneration;
 		queueFor(state->request.use).pending.push_back(state);
 	}
 	scheduleDrain(state, 0);
@@ -172,6 +176,39 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 			ProxyDiagnosticsPhase::AdmissionCancelled,
 			{},
 			u"mtproxy admission cancelled"_q);
+	}
+}
+
+void ConnectionBroker::cancelByProxyGeneration(
+		Instance *instance,
+		uint64 generation) {
+	auto cancelled = std::vector<std::shared_ptr<RequestState>>();
+	{
+		QMutexLocker lock(&_mutex);
+		for (const auto queue : {
+				_mainQueue.get(),
+				_proxyCheckQueue.get(),
+				_mediaQueue.get(),
+				_uploadQueue.get() }) {
+			for (auto i = begin(queue->pending); i != end(queue->pending);) {
+				const auto &state = *i;
+				if (state->request.instance == instance
+					&& state->proxyGeneration < generation) {
+					state->active = false;
+					cancelled.push_back(state);
+					i = queue->pending.erase(i);
+				} else {
+					++i;
+				}
+			}
+		}
+	}
+	for (const auto &state : cancelled) {
+		reportAdmissionEvent(
+			state,
+			ProxyDiagnosticsPhase::AdmissionCancelled,
+			{},
+			u"mtproxy admission cancelled by proxy switch"_q);
 	}
 }
 
@@ -223,13 +260,13 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 		return;
 	}
 
-	auto admission = MtProxy::EndpointHealth::Instance().admit({
+	auto admission = ProxyControlPlane::Admit({
 		.endpoint = state->request.endpoint,
 		.use = state->request.use,
 		.stealth = state->request.stealth,
 		.configuredTlsProfile = state->request.configuredTlsProfile,
 	});
-	if (admission.action == MtProxy::AdmissionAction::StartNow) {
+	if (admission.action == ProxyAdmissionAction::StartNow) {
 		const auto openDelay = MtProxy::ReserveOpenSlot(
 			state->request.endpoint,
 			state->request.connectionPattern,
@@ -339,6 +376,7 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 	auto admission = std::move(state->admission);
 	auto start = ConnectionStart();
 	start.ticketId = id;
+	start.proxyGeneration = state->proxyGeneration;
 	start.endpoint = request.endpoint;
 	start.use = request.use;
 	start.stealth = admission ? admission->stealth : request.stealth;
@@ -347,6 +385,7 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 		: request.configuredTlsProfile;
 	start.attemptId = admission ? admission->attemptId : 0;
 	start.proxyEpoch = admission ? admission->proxyEpoch : 0;
+	start.attemptStartedAt = admission ? admission->attemptStartedAt : 0;
 	if (admission) {
 		start.lease = std::move(admission->lease);
 	}

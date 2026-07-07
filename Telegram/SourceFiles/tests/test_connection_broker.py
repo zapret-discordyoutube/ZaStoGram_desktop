@@ -29,7 +29,8 @@ def test_connection_broker_is_registered_owner_seam():
     assert "std::unique_ptr<EndpointQueue> _mainQueue;" in header
     assert "std::unique_ptr<EndpointQueue> _mediaQueue;" in header
     assert "std::unique_ptr<EndpointQueue> _proxyCheckQueue;" in header
-    assert "MtProxy::EndpointHealth::Instance().admit(" in source
+    assert '#include "mtproto/proxy/control_plane.h"' in source
+    assert "ProxyControlPlane::Admit({" in source
     assert "MtProxy::ReserveOpenSlot(" in source
 
 
@@ -49,6 +50,7 @@ def test_session_private_queues_admission_without_retry_backoff():
     assert "std::vector<ConnectionTicket> _connectionBrokerTickets;" in header
     assert "ConnectionBroker::Instance().request({" in append_body
     assert "EndpointHealth::Instance().admit(" not in append_body
+    assert "EndpointHealth::Instance().admit(" not in broker
     assert "setState(-int(admission.retryAfter));" not in append_body
     assert "ConnectionBrokerAction::Queued" in notify_body
     assert "ConnectionBrokerAction::StartAfter" in notify_body

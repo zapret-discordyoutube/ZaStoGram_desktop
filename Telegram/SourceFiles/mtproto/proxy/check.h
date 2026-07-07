@@ -15,6 +15,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
+enum class ProxyCheckStatus {
+	Idle,
+	WaitingForConnectionSlot,
+	Resolving,
+	TcpConnected,
+	ClientHelloSent,
+	ServerHelloOk,
+	FirstTlsAppData,
+	FirstMtprotoPayload,
+	ConnectedByActiveSession,
+};
+
 class ProxyCheckConnection final {
 public:
 	struct Data {
@@ -23,7 +35,11 @@ public:
 		details::HandshakeGateLease handshakeGate;
 		details::MtProxy::EndpointId mtproxyEndpoint;
 		details::MtProxy::EndpointAttemptLease mtproxyLease;
+		Fn<void(ProxyCheckStatus status)> progress;
+		QString probeKey;
+		ProxyCheckStatus progressStatus = ProxyCheckStatus::Idle;
 		bool finished = false;
+		bool networkStarted = false;
 	};
 
 	ProxyCheckConnection();
@@ -62,6 +78,7 @@ void StartProxyCheck(
 	ProxyCheckConnection &v4,
 	ProxyCheckConnection &v6,
 	Fn<void(details::AbstractConnection *raw, int ping)> done,
-	Fn<void(details::AbstractConnection *raw)> fail);
+	Fn<void(details::AbstractConnection *raw)> fail,
+	Fn<void(ProxyCheckStatus status)> progress = nullptr);
 
 } // namespace MTP

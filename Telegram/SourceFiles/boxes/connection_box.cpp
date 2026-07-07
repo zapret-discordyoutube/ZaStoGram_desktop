@@ -111,6 +111,64 @@ using ProxyData = MTP::ProxyData;
 		|| (proxy.type == Type::Mtproto);
 }
 
+[[nodiscard]] bool ProxyCheckStatusTerminal(MTP::ProxyCheckStatus status) {
+	switch (status) {
+	case MTP::ProxyCheckStatus::WaitingForConnectionSlot:
+	case MTP::ProxyCheckStatus::ConnectedByActiveSession:
+		return true;
+	case MTP::ProxyCheckStatus::Idle:
+	case MTP::ProxyCheckStatus::Resolving:
+	case MTP::ProxyCheckStatus::TcpConnected:
+	case MTP::ProxyCheckStatus::ClientHelloSent:
+	case MTP::ProxyCheckStatus::ServerHelloOk:
+	case MTP::ProxyCheckStatus::FirstTlsAppData:
+	case MTP::ProxyCheckStatus::FirstMtprotoPayload:
+		return false;
+	}
+	return false;
+}
+
+[[nodiscard]] QString ProxyCheckStatusText(MTP::ProxyCheckStatus status) {
+	switch (status) {
+	case MTP::ProxyCheckStatus::Idle:
+		return tr::lng_proxy_box_table_checking(tr::now);
+	case MTP::ProxyCheckStatus::WaitingForConnectionSlot:
+		return tr::lng_proxy_box_table_waiting_slot(tr::now);
+	case MTP::ProxyCheckStatus::Resolving:
+		return tr::lng_proxy_box_table_resolving(tr::now);
+	case MTP::ProxyCheckStatus::TcpConnected:
+		return tr::lng_proxy_box_table_tcp_connected(tr::now);
+	case MTP::ProxyCheckStatus::ClientHelloSent:
+		return tr::lng_proxy_box_table_client_hello_sent(tr::now);
+	case MTP::ProxyCheckStatus::ServerHelloOk:
+		return tr::lng_proxy_box_table_server_hello_ok(tr::now);
+	case MTP::ProxyCheckStatus::FirstTlsAppData:
+		return tr::lng_proxy_box_table_first_tls_appdata(tr::now);
+	case MTP::ProxyCheckStatus::FirstMtprotoPayload:
+		return tr::lng_proxy_box_table_first_mtproto(tr::now);
+	case MTP::ProxyCheckStatus::ConnectedByActiveSession:
+		return tr::lng_proxy_box_table_connected_active(tr::now);
+	}
+	return tr::lng_proxy_box_table_checking(tr::now);
+}
+
+[[nodiscard]] style::color ProxyCheckStatusColor(MTP::ProxyCheckStatus status) {
+	switch (status) {
+	case MTP::ProxyCheckStatus::ConnectedByActiveSession:
+	case MTP::ProxyCheckStatus::FirstMtprotoPayload:
+		return st::proxyRowStatusFgAvailable;
+	case MTP::ProxyCheckStatus::Idle:
+	case MTP::ProxyCheckStatus::WaitingForConnectionSlot:
+	case MTP::ProxyCheckStatus::Resolving:
+	case MTP::ProxyCheckStatus::TcpConnected:
+	case MTP::ProxyCheckStatus::ClientHelloSent:
+	case MTP::ProxyCheckStatus::ServerHelloOk:
+	case MTP::ProxyCheckStatus::FirstTlsAppData:
+		return st::proxyRowStatusFg;
+	}
+	return st::proxyRowStatusFg;
+}
+
 [[nodiscard]] QString ProxyDataToQueryPath(const ProxyData &proxy) {
 	using Type = ProxyData::Type;
 	const auto path = [&] {
@@ -846,7 +904,8 @@ void ProxyRow::updateFields(View &&view) {
 	} else if (_progress) {
 		_progress->stop();
 	}
-	if (state == State::Checking) {
+	if (state == State::Checking
+		&& !ProxyCheckStatusTerminal(_view.progressStatus)) {
 		if (!_checking) {
 			_checking = std::make_unique<Ui::InfiniteRadialAnimation>(
 				[=] { radialAnimationCallback(); },
@@ -926,6 +985,8 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 			return st::proxyRowStatusFgOffline;
 		case State::Available:
 			return st::proxyRowStatusFgAvailable;
+		case State::Checking:
+			return ProxyCheckStatusColor(_view.progressStatus);
 		default:
 			return st::proxyRowStatusFg;
 		}
@@ -940,7 +1001,7 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 				lt_ping,
 				QString::number(_view.ping));
 		case State::Checking:
-			return tr::lng_proxy_checking(tr::now);
+			return ProxyCheckStatusText(_view.progressStatus);
 		case State::Connecting:
 			return tr::lng_proxy_connecting(tr::now);
 		case State::Online:
@@ -2277,6 +2338,8 @@ void ProxiesBoxController::ShowApplyConfirmation(
 				Checker v4;
 				Checker v6;
 				rpl::variable<TextWithEntities> statusValue;
+				MTP::ProxyCheckStatus progressStatus
+					= MTP::ProxyCheckStatus::Idle;
 				bool finished = false;
 			};
 			const auto state
@@ -2302,6 +2365,22 @@ void ProxiesBoxController::ShowApplyConfirmation(
 					st::proxyRowStatusFgOffline->c);
 				relayout();
 			};
+			const auto setProgress = [=](MTP::ProxyCheckStatus status) {
+				if (!weak || state->finished) {
+					return;
+				}
+				state->progressStatus = status;
+				state->statusValue = TextWithEntities{
+					ProxyCheckStatusText(status),
+				};
+				statusLabel->setTextColorOverride(
+					ProxyCheckStatusColor(status)->c);
+				if (status == MTP::ProxyCheckStatus::ConnectedByActiveSession) {
+					state->finished = true;
+					MTP::ResetProxyCheckers(state->v4, state->v6);
+				}
+				relayout();
+			};
 			const auto runCheck = [=] {
 				if (!weak) {
 					return;
@@ -2310,10 +2389,12 @@ void ProxiesBoxController::ShowApplyConfirmation(
 					? &controller->session().account()
 					: &Core::App().activeAccount();
 				state->finished = false;
+				state->progressStatus = MTP::ProxyCheckStatus::Idle;
 				state->statusValue = TextWithEntities{
 					tr::lng_proxy_box_table_checking(tr::now),
 				};
-				statusLabel->setTextColorOverride(st::proxyRowStatusFg->c);
+				statusLabel->setTextColorOverride(
+					ProxyCheckStatusColor(state->progressStatus)->c);
 				relayout();
 				MTP::StartProxyCheck(
 					&account->mtp(),
@@ -2348,8 +2429,12 @@ void ProxiesBoxController::ShowApplyConfirmation(
 							state->finished = true;
 							setUnavailable();
 						}
-					});
-				if (!MTP::HasProxyCheckers(state->v4, state->v6)) {
+					},
+					setProgress);
+				if (!MTP::HasProxyCheckers(state->v4, state->v6)
+					&& !state->finished
+					&& state->progressStatus
+						!= MTP::ProxyCheckStatus::WaitingForConnectionSlot) {
 					state->finished = true;
 					setUnavailable();
 				}
@@ -2426,7 +2511,15 @@ auto ProxiesBoxController::proxySettingsValue() const
 }
 
 void ProxiesBoxController::refreshChecker(Item &item) {
+	if (MTP::HasProxyCheckers(item.checker, item.checkerv6)) {
+		item.progressStatus = item.checker
+			? item.checker.state()->progressStatus
+			: item.checkerv6.state()->progressStatus;
+		updateView(item);
+		return;
+	}
 	item.state = ItemState::Checking;
+	item.progressStatus = MTP::ProxyCheckStatus::Idle;
 	updateView(item);
 	const auto id = item.id;
 	MTP::StartProxyCheck(
@@ -2448,6 +2541,8 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 			MTP::ResetProxyCheckers(item->checker, item->checkerv6);
 			if (item->state == ItemState::Checking) {
 				item->state = ItemState::Available;
+				item->progressStatus
+					= MTP::ProxyCheckStatus::FirstMtprotoPayload;
 				item->ping = pingTime;
 				updateView(*item);
 			}
@@ -2464,11 +2559,28 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 			if (!MTP::HasProxyCheckers(item->checker, item->checkerv6)
 				&& item->state == ItemState::Checking) {
 				item->state = ItemState::Unavailable;
+				item->progressStatus = MTP::ProxyCheckStatus::Idle;
 				updateView(*item);
 			}
+		},
+		[=](MTP::ProxyCheckStatus status) {
+			const auto item = ranges::find(
+				_list,
+				id,
+				[](const Item &item) { return item.id; });
+			if (item == end(_list) || item->state != ItemState::Checking) {
+				return;
+			}
+			item->progressStatus = status;
+			updateView(*item);
 		});
-	if (!MTP::HasProxyCheckers(item.checker, item.checkerv6)) {
+	if (!MTP::HasProxyCheckers(item.checker, item.checkerv6)
+		&& item.progressStatus
+			!= MTP::ProxyCheckStatus::WaitingForConnectionSlot
+		&& item.progressStatus
+			!= MTP::ProxyCheckStatus::ConnectedByActiveSession) {
 		item.state = ItemState::Unavailable;
+		updateView(item);
 	}
 }
 
@@ -2858,6 +2970,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		!deleted && supportsShare,
 		supportsCalls,
 		state,
+		item.progressStatus,
 	});
 }
 

@@ -181,6 +181,11 @@ HandshakePhase AbstractConnection::handshakePhase() const {
 	return HandshakePhase::None;
 }
 
+void AbstractConnection::setMtproxyAttempt(
+		ProxyConnectionAttempt,
+		crl::time) {
+}
+
 ConnectionPointer AbstractConnection::Create(
 		not_null<Instance*> instance,
 		DcOptions::Variants::Protocol protocol,

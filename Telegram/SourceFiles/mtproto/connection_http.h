@@ -34,6 +34,9 @@ public:
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
 		bool protocolForFiles) override;
+	void setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) override;
 	bool isConnected() const override;
 	bool usingHttpWait() override;
 	bool needHttpWait() override;
@@ -63,6 +66,7 @@ private:
 
 	QNetworkAccessManager _manager;
 	QString _address;
+	ProxyConnectionAttempt _mtproxyAttempt;
 
 	QSet<QNetworkReply*> _requests;
 

@@ -132,7 +132,9 @@ def test_session_reports_silence_and_recovers_temporary_key():
     # and repeated silence is treated like an explicit -404: the server
     # may drop packets of a discarded temporary key without answering.
     assert "kSilentTimeoutsToAssumeKeyDestroyed" in session
-    assert ("MtProxy::FailureReason::ConnectedNoMtprotoData"
+    assert ("MtProxy::FailureReason::ServerHelloOkNoMtprotoData"
+        in wait_received)
+    assert ("ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData"
         in wait_received)
     assert "return destroyTemporaryKey();" in wait_received
 
@@ -155,14 +157,14 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     wait_received = function_body(
         session, "void SessionPrivate::waitReceivedFailed(")
 
-    # After a relay stall a dozen sessions reconnect at once; releasing
-    # the full healthy cap on a mere TLS handshake success re-triggers
-    # the proxy-side throttle and sustains the stall. Full concurrency
-    # requires an actually received MTProto payload (relay proof).
     assert "state.relayProven" in policy
-    assert "state.healthy && state.relayProven" in policy
-    assert policy.index("state.healthy && state.relayProven") < policy.index(
-        "kHealthyActiveCap")
+    assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
+    assert "use != EndpointUse::Main" in policy
+    assert "policy.useAllowed = false;" in policy
+    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
+    assert "kFreshRelayActiveCap" in policy
+    assert "kWarmRelayActiveCap" in policy
+    assert "kStableRelayActiveCap" in policy
     assert "state.relayProven = true;" in success
     assert success.index("SuccessScope::Relay") < success.index(
         "state.relayProven = true;")
@@ -173,7 +175,7 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     assert "void noteRelayStall(" in header
     assert "relayProven = false;" in stall
     assert "terminalUntil" not in stall
-    assert "noteRelayStall(" in wait_received
+    assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
 
 
 def test_established_idle_close_is_not_a_health_failure():
@@ -187,4 +189,4 @@ def test_established_idle_close_is_not_a_health_failure():
     assert "benignIdleClose" in handle_error
     assert "_firstAppDataAt" in handle_error
     assert handle_error.index("benignIdleClose") < handle_error.index(
-        "reportFailure({")
+        "ReportMtproxyFailure({")

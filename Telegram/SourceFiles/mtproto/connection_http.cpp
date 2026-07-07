@@ -135,6 +135,7 @@ void HttpConnection::connectToServer(
 
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Connecting,
+		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
 		.transport = u"HTTP"_q,
 		.connectionId = _debugId,
@@ -252,6 +253,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 		_requests.remove(reply);
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::TelegramCheck,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = u"HTTP"_q,
 			.connectionId = _debugId,
@@ -263,6 +265,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 			ReportProxyEvent(_instance, {
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
 				.proxy = _proxy,
 				.transport = u"HTTP"_q,
 				.connectionId = _debugId,
@@ -282,6 +285,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 					_pingTime = crl::now() - _pingTime;
 					ReportProxyEvent(_instance, {
 						.phase = ProxyDiagnosticsPhase::Connected,
+						.attempt = _mtproxyAttempt,
 						.proxy = _proxy,
 						.transport = u"HTTP"_q,
 						.connectionId = _debugId,
@@ -294,6 +298,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 					ReportProxyEvent(_instance, {
 						.phase = ProxyDiagnosticsPhase::Failed,
 						.error = ProxyConnectionError::BadResponse,
+						.attempt = _mtproxyAttempt,
 						.proxy = _proxy,
 						.transport = u"HTTP"_q,
 						.connectionId = _debugId,
@@ -307,6 +312,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 				ReportProxyEvent(_instance, {
 					.phase = ProxyDiagnosticsPhase::Failed,
 					.error = ProxyConnectionError::BadResponse,
+					.attempt = _mtproxyAttempt,
 					.proxy = _proxy,
 					.transport = u"HTTP"_q,
 					.connectionId = _debugId,
@@ -323,6 +329,7 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
 			.error = ReplyProxyConnectionError(reply->error()),
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.transport = u"HTTP"_q,
 			.connectionId = _debugId,
@@ -334,6 +341,12 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 
 crl::time HttpConnection::pingTime() const {
 	return isConnected() ? _pingTime : crl::time(0);
+}
+
+void HttpConnection::setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time) {
+	_mtproxyAttempt = attempt;
 }
 
 crl::time HttpConnection::fullConnectTimeout() const {

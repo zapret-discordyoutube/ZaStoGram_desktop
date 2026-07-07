@@ -50,6 +50,8 @@ public:
 
 	void updateAuthKey();
 	void restartNow();
+	void migrateProxy(uint64 generation, bool scout);
+	void releaseProxyMigration(uint64 generation);
 	void sendPingForce();
 	void tryToSend();
 
@@ -63,6 +65,8 @@ private:
 		MtProxy::EndpointId mtproxyEndpoint;
 		MtProxy::EndpointUse mtproxyUse = MtProxy::EndpointUse::Main;
 		MtProxy::EndpointAttemptLease mtproxyLease;
+		ProxyConnectionAttempt mtproxyAttempt;
+		crl::time mtproxyAttemptStartedAt = 0;
 	};
 	struct SentContainer {
 		crl::time sent = 0;
@@ -212,6 +216,11 @@ private:
 	ConnectionPointer _connection;
 	MtProxy::EndpointId _connectionMtproxyEndpoint;
 	MtProxy::EndpointUse _connectionMtproxyUse = MtProxy::EndpointUse::Main;
+	ProxyConnectionAttempt _connectionMtproxyAttempt;
+	crl::time _connectionMtproxyAttemptStartedAt = 0;
+	uint64 _proxyGeneration = 0;
+	bool _proxyMigrationSuspended = false;
+	bool _proxyMigrationScout = false;
 	bool _mtprotoDataReceived = false;
 	int _mtprotoSilentTimeouts = 0;
 	std::vector<TestConnection> _testConnections;

@@ -205,7 +205,9 @@ def test_debug_logs_use_one_run_file_with_weekly_retention():
 
 def test_mtproxy_progress_errors_and_success_are_reported():
     tcp_connection = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
-    diagnostics_source = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
+    control_source = (
+        SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
+    ).read_text(encoding="utf-8")
 
     assert "_socket->progress(" in tcp_connection
     assert "socketProgress(phase);" in tcp_connection
@@ -220,9 +222,9 @@ def test_mtproxy_progress_errors_and_success_are_reported():
     assert "ProxyDiagnosticsPhase::ClientHelloSent" in tcp_connection
     assert "ProxyDiagnosticsPhase::TelegramCheck" in tcp_connection
     assert "ProxyDiagnosticsPhase::Connected" in tcp_connection
-    assert "ProxyConnectionPhase::Handshake" in diagnostics_source
-    assert "ProxyConnectionPhase::CheckingTelegram" in diagnostics_source
-    assert "ProxyConnectionPhase::Connected" in diagnostics_source
+    assert "ProxyConnectionPhase::Handshake" in control_source
+    assert "ProxyConnectionPhase::CheckingTelegram" in control_source
+    assert "ProxyConnectionPhase::Connected" in control_source
 
 
 if __name__ == "__main__":

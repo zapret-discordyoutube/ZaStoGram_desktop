@@ -237,6 +237,33 @@ void Session::restart() {
 	}
 }
 
+void Session::migrateProxy(uint64 generation, bool scout) {
+	if (_killed) {
+		DEBUG_LOG(("Session Error: can't migrate proxy in a killed session"));
+		return;
+	}
+	refreshOptions();
+	if (scout) {
+		setConnectionNotInited();
+	}
+	if (const auto captured = _private) {
+		InvokeQueued(captured, [=] {
+			captured->migrateProxy(generation, scout);
+		});
+	}
+}
+
+void Session::releaseProxyMigration(uint64 generation) {
+	if (_killed) {
+		return;
+	}
+	if (const auto captured = _private) {
+		InvokeQueued(captured, [=] {
+			captured->releaseProxyMigration(generation);
+		});
+	}
+}
+
 void Session::refreshOptions() {
 	auto &settings = Core::App().settings().proxy();
 	const auto &proxy = settings.selected();

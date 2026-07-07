@@ -124,9 +124,81 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     assert report_failure.index("FailureIsRouteOnly(report.reason)") < (
         report_failure.index("state.lastFailure = report.reason;"))
 
-    assert 'u"server_hello_ok_no_appdata"_q' in adaptive_recipe
+    assert 'u"server_hello_ok_no_appdata"_q' not in adaptive_recipe
     assert 'u"tcp_connect_timeout"_q' not in adaptive_recipe
     assert 'u"server_hello_ok_no_appdata"_q' not in adaptive_rotation
+
+
+def test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile():
+    health = read(ENDPOINT_HEALTH_CPP)
+    adaptive = read(ADAPTIVE_POLICY_CPP)
+    report_failure = function_body(health, "void EndpointHealth::reportFailure(")
+    downgrade = function_body(health, "void DowngradeRecipeForRelayStall(")
+    policy = function_body(
+        health,
+        "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+    recipe_body = function_body(health, "bool FailureNeedsRecipeEscalation(")
+    rotation_body = function_body(health, "bool FailureNeedsTlsRotation(")
+    adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
+    adaptive_rotation = function_body(
+        adaptive,
+        "bool FailureNeedsTlsProfileRotation(")
+
+    for diagnostic in (
+        "client_hello_sent_no_server_hello",
+        "tls_alert_after_client_hello",
+        "server_hello_hmac_mismatch",
+    ):
+        assert diagnostic in adaptive_recipe
+        assert diagnostic in adaptive_rotation
+
+    for forbidden in (
+        "server_hello_ok_no_appdata",
+        "server_hello_ok_no_mtproto_data",
+        "connected_no_mtproto_data",
+        "mtp_receive_timeout_after_data",
+    ):
+        assert forbidden not in adaptive_recipe
+        assert forbidden not in adaptive_rotation
+
+    no_appdata_recipe_case = recipe_body.split(
+        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
+    assert "return false;" in no_appdata_recipe_case.split("}", 1)[0]
+
+    no_appdata_rotation_case = rotation_body.split(
+        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
+    assert "return false;" in no_appdata_rotation_case.split("}", 1)[0]
+
+    capability_gate = report_failure.split(
+        "ProxyCapabilityCache::Instance().noteMtproxyFailure(", 1)[0]
+    assert "report.reason != FailureReason::ServerHelloOkNoAppData" in (
+        capability_gate)
+
+    downgrade_at = report_failure.index(
+        "DowngradeRecipeForRelayStall(state, report.reason);")
+    cooldown_echo_at = report_failure.index("if (state.terminalUntil > now) {")
+    increment_at = report_failure.index("++state.recipeLevel;")
+    rotation_at = report_failure.index("RotateTlsProfileOnFailure(")
+    assert downgrade_at < cooldown_echo_at
+    assert downgrade_at < increment_at
+    assert downgrade_at < rotation_at
+
+    assert "FailureDowngradesRecipe(reason)" in downgrade
+    assert "--state.recipeLevel;" in downgrade
+    after_downgrade = report_failure.split(
+        "DowngradeRecipeForRelayStall(state, report.reason);", 1)[1]
+    assert "++state.recipeLevel;" in after_downgrade
+    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
+
+    assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
+    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
+    assert policy.index("relayAge < kFreshRelayWindow") < policy.index(
+        "kFreshRelayActiveCap")
+    assert policy.index("relayAge < kWarmRelayWindow") < policy.index(
+        "kWarmRelayActiveCap")
+    assert "kStableRelayActiveCap" in policy
+    assert "policy.activeCap = kUnknownActiveCap;" in policy
+    assert "policy.retryAfter = kQueuedRetry;" in policy
 
 
 def test_logs_and_proxy_status_use_phase_specific_names():
@@ -200,5 +272,6 @@ if __name__ == "__main__":
     test_failure_reason_enum_is_phase_specific()
     test_tls_socket_reports_timeout_by_handshake_phase()
     test_phase_cooldown_and_recipe_policy_is_reason_based()
+    test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile()
     test_logs_and_proxy_status_use_phase_specific_names()
     test_proxy_check_and_session_timeout_use_phase_reasons()

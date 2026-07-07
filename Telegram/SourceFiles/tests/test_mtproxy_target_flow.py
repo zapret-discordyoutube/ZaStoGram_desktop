@@ -51,9 +51,11 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
     assert "ProxyCapabilityCache::Instance().lookup(proxy)" in mtproxy_branch
     assert mtproxy_branch.index("result.transport = ProxyTransport::Tcp;") < (
         mtproxy_branch.index("ProxyCapabilityCache::Instance().lookup(proxy)"))
-    assert "CompatStrictProxyStealthOptions(std::move(result))" in mtproxy_branch
-    assert mtproxy_branch.index("CompatStrictProxyStealthOptions(") < (
-        mtproxy_branch.index("result.tlsProfile = capability.lastGoodProfile;"))
+    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
+    assert "ProxyTlsProfile::ChromeModern" in policy
+    assert "capability.lastGoodProfile" in mtproxy_branch
+    assert mtproxy_branch.index("capability.lastGoodProfile") < (
+        mtproxy_branch.index("BoringMtproxyStealthOptions(std::move(result))"))
     assert "ProxyTransport::Wss" not in mtproxy_branch
     assert "ApplyProxyStealthLevel(" not in mtproxy_branch
     assert "syntheticPskAllowed" not in mtproxy_branch
@@ -124,7 +126,7 @@ def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
     # cooldown must not starve Media/Upload queues (head-of-line blocking).
     assert "for (const auto use : kQueuePriorityOrder)" in drain
     assert "drainQueue(use);" in drain
-    assert "MtProxy::EndpointHealth::Instance().admit({" in drain_queue
+    assert "ProxyControlPlane::Admit({" in drain_queue
     assert "MtProxy::ReserveOpenSlot(" in drain_queue
     assert "ConnectionBrokerAction::Queued" in notify
     assert "ConnectionBrokerAction::StartAfter" in notify
@@ -159,14 +161,16 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     # degrade: cooldown applied and rotation allowed.
     assert "const auto needsCooldown = FailureNeedsCooldown(report.reason)" in failure
     assert "|| report.routesExhausted;" in failure
-    assert ".rotationAllowed = needsCooldown," in failure
+    assert ".rotationAllowed = needsCooldown && !noAppDataWarning," in failure
     # A proxy that served connections before only degrades after several
     # exhaustions in a row (per-connect throttling must not lock out a
     # working proxy); one that never succeeded degrades on the first.
     assert "++state.exhaustedSinceSuccess;" in failure
     assert "state.exhaustedSinceSuccess < kExhaustedStrikesAfterSuccess" in failure
     assert "state.lastSuccessAt" in failure
-    assert "state.lastSuccessAt = crl::now();" in success
+    assert "const auto now = crl::now();" in success
+    assert "state.lastSuccessAt = now;" in success
+    assert "state.lastRelaySuccessAt = now;" in success
     assert "state.exhaustedSinceSuccess = 0;" in success
     # A recently-working endpoint whose handshake gets killed probes
     # again quickly with the escalated recipe instead of sitting out
@@ -191,19 +195,19 @@ def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
     policy = read(TRANSPORT_POLICY_CPP)
     status = read(STATUS_CPP)
     recipe = function_body(adaptive, "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
+    recipe_gate = function_body(adaptive, "bool FailureNeedsRecipe(")
     wss_allowed = function_body(policy, "bool ProxyWssAllowed(")
     wss_recommend = function_body(policy, "bool WssNeedsProxyRecommendation(")
 
     assert "FailureNeedsTlsRotation(report.reason)" in health
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in health
-    assert "MtProxy::EndpointHealth::Instance().snapshot(" in tls
+    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in tls
     assert "ApplyAdaptiveRecipe(input)" in tls
     assert "FailureNeedsRecipe(input.lastDiagnostic)" in recipe
     assert recipe.index("FailureNeedsRecipe(input.lastDiagnostic)") < (
         recipe.index("ApplyProxyStealthLevel("))
-    assert 'input.lastDiagnostic == u"server_hello_ok_no_appdata"_q' in recipe
-    assert recipe.index('input.lastDiagnostic == u"server_hello_ok_no_appdata"_q') < (
-        recipe.index("CompatibilityTlsProfile("))
+    assert 'u"server_hello_ok_no_appdata"_q' not in recipe_gate
+    assert 'input.lastDiagnostic == u"server_hello_ok_no_appdata"_q' not in recipe
     assert "proxy.type != ProxyData::Type::Socks5" in wss_allowed
     assert "!ProxyCapabilityCache::Instance().wssAllowed(proxy)" in wss_allowed
     assert "proxy.type == ProxyData::Type::None" in wss_recommend
@@ -254,7 +258,7 @@ def test_first_app_data_reported_once_per_tls_socket():
     guard = body.index("if (!_firstAppDataReceived) {")
     assert guard < body.index("_firstAppDataReceived = true;")
     assert guard < body.index("connectionProgress(_phase);")
-    assert guard < body.index("reportSuccess({")
+    assert guard < body.index("ReportMtproxySuccess({")
 
 
 def test_route_timeouts_and_exhaustion_reach_endpoint_health():

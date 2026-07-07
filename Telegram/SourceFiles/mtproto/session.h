@@ -146,6 +146,8 @@ public:
 	void setConnectionNotInited();
 
 	void restart();
+	void migrateProxy(uint64 generation, bool scout);
+	void releaseProxyMigration(uint64 generation);
 	void refreshOptions();
 	void stop();
 	void kill();

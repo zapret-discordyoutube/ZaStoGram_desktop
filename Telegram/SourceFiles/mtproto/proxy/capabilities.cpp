@@ -186,8 +186,14 @@ constexpr auto kMaxStoredRoutes = 16;
 	result.proxyKey = object.value("proxyKey").toString();
 	result.lastGoodTransport = TransportFromName(
 		object.value("lastGoodTransport").toString());
+	result.lastGoodRoute = object.value("lastGoodRoute").toString();
 	result.lastGoodProfile = ProfileFromName(
 		object.value("lastGoodProfile").toString());
+	result.lastGoodRecipeLevel = object.value(
+		"lastGoodRecipeLevel").toInt();
+	result.relayProven = object.value("relayProven").toBool(false);
+	result.autoRotateAllowed = object.value(
+		"autoRotateAllowed").toBool(true);
 	result.wssAllowed = object.value("wssAllowed").toBool(true);
 	result.syntheticPskAllowed = object.value(
 		"syntheticPskAllowed").toBool(false);
@@ -210,7 +216,11 @@ constexpr auto kMaxStoredRoutes = 16;
 	result.insert(
 		"lastGoodTransport",
 		TransportName(card.lastGoodTransport));
+	result.insert("lastGoodRoute", card.lastGoodRoute);
 	result.insert("lastGoodProfile", ProfileName(card.lastGoodProfile));
+	result.insert("lastGoodRecipeLevel", card.lastGoodRecipeLevel);
+	result.insert("relayProven", card.relayProven);
+	result.insert("autoRotateAllowed", card.autoRotateAllowed);
 	result.insert("wssAllowed", card.wssAllowed);
 	result.insert("syntheticPskAllowed", card.syntheticPskAllowed);
 	result.insert("fragmentationAllowed", card.fragmentationAllowed);
@@ -291,8 +301,11 @@ void ProxyCapabilityCache::noteWssRemoteClosed(
 void ProxyCapabilityCache::noteMtproxySuccess(
 		const QString &proxyKey,
 		const QString &routeKey,
+		const QString &lastGoodRoute,
 		ProxyTlsProfile sentProfile,
-		const ProxyStealthOptions &stealth) {
+		const ProxyStealthOptions &stealth,
+		int recipeLevel,
+		bool relayProven) {
 	if (proxyKey.isEmpty()) {
 		return;
 	}
@@ -301,16 +314,16 @@ void ProxyCapabilityCache::noteMtproxySuccess(
 	auto &card = _cards[proxyKey];
 	card.proxyKey = proxyKey;
 	card.lastGoodTransport = ProxyCapabilityTransport::MtproxyFakeTlsTcp;
+	card.lastGoodRoute = lastGoodRoute;
 	card.lastGoodProfile = sentProfile;
+	card.lastGoodRecipeLevel = recipeLevel;
+	card.relayProven = relayProven;
+	card.autoRotateAllowed = false;
 	card.lastSuccessAt = crl::now();
 	card.lastFailureClass.clear();
-	if (stealth.syntheticPsk) {
-		card.syntheticPskAllowed = true;
-	}
-	if (stealth.clientHelloFragmentation
-			!= ProxyClientHelloFragmentation::Off) {
-		card.fragmentationAllowed = true;
-	}
+	card.syntheticPskAllowed = stealth.syntheticPsk;
+	card.fragmentationAllowed = (stealth.clientHelloFragmentation
+		!= ProxyClientHelloFragmentation::Off);
 	AddRoute(card.goodRoutes, routeKey);
 	RemoveRoute(card.badRoutes, routeKey);
 	save();

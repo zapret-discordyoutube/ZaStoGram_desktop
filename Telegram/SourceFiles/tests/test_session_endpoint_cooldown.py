@@ -39,8 +39,9 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     assert "std::move(start.lease)" in source
     assert "std::vector<ConnectionTicket> _connectionBrokerTickets;" in header
     assert "i->mtproxyLease.release();" in source
-    assert "reportFailure(" in source
-    assert "reportSuccess(" in TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    assert "ProxyControlPlane::ReportMtproxyFailure(" in source
+    assert "ProxyControlPlane::ReportMtproxySuccess(" in (
+        TLS_SOCKET_CPP.read_text(encoding="utf-8"))
 
 
 def function_body(text: str, signature: str) -> str:

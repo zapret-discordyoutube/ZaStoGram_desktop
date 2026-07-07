@@ -74,6 +74,7 @@ public:
 		bool supportsShare = false;
 		bool supportsCalls = false;
 		ItemState state = ItemState::Unknown;
+		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 
 	};
 
@@ -112,6 +113,7 @@ private:
 		Checker checker;
 		Checker checkerv6;
 		ItemState state = ItemState::Unknown;
+		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 		int ping = 0;
 
 	};

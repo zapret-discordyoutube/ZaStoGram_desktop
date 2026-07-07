@@ -16,19 +16,52 @@ namespace {
 	return status.phase == ProxyConnectionPhase::Connected;
 }
 
+[[nodiscard]] bool IsTerminalFailure(
+		const ProxyConnectionStatus &status) {
+	return (status.error != ProxyConnectionError::None)
+		|| IsMtproxyTerminalFailure(status.mtproxyReason);
+}
+
 [[nodiscard]] bool IsNewerAttempt(
 		const ProxyConnectionAttempt &current,
 		const ProxyConnectionAttempt &update) {
+	if (update.proxyGeneration != current.proxyGeneration) {
+		return update.proxyGeneration > current.proxyGeneration;
+	}
 	if (update.proxyEpoch != current.proxyEpoch) {
 		return update.proxyEpoch > current.proxyEpoch;
 	}
 	return update.attemptId > current.attemptId;
 }
 
+[[nodiscard]] bool IsNewerProxyEpoch(
+		const ProxyConnectionAttempt &current,
+		const ProxyConnectionAttempt &update) {
+	if (update.proxyGeneration != current.proxyGeneration) {
+		return update.proxyGeneration > current.proxyGeneration;
+	}
+	return update.proxyEpoch > current.proxyEpoch;
+}
+
+[[nodiscard]] bool IsOlderProxyGeneration(
+		const ProxyConnectionAttempt &current,
+		const ProxyConnectionAttempt &update) {
+	return current.proxyGeneration
+		&& (!update.proxyGeneration
+			|| (update.proxyGeneration < current.proxyGeneration));
+}
+
 [[nodiscard]] bool StickyWindowActive(
 		const ProxyConnectionStatus &status) {
 	return status.terminalUntil
 		&& (status.terminalUntil > crl::now());
+}
+
+[[nodiscard]] bool FreshRelaySuccess(
+		const ProxyConnectionStatus &status) {
+	return IsSuccess(status)
+		&& status.successUntil
+		&& (status.successUntil > crl::now());
 }
 
 } // namespace
@@ -55,10 +88,14 @@ ProxyConnectionStatusKind ProxyConnectionStatusKindFor(
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
-	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
 		return ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:
+	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
+		return ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData;
 	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
 		return ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed;
+	case ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData:
+		return ProxyConnectionStatusKind::MtproxyMtpReceiveTimeoutAfterData;
 	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
 		return ProxyConnectionStatusKind::MtproxyProxyProtocolBadResponse;
 	}
@@ -116,6 +153,8 @@ ProxyConnectionStatusSeverity ProxyConnectionStatusSeverityFor(
 	case ProxyConnectionStatusKind::Connected:
 		return ProxyConnectionStatusSeverity::Success;
 	case ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData:
+	case ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData:
+	case ProxyConnectionStatusKind::MtproxyMtpReceiveTimeoutAfterData:
 		return ProxyConnectionStatusSeverity::Warning;
 	case ProxyConnectionStatusKind::HostNotFound:
 	case ProxyConnectionStatusKind::ConnectionRefused:
@@ -158,6 +197,8 @@ ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 	case ProxyConnectionStatusKind::Connected:
 		return ProxyConnectionStatusTone::Success;
 	case ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData:
+	case ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData:
+	case ProxyConnectionStatusKind::MtproxyMtpReceiveTimeoutAfterData:
 		return ProxyConnectionStatusTone::Warning;
 	case ProxyConnectionStatusKind::HostNotFound:
 	case ProxyConnectionStatusKind::MtproxyDnsFailed:
@@ -196,6 +237,14 @@ ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 ProxyConnectionStatus ApplyProxyConnectionStatusUpdate(
 		const ProxyConnectionStatus &current,
 		ProxyConnectionStatus update) {
+	if (IsOlderProxyGeneration(current.attempt, update.attempt)) {
+		return current;
+	}
+	if (FreshRelaySuccess(current)
+		&& IsTerminalFailure(update)
+		&& !IsNewerProxyEpoch(current.attempt, update.attempt)) {
+		return current;
+	}
 	if (!IsMtproxyTerminalFailure(current.mtproxyReason)) {
 		return update;
 	}

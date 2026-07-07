@@ -23,7 +23,9 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
-		int16 protocolDcId) {
+		int16 protocolDcId,
+		ProxyConnectionAttempt mtproxyAttempt,
+		crl::time mtproxyAttemptStartedAt) {
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {
 		auto route = WssCustomRoute(stealth);
@@ -44,7 +46,9 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 			secret,
 			proxy,
 			protocolForFiles,
-			stealth);
+			stealth,
+			mtproxyAttempt,
+			mtproxyAttemptStartedAt);
 	} else {
 		return std::make_unique<TcpSocket>(
 			thread,

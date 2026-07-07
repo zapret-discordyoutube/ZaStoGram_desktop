@@ -10,9 +10,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtp_instance.h"
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/capabilities.h"
+#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include <algorithm>
 
@@ -83,25 +83,35 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 void ReportRouteFailureToHealth(
 		const ProxyData &proxy,
 		int ipIndex,
-		MtProxy::FailureReason reason) {
+		MtProxy::FailureReason reason,
+		ProxyConnectionAttempt attempt,
+		crl::time attemptStartedAt) {
 	if (proxy.type != ProxyData::Type::Mtproto) {
 		return;
 	}
-	MtProxy::EndpointHealth::Instance().reportFailure({
+	ProxyControlPlane::ReportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex),
 		.reason = reason,
+		.attemptId = attempt.attemptId,
+		.proxyEpoch = attempt.proxyEpoch,
+		.attemptStartedAt = attemptStartedAt,
 	});
 }
 
 void ReportAllRoutesFailed(
 		const ProxyData &proxy,
-		MtProxy::FailureReason reason) {
+		MtProxy::FailureReason reason,
+		ProxyConnectionAttempt attempt,
+		crl::time attemptStartedAt) {
 	if (proxy.type != ProxyData::Type::Mtproto) {
 		return;
 	}
-	MtProxy::EndpointHealth::Instance().reportFailure({
+	ProxyControlPlane::ReportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForProxy(proxy),
 		.reason = reason,
+		.attemptId = attempt.attemptId,
+		.proxyEpoch = attempt.proxyEpoch,
+		.attemptStartedAt = attemptStartedAt,
 		.routesExhausted = true,
 	});
 }
@@ -164,6 +174,7 @@ ResolvingConnection::ResolvingConnection(
 	if (proxy.resolvedIPs.empty() || proxy.resolvedExpireAt < crl::now()) {
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Resolving,
+			.attempt = _mtproxyAttempt,
 			.proxy = _proxy,
 			.message = u"resolving proxy host"_q,
 		});
@@ -194,6 +205,9 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 	auto attempt = RouteAttempt();
 	attempt.ipIndex = ipIndex;
 	attempt.child = _child->clone(ToDirectIpProxy(_proxy, ipIndex));
+	attempt.child->setMtproxyAttempt(
+		_mtproxyAttempt,
+		_mtproxyAttemptStartedAt);
 	const auto raw = attempt.child.get();
 	connect(
 		raw,
@@ -275,6 +289,19 @@ std::vector<int> ResolvingConnection::routeOrder() const {
 
 int ResolvingConnection::activeRouteAttempts() const {
 	return int(_routeAttempts.size());
+}
+
+void ResolvingConnection::setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) {
+	_mtproxyAttempt = attempt;
+	_mtproxyAttemptStartedAt = startedAt;
+	if (_child) {
+		_child->setMtproxyAttempt(attempt, startedAt);
+	}
+	for (auto &routeAttempt : _routeAttempts) {
+		routeAttempt.child->setMtproxyAttempt(attempt, startedAt);
+	}
 }
 
 ResolvingConnection::RouteAttempt *ResolvingConnection::findRouteAttempt(
@@ -410,7 +437,12 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		// later phases are reported precisely by the socket itself from
 		// timedOut() below - reporting them here as well would degrade
 		// the canonical endpoint twice for one failed cycle.
-		ReportRouteFailureToHealth(_proxy, ipIndex, reason);
+		ReportRouteFailureToHealth(
+			_proxy,
+			ipIndex,
+			reason,
+			_mtproxyAttempt,
+			_mtproxyAttemptStartedAt);
 	}
 	// Let the attempt report its own failure before it is destroyed: the
 	// socket knows which handshake phase actually stalled. A proxy that
@@ -421,7 +453,11 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	}
 	_routeAttempts.erase(victim);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
-		ReportAllRoutesFailed(_proxy, reason);
+		ReportAllRoutesFailed(
+			_proxy,
+			reason,
+			_mtproxyAttempt,
+			_mtproxyAttemptStartedAt);
 		emitError(kErrorCodeOther);
 		return;
 	}
@@ -439,7 +475,7 @@ void ResolvingConnection::domainResolved(
 	_proxy.resolvedExpireAt = expireAt;
 	if (ips.empty()) {
 		if (_proxy.type == ProxyData::Type::Mtproto) {
-			MtProxy::EndpointHealth::Instance().reportFailure({
+			ProxyControlPlane::ReportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
 			});
@@ -450,6 +486,7 @@ void ResolvingConnection::domainResolved(
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
 				? ProxyMtproxyTerminalReason::DnsFailed
 				: ProxyMtproxyTerminalReason::None,
+			.attempt = _mtproxyAttempt,
 			.terminalUntil = expireAt,
 			.proxy = _proxy,
 			.message = u"proxy host not found"_q,
@@ -459,6 +496,7 @@ void ResolvingConnection::domainResolved(
 	}
 	ReportProxyEvent(_instance, {
 		.phase = ProxyDiagnosticsPhase::Resolving,
+		.attempt = _mtproxyAttempt,
 		.proxy = _proxy,
 		.message = u"proxy host resolved (%1 addresses)"_q.arg(
 			ips.size()),
@@ -515,7 +553,11 @@ void ResolvingConnection::handleError(
 			if (reason == MtProxy::FailureReason::None) {
 				reason = MtProxy::FailureReason::TcpConnectTimeout;
 			}
-			ReportAllRoutesFailed(_proxy, reason);
+			ReportAllRoutesFailed(
+				_proxy,
+				reason,
+				_mtproxyAttempt,
+				_mtproxyAttemptStartedAt);
 		}
 		emitError(errorCode);
 	} else if (_routeAttempts.empty()) {
@@ -645,7 +687,7 @@ void ResolvingConnection::connectToServer(
 		bool protocolForFiles) {
 	if (!_child) {
 		if (_proxy.type == ProxyData::Type::Mtproto) {
-			MtProxy::EndpointHealth::Instance().reportFailure({
+			ProxyControlPlane::ReportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
 			});
@@ -656,6 +698,7 @@ void ResolvingConnection::connectToServer(
 			.mtproxyReason = (_proxy.type == ProxyData::Type::Mtproto)
 				? ProxyMtproxyTerminalReason::DnsFailed
 				: ProxyMtproxyTerminalReason::None,
+			.attempt = _mtproxyAttempt,
 			.terminalUntil = _proxy.resolvedExpireAt,
 			.proxy = _proxy,
 			.message = u"proxy host not found"_q,

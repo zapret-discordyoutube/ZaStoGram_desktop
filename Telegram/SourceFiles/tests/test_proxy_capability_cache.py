@@ -57,7 +57,11 @@ def test_capability_card_contains_transport_profile_flags_and_routes():
     for field in (
         "QString proxyKey;",
         "ProxyCapabilityTransport lastGoodTransport",
+        "QString lastGoodRoute;",
         "ProxyTlsProfile lastGoodProfile",
+        "int lastGoodRecipeLevel",
+        "bool relayProven",
+        "bool autoRotateAllowed",
         "bool wssAllowed",
         "bool syntheticPskAllowed",
         "bool fragmentationAllowed",
@@ -71,7 +75,11 @@ def test_capability_card_contains_transport_profile_flags_and_routes():
     for json_key in (
         '"proxyKey"',
         '"lastGoodTransport"',
+        '"lastGoodRoute"',
         '"lastGoodProfile"',
+        '"lastGoodRecipeLevel"',
+        '"relayProven"',
+        '"autoRotateAllowed"',
         '"wssAllowed"',
         '"syntheticPskAllowed"',
         '"fragmentationAllowed"',
@@ -131,8 +139,47 @@ def test_mtproxy_success_and_failure_update_capability_routes():
     assert "RouteKey(report.endpoint.route)" in failure
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
+    assert "RouteText(report.endpoint)" in success
+    assert "report.scope == SuccessScope::Relay" in success
+    assert "successRecipeLevel" in success
     assert ".stealth = _stealth" in packet_body
     assert ".sentProfile = _sentTlsProfile" in packet_body
+
+
+def test_mtproxy_relay_success_persists_boring_last_good_path():
+    header = read(CAPABILITIES_H)
+    source = read(CAPABILITIES_CPP)
+    success = function_body(source, "void ProxyCapabilityCache::noteMtproxySuccess(")
+    read_card = function_body(source, "ProxyCapabilityCard ReadCard(")
+    write_card = function_body(source, "QJsonObject WriteCard(")
+
+    assert "QString lastGoodRoute;" in header
+    assert "int lastGoodRecipeLevel = 0;" in header
+    assert "bool relayProven = false;" in header
+    assert "bool autoRotateAllowed = true;" in header
+
+    for json_key in (
+        '"lastGoodRoute"',
+        '"lastGoodRecipeLevel"',
+        '"relayProven"',
+        '"autoRotateAllowed"',
+    ):
+        assert json_key in read_card
+        assert json_key in write_card
+
+    assert "const QString &lastGoodRoute" in source
+    assert "int recipeLevel" in source
+    assert "bool relayProven" in source
+    assert "card.lastGoodRoute = lastGoodRoute;" in success
+    assert "card.lastGoodRecipeLevel = recipeLevel;" in success
+    assert "card.relayProven = relayProven;" in success
+    assert "card.autoRotateAllowed = false;" in success
+    assert "card.syntheticPskAllowed = stealth.syntheticPsk;" in success
+    assert ("card.fragmentationAllowed = (stealth.clientHelloFragmentation\n"
+        "\t\t!= ProxyClientHelloFragmentation::Off);") in success
+    assert "if (stealth.syntheticPsk) {" not in success
+    assert "card.syntheticPskAllowed = true;" not in success
+    assert "card.fragmentationAllowed = true;" not in success
 
 
 def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
@@ -145,6 +192,9 @@ def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
 	assert "ProxyCapabilityCache::Instance().lookup(proxy)" in body
 	assert "capability.lastGoodTransport" in body
 	assert "ProxyCapabilityTransport::MtproxyFakeTlsTcp" in body
+	assert "capability.relayProven" in body
+	assert "capability.lastGoodRecipeLevel == 0" in body
+	assert "!capability.autoRotateAllowed" in body
 	assert "capability.lastGoodProfile" in body
 	assert "CompatStrictProxyStealthOptions(std::move(result))" in body
 	assert "capability.syntheticPskAllowed" not in mtproxy_branch
@@ -158,4 +208,5 @@ if __name__ == "__main__":
     test_proxy_capability_key_uses_canonical_identity_not_route_ip()
     test_wss_remote_closed_is_persisted_with_ttl_per_proxy()
     test_mtproxy_success_and_failure_update_capability_routes()
+    test_mtproxy_relay_success_persists_boring_last_good_path()
     test_last_good_capability_is_used_before_saved_mtproxy_experiments()

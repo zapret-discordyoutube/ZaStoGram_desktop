@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/connection_broker.h"
+#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session.h"
@@ -233,6 +234,10 @@ bool SessionPrivate::appendTestConnection(
 	const auto mtproxyUse = protocolForFiles
 		? MtProxy::EndpointUse::Media
 		: MtProxy::EndpointUse::Main;
+	if (_proxyMigrationScout
+		&& (!_connectionBrokerTickets.empty() || !_testConnections.empty())) {
+		return false;
+	}
 	const auto mtproxyEndpoint = mtproxy
 		? MtProxy::EndpointIdFromProxy(
 			proxy,
@@ -245,6 +250,8 @@ bool SessionPrivate::appendTestConnection(
 			MtProxy::EndpointId startEndpoint,
 			MtProxy::EndpointUse startUse,
 			MtProxy::EndpointAttemptLease startLease,
+			ProxyConnectionAttempt startAttempt,
+			crl::time startAttemptStartedAt,
 			ProxyStealthOptions startStealth) {
 		QWriteLocker lock(&_stateMutex);
 		_testConnections.push_back({
@@ -259,9 +266,12 @@ bool SessionPrivate::appendTestConnection(
 			endpoint,
 			std::move(startEndpoint),
 			startUse,
-			std::move(startLease)
+			std::move(startLease),
+			startAttempt,
+			startAttemptStartedAt
 		});
 		const auto weak = _testConnections.back().data.get();
+		weak->setMtproxyAttempt(startAttempt, startAttemptStartedAt);
 		connect(weak, &AbstractConnection::error, [=](int errorCode) {
 			onError(weak, errorCode);
 		});
@@ -299,6 +309,7 @@ bool SessionPrivate::appendTestConnection(
 
 	if (mtproxy) {
 		auto ticket = ConnectionBroker::Instance().request({
+			.proxyGeneration = _proxyGeneration,
 			.endpoint = mtproxyEndpoint,
 			.proxy = proxy,
 			.use = mtproxyUse,
@@ -309,10 +320,19 @@ bool SessionPrivate::appendTestConnection(
 			.context = this,
 			.start = [=](ConnectionStart start) mutable {
 				removeConnectionBrokerTicket(start.ticketId);
+				if (start.proxyGeneration != _proxyGeneration) {
+					return;
+				}
 				appendStartedConnection(
 					std::move(start.endpoint),
 					start.use,
 					std::move(start.lease),
+					{
+						.proxyGeneration = start.proxyGeneration,
+						.proxyEpoch = start.proxyEpoch,
+						.attemptId = start.attemptId,
+					},
+					start.attemptStartedAt,
 					start.stealth);
 			},
 			.status = [=](ConnectionBrokerDecision) {
@@ -330,6 +350,8 @@ bool SessionPrivate::appendTestConnection(
 		MtProxy::EndpointId(),
 		MtProxy::EndpointUse::Main,
 		MtProxy::EndpointAttemptLease(),
+		{ .proxyGeneration = _proxyGeneration },
+		0,
 		stealth);
 	return true;
 }
@@ -364,11 +386,23 @@ void SessionPrivate::logMtprotoEvent(
 		ProxyDiagnosticsPhase phase,
 		ProxyDiagnosticsSeverity severity,
 		const QString &message) const {
-	WriteProxyDiagnosticsLine({
-		.source = ProxyDiagnosticsSource::MTP,
+	const auto proxy = _options ? _options->proxy : ProxyData();
+	if (proxy.type == ProxyData::Type::None) {
+		WriteProxyDiagnosticsLine({
+			.source = ProxyDiagnosticsSource::MTP,
+			.phase = phase,
+			.severity = severity,
+			.proxy = proxy,
+			.dc = mtprotoLogDc(),
+			.message = message,
+		});
+		return;
+	}
+	ReportProxyEvent(_instance, {
 		.phase = phase,
+		.attempt = _connectionMtproxyAttempt,
 		.severity = severity,
-		.proxy = _options ? _options->proxy : ProxyData(),
+		.proxy = proxy,
 		.dc = mtprotoLogDc(),
 		.message = message,
 	});
@@ -468,6 +502,8 @@ void SessionPrivate::destroyAllConnections() {
 	_testConnections.clear();
 	_connectionMtproxyEndpoint = MtProxy::EndpointId();
 	_connectionMtproxyUse = MtProxy::EndpointUse::Main;
+	_connectionMtproxyAttempt = {};
+	_connectionMtproxyAttemptStartedAt = 0;
 	_mtprotoDataReceived = false;
 	_connection = nullptr;
 }
@@ -484,14 +520,17 @@ void SessionPrivate::reportMtproxyConnectionUsable(
 	if (MtProxy::EndpointEmpty(connection.mtproxyEndpoint)) {
 		return;
 	}
-	const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+	const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
 		connection.mtproxyEndpoint);
 	if (snapshot.healthy && !snapshot.halfOpen) {
 		return;
 	}
-	MtProxy::EndpointHealth::Instance().reportSuccess({
+	ProxyControlPlane::ReportMtproxySuccess({
 		.endpoint = connection.mtproxyEndpoint,
 		.use = connection.mtproxyUse,
+		.attemptId = connection.mtproxyAttempt.attemptId,
+		.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
+		.attemptStartedAt = connection.mtproxyAttemptStartedAt,
 	});
 }
 
@@ -1197,7 +1236,46 @@ void SessionPrivate::restartNow() {
 	restart();
 }
 
+void SessionPrivate::migrateProxy(uint64 generation, bool scout) {
+	_proxyGeneration = generation;
+	_proxyMigrationScout = scout;
+	_proxyMigrationSuspended = !scout;
+	_connectionMtproxyAttempt = { .proxyGeneration = generation };
+	_options = std::make_unique<SessionOptions>(_sessionData->options());
+	_retryTimer.cancel();
+	_waitForReceivedTimer.cancel();
+	_waitForConnectedTimer.cancel();
+	_waitForBetterTimer.cancel();
+	_brokerQueueDeadlineTimer.cancel();
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpRestart,
+		ProxyDiagnosticsSeverity::Info,
+		scout
+			? u"proxy_switch_main_scout"_q
+			: u"suspended_by_proxy_switch"_q);
+	destroyAllConnections();
+	_connectionMtproxyAttempt = { .proxyGeneration = generation };
+	setState(DisconnectedState);
+	if (!scout) {
+		return;
+	}
+	connectToServer();
+}
+
+void SessionPrivate::releaseProxyMigration(uint64 generation) {
+	if (generation != _proxyGeneration || !_proxyMigrationSuspended) {
+		return;
+	}
+	_proxyMigrationSuspended = false;
+	_proxyMigrationScout = false;
+	_connectionMtproxyAttempt = { .proxyGeneration = generation };
+	connectToServer();
+}
+
 void SessionPrivate::connectToServer(bool afterConfig) {
+	if (_proxyMigrationSuspended) {
+		return;
+	}
 	if (afterConfig
 		&& (!_testConnections.empty()
 			|| !_connectionBrokerTickets.empty()
@@ -1363,6 +1441,11 @@ void SessionPrivate::restart() {
 	if (_retryTimer.isActive()) {
 		return;
 	}
+	if (_options
+		&& (_options->proxy.type != ProxyData::Type::None)
+		&& (_retryTimeout < kProxyReconnectMinTimeout)) {
+		_retryTimeout = kProxyReconnectMinTimeout;
+	}
 
 	DEBUG_LOG(("MTP Info: restart timeout: %1ms").arg(_retryTimeout));
 	logMtprotoEvent(
@@ -1478,14 +1561,34 @@ void SessionPrivate::waitReceivedFailed() {
 			.arg(_waitForReceived)
 			.arg(_mtprotoDataReceived ? u"yes"_q : u"no"_q)
 			.arg(_mtprotoSilentTimeouts));
+	if (mtproxyConnection) {
+		const auto mtproxyReason = silentMtproxyConnection
+			? ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData
+			: ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData;
+		ReportProxyEvent(_instance, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ProxyConnectionError::Timeout,
+			.mtproxyReason = mtproxyReason,
+			.attempt = _connectionMtproxyAttempt,
+			.severity = ProxyDiagnosticsSeverity::Warning,
+			.proxy = _options->proxy,
+			.dc = mtprotoLogDc(),
+			.message = silentMtproxyConnection
+				? u"proxy connected, mtproto data stalled"_q
+				: u"mtp receive timeout after relay data"_q,
+		});
+	}
 	if (silentMtproxyConnection) {
-		MtProxy::EndpointHealth::Instance().reportFailure({
+		ProxyControlPlane::ReportMtproxyFailure({
 			.endpoint = _connectionMtproxyEndpoint,
 			.use = _connectionMtproxyUse,
-			.reason = MtProxy::FailureReason::ConnectedNoMtprotoData,
+			.reason = MtProxy::FailureReason::ServerHelloOkNoMtprotoData,
+			.attemptId = _connectionMtproxyAttempt.attemptId,
+			.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+			.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
 		});
 	} else if (mtproxyConnection) {
-		MtProxy::EndpointHealth::Instance().noteRelayStall(
+		ProxyControlPlane::NoteMtproxyRelayStall(
 			_connectionMtproxyEndpoint);
 	}
 	doDisconnect();
@@ -1588,10 +1691,13 @@ void SessionPrivate::connectingTimedOut() {
 	for (const auto &connection : _testConnections) {
 		if (!MtProxy::EndpointEmpty(connection.mtproxyEndpoint)
 			&& connection.mtproxyEndpoint.canonical.domainFromSecret.isEmpty()) {
-				MtProxy::EndpointHealth::Instance().reportFailure({
+				ProxyControlPlane::ReportMtproxyFailure({
 					.endpoint = connection.mtproxyEndpoint,
 					.use = connection.mtproxyUse,
 					.reason = MtProxy::FailureReason::TcpConnectTimeout,
+					.attemptId = connection.mtproxyAttempt.attemptId,
+					.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
+					.attemptStartedAt = connection.mtproxyAttemptStartedAt,
 				});
 		}
 		connection.data->timedOut();
@@ -1779,18 +1885,25 @@ void SessionPrivate::handleReceived() {
 		if (!_mtprotoDataReceived) {
 			_mtprotoDataReceived = true;
 			_mtprotoSilentTimeouts = 0;
-			logMtprotoEvent(
-				ProxyDiagnosticsPhase::MtpFirstDataReceived,
-				ProxyDiagnosticsSeverity::Info,
-				u"first mtproto payload received"_q);
-			if (!MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
-				MtProxy::EndpointHealth::Instance().reportSuccess({
-					.endpoint = _connectionMtproxyEndpoint,
-					.use = _connectionMtproxyUse,
-					.scope = MtProxy::SuccessScope::Relay,
-				});
+			if (_proxyMigrationScout) {
+				_proxyMigrationScout = false;
+				_instance->proxyMigrationSucceeded(_proxyGeneration);
 			}
-		}
+				logMtprotoEvent(
+					ProxyDiagnosticsPhase::MtpFirstDataReceived,
+					ProxyDiagnosticsSeverity::Info,
+					u"first mtproto payload received"_q);
+				if (!MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
+					ProxyControlPlane::ReportMtproxySuccess({
+						.endpoint = _connectionMtproxyEndpoint,
+						.use = _connectionMtproxyUse,
+						.attemptId = _connectionMtproxyAttempt.attemptId,
+						.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+						.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
+						.scope = MtProxy::SuccessScope::Relay,
+					});
+				}
+			}
 
 		_startedConnectingAt = crl::time(0);
 
@@ -2696,6 +2809,12 @@ void SessionPrivate::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_testConnections));
+	const auto mtproxyAttempt = ProxyConnectionAttempt{
+		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
+		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
+		.attemptId = i->mtproxyLease.attemptId(),
+	};
+	const auto mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
 	i->mtproxyLease.release();
 	reportMtproxyConnectionUsable(*i);
 	const auto my = i->priority;
@@ -2712,6 +2831,8 @@ void SessionPrivate::onConnected(
 		_waitForBetterTimer.cancel();
 		_connectionMtproxyEndpoint = i->mtproxyEndpoint;
 		_connectionMtproxyUse = i->mtproxyUse;
+		_connectionMtproxyAttempt = mtproxyAttempt;
+		_connectionMtproxyAttemptStartedAt = mtproxyAttemptStartedAt;
 		_connection = std::move(i->data);
 		_connectionBrokerTickets.clear();
 		_testConnections.clear();
@@ -2721,6 +2842,14 @@ void SessionPrivate::onConnected(
 
 void SessionPrivate::onDisconnected(
 		not_null<AbstractConnection*> connection) {
+	const auto found = ranges::find(
+		_testConnections,
+		connection.get(),
+		[](const TestConnection &test) { return test.data.get(); });
+	if (found == end(_testConnections)
+		&& _connection.get() != connection.get()) {
+		return;
+	}
 	removeTestConnection(connection);
 
 	if (_testConnections.empty() && _connectionBrokerTickets.empty()) {
@@ -2752,6 +2881,12 @@ void SessionPrivate::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	reportMtproxyConnectionUsable(*i);
+	_connectionMtproxyAttempt = {
+		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
+		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
+		.attemptId = i->mtproxyLease.attemptId(),
+	};
+	_connectionMtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
 	_connectionMtproxyEndpoint = i->mtproxyEndpoint;
 	_connectionMtproxyUse = i->mtproxyUse;
 	_connection = std::move(i->data);
@@ -3023,30 +3158,40 @@ void SessionPrivate::onError(
 		_testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
+	if (found == end(_testConnections)
+		&& _connection.get() != connection.get()) {
+		return;
+	}
 	if (found != end(_testConnections)) {
 		if (!MtProxy::EndpointEmpty(found->mtproxyEndpoint)) {
-			MtProxy::EndpointHealth::Instance().reportFailure({
+			ProxyControlPlane::ReportMtproxyFailure({
 				.endpoint = found->mtproxyEndpoint,
 				.use = found->mtproxyUse,
 				.reason = MtProxy::FailureReasonFromErrorCode(errorCode),
 				.lease = &found->mtproxyLease,
+				.attemptId = found->mtproxyAttempt.attemptId,
+				.proxyEpoch = found->mtproxyAttempt.proxyEpoch,
+				.attemptStartedAt = found->mtproxyAttemptStartedAt,
 			});
 		}
 	} else if (_connection.get() == connection.get()
 		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
 		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
 		if (reason != MtProxy::FailureReason::None) {
-			const auto snapshot = MtProxy::EndpointHealth::Instance().snapshot(
+			const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
 				_connectionMtproxyEndpoint);
 			const auto ignoreRemoteClosed = (reason
 					== MtProxy::FailureReason::AppDataRemoteClosed)
 				&& snapshot.healthy
 				&& !snapshot.halfOpen;
 			if (!ignoreRemoteClosed) {
-				MtProxy::EndpointHealth::Instance().reportFailure({
+				ProxyControlPlane::ReportMtproxyFailure({
 					.endpoint = _connectionMtproxyEndpoint,
 					.use = _connectionMtproxyUse,
 					.reason = reason,
+					.attemptId = _connectionMtproxyAttempt.attemptId,
+					.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+					.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
 				});
 			}
 		}

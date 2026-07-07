@@ -35,20 +35,60 @@ def test_endpoint_health_has_named_concurrency_policy():
     source = read(ENDPOINT_HEALTH_CPP)
 
     assert "struct EndpointConcurrencyPolicy" in source
+    assert "kColdActiveCap = 1" in source
     assert "kUnknownActiveCap = kColdActiveCap" in source
+    assert "kFreshRelayActiveCap = 2" in source
+    assert "kWarmRelayActiveCap = 4" in source
     assert "kDpiFailureActiveCap = 1" in source
-    assert "kHealthyActiveCap = 8" in source
+    assert "kStableRelayActiveCap = 8" in source
+    assert "kFreshRelayWindow = crl::time(10 * 1000)" in source
+    assert "kWarmRelayWindow = crl::time(20 * 1000)" in source
     assert "kHealthyHandshakeSpacing = crl::time(50)" in source
+    assert "bool useAllowed = true;" in source
     assert "nextHandshakeAt" in source
     assert "EndpointConcurrencyPolicyFor(" in source
     assert "SkipCooldown" in header
+
+
+def test_cold_endpoint_admits_only_main_scout_until_relay_proof():
+    source = read(ENDPOINT_HEALTH_CPP)
+    admit = body_after(source, "Admission EndpointHealth::admit(")
+    policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+
+    assert "EndpointUse use" in source
+    assert "crl::time now" in source
+    assert "const auto policy = EndpointConcurrencyPolicyFor(" in admit
+    assert "request.use," in admit
+    assert "!policy.useAllowed" in admit
+    assert "auto denialAllowsRotation = true;" in admit
+    assert "denialAllowsRotation = false;" in admit
+    assert "if (!denialAllowsRotation) {" in admit
+    assert "use != EndpointUse::Main" in policy
+    assert "policy.useAllowed = false;" in policy
+    assert "policy.activeCap = kUnknownActiveCap;" in policy
+    assert "policy.activeCap = kDpiFailureActiveCap;" in policy
+
+
+def test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst():
+    source = read(ENDPOINT_HEALTH_CPP)
+    policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+    success = body_after(source, "void EndpointHealth::reportSuccess(")
+
+    assert "state.relayProven = true;" in success
+    assert "state.lastRelaySuccessAt = now;" in success
+    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
+    assert "relayAge < kFreshRelayWindow" in policy
+    assert "policy.activeCap = kFreshRelayActiveCap;" in policy
+    assert "relayAge < kWarmRelayWindow" in policy
+    assert "policy.activeCap = kWarmRelayActiveCap;" in policy
+    assert "policy.activeCap = kStableRelayActiveCap;" in policy
 
 
 def test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail():
     source = read(ENDPOINT_HEALTH_CPP)
     admit = body_after(source, "Admission EndpointHealth::admit(")
 
-    assert "const auto policy = EndpointConcurrencyPolicyFor(state);" in admit
+    assert "const auto policy = EndpointConcurrencyPolicyFor(" in admit
     assert "state.active >= policy.activeCap" in admit
     assert "AdmissionAction::StartAfter" in admit
     assert "AdmissionAction::SkipCooldown" not in admit
@@ -66,9 +106,11 @@ def test_dpi_like_failures_keep_strict_cap_and_recipe_escalation():
         "ClientHelloSentNoServerHello",
         "TlsAlertAfterClientHello",
         "ServerHelloHmacMismatch",
-        "ServerHelloOkNoAppData",
     ):
         assert f"FailureReason::{reason}" in escalation
+    no_appdata_case = escalation.split(
+        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
+    assert "return false;" in no_appdata_case.split("}", 1)[0]
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
     assert "kDpiFailureActiveCap" in policy
     assert "policy.recipeEscalationAllowed = true;" in policy
@@ -122,6 +164,8 @@ def test_connection_broker_drains_by_priority_not_request_queue_only():
 
 if __name__ == "__main__":
     test_endpoint_health_has_named_concurrency_policy()
+    test_cold_endpoint_admits_only_main_scout_until_relay_proof()
+    test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst()
     test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail()
     test_dpi_like_failures_keep_strict_cap_and_recipe_escalation()
     test_tcp_route_failures_rotate_routes_without_canonical_cooldown()

@@ -1496,6 +1496,8 @@ PRIVATE
     mtproto/connection_http.h
     mtproto/proxy/connection_broker.cpp
     mtproto/proxy/connection_broker.h
+    mtproto/proxy/control_plane.cpp
+    mtproto/proxy/control_plane.h
     mtproto/proxy/capabilities.cpp
     mtproto/proxy/capabilities.h
     mtproto/proxy/data.cpp

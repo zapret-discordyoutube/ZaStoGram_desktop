@@ -9,6 +9,7 @@ INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
 ABSTRACT_CONNECTION_H = SOURCE_DIR / "mtproto" / "connection_abstract.h"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
+CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
 ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.h"
@@ -85,6 +86,7 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     status_header = STATUS_H.read_text(encoding="utf-8")
     abstract_socket_h = ABSTRACT_SOCKET_H.read_text(encoding="utf-8")
     abstract_socket_cpp = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
+    control = CONTROL_CPP.read_text(encoding="utf-8")
     diagnostics = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
     tcp_connection = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
 
@@ -96,8 +98,8 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     assert "ProxyAuthenticationRequiredError" in abstract_socket_cpp
     assert "ProxyConnectionError::Authentication" in abstract_socket_cpp
     assert "ReportProxyEvent(_instance, {" in tcp_connection
-    assert "setProxyConnectionStatus(status)" in diagnostics
-    assert "ProxyConnectionPhase::CheckingTelegram" in diagnostics
+    assert "ProxyControlPlane::SubmitFact(instance, report);" in diagnostics
+    assert "ProxyConnectionPhase::CheckingTelegram" in control
 
 
 def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():

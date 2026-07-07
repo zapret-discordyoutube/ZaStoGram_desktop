@@ -26,7 +26,11 @@ struct ProxyCapabilityCard {
 	QString proxyKey;
 	ProxyCapabilityTransport lastGoodTransport
 		= ProxyCapabilityTransport::Unknown;
+	QString lastGoodRoute;
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
+	int lastGoodRecipeLevel = 0;
+	bool relayProven = false;
+	bool autoRotateAllowed = true;
 	bool wssAllowed = true;
 	bool syntheticPskAllowed = false;
 	bool fragmentationAllowed = false;
@@ -49,8 +53,11 @@ public:
 	void noteMtproxySuccess(
 		const QString &proxyKey,
 		const QString &routeKey,
+		const QString &lastGoodRoute,
 		ProxyTlsProfile sentProfile,
-		const ProxyStealthOptions &stealth);
+		const ProxyStealthOptions &stealth,
+		int recipeLevel,
+		bool relayProven);
 	void noteMtproxyFailure(
 		const QString &proxyKey,
 		const QString &routeKey,

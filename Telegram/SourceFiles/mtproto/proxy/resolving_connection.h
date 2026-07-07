@@ -38,6 +38,9 @@ public:
 		bool protocolForFiles) override;
 	bool isConnected() const override;
 	void timedOut() override;
+	void setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) override;
 
 	int32 debugState() const override;
 
@@ -84,6 +87,8 @@ private:
 	bytes::vector _protocolSecret;
 	int16 _protocolDcId = 0;
 	bool _protocolForFiles = false;
+	ProxyConnectionAttempt _mtproxyAttempt;
+	crl::time _mtproxyAttemptStartedAt = 0;
 	base::Timer _timeoutTimer;
 	base::Timer _routeRaceTimer;
 
