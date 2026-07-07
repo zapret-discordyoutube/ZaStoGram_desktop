@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "mtproto/sender.h"
 #include "mtproto/mtproto_auth_key.h"
+#include "mtproto/auth/mtproto_dh_utils.h"
 #include "webrtc/webrtc_device_resolver.h"
 #include "webrtc/webrtc_system_audio_capture.h"
 
@@ -357,7 +358,7 @@ private:
 	bytes::vector _ga;
 	bytes::vector _gb;
 	bytes::vector _gaHash;
-	bytes::vector _randomPower;
+	MTP::SecureBytes _randomPower;
 	MTP::AuthKey::Data _authKey;
 
 	CallId _id = 0;

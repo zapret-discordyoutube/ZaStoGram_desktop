@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/diagnostics.h"
 
 #include "base/unixtime.h"
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QRegularExpression>

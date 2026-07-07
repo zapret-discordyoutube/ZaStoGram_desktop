@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/group/calls_group_rtmp.h"
 #include "history/history.h"
 #include "history/history_item.h"
-#include "mtproto/mtproto_dh_utils.h"
+#include "mtproto/auth/mtproto_dh_utils.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "main/session/session_show.h"

@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/dedicated_file_loader.h"
+#include "mtproto/files/dedicated_file_loader.h"
 
 namespace Main {
 class Session;

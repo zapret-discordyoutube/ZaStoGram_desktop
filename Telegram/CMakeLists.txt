@@ -1488,14 +1488,14 @@ PRIVATE
     menu/menu_sponsored.h
     menu/menu_ttl_validator.cpp
     menu/menu_ttl_validator.h
-    mtproto/config_loader.cpp
-    mtproto/config_loader.h
-    mtproto/connection_abstract.cpp
-    mtproto/connection_abstract.h
-    mtproto/connection_http.cpp
-    mtproto/connection_http.h
-    mtproto/runtime_environment.cpp
-    mtproto/runtime_environment.h
+    mtproto/config/config_loader.cpp
+    mtproto/config/config_loader.h
+    mtproto/transport/connection_abstract.cpp
+    mtproto/transport/connection_abstract.h
+    mtproto/transport/connection_http.cpp
+    mtproto/transport/connection_http.h
+    mtproto/runtime/runtime_environment.cpp
+    mtproto/runtime/runtime_environment.h
     mtproto/proxy/connection_broker.cpp
     mtproto/proxy/connection_broker.h
     mtproto/proxy/control_plane.cpp
@@ -1512,18 +1512,18 @@ PRIVATE
     mtproto/proxy/status.h
     mtproto/proxy/resolving_connection.cpp
     mtproto/proxy/resolving_connection.h
-    mtproto/connection_tcp.cpp
-    mtproto/connection_tcp.h
+    mtproto/transport/connection_tcp.cpp
+    mtproto/transport/connection_tcp.h
     mtproto/core_types.h
     mtproto/dc_id.h
-    mtproto/dedicated_file_loader.cpp
-    mtproto/dedicated_file_loader.h
-    mtproto/pause_state.cpp
-    mtproto/pause_state.h
+    mtproto/files/dedicated_file_loader.cpp
+    mtproto/files/dedicated_file_loader.h
+    mtproto/session/pause_state.cpp
+    mtproto/session/pause_state.h
     mtproto/proxy/handshake_gate.cpp
     mtproto/proxy/handshake_gate.h
-    mtproto/mtp_instance.cpp
-    mtproto/mtp_instance.h
+    mtproto/instance/mtp_instance.cpp
+    mtproto/instance/mtp_instance.h
     mtproto/proxy/diagnostics.cpp
     mtproto/proxy/diagnostics.h
     mtproto/proxy/check.cpp
@@ -1547,17 +1547,18 @@ PRIVATE
     mtproto/proxy/wss/socket.cpp
     mtproto/proxy/wss/socket.h
     mtproto/sender.h
-    mtproto/session.cpp
-    mtproto/session.h
-    mtproto/session_state.h
-    mtproto/session_private/auth.cpp
-    mtproto/session_private/connection.cpp
-    mtproto/session_private.cpp
-    mtproto/session_private/receive.cpp
-    mtproto/session_private/send.cpp
-    mtproto/session_private.h
-    mtproto/special_config_request.cpp
-    mtproto/special_config_request.h
+    mtproto/session/session.cpp
+    mtproto/session/session.h
+    mtproto/session/session_state.h
+    mtproto/session/options.h
+    mtproto/session/private/auth.cpp
+    mtproto/session/private/connection.cpp
+    mtproto/session/private/session_private.cpp
+    mtproto/session/private/receive.cpp
+    mtproto/session/private/send.cpp
+    mtproto/session/private/session_private.h
+    mtproto/config/special_config_request.cpp
+    mtproto/config/special_config_request.h
     mtproto/type_utils.h
     overview/overview_checkbox.cpp
     overview/overview_checkbox.h

@@ -16,9 +16,9 @@ PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 PROXY_ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
 TRANSPORT_POLICY_H = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.h"
 TRANSPORT_POLICY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.cpp"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session.cpp"
-SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
-CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
+SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
+CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
 CMAKE_LISTS = SOURCE_DIR.parent / "CMakeLists.txt"
 
 

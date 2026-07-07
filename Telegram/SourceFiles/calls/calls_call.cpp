@@ -25,7 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "media/audio/media_audio_track.h"
 #include "mtproto/mtproto_config.h"
-#include "mtproto/mtproto_dh_utils.h"
+#include "mtproto/auth/mtproto_dh_utils.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/rate_call_box.h"
 #include "webrtc/webrtc_create_adm.h"
@@ -952,17 +952,19 @@ void Call::confirmAcceptedCall(const MTPDphoneCallAccepted &call) {
 	}
 
 	const auto firstBytes = bytes::make_span(call.vg_b().v);
-	const auto computedAuthKey = MTP::CreateAuthKey(
+	auto computedAuthKey = MTP::CreateAuthKey(
 		firstBytes,
-		_randomPower,
+		_randomPower.bytes(),
 		_dhConfig.p);
+	_randomPower.clear();
 	if (computedAuthKey.empty()) {
 		LOG(("Call Error: Could not compute mod-exp final."));
 		finish(FinishType::Failed);
 		return;
 	}
 
-	MTP::AuthKey::FillData(_authKey, computedAuthKey);
+	MTP::AuthKey::FillData(_authKey, computedAuthKey.bytes());
+	computedAuthKey.clear();
 	_keyFingerprint = ComputeFingerprint(_authKey);
 
 	setState(State::ExchangingKeys);
@@ -1006,17 +1008,19 @@ void Call::startConfirmedCall(const MTPDphoneCall &call) {
 	}
 	_ga = bytes::vector(firstBytes.begin(), firstBytes.end());
 
-	const auto computedAuthKey = MTP::CreateAuthKey(
+	auto computedAuthKey = MTP::CreateAuthKey(
 		firstBytes,
-		_randomPower,
+		_randomPower.bytes(),
 		_dhConfig.p);
+	_randomPower.clear();
 	if (computedAuthKey.empty()) {
 		LOG(("Call Error: Could not compute mod-exp final."));
 		finish(FinishType::Failed);
 		return;
 	}
 
-	MTP::AuthKey::FillData(_authKey, computedAuthKey);
+	MTP::AuthKey::FillData(_authKey, computedAuthKey.bytes());
+	computedAuthKey.clear();
 	_keyFingerprint = ComputeFingerprint(_authKey);
 
 	createAndStartController(call);
@@ -1667,6 +1671,7 @@ void Call::destroyController() {
 
 Call::~Call() {
 	destroyController();
+	OPENSSL_cleanse(_authKey.data(), _authKey.size());
 }
 
 void UpdateConfig(const std::string &data) {

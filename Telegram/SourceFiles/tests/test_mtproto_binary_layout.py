@@ -6,9 +6,10 @@ from session_private_sources import read_session_private_sources
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 MTPROTO_DIR = SOURCE_DIR / "mtproto"
-BINARY_H = MTPROTO_DIR / "details" / "mtproto_binary.h"
+BINARY_H = MTPROTO_DIR / "protocol" / "mtproto_binary.h"
+AUTH_KEY_CPP = MTPROTO_DIR / "mtproto_auth_key.cpp"
 TD_MTPROTO_CMAKE = ROOT / "Telegram" / "cmake" / "td_mtproto.cmake"
-SESSION_CPP = MTPROTO_DIR / "session_private.cpp"
+SESSION_CPP = MTPROTO_DIR / "session" / "private" / "session_private.cpp"
 
 
 def read(path):
@@ -89,7 +90,18 @@ def test_binary_layout_helper_is_mtproto_local_and_registered():
             "AppendPrimes("):
         assert symbol in header
     assert '#include "base/bytes.h"' in header
-    assert "mtproto/details/mtproto_binary.h" in cmake
+    assert "mtproto/protocol/mtproto_binary.h" in cmake
+
+
+def test_auth_key_qualifies_mtproto_binary_helpers_from_parent_namespace():
+    source = read(AUTH_KEY_CPP)
+    offenders = []
+
+    for index, line in enumerate(source.splitlines(), start=1):
+        if re.search(r"(?<!details::)\bbinary::", line):
+            offenders.append(f"{AUTH_KEY_CPP.relative_to(ROOT)}:{index}: {line.strip()}")
+
+    assert not offenders, "\n".join(offenders)
 
 
 def test_protocol_layout_uses_binary_helpers_not_raw_typed_aliasing():

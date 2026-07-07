@@ -17,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "mainwidget.h"
-#include "mtproto/dedicated_file_loader.h"
+#include "mtproto/files/dedicated_file_loader.h"
 #include "spellcheck/spellcheck_utils.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/buttons.h"

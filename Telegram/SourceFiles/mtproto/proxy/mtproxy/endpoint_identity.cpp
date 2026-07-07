@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
 
-#include "mtproto/connection_abstract.h"
+#include "mtproto/transport/connection_abstract.h"
 
 #include <QtCore/QByteArray>
 #include <QtCore/QCryptographicHash>

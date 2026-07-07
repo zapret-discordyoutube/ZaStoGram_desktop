@@ -43,7 +43,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "mainwidget.h"
 #include "media/player/media_player_instance.h"
-#include "mtproto/session_private.h"
+#include "mtproto/session/options.h"
 #include "webview/webview_embed.h"
 #include "window/main_window.h"
 #include "window/window_peer_menu.h"

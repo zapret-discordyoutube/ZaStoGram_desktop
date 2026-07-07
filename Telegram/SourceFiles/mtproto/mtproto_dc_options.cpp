@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/dc_id.h"
-#include "mtproto/connection_tcp.h"
+#include "mtproto/transport/connection_tcp.h"
 #include "storage/serialize_common.h"
 
 #include <QtCore/QFile>

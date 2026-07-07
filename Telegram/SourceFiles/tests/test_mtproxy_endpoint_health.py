@@ -11,13 +11,13 @@ DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
 DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
-ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.h"
-ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
-SESSION_H = SOURCE_DIR / "mtproto" / "session_private.h"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
-CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
-CONNECTION_TCP_H = SOURCE_DIR / "mtproto" / "connection_tcp.h"
-CONNECTION_ABSTRACT_H = SOURCE_DIR / "mtproto" / "connection_abstract.h"
+ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.h"
+ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.cpp"
+SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
+CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
+CONNECTION_TCP_H = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.h"
+CONNECTION_ABSTRACT_H = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.h"
 TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
@@ -625,8 +625,27 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
     assert "kDeniedRotationAfter = crl::time(20 * 1000)" in source
     assert "state.deniedSince" in admit_body
     assert ".rotationAllowed = true," in admit_body
-    assert "Events.fire(std::move(*rotationEvent));" in admit_body
+    assert "FireEndpointEventOnMain(std::move(*rotationEvent));" in admit_body
     assert "mtproxy admission starving, requesting rotation" in admit_body
+
+
+def test_endpoint_health_events_are_published_on_main_thread():
+    source = read(ENDPOINT_HEALTH_CPP)
+    manager = read(ROTATION_MANAGER_CPP)
+    publisher = function_body(source, "void FireEndpointEventOnMain(")
+    admit_body = function_body(source, "Admission EndpointHealth::admit(")
+    failure_body = function_body(source, "void EndpointHealth::reportFailure(")
+    changes_body = function_body(source, "auto EndpointHealth::changes() const")
+
+    assert '#include <crl/crl_on_main.h>' in source
+    assert "crl::on_main([event = std::move(event)]() mutable {" in publisher
+    assert "Events.fire(std::move(event));" in publisher
+    assert "FireEndpointEventOnMain(std::move(*rotationEvent));" in admit_body
+    assert "FireEndpointEventOnMain(std::move(event));" in failure_body
+    assert "Events.fire(" not in admit_body
+    assert "Events.fire(" not in failure_body
+    assert "return Events.events();" in changes_body
+    assert "crl::on_main(base::make_weak(this)" not in manager
 
 
 def test_rotation_manager_is_endpoint_health_aware():
@@ -677,4 +696,5 @@ if __name__ == "__main__":
     test_half_open_media_can_probe_after_cooldown()
     test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances()
     test_active_slots_expire_and_sustained_denial_requests_rotation()
+    test_endpoint_health_events_are_published_on_main_thread()
     test_rotation_manager_is_endpoint_health_aware()

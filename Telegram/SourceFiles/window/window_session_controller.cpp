@@ -88,7 +88,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/message_sending_animation_controller.h"
 #include "ui/style/style_palette_colorizer.h"
 #include "ui/toast/toast.h"
-#include "calls/calls_instance.h" // Core::App().calls().inCall().
+#include "calls/calls_instance.h"
 #include "calls/group/calls_group_call.h"
 #include "calls/group/calls_group_common.h"
 #include "calls/group/calls_group_invite_controller.h"

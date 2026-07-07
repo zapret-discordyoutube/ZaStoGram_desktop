@@ -17,9 +17,9 @@ def test_facade_module_is_split_by_responsibility():
     assert not (MTPROTO_DIR / "facade.cpp").exists()
 
     dc_id = read(MTPROTO_DIR / "dc_id.h")
-    pause_header = read(MTPROTO_DIR / "pause_state.h")
-    pause_source = read(MTPROTO_DIR / "pause_state.cpp")
-    session_state = read(MTPROTO_DIR / "session_state.h")
+    pause_header = read(MTPROTO_DIR / "session" / "pause_state.h")
+    pause_source = read(MTPROTO_DIR / "session" / "pause_state.cpp")
+    session_state = read(MTPROTO_DIR / "session" / "session_state.h")
 
     for symbol in (
         "configDcId",
@@ -33,7 +33,7 @@ def test_facade_module_is_split_by_responsibility():
     assert "pause()" not in dc_id
     assert "PauseLevel" not in dc_id
     assert "ConnectedState" not in dc_id
-    assert '#include "mtproto/mtp_instance.h"' not in dc_id
+    assert '#include "mtproto/instance/mtp_instance.h"' not in dc_id
 
     for symbol in ("paused()", "pause()", "unpause()", "unpaused()"):
         assert symbol in pause_header
@@ -67,9 +67,9 @@ def test_pause_state_sources_are_registered_for_build():
     cmake = read(CMAKE)
 
     assert "mtproto/dc_id.h" in cmake
-    assert "mtproto/pause_state.cpp" in cmake
-    assert "mtproto/pause_state.h" in cmake
-    assert "mtproto/session_state.h" in cmake
+    assert "mtproto/session/pause_state.cpp" in cmake
+    assert "mtproto/session/pause_state.h" in cmake
+    assert "mtproto/session/session_state.h" in cmake
     assert "mtproto/facade.cpp" not in cmake
     assert "mtproto/facade.h" not in cmake
 

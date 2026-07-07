@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/qt/qt_string_view.h"
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>

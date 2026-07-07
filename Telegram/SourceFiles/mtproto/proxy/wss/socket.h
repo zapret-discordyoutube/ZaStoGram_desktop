@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
 
 #include <QtNetwork/QSslSocket>
 

@@ -8,9 +8,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/bytes.h"
-#include "mtproto/details/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_binary.h"
 #include <array>
 #include <memory>
+
+namespace Main {
+class Account;
+} // namespace Main
+
+namespace Storage {
+class Domain;
+} // namespace Storage
 
 namespace MTP {
 
@@ -40,10 +48,13 @@ public:
 	void prepareAES_oldmtp(const MTPint128 &msgKey, MTPint256 &aesKey, MTPint256 &aesIV, bool send) const;
 	void prepareAES(const MTPint128 &msgKey, MTPint256 &aesKey, MTPint256 &aesIV, bool send) const;
 
-	[[nodiscard]] const void *partForMsgKey(bool send) const;
-
-	void write(QDataStream &to) const;
-	[[nodiscard]] bytes::const_span data() const;
+	[[nodiscard]] MTPint128 countMsgKey(
+		bytes::const_span data,
+		bool send) const;
+	[[nodiscard]] bool validateMsgKey(
+		const MTPint128 &msgKey,
+		bytes::const_span data,
+		bool send) const;
 	[[nodiscard]] bool equals(const std::shared_ptr<AuthKey> &other) const;
 
 	[[nodiscard]] crl::time creationTime() const; // > 0 if known.
@@ -53,7 +64,11 @@ public:
 	static void FillData(Data &authKey, bytes::const_span computedAuthKey);
 
 private:
+	friend class ::Main::Account;
+	friend class ::Storage::Domain;
+
 	void countKeyId();
+	void write(QDataStream &to) const;
 
 	Type _type = Type::Generated;
 	DcId _dcId = 0;

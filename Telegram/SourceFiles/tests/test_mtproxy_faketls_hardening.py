@@ -7,7 +7,7 @@ MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
-SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
 
 def test_auto_rotate_profile_changes_are_hysteresis_gated():

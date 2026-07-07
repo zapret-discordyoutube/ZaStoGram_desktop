@@ -16,9 +16,9 @@ CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 BROKER_H = PROXY_DIR / "connection_broker.h"
 DNS_H = PROXY_DIR / "dns_resolver_cache.h"
 CHECK_H = PROXY_DIR / "check.h"
-ABSTRACT_CONNECTION_H = MTPROTO_DIR / "connection_abstract.h"
-ABSTRACT_CONNECTION_CPP = MTPROTO_DIR / "connection_abstract.cpp"
-SESSION_CPP = MTPROTO_DIR / "session_private.cpp"
+ABSTRACT_CONNECTION_H = MTPROTO_DIR / "transport" / "connection_abstract.h"
+ABSTRACT_CONNECTION_CPP = MTPROTO_DIR / "transport" / "connection_abstract.cpp"
+SESSION_CPP = MTPROTO_DIR / "session" / "private.cpp"
 INSTANCE_CPP = MTPROTO_DIR / "mtp_instance.cpp"
 
 
@@ -32,14 +32,14 @@ def mtproto_sources():
             list(PROXY_DIR.rglob("*.h"))
             + list(PROXY_DIR.rglob("*.cpp"))
             + [
-                MTPROTO_DIR / "connection_abstract.h",
-                MTPROTO_DIR / "connection_abstract.cpp",
-                MTPROTO_DIR / "connection_tcp.h",
-                MTPROTO_DIR / "connection_tcp.cpp",
-                MTPROTO_DIR / "connection_http.h",
-                MTPROTO_DIR / "connection_http.cpp",
-                MTPROTO_DIR / "details" / "mtproto_abstract_socket.h",
-                MTPROTO_DIR / "details" / "mtproto_abstract_socket.cpp",
+                MTPROTO_DIR / "transport" / "connection_abstract.h",
+                MTPROTO_DIR / "transport" / "connection_abstract.cpp",
+                MTPROTO_DIR / "transport" / "connection_tcp.h",
+                MTPROTO_DIR / "transport" / "connection_tcp.cpp",
+                MTPROTO_DIR / "transport" / "connection_http.h",
+                MTPROTO_DIR / "transport" / "connection_http.cpp",
+                MTPROTO_DIR / "transport" / "mtproto_abstract_socket.h",
+                MTPROTO_DIR / "transport" / "mtproto_abstract_socket.cpp",
             ]):
         if path.exists():
             yield path
@@ -51,8 +51,8 @@ def test_runtime_environment_is_the_app_gateway():
     source = read(RUNTIME_CPP)
     instance = read(INSTANCE_CPP)
 
-    assert "mtproto/runtime_environment.cpp" in cmake
-    assert "mtproto/runtime_environment.h" in cmake
+    assert "mtproto/runtime/runtime_environment.cpp" in cmake
+    assert "mtproto/runtime/runtime_environment.h" in cmake
     assert "struct RuntimeEnvironment" in header
     assert "Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine" in header
     assert "Fn<void(ProxyEventReport)> reportProxyEvent" in header
@@ -65,7 +65,7 @@ def test_runtime_environment_is_the_app_gateway():
 
 def test_lower_mtproto_layers_do_not_include_app_facade():
     banned_tokens = (
-        '#include "mtproto/mtp_instance.h"',
+        '#include "mtproto/instance/mtp_instance.h"',
         '#include "core/',
         '#include "main/',
         '#include "settings.h"',

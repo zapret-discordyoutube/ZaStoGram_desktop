@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 #include "lang/lang_file_parser.h"
 #include "lang/lang_text_entity.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "storage/localstorage.h"
 #include "core/application.h"
 #include "main/main_account.h"

@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
-#include "mtproto/details/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_binary.h"
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
-#include "mtproto/details/mtproto_tcp_socket.h"
+#include "mtproto/transport/details/mtproto_tcp_socket.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"

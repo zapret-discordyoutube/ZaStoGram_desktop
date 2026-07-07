@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/wss/socket.h"
 
-#include "mtproto/details/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_binary.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 

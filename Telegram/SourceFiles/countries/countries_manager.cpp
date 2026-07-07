@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_app_config.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/instance/mtp_instance.h"
 
 #include <QtCore/QFile>
 

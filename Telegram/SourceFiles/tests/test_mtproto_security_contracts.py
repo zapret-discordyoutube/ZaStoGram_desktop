@@ -4,17 +4,45 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 AUTH_KEY_H = SOURCE_DIR / "mtproto" / "mtproto_auth_key.h"
 AUTH_KEY_CPP = SOURCE_DIR / "mtproto" / "mtproto_auth_key.cpp"
+TYPE_UTILS_H = SOURCE_DIR / "mtproto" / "type_utils.h"
+DH_UTILS_H = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.h"
+DH_UTILS_CPP = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.cpp"
 DC_KEY_CREATOR_CPP = (
-    SOURCE_DIR / "mtproto" / "details" / "mtproto_dc_key_creator.cpp")
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session.cpp"
+    SOURCE_DIR / "mtproto" / "auth" / "mtproto_dc_key_creator.cpp")
+CALLS_CALL_H = SOURCE_DIR / "calls" / "calls_call.h"
+CALLS_CALL_CPP = SOURCE_DIR / "calls" / "calls_call.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
 DC_OPTIONS_CPP = SOURCE_DIR / "mtproto" / "mtproto_dc_options.cpp"
 CONCURRENT_SENDER_CPP = SOURCE_DIR / "mtproto" / "mtproto_concurrent_sender.cpp"
-SPECIAL_CONFIG_CPP = SOURCE_DIR / "mtproto" / "special_config_request.cpp"
-SPECIAL_CONFIG_H = SOURCE_DIR / "mtproto" / "special_config_request.h"
+SPECIAL_CONFIG_CPP = SOURCE_DIR / "mtproto" / "config" / "special_config_request.cpp"
+SPECIAL_CONFIG_H = SOURCE_DIR / "mtproto" / "config" / "special_config_request.h"
 RSA_PUBLIC_KEY_CPP = (
     SOURCE_DIR / "mtproto" / "details" / "mtproto_rsa_public_key.cpp")
 WSS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.cpp"
 WSS_TEST = SOURCE_DIR / "tests" / "test_proxy_wss_default.py"
+WINDOW_SESSION_CONTROLLER_CPP = (
+    SOURCE_DIR / "window" / "window_session_controller.cpp")
+
+
+def test_type_utils_declares_direct_scheme_dependency():
+    header = TYPE_UTILS_H.read_text(encoding="utf-8")
+
+    assert '#include "scheme.h"' in header
+
+
+def test_window_session_controller_does_not_justify_calls_include_stale():
+    source = WINDOW_SESSION_CONTROLLER_CPP.read_text(encoding="utf-8")
+
+    assert '#include "calls/calls_instance.h" // Core::App().calls().inCall().' not in source
+
+
+def test_auth_key_raw_byte_hatches_are_not_public_api():
+    header = AUTH_KEY_H.read_text(encoding="utf-8")
+    public_api = class_public_section(header, "class AuthKey")
+
+    assert "partForMsgKey(" not in public_api
+    assert "void write(QDataStream &to) const;" not in public_api
+    assert "[[nodiscard]] bytes::const_span data() const;" not in public_api
 
 
 def test_auth_key_cleans_secret_and_compares_in_constant_time():
@@ -46,6 +74,48 @@ def test_auth_key_handshake_uses_constant_time_secret_checks():
     assert "data.vnew_nonce_hash1() != NonceDigest(" not in source
     assert "data.vnew_nonce_hash2() != NonceDigest(" not in source
     assert "data.vnew_nonce_hash3() != NonceDigest(" not in source
+
+
+def test_dh_intermediate_secret_bytes_are_raii_cleansed():
+    header = DH_UTILS_H.read_text(encoding="utf-8")
+    source = DH_UTILS_CPP.read_text(encoding="utf-8")
+    destructor_body = function_body(source, "SecureBytes::~SecureBytes()")
+
+    assert "class SecureBytes" in header
+    assert "OPENSSL_cleanse(_data.data(), _data.size());" in destructor_body
+    assert "void clear();" in header
+    assert "SecureBytes randomPower;" in header
+    assert "[[nodiscard]] SecureBytes CreateAuthKey(" in header
+    assert "return SecureBytes(BigNum::ModExp(" in source
+
+
+def test_dc_key_creator_cleans_ephemeral_dh_secret_copies():
+    source = DC_KEY_CREATOR_CPP.read_text(encoding="utf-8")
+    body = function_body(source, "void DcKeyCreator::dhClientParamsSend(")
+
+    assert "auto randomSeed = SecureBytes(" in body
+    assert "bytes::set_random(randomSeed.bytes());" in body
+    assert "CreateModExp(" in body
+    assert "randomSeed.bytes());" in body
+    assert "g_b_data.randomPower.clear();" in body
+    assert (
+        "AuthKey::FillData(attempt->authKey, computedAuthKey.bytes());"
+        in body)
+    assert "computedAuthKey.clear();" in body
+    assert "auto randomSeed = bytes::vector(" not in body
+
+
+def test_call_key_exchange_cleans_dh_secret_copies():
+    header = CALLS_CALL_H.read_text(encoding="utf-8")
+    source = CALLS_CALL_CPP.read_text(encoding="utf-8")
+    destructor_body = function_body(source, "Call::~Call()")
+
+    assert "MTP::SecureBytes _randomPower;" in header
+    assert "OPENSSL_cleanse(_authKey.data(), _authKey.size());" in destructor_body
+    assert "MTP::AuthKey::FillData(_authKey, computedAuthKey.bytes());" in source
+    assert "_randomPower.clear();" in source
+    assert "computedAuthKey.clear();" in source
+    assert "bytes::vector _randomPower;" not in header
 
 
 def test_session_connection_init_compares_passed_options_to_snapshot():
@@ -121,3 +191,10 @@ def function_body(text: str, signature: str) -> str:
             if depth == 0:
                 return text[brace + 1:index]
     raise AssertionError(f"body not found for {signature}")
+
+
+def class_public_section(text: str, signature: str) -> str:
+    start = text.index(signature)
+    public = text.index("public:", start)
+    private = text.index("private:", public)
+    return text[public:private]

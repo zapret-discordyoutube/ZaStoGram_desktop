@@ -93,7 +93,7 @@ generate({
   'optimizeSingleData': True,
 
   'dumpToText': {
-    'include': 'mtproto/details/mtproto_dump_to_text.h',
+    'include': 'mtproto/protocol/mtproto_dump_to_text.h',
   },
 
 })

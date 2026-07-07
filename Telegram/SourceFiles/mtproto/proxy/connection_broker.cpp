@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/algorithm.h"
 
 #include <QtCore/QTimer>

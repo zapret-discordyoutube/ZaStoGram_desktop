@@ -1,0 +1,874 @@
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
+#include "mtproto/transport/connection_tcp.h"
+
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
+#include "mtproto/protocol/mtproto_binary.h"
+#include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/runtime_environment.h"
+#include "base/bytes.h"
+#include "base/invoke_queued.h"
+#include "base/openssl_help.h"
+#include "base/random.h"
+#include "base/qthelp_url.h"
+
+namespace MTP {
+namespace details {
+namespace {
+
+constexpr auto kPacketSizeMax = int(0x01000000 * sizeof(mtpPrime));
+constexpr auto kFullConnectionTimeout = 8 * crl::time(1000);
+constexpr auto kSmallBufferSize = 256 * 1024;
+constexpr auto kMinPacketBuffer = 256;
+constexpr auto kConnectionStartPrefixSize = 64;
+
+} // namespace
+
+class TcpConnection::Protocol {
+public:
+	static std::unique_ptr<Protocol> Create(bytes::const_span secret);
+
+	virtual uint32 id() const = 0;
+	virtual bool supportsArbitraryLength() const = 0;
+
+	virtual void prepareKey(bytes::span key, bytes::const_span source) = 0;
+	virtual bytes::span finalizePacket(mtpBuffer &buffer) = 0;
+
+	static constexpr auto kUnknownSize = -1;
+	static constexpr auto kInvalidSize = -2;
+	virtual int readPacketLength(bytes::const_span bytes) const = 0;
+	virtual bytes::const_span readPacket(bytes::const_span bytes) const = 0;
+
+	virtual QString debugPostfix() const = 0;
+
+	virtual ~Protocol() = default;
+
+private:
+	class Version0;
+	class Version1;
+	class VersionD;
+
+};
+
+class TcpConnection::Protocol::Version0 : public Protocol {
+public:
+	uint32 id() const override;
+	bool supportsArbitraryLength() const override;
+
+	void prepareKey(bytes::span key, bytes::const_span source) override;
+	bytes::span finalizePacket(mtpBuffer &buffer) override;
+
+	int readPacketLength(bytes::const_span bytes) const override;
+	bytes::const_span readPacket(bytes::const_span bytes) const override;
+
+	QString debugPostfix() const override;
+
+};
+
+uint32 TcpConnection::Protocol::Version0::id() const {
+	return 0xEFEFEFEFU;
+}
+
+bool TcpConnection::Protocol::Version0::supportsArbitraryLength() const {
+	return false;
+}
+
+void TcpConnection::Protocol::Version0::prepareKey(
+		bytes::span key,
+		bytes::const_span source) {
+	bytes::copy(key, source);
+}
+
+bytes::span TcpConnection::Protocol::Version0::finalizePacket(
+		mtpBuffer &buffer) {
+	Expects(buffer.size() > 2 && buffer.size() < 0x1000003U);
+
+	const auto intsSize = uint32(buffer.size() - 2);
+	const auto bytesSize = intsSize * sizeof(mtpPrime);
+	auto data = bytes::make_span(buffer);
+	const auto added = [&] {
+		if (intsSize < 0x7F) {
+			data[7] = bytes::type(uchar(intsSize));
+			return 1;
+		}
+		data[4] = bytes::type(uchar(0x7F));
+		data[5] = bytes::type(uchar(intsSize & 0xFF));
+		data[6] = bytes::type(uchar((intsSize >> 8) & 0xFF));
+		data[7] = bytes::type(uchar((intsSize >> 16) & 0xFF));
+		return 4;
+	}();
+	return bytes::make_span(buffer).subspan(8 - added, added + bytesSize);
+}
+
+int TcpConnection::Protocol::Version0::readPacketLength(
+		bytes::const_span bytes) const {
+	if (bytes.empty()) {
+		return kUnknownSize;
+	}
+
+	const auto first = static_cast<char>(bytes[0]);
+	if (first == 0x7F) {
+		if (bytes.size() < 4) {
+			return kUnknownSize;
+		}
+		const auto ints = static_cast<uint32>(bytes[1])
+			| (static_cast<uint32>(bytes[2]) << 8)
+			| (static_cast<uint32>(bytes[3]) << 16);
+		return (ints >= 0x7F) ? (int(ints << 2) + 4) : kInvalidSize;
+	} else if (first > 0 && first < 0x7F) {
+		const auto ints = uint32(first);
+		return int(ints << 2) + 1;
+	}
+	return kInvalidSize;
+}
+
+bytes::const_span TcpConnection::Protocol::Version0::readPacket(
+		bytes::const_span bytes) const {
+	const auto size = readPacketLength(bytes);
+	Assert(size != kUnknownSize
+		&& size != kInvalidSize
+		&& size <= bytes.size());
+	const auto sizeLength = (static_cast<char>(bytes[0]) == 0x7F) ? 4 : 1;
+	return bytes.subspan(sizeLength, size - sizeLength);
+}
+
+QString TcpConnection::Protocol::Version0::debugPostfix() const {
+	return QString();
+}
+
+class TcpConnection::Protocol::Version1 : public Version0 {
+public:
+	explicit Version1(bytes::vector &&secret);
+
+	void prepareKey(bytes::span key, bytes::const_span source) override;
+
+	QString debugPostfix() const override;
+
+private:
+	bytes::vector _secret;
+
+};
+
+TcpConnection::Protocol::Version1::Version1(bytes::vector &&secret)
+: _secret(std::move(secret)) {
+}
+
+void TcpConnection::Protocol::Version1::prepareKey(
+		bytes::span key,
+		bytes::const_span source) {
+	const auto payload = bytes::concatenate(source, _secret);
+	bytes::copy(key, openssl::Sha256(payload));
+}
+
+QString TcpConnection::Protocol::Version1::debugPostfix() const {
+	return u"_obf"_q;
+}
+
+class TcpConnection::Protocol::VersionD : public Version1 {
+public:
+	using Version1::Version1;
+
+	uint32 id() const override;
+	bool supportsArbitraryLength() const override;
+
+	bytes::span finalizePacket(mtpBuffer &buffer) override;
+
+	int readPacketLength(bytes::const_span bytes) const override;
+	bytes::const_span readPacket(bytes::const_span bytes) const override;
+
+	QString debugPostfix() const override;
+
+};
+
+uint32 TcpConnection::Protocol::VersionD::id() const {
+	return 0xDDDDDDDDU;
+}
+
+bool TcpConnection::Protocol::VersionD::supportsArbitraryLength() const {
+	return true;
+}
+
+bytes::span TcpConnection::Protocol::VersionD::finalizePacket(
+		mtpBuffer &buffer) {
+	Expects(buffer.size() > 2 && buffer.size() < 0x1000003U);
+
+	const auto intsSize = uint32(buffer.size() - 2);
+	const auto padding = base::RandomValue<uint32>() & 0x0F;
+	const auto bytesSize = intsSize * sizeof(mtpPrime) + padding;
+	buffer[1] = bytesSize;
+	for (auto added = 0; added < padding; added += 4) {
+		buffer.push_back(base::RandomValue<mtpPrime>());
+	}
+
+	return bytes::make_span(buffer).subspan(4, 4 + bytesSize);
+}
+
+int TcpConnection::Protocol::VersionD::readPacketLength(
+		bytes::const_span bytes) const {
+	if (bytes.size() < 4) {
+		return kUnknownSize;
+	}
+	const auto value = binary::Read<uint32>(bytes) + 4;
+	return (value >= 8 && value < kPacketSizeMax)
+		? int(value)
+		: kInvalidSize;
+}
+
+bytes::const_span TcpConnection::Protocol::VersionD::readPacket(
+		bytes::const_span bytes) const {
+	const auto size = readPacketLength(bytes);
+	Assert(size != kUnknownSize
+		&& size != kInvalidSize
+		&& size <= bytes.size());
+	const auto sizeLength = 4;
+	return bytes.subspan(sizeLength, size - sizeLength);
+}
+
+QString TcpConnection::Protocol::VersionD::debugPostfix() const {
+	return u"_dd"_q;
+}
+
+auto TcpConnection::Protocol::Create(bytes::const_span secret)
+-> std::unique_ptr<Protocol> {
+	// See also DcOptions::ValidateSecret.
+	if ((secret.size() >= 21 && secret[0] == bytes::type(0xEE))
+		|| (secret.size() == 17 && secret[0] == bytes::type(0xDD))) {
+		return std::make_unique<VersionD>(
+			bytes::make_vector(secret.subspan(1, 16)));
+	} else if (secret.size() == 16) {
+		return std::make_unique<Version1>(bytes::make_vector(secret));
+	} else if (secret.empty()) {
+		return std::make_unique<Version0>();
+	}
+	Unexpected("Secret bytes in TcpConnection::Protocol::Create.");
+}
+
+TcpConnection::TcpConnection(
+	not_null<RuntimeEnvironment*> runtime,
+	QThread *thread,
+	const ProxyData &proxy,
+	const ProxyStealthOptions &stealth)
+: AbstractConnection(runtime, thread, proxy)
+, _stealth(stealth)
+, _checkNonce(base::RandomValue<MTPint128>()) {
+}
+
+ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
+	return ConnectionPointer::New<TcpConnection>(
+		_runtime,
+		thread(),
+		proxy,
+		_stealth);
+}
+
+void TcpConnection::ensureAvailableInBuffer(int amount) {
+	auto &buffer = _usingLargeBuffer ? _largeBuffer : _smallBuffer;
+	const auto full = bytes::make_span(buffer).subspan(
+		_offsetBytes);
+	if (full.size() >= amount) {
+		return;
+	}
+	const auto read = full.subspan(0, _readBytes);
+	if (amount <= _smallBuffer.size()) {
+		if (_usingLargeBuffer) {
+			bytes::copy(_smallBuffer, read);
+			_usingLargeBuffer = false;
+			_largeBuffer.clear();
+		} else {
+			bytes::move(_smallBuffer, read);
+		}
+	} else if (amount <= _largeBuffer.size()) {
+		Assert(_usingLargeBuffer);
+		bytes::move(_largeBuffer, read);
+	} else {
+		auto enough = bytes::vector(amount);
+		bytes::copy(enough, read);
+		_largeBuffer = std::move(enough);
+		_usingLargeBuffer = true;
+	}
+	_offsetBytes = 0;
+}
+
+void TcpConnection::socketRead() {
+	Expects(_leftBytes > 0 || !_usingLargeBuffer);
+
+	if (!_socket || !_socket->isConnected()) {
+		CONNECTION_LOG_ERROR("Socket not connected in socketRead()");
+		ReportProxyEvent(_runtime, {
+			.phase = ProxyDiagnosticsPhase::Failed,
+			.error = ProxyConnectionError::BadResponse,
+			.attempt = _mtproxyAttempt,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"socket not connected while reading"_q,
+		});
+		error(kErrorCodeOther);
+		return;
+	}
+
+	if (_smallBuffer.empty()) {
+		_smallBuffer.resize(kSmallBufferSize);
+	}
+	do {
+		const auto readLimit = (_leftBytes > 0)
+			? _leftBytes
+			: (kSmallBufferSize - _offsetBytes - _readBytes);
+		Assert(readLimit > 0);
+
+		auto &buffer = _usingLargeBuffer ? _largeBuffer : _smallBuffer;
+		const auto full = bytes::make_span(buffer).subspan(_offsetBytes);
+		const auto free = full.subspan(_readBytes);
+		const auto readCount = _socket->read(free.subspan(0, readLimit));
+		if (readCount > 0) {
+			const auto read = free.subspan(0, readCount);
+			aesCtrEncrypt(read, _receiveKey, &_receiveState);
+			CONNECTION_LOG_INFO(u"Read %1 bytes"_q.arg(readCount));
+
+			_readBytes += readCount;
+			if (_leftBytes > 0) {
+				Assert(readCount <= _leftBytes);
+				_leftBytes -= readCount;
+				if (!_leftBytes) {
+					socketPacket(full.subspan(0, _readBytes));
+					if (!_socket || !_socket->isConnected()) {
+						return;
+					}
+
+					_usingLargeBuffer = false;
+					_largeBuffer.clear();
+					_offsetBytes = _readBytes = 0;
+				} else {
+					CONNECTION_LOG_INFO(
+						u"Not enough %1 for packet! read %2"_q
+						.arg(_leftBytes)
+						.arg(_readBytes));
+					receivedSome();
+				}
+			} else {
+				auto available = full.subspan(0, _readBytes);
+				while (_readBytes > 0) {
+					const auto packetSize = _protocol->readPacketLength(
+						available);
+					if (packetSize == Protocol::kUnknownSize) {
+						// Not enough bytes yet.
+						break;
+					} else if (packetSize <= 0) {
+						CONNECTION_LOG_ERROR(
+							u"Bad packet size in 4 bytes: %1"_q
+							.arg(packetSize));
+						ReportProxyEvent(_runtime, {
+							.phase = ProxyDiagnosticsPhase::Failed,
+							.error = ProxyConnectionError::BadResponse,
+							.attempt = _mtproxyAttempt,
+							.proxy = _proxy,
+							.transport = tag(),
+							.connectionId = _debugId,
+							.message = u"bad packet size while reading"_q,
+						});
+						error(kErrorCodeOther);
+						return;
+					} else if (available.size() >= packetSize) {
+						socketPacket(available.subspan(0, packetSize));
+						if (!_socket || !_socket->isConnected()) {
+							return;
+						}
+
+						available = available.subspan(packetSize);
+						_offsetBytes += packetSize;
+						_readBytes -= packetSize;
+
+						// If we have too little space left in the buffer.
+						ensureAvailableInBuffer(kMinPacketBuffer);
+					} else {
+						_leftBytes = packetSize - available.size();
+
+						// If the next packet won't fit in the buffer.
+						ensureAvailableInBuffer(packetSize);
+
+						CONNECTION_LOG_INFO(u"Not enough %1 for packet! "
+							"full size %2 read %3"_q
+							.arg(_leftBytes)
+							.arg(packetSize)
+							.arg(available.size()));
+						receivedSome();
+						break;
+					}
+				}
+			}
+		} else if (readCount < 0) {
+			CONNECTION_LOG_ERROR(u"Socket read return %1."_q.arg(readCount));
+			ReportProxyEvent(_runtime, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"socket read failed"_q,
+			});
+			error(kErrorCodeOther);
+			return;
+		} else {
+			CONNECTION_LOG_INFO(
+				"No bytes read, but bytes available was true...");
+			break;
+		}
+	} while (_socket
+		&& _socket->isConnected()
+		&& _socket->hasBytesAvailable());
+}
+
+mtpBuffer TcpConnection::parsePacket(bytes::const_span bytes) {
+	const auto packet = _protocol->readPacket(bytes);
+	CONNECTION_LOG_INFO(u"Packet received, size = %1."_q.arg(packet.size()));
+	const auto primes = packet.size() / sizeof(mtpPrime);
+	Assert(primes > 0);
+	if (primes < 3) {
+		// nop or error or new quickack, latter is not yet supported.
+		const auto first = binary::Read<mtpPrime>(packet);
+		if (first != 0) {
+			CONNECTION_LOG_ERROR(u"Error packet received, code = %1"_q
+				.arg(first));
+		}
+		return mtpBuffer(1, first);
+	}
+	auto result = mtpBuffer(primes);
+	binary::Copy(bytes::make_span(result), packet);
+	return result;
+}
+
+void TcpConnection::socketConnected() {
+	Expects(_status == Status::Waiting);
+
+	auto buffer = preparePQFake(_checkNonce);
+
+	CONNECTION_LOG_INFO("Socket connected; sending fake req_pq.");
+	ReportProxyEvent(_runtime, {
+		.phase = ProxyDiagnosticsPhase::TelegramCheck,
+		.attempt = _mtproxyAttempt,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"checking telegram through proxy"_q,
+	});
+
+	_pingTime = crl::now();
+	sendData(std::move(buffer), {});
+}
+
+void TcpConnection::socketDisconnected() {
+	CONNECTION_LOG_INFO("Socket disconnected.");
+	if (_status == Status::Waiting || _status == Status::Ready) {
+		disconnected();
+	}
+}
+
+void TcpConnection::sendData(mtpBuffer &&buffer, SendDataContext) {
+	Expects(buffer.size() > 2);
+
+	if (!_socket) {
+		return;
+	}
+	char connectionStartPrefixBytes[kConnectionStartPrefixSize];
+	const auto connectionStartPrefix = prepareConnectionStartPrefix(
+		bytes::make_span(connectionStartPrefixBytes));
+
+	// buffer: 2 available int-s + data + available int.
+	const auto bytes = _protocol->finalizePacket(buffer);
+	CONNECTION_LOG_INFO(u"TCP Info: write packet %1 bytes."_q
+		.arg(bytes.size()));
+	aesCtrEncrypt(bytes, _sendKey, &_sendState);
+	_socket->write(connectionStartPrefix, bytes);
+}
+
+bytes::const_span TcpConnection::prepareConnectionStartPrefix(
+		bytes::span buffer) {
+	Expects(_socket != nullptr);
+	Expects(_protocol != nullptr);
+
+	if (_connectionStarted) {
+		return {};
+	}
+	_connectionStarted = true;
+
+	// prepare random part
+	char nonceBytes[64];
+	const auto nonce = bytes::make_span(nonceBytes);
+	do {
+		bytes::set_random(nonce);
+	} while (!_socket->isGoodStartNonce(nonce));
+
+	// prepare encryption key/iv
+	_protocol->prepareKey(
+		bytes::make_span(_sendKey),
+		nonce.subspan(8, CTRState::KeySize));
+	bytes::copy(
+		bytes::make_span(_sendState.ivec),
+		nonce.subspan(8 + CTRState::KeySize, CTRState::IvecSize));
+
+	// prepare decryption key/iv
+	auto reversedBytes = bytes::vector(48);
+	const auto reversed = bytes::make_span(reversedBytes);
+	bytes::copy(reversed, nonce.subspan(8, reversed.size()));
+	std::reverse(reversed.begin(), reversed.end());
+	_protocol->prepareKey(
+		bytes::make_span(_receiveKey),
+		reversed.subspan(0, CTRState::KeySize));
+	bytes::copy(
+		bytes::make_span(_receiveState.ivec),
+		reversed.subspan(CTRState::KeySize, CTRState::IvecSize));
+
+	binary::WriteAt<uint32>(nonce, 56, _protocol->id());
+	binary::WriteAt<int16>(nonce, 60, _protocolDcId);
+
+	bytes::copy(buffer, nonce.subspan(0, 56));
+	aesCtrEncrypt(nonce, _sendKey, &_sendState);
+	bytes::copy(buffer.subspan(56), nonce.subspan(56));
+
+	return buffer;
+}
+
+void TcpConnection::disconnectFromServer() {
+	if (_status == Status::Finished) {
+		return;
+	}
+	_status = Status::Finished;
+	_connectedLifetime.destroy();
+	_lifetime.destroy();
+	_socket = nullptr;
+}
+
+void TcpConnection::connectToServer(
+		const QString &address,
+		int port,
+		const bytes::vector &protocolSecret,
+		int16 protocolDcId,
+		bool protocolForFiles) {
+	Expects(_address.isEmpty());
+	Expects(_port == 0);
+	Expects(_protocol == nullptr);
+	Expects(_protocolDcId == 0);
+
+	const auto secret = (_proxy.type == ProxyData::Type::Mtproto)
+		? _proxy.secretFromMtprotoPassword()
+		: protocolSecret;
+	_transport = (_proxy.type == ProxyData::Type::Socks5)
+		? TransportMode::Socks5
+		: (_proxy.type == ProxyData::Type::Http)
+		? TransportMode::Http
+		: (_proxy.type == ProxyData::Type::Mtproto)
+		? ((secret.size() >= 21 && secret[0] == bytes::type(0xEE))
+			? TransportMode::FakeTlsMtproxy
+			: TransportMode::PlainMtproxy)
+		: TransportMode::Direct;
+	if (_proxy.type == ProxyData::Type::Mtproto) {
+		_address = _proxy.host;
+		_port = _proxy.port;
+		_protocol = Protocol::Create(secret);
+	} else {
+		_address = address;
+		_port = port;
+		_protocol = Protocol::Create(secret);
+	}
+	_socket = AbstractSocket::Create(
+		thread(),
+		secret,
+		_proxy,
+		protocolForFiles,
+		_stealth,
+		protocolDcId,
+		_mtproxyAttempt,
+		_mtproxyAttemptStartedAt);
+	_protocolDcId = protocolDcId;
+
+	const auto postfix = _socket->debugPostfix();
+	_debugId = u"%1(dc:%2,%3%4:%5%6)"_q
+		.arg(_debugId.toInt())
+		.arg(
+			ProtocolDcDebugId(_protocolDcId),
+			(_proxy.type == ProxyData::Type::Mtproto) ? "mtproxy " : "",
+			_address)
+		.arg(_port)
+		.arg(postfix.isEmpty() ? _protocol->debugPostfix() : postfix);
+	_socket->setDebugId(_debugId);
+
+	CONNECTION_LOG_INFO("Connecting...");
+	ReportProxyEvent(_runtime, {
+		.phase = ProxyDiagnosticsPhase::Connecting,
+		.attempt = _mtproxyAttempt,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"connecting to proxy"_q,
+	});
+
+	_socket->connected(
+	) | rpl::on_next([=] {
+		socketConnected();
+	}, _connectedLifetime);
+
+	_socket->disconnected(
+	) | rpl::on_next([=] {
+		socketDisconnected();
+	}, _lifetime);
+
+	_socket->readyRead(
+	) | rpl::on_next([=] {
+		socketRead();
+	}, _lifetime);
+
+	_socket->error(
+	) | rpl::on_next([=](int errorCode) {
+		socketError(errorCode);
+	}, _lifetime);
+
+	_socket->progress(
+	) | rpl::on_next([=](HandshakePhase phase) {
+		socketProgress(phase);
+	}, _lifetime);
+
+	_socket->syncTimeRequests(
+	) | rpl::on_next([=] {
+		syncTimeRequest();
+	}, _lifetime);
+
+	_socket->connectToHost(_address, _port);
+}
+
+crl::time TcpConnection::pingTime() const {
+	return isConnected() ? _pingTime : crl::time(0);
+}
+
+crl::time TcpConnection::fullConnectTimeout() const {
+	return kFullConnectionTimeout;
+}
+
+void TcpConnection::socketPacket(bytes::const_span bytes) {
+	Expects(_socket != nullptr);
+
+	// old quickack?..
+	const auto data = parsePacket(bytes);
+	if (data.size() == 1) {
+		if (data[0] != 0) {
+			ReportProxyEvent(_runtime, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"bad proxy response"_q,
+			});
+			error(data[0]);
+		} else {
+			// nop
+		}
+	//} else if (data.size() == 2) {
+		// new quickack?..
+	} else if (_status == Status::Ready) {
+		_receivedQueue.push_back(data);
+		receivedData();
+	} else if (_status == Status::Waiting) {
+		if (const auto res_pq = readPQFakeReply(data)) {
+			const auto &data = res_pq->c_resPQ();
+			if (data.vnonce() == _checkNonce) {
+				CONNECTION_LOG_INFO("Valid pq response by TCP.");
+				_status = Status::Ready;
+				_connectedLifetime.destroy();
+				_pingTime = (crl::now() - _pingTime);
+				ReportProxyEvent(_runtime, {
+					.phase = ProxyDiagnosticsPhase::Connected,
+					.attempt = _mtproxyAttempt,
+					.proxy = _proxy,
+					.transport = tag(),
+					.connectionId = _debugId,
+					.message = u"proxy connected"_q,
+				});
+				connected();
+			} else {
+				CONNECTION_LOG_ERROR(
+					"Wrong nonce received in TCP fake pq-responce");
+				ReportProxyEvent(_runtime, {
+					.phase = ProxyDiagnosticsPhase::Failed,
+					.error = ProxyConnectionError::BadResponse,
+					.attempt = _mtproxyAttempt,
+					.proxy = _proxy,
+					.transport = tag(),
+					.connectionId = _debugId,
+					.message = u"wrong nonce in proxy response"_q,
+				});
+				error(kErrorCodeOther);
+			}
+		} else {
+			CONNECTION_LOG_ERROR("Could not parse TCP fake pq-responce");
+			ReportProxyEvent(_runtime, {
+				.phase = ProxyDiagnosticsPhase::Failed,
+				.error = ProxyConnectionError::BadResponse,
+				.attempt = _mtproxyAttempt,
+				.proxy = _proxy,
+				.transport = tag(),
+				.connectionId = _debugId,
+				.message = u"could not parse proxy response"_q,
+			});
+			error(kErrorCodeOther);
+		}
+	}
+}
+
+void TcpConnection::timedOut() {
+	CONNECTION_LOG_ERROR("Connection timed out.");
+	if (_socket) {
+		_socket->timedOut();
+	}
+	ReportProxyEvent(_runtime, {
+		.phase = ProxyDiagnosticsPhase::Failed,
+		.error = ProxyConnectionError::Timeout,
+		.mtproxyReason = _socket
+			? _socket->mtproxyTerminalReason()
+			: ProxyMtproxyTerminalReason::None,
+		.attempt = _mtproxyAttempt,
+		.terminalUntil = _socket
+			? _socket->mtproxyTerminalUntil()
+			: 0,
+		.proxy = _proxy,
+		.transport = tag(),
+		.connectionId = _debugId,
+		.message = u"proxy connection timed out"_q,
+	});
+}
+
+HandshakePhase TcpConnection::handshakePhase() const {
+	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
+}
+
+void TcpConnection::setMtproxyAttempt(
+		ProxyConnectionAttempt attempt,
+		crl::time startedAt) {
+	_mtproxyAttempt = attempt;
+	_mtproxyAttemptStartedAt = startedAt;
+}
+
+bool TcpConnection::isConnected() const {
+	return (_status == Status::Ready);
+}
+
+int32 TcpConnection::debugState() const {
+	return _socket ? _socket->debugState() : -1;
+}
+
+QString TcpConnection::transport() const {
+	if (!isConnected()) {
+		return QString();
+	}
+	auto result = _socket ? _socket->transportName() : u"TCP"_q;
+	if (qthelp::is_ipv6(_address)) {
+		result += u"/IPv6"_q;
+	}
+	return result;
+}
+
+QString TcpConnection::tag() const {
+	auto result = u"TCP"_q;
+	if (qthelp::is_ipv6(_address)) {
+		result += u"/IPv6"_q;
+	} else {
+		result += u"/IPv4"_q;
+	}
+	return result;
+}
+
+void TcpConnection::socketError(int errorCode) {
+	if (!_socket) {
+		return;
+	}
+
+	CONNECTION_LOG_ERROR(u"Socket error %1."_q.arg(errorCode));
+	const auto proxyError = SocketProxyConnectionError(errorCode);
+	const auto transport = _socket->transportName();
+	if (transport == u"WSS"_q
+		&& proxyError == ProxyConnectionError::RemoteClosed) {
+		NoteProxyWssRemoteClosed(_proxy);
+	}
+	ReportProxyEvent(_runtime, {
+		.phase = ProxyDiagnosticsPhase::Failed,
+		.error = proxyError,
+		.mtproxyReason = _socket->mtproxyTerminalReason(),
+		.attempt = _mtproxyAttempt,
+		.terminalUntil = _socket->mtproxyTerminalUntil(),
+		.proxy = _proxy,
+		.transport = (transport == u"WSS"_q) ? transport : tag(),
+		.connectionId = _debugId,
+		.message = u"proxy socket error"_q,
+	});
+	error(errorCode);
+}
+
+void TcpConnection::socketProgress(HandshakePhase phase) {
+	if (phase != HandshakePhase::None) {
+		handshakeProgress();
+	}
+	switch (phase) {
+	case HandshakePhase::None:
+		return;
+
+	case HandshakePhase::TcpConnected:
+		CONNECTION_LOG_INFO("mtproxy tcp_connected");
+		ReportProxyEvent(_runtime, {
+			.phase = ProxyDiagnosticsPhase::TcpConnected,
+			.attempt = _mtproxyAttempt,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"tcp connected"_q,
+		});
+		return;
+
+	case HandshakePhase::ClientHelloSent:
+		CONNECTION_LOG_INFO("mtproxy client_hello_sent");
+		ReportProxyEvent(_runtime, {
+			.phase = ProxyDiagnosticsPhase::ClientHelloSent,
+			.attempt = _mtproxyAttempt,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"client hello sent"_q,
+		});
+		return;
+
+	case HandshakePhase::ServerHelloOk:
+		CONNECTION_LOG_INFO("mtproxy server_hello_hmac_ok");
+		ReportProxyEvent(_runtime, {
+			.phase = ProxyDiagnosticsPhase::ServerHelloOk,
+			.attempt = _mtproxyAttempt,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"server hello hmac ok"_q,
+		});
+		return;
+
+	case HandshakePhase::FirstDataReceived:
+		CONNECTION_LOG_INFO("mtproxy first_tls_app_recv");
+		ReportProxyEvent(_runtime, {
+			.phase = ProxyDiagnosticsPhase::TelegramCheck,
+			.attempt = _mtproxyAttempt,
+			.proxy = _proxy,
+			.transport = tag(),
+			.connectionId = _debugId,
+			.message = u"first tls app data received"_q,
+		});
+		return;
+	}
+}
+
+TcpConnection::~TcpConnection() = default;
+
+} // namespace details
+} // namespace MTP

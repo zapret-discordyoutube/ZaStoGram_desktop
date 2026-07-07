@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "scheme.h"
+
 inline MTPbool MTP_bool(bool v) {
 	return v ? MTP_boolTrue() : MTP_boolFalse();
 }

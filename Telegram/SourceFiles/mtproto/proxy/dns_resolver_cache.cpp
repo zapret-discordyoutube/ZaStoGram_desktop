@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/dns_resolver_cache.h"
 
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/invoke_queued.h"
 #include "base/timer.h"
 

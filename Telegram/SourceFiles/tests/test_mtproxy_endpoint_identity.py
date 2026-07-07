@@ -12,7 +12,7 @@ ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 
 

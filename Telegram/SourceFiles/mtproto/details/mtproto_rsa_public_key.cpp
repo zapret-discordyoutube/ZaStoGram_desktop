@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_rsa_public_key.h"
 
 #include "base/openssl_help.h"
-#include "mtproto/details/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_binary.h"
 
 namespace MTP::details {
 namespace {

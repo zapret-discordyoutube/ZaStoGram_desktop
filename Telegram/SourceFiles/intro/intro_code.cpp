@@ -21,8 +21,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_utilities.h"
 #include "ui/boxes/confirm_box.h"
 #include "main/main_account.h"
-#include "mtproto/mtp_instance.h"
-#include "mtproto/session_state.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/session/session_state.h"
 #include "styles/style_intro.h"
 
 namespace Intro {

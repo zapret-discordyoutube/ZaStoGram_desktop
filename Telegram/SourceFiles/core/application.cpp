@@ -30,7 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/proxy_rotation_manager.h"
 #include "core/ui_integration.h"
 #include "core/version.h"
-#include "mtproto/pause_state.h"
+#include "mtproto/session/pause_state.h"
 #include "chat_helpers/emoji_keywords.h"
 #include "chat_helpers/stickers_emoji_image_loader.h"
 #include "base/platform/base_platform_global_shortcuts.h"

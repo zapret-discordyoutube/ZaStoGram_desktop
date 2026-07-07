@@ -7,12 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/resolving_connection.h"
 
-#include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <algorithm>
 

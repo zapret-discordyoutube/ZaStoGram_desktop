@@ -6,7 +6,7 @@ from session_private_sources import read_session_private_sources
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.h"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
 
 def read(path):

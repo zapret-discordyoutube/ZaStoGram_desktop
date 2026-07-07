@@ -12,8 +12,8 @@ TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
-SESSION_H = SOURCE_DIR / "mtproto" / "session_private.h"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
+SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
 
 
 def read(path):

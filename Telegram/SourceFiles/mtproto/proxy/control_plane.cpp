@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/invoke_queued.h"
 #include "base/timer.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/runtime_environment.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 namespace MTP {
 namespace {

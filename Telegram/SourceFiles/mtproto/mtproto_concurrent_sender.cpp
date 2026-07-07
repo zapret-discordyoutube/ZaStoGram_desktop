@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/mtproto_concurrent_sender.h"
 
-#include "mtproto/mtp_instance.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 
 namespace MTP {

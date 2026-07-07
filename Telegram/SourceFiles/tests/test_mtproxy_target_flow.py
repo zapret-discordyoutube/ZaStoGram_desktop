@@ -6,9 +6,9 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 MTPROXY_DIR = PROXY_DIR / "mtproxy"
 
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session.cpp"
-SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
-ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
+SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
+ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"

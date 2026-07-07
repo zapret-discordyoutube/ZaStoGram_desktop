@@ -3,8 +3,8 @@ from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
-SESSION_PRIVATE_H = SOURCE_DIR / "mtproto" / "session_private.h"
-SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+SESSION_PRIVATE_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
+SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 TLS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 

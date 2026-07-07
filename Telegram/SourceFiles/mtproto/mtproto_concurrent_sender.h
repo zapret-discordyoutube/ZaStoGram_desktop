@@ -12,8 +12,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_qptr.h"
 #include "base/flat_map.h"
 #include "mtproto/core_types.h"
-#include "mtproto/details/mtproto_binary.h"
-#include "mtproto/details/mtproto_serialized_request.h"
+#include "mtproto/protocol/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
 
 #include <QtCore/QPointer>
 #include <rpl/details/callable.h>

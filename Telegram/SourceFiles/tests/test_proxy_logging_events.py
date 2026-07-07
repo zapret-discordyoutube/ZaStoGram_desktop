@@ -12,7 +12,7 @@ RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
-SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
 
 def read(path):

@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "export/output/export_output_abstract.h"
 #include "export/output/export_output_result.h"
 #include "export/output/export_output_stats.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/instance/mtp_instance.h"
 
 namespace Export {
 namespace {

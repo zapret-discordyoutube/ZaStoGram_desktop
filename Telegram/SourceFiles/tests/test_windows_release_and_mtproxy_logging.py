@@ -9,13 +9,14 @@ ROOT_CMAKE = ROOT / "CMakeLists.txt"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 LOGS_H = SOURCE_DIR / "logs.h"
 LOGS_CPP = SOURCE_DIR / "logs.cpp"
-ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_abstract.cpp"
+ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.cpp"
 ABSTRACT_SOCKET_CPP = (
-    SOURCE_DIR / "mtproto" / "details" / "mtproto_abstract_socket.cpp"
+    SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.cpp"
 )
-TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "connection_tcp.cpp"
+TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
 DIAGNOSTICS_H = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.h"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
 
 
 def test_windows_artifact_uses_release_configuration():
@@ -176,6 +177,7 @@ def test_mtproxy_logs_have_release_visible_stream():
     abstract_connection = ABSTRACT_CONNECTION_CPP.read_text(encoding="utf-8")
     abstract_socket = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
     diagnostics_source = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
+    runtime_source = RUNTIME_CPP.read_text(encoding="utf-8")
 
     assert "void writeMtproxy(const QString &v);" in logs_h
     assert "LogDataMtproxy" in logs_cpp
@@ -183,7 +185,8 @@ def test_mtproxy_logs_have_release_visible_stream():
     assert "AlwaysWriteLogData(type)" in logs_cpp
     assert "WriteProxyDiagnosticsLine(" in abstract_connection
     assert "WriteProxyDiagnosticsLine(" in abstract_socket
-    assert "Logs::writeMtproxy(" in diagnostics_source
+    assert "runtime->reportProxyEvent" in diagnostics_source
+    assert "Logs::writeMtproxy(" in runtime_source
     assert "AddProxyDiagnosticsEvent" not in diagnostics_source
     assert "ProxyDiagnosticsEventsValue" not in diagnostics_source
     assert "LoadProxyDiagnosticsTail" not in diagnostics_source

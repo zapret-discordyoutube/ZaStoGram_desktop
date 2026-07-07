@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/timer.h"
 
+#include <crl/crl_on_main.h>
 #include <QtCore/QMutex>
 #include <rpl/event_stream.h>
 
@@ -130,6 +131,12 @@ QMutex StatesMutex;
 std::map<QString, EndpointState> States;
 std::map<QString, RouteState> Routes;
 rpl::event_stream<EndpointEvent> Events;
+
+void FireEndpointEventOnMain(EndpointEvent event) {
+	crl::on_main([event = std::move(event)]() mutable {
+		Events.fire(std::move(event));
+	});
+}
 
 void NoteRouteFailure(
 		EndpointState &state,
@@ -891,7 +898,7 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		WriteProxyDiagnosticsLine(std::move(*starvationDiagnostics));
 	}
 	if (rotationEvent) {
-		Events.fire(std::move(*rotationEvent));
+		FireEndpointEventOnMain(std::move(*rotationEvent));
 	}
 	return result;
 }
@@ -1074,7 +1081,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			capabilityRelayFailure->diagnostic);
 	}
 	WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
-	Events.fire(std::move(event));
+	FireEndpointEventOnMain(std::move(event));
 }
 
 void EndpointHealth::reportSuccess(SuccessReport report) {

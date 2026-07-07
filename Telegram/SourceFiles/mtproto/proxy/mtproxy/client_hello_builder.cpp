@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 
-#include "mtproto/details/mtproto_binary.h"
+#include "mtproto/protocol/mtproto_binary.h"
 #include "mtproto/proxy/mtproxy/client_hello_profile.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"

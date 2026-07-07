@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "mainwidget.h"
-#include "mtproto/dedicated_file_loader.h"
+#include "mtproto/files/dedicated_file_loader.h"
 #include "spellcheck/platform/platform_spellcheck.h"
 #include "spellcheck/spellcheck_utils.h"
 #include "spellcheck/spellcheck_value.h"

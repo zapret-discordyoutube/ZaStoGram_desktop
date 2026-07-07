@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/cache/storage_cache_types.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_auth_key.h"
 

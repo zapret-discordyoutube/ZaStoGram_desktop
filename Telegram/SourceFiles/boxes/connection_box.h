@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/object_ptr.h"
 #include "core/core_settings_proxy.h"
-#include "mtproto/connection_abstract.h"
+#include "mtproto/transport/connection_abstract.h"
 #include "mtproto/proxy/check.h"
 #include "mtproto/proxy/data.h"
 

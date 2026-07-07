@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "chat_helpers/emoji_sets_manager.h"
 
-#include "mtproto/dedicated_file_loader.h"
+#include "mtproto/files/dedicated_file_loader.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/fade_wrap.h"
 #include "ui/widgets/buttons.h"
