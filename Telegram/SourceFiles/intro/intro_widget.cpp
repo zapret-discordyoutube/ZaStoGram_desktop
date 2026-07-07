@@ -36,7 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/abstract_box.h"
 #include "core/update_checker.h"
 #include "core/application.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "window/window_slide_animation.h"
 #include "window/window_connecting_widget.h"
 #include "window/window_controller.h"

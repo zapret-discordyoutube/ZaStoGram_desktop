@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_received_ids_manager.h"
 #include "mtproto/protocol/mtproto_serialized_request.h"
-#include "mtproto/mtproto_auth_key.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/auth/mtproto_auth_key.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/transport/connection_abstract.h"
 #include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/diagnostics.h"

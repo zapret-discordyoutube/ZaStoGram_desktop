@@ -4,14 +4,16 @@ from pathlib import Path
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
-INSTANCE_H = SOURCE_DIR / "mtproto" / "mtp_instance.h"
-INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
+INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
+INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
+CONNECTION_STATUS_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.h"
+CONNECTION_STATUS_CPP = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.cpp"
 ABSTRACT_CONNECTION_H = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.h"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
-RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
 ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.h"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.cpp"
@@ -36,6 +38,9 @@ def function_body(source, signature):
 def test_proxy_status_model_is_exposed_to_ui():
     status_header = STATUS_H.read_text(encoding="utf-8")
     instance_header = INSTANCE_H.read_text(encoding="utf-8")
+    connection_status_header = CONNECTION_STATUS_H.read_text(encoding="utf-8")
+    connection_status_source = CONNECTION_STATUS_CPP.read_text(
+        encoding="utf-8")
     abstract_connection = ABSTRACT_CONNECTION_H.read_text(encoding="utf-8")
     source = INSTANCE_CPP.read_text(encoding="utf-8")
     widget_header = CONNECTING_WIDGET_H.read_text(encoding="utf-8")
@@ -52,31 +57,43 @@ def test_proxy_status_model_is_exposed_to_ui():
     assert "crl::time successUntil" in status_header
     assert "struct ProxyConnectionStatus" not in abstract_connection
     assert '#include "mtproto/proxy/status.h"' not in instance_header
-    assert "struct ProxyConnectionStatus;" in instance_header
-    assert "enum class ConnectionNotice;" in instance_header
+    assert "ConnectionStatus &connectionStatus() const" in instance_header
+    assert "class ConnectionStatus final" in connection_status_header
+    assert "ProxyConnectionStatus proxyStatus() const" in (
+        connection_status_header)
+    assert "setProxyStatus(ProxyConnectionStatus status)" in (
+        connection_status_header)
     assert '#include "mtproto/proxy/status.h"' in source
     assert '#include "mtproto/proxy/status.h"' in widget_header
-    assert "proxyConnectionStatusValue()" in instance_header
-    assert "setProxyConnectionStatus(ProxyConnectionStatus status)" in instance_header
-    assert "rpl::variable<ProxyConnectionStatus> _proxyConnectionStatus" in source
-    assert "proxyConnectionStatusValue()" in widget
+    assert "proxyConnectionStatusValue()" not in instance_header
+    assert "setProxyConnectionStatus(ProxyConnectionStatus status)" not in (
+        instance_header)
+    assert "rpl::variable<ProxyConnectionStatus> _proxyStatus" in (
+        connection_status_header)
+    assert "connectionStatus().proxyStatusValue()" in widget
     assert "ProxyConnectionStatusKindText(" in widget
 
 
 def test_connection_notice_model_is_visible_without_proxy():
     status_header = STATUS_H.read_text(encoding="utf-8")
     instance_header = INSTANCE_H.read_text(encoding="utf-8")
-    source = INSTANCE_CPP.read_text(encoding="utf-8")
+    connection_status_source = CONNECTION_STATUS_CPP.read_text(
+        encoding="utf-8")
+    connection_status_header = CONNECTION_STATUS_H.read_text(encoding="utf-8")
     widget_header = CONNECTING_WIDGET_H.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
     lang = LANG.read_text(encoding="utf-8")
 
     assert "enum class ConnectionNotice" in status_header
     assert "WssDirectFallback" in status_header
-    assert "connectionNoticeValue()" in instance_header
-    assert "setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice)" in instance_header
-    assert "rpl::variable<ConnectionNotice> _connectionNotice" in source
-    assert "connectionNoticeValue()" in widget
+    assert "connectionNoticeValue()" not in instance_header
+    assert "setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice)" not in instance_header
+    assert "noticeValue() const" in connection_status_header
+    assert "setNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice)" in (
+        connection_status_header)
+    assert "rpl::variable<ConnectionNotice> _notice" in (
+        connection_status_header)
+    assert "connectionStatus().noticeValue()" in widget
     assert "ConnectionNoticeText(" in widget
     assert "MTP::ConnectionNotice connectionNotice" in widget_header
     assert "ConnectionNoticeText(state.connectionNotice)" in widget
@@ -106,11 +123,13 @@ def test_proxy_status_tracks_phases_and_socket_errors():
 def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():
     status_header = STATUS_H.read_text(encoding="utf-8")
     diagnostics = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
-    instance = INSTANCE_CPP.read_text(encoding="utf-8")
+    connection_status = CONNECTION_STATUS_CPP.read_text(encoding="utf-8")
     control = CONTROL_CPP.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
     runtime = RUNTIME_CPP.read_text(encoding="utf-8")
-    sink = function_body(instance, "void Instance::Private::setProxyConnectionStatus(")
+    sink = function_body(
+        connection_status,
+        "void ConnectionStatus::setProxyStatus(")
 
     assert "ServerHelloHmacMismatch" in status_header
     assert "IsMtproxyTerminalFailure(" in status_header

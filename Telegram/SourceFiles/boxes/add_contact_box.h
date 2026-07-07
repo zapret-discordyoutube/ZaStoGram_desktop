@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/layers/box_content.h"
 #include "base/timer.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class PeerListBox;
 struct RequestPeerQuery;

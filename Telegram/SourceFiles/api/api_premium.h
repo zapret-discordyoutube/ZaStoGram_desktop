@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_premium_subscription_option.h"
 #include "data/data_star_gift.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class History;
 class ApiWrap;

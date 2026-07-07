@@ -34,19 +34,19 @@ PRIVATE
     mtproto/protocol/mtproto_serialized_request.h
     mtproto/transport/details/mtproto_tcp_socket.cpp
     mtproto/transport/details/mtproto_tcp_socket.h
-    mtproto/mtproto_auth_key.cpp
-    mtproto/mtproto_auth_key.h
-    mtproto/mtproto_concurrent_sender.cpp
-    mtproto/mtproto_concurrent_sender.h
-    mtproto/mtproto_config.cpp
-    mtproto/mtproto_config.h
-    mtproto/mtproto_dc_options.cpp
-    mtproto/mtproto_dc_options.h
+    mtproto/auth/mtproto_auth_key.cpp
+    mtproto/auth/mtproto_auth_key.h
+    mtproto/instance/mtproto_concurrent_sender.cpp
+    mtproto/instance/mtproto_concurrent_sender.h
+    mtproto/config/mtproto_config.cpp
+    mtproto/config/mtproto_config.h
+    mtproto/config/mtproto_dc_options.cpp
+    mtproto/config/mtproto_dc_options.h
     mtproto/auth/mtproto_dh_utils.cpp
     mtproto/auth/mtproto_dh_utils.h
     mtproto/mtproto_pch.h
-    mtproto/mtproto_response.cpp
-    mtproto/mtproto_response.h
+    mtproto/protocol/mtproto_response.cpp
+    mtproto/protocol/mtproto_response.h
 )
 
 target_include_directories(td_mtproto

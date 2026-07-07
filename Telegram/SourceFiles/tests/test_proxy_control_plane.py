@@ -12,9 +12,13 @@ CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 STATUS_H = PROXY_DIR / "status.h"
 STATUS_CPP = PROXY_DIR / "status.cpp"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
-RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime_environment.cpp"
-INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
-INSTANCE_H = SOURCE_DIR / "mtproto" / "mtp_instance.h"
+RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
+INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
+INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
+CONNECTION_STATUS_CPP = (
+    SOURCE_DIR / "mtproto" / "runtime" / "connection_status.cpp")
+CONNECTION_STATUS_H = (
+    SOURCE_DIR / "mtproto" / "runtime" / "connection_status.h")
 ADAPTIVE_POLICY_CPP = PROXY_DIR / "mtproxy" / "adaptive_policy.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
@@ -408,33 +412,33 @@ def test_instance_status_sink_does_not_reduce_control_plane_output_again():
     control = read(CONTROL_CPP)
     status_header = read(STATUS_H)
     status_source = read(STATUS_CPP)
-    instance = read(INSTANCE_CPP)
+    connection_status = read(CONNECTION_STATUS_CPP)
     submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
-    sink = function_body(instance, "void Instance::Private::setProxyConnectionStatus(")
+    sink = function_body(
+        connection_status,
+        "void ConnectionStatus::setProxyStatus(")
 
     assert "ProxyControlPlane::Reduce(current, normalized)" in submit
     assert "ApplySelectedStatusUpdate(" in control
     assert "ApplyProxyConnectionStatusUpdate(" not in status_header
     assert "ApplyProxyConnectionStatusUpdate(" not in status_source
     assert "ApplyProxyConnectionStatusUpdate(" not in sink
-    assert "_proxyConnectionStatus = status;" in sink
+    assert "_proxyStatus = status;" in sink
 
 
 def test_instance_status_sink_is_private_to_runtime_gateway():
     header = read(INSTANCE_H)
+    status_header = read(CONNECTION_STATUS_H)
     control = read(CONTROL_CPP)
 
     assert "struct RuntimeEnvironment;" in header
     assert "friend class ProxyControlPlane;" not in header
-    assert "void setProxyConnectionStatus(ProxyConnectionStatus status);" in header
-
-    setter = header.index(
-        "void setProxyConnectionStatus(ProxyConnectionStatus status);")
-    private_section = header.rindex("private:")
-    assert setter > private_section
+    assert "void setProxyConnectionStatus(ProxyConnectionStatus status);" not in header
+    assert "ConnectionStatus &connectionStatus() const;" in header
+    assert "void setProxyStatus(ProxyConnectionStatus status);" in status_header
 
     submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
-    assert "runtime->setProxyConnectionStatus(" in submit
+    assert "runtime->connectionStatus->setProxyStatus(" in submit
 
 
 if __name__ == "__main__":

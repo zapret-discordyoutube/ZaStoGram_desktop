@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/protocol/mtproto_binary.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/mtproto_dc_options.h"
-#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "base/unixtime.h"
 #include "base/openssl_help.h"
 #include "base/call_delayed.h"

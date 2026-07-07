@@ -21,7 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 #include "core/application.h"
 #include "mtproto/instance/mtp_instance.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "core/file_utilities.h"
 #include "core/update_checker.h"
 #include "window/themes/window_theme.h"

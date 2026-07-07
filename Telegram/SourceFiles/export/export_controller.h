@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/variant.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 
 #include <QtCore/QPointer>
 #include <crl/crl_object_on_queue.h>

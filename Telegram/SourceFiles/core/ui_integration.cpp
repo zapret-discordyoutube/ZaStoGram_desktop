@@ -29,7 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "main/main_app_config.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "mainwindow.h"

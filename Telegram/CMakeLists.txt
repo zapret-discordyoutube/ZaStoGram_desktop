@@ -1494,6 +1494,8 @@ PRIVATE
     mtproto/transport/connection_abstract.h
     mtproto/transport/connection_http.cpp
     mtproto/transport/connection_http.h
+    mtproto/runtime/connection_status.cpp
+    mtproto/runtime/connection_status.h
     mtproto/runtime/runtime_environment.cpp
     mtproto/runtime/runtime_environment.h
     mtproto/proxy/connection_broker.cpp
@@ -1546,7 +1548,7 @@ PRIVATE
     mtproto/proxy/mtproxy/tls_socket.h
     mtproto/proxy/wss/socket.cpp
     mtproto/proxy/wss/socket.h
-    mtproto/sender.h
+    mtproto/instance/sender.h
     mtproto/session/session.cpp
     mtproto/session/session.h
     mtproto/session/session_state.h

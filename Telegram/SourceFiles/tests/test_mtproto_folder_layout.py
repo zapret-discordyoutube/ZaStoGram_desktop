@@ -113,8 +113,14 @@ def test_config_auth_protocol_and_files_have_folders():
     expected = (
         "config/config_loader.cpp",
         "config/config_loader.h",
+        "config/mtproto_config.cpp",
+        "config/mtproto_config.h",
+        "config/mtproto_dc_options.cpp",
+        "config/mtproto_dc_options.h",
         "config/special_config_request.cpp",
         "config/special_config_request.h",
+        "auth/mtproto_auth_key.cpp",
+        "auth/mtproto_auth_key.h",
         "auth/mtproto_bound_key_creator.cpp",
         "auth/mtproto_bound_key_creator.h",
         "auth/mtproto_dc_key_binder.cpp",
@@ -126,6 +132,8 @@ def test_config_auth_protocol_and_files_have_folders():
         "protocol/mtproto_binary.h",
         "protocol/mtproto_dump_to_text.cpp",
         "protocol/mtproto_dump_to_text.h",
+        "protocol/mtproto_response.cpp",
+        "protocol/mtproto_response.h",
         "protocol/mtproto_serialized_request.cpp",
         "protocol/mtproto_serialized_request.h",
         "files/dedicated_file_loader.cpp",
@@ -136,6 +144,12 @@ def test_config_auth_protocol_and_files_have_folders():
         "config_loader.h",
         "special_config_request.cpp",
         "special_config_request.h",
+        "mtproto_auth_key.cpp",
+        "mtproto_auth_key.h",
+        "mtproto_config.cpp",
+        "mtproto_config.h",
+        "mtproto_dc_options.cpp",
+        "mtproto_dc_options.h",
         "details/mtproto_bound_key_creator.cpp",
         "details/mtproto_bound_key_creator.h",
         "details/mtproto_dc_key_binder.cpp",
@@ -149,8 +163,42 @@ def test_config_auth_protocol_and_files_have_folders():
         "details/mtproto_dump_to_text.h",
         "details/mtproto_serialized_request.cpp",
         "details/mtproto_serialized_request.h",
+        "mtproto_response.cpp",
+        "mtproto_response.h",
         "dedicated_file_loader.cpp",
         "dedicated_file_loader.h",
+    )
+    listed = build_lists()
+
+    for path in expected:
+        assert (MTPROTO_DIR / path).exists()
+        assert f"mtproto/{path}" in listed
+
+    for path in removed:
+        assert not (MTPROTO_DIR / path).exists()
+        assert f"mtproto/{path}" not in listed
+
+
+def test_instance_and_runtime_have_strict_folders():
+    expected = (
+        "instance/mtp_instance.cpp",
+        "instance/mtp_instance.h",
+        "instance/mtproto_concurrent_sender.cpp",
+        "instance/mtproto_concurrent_sender.h",
+        "instance/sender.h",
+        "runtime/connection_status.cpp",
+        "runtime/connection_status.h",
+        "runtime/runtime_environment.cpp",
+        "runtime/runtime_environment.h",
+    )
+    removed = (
+        "mtp_instance.cpp",
+        "mtp_instance.h",
+        "mtproto_concurrent_sender.cpp",
+        "mtproto_concurrent_sender.h",
+        "runtime_environment.cpp",
+        "runtime_environment.h",
+        "sender.h",
     )
     listed = build_lists()
 

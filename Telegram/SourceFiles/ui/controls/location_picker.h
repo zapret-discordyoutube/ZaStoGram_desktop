@@ -11,7 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "core/current_geo_location.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "webview/webview_common.h"
 
 namespace Data {

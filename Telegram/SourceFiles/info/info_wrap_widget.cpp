@@ -41,7 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/peer_qr_box.h"
 #include "main/main_session.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "data/data_download_manager.h"
 #include "data/data_session.h"
 #include "data/data_changes.h"

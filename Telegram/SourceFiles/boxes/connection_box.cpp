@@ -19,8 +19,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
+#include "mtproto/runtime/connection_status.h"
 #include "mtproto/session/session_state.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/check.h"
 #include "mtproto/proxy/transport_policy.h"
@@ -2189,7 +2190,7 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 		}
 	}, _lifetime);
 
-	_account->mtp().pingTimeValue(
+	_account->mtp().connectionStatus().pingTimeValue(
 	) | rpl::skip(1) | rpl::on_next([=] {
 		const auto i = findByProxy(_settings.selected());
 		if (i != end(_list)) {
@@ -2955,7 +2956,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		return ItemState::Connecting;
 	}();
 	const auto ping = (state == ItemState::Online)
-		? int(_account->mtp().pingTime())
+		? int(_account->mtp().connectionStatus().pingTime())
 		: item.ping;
 	const auto supportsShare = ProxyDataIsShareable(item.data);
 	const auto supportsCalls = item.data.supportsCalls();

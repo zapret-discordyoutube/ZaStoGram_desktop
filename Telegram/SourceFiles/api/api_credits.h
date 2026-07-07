@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_statistics_sender.h"
 #include "data/data_credits.h"
 #include "data/data_credits_earn.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 namespace Data {
 class SavedStarGiftId;

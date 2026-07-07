@@ -7,7 +7,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 MTPROTO_DIR = SOURCE_DIR / "mtproto"
 BINARY_H = MTPROTO_DIR / "protocol" / "mtproto_binary.h"
-AUTH_KEY_CPP = MTPROTO_DIR / "mtproto_auth_key.cpp"
+AUTH_KEY_CPP = MTPROTO_DIR / "auth" / "mtproto_auth_key.cpp"
 TD_MTPROTO_CMAKE = ROOT / "Telegram" / "cmake" / "td_mtproto.cmake"
 SESSION_CPP = MTPROTO_DIR / "session" / "private" / "session_private.cpp"
 

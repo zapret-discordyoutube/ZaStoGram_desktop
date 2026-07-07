@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/controls/swipe_handler_data.h"
 #include "ui/effects/animations.h"
 #include "ui/userpic_view.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "api/api_single_message_search.h"
 
 namespace MTP {

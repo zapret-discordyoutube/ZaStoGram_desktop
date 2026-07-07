@@ -18,7 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/add_contact_box.h"
 #include "main/main_session.h"
 #include "menu/menu_antispam_validator.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "apiwrap.h"
 #include "lang/lang_keys.h"
 #include "dialogs/dialogs_indexed_list.h"

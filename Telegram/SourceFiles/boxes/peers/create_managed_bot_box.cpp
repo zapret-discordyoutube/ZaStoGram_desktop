@@ -16,7 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/session/session_show.h"
 #include "main/main_session.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "settings/sections/settings_premium.h"
 #include "ui/controls/userpic_button.h"
 #include "ui/layers/generic_box.h"

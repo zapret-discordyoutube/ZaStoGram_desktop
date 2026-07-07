@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/data_user_names.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class ApiWrap;
 class PeerData;

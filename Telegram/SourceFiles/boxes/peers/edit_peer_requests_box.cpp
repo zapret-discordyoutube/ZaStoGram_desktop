@@ -25,7 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/requests_list/info_requests_list_widget.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/painter.h"
 #include "ui/round_rect.h"

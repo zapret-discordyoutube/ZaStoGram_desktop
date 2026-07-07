@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 namespace Main {
 class Domain;

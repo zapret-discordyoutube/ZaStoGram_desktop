@@ -13,8 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "apiwrap.h"
 #include "mtproto/instance/mtp_instance.h"
-#include "mtproto/mtproto_config.h"
-#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/config/mtproto_config.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 
 mtpFileLoader::mtpFileLoader(
 	not_null<Main::Session*> session,

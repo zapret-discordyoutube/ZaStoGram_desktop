@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/protocol/mtproto_binary.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/proxy/status.h"
 #include "base/bytes.h"

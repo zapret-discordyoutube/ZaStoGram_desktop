@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/details/storage_file_utilities.h"
 
 #include "core/version.h"
-#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "base/platform/base_platform_file_utilities.h"
 #include "base/openssl_help.h"
 #include "base/random.h"

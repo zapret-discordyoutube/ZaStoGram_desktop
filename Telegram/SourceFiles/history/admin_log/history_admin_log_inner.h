@@ -17,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/animations.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/widgets/scroll_area.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "base/timer.h"
 
 struct ChatRestrictionsInfo;

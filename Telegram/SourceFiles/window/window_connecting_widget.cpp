@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "mtproto/instance/mtp_instance.h"
+#include "mtproto/runtime/connection_status.h"
 #include "mtproto/session/session_state.h"
 #include "main/main_account.h"
 #include "core/application.h"
@@ -381,8 +382,8 @@ ConnectionState::ConnectionState(
 
 	rpl::combine(
 		Core::App().settings().proxy().connectionTypeValue(),
-		_account->mtp().proxyConnectionStatusValue(),
-		_account->mtp().connectionNoticeValue(),
+		_account->mtp().connectionStatus().proxyStatusValue(),
+		_account->mtp().connectionStatus().noticeValue(),
 		rpl::single(QRect()) | rpl::then(_parent->paintRequest())
 	) | rpl::on_next([=] {
 		refreshState();
@@ -450,8 +451,9 @@ void ConnectionState::refreshState() {
 			&& (Checker().state() == Checker::State::Ready);
 		const auto state = _account->mtp().dcstate();
 		const auto proxy = Core::App().settings().proxy().isEnabled();
-		const auto proxyStatus = _account->mtp().proxyConnectionStatus();
-		const auto connectionNotice = _account->mtp().connectionNotice();
+		auto &status = _account->mtp().connectionStatus();
+		const auto proxyStatus = status.proxyStatus();
+		const auto connectionNotice = status.notice();
 		if (state == MTP::ConnectingState
 			|| state == MTP::DisconnectedState
 			|| (state < 0 && state > -600)) {

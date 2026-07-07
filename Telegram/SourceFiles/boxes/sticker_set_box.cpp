@@ -35,7 +35,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "media/clip/media_clip_reader.h"
 #include "menu/menu_send.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "settings/sections/settings_premium.h"
 #include "storage/storage_account.h"
 #include "ui/boxes/confirm_box.h"

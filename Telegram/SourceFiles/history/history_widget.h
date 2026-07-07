@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/section_widget.h"
 #include "window/window_session_controller.h"
 #include "ui/widgets/fields/input_field.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 enum class SendMediaType;
 class MessageLinksParser;

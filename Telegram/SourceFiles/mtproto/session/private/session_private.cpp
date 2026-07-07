@@ -18,10 +18,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/session.h"
-#include "mtproto/mtproto_response.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/protocol/mtproto_response.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/transport/connection_abstract.h"
 #include "base/options.h"
 #include "base/random.h"
@@ -99,15 +100,22 @@ SessionPrivate::~SessionPrivate() {
 
 void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
 	const auto shiftedDcId = _shiftedDcId;
-	InvokeQueued(_instance, [=, instance = _instance] {
-		instance->setConnectionNotice(shiftedDcId, notice);
+	InvokeQueued(_runtime, [=, runtime = _runtime] {
+		if (runtime->connectionStatus) {
+			runtime->connectionStatus->setNotice(shiftedDcId, notice);
+		}
 	});
 }
 
 void SessionPrivate::reportPingTime(crl::time time) {
 	const auto shiftedDcId = _shiftedDcId;
-	InvokeQueued(_instance, [=, instance = _instance] {
-		instance->setSessionPingTime(shiftedDcId, time);
+	InvokeQueued(_runtime, [=, runtime = _runtime, instance = _instance] {
+		if (runtime->connectionStatus) {
+			runtime->connectionStatus->setSessionPingTime(
+				instance->mainDcId(),
+				shiftedDcId,
+				time);
+		}
 	});
 }
 

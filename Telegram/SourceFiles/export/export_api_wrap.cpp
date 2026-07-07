@@ -11,7 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "export/data/export_data_types.h"
 #include "export/output/export_output_result.h"
 #include "export/output/export_output_file.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 #include "base/bytes.h"
 #include "base/options.h"
 #include "base/random.h"

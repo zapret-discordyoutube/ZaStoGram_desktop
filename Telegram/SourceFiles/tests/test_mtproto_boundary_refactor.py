@@ -7,8 +7,10 @@ ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 MTPROTO_DIR = SOURCE_DIR / "mtproto"
 PROXY_DIR = MTPROTO_DIR / "proxy"
-RUNTIME_H = MTPROTO_DIR / "runtime_environment.h"
-RUNTIME_CPP = MTPROTO_DIR / "runtime_environment.cpp"
+RUNTIME_H = MTPROTO_DIR / "runtime" / "runtime_environment.h"
+RUNTIME_CPP = MTPROTO_DIR / "runtime" / "runtime_environment.cpp"
+CONNECTION_STATUS_H = MTPROTO_DIR / "runtime" / "connection_status.h"
+CONNECTION_STATUS_CPP = MTPROTO_DIR / "runtime" / "connection_status.cpp"
 DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
 CONTROL_H = PROXY_DIR / "control_plane.h"
@@ -18,13 +20,30 @@ DNS_H = PROXY_DIR / "dns_resolver_cache.h"
 CHECK_H = PROXY_DIR / "check.h"
 ABSTRACT_CONNECTION_H = MTPROTO_DIR / "transport" / "connection_abstract.h"
 ABSTRACT_CONNECTION_CPP = MTPROTO_DIR / "transport" / "connection_abstract.cpp"
-SESSION_CPP = MTPROTO_DIR / "session" / "private.cpp"
-INSTANCE_CPP = MTPROTO_DIR / "mtp_instance.cpp"
+INSTANCE_CPP = MTPROTO_DIR / "instance" / "mtp_instance.cpp"
+INSTANCE_H = MTPROTO_DIR / "instance" / "mtp_instance.h"
+SESSION_CPP = MTPROTO_DIR / "session" / "session.cpp"
+SESSION_PRIVATE_CPP = MTPROTO_DIR / "session" / "private" / "session_private.cpp"
 
 
 def read(path):
     assert path.exists(), f"missing expected source file: {path}"
     return path.read_text(encoding="utf-8")
+
+
+def function_body(source, signature):
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1:index]
+    raise AssertionError(f"function body not found: {signature}")
 
 
 def mtproto_sources():
@@ -49,17 +68,28 @@ def test_runtime_environment_is_the_app_gateway():
     cmake = read(CMAKE)
     header = read(RUNTIME_H)
     source = read(RUNTIME_CPP)
+    status_header = read(CONNECTION_STATUS_H)
+    status_source = read(CONNECTION_STATUS_CPP)
     instance = read(INSTANCE_CPP)
 
     assert "mtproto/runtime/runtime_environment.cpp" in cmake
     assert "mtproto/runtime/runtime_environment.h" in cmake
+    assert "mtproto/runtime/connection_status.cpp" in cmake
+    assert "mtproto/runtime/connection_status.h" in cmake
     assert "struct RuntimeEnvironment" in header
+    assert "struct RuntimeProxySettings" in header
+    assert "struct RuntimeDeviceSettings" in header
+    assert "struct RuntimeLanguageGateway" in header
+    assert "struct RuntimeStorageGateway" in header
+    assert "struct RuntimeAppGateway" in header
+    assert "ConnectionStatus *connectionStatus = nullptr" in header
     assert "Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine" in header
     assert "Fn<void(ProxyEventReport)> reportProxyEvent" in header
-    assert "Fn<ProxyConnectionStatus()> proxyConnectionStatus" in header
     assert "Fn<void(QString, QStringList, qint64)> proxyDomainResolved" in header
     assert "DefaultRuntimeEnvironment()" in header
     assert "DefaultRuntimeEnvironment()" in source
+    assert "class ConnectionStatus final" in status_header
+    assert "ConnectionStatus::setProxyStatus(" in status_source
     assert "fields.runtimeEnvironment" in instance
 
 
@@ -76,8 +106,8 @@ def test_lower_mtproto_layers_do_not_include_app_facade():
         "Logs::writeMtproxy",
     )
     allowed = {
-        MTPROTO_DIR / "runtime_environment.cpp",
-        MTPROTO_DIR / "runtime_environment.h",
+        RUNTIME_CPP,
+        RUNTIME_H,
     }
 
     for path in mtproto_sources():
@@ -107,7 +137,63 @@ def test_proxy_reporting_and_control_plane_do_not_accept_instance():
     assert "SubmitFact(\n\t\tnot_null<RuntimeEnvironment*> runtime" in control_h
     assert "not_null<Instance*>" not in control_h
     assert "not_null<Instance*>" not in control_cpp
-    assert "runtime->setProxyConnectionStatus" in control_cpp
+    assert "runtime->connectionStatus->setProxyStatus" in control_cpp
+
+
+def test_instance_and_session_use_runtime_gateway_for_app_facade():
+    runtime = read(RUNTIME_CPP)
+    instance_h = read(INSTANCE_H)
+    checked_sources = (
+        INSTANCE_CPP,
+        SESSION_CPP,
+        SESSION_PRIVATE_CPP,
+    )
+    banned_tokens = (
+        '#include "core/application.h"',
+        '#include "core/core_settings.h"',
+        '#include "main/',
+        '#include "storage/localstorage.h"',
+        '#include "lang/',
+        "Core::App(",
+        "Core::App().",
+        "Local::",
+        "Lang::",
+    )
+
+    assert "Core::App().settings().proxy()" in runtime
+    assert "Lang::CurrentCloudManager()" in runtime
+    assert "Local::writeSettings()" in runtime
+    assert "ConnectionStatus &connectionStatus() const;" in instance_h
+    for removed in (
+            "proxyConnectionStatus",
+            "connectionNoticeValue",
+            "setConnectionNotice",
+            "pingTimeValue",
+            "setSessionPingTime"):
+        assert removed not in instance_h
+
+    for path in checked_sources:
+        text = read(path)
+        for token in banned_tokens:
+            assert token not in text, (
+                f"{path.relative_to(ROOT)} still depends on app layer via "
+                f"{token}")
+
+
+def test_on_error_default_is_split_into_helpers():
+    instance = read(INSTANCE_CPP)
+    body = function_body(
+        instance,
+        "bool Instance::Private::onErrorDefault(")
+
+    assert len(body.splitlines()) <= 70
+    for helper in (
+            "handleMigrationError(",
+            "handleMsgWaitError(",
+            "handleRetryError(",
+            "handleUnauthorizedError(",
+            "handleConnectionInitError("):
+        assert helper in body
 
 
 def test_runtime_context_replaces_instance_in_proxy_entrypoints():
@@ -152,5 +238,7 @@ if __name__ == "__main__":
     test_runtime_environment_is_the_app_gateway()
     test_lower_mtproto_layers_do_not_include_app_facade()
     test_proxy_reporting_and_control_plane_do_not_accept_instance()
+    test_instance_and_session_use_runtime_gateway_for_app_facade()
+    test_on_error_default_is_split_into_helpers()
     test_runtime_context_replaces_instance_in_proxy_entrypoints()
     test_transport_session_leaks_use_neutral_metadata()

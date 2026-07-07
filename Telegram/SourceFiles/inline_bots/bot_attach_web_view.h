@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_ptr.h"
 #include "dialogs/dialogs_key.h"
 #include "menu/menu_send_details.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "ui/chat/attach/attach_bot_webview.h"
 #include "ui/rp_widget.h"
 

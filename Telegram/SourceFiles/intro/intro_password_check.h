@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "intro/intro_step.h"
 #include "core/core_cloud_password.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "base/timer.h"
 
 namespace Ui {

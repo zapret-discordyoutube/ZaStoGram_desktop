@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/details/mtproto_dcenter.h"
 
-#include "mtproto/mtproto_auth_key.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/auth/mtproto_auth_key.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/config/special_config_request.h"
 

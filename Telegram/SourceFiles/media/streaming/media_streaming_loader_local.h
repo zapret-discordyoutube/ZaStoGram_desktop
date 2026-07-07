@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "media/streaming/media_streaming_loader.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "data/data_file_origin.h"
 
 class ApiWrap;

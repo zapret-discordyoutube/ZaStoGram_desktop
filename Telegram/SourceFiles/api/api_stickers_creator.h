@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/weak_ptr.h"
 #include "data/stickers/data_stickers.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class DocumentData;
 

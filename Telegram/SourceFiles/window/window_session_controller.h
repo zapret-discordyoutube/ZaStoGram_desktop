@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat_participant_status.h"
 #include "data/data_report.h"
 #include "dialogs/dialogs_key.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "settings/settings_type.h"
 #include "window/window_adaptive.h"
 

@@ -8,11 +8,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/check.h"
 
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QHash>
@@ -107,8 +108,8 @@ void SetProxyCheckProgress(
 			&& (crl::now() - snapshot.lastRelaySuccessAt
 				< kProxyCheckActiveSessionWindow);
 	}
-	const auto status = runtime->proxyConnectionStatus
-		? runtime->proxyConnectionStatus()
+	const auto status = runtime->connectionStatus
+		? runtime->connectionStatus->proxyStatus()
 		: ProxyConnectionStatus();
 	return (status.phase == ProxyConnectionPhase::Connected)
 		&& (status.proxy == proxy);

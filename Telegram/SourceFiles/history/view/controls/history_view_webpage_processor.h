@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_drafts.h"
 #include "chat_helpers/message_field.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class History;
 

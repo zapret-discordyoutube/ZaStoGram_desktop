@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/compose/compose_features.h"
 #include "chat_helpers/tabbed_selector.h"
 #include "media/clip/media_clip_reader.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "ui/dpr/dpr_image.h"
 #include "ui/round_rect.h"
 #include "ui/userpic_view.h"

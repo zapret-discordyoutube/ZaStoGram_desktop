@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "payments/ui/payments_panel_data.h"
 #include "base/weak_ptr.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class Image;
 class QJsonObject;

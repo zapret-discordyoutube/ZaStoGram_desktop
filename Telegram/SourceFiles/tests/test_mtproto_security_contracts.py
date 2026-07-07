@@ -2,8 +2,8 @@ from pathlib import Path
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
-AUTH_KEY_H = SOURCE_DIR / "mtproto" / "mtproto_auth_key.h"
-AUTH_KEY_CPP = SOURCE_DIR / "mtproto" / "mtproto_auth_key.cpp"
+AUTH_KEY_H = SOURCE_DIR / "mtproto" / "auth" / "mtproto_auth_key.h"
+AUTH_KEY_CPP = SOURCE_DIR / "mtproto" / "auth" / "mtproto_auth_key.cpp"
 TYPE_UTILS_H = SOURCE_DIR / "mtproto" / "type_utils.h"
 DH_UTILS_H = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.h"
 DH_UTILS_CPP = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.cpp"
@@ -12,8 +12,9 @@ DC_KEY_CREATOR_CPP = (
 CALLS_CALL_H = SOURCE_DIR / "calls" / "calls_call.h"
 CALLS_CALL_CPP = SOURCE_DIR / "calls" / "calls_call.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
-DC_OPTIONS_CPP = SOURCE_DIR / "mtproto" / "mtproto_dc_options.cpp"
-CONCURRENT_SENDER_CPP = SOURCE_DIR / "mtproto" / "mtproto_concurrent_sender.cpp"
+DC_OPTIONS_CPP = SOURCE_DIR / "mtproto" / "config" / "mtproto_dc_options.cpp"
+CONCURRENT_SENDER_CPP = (
+    SOURCE_DIR / "mtproto" / "instance" / "mtproto_concurrent_sender.cpp")
 SPECIAL_CONFIG_CPP = SOURCE_DIR / "mtproto" / "config" / "special_config_request.cpp"
 SPECIAL_CONFIG_H = SOURCE_DIR / "mtproto" / "config" / "special_config_request.h"
 RSA_PUBLIC_KEY_CPP = (

@@ -11,11 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/session/pause_state.h"
 #include "mtproto/session/private/session_private.h"
-#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/session_state.h"
-#include "core/application.h"
-#include "core/core_settings.h"
 #include "base/unixtime.h"
 
 namespace MTP {
@@ -267,14 +266,20 @@ void Session::releaseProxyMigration(uint64 generation) {
 }
 
 void Session::refreshOptions() {
-	auto &settings = Core::App().settings().proxy();
-	const auto &proxy = settings.selected();
-	const auto isEnabled = settings.isEnabled();
+	auto &runtime = _instance->runtimeEnvironment();
+	const auto proxy = runtime.proxy.selected
+		? runtime.proxy.selected()
+		: ProxyData();
+	const auto isEnabled = runtime.proxy.enabled
+		? runtime.proxy.enabled()
+		: false;
 	const auto proxyType = (isEnabled ? proxy.type : ProxyData::Type::None);
 	const auto useTcp = (proxyType != ProxyData::Type::Http);
 	const auto useHttp = (proxyType != ProxyData::Type::Mtproto);
 	const auto useIPv4 = true;
-	const auto useIPv6 = settings.tryIPv6();
+	const auto useIPv6 = runtime.proxy.tryIPv6
+		? runtime.proxy.tryIPv6()
+		: false;
 	auto options = SessionOptions(
 		_instance->systemLangCode(),
 		_instance->cloudLangCode(),
@@ -284,10 +289,16 @@ void Session::refreshOptions() {
 		useIPv6,
 		useHttp,
 		useTcp);
+	const auto proxySettings = runtime.proxy.settings
+		? runtime.proxy.settings()
+		: ProxyData::Settings::System;
+	const auto stealthOptions = runtime.proxy.stealthOptions
+		? runtime.proxy.stealthOptions()
+		: ProxyStealthOptions();
 	options.stealth = MTP::EffectiveProxyStealthOptions(
 		options.proxy,
-		settings.settings(),
-		Core::App().settings().proxyStealthOptions());
+		proxySettings,
+		stealthOptions);
 	_data->setOptions(std::move(options));
 }
 

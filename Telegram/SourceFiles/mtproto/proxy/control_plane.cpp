@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/invoke_queued.h"
 #include "base/timer.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
 
 namespace MTP {
@@ -410,16 +411,16 @@ void ProxyControlPlane::SubmitFact(
 		return;
 	}
 	InvokeQueued(runtime, [=] {
-		const auto current = runtime->proxyConnectionStatus
-			? runtime->proxyConnectionStatus()
+		const auto current = runtime->connectionStatus
+			? runtime->connectionStatus->proxyStatus()
 			: ProxyConnectionStatus();
 		auto normalized = fact;
 		NormalizeMtproxyTerminalReason(current, normalized.status);
 		if (ShadowedByFreshRelaySuccess(current, normalized)) {
 			LogShadowedFact(runtime, normalized);
 		}
-		if (runtime->setProxyConnectionStatus) {
-			runtime->setProxyConnectionStatus(
+		if (runtime->connectionStatus) {
+			runtime->connectionStatus->setProxyStatus(
 				ProxyControlPlane::Reduce(current, normalized));
 		}
 	});

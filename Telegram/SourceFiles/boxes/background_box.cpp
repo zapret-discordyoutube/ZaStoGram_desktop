@@ -16,7 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/vertical_list.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "core/file_utilities.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"

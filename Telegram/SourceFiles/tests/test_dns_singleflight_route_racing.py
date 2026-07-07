@@ -49,7 +49,7 @@ def test_dns_resolver_cache_is_registered_and_models_singleflight_states():
     assert "std::vector<DnsResolverSubscriber> subscribers;" in source
     assert "state = DnsResolverCacheState::Inflight;" in source
     assert "subscribers.push_back(" in source
-    assert "instance->resolveProxyDomain(host);" in source
+    assert "runtime->resolveProxyDomain(host);" in source
 
 
 def test_resolving_connection_subscribes_to_dns_cache_instead_of_resolving():

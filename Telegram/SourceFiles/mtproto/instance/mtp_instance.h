@@ -12,16 +12,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // header (via sender.h / main_account.h) — keep until those includers are
 // cleaned up to include it themselves.
 #include "mtproto/proxy/data.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 
 #include <QtCore/QObject>
 
 namespace MTP {
-
-// Deliberately not including mtproto/proxy/status.h: it changes often and
-// this header reaches almost every TU. Include it where the values are used.
-enum class ConnectionNotice;
-struct ProxyConnectionStatus;
 
 namespace details {
 
@@ -33,6 +28,7 @@ class Session;
 } // namespace details
 
 class DcOptions;
+class ConnectionStatus;
 class Config;
 struct ConfigFields;
 class AuthKey;
@@ -110,16 +106,7 @@ public:
 	void proxyMigrationSucceeded(uint64 generation);
 	int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	QString dctransport(ShiftedDcId shiftedDcId = 0);
-	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;
-	[[nodiscard]] auto proxyConnectionStatusValue() const
-	-> rpl::producer<ProxyConnectionStatus>;
-	[[nodiscard]] ConnectionNotice connectionNotice() const;
-	[[nodiscard]] auto connectionNoticeValue() const
-	-> rpl::producer<ConnectionNotice>;
-	void setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice);
-	[[nodiscard]] crl::time pingTime() const;
-	[[nodiscard]] rpl::producer<crl::time> pingTimeValue() const;
-	void setSessionPingTime(ShiftedDcId shiftedDcId, crl::time time);
+	[[nodiscard]] ConnectionStatus &connectionStatus() const;
 	void ping();
 	void cancel(mtpRequestId requestId);
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
@@ -257,7 +244,6 @@ Q_SIGNALS:
 		qint64 expireAt);
 
 private:
-	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	void sendRequest(
 		mtpRequestId requestId,
 		details::SerializedRequest &&request,

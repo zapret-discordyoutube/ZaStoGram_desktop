@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "base/weak_ptr.h"
 
 namespace MTP {

@@ -10,8 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "mtproto/dc_id.h"
 #include "mtproto/config/special_config_request.h"
-#include "mtproto/mtproto_dc_options.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_config.h"
 #include "mtproto/instance/mtp_instance.h"
 
 namespace MTP {

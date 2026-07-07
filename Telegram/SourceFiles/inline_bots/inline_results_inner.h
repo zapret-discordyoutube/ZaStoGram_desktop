@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/panel_animation.h"
 #include "dialogs/dialogs_key.h"
 #include "base/timer.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "inline_bots/inline_bot_layout_item.h"
 #include "layout/layout_mosaic.h"
 

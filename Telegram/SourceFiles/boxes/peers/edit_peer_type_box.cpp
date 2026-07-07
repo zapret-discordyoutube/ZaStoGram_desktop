@@ -27,7 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "info/profile/info_profile_values.h"
 #include "lang/lang_keys.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "ui/rp_widget.h"
 #include "ui/vertical_list.h"
 #include "ui/controls/userpic_button.h"

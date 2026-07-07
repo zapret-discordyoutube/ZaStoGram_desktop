@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/mtproto_concurrent_sender.h"
+#include "mtproto/instance/mtproto_concurrent_sender.h"
 #include "data/data_peer_id.h"
 
 namespace Export {

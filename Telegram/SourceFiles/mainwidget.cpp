@@ -72,7 +72,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/player/media_player_instance.h"
 #include "base/qthelp_regex.h"
 #include "base/options.h"
-#include "mtproto/mtproto_dc_options.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "core/update_checker.h"
 #include "core/shortcuts.h"
 #include "core/application.h"

@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/timer.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class ApiWrap;
 class HistoryItem;

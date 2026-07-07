@@ -8,8 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/download_manager_mtproto.h"
 
 #include "mtproto/dc_id.h"
-#include "mtproto/mtproto_auth_key.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/auth/mtproto_auth_key.h"
+#include "mtproto/protocol/mtproto_response.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"

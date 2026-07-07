@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/transport/connection_abstract.h"
 #include "base/timer.h"
 

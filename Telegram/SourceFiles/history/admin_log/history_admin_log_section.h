@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/admin_log/history_admin_log_filter_value.h"
 #include "ui/controls/swipe_handler_data.h"
 #include "ui/effects/animations.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 namespace Ui {
 class ScrollArea;

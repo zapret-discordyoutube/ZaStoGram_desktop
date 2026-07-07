@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "support/support_templates.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class History;
 

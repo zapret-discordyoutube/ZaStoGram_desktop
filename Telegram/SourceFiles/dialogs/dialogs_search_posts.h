@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "dialogs/ui/posts_search_intro.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 namespace Main {
 class Session;

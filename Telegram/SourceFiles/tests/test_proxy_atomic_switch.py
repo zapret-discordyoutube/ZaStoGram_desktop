@@ -4,8 +4,8 @@ from session_private_sources import read_session_private_sources
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MAIN_ACCOUNT_CPP = SOURCE_DIR / "main" / "main_account.cpp"
-INSTANCE_H = SOURCE_DIR / "mtproto" / "mtp_instance.h"
-INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
+INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
+INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "session.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
 SESSION_PRIVATE_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"

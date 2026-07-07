@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "media/streaming/media_streaming_loader.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "data/data_file_origin.h"
 #include "storage/download_manager_mtproto.h"
 

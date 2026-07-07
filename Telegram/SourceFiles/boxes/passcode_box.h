@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/layers/box_content.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "core/core_cloud_password.h"
 
 namespace MTP {

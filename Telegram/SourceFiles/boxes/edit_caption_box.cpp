@@ -43,7 +43,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "mainwidget.h" // controller->content() -> QWidget*
 #include "menu/menu_send.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "platform/platform_specific.h"
 #include "storage/localimageloader.h" // SendMediaType
 #include "storage/storage_media_prepare.h"

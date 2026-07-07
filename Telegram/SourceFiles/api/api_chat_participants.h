@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/data_chat_participant_status.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "base/timer.h"
 
 class ApiWrap;

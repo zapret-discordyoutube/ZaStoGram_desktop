@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "window/window_controller.h"
 #include "media/audio/media_audio.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mainwidget.h"
 #include "api/api_updates.h"

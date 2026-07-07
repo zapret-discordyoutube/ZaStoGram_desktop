@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/weak_ptr.h"
 #include "media/player/media_player_float.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 class HistoryWidget;
 class StackItem;

@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "mtproto/instance/mtp_instance.h"
+#include "mtproto/runtime/connection_status.h"
 #include "platform/platform_specific.h"
 #include "settings/settings_builder.h"
 #include "settings/sections/settings_local_storage.h"
@@ -106,7 +107,7 @@ void BuildDataStorageSection(SectionBuilder &builder) {
 
 	const auto connectionType = [=] {
 		const auto transport = account->mtp().dctransport();
-		const auto ping = account->mtp().pingTime();
+		const auto ping = account->mtp().connectionStatus().pingTime();
 		if (!Core::App().settings().proxy().isEnabled()) {
 			return transport.isEmpty()
 				? tr::lng_connection_auto_connecting(tr::now)
@@ -138,7 +139,7 @@ void BuildDataStorageSection(SectionBuilder &builder) {
 		.icon = { &st::menuIconNetwork },
 		.label = rpl::merge(
 			Core::App().settings().proxy().connectionTypeChanges(),
-			account->mtp().pingTimeValue() | rpl::to_empty,
+			account->mtp().connectionStatus().pingTimeValue() | rpl::to_empty,
 			tr::lng_connection_auto_connecting() | rpl::to_empty
 		) | rpl::map(connectionType),
 		.onClick = [=] {
@@ -1333,7 +1334,7 @@ void SetupConnectionType(
 		not_null<Ui::VerticalLayout*> container) {
 	const auto connectionType = [=] {
 		const auto transport = account->mtp().dctransport();
-		const auto ping = account->mtp().pingTime();
+		const auto ping = account->mtp().connectionStatus().pingTime();
 		if (!Core::App().settings().proxy().isEnabled()) {
 			return transport.isEmpty()
 				? tr::lng_connection_auto_connecting(tr::now)
@@ -1363,7 +1364,7 @@ void SetupConnectionType(
 		tr::lng_settings_connection_type(),
 		rpl::merge(
 			Core::App().settings().proxy().connectionTypeChanges(),
-			account->mtp().pingTimeValue() | rpl::to_empty,
+			account->mtp().connectionStatus().pingTimeValue() | rpl::to_empty,
 			tr::lng_connection_auto_connecting() | rpl::to_empty
 		) | rpl::map([=] { return connectionType(); }),
 		st::settingsButton,

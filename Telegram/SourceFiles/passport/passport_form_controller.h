@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "core/core_cloud_password.h"
