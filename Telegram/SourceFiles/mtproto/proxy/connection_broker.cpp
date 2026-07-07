@@ -180,7 +180,7 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 }
 
 void ConnectionBroker::cancelByProxyGeneration(
-		Instance *instance,
+		MTP::Instance *instance,
 		uint64 generation) {
 	auto cancelled = std::vector<std::shared_ptr<RequestState>>();
 	{

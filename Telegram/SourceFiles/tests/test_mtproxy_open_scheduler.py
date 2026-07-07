@@ -10,6 +10,7 @@ CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+CONNECTION_BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 SCHEDULER_H = MTPROXY_DIR / "open_scheduler.h"
@@ -84,6 +85,15 @@ def test_connection_broker_reserves_global_open_slot_before_start():
         "scheduleStart(state, openDelay)")
 
 
+def test_connection_broker_qualifies_mtp_instance_inside_class_scope():
+    broker = CONNECTION_BROKER_H.read_text(encoding="utf-8")
+
+    assert (
+        "void cancelByProxyGeneration("
+        "MTP::Instance *instance, uint64 generation);"
+    ) in broker
+
+
 def test_live_mtproxy_connects_through_connection_broker_before_syn():
     session = SESSION_CPP.read_text(encoding="utf-8")
     append_body = body_after(session, "bool SessionPrivate::appendTestConnection")
@@ -132,6 +142,7 @@ if __name__ == "__main__":
     test_scheduler_defines_safe_open_gap_and_off_bypass()
     test_adaptive_recipe_uses_ladder_for_spacing()
     test_connection_broker_reserves_global_open_slot_before_start()
+    test_connection_broker_qualifies_mtp_instance_inside_class_scope()
     test_live_mtproxy_connects_through_connection_broker_before_syn()
     test_proxy_check_uses_same_connection_broker_before_syn()
 

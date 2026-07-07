@@ -95,7 +95,7 @@ public:
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
 	void cancel(ConnectionTicketId id);
-	void cancelByProxyGeneration(Instance *instance, uint64 generation);
+	void cancelByProxyGeneration(MTP::Instance *instance, uint64 generation);
 
 private:
 	struct RequestState;
