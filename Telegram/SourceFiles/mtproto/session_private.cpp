@@ -62,6 +62,15 @@ constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
 // forever either - tear down and reconnect with fresh options instead.
 constexpr auto kBrokerQueueHardDeadline = 90 * crl::time(1000);
 
+// The server drops packets encrypted with an auth key it no longer knows
+// and does not always answer them with -404 - the session then connects
+// fine at the transport level (even the plaintext fake-pq check passes)
+// but never receives a single MTProto payload, reconnects and repeats
+// this forever until the app is restarted. After this many consecutive
+// received-nothing timeouts treat the temporary key as silently
+// destroyed, exactly like an explicit -404.
+constexpr auto kSilentTimeoutsToAssumeKeyDestroyed = 2;
+
 // Don't try to handle messages larger than this size.
 constexpr auto kMaxMessageLength = 16 * 1024 * 1024;
 
@@ -433,6 +442,7 @@ void SessionPrivate::destroyAllConnections() {
 	_testConnections.clear();
 	_connectionMtproxyEndpoint = MtProxy::EndpointId();
 	_connectionMtproxyUse = MtProxy::EndpointUse::Main;
+	_mtprotoDataReceived = false;
 	_connection = nullptr;
 }
 
@@ -1413,7 +1423,27 @@ void SessionPrivate::waitReceivedFailed() {
 			_waitForReceived * 2,
 			kMaxReceiveTimeout);
 	}
+	const auto silentMtproxyConnection = !_mtprotoDataReceived
+		&& _connection
+		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint);
+	if (silentMtproxyConnection) {
+		++_mtprotoSilentTimeouts;
+		MtProxy::EndpointHealth::Instance().reportFailure({
+			.endpoint = _connectionMtproxyEndpoint,
+			.use = _connectionMtproxyUse,
+			.reason = MtProxy::FailureReason::ConnectedNoMtprotoData,
+		});
+	}
 	doDisconnect();
+	if (silentMtproxyConnection
+		&& (_mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
+		_mtprotoSilentTimeouts = 0;
+		LOG(("MTP Info: dc %1 connected but received nothing %2 times, "
+			"assuming the temporary key was silently destroyed."
+			).arg(_shiftedDcId
+			).arg(kSilentTimeoutsToAssumeKeyDestroyed));
+		return destroyTemporaryKey();
+	}
 	if (_retryTimer.isActive()) {
 		return;
 	}
@@ -1680,6 +1710,18 @@ void SessionPrivate::handleReceived() {
 			return restart();
 		}
 		_retryTimeout = 1; // reset restart() timer
+
+		if (!_mtprotoDataReceived) {
+			_mtprotoDataReceived = true;
+			_mtprotoSilentTimeouts = 0;
+			if (!MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
+				MtProxy::EndpointHealth::Instance().reportSuccess({
+					.endpoint = _connectionMtproxyEndpoint,
+					.use = _connectionMtproxyUse,
+					.scope = MtProxy::SuccessScope::Relay,
+				});
+			}
+		}
 
 		_startedConnectingAt = crl::time(0);
 

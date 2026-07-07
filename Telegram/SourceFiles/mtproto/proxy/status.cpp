@@ -55,6 +55,7 @@ ProxyConnectionStatusKind ProxyConnectionStatusKindFor(
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
+	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
 		return ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData;
 	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
 		return ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed;

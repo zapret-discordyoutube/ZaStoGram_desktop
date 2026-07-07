@@ -44,6 +44,7 @@ enum class ProxyMtproxyTerminalReason {
 	ServerHelloHmacMismatch,
 	ServerHelloOkNoAppData,
 	AppDataRemoteClosed,
+	ConnectedNoMtprotoData,
 	ProxyProtocolBadResponse,
 };
 

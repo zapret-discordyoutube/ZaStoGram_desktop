@@ -206,6 +206,8 @@ private:
 	ConnectionPointer _connection;
 	MtProxy::EndpointId _connectionMtproxyEndpoint;
 	MtProxy::EndpointUse _connectionMtproxyUse = MtProxy::EndpointUse::Main;
+	bool _mtprotoDataReceived = false;
+	int _mtprotoSilentTimeouts = 0;
 	std::vector<TestConnection> _testConnections;
 	std::vector<ConnectionTicket> _connectionBrokerTickets;
 	crl::time _startedConnectingAt = 0;

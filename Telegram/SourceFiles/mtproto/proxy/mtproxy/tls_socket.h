@@ -119,6 +119,7 @@ private:
 	bool _syntheticPskOffered = false;
 	bool _clientHelloFragmented = false;
 	bool _firstAppDataReceived = false;
+	crl::time _firstAppDataAt = 0;
 	QByteArray _clientHelloTail;
 	base::Timer _pacingTimer;
 	base::Timer _clientHelloTimer;

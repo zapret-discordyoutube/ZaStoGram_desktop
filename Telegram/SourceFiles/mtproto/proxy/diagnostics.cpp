@@ -198,6 +198,8 @@ namespace {
 		return u"server_hello_ok_no_appdata"_q;
 	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
 		return u"appdata_remote_closed"_q;
+	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
+		return u"connected_no_mtproto_data"_q;
 	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
 		return u"proxy_protocol_bad_response"_q;
 	}

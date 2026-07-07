@@ -45,6 +45,7 @@ constexpr auto kMaxPacedFrames = 24;
 constexpr auto kSyntheticPskPoolSize = 3;
 constexpr auto kSyntheticPskMinLifetime = crl::time(2 * 60 * 60 * 1000);
 constexpr auto kSyntheticPskMaxLifetime = crl::time(8 * 60 * 60 * 1000);
+constexpr auto kEstablishedIdleCloseAge = crl::time(20 * 1000);
 
 struct SyntheticPskTicket {
 	bytes::vector identity;
@@ -353,6 +354,7 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 	case MtProxy::FailureReason::TcpConnectTimeout:
 	case MtProxy::FailureReason::TcpConnectedNoClientHelloWrite:
 	case MtProxy::FailureReason::AppDataRemoteClosed:
+	case MtProxy::FailureReason::ConnectedNoMtprotoData:
 	case MtProxy::FailureReason::Network:
 	case MtProxy::FailureReason::ProxyProtocolBadResponse:
 		break;
@@ -667,6 +669,7 @@ bool TlsSocket::checkNextPacket() {
 			_incomingGoodDataLimit = length;
 			if (!_firstAppDataReceived) {
 				_firstAppDataReceived = true;
+				_firstAppDataAt = crl::now();
 				_phase = HandshakePhase::FirstDataReceived;
 				connectionProgress(_phase);
 				MtProxy::EndpointHealth::Instance().reportSuccess({
@@ -674,6 +677,7 @@ bool TlsSocket::checkNextPacket() {
 					.use = _endpointUse,
 					.stealth = _stealth,
 					.sentProfile = _sentTlsProfile,
+					.scope = MtProxy::SuccessScope::Handshake,
 				});
 				NoteSyntheticPskDataPathSuccess(
 					MtProxy::EndpointKey(_endpointId.canonical),
@@ -943,10 +947,24 @@ void TlsSocket::handleError(int errorCode) {
 		reason = MtProxy::FailureReason::AppDataRemoteClosed;
 	}
 	_failureReason = reason;
-	clearSyntheticPskOnFailure(reason);
-	if (_state != State::Connected
-		|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
-		|| reason == MtProxy::FailureReason::AppDataRemoteClosed) {
+	// Proxies routinely close idle established connections (observed
+	// about once a minute per idle media session). A remote close of a
+	// connection that lived past the handshake for a while is server-side
+	// housekeeping, not a health signal - reporting each one degraded the
+	// canonical endpoint every minute and marked healthy routes unhealthy
+	// all session long. A close shortly after the handshake is different:
+	// that looks like a relay kill and must still count.
+	const auto benignIdleClose = (reason
+			== MtProxy::FailureReason::AppDataRemoteClosed)
+		&& _firstAppDataAt
+		&& (crl::now() - _firstAppDataAt >= kEstablishedIdleCloseAge);
+	if (!benignIdleClose) {
+		clearSyntheticPskOnFailure(reason);
+	}
+	if (!benignIdleClose
+		&& (_state != State::Connected
+			|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
+			|| reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
 		_syncTimeRequests.fire({});
 		MtProxy::EndpointHealth::Instance().reportFailure({
 			.endpoint = _endpointId,

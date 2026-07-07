@@ -25,6 +25,7 @@ enum class FailureReason {
 	ServerHelloHmacMismatch,
 	ServerHelloOkNoAppData,
 	AppDataRemoteClosed,
+	ConnectedNoMtprotoData,
 	Network,
 	ProxyProtocolBadResponse,
 };
@@ -158,12 +159,27 @@ struct FailureReport {
 	bool routesExhausted = false;
 };
 
+// Success evidence comes from two different layers with different meaning.
+// Handshake: the proxy accepted our TCP/TLS handshake (first FakeTLS app
+// data frame, or a plain-obfuscated transport connect). Proves the
+// fingerprint and the route, so it may reset recipe escalation - but says
+// nothing about whether Telegram data actually flows through the relay.
+// Relay: an MTProto payload was actually received through the proxy. Only
+// this proves the endpoint end-to-end and may clear a relay-silence
+// cooldown; otherwise every reconnect of a dead relay would repaint the
+// endpoint green and the sessions would hammer it forever.
+enum class SuccessScope {
+	Handshake,
+	Relay,
+};
+
 struct SuccessReport {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+	SuccessScope scope = SuccessScope::Handshake;
 };
 
 struct Snapshot {

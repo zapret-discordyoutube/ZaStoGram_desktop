@@ -208,6 +208,7 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	case FailureReason::ServerHelloHmacMismatch:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::ProxyProtocolBadResponse:
+	case FailureReason::ConnectedNoMtprotoData:
 		return true;
 	case FailureReason::None:
 	case FailureReason::TcpConnectTimeout:
@@ -232,12 +233,16 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	// break a FakeTLS front that was answering fine, turning a slow
 	// relay into client_hello_sent_no_server_hello. Escalate only on
 	// failures that actually implicate the handshake fingerprint.
+	// ConnectedNoMtprotoData is even further downstream: the handshake
+	// and even the plaintext transport check passed, so the fingerprint
+	// is definitely not the problem.
 	case FailureReason::None:
 	case FailureReason::DnsFailed:
 	case FailureReason::TcpConnectTimeout:
 	case FailureReason::TcpConnectedNoClientHelloWrite:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::ConnectedNoMtprotoData:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
 		return false;
@@ -257,6 +262,7 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	case FailureReason::TcpConnectedNoClientHelloWrite:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::ConnectedNoMtprotoData:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
 		return false;
@@ -276,6 +282,7 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	case FailureReason::ServerHelloHmacMismatch:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::ConnectedNoMtprotoData:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
 		return false;
@@ -313,6 +320,18 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 			? kThrottledRetryCooldown
 			: kFirstCooldown;
 	}
+	if (reason == FailureReason::ConnectedNoMtprotoData) {
+		// Transport connects and handshakes fine, MTProto payloads never
+		// arrive. Hammering with instant reconnects is what sustains a
+		// server-side throttle, so back off progressively - but keep the
+		// cap below kMaxCooldown: the proxy itself is alive and a probe
+		// every 45 seconds is gentle enough.
+		return (consecutiveFailures <= 1)
+			? kThrottledRetryCooldown
+			: (consecutiveFailures == 2)
+			? kFirstCooldown
+			: kSecondCooldown;
+	}
 	if (consecutiveFailures <= 1) {
 		return kFirstCooldown;
 	} else if (consecutiveFailures == 2) {
@@ -340,6 +359,7 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 	case FailureReason::ServerHelloHmacMismatch:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::ConnectedNoMtprotoData:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
 		break;
@@ -575,10 +595,12 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
 	auto event = EndpointEvent();
-	ProxyCapabilityCache::Instance().noteMtproxyFailure(
-		CapabilityProxyKey(report.endpoint.canonical),
-		RouteKey(report.endpoint.route),
-		diagnostic);
+	if (report.reason != FailureReason::ConnectedNoMtprotoData) {
+		ProxyCapabilityCache::Instance().noteMtproxyFailure(
+			CapabilityProxyKey(report.endpoint.canonical),
+			RouteKey(report.endpoint.route),
+			diagnostic);
+	}
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
 	state.endpoint = report.endpoint;
@@ -590,10 +612,14 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		NoteConnectTimeout(report.endpoint);
 		return;
 	}
-	if (report.routesExhausted && state.terminalUntil > now) {
-		// The canonical endpoint is already cooling down, likely from the
-		// socket-level report of the same connect cycle - don't escalate
-		// consecutiveFailures twice for one failure.
+	if (state.terminalUntil > now) {
+		// An active cooldown means this connect cycle already produced a
+		// terminal verdict. Several sockets dying in one storm report
+		// their failures within the same second, and counting each of
+		// them would ratchet consecutiveFailures and the stealth recipe
+		// several levels per single incident (observed: recipe 1->4 in
+		// under a second when four sockets died together). One incident,
+		// one strike.
 		return;
 	}
 	if (report.routesExhausted) {
@@ -686,15 +712,24 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (!routeKey.isEmpty()) {
 		NoteRouteSuccess(state, report.endpoint.route);
 	}
+	state.recipeLevel = 0;
+	state.lastSuccessAt = crl::now();
+	state.exhaustedSinceSuccess = 0;
+	if (report.scope == SuccessScope::Handshake
+		&& state.lastFailure == FailureReason::ConnectedNoMtprotoData) {
+		// A handshake success cannot clear a relay-silence cooldown: on a
+		// dead relay every reconnect handshakes fine, and treating that
+		// as recovery would repaint the endpoint green each cycle and
+		// keep the sessions hammering it forever. Only an actual MTProto
+		// payload (SuccessScope::Relay) proves the endpoint end-to-end.
+		return;
+	}
 	state.lastFailure = FailureReason::None;
 	state.lastDiagnostic.clear();
 	state.terminalUntil = 0;
 	state.consecutiveFailures = 0;
-	state.recipeLevel = 0;
 	state.healthy = true;
 	state.halfOpen = false;
-	state.lastSuccessAt = crl::now();
-	state.exhaustedSinceSuccess = 0;
 	if (wasDegraded) {
 		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 			ProxyDiagnosticsPhase::CanonicalRecovered,
@@ -872,6 +907,8 @@ QString ToLegacyDiagnostic(FailureReason reason) {
 		return u"server_hello_ok_no_appdata"_q;
 	case FailureReason::AppDataRemoteClosed:
 		return u"appdata_remote_closed"_q;
+	case FailureReason::ConnectedNoMtprotoData:
+		return u"connected_no_mtproto_data"_q;
 	case FailureReason::Network:
 		return u"network_error"_q;
 	case FailureReason::ProxyProtocolBadResponse:
@@ -908,6 +945,7 @@ ProxyConnectionError ToProxyConnectionError(FailureReason reason) {
 		return ProxyConnectionError::HostNotFound;
 	case FailureReason::TcpConnectTimeout:
 	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ConnectedNoMtprotoData:
 		return ProxyConnectionError::Timeout;
 	case FailureReason::AppDataRemoteClosed:
 		return ProxyConnectionError::RemoteClosed;
@@ -944,6 +982,8 @@ ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 		return ProxyMtproxyTerminalReason::ServerHelloOkNoAppData;
 	case FailureReason::AppDataRemoteClosed:
 		return ProxyMtproxyTerminalReason::AppDataRemoteClosed;
+	case FailureReason::ConnectedNoMtprotoData:
+		return ProxyMtproxyTerminalReason::ConnectedNoMtprotoData;
 	case FailureReason::ProxyProtocolBadResponse:
 		return ProxyMtproxyTerminalReason::ProxyProtocolBadResponse;
 	case FailureReason::None:

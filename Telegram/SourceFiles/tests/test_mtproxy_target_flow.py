@@ -275,7 +275,7 @@ def test_route_timeouts_and_exhaustion_reach_endpoint_health():
     # escalation), not as a generic tcp connect timeout.
     assert "child->timedOut();" in timeout
     assert timeout.index("child->timedOut();") < timeout.index(
-        "_routeAttempts.erase(begin(_routeAttempts));")
+        "_routeAttempts.erase(victim);")
     # Once the last route fails the canonical endpoint must degrade so a
     # fully blackholed proxy gets a cooldown and can trigger rotation.
     assert "ReportAllRoutesFailed(" in timeout
