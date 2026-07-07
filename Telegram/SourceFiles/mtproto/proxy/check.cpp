@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/check.h"
 
-#include "mtproto/facade.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/details/mtproto_abstract_socket.h"
 #include "mtproto/mtproto_dc_options.h"
@@ -370,12 +369,12 @@ void StartProxyCheck(
 			: MtProxy::EndpointId();
 		state->connectionTicket = details::ConnectionBroker::Instance().request({
 			.endpoint = endpoint,
+			.proxy = proxy,
 			.use = MtProxy::EndpointUse::ProxyCheck,
 			.stealth = checkStealth,
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.connectionPattern = checkStealth.connectionPattern,
 			.notBefore = gateDelay,
-			.proxy = proxy,
 			.instance = mtproto,
 			.context = raw,
 			.start = [=, secret = std::move(secret)](
@@ -388,13 +387,13 @@ void StartProxyCheck(
 				state->mtproxyStealth = start.stealth;
 				state->mtproxySentProfile = start.effectiveTlsProfile;
 				state->networkStarted = true;
-					raw->setMtproxyAttempt({
-						.proxyGeneration = start.proxyGeneration,
-						.proxyEpoch = start.proxyEpoch,
-						.successEpoch = start.successEpoch,
-						.attemptId = start.attemptId,
-						.connectionId = raw->debugId(),
-						.probe = true,
+				raw->setMtproxyAttempt({
+					.proxyGeneration = start.proxyGeneration,
+					.proxyEpoch = start.proxyEpoch,
+					.successEpoch = start.successEpoch,
+					.attemptId = start.attemptId,
+					.connectionId = raw->debugId(),
+					.probe = true,
 				}, start.attemptStartedAt);
 				SetProxyCheckProgress(state, ProxyCheckStatus::Resolving);
 				raw->connectToServer(

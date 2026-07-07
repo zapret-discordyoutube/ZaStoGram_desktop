@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -170,6 +171,24 @@ def test_proxy_check_uses_connection_broker_proxy_check_queue():
     assert "state->mtproxyLease = std::move(start.lease);" in start_body
 
 
+def test_proxy_check_connection_request_designators_match_struct_order():
+    header = BROKER_H.read_text(encoding="utf-8")
+    source = PROXY_CHECK_CPP.read_text(encoding="utf-8")
+    fields = struct_fields(header, "struct ConnectionRequest {")
+    start_body = function_body(source, "void StartProxyCheck(")
+    request = block_after(
+        start_body,
+        "details::ConnectionBroker::Instance().request(").split(
+        ".start = ", 1)[0]
+    designators = [
+        match.group(1)
+        for match in re.finditer(r"^\s*\.(\w+)\s*=", request, re.MULTILINE)
+    ]
+    field_indexes = [fields.index(name) for name in designators]
+
+    assert field_indexes == sorted(field_indexes)
+
+
 def function_body(text: str, signature: str) -> str:
     start = text.index(signature)
     brace = text.index(" {\n", start) + 1
@@ -183,6 +202,18 @@ def function_body(text: str, signature: str) -> str:
             if depth == 0:
                 return text[brace + 1:index]
     raise AssertionError(f"body not found for {signature}")
+
+
+def struct_fields(text: str, marker: str) -> list[str]:
+    body = block_after(text, marker)
+    fields = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or not line.endswith(";"):
+            continue
+        declaration = line.split("=", 1)[0].removesuffix(";").strip()
+        fields.append(declaration.split()[-1].lstrip("*&"))
+    return fields
 
 
 def block_after(text: str, marker: str) -> str:
@@ -209,3 +240,4 @@ if __name__ == "__main__":
     test_broker_claims_front_request_before_admission()
     test_broker_cancel_releases_admitted_lease_immediately()
     test_proxy_check_uses_connection_broker_proxy_check_queue()
+    test_proxy_check_connection_request_designators_match_struct_order()

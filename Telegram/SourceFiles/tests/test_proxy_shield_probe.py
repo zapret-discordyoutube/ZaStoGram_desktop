@@ -135,9 +135,18 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
     source = read(CHECK_CPP)
     header = read(CHECK_H)
     start = function_body(source, "void StartProxyCheck(")
+    request = start.split(
+        "ConnectionBroker::Instance().request({", 1)[1].split(
+        ".start = ", 1)[0]
 
     assert "ProxyStealthOptions mtproxyStealth;" in header
     assert "ProxyTlsProfile mtproxySentProfile" in header
+    assert request.index(".endpoint = endpoint") < request.index(
+        ".proxy = proxy")
+    assert request.index(".proxy = proxy") < request.index(
+        ".use = MtProxy::EndpointUse::ProxyCheck")
+    assert request.index(".notBefore = gateDelay") < request.index(
+        ".instance = mtproto")
     assert "raw->setMtproxyAttempt({" in start
     assert ".proxyGeneration = start.proxyGeneration" in start
     assert ".proxyEpoch = start.proxyEpoch" in start
