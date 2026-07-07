@@ -45,6 +45,18 @@ enum class ProxyDiagnosticsPhase {
 	CanonicalRecovered,
 	StealthRecipeApplied,
 	TransportFallbackApplied,
+	MtpConnecting,
+	MtpTransportReady,
+	MtpKeyCreating,
+	MtpKeyReady,
+	MtpFirstDataReceived,
+	MtpReceiveTimeout,
+	MtpConnectTimeout,
+	MtpBrokerTimeout,
+	MtpPingTimeout,
+	MtpBindFailed,
+	MtpKeyDestroyed,
+	MtpRestart,
 };
 
 enum class ProxyDiagnosticsSeverity {

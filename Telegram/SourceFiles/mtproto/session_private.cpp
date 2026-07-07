@@ -348,6 +348,32 @@ void SessionPrivate::reportPingTime(crl::time time) {
 	});
 }
 
+QString SessionPrivate::mtprotoLogDc() const {
+	const auto suffix = isUploadDcId(_shiftedDcId)
+		? u"_upload"_q
+		: isMediaClusterDcId(_shiftedDcId)
+		? u"_media"_q
+		: QString();
+	return u"%1%2(%3)"_q
+		.arg(BareDcId(_shiftedDcId))
+		.arg(suffix)
+		.arg(_shiftedDcId);
+}
+
+void SessionPrivate::logMtprotoEvent(
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsSeverity severity,
+		const QString &message) const {
+	WriteProxyDiagnosticsLine({
+		.source = ProxyDiagnosticsSource::MTP,
+		.phase = phase,
+		.severity = severity,
+		.proxy = _options ? _options->proxy : ProxyData(),
+		.dc = mtprotoLogDc(),
+		.message = message,
+	});
+}
+
 int16 SessionPrivate::getProtocolDcId() const {
 	const auto dcId = BareDcId(_shiftedDcId);
 	const auto simpleDcId = isTemporaryDcId(dcId)
@@ -1300,6 +1326,13 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	_retryTimer.cancel();
 	_waitForConnectedTimer.cancel();
 
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpConnecting,
+		ProxyDiagnosticsSeverity::Info,
+		u"connecting (sockets: %1, broker queued: %2)"_q
+			.arg(_testConnections.size())
+			.arg(_connectionBrokerTickets.size()));
+
 	setState(ConnectingState);
 
 	_bindMsgId = 0;
@@ -1396,6 +1429,10 @@ void SessionPrivate::sendPingByTimer() {
 			- kPingSendAfter;
 		if (mustSendTill < now + 1000) {
 			LOG(("Could not send ping for some seconds, restarting..."));
+			logMtprotoEvent(
+				ProxyDiagnosticsPhase::MtpPingTimeout,
+				ProxyDiagnosticsSeverity::Warning,
+				u"ping unanswered for too long, restarting"_q);
 			return restart();
 		} else {
 			_pingSender.callOnce(mustSendTill - now);
@@ -1428,6 +1465,15 @@ void SessionPrivate::waitReceivedFailed() {
 		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint);
 	if (silentMtproxyConnection) {
 		++_mtprotoSilentTimeouts;
+	}
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpReceiveTimeout,
+		ProxyDiagnosticsSeverity::Warning,
+		u"no mtproto data in %1ms (received before: %2, silent strikes: %3)"_q
+			.arg(_waitForReceived)
+			.arg(_mtprotoDataReceived ? u"yes"_q : u"no"_q)
+			.arg(_mtprotoSilentTimeouts));
+	if (silentMtproxyConnection) {
 		MtProxy::EndpointHealth::Instance().reportFailure({
 			.endpoint = _connectionMtproxyEndpoint,
 			.use = _connectionMtproxyUse,
@@ -1469,6 +1515,12 @@ void SessionPrivate::waitReceivedFailed() {
 
 void SessionPrivate::waitConnectedFailed() {
 	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(_waitForConnected));
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpConnectTimeout,
+		ProxyDiagnosticsSeverity::Warning,
+		u"connect budget %1ms expired (sockets: %2)"_q
+			.arg(_waitForConnected)
+			.arg(_testConnections.size()));
 	auto maxTimeout = kMaxConnectedTimeout;
 	for (const auto &connection : _testConnections) {
 		accumulate_max(maxTimeout, connection.data->fullConnectTimeout());
@@ -1500,6 +1552,11 @@ void SessionPrivate::brokerQueueDeadlineFired() {
 	}
 	DEBUG_LOG(("MTP Info: broker ticket not started in %1ms, reconnecting"
 		).arg(kBrokerQueueHardDeadline));
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpBrokerTimeout,
+		ProxyDiagnosticsSeverity::Warning,
+		u"broker ticket not started in %1ms, reconnecting"_q
+			.arg(kBrokerQueueHardDeadline));
 
 	doDisconnect();
 
@@ -1714,6 +1771,10 @@ void SessionPrivate::handleReceived() {
 		if (!_mtprotoDataReceived) {
 			_mtprotoDataReceived = true;
 			_mtprotoSilentTimeouts = 0;
+			logMtprotoEvent(
+				ProxyDiagnosticsPhase::MtpFirstDataReceived,
+				ProxyDiagnosticsSeverity::Info,
+				u"first mtproto payload received"_q);
 			if (!MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
 				MtProxy::EndpointHealth::Instance().reportSuccess({
 					.endpoint = _connectionMtproxyEndpoint,
@@ -2693,6 +2754,13 @@ void SessionPrivate::removeTestConnection(
 }
 
 void SessionPrivate::checkAuthKey() {
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpTransportReady,
+		ProxyDiagnosticsSeverity::Info,
+		u"transport ready via %1, handshake %2ms, key id %3"_q
+			.arg(_connection ? _connection->tag() : u"none"_q)
+			.arg(_connection ? _connection->pingTime() : 0)
+			.arg(_keyId));
 	if (_keyId) {
 		authKeyChecked();
 	} else if (_instance->isKeysDestroyer()) {
@@ -2771,6 +2839,10 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 	}
 	if (_keyCreator) {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey(), creating."));
+		logMtprotoEvent(
+			ProxyDiagnosticsPhase::MtpKeyCreating,
+			ProxyDiagnosticsSeverity::Info,
+			u"no auth key, starting key creation"_q);
 		_keyCreator->start(
 			BareDcId(_shiftedDcId),
 			getProtocolDcId(),
@@ -2779,6 +2851,10 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 	} else {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey(), "
 			"but someone is creating already, waiting."));
+		logMtprotoEvent(
+			ProxyDiagnosticsPhase::MtpKeyCreating,
+			ProxyDiagnosticsSeverity::Info,
+			u"no auth key, waiting for creation by another session"_q);
 	}
 }
 
@@ -2894,6 +2970,15 @@ void SessionPrivate::authKeyChecked() {
 	connect(_connection, &AbstractConnection::receivedData, [=] {
 		handleReceived();
 	});
+
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpKeyReady,
+		ProxyDiagnosticsSeverity::Info,
+		u"auth key ready (id %1), %2"_q
+			.arg(_keyId)
+			.arg(_sessionSalt
+				? u"session connected"_q
+				: u"requesting server salt"_q));
 
 	if (_sessionSalt && setState(ConnectedState)) {
 		resendAll();

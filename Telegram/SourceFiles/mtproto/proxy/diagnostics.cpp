@@ -74,6 +74,30 @@ namespace {
 		return u"stealth_recipe_applied"_q;
 	case ProxyDiagnosticsPhase::TransportFallbackApplied:
 		return u"transport_fallback_applied"_q;
+	case ProxyDiagnosticsPhase::MtpConnecting:
+		return u"mtp_connecting"_q;
+	case ProxyDiagnosticsPhase::MtpTransportReady:
+		return u"mtp_transport_ready"_q;
+	case ProxyDiagnosticsPhase::MtpKeyCreating:
+		return u"mtp_key_creating"_q;
+	case ProxyDiagnosticsPhase::MtpKeyReady:
+		return u"mtp_key_ready"_q;
+	case ProxyDiagnosticsPhase::MtpFirstDataReceived:
+		return u"mtp_first_data"_q;
+	case ProxyDiagnosticsPhase::MtpReceiveTimeout:
+		return u"mtp_receive_timeout"_q;
+	case ProxyDiagnosticsPhase::MtpConnectTimeout:
+		return u"mtp_connect_timeout"_q;
+	case ProxyDiagnosticsPhase::MtpBrokerTimeout:
+		return u"mtp_broker_timeout"_q;
+	case ProxyDiagnosticsPhase::MtpPingTimeout:
+		return u"mtp_ping_timeout"_q;
+	case ProxyDiagnosticsPhase::MtpBindFailed:
+		return u"mtp_bind_failed"_q;
+	case ProxyDiagnosticsPhase::MtpKeyDestroyed:
+		return u"mtp_key_destroyed"_q;
+	case ProxyDiagnosticsPhase::MtpRestart:
+		return u"mtp_restart"_q;
 	}
 	return u"event"_q;
 }
@@ -235,6 +259,18 @@ namespace {
 	case ProxyDiagnosticsPhase::CanonicalRecovered:
 	case ProxyDiagnosticsPhase::StealthRecipeApplied:
 	case ProxyDiagnosticsPhase::TransportFallbackApplied:
+	case ProxyDiagnosticsPhase::MtpConnecting:
+	case ProxyDiagnosticsPhase::MtpTransportReady:
+	case ProxyDiagnosticsPhase::MtpKeyCreating:
+	case ProxyDiagnosticsPhase::MtpKeyReady:
+	case ProxyDiagnosticsPhase::MtpFirstDataReceived:
+	case ProxyDiagnosticsPhase::MtpReceiveTimeout:
+	case ProxyDiagnosticsPhase::MtpConnectTimeout:
+	case ProxyDiagnosticsPhase::MtpBrokerTimeout:
+	case ProxyDiagnosticsPhase::MtpPingTimeout:
+	case ProxyDiagnosticsPhase::MtpBindFailed:
+	case ProxyDiagnosticsPhase::MtpKeyDestroyed:
+	case ProxyDiagnosticsPhase::MtpRestart:
 		return std::nullopt;
 	}
 	return std::nullopt;
@@ -363,20 +399,22 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (!safe.profile.isEmpty()) {
 		parts.push_back(u"profile=%1"_q.arg(safe.profile));
 	}
-	parts.push_back(u"recipe_level=%1"_q.arg(safe.recipeLevel));
-	parts.push_back(u"psk_offered=%1"_q.arg(
-		(safe.pskOfferedKnown && safe.pskOffered)
-			? u"true"_q
-			: u"false"_q));
-	parts.push_back(u"fragmented_ch=%1"_q.arg(
-		(safe.fragmentedClientHelloKnown && safe.fragmentedClientHello)
-			? u"true"_q
-			: u"false"_q));
-	parts.push_back(u"phase_at_failure=%1"_q.arg(
-		safe.phaseAtFailure.isEmpty()
-			? u"none"_q
-			: safe.phaseAtFailure));
-	parts.push_back(u"queue_ms=%1"_q.arg(safe.queueMs));
+	if (safe.source != ProxyDiagnosticsSource::MTP) {
+		parts.push_back(u"recipe_level=%1"_q.arg(safe.recipeLevel));
+		parts.push_back(u"psk_offered=%1"_q.arg(
+			(safe.pskOfferedKnown && safe.pskOffered)
+				? u"true"_q
+				: u"false"_q));
+		parts.push_back(u"fragmented_ch=%1"_q.arg(
+			(safe.fragmentedClientHelloKnown && safe.fragmentedClientHello)
+				? u"true"_q
+				: u"false"_q));
+		parts.push_back(u"phase_at_failure=%1"_q.arg(
+			safe.phaseAtFailure.isEmpty()
+				? u"none"_q
+				: safe.phaseAtFailure));
+		parts.push_back(u"queue_ms=%1"_q.arg(safe.queueMs));
+	}
 	const auto cooldownMs = safe.terminalUntil - crl::now();
 	if (cooldownMs > 0) {
 		parts.push_back(u"cooldown_ms=%1"_q.arg(cooldownMs));

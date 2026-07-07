@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
 #include "mtproto/proxy/connection_broker.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/status.h"
 #include "base/timer.h"
 
@@ -108,6 +109,11 @@ private:
 	void removeTestConnection(not_null<AbstractConnection*> connection);
 	void setConnectionNotice(ConnectionNotice notice);
 	void reportPingTime(crl::time time);
+	void logMtprotoEvent(
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsSeverity severity,
+		const QString &message) const;
+	[[nodiscard]] QString mtprotoLogDc() const;
 	[[nodiscard]] int16 getProtocolDcId() const;
 
 	void checkSentRequests();
