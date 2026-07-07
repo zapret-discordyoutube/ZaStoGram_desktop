@@ -30,6 +30,7 @@ FAKETLS_APPDATA = "faketls_appdata"
 class Attempt:
     proxy_generation: int = 0
     proxy_epoch: int = 0
+    success_epoch: int = 0
     attempt_id: int = 0
     probe: bool = False
 
@@ -93,7 +94,9 @@ def relay_success_is_fresh(status, now):
 def is_newer_proxy_epoch(current, update):
     if update.proxy_generation != current.proxy_generation:
         return update.proxy_generation > current.proxy_generation
-    return update.proxy_epoch > current.proxy_epoch
+    if update.proxy_epoch != current.proxy_epoch:
+        return update.proxy_epoch > current.proxy_epoch
+    return update.success_epoch > current.success_epoch
 
 
 def is_newer_attempt(current, update):
@@ -101,6 +104,8 @@ def is_newer_attempt(current, update):
         return update.proxy_generation > current.proxy_generation
     if update.proxy_epoch != current.proxy_epoch:
         return update.proxy_epoch > current.proxy_epoch
+    if update.success_epoch != current.success_epoch:
+        return update.success_epoch > current.success_epoch
     return update.attempt_id > current.attempt_id
 
 
@@ -120,6 +125,12 @@ def is_older_attempt(current, update):
     if update.proxy_epoch and update.proxy_epoch < current.proxy_epoch:
         return True
     if update.proxy_epoch != current.proxy_epoch:
+        return False
+    if current.success_epoch and not update.success_epoch:
+        return True
+    if update.success_epoch and update.success_epoch < current.success_epoch:
+        return True
+    if update.success_epoch != current.success_epoch:
         return False
     return (
         current.attempt_id
@@ -392,6 +403,36 @@ def test_older_progress_fact_cannot_repaint_connected_status():
     assert reduce_status(current, stale_epoch_progress) == current
 
 
+def test_selected_status_success_epoch_shadows_late_failures():
+    current = Status(
+        phase=CONNECTED,
+        attempt=Attempt(
+            proxy_generation=1,
+            proxy_epoch=2,
+            success_epoch=1,
+            attempt_id=4),
+        success_until=16000)
+    stale_success_epoch_failure = Fact(Status(
+        phase=FAILED,
+        reason=NO_SERVERHELLO,
+        error=True,
+        attempt=Attempt(
+            proxy_generation=1,
+            proxy_epoch=2,
+            success_epoch=0,
+            attempt_id=99)))
+    fresh_success_epoch_progress = Fact(Status(
+        phase=CHECKING,
+        attempt=Attempt(
+            proxy_generation=1,
+            proxy_epoch=2,
+            success_epoch=2,
+            attempt_id=1)))
+
+    assert reduce_status(current, stale_success_epoch_failure) == current
+    assert reduce_status(current, fresh_success_epoch_progress) != current
+
+
 def test_endpoint_success_epoch_shadows_old_reports():
     state = EndpointState(proxy_generation=3)
     assert relay_success(
@@ -577,6 +618,7 @@ def run_all_truth_tables():
     test_reducer_no_appdata_relay_success_sibling_failure()
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()
+    test_selected_status_success_epoch_shadows_late_failures()
     test_endpoint_success_epoch_shadows_old_reports()
     test_faketls_appdata_does_not_prove_relay_or_bump_epoch()
     test_probe_waiting_slot_and_relay_proven_gate()
