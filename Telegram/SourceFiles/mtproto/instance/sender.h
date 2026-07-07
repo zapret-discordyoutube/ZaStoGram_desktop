@@ -9,9 +9,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/variant.h"
 #include "mtproto/protocol/mtproto_response.h"
-#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
 
 namespace MTP {
+
+namespace details {
+
+[[nodiscard]] int GetNextRequestId();
+
+} // namespace details
+
+class Instance;
 
 class Sender {
 	class RequestBuilder {
@@ -197,13 +205,9 @@ class Sender {
 	};
 
 public:
-	explicit Sender(not_null<Instance*> instance) noexcept
-	: _instance(instance) {
-	}
+	explicit Sender(not_null<Instance*> instance) noexcept;
 
-	[[nodiscard]] Instance &instance() const {
-		return *_instance;
-	}
+	[[nodiscard]] Instance &instance() const;
 
 	template <typename Request>
 	class SpecificRequestBuilder : public RequestBuilder {
@@ -300,10 +304,9 @@ public:
 		}
 
 		mtpRequestId send() {
-			const auto id = sender()->_instance->send(
-				_request,
-				takeOnDone(),
-				takeOnFail(),
+			const auto id = sender()->sendSerializedRequest(
+				details::SerializedRequest::Serialize(_request),
+				ResponseHandler{ takeOnDone(), takeOnFail() },
 				takeDcId(),
 				takeCanWait(),
 				takeAfter(),
@@ -351,7 +354,7 @@ public:
 	}
 
 	void requestSendDelayed() {
-		_instance->sendAnything();
+		sendAnything();
 	}
 	void requestCancellingDiscard() {
 		for (auto &request : base::take(_requests)) {
@@ -370,20 +373,20 @@ private:
 	class RequestWrap {
 	public:
 		RequestWrap(
-			not_null<Instance*> instance,
+			not_null<Sender*> sender,
 			mtpRequestId requestId) noexcept
-		: _instance(instance)
+		: _sender(sender)
 		, _id(requestId) {
 		}
 
 		RequestWrap(const RequestWrap &other) = delete;
 		RequestWrap &operator=(const RequestWrap &other) = delete;
 		RequestWrap(RequestWrap &&other)
-		: _instance(other._instance)
+		: _sender(other._sender)
 		, _id(base::take(other._id)) {
 		}
 		RequestWrap &operator=(RequestWrap &&other) {
-			Expects(_instance == other._instance);
+			Expects(_sender == other._sender);
 
 			if (_id != other._id) {
 				cancelRequest();
@@ -406,10 +409,10 @@ private:
 	private:
 		void cancelRequest() {
 			if (_id) {
-				_instance->cancel(_id);
+				_sender->cancelRequest(_id);
 			}
 		}
-		const not_null<Instance*> _instance;
+		const not_null<Sender*> _sender;
 		mutable mtpRequestId _id = 0;
 
 	};
@@ -442,8 +445,18 @@ private:
 	friend class RequestWrap;
 	friend class SentRequestWrap;
 
+	mtpRequestId sendSerializedRequest(
+		details::SerializedRequest &&request,
+		ResponseHandler &&callbacks,
+		ShiftedDcId shiftedDcId,
+		crl::time msCanWait,
+		mtpRequestId afterRequestId,
+		mtpRequestId overrideRequestId);
+	void sendAnything();
+	void cancelRequest(mtpRequestId requestId);
+
 	void senderRequestRegister(mtpRequestId requestId) {
-		_requests.emplace(_instance, requestId);
+		_requests.emplace(this, requestId);
 	}
 	void senderRequestHandled(mtpRequestId requestId) {
 		auto it = _requests.find(requestId);

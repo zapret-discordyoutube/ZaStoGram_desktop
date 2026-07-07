@@ -9,8 +9,12 @@ BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 CHECK_CPP = PROXY_DIR / "check.cpp"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_HEALTH_CAPABILITIES_CPP = (
+    PROXY_DIR / "mtproxy" / "endpoint_health_capabilities.cpp")
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
+ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp"
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
+TLS_SOCKET_RECORDS_CPP = PROXY_DIR / "mtproxy" / "tls_socket_records.cpp"
 
 NONE = "none"
 FAILED = "failed"
@@ -578,7 +582,9 @@ def test_source_seams_match_truth_table_contract():
     check = read(CHECK_CPP)
     health_header = read(ENDPOINT_HEALTH_H)
     health = read(ENDPOINT_HEALTH_CPP)
-    tls_socket = read(TLS_SOCKET_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
+    tls_records = read(TLS_SOCKET_RECORDS_CPP)
     capabilities = read(CAPABILITIES_CPP)
 
     assert "ProxyControlPlane::Reduce(current, normalized)" in control
@@ -587,10 +593,10 @@ def test_source_seams_match_truth_table_contract():
     assert "fact.status.attempt.probe" in control
     assert "ShadowedByFreshRelaySuccess(current, fact)" in control
     assert "FakeTlsAppData," in health_header
-    assert ".scope = MtProxy::SuccessScope::FakeTlsAppData" in tls_socket
-    assert "ReportEpochIsStale(report.proxyEpoch, state)" in health
-    assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in health
-    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in health
+    assert ".scope = MtProxy::SuccessScope::FakeTlsAppData" in tls_records
+    assert "ReportEpochIsStale(report.proxyEpoch, state)" in policy
+    assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in policy
+    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in policy
     assert "SuccessFromStaleAttempt(report, state)" in health
     assert "uint64 proxyGeneration = 0;" in health_header
     assert "uint64 successEpoch = 0;" in health_header
@@ -611,7 +617,8 @@ def test_source_seams_match_truth_table_contract():
     relay_stall = health.split("void EndpointHealth::noteRelayStall(", 1)[1]
     assert "RelayStallReport report" in relay_stall.split(")", 1)[0]
     assert "FailureFromStaleAttempt(staleReport, state)" in relay_stall
-    assert "noteMtproxyRelayFailure(" in relay_stall
+    assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
+    assert "noteMtproxyRelayFailure(" in capabilities_bridge
 
 
 def run_all_truth_tables():

@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 struct ProxyEventReport;
-struct RuntimeEnvironment;
+class RuntimeEnvironment;
 
 enum class ProxyControlPlaneSuccessScope {
 	None,

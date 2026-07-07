@@ -10,10 +10,15 @@ MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 CLIENT_HELLO_BUILDER_CPP = MTPROXY_DIR / "client_hello_builder.cpp"
 CLIENT_HELLO_BUILDER_H = MTPROXY_DIR / "client_hello_builder.h"
+CLIENT_HELLO_CONSTANTS_H = MTPROXY_DIR / "client_hello_constants.h"
 CLIENT_HELLO_FACTS_CPP = MTPROXY_DIR / "client_hello_facts.cpp"
 CLIENT_HELLO_FACTS_H = MTPROXY_DIR / "client_hello_facts.h"
+CLIENT_HELLO_FRAGMENTATION_CPP = MTPROXY_DIR / "client_hello_fragmentation.cpp"
+CLIENT_HELLO_RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
 CPP_SMOKE = SOURCE_DIR / "tests" / "test_mtproxy_client_hello.cpp"
 FIXTURE = SOURCE_DIR / "tests" / "fixtures" / "mtproxy" / "chrome_modern_client_hello.json"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
+TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 
 
 def test_chrome_modern_capture_fixture_is_ja4_consistent():
@@ -53,7 +58,10 @@ def test_profile_metadata_marks_only_capture_backed_profile_validated():
 def test_client_hello_builder_owns_templates_and_fragmentation_plan():
     builder_header = CLIENT_HELLO_BUILDER_H.read_text(encoding="utf-8")
     builder_source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
-    tls_socket = (MTPROXY_DIR / "tls_socket.cpp").read_text(encoding="utf-8")
+    rules_source = CLIENT_HELLO_RULES_CPP.read_text(encoding="utf-8")
+    fragmentation_source = CLIENT_HELLO_FRAGMENTATION_CPP.read_text(
+        encoding="utf-8")
+    tls_socket = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
 
     assert "struct ClientHelloFragmentationPlan" in builder_header
     assert "secondDelay" in builder_header
@@ -63,15 +71,53 @@ def test_client_hello_builder_owns_templates_and_fragmentation_plan():
     assert "PrepareClientHelloFragmentation(" in builder_header
     assert "MTPTlsClientHello PrepareClientHelloRules(" in builder_header
     assert "class Generator" in builder_source
-    assert "MTPTlsClientHello PrepareClientHelloRules(" in builder_source
-    assert "PrepareClientHelloFragmentation(" in builder_source
+    assert "ClientHello PrepareClientHello(" in builder_source
+    assert "MTPTlsClientHello PrepareClientHelloRules(" not in builder_source
+    assert "PrepareClientHelloFragmentation(" not in builder_source
+    assert "MTPTlsClientHello PrepareClientHelloRules(" in rules_source
+    assert "PrepareClientHelloRulesInternal(" in rules_source
+    assert "PrepareClientHelloFragmentation(" in fragmentation_source
     assert "_options.deterministic" in builder_source
     assert '#include "mtproto/proxy/mtproxy/client_hello_builder.h"' in tls_socket
-    assert '#include "mtproto/proxy/mtproxy/client_hello_profile.h"' in builder_source
-    assert "DefaultClientHelloProfile()" in builder_source
+    assert '#include "mtproto/proxy/mtproxy/client_hello_profile.h"' in rules_source
+    assert "DefaultClientHelloProfile()" in rules_source
     assert "MTPTlsClientHello PrepareClientHelloRules(" not in tls_socket
     assert "class Generator" not in tls_socket
     assert "PrepareClientHelloFragmentation(" in tls_socket
+
+
+def test_client_hello_uses_shared_constants_and_typed_absence():
+    constants = CLIENT_HELLO_CONSTANTS_H.read_text(encoding="utf-8")
+    builder = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    facts = CLIENT_HELLO_FACTS_CPP.read_text(encoding="utf-8")
+    fragmentation = CLIENT_HELLO_FRAGMENTATION_CPP.read_text(encoding="utf-8")
+    tls_handshake = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
+    tls_records = TLS_SOCKET_RECORDS_CPP.read_text(encoding="utf-8")
+
+    for name in (
+        "kClientHelloGreaseCount",
+        "kClientHelloLimit",
+        "kClientHelloDigestLength",
+        "kTlsLengthFieldSize",
+        "kClientHelloFragmentDelayMin",
+        "kClientHelloFragmentDelayMax",
+    ):
+        assert name in constants
+        assert name in builder + fragmentation + tls_handshake + tls_records
+
+    for source in (builder, facts, fragmentation, tls_handshake, tls_records):
+        assert "constexpr auto kHelloDigestLength" not in source
+        assert "constexpr auto kLengthSize" not in source
+        assert "constexpr auto kClientHelloFragmentDelayMin" not in source
+        assert "constexpr auto kClientHelloFragmentDelayMax" not in source
+        assert "return -1;" not in source
+        assert "= -1" not in source
+
+    assert "std::optional<int> _digestPosition;" in builder
+    assert "std::optional<int> ClientHelloRead16(" in facts
+    assert "std::optional<int> ClientHelloRead24(" in facts
+    assert "std::optional<int> ClientHelloRead16(" in fragmentation
+    assert "std::optional<int> ClientHelloRead24(" in fragmentation
 
 
 def test_prepare_client_hello_has_external_linkage():
@@ -180,10 +226,13 @@ def test_new_client_hello_sources_are_registered_for_build():
     for path in (
         "mtproto/proxy/mtproxy/client_hello_builder.cpp",
         "mtproto/proxy/mtproxy/client_hello_builder.h",
+        "mtproto/proxy/mtproxy/client_hello_constants.h",
         "mtproto/proxy/mtproxy/client_hello_facts.cpp",
         "mtproto/proxy/mtproxy/client_hello_facts.h",
+        "mtproto/proxy/mtproxy/client_hello_fragmentation.cpp",
         "mtproto/proxy/mtproxy/client_hello_profile.cpp",
         "mtproto/proxy/mtproxy/client_hello_profile.h",
+        "mtproto/proxy/mtproxy/client_hello_rules.cpp",
     ):
         assert path in cmake
 
@@ -196,8 +245,11 @@ def test_cpp_smoke_invokes_deterministic_builder_and_ja4_facts():
     assert "tests/test_mtproxy_client_hello.cpp" in cmake
     for path in (
         "mtproto/proxy/mtproxy/client_hello_builder.cpp",
+        "mtproto/proxy/mtproxy/client_hello_constants.h",
         "mtproto/proxy/mtproxy/client_hello_facts.cpp",
+        "mtproto/proxy/mtproxy/client_hello_fragmentation.cpp",
         "mtproto/proxy/mtproxy/client_hello_profile.cpp",
+        "mtproto/proxy/mtproxy/client_hello_rules.cpp",
     ):
         assert path in cmake
     assert "tdesktop::td_scheme" in cmake
@@ -430,7 +482,7 @@ def initializer_after(text: str, marker: str) -> str:
 
 
 def render_chrome_modern_builder_hello() -> bytes:
-    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_RULES_CPP.read_text(encoding="utf-8")
     body = block_after(source, "case ProxyTlsProfile::ChromeModern: {")
     return render_builder_scope(body, b"ja4-capture.test")
 
@@ -530,6 +582,7 @@ if __name__ == "__main__":
     test_chrome_modern_capture_fixture_is_ja4_consistent()
     test_profile_metadata_marks_only_capture_backed_profile_validated()
     test_client_hello_builder_owns_templates_and_fragmentation_plan()
+    test_client_hello_uses_shared_constants_and_typed_absence()
     test_client_hello_facts_module_parses_and_computes_ja4()
     test_chrome_modern_builder_template_matches_capture_ja4_facts()
     test_chrome_modern_builder_matches_capture_extension_payloads()

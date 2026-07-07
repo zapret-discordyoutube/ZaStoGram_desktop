@@ -11,6 +11,9 @@ DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
 DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
+ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
+ENDPOINT_HEALTH_DIAGNOSTICS_CPP = MTPROXY_DIR / "endpoint_health_diagnostics.cpp"
 ABSTRACT_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.h"
 ABSTRACT_SOCKET_CPP = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_abstract_socket.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
@@ -20,6 +23,8 @@ CONNECTION_TCP_H = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.h"
 CONNECTION_ABSTRACT_H = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.h"
 TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
+TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 DOMAIN_RESOLVER_CPP = SOURCE_DIR / "mtproto" / "details" / "mtproto_domain_resolver.cpp"
@@ -38,6 +43,7 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     header = read(ENDPOINT_HEALTH_H)
     identity_header = read(ENDPOINT_IDENTITY_H)
     source = read(ENDPOINT_HEALTH_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     cmake = read(CMAKE)
 
     assert "mtproto/proxy/mtproxy/endpoint_health.cpp" in cmake
@@ -68,16 +74,16 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "void reportSuccess(" in header
     assert "Snapshot snapshot(" in header
     assert "rpl::producer<EndpointEvent> changes()" in header
-    assert "kFirstCooldown = crl::time(15 * 1000)" in source
-    assert "kSecondCooldown = crl::time(45 * 1000)" in source
-    assert "kMaxCooldown = crl::time(120 * 1000)" in source
-    assert "kDnsNegativeTtl = crl::time(30 * 1000)" in source
-    assert "kColdActiveCap = 1" in source
-    assert "kFreshRelayActiveCap = 2" in source
-    assert "kWarmRelayActiveCap = 4" in source
-    assert "kStableRelayActiveCap = 8" in source
-    assert "kHealthyHandshakeSpacing = crl::time(50)" in source
-    assert "EndpointConcurrencyPolicyFor(" in source
+    assert "kFirstCooldown = crl::time(15 * 1000)" in policy
+    assert "kSecondCooldown = crl::time(45 * 1000)" in policy
+    assert "kMaxCooldown = crl::time(120 * 1000)" in policy
+    assert "kDnsNegativeTtl = crl::time(30 * 1000)" in policy
+    assert "kColdActiveCap = 1" in policy
+    assert "kFreshRelayActiveCap = 2" in policy
+    assert "kWarmRelayActiveCap = 4" in policy
+    assert "kStableRelayActiveCap = 8" in policy
+    assert "kHealthyHandshakeSpacing = crl::time(50)" in policy
+    assert "EndpointConcurrencyPolicyFor(" in policy
 
 
 def test_session_private_admission_gates_before_socket_creation():
@@ -166,7 +172,7 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     assert "_connectionState.mtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
     assert "i->mtproxyLease.release();" in connected_body
     assert "ProxyControlPlane::ReportMtproxySuccess(" in read(
-        TLS_SOCKET_CPP)
+        TLS_SOCKET_RECORDS_CPP)
     assert "i->mtproxyLease.release();" in remove_body
 
     # Success must also be reported for non-FakeTLS (plain obfuscated)
@@ -185,6 +191,9 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
 def test_relay_success_shadows_older_attempt_failures():
     header = read(ENDPOINT_HEALTH_H)
     source = read(ENDPOINT_HEALTH_CPP)
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    diagnostics = read(ENDPOINT_HEALTH_DIAGNOSTICS_CPP)
     abstract_h = read(CONNECTION_ABSTRACT_H)
     tcp_h = read(CONNECTION_TCP_H)
     tcp = read(CONNECTION_TCP_CPP)
@@ -193,28 +202,29 @@ def test_relay_success_shadows_older_attempt_failures():
     resolving = read(RESOLVING_CONNECTION_CPP)
     tls_h = read(TLS_SOCKET_H)
     tls = read(TLS_SOCKET_CPP)
+    tls_records = read(TLS_SOCKET_RECORDS_CPP)
     session = read_session_private_sources()
 
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
     report_success = function_body(source, "void EndpointHealth::reportSuccess(")
-    stale_reasons = function_body(source, "bool FailureCanBeStale(")
-    stale_helper = function_body(source, "bool FailureFromStaleAttempt(")
-    stale_log = function_body(source, "void LogStaleAttemptFailure(")
+    stale_reasons = function_body(policy, "bool FailureCanBeStale(")
+    stale_helper = function_body(policy, "bool FailureFromStaleAttempt(")
+    stale_log = function_body(diagnostics, "void LogStaleAttemptFailure(")
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
     tcp_connect = function_body(tcp, "void TcpConnection::connectToServer(")
     tls_timeout = function_body(tls, "void TlsSocket::timedOut()")
     tls_error = function_body(tls, "void TlsSocket::handleError(int errorCode)")
-    tls_packet = function_body(tls, "bool TlsSocket::checkNextPacket()")
+    tls_packet = function_body(tls_records, "bool TlsSocket::checkNextPacket()")
     session_connected = function_body(session, "void SessionPrivate::onConnected(")
     handle_received = function_body(session, "void SessionPrivate::handleReceived()")
     append_body = function_body(
         session,
         "bool SessionPrivate::appendTestConnection(")
 
-    assert "uint64 successEpoch = 0;" in source
-    assert "crl::time lastRelaySuccessAt = 0;" in source
-    assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in source
-    assert "RouteEndpoint lastGoodRoute;" in source
+    assert "uint64 successEpoch = 0;" in state_source
+    assert "crl::time lastRelaySuccessAt = 0;" in state_source
+    assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in state_source
+    assert "RouteEndpoint lastGoodRoute;" in state_source
     assert "uint64 successEpoch = 0;" in header
     assert "crl::time lastRelaySuccessAt = 0;" in header
     assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in header
@@ -303,8 +313,7 @@ def test_relay_success_shadows_older_attempt_failures():
     canonical_degrade = report_failure.index(
         "ProxyDiagnosticsPhase::CanonicalDegraded")
     last_failure = report_failure.index("state.lastFailure = report.reason;")
-    capability_failure = report_failure.index(
-        "ProxyCapabilityCache::Instance().noteMtproxyFailure(")
+    capability_failure = report_failure.index("NoteCapabilityMtproxyFailure(")
     assert stale_check < capability_failure
     assert stale_check < last_failure
     assert stale_check < canonical_degrade
@@ -317,18 +326,20 @@ def test_relay_success_shadows_older_attempt_failures():
 def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     header = read(ENDPOINT_HEALTH_H)
     source = read(ENDPOINT_HEALTH_CPP)
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
     report_success = function_body(source, "void EndpointHealth::reportSuccess(")
-    report_epoch_stale = function_body(source, "bool ReportEpochIsStale(")
-    stale_failure = function_body(source, "bool FailureFromStaleAttempt(")
-    stale_success = function_body(source, "bool SuccessFromStaleAttempt(")
+    report_epoch_stale = function_body(policy, "bool ReportEpochIsStale(")
+    stale_failure = function_body(policy, "bool FailureFromStaleAttempt(")
+    stale_success = function_body(policy, "bool SuccessFromStaleAttempt(")
 
     assert "uint64 proxyEpoch = 0;" in header
     assert "uint64 successEpoch = 0;" in header
     assert "uint64 proxyGeneration = 0;" in header
-    assert "uint64 proxyEpoch = 1;" in source
-    assert "uint64 successEpoch = 0;" in source
-    assert "uint64 proxyGeneration = 0;" in source
+    assert "uint64 proxyEpoch = 1;" in state_source
+    assert "uint64 successEpoch = 0;" in state_source
+    assert "uint64 proxyGeneration = 0;" in state_source
     assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
         stale_failure)
     assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
@@ -342,7 +353,7 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     assert "proxyEpoch&&proxyEpoch<state.proxyEpoch" in (
         "".join(report_epoch_stale.split()))
     report_success_epoch_stale = function_body(
-        source,
+        policy,
         "bool ReportSuccessEpochIsStale(")
     assert "successEpoch&&successEpoch<state.successEpoch" in (
         "".join(report_success_epoch_stale.split()))
@@ -371,18 +382,20 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
 
 def test_serverhello_ok_no_appdata_is_warning_not_fatal():
     source = read(ENDPOINT_HEALTH_CPP)
-    route_state = source.split("struct RouteState", 1)[1].split("};", 1)[0]
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    route_state = state_source.split("struct RouteState", 1)[1].split("};", 1)[0]
     note_failure = function_body(source, "void NoteRouteFailure(")
     note_success = function_body(source, "void NoteRouteSuccess(")
-    cooldown = function_body(source, "crl::time CooldownFor(")
-    soft_helper = function_body(source, "bool SoftNoAppDataFailure(")
-    warning_helper = function_body(source, "bool NoAppDataWarningStrike(")
+    cooldown = function_body(policy, "crl::time CooldownFor(")
+    soft_helper = function_body(policy, "bool SoftNoAppDataFailure(")
+    warning_helper = function_body(policy, "bool NoAppDataWarningStrike(")
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
 
-    assert "kRecentRelaySuccessWindow = crl::time(60 * 1000)" in source
-    assert "kNoAppDataSoftRetry = crl::time(1000)" in source
-    assert "kNoAppDataWarningCooldown = crl::time(3000)" in source
+    assert "kRecentRelaySuccessWindow = crl::time(60 * 1000)" in policy
+    assert "kNoAppDataSoftRetry = crl::time(1000)" in policy
+    assert "kNoAppDataWarningCooldown = crl::time(3000)" in policy
     assert "int relaySuspect = 0;" in route_state
     assert "++routeState.relaySuspect;" in note_failure
     assert "routeState.relaySuspect = 0;" in note_success
@@ -414,7 +427,7 @@ def test_serverhello_ok_no_appdata_is_warning_not_fatal():
         "if (SoftNoAppDataFailure(state, report.reason, now)) {", 1
     )[1].split("\n\t}", 1)[0]
     assert "state.relayProven = false;" in soft_branch
-    assert "state.nextHandshakeAt = now + kNoAppDataSoftRetry;" in soft_branch
+    assert "state.nextHandshakeAt = now + NoAppDataSoftRetry();" in soft_branch
     assert "mtproxy no appdata warning after recent relay success" in (
         soft_branch)
     assert "return;" in soft_branch
@@ -450,9 +463,12 @@ def test_session_does_not_punish_remote_closed_after_usable_success():
 def test_tls_socket_reports_typed_terminal_reasons():
     header = read(TLS_SOCKET_H)
     source = read(TLS_SOCKET_CPP)
-    digest_body = function_body(source, "void TlsSocket::checkHelloDigest()")
+    handshake = read(TLS_SOCKET_HANDSHAKE_CPP)
+    records = read(TLS_SOCKET_RECORDS_CPP)
+    tls_sources = "\n".join((source, handshake, records))
+    digest_body = function_body(handshake, "void TlsSocket::checkHelloDigest()")
     parts12_body = function_body(
-        source,
+        handshake,
         "void TlsSocket::checkHelloParts12(int parts1Size)")
     error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
     timeout_body = function_body(source, "void TlsSocket::timedOut()")
@@ -469,10 +485,10 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert 'u"server_hello_hmac_mismatch"_q' not in digest_body
     assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
     assert "MtProxy::FailureReason::ProxyProtocolBadResponse" in parts12_body
-    assert "ProxyControlPlane::ReportMtproxySuccess(" in source
+    assert "ProxyControlPlane::ReportMtproxySuccess(" in records
     assert "_endpointUse = protocolForFiles" in source
-    assert ".use = _endpointUse" in source
-    assert ".use = MtProxy::EndpointUse::Main" not in source
+    assert ".use = _endpointUse" in tls_sources
+    assert ".use = MtProxy::EndpointUse::Main" not in tls_sources
     assert "ToLegacyDiagnostic(FailureReason reason)" in read(
         MTPROXY_DIR / "endpoint_identity.cpp")
     assert "ProxyControlPlane::ReportMtproxyFailure(" in error_body
@@ -490,17 +506,18 @@ def test_tls_socket_reports_typed_terminal_reasons():
         tcp_timeout_body)
     assert ".terminalUntil = _socket\n\t\t\t? _socket->mtproxyTerminalUntil()" in (
         tcp_timeout_body)
-    assert "MtproxyRotateTlsProfileOnFailure(" not in source
+    assert "MtproxyRotateTlsProfileOnFailure(" not in tls_sources
 
 
 def test_tls_socket_uses_endpoint_health_key_for_profile_rotation():
     abstract_header = read(ABSTRACT_SOCKET_H)
     abstract_source = read(ABSTRACT_SOCKET_CPP)
     source = read(TLS_SOCKET_CPP)
+    handshake = read(TLS_SOCKET_HANDSHAKE_CPP)
     header = read(TLS_SOCKET_H)
     connect_body = function_body(source, "void TlsSocket::connectToHost(")
     effective_body = function_body(source, "ProxyTlsProfile TlsSocket::effectiveTlsProfile() const")
-    recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
+    recipe_body = function_body(handshake, "void TlsSocket::applyAdaptiveRecipe()")
 
     assert "const ProxyData &proxy," in abstract_header
     assert "const auto networkProxy = ToNetworkProxy(proxy);" in abstract_source
@@ -538,9 +555,9 @@ def test_appdata_remote_closed_is_mtproxy_terminal_reason():
     status_header = read(SOURCE_DIR / "mtproto" / "proxy" / "status.h")
     status_source = read(SOURCE_DIR / "mtproto" / "proxy" / "status.cpp")
     diagnostics = read(SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp")
-    source = read(ENDPOINT_HEALTH_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     identity_source = read(MTPROXY_DIR / "endpoint_identity.cpp")
-    cooldown_body = function_body(source, "bool FailureNeedsCooldown(")
+    cooldown_body = function_body(policy, "bool FailureNeedsCooldown(")
     terminal_body = function_body(
         identity_source,
         "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
@@ -606,6 +623,7 @@ def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
 
 def test_active_slots_expire_and_sustained_denial_requests_rotation():
     source = read(ENDPOINT_HEALTH_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
     release_body = function_body(
         source,
@@ -613,7 +631,7 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
 
     # A leaked lease must not pin the endpoint at its active cap forever:
     # attempts have a hard TTL, pruned on every admit.
-    assert "kAttemptHardTtl = crl::time(120 * 1000)" in source
+    assert "kAttemptHardTtl = crl::time(120 * 1000)" in policy
     assert "PruneExpiredAttempts(state, now);" in admit_body
     assert "state.attemptStarts.emplace(result.attemptId, attemptStartedAt);" in (
         admit_body)

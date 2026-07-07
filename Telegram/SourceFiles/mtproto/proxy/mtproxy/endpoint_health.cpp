@@ -7,7 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
-#include "mtproto/proxy/capabilities.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_state.h"
+
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
@@ -25,107 +29,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details::MtProxy {
 namespace {
 
-constexpr auto kFirstCooldown = crl::time(15 * 1000);
-constexpr auto kSecondCooldown = crl::time(45 * 1000);
-constexpr auto kMaxCooldown = crl::time(120 * 1000);
-constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
-constexpr auto kColdActiveCap = 1;
-constexpr auto kUnknownActiveCap = kColdActiveCap;
-constexpr auto kDpiFailureActiveCap = 1;
-constexpr auto kFreshRelayActiveCap = 2;
-constexpr auto kWarmRelayActiveCap = 4;
-constexpr auto kStableRelayActiveCap = 8;
-constexpr auto kFreshRelayWindow = crl::time(10 * 1000);
-constexpr auto kWarmRelayWindow = crl::time(20 * 1000);
-constexpr auto kHealthyHandshakeSpacing = crl::time(50);
-constexpr auto kQueuedRetry = crl::time(1000);
-
-// No single connect attempt may hold an active slot longer than this.
-// A leaked lease (hung socket, lost owner) would otherwise pin the
-// endpoint at its active cap and deny admission forever.
-constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
-
 // If every admission request for an endpoint has been denied for this
 // long without a single grant, ask the rotation manager to look for
 // another proxy instead of spinning on this one.
 constexpr auto kDeniedRotationAfter = crl::time(20 * 1000);
-
-// A proxy that throttles new TCP connects while serving established
-// connections fine looks like "all routes failed" on every unlucky
-// reconnect. An endpoint that has succeeded before only degrades after
-// this many exhaustions in a row with no success in between; one that
-// never succeeded degrades on the first (fast dead-proxy detection).
 constexpr auto kExhaustedStrikesAfterSuccess = 3;
-
-// A DPI that kills only some handshakes leaves the endpoint flapping:
-// connected for seconds, then a full cooldown on the first killed
-// handshake. If the endpoint served a connection this recently, probe
-// again quickly with the escalated recipe instead of blocking every
-// new connection for the full cooldown - the adaptive open pacing
-// keeps the probe rate down.
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
-constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
-constexpr auto kThrottledRetryCooldown = crl::time(3000);
-constexpr auto kNoAppDataSoftRetry = crl::time(1000);
-constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
-
-struct EndpointState {
-	EndpointId endpoint;
-	std::set<QString> routeKeys;
-	FailureReason lastFailure = FailureReason::None;
-	QString lastDiagnostic;
-	crl::time terminalUntil = 0;
-	int active = 0;
-	int consecutiveFailures = 0;
-	int recipeLevel = 0;
-	crl::time nextHandshakeAt = 0;
-	bool healthy = false;
-	bool halfOpen = false;
-	uint64 proxyGeneration = 0;
-	uint64 proxyEpoch = 1;
-	uint64 lastAttemptId = 0;
-	std::map<uint64, crl::time> attemptStarts;
-	crl::time deniedSince = 0;
-	crl::time lastDenialRotationSignal = 0;
-	crl::time lastSuccessAt = 0;
-	int exhaustedSinceSuccess = 0;
-	bool relayProven = false;
-	uint64 successEpoch = 0;
-	crl::time lastRelaySuccessAt = 0;
-	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
-	RouteEndpoint lastGoodRoute;
-};
-
-struct RouteState {
-	RouteEndpoint route;
-	FailureReason lastFailure = FailureReason::None;
-	bool healthy = false;
-	int relaySuspect = 0;
-};
-
-struct EndpointConcurrencyPolicy {
-	int activeCap = kUnknownActiveCap;
-	crl::time handshakeSpacing = 0;
-	crl::time retryAfter = kQueuedRetry;
-	bool recipeEscalationAllowed = false;
-	bool useAllowed = true;
-};
-
-struct CapabilitySuccess {
-	QString proxyKey;
-	QString routeKey;
-	QString route;
-	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
-	ProxyStealthOptions stealth;
-	int recipeLevel = 0;
-	bool relayProven = false;
-};
-
-struct CapabilityFailure {
-	QString proxyKey;
-	QString routeKey;
-	QString diagnostic;
-};
 
 QMutex StatesMutex;
 std::map<QString, EndpointState> States;
@@ -179,532 +88,7 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	return false;
 }
 
-[[nodiscard]] bool FailureNeedsCooldown(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::DnsFailed:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ProxyProtocolBadResponse:
-	case FailureReason::ConnectedNoMtprotoData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-		return false;
-	}
-	return false;
-}
 
-[[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-		return true;
-	// ServerHelloOkNoAppData means the server accepted our ClientHello
-	// (HMAC verified) and the stall is downstream - the proxy's own link
-	// to the DC. Mutating the ClientHello cannot fix that; escalated
-	// recipes (fragmentation, pacing, spacing) only add latency and can
-	// break a FakeTLS front that was answering fine, turning a slow
-	// relay into client_hello_sent_no_server_hello. Escalate only on
-	// failures that actually implicate the handshake fingerprint.
-	// ConnectedNoMtprotoData is even further downstream: the handshake
-	// and even the plaintext transport check passed, so the fingerprint
-	// is definitely not the problem.
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool FailureIsRouteOnly(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool FailureDowngradesRecipe(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-void DowngradeRecipeForRelayStall(
-		EndpointState &state,
-		FailureReason reason) {
-	if (FailureDowngradesRecipe(reason) && state.recipeLevel > 0) {
-		--state.recipeLevel;
-	}
-}
-
-[[nodiscard]] bool FailureCanBeStale(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool RecentRelaySuccess(
-		const EndpointState &state,
-		crl::time now) {
-	return state.lastRelaySuccessAt
-		&& (now - state.lastRelaySuccessAt < kRecentRelaySuccessWindow);
-}
-
-[[nodiscard]] bool SoftNoAppDataFailure(
-		const EndpointState &state,
-		FailureReason reason,
-		crl::time now) {
-	return (reason == FailureReason::ServerHelloOkNoAppData)
-		&& RecentRelaySuccess(state, now);
-}
-
-[[nodiscard]] bool NoAppDataWarningStrike(
-		FailureReason reason,
-		int consecutiveFailures) {
-	return (reason == FailureReason::ServerHelloOkNoAppData)
-		&& (consecutiveFailures <= 3);
-}
-
-[[nodiscard]] crl::time AttemptStartedAt(
-		const FailureReport &report,
-		const EndpointState &state) {
-	if (report.attemptStartedAt) {
-		return report.attemptStartedAt;
-	}
-	if (report.lease && report.lease->startedAt()) {
-		return report.lease->startedAt();
-	}
-	const auto attemptId = report.attemptId
-		? report.attemptId
-		: report.lease
-		? report.lease->attemptId()
-		: uint64();
-	if (!attemptId) {
-		return 0;
-	}
-	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts)) ? i->second : crl::time();
-}
-
-[[nodiscard]] crl::time AttemptStartedAt(
-		const SuccessReport &report,
-		const EndpointState &state) {
-	if (report.attemptStartedAt) {
-		return report.attemptStartedAt;
-	}
-	if (report.lease && report.lease->startedAt()) {
-		return report.lease->startedAt();
-	}
-	const auto attemptId = report.attemptId
-		? report.attemptId
-		: report.lease
-		? report.lease->attemptId()
-		: uint64();
-	if (!attemptId) {
-		return 0;
-	}
-	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts)) ? i->second : crl::time();
-}
-
-[[nodiscard]] bool ReportEpochIsStale(
-		uint64 proxyEpoch,
-		const EndpointState &state) {
-	return proxyEpoch && proxyEpoch < state.proxyEpoch;
-}
-
-[[nodiscard]] bool ReportSuccessEpochIsStale(
-		uint64 successEpoch,
-		const EndpointState &state) {
-	return state.successEpoch && successEpoch < state.successEpoch;
-}
-
-[[nodiscard]] bool ReportGenerationIsStale(
-		uint64 proxyGeneration,
-		const EndpointState &state) {
-	return proxyGeneration && proxyGeneration < state.proxyGeneration;
-}
-
-void ApplyProxyGeneration(
-		EndpointState &state,
-		uint64 proxyGeneration) {
-	if (!proxyGeneration || proxyGeneration <= state.proxyGeneration) {
-		return;
-	}
-	state.proxyGeneration = proxyGeneration;
-	state.attemptStarts.clear();
-	state.active = 0;
-}
-
-[[nodiscard]] bool FailureFromStaleAttempt(
-		const FailureReport &report,
-		const EndpointState &state) {
-	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
-		return true;
-	}
-	if (ReportEpochIsStale(report.proxyEpoch, state)) {
-		return true;
-	}
-	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
-		return true;
-	}
-	if (!state.lastRelaySuccessAt || !FailureCanBeStale(report.reason)) {
-		return false;
-	}
-	const auto startedAt = AttemptStartedAt(report, state);
-	return startedAt && (startedAt < state.lastRelaySuccessAt);
-}
-
-[[nodiscard]] bool SuccessFromStaleAttempt(
-		const SuccessReport &report,
-		const EndpointState &state) {
-	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
-		return true;
-	}
-	if (ReportEpochIsStale(report.proxyEpoch, state)) {
-		return true;
-	}
-	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
-		return true;
-	}
-	if (!state.lastRelaySuccessAt) {
-		return false;
-	}
-	const auto startedAt = AttemptStartedAt(report, state);
-	return startedAt && (startedAt < state.lastRelaySuccessAt);
-}
-
-void PruneExpiredAttempts(EndpointState &state, crl::time now) {
-	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
-		if (now - i->second > kAttemptHardTtl) {
-			i = state.attemptStarts.erase(i);
-		} else {
-			++i;
-		}
-	}
-	state.active = int(state.attemptStarts.size());
-}
-
-[[nodiscard]] crl::time CooldownFor(
-		FailureReason reason,
-		int consecutiveFailures) {
-	if (reason == FailureReason::DnsFailed) {
-		return kDnsNegativeTtl;
-	}
-	if (reason == FailureReason::ClientHelloSentNoServerHello) {
-		return kFirstCooldown;
-	}
-	if (reason == FailureReason::ServerHelloOkNoAppData) {
-		// The proxy is alive and validated our handshake - it just did
-		// not relay telegram data in time. That is often transient (the
-		// proxy warming up its DC link) - retry quickly instead of the
-		// full ladder, capping at the first cooldown so a genuinely
-		// broken relay still backs off.
-		return (consecutiveFailures <= 3)
-			? kNoAppDataWarningCooldown
-			: kFirstCooldown;
-	}
-	if (reason == FailureReason::ServerHelloOkNoMtprotoData
-		|| reason == FailureReason::ConnectedNoMtprotoData) {
-		// Transport connects and handshakes fine, MTProto payloads never
-		// arrive. Hammering with instant reconnects is what sustains a
-		// server-side throttle, so back off progressively - but keep the
-		// cap below kMaxCooldown: the proxy itself is alive and a probe
-		// every 45 seconds is gentle enough.
-		return (consecutiveFailures <= 1)
-			? kThrottledRetryCooldown
-			: (consecutiveFailures == 2)
-			? kFirstCooldown
-			: kSecondCooldown;
-	}
-	if (consecutiveFailures <= 1) {
-		return kFirstCooldown;
-	} else if (consecutiveFailures == 2) {
-		return kSecondCooldown;
-	}
-	return kMaxCooldown;
-}
-
-[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
-		const EndpointState &state,
-		EndpointUse use,
-		crl::time now) {
-	auto policy = EndpointConcurrencyPolicy();
-	if (FailureNeedsRecipeEscalation(state.lastFailure)) {
-		policy.activeCap = kDpiFailureActiveCap;
-		policy.retryAfter = kQueuedRetry;
-		policy.recipeEscalationAllowed = true;
-		if (!state.relayProven && use != EndpointUse::Main) {
-			policy.useAllowed = false;
-		}
-		return policy;
-	}
-	switch (state.lastFailure) {
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		break;
-	}
-	if (!state.relayProven || !state.lastRelaySuccessAt) {
-		policy.activeCap = kUnknownActiveCap;
-		policy.retryAfter = kQueuedRetry;
-		if (use != EndpointUse::Main) {
-			policy.useAllowed = false;
-		}
-	} else if (state.healthy) {
-		const auto relayAge = now - state.lastRelaySuccessAt;
-		if (relayAge < kFreshRelayWindow) {
-			policy.activeCap = kFreshRelayActiveCap;
-		} else if (relayAge < kWarmRelayWindow) {
-			policy.activeCap = kWarmRelayActiveCap;
-		} else {
-			policy.activeCap = kStableRelayActiveCap;
-		}
-		policy.handshakeSpacing = kHealthyHandshakeSpacing;
-		policy.retryAfter = kHealthyHandshakeSpacing;
-	} else {
-		policy.activeCap = kUnknownActiveCap;
-		policy.retryAfter = kQueuedRetry;
-	}
-	return policy;
-}
-
-[[nodiscard]] Snapshot MakeSnapshot(const EndpointState &state) {
-	return {
-		.endpoint = state.endpoint,
-		.lastFailure = state.lastFailure,
-		.lastDiagnostic = state.lastDiagnostic,
-		.terminalUntil = state.terminalUntil,
-		.active = state.active,
-		.consecutiveFailures = state.consecutiveFailures,
-		.recipeLevel = state.recipeLevel,
-		.healthy = state.healthy,
-		.halfOpen = state.halfOpen,
-		.successEpoch = state.successEpoch,
-		.lastRelaySuccessAt = state.lastRelaySuccessAt,
-		.lastGoodProfile = state.lastGoodProfile,
-		.lastGoodRoute = state.lastGoodRoute,
-		.relayProven = state.relayProven,
-		.proxyGeneration = state.proxyGeneration,
-		.proxyEpoch = state.proxyEpoch,
-		.attemptId = state.lastAttemptId,
-	};
-}
-
-[[nodiscard]] QString CanonicalText(const EndpointId &endpoint) {
-	return ProxyDiagnosticsEndpointText(
-		endpoint.canonical.originalHost,
-		endpoint.canonical.port);
-}
-
-[[nodiscard]] QString RouteText(const EndpointId &endpoint) {
-	return ProxyDiagnosticsEndpointText(
-		endpoint.route.address,
-		endpoint.route.port);
-}
-
-[[nodiscard]] ProxyDiagnosticsEvent CanonicalDiagnosticsEvent(
-		ProxyDiagnosticsPhase phase,
-		const EndpointState &state,
-		FailureReason reason,
-		const QString &message) {
-	return {
-		.source = ProxyDiagnosticsSource::MTProxy,
-		.phase = phase,
-		.severity = (phase == ProxyDiagnosticsPhase::CanonicalRecovered)
-			? ProxyDiagnosticsSeverity::Info
-			: ProxyDiagnosticsSeverity::Warning,
-		.error = ToProxyConnectionError(reason),
-		.mtproxyReason = ToProxyMtproxyTerminalReason(reason),
-		.terminalUntil = state.terminalUntil,
-		.transport = ProxyDiagnosticsTransportName(
-			state.endpoint.canonical.proxyKind,
-			state.endpoint.route.transport),
-		.message = message,
-		.canonical = CanonicalText(state.endpoint),
-		.route = RouteText(state.endpoint),
-		.proxyKeyHash = ProxyDiagnosticsKeyHash(
-			EndpointKey(state.endpoint.canonical)),
-		.recipeLevel = state.recipeLevel,
-		.phaseAtFailure = ToLegacyDiagnostic(reason),
-	};
-}
-
-void LogStaleAttemptFailure(
-		const FailureReport &report,
-		int recipeLevel) {
-	WriteProxyDiagnosticsLine({
-		.source = ProxyDiagnosticsSource::MTProxy,
-		.phase = ProxyDiagnosticsPhase::RouteFailed,
-		.severity = ProxyDiagnosticsSeverity::Info,
-		.error = ToProxyConnectionError(report.reason),
-		.mtproxyReason = ToProxyMtproxyTerminalReason(report.reason),
-		.transport = ProxyDiagnosticsTransportName(
-			report.endpoint.canonical.proxyKind,
-			report.endpoint.route.transport),
-		.message = u"stale_attempt_failed"_q,
-		.canonical = CanonicalText(report.endpoint),
-		.route = RouteText(report.endpoint),
-		.proxyKeyHash = ProxyDiagnosticsKeyHash(
-			EndpointKey(report.endpoint.canonical)),
-		.recipeLevel = recipeLevel,
-		.phaseAtFailure = ToLegacyDiagnostic(report.reason),
-	});
-}
-
-void LogProbeAttemptFailure(const FailureReport &report) {
-	WriteProxyDiagnosticsLine({
-		.source = ProxyDiagnosticsSource::MTProxy,
-		.phase = ProxyDiagnosticsPhase::RouteFailed,
-		.severity = ProxyDiagnosticsSeverity::Info,
-		.error = ToProxyConnectionError(report.reason),
-		.mtproxyReason = ToProxyMtproxyTerminalReason(report.reason),
-		.transport = ProxyDiagnosticsTransportName(
-			report.endpoint.canonical.proxyKind,
-			report.endpoint.route.transport),
-		.message = u"probe_attempt_failed"_q,
-		.canonical = CanonicalText(report.endpoint),
-		.route = RouteText(report.endpoint),
-		.proxyKeyHash = ProxyDiagnosticsKeyHash(
-			EndpointKey(report.endpoint.canonical)),
-		.phaseAtFailure = ToLegacyDiagnostic(report.reason),
-	});
-}
-
-void LogProbeAttemptSuccess(const SuccessReport &report) {
-	WriteProxyDiagnosticsLine({
-		.source = ProxyDiagnosticsSource::MTProxy,
-		.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
-		.severity = ProxyDiagnosticsSeverity::Info,
-		.transport = ProxyDiagnosticsTransportName(
-			report.endpoint.canonical.proxyKind,
-			report.endpoint.route.transport),
-		.message = u"probe_attempt_succeeded"_q,
-		.canonical = CanonicalText(report.endpoint),
-		.route = RouteText(report.endpoint),
-		.proxyKeyHash = ProxyDiagnosticsKeyHash(
-			EndpointKey(report.endpoint.canonical)),
-	});
-}
 
 } // namespace
 
@@ -754,16 +138,6 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
-crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
-	switch (pattern) {
-	case ProxyConnectionPattern::Soft: return crl::time(150);
-	case ProxyConnectionPattern::Quiet: return crl::time(400);
-	case ProxyConnectionPattern::Strict: return crl::time(700);
-	case ProxyConnectionPattern::Browser: return crl::time(250);
-	case ProxyConnectionPattern::Off: break;
-	}
-	return crl::time(0);
-}
 
 void EndpointAttemptLease::release() {
 	if (!_active) {
@@ -805,6 +179,9 @@ EndpointHealth &EndpointHealth::Instance() {
 Admission EndpointHealth::admit(const AdmissionRequest &request) {
 	const auto key = EndpointKey(request.endpoint);
 	const auto now = crl::now();
+	const auto effectiveTlsProfile = ResolveEffectiveTlsProfile(
+		request.configuredTlsProfile,
+		key);
 	auto result = Admission();
 	auto rotationEvent = std::optional<EndpointEvent>();
 	auto starvationDiagnostics = std::optional<ProxyDiagnosticsEvent>();
@@ -815,9 +192,7 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		ApplyProxyGeneration(state, request.proxyGeneration);
 		PruneExpiredAttempts(state, now);
 		result.stealth = request.stealth;
-		result.effectiveTlsProfile = ResolveEffectiveTlsProfile(
-			request.configuredTlsProfile,
-			key);
+		result.effectiveTlsProfile = effectiveTlsProfile;
 		result.proxyGeneration = request.proxyGeneration;
 		result.proxyEpoch = state.proxyEpoch;
 		result.successEpoch = state.successEpoch;
@@ -936,7 +311,10 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
 	auto event = EndpointEvent();
+	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
+	auto noteConnectTimeout = false;
+	auto rotateTlsProfile = false;
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
 	if (FailureFromStaleAttempt(report, state)) {
@@ -951,18 +329,17 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		&& report.reason != FailureReason::ServerHelloOkNoMtprotoData
 		&& report.reason != FailureReason::ConnectedNoMtprotoData
 		&& report.reason != FailureReason::MtpReceiveTimeoutAfterData) {
-		lock.unlock();
-		ProxyCapabilityCache::Instance().noteMtproxyFailure(
-			CapabilityProxyKey(report.endpoint.canonical),
-			RouteKey(report.endpoint.route),
-			diagnostic);
-		lock.relock();
+		capabilityFailure = CapabilityFailure{
+			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+			.routeKey = RouteKey(report.endpoint.route),
+			.diagnostic = diagnostic,
+		};
 	}
 	NoteRouteFailure(state, report.endpoint.route, report.reason);
 	DowngradeRecipeForRelayStall(state, report.reason);
 	if (SoftNoAppDataFailure(state, report.reason, now)) {
 		state.relayProven = false;
-		state.nextHandshakeAt = now + kNoAppDataSoftRetry;
+		state.nextHandshakeAt = now + NoAppDataSoftRetry();
 		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 			ProxyDiagnosticsPhase::RouteFailed,
 			state,
@@ -973,9 +350,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		return;
 	}
 	if (FailureIsRouteOnly(report.reason) && !report.routesExhausted) {
-		// Feed the open scheduler: connect timeouts slow down the pace
-		// of new opens to this endpoint. The exhausted follow-up report
-		// describes the same failed cycle, so it does not count again.
+		noteConnectTimeout = true;
+		lock.unlock();
+		if (capabilityFailure) {
+			NoteCapabilityMtproxyFailure(
+				report.endpoint,
+				capabilityFailure->diagnostic);
+		}
 		NoteConnectTimeout(report.endpoint);
 		return;
 	}
@@ -987,6 +368,12 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		// several levels per single incident (observed: recipe 1->4 in
 		// under a second when four sockets died together). One incident,
 		// one strike.
+		lock.unlock();
+		if (capabilityFailure) {
+			NoteCapabilityMtproxyFailure(
+				report.endpoint,
+				capabilityFailure->diagnostic);
+		}
 		return;
 	}
 	if (report.routesExhausted) {
@@ -994,15 +381,24 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		if (state.lastSuccessAt
 			&& state.exhaustedSinceSuccess < kExhaustedStrikesAfterSuccess
 			&& FailureIsRouteOnly(report.reason)) {
-			// The proxy served connections before and this is likely
-			// per-connect throttling - keep it route-level for now so
-			// working connections and retries are not locked out.
+			lock.unlock();
+			if (capabilityFailure) {
+				NoteCapabilityMtproxyFailure(
+					report.endpoint,
+					capabilityFailure->diagnostic);
+			}
 			return;
 		}
 	}
 	if (!routeKey.isEmpty()
 		&& HasHealthyRoute(state)
 		&& !report.routesExhausted) {
+		lock.unlock();
+		if (capabilityFailure) {
+			NoteCapabilityMtproxyFailure(
+				report.endpoint,
+				capabilityFailure->diagnostic);
+		}
 		return;
 	}
 	state.lastFailure = report.reason;
@@ -1022,10 +418,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	if (report.configuredTlsProfile == ProxyTlsProfile::AutoRotate
 		&& FailureNeedsTlsRotation(report.reason)) {
-		(void)RotateTlsProfileOnFailure(
-			key,
-			diagnostic,
-			report.sentProfile);
+		rotateTlsProfile = true;
 	}
 	const auto needsCooldown = FailureNeedsCooldown(report.reason)
 		|| report.routesExhausted;
@@ -1043,8 +436,8 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		const auto recentSuccess = state.lastSuccessAt
 			&& (now - state.lastSuccessAt < kRecentSuccessWindow);
 		if (recentSuccess && FailureNeedsRecipeEscalation(report.reason)) {
-			cooldown = std::min(cooldown, kThrottledRetryCooldown);
-			NoteConnectTimeout(report.endpoint);
+			cooldown = std::min(cooldown, ThrottledRetryCooldown());
+			noteConnectTimeout = true;
 		}
 		state.terminalUntil = now + cooldown;
 	}
@@ -1074,11 +467,22 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			? u"mtproxy canonical endpoint degraded"_q
 			: u"mtproxy endpoint failure"_q);
 	lock.unlock();
+	if (capabilityFailure) {
+		NoteCapabilityMtproxyFailure(
+			report.endpoint,
+			capabilityFailure->diagnostic);
+	}
 	if (capabilityRelayFailure) {
-		ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(
-			capabilityRelayFailure->proxyKey,
-			capabilityRelayFailure->routeKey,
-			capabilityRelayFailure->diagnostic);
+		NoteCapabilityMtproxyRelayFailure(*capabilityRelayFailure);
+	}
+	if (rotateTlsProfile) {
+		(void)RotateTlsProfileOnFailure(
+			key,
+			diagnostic,
+			report.sentProfile);
+	}
+	if (noteConnectTimeout) {
+		NoteConnectTimeout(report.endpoint);
 	}
 	WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
 	FireEndpointEventOnMain(std::move(event));
@@ -1183,14 +587,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	lock.unlock();
 	NoteConnectSuccess(report.endpoint);
 	if (capabilitySuccess) {
-		ProxyCapabilityCache::Instance().noteMtproxySuccess(
-			capabilitySuccess->proxyKey,
-			capabilitySuccess->routeKey,
-			capabilitySuccess->route,
-			capabilitySuccess->sentProfile,
-			capabilitySuccess->stealth,
-			capabilitySuccess->recipeLevel,
-			capabilitySuccess->relayProven);
+		NoteCapabilityMtproxySuccess(*capabilitySuccess);
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(std::move(*diagnosticsEvent));
@@ -1198,12 +595,8 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 }
 
 void EndpointHealth::noteRelayStall(RelayStallReport report) {
-	// An established connection that had already received MTProto data
-	// went silent mid-session. That is not a failure of any particular
-	// connect attempt (no cooldown, reconnects stay allowed), but the
-	// relay is no longer proven: the reconnect wave that follows must go
-	// out as scouts, not as the full healthy-cap herd.
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
+	auto staleRecipeLevel = std::optional<int>();
 	auto staleReport = FailureReport{
 		.endpoint = report.endpoint,
 		.use = report.use,
@@ -1220,25 +613,26 @@ void EndpointHealth::noteRelayStall(RelayStallReport report) {
 		if (i != end(States)) {
 			auto &state = i->second;
 			if (FailureFromStaleAttempt(staleReport, state)) {
-				const auto recipeLevel = state.recipeLevel;
-				lock.unlock();
-				LogStaleAttemptFailure(staleReport, recipeLevel);
-				return;
+				staleRecipeLevel = state.recipeLevel;
+			} else {
+				ApplyProxyGeneration(state, report.proxyGeneration);
+				state.relayProven = false;
 			}
-			ApplyProxyGeneration(state, report.proxyGeneration);
-			state.relayProven = false;
 		}
-		capabilityRelayFailure = CapabilityFailure{
-			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
-			.routeKey = RouteKey(report.endpoint.route),
-			.diagnostic = u"relay_stall"_q,
-		};
+		if (!staleRecipeLevel) {
+			capabilityRelayFailure = CapabilityFailure{
+				.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+				.routeKey = RouteKey(report.endpoint.route),
+				.diagnostic = u"relay_stall"_q,
+			};
+		}
+	}
+	if (staleRecipeLevel) {
+		LogStaleAttemptFailure(staleReport, *staleRecipeLevel);
+		return;
 	}
 	if (capabilityRelayFailure) {
-		ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(
-			capabilityRelayFailure->proxyKey,
-			capabilityRelayFailure->routeKey,
-			capabilityRelayFailure->diagnostic);
+		NoteCapabilityMtproxyRelayFailure(*capabilityRelayFailure);
 	}
 }
 

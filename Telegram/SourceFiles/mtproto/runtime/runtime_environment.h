@@ -59,23 +59,59 @@ struct RuntimeAppGateway final {
 	Fn<void()> badMtprotoConfigurationError;
 };
 
-struct RuntimeEnvironment final : public QObject {
+struct RuntimeDiagnosticsGateway final {
+	Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine;
+	Fn<void(ProxyEventReport)> reportProxyEvent;
+};
+
+struct RuntimeProxyResolver final {
+	Fn<void(QString)> resolveDomain;
+	Fn<void(QString, QString)> setGoodDomain;
+	Fn<void(QString, QStringList, qint64)> domainResolved;
+};
+
+struct RuntimeInstanceServices final {
+	ConnectionStatus *connectionStatus = nullptr;
+	Fn<DcId()> mainDcId;
+	Fn<DcOptions::Variants(DcId, DcType, bool)> dcOptionsLookup;
+	RuntimeProxyResolver proxyResolver;
+	Fn<void()> syncHttpUnixtime;
+};
+
+struct RuntimeProxyCapabilities final {
+	Fn<QString()> path;
+};
+
+struct RuntimeEnvironmentDescriptor final {
 	RuntimeProxySettings proxy;
 	RuntimeDeviceSettings device;
 	RuntimeLanguageGateway language;
 	RuntimeStorageGateway storage;
 	RuntimeAppGateway app;
-	ConnectionStatus *connectionStatus = nullptr;
+	RuntimeDiagnosticsGateway diagnostics;
+	RuntimeProxyCapabilities proxyCapabilities;
+};
 
-	Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine;
-	Fn<void(ProxyEventReport)> reportProxyEvent;
-	Fn<DcId()> mainDcId;
-	Fn<DcOptions::Variants(DcId, DcType, bool)> dcOptionsLookup;
-	Fn<void(QString)> resolveProxyDomain;
-	Fn<void(QString, QString)> setGoodProxyDomain;
-	Fn<void(QString, QStringList, qint64)> proxyDomainResolved;
-	Fn<QString()> proxyCapabilitiesPath;
-	Fn<void()> syncHttpUnixtime;
+class RuntimeEnvironment final : public QObject {
+public:
+	explicit RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor);
+
+	void bindInstance(RuntimeInstanceServices services);
+	void unbindInstance(ConnectionStatus *status);
+
+	[[nodiscard]] const RuntimeProxySettings &proxy() const;
+	[[nodiscard]] const RuntimeDeviceSettings &device() const;
+	[[nodiscard]] const RuntimeLanguageGateway &language() const;
+	[[nodiscard]] const RuntimeStorageGateway &storage() const;
+	[[nodiscard]] const RuntimeAppGateway &app() const;
+	[[nodiscard]] const RuntimeDiagnosticsGateway &diagnostics() const;
+	[[nodiscard]] const RuntimeInstanceServices &instance() const;
+	[[nodiscard]] const RuntimeProxyResolver &proxyResolver() const;
+	[[nodiscard]] const RuntimeProxyCapabilities &proxyCapabilities() const;
+
+private:
+	RuntimeEnvironmentDescriptor _descriptor;
+	RuntimeInstanceServices _instance;
 };
 
 [[nodiscard]] std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment();

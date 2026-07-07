@@ -155,10 +155,12 @@ void SessionData::detach() {
 
 Session::Session(
 	not_null<Instance*> instance,
+	not_null<SessionDelegate*> delegate,
 	not_null<QThread*> thread,
 	ShiftedDcId shiftedDcId,
 	not_null<Dcenter*> dc)
 : _instance(instance)
+, _delegate(delegate)
 , _shiftedDcId(shiftedDcId)
 , _dc(dc)
 , _data(std::make_shared<SessionData>(this))
@@ -179,7 +181,7 @@ Session::~Session() {
 }
 
 void Session::watchDcKeyChanges() {
-	_instance->dcTemporaryKeyChanged(
+	_delegate->dcTemporaryKeyChanged(
 	) | rpl::filter([=](DcId dcId) {
 		return (dcId == _shiftedDcId) || (dcId == BareDcId(_shiftedDcId));
 	}) | rpl::on_next([=] {
@@ -196,7 +198,7 @@ void Session::watchDcKeyChanges() {
 }
 
 void Session::watchDcOptionsChanges() {
-	_instance->dcOptions().changed(
+	_delegate->dcOptions().changed(
 	) | rpl::filter([=](DcId dcId) {
 		return (BareDcId(_shiftedDcId) == dcId) && (_private != nullptr);
 	}) | rpl::on_next([=] {
@@ -205,10 +207,10 @@ void Session::watchDcOptionsChanges() {
 		});
 	}, _lifetime);
 
-	_instance->dcOptions().cdnConfigChanged(
+	_delegate->dcOptions().cdnConfigChanged(
 	) | rpl::filter([=] {
 		return (_private != nullptr)
-			&& (_instance->dcOptions().dcType(_shiftedDcId) == DcType::Cdn);
+			&& (_delegate->dcOptions().dcType(_shiftedDcId) == DcType::Cdn);
 	}) | rpl::on_next([=] {
 		InvokeQueued(_private, [captured = _private] {
 			captured->cdnConfigChanged();
@@ -220,6 +222,7 @@ void Session::start() {
 	killConnection();
 	_private = new SessionPrivate(
 		_instance,
+		_delegate,
 		_thread.get(),
 		_data,
 		_shiftedDcId);
@@ -266,34 +269,34 @@ void Session::releaseProxyMigration(uint64 generation) {
 }
 
 void Session::refreshOptions() {
-	auto &runtime = _instance->runtimeEnvironment();
-	const auto proxy = runtime.proxy.selected
-		? runtime.proxy.selected()
+	auto &runtime = _delegate->runtimeEnvironment();
+	const auto proxy = runtime.proxy().selected
+		? runtime.proxy().selected()
 		: ProxyData();
-	const auto isEnabled = runtime.proxy.enabled
-		? runtime.proxy.enabled()
+	const auto isEnabled = runtime.proxy().enabled
+		? runtime.proxy().enabled()
 		: false;
 	const auto proxyType = (isEnabled ? proxy.type : ProxyData::Type::None);
 	const auto useTcp = (proxyType != ProxyData::Type::Http);
 	const auto useHttp = (proxyType != ProxyData::Type::Mtproto);
 	const auto useIPv4 = true;
-	const auto useIPv6 = runtime.proxy.tryIPv6
-		? runtime.proxy.tryIPv6()
+	const auto useIPv6 = runtime.proxy().tryIPv6
+		? runtime.proxy().tryIPv6()
 		: false;
 	auto options = SessionOptions(
-		_instance->systemLangCode(),
-		_instance->cloudLangCode(),
-		_instance->langPackName(),
+		_delegate->systemLangCode(),
+		_delegate->cloudLangCode(),
+		_delegate->langPackName(),
 		(isEnabled ? proxy : ProxyData()),
 		useIPv4,
 		useIPv6,
 		useHttp,
 		useTcp);
-	const auto proxySettings = runtime.proxy.settings
-		? runtime.proxy.settings()
+	const auto proxySettings = runtime.proxy().settings
+		? runtime.proxy().settings()
 		: ProxyData::Settings::System;
-	const auto stealthOptions = runtime.proxy.stealthOptions
-		? runtime.proxy.stealthOptions()
+	const auto stealthOptions = runtime.proxy().stealthOptions
+		? runtime.proxy().stealthOptions()
 		: ProxyStealthOptions();
 	options.stealth = MTP::EffectiveProxyStealthOptions(
 		options.proxy,
@@ -387,11 +390,11 @@ void Session::needToResumeAndSend() {
 }
 
 void Session::connectionStateChange(int newState) {
-	_instance->onStateChange(_shiftedDcId, newState);
+	_delegate->onStateChange(_shiftedDcId, newState);
 }
 
 void Session::resetDone() {
-	_instance->onSessionReset(_shiftedDcId);
+	_delegate->onSessionReset(_shiftedDcId);
 }
 
 void Session::cancel(mtpRequestId requestId, mtpMsgId msgId) {
@@ -534,11 +537,12 @@ bool Session::releaseGenericKeyCreationOnDone(
 
 	const auto dcId = _dc->id();
 	const auto instance = _instance;
+	const auto delegate = _delegate;
 	InvokeQueued(instance, [=] {
 		if (wasKeyCreation == CreatingKeyType::Persistent) {
-			instance->dcPersistentKeyChanged(dcId, persistentKeyUsedForBind);
+			delegate->dcPersistentKeyChanged(dcId, persistentKeyUsedForBind);
 		} else {
-			instance->dcTemporaryKeyChanged(dcId);
+			delegate->dcTemporaryKeyChanged(dcId);
 		}
 	});
 	return true;
@@ -565,8 +569,9 @@ void Session::destroyTemporaryKey(uint64 keyId) {
 	}
 	const auto dcId = _dc->id();
 	const auto instance = _instance;
+	const auto delegate = _delegate;
 	InvokeQueued(instance, [=] {
-		instance->dcTemporaryKeyChanged(dcId);
+		delegate->dcTemporaryKeyChanged(dcId);
 	});
 }
 
@@ -604,13 +609,13 @@ void Session::tryToReceive() {
 		}
 		const auto guard = QPointer<Session>(this);
 		const auto instance = QPointer<Instance>(_instance);
+		const auto delegate = _delegate;
 		const auto main = (_shiftedDcId == BareDcId(_shiftedDcId));
 		for (const auto &message : messages) {
 			if (message.requestId) {
-				instance->processCallback(message);
+				delegate->processCallback(message);
 			} else if (main) {
-				// Process updates only in main session.
-				instance->processUpdate(message);
+				delegate->processUpdate(message);
 			}
 			if (!instance) {
 				return;

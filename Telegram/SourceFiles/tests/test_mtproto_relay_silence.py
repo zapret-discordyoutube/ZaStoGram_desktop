@@ -8,6 +8,7 @@ ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
@@ -63,12 +64,12 @@ def test_relay_silence_reason_is_wired_through_all_mappings():
 
 
 def test_relay_silence_cools_down_without_recipe_or_tls_churn():
-    health = read(ENDPOINT_HEALTH_CPP)
-    cooldown_body = function_body(health, "bool FailureNeedsCooldown(")
-    recipe_body = function_body(health, "bool FailureNeedsRecipeEscalation(")
-    rotation_body = function_body(health, "bool FailureNeedsTlsRotation(")
-    route_only_body = function_body(health, "bool FailureIsRouteOnly(")
-    ladder = function_body(health, "crl::time CooldownFor(")
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    cooldown_body = function_body(policy, "bool FailureNeedsCooldown(")
+    recipe_body = function_body(policy, "bool FailureNeedsRecipeEscalation(")
+    rotation_body = function_body(policy, "bool FailureNeedsTlsRotation(")
+    route_only_body = function_body(policy, "bool FailureIsRouteOnly(")
+    ladder = function_body(policy, "crl::time CooldownFor(")
 
     # No MTProto payload after a successful handshake means the handshake
     # fingerprint is fine - mutating it or rotating TLS profiles cannot
@@ -151,9 +152,10 @@ def test_session_reports_silence_and_recovers_temporary_key():
 def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     health = read(ENDPOINT_HEALTH_CPP)
     header = read(ENDPOINT_HEALTH_H)
+    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     session = read_session_private_sources()
     policy = function_body(
-        health, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+        policy_source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     stall = function_body(health, "void EndpointHealth::noteRelayStall(")

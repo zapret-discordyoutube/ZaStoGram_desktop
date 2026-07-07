@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/protocol/mtproto_serialized_request.h"
+#include "mtproto/session/session_delegate.h"
 
 #include <QtCore/QTimer>
 
@@ -25,6 +26,7 @@ namespace details {
 
 class Dcenter;
 class SessionPrivate;
+class SessionDelegate;
 
 enum class TemporaryKeyType;
 enum class CreatingKeyType;
@@ -136,6 +138,7 @@ public:
 	// Main thread.
 	Session(
 		not_null<Instance*> instance,
+		not_null<SessionDelegate*> delegate,
 		not_null<QThread*> thread,
 		ShiftedDcId shiftedDcId,
 		not_null<Dcenter*> dc);
@@ -197,6 +200,7 @@ private:
 		const AuthKeyPtr &persistentKeyUsedForBind);
 
 	const not_null<Instance*> _instance;
+	const not_null<SessionDelegate*> _delegate;
 	const ShiftedDcId _shiftedDcId = 0;
 	const not_null<Dcenter*> _dc;
 	const std::shared_ptr<SessionData> _data;

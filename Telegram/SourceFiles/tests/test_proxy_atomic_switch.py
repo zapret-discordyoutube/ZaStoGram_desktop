@@ -91,7 +91,7 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     assert "_connectionState.proxyMigrationScout" in append_body
     assert "_connectionState.brokerTickets.empty()" in append_body
     assert ".proxyGeneration = _connectionState.proxyGeneration" in append_body
-    assert "_instance->proxyMigrationSucceeded(_connectionState.proxyGeneration);" in received_body
+    assert "_delegate->proxyMigrationSucceeded(_connectionState.proxyGeneration);" in received_body
     assert "_connectionState.proxyMigrationScout = false;" in received_body
     assert "_connectionState.proxyMigrationSuspended = false;" in release_body
     assert "connectToServer();" in release_body

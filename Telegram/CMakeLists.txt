@@ -1526,6 +1526,9 @@ PRIVATE
     mtproto/proxy/handshake_gate.h
     mtproto/instance/mtp_instance.cpp
     mtproto/instance/mtp_instance.h
+    mtproto/instance/rpc_error_handler.cpp
+    mtproto/instance/rpc_error_handler.h
+    mtproto/instance/sender.cpp
     mtproto/proxy/diagnostics.cpp
     mtproto/proxy/diagnostics.h
     mtproto/proxy/check.cpp
@@ -1534,22 +1537,38 @@ PRIVATE
     mtproto/proxy/mtproxy/adaptive_policy.h
     mtproto/proxy/mtproxy/client_hello_builder.cpp
     mtproto/proxy/mtproxy/client_hello_builder.h
+    mtproto/proxy/mtproxy/client_hello_constants.h
+    mtproto/proxy/mtproxy/client_hello_fragmentation.cpp
     mtproto/proxy/mtproxy/client_hello_facts.cpp
     mtproto/proxy/mtproxy/client_hello_facts.h
     mtproto/proxy/mtproxy/client_hello_profile.cpp
     mtproto/proxy/mtproxy/client_hello_profile.h
+    mtproto/proxy/mtproxy/client_hello_rules.cpp
+    mtproto/proxy/mtproxy/endpoint_health_capabilities.cpp
+    mtproto/proxy/mtproxy/endpoint_health_capabilities.h
     mtproto/proxy/mtproxy/endpoint_health.cpp
     mtproto/proxy/mtproxy/endpoint_health.h
+    mtproto/proxy/mtproxy/endpoint_health_diagnostics.cpp
+    mtproto/proxy/mtproxy/endpoint_health_diagnostics.h
+    mtproto/proxy/mtproxy/endpoint_health_policy.cpp
+    mtproto/proxy/mtproxy/endpoint_health_policy.h
+    mtproto/proxy/mtproxy/endpoint_health_state.h
     mtproto/proxy/mtproxy/endpoint_identity.cpp
     mtproto/proxy/mtproxy/endpoint_identity.h
     mtproto/proxy/mtproxy/open_scheduler.cpp
     mtproto/proxy/mtproxy/open_scheduler.h
     mtproto/proxy/mtproxy/tls_socket.cpp
     mtproto/proxy/mtproxy/tls_socket.h
+    mtproto/proxy/mtproxy/tls_socket_handshake.cpp
+    mtproto/proxy/mtproxy/tls_socket_psk.cpp
+    mtproto/proxy/mtproxy/tls_socket_psk.h
+    mtproto/proxy/mtproxy/tls_socket_records.cpp
+    mtproto/proxy/mtproxy/tls_socket_utils.h
     mtproto/proxy/wss/socket.cpp
     mtproto/proxy/wss/socket.h
     mtproto/instance/sender.h
     mtproto/session/session.cpp
+    mtproto/session/session_delegate.h
     mtproto/session/session.h
     mtproto/session/session_state.h
     mtproto/session/options.h

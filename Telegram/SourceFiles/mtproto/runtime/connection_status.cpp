@@ -26,11 +26,11 @@ auto ConnectionStatus::proxyStatusValue() const
 
 void ConnectionStatus::setProxyStatus(ProxyConnectionStatus status) {
 	if (status.phase != ProxyConnectionPhase::None) {
-		if (!_runtime->proxy.enabled || !_runtime->proxy.enabled()) {
+		if (!_runtime->proxy().enabled || !_runtime->proxy().enabled()) {
 			return;
 		}
-		const auto selected = _runtime->proxy.selected
-			? _runtime->proxy.selected()
+		const auto selected = _runtime->proxy().selected
+			? _runtime->proxy().selected()
 			: ProxyData();
 		const auto matches = [&] {
 			if (status.proxy == selected) {

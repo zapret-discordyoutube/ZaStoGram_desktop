@@ -137,8 +137,8 @@ bool SessionPrivate::appendTestConnection(
 		});
 		connect(weak, &AbstractConnection::syncTimeRequest, [=] {
 			InvokeQueued(_runtime, [runtime = _runtime] {
-				if (runtime->syncHttpUnixtime) {
-					runtime->syncHttpUnixtime();
+				if (runtime->instance().syncHttpUnixtime) {
+					runtime->instance().syncHttpUnixtime();
 				}
 			});
 		});
@@ -371,8 +371,8 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	const auto bareDc = BareDcId(_shiftedDcId);
 
 	_currentDcType = tryAcquireKeyCreation();
-	if (_currentDcType == DcType::Cdn && !_instance->isKeysDestroyer()) {
-		if (!_instance->dcOptions().hasCDNKeysForDc(bareDc)) {
+	if (_currentDcType == DcType::Cdn && !_delegate->isKeysDestroyer()) {
+		if (!_delegate->dcOptions().hasCDNKeysForDc(bareDc)) {
 			requestCDNConfig();
 			return;
 		}
@@ -400,7 +400,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	} else {
 		using Variants = DcOptions::Variants;
 		const auto special = (_currentDcType == DcType::Temporary);
-		const auto variants = _instance->dcOptions().lookup(
+		const auto variants = _delegate->dcOptions().lookup(
 			bareDc,
 			_currentDcType,
 			_sessionState.options->proxy.type != ProxyData::Type::None);
@@ -438,17 +438,17 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		}
 	}
 	if (_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()) {
-		if (_instance->isKeysDestroyer()) {
+		if (_delegate->isKeysDestroyer()) {
 			LOG(("MTP Error: DC %1 options for not found for auth key destruction!").arg(_shiftedDcId));
-			_instance->keyWasPossiblyDestroyed(_shiftedDcId);
+			_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
 			return;
 		} else if (afterConfig) {
 			LOG(("MTP Error: DC %1 options for not found right after config load!").arg(_shiftedDcId));
 			return restart();
 		}
 		DEBUG_LOG(("MTP Info: DC %1 options not found, waiting for config").arg(_shiftedDcId));
-		InvokeQueued(_instance, [instance = _instance] {
-			instance->requestConfig();
+		InvokeQueued(_instance, [delegate = _delegate] {
+			delegate->requestConfig();
 		});
 		return;
 	}
@@ -459,8 +459,8 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	if (!_connectionState.startedConnectingAt) {
 		_connectionState.startedConnectingAt = crl::now();
 	} else if (crl::now() - _connectionState.startedConnectingAt > kRequestConfigTimeout) {
-		InvokeQueued(_instance, [instance = _instance] {
-			instance->requestConfigIfOld();
+		InvokeQueued(_instance, [delegate = _delegate] {
+			delegate->requestConfigIfOld();
 		});
 	}
 
@@ -658,9 +658,10 @@ void SessionPrivate::waitReceivedFailed() {
 	}
 
 	const auto instance = _instance;
+	const auto delegate = _delegate;
 	const auto shiftedDcId = _shiftedDcId;
 	InvokeQueued(instance, [=] {
-		instance->restartedByTimeout(shiftedDcId);
+		delegate->restartedByTimeout(shiftedDcId);
 	});
 }
 
@@ -753,8 +754,8 @@ void SessionPrivate::doDisconnect() {
 }
 
 void SessionPrivate::requestCDNConfig() {
-	InvokeQueued(_instance, [instance = _instance] {
-		instance->requestCDNConfig();
+	InvokeQueued(_instance, [delegate = _delegate] {
+		delegate->requestCDNConfig();
 	});
 }
 
@@ -883,8 +884,8 @@ void SessionPrivate::onError(
 		LOG(("Protocol Error: -429 flood code returned!"));
 	} else if (errorCode == -444) {
 		LOG(("Protocol Error: -444 bad dc_id code returned!"));
-		InvokeQueued(_instance, [instance = _instance] {
-			instance->badConfigurationError();
+		InvokeQueued(_instance, [delegate = _delegate] {
+			delegate->badConfigurationError();
 		});
 	}
 	const auto found = ranges::find(

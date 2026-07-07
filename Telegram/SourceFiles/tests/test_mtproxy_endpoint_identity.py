@@ -10,6 +10,7 @@ ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
@@ -98,11 +99,12 @@ def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
 
 def test_route_success_promotes_to_canonical_but_route_failure_stays_local():
     source = read(ENDPOINT_HEALTH_CPP)
+    state = read(ENDPOINT_HEALTH_STATE_H)
     failure = function_body(source, "void EndpointHealth::reportFailure(")
     success = function_body(source, "void EndpointHealth::reportSuccess(")
 
     assert "std::map<QString, RouteState> Routes;" in source
-    assert "std::set<QString> routeKeys;" in source
+    assert "std::set<QString> routeKeys;" in state
     assert "RouteKey(report.endpoint.route)" in failure
     assert "NoteRouteFailure(" in failure
     assert "HasHealthyRoute(" in failure

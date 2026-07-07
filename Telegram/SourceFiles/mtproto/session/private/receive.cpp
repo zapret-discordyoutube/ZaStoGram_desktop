@@ -266,7 +266,7 @@ void SessionPrivate::handleReceived() {
 			_connectionState.mtprotoSilentTimeouts = 0;
 			if (_connectionState.proxyMigrationScout) {
 				_connectionState.proxyMigrationScout = false;
-				_instance->proxyMigrationSucceeded(_connectionState.proxyGeneration);
+				_delegate->proxyMigrationSucceeded(_connectionState.proxyGeneration);
 			}
 			logMtprotoEvent(
 				ProxyDiagnosticsPhase::MtpFirstDataReceived,
@@ -1078,7 +1078,7 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 			if (const auto i = haveSent.find(msgId); i != end(haveSent)) {
 				const auto requestId = i->second->requestId;
 
-				if (!byResponse && _instance->hasCallback(requestId)) {
+				if (!byResponse && _delegate->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
 					continue;
 				}
@@ -1091,7 +1091,7 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 			if (const auto i = _requestState.resendingIds.find(msgId); i != end(_requestState.resendingIds)) {
 				const auto requestId = i->second;
 
-				if (!byResponse && _instance->hasCallback(requestId)) {
+				if (!byResponse && _delegate->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
 					continue;
 				}

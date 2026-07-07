@@ -93,7 +93,7 @@ void SessionPrivate::checkAuthKey() {
 			.arg(_sessionState.keyId));
 	if (_sessionState.keyId) {
 		authKeyChecked();
-	} else if (_instance->isKeysDestroyer()) {
+	} else if (_delegate->isKeysDestroyer()) {
 		applyAuthKey(_sessionState.data->getPersistentKey());
 	} else {
 		applyAuthKey(_sessionState.data->getTemporaryKey(
@@ -102,7 +102,7 @@ void SessionPrivate::checkAuthKey() {
 }
 
 void SessionPrivate::updateAuthKey() {
-	if (_instance->isKeysDestroyer() || _authState.keyCreator || !_connectionState.connection) {
+	if (_delegate->isKeysDestroyer() || _authState.keyCreator || !_connectionState.connection) {
 		return;
 	}
 
@@ -149,11 +149,11 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		return authKeyChecked();
 	}
 
-	if (_instance->isKeysDestroyer()) {
+	if (_delegate->isKeysDestroyer()) {
 		// We are here to destroy an old key, so we're done.
 		LOG(("MTP Error: No key %1 in updateAuthKey() for destroying."
 			).arg(_shiftedDcId));
-		_instance->keyWasPossiblyDestroyed(_shiftedDcId);
+		_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
 	} else if (noMediaKeyWithExistingRegularKey()) {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey() for media, "
 			"but someone has created regular, trying to acquire."));
@@ -175,7 +175,7 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 			BareDcId(_shiftedDcId),
 			getProtocolDcId(),
 			_connectionState.connection.get(),
-			&_instance->dcOptions());
+			&_delegate->dcOptions());
 	} else {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey(), "
 			"but someone is creating already, waiting."));
@@ -203,10 +203,11 @@ bool SessionPrivate::destroyOldEnoughPersistentKey() {
 		return false;
 	}
 	const auto instance = _instance;
+	const auto delegate = _delegate;
 	const auto shiftedDcId = _shiftedDcId;
 	const auto keyId = key->keyId();
 	InvokeQueued(instance, [=] {
-		instance->keyDestroyedOnServer(shiftedDcId, keyId);
+		delegate->keyDestroyedOnServer(shiftedDcId, keyId);
 	});
 	return true;
 }
@@ -214,7 +215,7 @@ bool SessionPrivate::destroyOldEnoughPersistentKey() {
 DcType SessionPrivate::tryAcquireKeyCreation() {
 	if (_authState.keyCreator) {
 		return _currentDcType;
-	} else if (_instance->isKeysDestroyer()) {
+	} else if (_delegate->isKeysDestroyer()) {
 		return _realDcType;
 	}
 
@@ -317,13 +318,13 @@ void SessionPrivate::authKeyChecked() {
 }
 
 void SessionPrivate::destroyTemporaryKey() {
-	if (_instance->isKeysDestroyer()) {
+	if (_delegate->isKeysDestroyer()) {
 		LOG(("MTP Info: -404 error received in destroyer %1, assuming key was destroyed.").arg(_shiftedDcId));
 		logMtprotoEvent(
 			ProxyDiagnosticsPhase::MtpKeyDestroyed,
 			ProxyDiagnosticsSeverity::Info,
 			u"key destroyer confirmed key gone"_q);
-		_instance->keyWasPossiblyDestroyed(_shiftedDcId);
+		_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
 		return;
 	}
 	LOG(("MTP Info: -404 error received in %1 with temporary key, assuming it was destroyed.").arg(_shiftedDcId));

@@ -6,6 +6,10 @@ ENDPOINT_HEALTH_H = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h")
 ENDPOINT_HEALTH_CPP = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+ENDPOINT_HEALTH_POLICY_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp")
+ENDPOINT_HEALTH_STATE_H = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_state.h")
 CONNECTION_BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 
@@ -32,31 +36,35 @@ def body_after(text: str, signature: str) -> str:
 
 def test_endpoint_health_has_named_concurrency_policy():
     header = read(ENDPOINT_HEALTH_H)
-    source = read(ENDPOINT_HEALTH_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    state = read(ENDPOINT_HEALTH_STATE_H)
 
-    assert "struct EndpointConcurrencyPolicy" in source
-    assert "kColdActiveCap = 1" in source
-    assert "kUnknownActiveCap = kColdActiveCap" in source
-    assert "kFreshRelayActiveCap = 2" in source
-    assert "kWarmRelayActiveCap = 4" in source
-    assert "kDpiFailureActiveCap = 1" in source
-    assert "kStableRelayActiveCap = 8" in source
-    assert "kFreshRelayWindow = crl::time(10 * 1000)" in source
-    assert "kWarmRelayWindow = crl::time(20 * 1000)" in source
-    assert "kHealthyHandshakeSpacing = crl::time(50)" in source
-    assert "bool useAllowed = true;" in source
-    assert "nextHandshakeAt" in source
-    assert "EndpointConcurrencyPolicyFor(" in source
+    assert "struct EndpointConcurrencyPolicy" in state
+    assert "kColdActiveCap = 1" in policy
+    assert "kUnknownActiveCap = kColdActiveCap" in policy
+    assert "kFreshRelayActiveCap = 2" in policy
+    assert "kWarmRelayActiveCap = 4" in policy
+    assert "kDpiFailureActiveCap = 1" in policy
+    assert "kStableRelayActiveCap = 8" in policy
+    assert "kFreshRelayWindow = crl::time(10 * 1000)" in policy
+    assert "kWarmRelayWindow = crl::time(20 * 1000)" in policy
+    assert "kHealthyHandshakeSpacing = crl::time(50)" in policy
+    assert "bool useAllowed = true;" in state
+    assert "nextHandshakeAt" in state
+    assert "EndpointConcurrencyPolicyFor(" in policy
     assert "SkipCooldown" in header
 
 
 def test_cold_endpoint_admits_only_main_scout_until_relay_proof():
     source = read(ENDPOINT_HEALTH_CPP)
+    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     admit = body_after(source, "Admission EndpointHealth::admit(")
-    policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+    policy = body_after(
+        policy_source,
+        "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
 
-    assert "EndpointUse use" in source
-    assert "crl::time now" in source
+    assert "EndpointUse use" in policy_source
+    assert "crl::time now" in policy_source
     assert "const auto policy = EndpointConcurrencyPolicyFor(" in admit
     assert "request.use," in admit
     assert "!policy.useAllowed" in admit
@@ -71,7 +79,9 @@ def test_cold_endpoint_admits_only_main_scout_until_relay_proof():
 
 def test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst():
     source = read(ENDPOINT_HEALTH_CPP)
-    policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+    policy = body_after(
+        read(ENDPOINT_HEALTH_POLICY_CPP),
+        "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
     success = body_after(source, "void EndpointHealth::reportSuccess(")
 
     assert "state.relayProven = true;" in success
@@ -98,7 +108,7 @@ def test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail():
 
 
 def test_dpi_like_failures_keep_strict_cap_and_recipe_escalation():
-    source = read(ENDPOINT_HEALTH_CPP)
+    source = read(ENDPOINT_HEALTH_POLICY_CPP)
     policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
     escalation = body_after(source, "bool FailureNeedsRecipeEscalation(")
 
@@ -117,8 +127,9 @@ def test_dpi_like_failures_keep_strict_cap_and_recipe_escalation():
 
 
 def test_tcp_route_failures_rotate_routes_without_canonical_cooldown():
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     source = read(ENDPOINT_HEALTH_CPP)
-    route_only = body_after(source, "bool FailureIsRouteOnly(")
+    route_only = body_after(policy, "bool FailureIsRouteOnly(")
     failure = body_after(source, "void EndpointHealth::reportFailure(")
 
     assert "FailureReason::TcpConnectTimeout" in route_only

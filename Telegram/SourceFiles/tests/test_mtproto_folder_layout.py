@@ -125,6 +125,8 @@ def test_config_auth_protocol_and_files_have_folders():
         "auth/mtproto_bound_key_creator.h",
         "auth/mtproto_dc_key_binder.cpp",
         "auth/mtproto_dc_key_binder.h",
+        "auth/mtproto_dc_key_crypto.cpp",
+        "auth/mtproto_dc_key_crypto.h",
         "auth/mtproto_dc_key_creator.cpp",
         "auth/mtproto_dc_key_creator.h",
         "auth/mtproto_dh_utils.cpp",

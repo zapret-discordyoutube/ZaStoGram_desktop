@@ -8,10 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/protocol/mtproto_serialized_request.h"
-// Not used here directly, but almost every TU gets ProxyData through this
-// header (via sender.h / main_account.h) — keep until those includers are
-// cleaned up to include it themselves.
-#include "mtproto/proxy/data.h"
 #include "mtproto/protocol/mtproto_response.h"
 
 #include <QtCore/QObject>
@@ -32,7 +28,7 @@ class ConnectionStatus;
 class Config;
 struct ConfigFields;
 class AuthKey;
-struct RuntimeEnvironment;
+class RuntimeEnvironment;
 using AuthKeyPtr = std::shared_ptr<AuthKey>;
 using AuthKeysList = std::vector<AuthKeyPtr>;
 enum class Environment : uchar;
@@ -70,15 +66,10 @@ public:
 	Instance &operator=(const Instance &other) = delete;
 	~Instance();
 
-	void resolveProxyDomain(const QString &host);
-	void setGoodProxyDomain(const QString &host, const QString &ip);
 	void suggestMainDcId(DcId mainDcId);
 	void setMainDcId(DcId mainDcId);
 	[[nodiscard]] DcId mainDcId() const;
 	[[nodiscard]] rpl::producer<DcId> mainDcIdValue() const;
-	[[nodiscard]] QString systemLangCode() const;
-	[[nodiscard]] QString cloudLangCode() const;
-	[[nodiscard]] QString langPackName() const;
 
 	[[nodiscard]] rpl::producer<> writeKeysRequests() const;
 	[[nodiscard]] rpl::producer<> allKeysDestroyed() const;
@@ -93,17 +84,12 @@ public:
 	[[nodiscard]] QString deviceModel() const;
 	[[nodiscard]] QString systemVersion() const;
 
-	// Main thread.
-	void dcPersistentKeyChanged(DcId dcId, const AuthKeyPtr &persistentKey);
-	void dcTemporaryKeyChanged(DcId dcId);
-	[[nodiscard]] rpl::producer<DcId> dcTemporaryKeyChanged() const;
 	[[nodiscard]] AuthKeysList getKeysForWrite() const;
 	void addKeysForDestroy(AuthKeysList &&keys);
 
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
 	void migrateProxy();
-	void proxyMigrationSucceeded(uint64 generation);
 	int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	QString dctransport(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] ConnectionStatus &connectionStatus() const;
@@ -125,33 +111,14 @@ public:
 	void setSessionResetHandler(Fn<void(ShiftedDcId shiftedDcId)> handler);
 	void clearGlobalHandlers();
 
-	void onStateChange(ShiftedDcId shiftedDcId, int32 state);
-	void onSessionReset(ShiftedDcId shiftedDcId);
-
-	[[nodiscard]] bool hasCallback(mtpRequestId requestId) const;
-	void processCallback(const Response &response);
-	void processUpdate(const Response &message);
-
-	// return true if need to clean request data
-	bool rpcErrorOccured(
-		const Response &response,
-		const FailHandler &onFail,
-		const Error &err);
-
 	// Thread-safe.
 	bool isKeysDestroyer() const;
-	void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId);
-
-	// Main thread.
-	void keyDestroyedOnServer(ShiftedDcId shiftedDcId, uint64 keyId);
 
 	void requestConfig();
 	void requestConfigIfOld();
 	void requestCDNConfig();
 	void setUserPhone(const QString &phone);
-	void badConfigurationError();
 
-	void restartedByTimeout(ShiftedDcId shiftedDcId);
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;
 
 	[[nodiscard]] auto nonPremiumDelayedRequests() const

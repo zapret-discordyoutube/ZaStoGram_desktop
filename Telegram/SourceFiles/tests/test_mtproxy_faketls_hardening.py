@@ -7,6 +7,7 @@ MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
 
@@ -90,7 +91,7 @@ def test_post_handshake_failure_does_not_rotate_client_hello_profile():
 
 
 def test_prepared_adaptive_profile_is_used_for_client_hello():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
     header = (MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")
     recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
     send_body = function_body(source, "void TlsSocket::sendClientHello()")

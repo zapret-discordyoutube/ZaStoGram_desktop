@@ -11,6 +11,7 @@ CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
@@ -117,7 +118,7 @@ def test_admission_queue_and_start_are_logged_not_failed():
 def test_route_canonical_recipe_and_fallback_events_are_emitted():
     resolving = read(RESOLVING_CPP)
     endpoint_health = read(ENDPOINT_HEALTH_CPP)
-    tls_socket = read(TLS_SOCKET_CPP)
+    tls_socket = read(TLS_SOCKET_HANDSHAKE_CPP)
     transport_policy = read(TRANSPORT_POLICY_CPP)
 
     assert "ProxyDiagnosticsPhase::RouteSelected" in resolving

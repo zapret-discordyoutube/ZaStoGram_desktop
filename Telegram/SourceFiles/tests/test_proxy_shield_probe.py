@@ -9,6 +9,8 @@ CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
+ENDPOINT_HEALTH_POLICY_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp")
 
 
 def read(path):
@@ -84,8 +86,7 @@ def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
     source = read(CHECK_CPP)
     health_header = read(
         SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h")
-    health_source = read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+    health_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     active = function_body(source, "bool ActiveSessionProvesProxy(")
     snapshot = function_body(health_source, "Snapshot MakeSnapshot(")
 

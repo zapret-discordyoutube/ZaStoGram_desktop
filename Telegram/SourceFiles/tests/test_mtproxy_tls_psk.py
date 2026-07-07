@@ -6,6 +6,11 @@ MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TLS_SOCKET_H = MTPROXY_DIR / "tls_socket.h"
 CLIENT_HELLO_BUILDER_CPP = MTPROXY_DIR / "client_hello_builder.cpp"
+CLIENT_HELLO_FRAGMENTATION_CPP = MTPROXY_DIR / "client_hello_fragmentation.cpp"
+CLIENT_HELLO_RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
+TLS_SOCKET_PSK_CPP = MTPROXY_DIR / "tls_socket_psk.cpp"
+TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 TCP_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_tcp_socket.h"
@@ -40,17 +45,18 @@ def test_server_hello_length_uses_non_narrow_storage():
 
 
 def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
-    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_RULES_CPP.read_text(encoding="utf-8")
+    builder = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
     rules_body = function_body(
         source,
         "MTPTlsClientHello PrepareClientHelloRulesInternal(\n\t\tProxyTlsProfile profile)")
     padding_body = function_body(
-        source,
+        builder,
         "void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data)")
     permutation_body = function_body(
-        source,
+        builder,
         "void Generator::Part::writeBlock(const MTPDtlsBlockPermutation &data)")
-    prepare_body = function_body(source, "ClientHello PrepareClientHello(")
+    prepare_body = function_body(builder, "ClientHello PrepareClientHello(")
 
     assert 'S("\\x00\\x29"_q);' not in rules_body
     for marker in (
@@ -69,21 +75,23 @@ def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
 
 
 def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
-    plain_connected = function_body(source, "void TlsSocket::plainConnected()")
-    send_client_hello = function_body(source, "void TlsSocket::sendClientHello()")
-    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
-    hello_digest = function_body(source, "void TlsSocket::checkHelloDigest()")
+    psk = TLS_SOCKET_PSK_CPP.read_text(encoding="utf-8")
+    handshake = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
+    socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    plain_connected = function_body(handshake, "void TlsSocket::plainConnected()")
+    send_client_hello = function_body(handshake, "void TlsSocket::sendClientHello()")
+    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
+    hello_digest = function_body(handshake, "void TlsSocket::checkHelloDigest()")
 
-    assert "struct SyntheticPskTicket" in source
-    assert "struct SyntheticPskCacheEntry" in source
-    assert "std::map<QString, SyntheticPskCacheEntry>" in source
-    assert "kSyntheticPskPoolSize" in source
-    assert "kSyntheticPskMinLifetime" in source
-    assert "kSyntheticPskMaxLifetime" in source
-    assert "PrepareSyntheticPskOffer(" in source
-    assert "NoteSyntheticPskDataPathSuccess(" in source
-    assert "ClearSyntheticPskTickets(" in source
+    assert "struct SyntheticPskTicket" in psk
+    assert "struct SyntheticPskCacheEntry" in psk
+    assert "std::map<QString, SyntheticPskCacheEntry>" in psk
+    assert "kSyntheticPskPoolSize" in psk
+    assert "kSyntheticPskMinLifetime" in psk
+    assert "kSyntheticPskMaxLifetime" in psk
+    assert "PrepareSyntheticPskOffer(" in psk
+    assert "NoteSyntheticPskDataPathSuccess(" in psk
+    assert "ClearSyntheticPskTickets(" in psk
 
     assert "sendClientHello();" in plain_connected
     assert "_sentTlsProfile = profile;" in send_client_hello
@@ -100,7 +108,7 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
 
 
 def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = TLS_SOCKET_RECORDS_CPP.read_text(encoding="utf-8")
     packet_body = function_body(source, "bool TlsSocket::checkNextPacket()")
 
     assert "NoteSyntheticPskDataPathSuccess(" in source
@@ -122,12 +130,15 @@ def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
 
 def test_synthetic_psk_offer_failures_clear_remaining_tickets():
     header = TLS_SOCKET_H.read_text(encoding="utf-8")
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
-    send_client_hello = function_body(source, "void TlsSocket::sendClientHello()")
-    disconnected_body = function_body(source, "void TlsSocket::plainDisconnected()")
-    clear_helper = function_body(source, "bool TlsSocket::clearSyntheticPskOnFailure(")
-    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
-    timeout_body = function_body(source, "void TlsSocket::timedOut()")
+    socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    handshake = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
+    send_client_hello = function_body(handshake, "void TlsSocket::sendClientHello()")
+    disconnected_body = function_body(handshake, "void TlsSocket::plainDisconnected()")
+    clear_helper = function_body(
+        socket,
+        "bool TlsSocket::clearSyntheticPskOnFailure(")
+    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
+    timeout_body = function_body(socket, "void TlsSocket::timedOut()")
 
     assert "bool _syntheticPskOffered = false;" in header
     assert "_syntheticPskOffered = pskOffer.has_value();" in send_client_hello
@@ -149,7 +160,7 @@ def test_synthetic_psk_offer_failures_clear_remaining_tickets():
 
 def test_synthetic_psk_uses_cached_identity_and_plausible_age():
     source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
-    tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    tls_socket = TLS_SOCKET_PSK_CPP.read_text(encoding="utf-8")
     helper = function_body(
         source,
         "void Generator::Part::writeSyntheticPskExtension()")
@@ -179,7 +190,7 @@ def test_synthetic_psk_uses_cached_identity_and_plausible_age():
 
 
 def test_synthetic_psk_ticket_is_consumed_after_offer():
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = TLS_SOCKET_PSK_CPP.read_text(encoding="utf-8")
     offer_body = function_body(
         source,
         "std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(")
@@ -203,16 +214,16 @@ def test_synthetic_psk_does_not_take_over_mtproxy_digest_slot():
 
     assert "_digestPosition" not in helper
     assert "MTP_tlsBlockZero" not in helper
-    assert "length == kHelloDigestLength && _digestPosition < 0" in zero_body
+    assert "length == kClientHelloDigestLength && !_digestPosition" in zero_body
     assert finalize_body.index("writeDigest(key);") < finalize_body.index(
         "injectTimestamp();")
 
 
 def test_client_hello_fragmentation_targets_sni_hostname():
-    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_FRAGMENTATION_CPP.read_text(encoding="utf-8")
     builder_header = (
         MTPROXY_DIR / "client_hello_builder.h").read_text(encoding="utf-8")
-    tls_socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    tls_socket = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
     header = TLS_SOCKET_H.read_text(encoding="utf-8")
     split_body = function_body(source, "int ClientHelloFragmentSplit(")
     plan_body = function_body(
@@ -254,7 +265,7 @@ def test_mtproxy_profile_wording_does_not_claim_ja4_validation():
 
 
 def test_manual_tls_profiles_have_independent_transport_cases():
-    source = CLIENT_HELLO_BUILDER_CPP.read_text(encoding="utf-8")
+    source = CLIENT_HELLO_RULES_CPP.read_text(encoding="utf-8")
     box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
     rules_body = function_body(
         source,
@@ -289,12 +300,13 @@ def test_stealth_record_timing_and_startup_cover_default_off():
 
 def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
     header = TLS_SOCKET_H.read_text(encoding="utf-8")
-    source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
+    source = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
+    socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     adaptive_header = ADAPTIVE_POLICY_H.read_text(encoding="utf-8")
     adaptive_source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
     recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
     connected_body = function_body(source, "void TlsSocket::plainConnected()")
-    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
+    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
     parts12_body = function_body(source, "void TlsSocket::checkHelloParts12(int parts1Size)")
     digest_body = function_body(source, "void TlsSocket::checkHelloDigest()")
 

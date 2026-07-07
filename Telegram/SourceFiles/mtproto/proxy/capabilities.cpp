@@ -87,8 +87,8 @@ constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
 
 [[nodiscard]] QString CapabilitiesPath() {
 	const auto runtime = DefaultRuntimeEnvironment();
-	return runtime->proxyCapabilitiesPath
-		? runtime->proxyCapabilitiesPath()
+	return runtime->proxyCapabilities().path
+		? runtime->proxyCapabilities().path()
 		: QString();
 }
 

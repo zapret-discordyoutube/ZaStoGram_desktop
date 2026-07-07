@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 
 #include "mtproto/protocol/mtproto_binary.h"
-#include "mtproto/proxy/mtproxy/client_hello_profile.h"
+#include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/random.h"
@@ -18,591 +18,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <array>
-#include <variant>
+#include <optional>
 #include <vector>
 
 namespace MTP::details {
 namespace {
 
-constexpr auto kMaxGrease = 8;
-constexpr auto kClientHelloLimit = 4096;
-constexpr auto kHelloDigestLength = 32;
-constexpr auto kLengthSize = sizeof(uint16);
-constexpr auto kClientHelloFragmentDelayMin = crl::time(2);
-constexpr auto kClientHelloFragmentDelayMax = crl::time(7);
-
-[[nodiscard]] MTPTlsClientHello PrepareClientHelloRulesInternal(
-		ProxyTlsProfile profile) {
-	using Scope = QVector<MTPTlsBlock>;
-	using Permutation = std::vector<Scope>;
-	using StackElement = std::variant<Scope, Permutation>;
-	auto stack = std::vector<StackElement>();
-	const auto pushToBack = [&](MTPTlsBlock &&block) {
-		Expects(!stack.empty());
-
-		if (const auto scope = std::get_if<Scope>(&stack.back())) {
-			scope->push_back(std::move(block));
-		} else {
-			auto &permutation = v::get<Permutation>(stack.back());
-			Assert(!permutation.empty());
-			permutation.back().push_back(std::move(block));
-		}
-	};
-	const auto S = [&](QByteArray data) {
-		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
-	};
-	const auto Z = [&](int length) {
-		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
-	};
-	const auto G = [&](int seed) {
-		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
-	};
-	const auto R = [&](int length) {
-		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
-	};
-	const auto D = [&] {
-		pushToBack(MTP_tlsBlockDomain());
-	};
-	const auto K = [&] {
-		pushToBack(MTP_tlsBlockPublicKey());
-	};
-	const auto M = [&] {
-		pushToBack(MTP_tlsBlockM());
-	};
-	const auto E = [&] {
-		pushToBack(MTP_tlsBlockE());
-	};
-	const auto P = [&] {
-		pushToBack(MTP_tlsBlockPadding());
-	};
-	const auto OpenScope = [&] {
-		stack.emplace_back(Scope());
-	};
-	const auto CloseScope = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Scope>(stack.back()));
-
-		const auto blocks = std::move(v::get<Scope>(stack.back()));
-		stack.pop_back();
-		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
-	};
-	const auto OpenPermutation = [&] {
-		stack.emplace_back(Permutation());
-	};
-	const auto ClosePermutation = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Permutation>(stack.back()));
-
-		const auto list = std::move(v::get<Permutation>(stack.back()));
-		stack.pop_back();
-
-		const auto wrapped = list | ranges::views::transform([](
-				const QVector<MTPTlsBlock> &elements) {
-			return MTP_vector<MTPTlsBlock>(elements);
-		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
-
-		pushToBack(MTP_tlsBlockPermutation(
-			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
-	};
-	const auto StartPermutationElement = [&] {
-		Expects(stack.size() > 1);
-		Expects(v::is<Permutation>(stack.back()));
-
-		v::get<Permutation>(stack.back()).emplace_back();
-	};
-	const auto Finish = [&] {
-		Expects(stack.size() == 1);
-		Expects(v::is<Scope>(stack.back()));
-
-		return v::get<Scope>(stack.back());
-	};
-
-	stack.emplace_back(Scope());
-
-	switch (profile) {
-	case ProxyTlsProfile::Firefox: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x22"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
-			"\xc0\x30\xc0\x0a\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"_q);
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x17\x00\x00"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S("\x00\x0a\x00\x10\x00\x0e"_q);
-		G(2);
-		S("\x00\x1d\x00\x17\x00\x18\x00\x19\x01\x00\x01\x01"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S("\x00\x23\x00\x00"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
-		S("\x00\x33\x05\x2f\x05\x2d"_q);
-		S("\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		S("\x00\x17\x00\x41"_q);
-		R(65);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(4);
-		S("\x03\x04\x03\x03"_q);
-		S(""
-			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
-			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1c\x00\x02\x40\x01"_q);
-		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
-		S("\xfe\x0d\x01\x19"_q);
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		S("\x00\xef"_q);
-		R(239);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::FirefoxAndroid: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x22"_q);
-		S(""
-			"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
-			"\xc0\x30\xc0\x0a\xc0\x09\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f"
-			"\x00\x35"_q);
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x17\x00\x00"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S(""
-			"\x00\x0a\x00\x10\x00\x0e\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19"
-			"\x01\x00\x01\x01"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x00\x22\x00\x0a\x00\x08\x04\x03\x05\x03\x06\x03\x02\x03"_q);
-		S("\x00\x33\x05\x2f\x05\x2d"_q);
-		S("\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		S("\x00\x17\x00\x41"_q);
-		R(65);
-		S("\x00\x2b\x00\x05\x04\x03\x04\x03\x03"_q);
-		S(""
-			"\x00\x0d\x00\x18\x00\x16\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05"
-			"\x08\x06\x04\x01\x05\x01\x06\x01\x02\x03\x02\x01"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1c\x00\x02\x40\x01"_q);
-		S("\x00\x1b\x00\x07\x06\x00\x01\x00\x02\x00\x03"_q);
-		S("\xfe\x0d\x01\xb9"_q);
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		S("\x01\x8f"_q);
-		R(399);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::AndroidOkHttp: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x0a\x00\x0a\x00\x08"_q);
-		G(4);
-		S("\x00\x1d\x00\x17\x00\x18"_q);
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S(""
-			"\x00\x0d\x00\x0e\x00\x0c\x04\x03\x05\x03\x04\x01\x05\x01\x02\x01"
-			"\x02\x03"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(6);
-		S("\x03\x04\x03\x03"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20"_q);
-		K();
-		G(3);
-		S("\x00\x01\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::Yandex: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		S("\x00\x17\x00\x00"_q);
-		S(""
-			"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05"
-			"\x05\x01\x08\x06\x06\x01"_q);
-		S("\x00\x00"_q);
-		OpenScope();
-		OpenScope();
-		S("\x00"_q);
-		OpenScope();
-		D();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		S("\x00\x0b\x00\x02\x01\x00"_q);
-		S("\x00\x2d\x00\x02\x01\x01"_q);
-		S("\x00\x1b\x00\x03\x02\x00\x02"_q);
-		S(""
-			"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-			"\x2e\x31"_q);
-		S("\xff\x01\x00\x01\x00"_q);
-		S("\x00\x23\x00\x00"_q);
-		S("\x00\x2b\x00\x07\x06"_q);
-		G(6);
-		S("\x03\x04\x03\x03"_q);
-		S("\x00\x12\x00\x00"_q);
-		S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-		S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
-		S("\x00\x0a\x00\x0c\x00\x0a"_q);
-		G(4);
-		S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
-		S("\xfe\x0d"_q);
-		OpenScope();
-		S("\x00\x00\x01\x00\x01"_q);
-		R(1);
-		S("\x00\x20"_q);
-		K();
-		OpenScope();
-		E();
-		CloseScope();
-		CloseScope();
-		S("\x00\x33\x04\xef\x04\xed"_q);
-		G(4);
-		S("\x00\x01\x00\x11\xec\x04\xc0"_q);
-		M();
-		K();
-		S("\x00\x1d\x00\x20"_q);
-		K();
-		G(3);
-		S("\x00\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::ChromeModern: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"
-			""_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		OpenPermutation(); {
-			StartPermutationElement(); {
-				S("\x00\x00"_q);
-				OpenScope();
-				OpenScope();
-				S("\x00"_q);
-				OpenScope();
-				D();
-				CloseScope();
-				CloseScope();
-				CloseScope();
-			}
-			StartPermutationElement(); {
-				S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x0a\x00\x0c\x00\x0a"_q);
-				G(4);
-				S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x0b\x00\x02\x01\x00"_q);
-			}
-			StartPermutationElement(); {
-				S(""
-					"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03"
-					"\x08\x05\x05\x01\x08\x06\x06\x01"_q);
-			}
-			StartPermutationElement(); {
-				S(""
-					"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
-					"\x2f\x31\x2e\x31"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x12\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x17\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x1b\x00\x03\x02\x00\x02"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x23\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x2b\x00\x07\x06"_q);
-				G(6);
-				S("\x03\x04\x03\x03"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x2d\x00\x02\x01\x01"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x33\x04\xef\x04\xed"_q);
-				G(4);
-				S("\x00\x01\x00\x11\xec\x04\xc0"_q);
-				M();
-				K();
-				S("\x00\x1d\x00\x20"_q);
-				K();
-			}
-			StartPermutationElement(); {
-				S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
-			}
-			StartPermutationElement(); {
-				S("\xfe\x0d"_q);
-				OpenScope();
-				S("\x00\x00\x01\x00\x01"_q);
-				R(1);
-				S("\x00\x20"_q);
-				R(32);
-				OpenScope();
-				E();
-				CloseScope();
-				CloseScope();
-			}
-			StartPermutationElement(); {
-				S("\xff\x01\x00\x01\x00"_q);
-			}
-		} ClosePermutation();
-		G(3);
-		S("\x00\x01\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::Auto: {
-		return PrepareClientHelloRulesInternal(DefaultClientHelloProfile());
-	}
-	case ProxyTlsProfile::AndroidChrome: {
-		S("\x16\x03\x01"_q);
-		OpenScope();
-		S("\x01\x00"_q);
-		OpenScope();
-		S("\x03\x03"_q);
-		Z(32);
-		S("\x20"_q);
-		R(32);
-		S("\x00\x20"_q);
-		G(0);
-		S(""
-			"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-			"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"
-			""_q);
-		OpenScope();
-		G(2);
-		S("\x00\x00"_q);
-		OpenPermutation(); {
-			StartPermutationElement(); {
-				S("\x00\x00"_q);
-				OpenScope();
-				OpenScope();
-				S("\x00"_q);
-				OpenScope();
-				D();
-				CloseScope();
-				CloseScope();
-				CloseScope();
-			}
-			StartPermutationElement(); {
-				S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x0a\x00\x0c\x00\x0a"_q);
-				G(4);
-				S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x0b\x00\x02\x01\x00"_q);
-			}
-			StartPermutationElement(); {
-				S(""
-					"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03"
-					"\x08\x05\x05\x01\x08\x06\x06\x01"_q);
-			}
-			StartPermutationElement(); {
-				S(""
-					"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
-					"\x2f\x31\x2e\x31"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x12\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x17\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x1b\x00\x03\x02\x00\x02"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x23\x00\x00"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x2b\x00\x07\x06"_q);
-				G(6);
-				S("\x03\x04\x03\x03"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x2d\x00\x02\x01\x01"_q);
-			}
-			StartPermutationElement(); {
-				S("\x00\x33\x04\xef\x04\xed"_q);
-				G(4);
-				S("\x00\x01\x00\x11\xec\x04\xc0"_q);
-				M();
-				K();
-				S("\x00\x1d\x00\x20"_q);
-				K();
-			}
-			StartPermutationElement(); {
-				S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
-			}
-			StartPermutationElement(); {
-				S("\xfe\x0d"_q);
-				OpenScope();
-				S("\x00\x00\x01\x00\x01"_q);
-				R(1);
-				S("\x00\x20"_q);
-				R(32);
-				OpenScope();
-				E();
-				CloseScope();
-				CloseScope();
-			}
-			StartPermutationElement(); {
-				S("\xff\x01\x00\x01\x00"_q);
-			}
-		} ClosePermutation();
-		G(3);
-		S("\x00\x01\x00"_q);
-		P();
-		CloseScope();
-		CloseScope();
-		CloseScope();
-		break;
-	}
-	case ProxyTlsProfile::AutoRotate: {
-		return PrepareClientHelloRulesInternal(DefaultClientHelloProfile());
-	}
-	}
-
-	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
-}
-
 [[nodiscard]] bytes::vector PrepareGreases(
 		const ClientHelloGenerationOptions &options) {
-	auto result = bytes::vector(kMaxGrease);
+	auto result = bytes::vector(kClientHelloGreaseCount);
 	if (options.deterministic) {
-		for (auto i = 0; i != kMaxGrease; ++i) {
+		for (auto i = 0; i != kClientHelloGreaseCount; ++i) {
 			result[i] = bytes::type((i << 4) + 0x0A);
 		}
 		return result;
@@ -611,8 +37,8 @@ constexpr auto kClientHelloFragmentDelayMax = crl::time(7);
 	for (auto &byte : result) {
 		byte = bytes::type((uchar(byte) & 0xF0) + 0x0A);
 	}
-	static_assert(kMaxGrease % 2 == 0);
-	for (auto i = 0; i != kMaxGrease; i += 2) {
+	static_assert(kClientHelloGreaseCount % 2 == 0);
+	for (auto i = 0; i != kClientHelloGreaseCount; i += 2) {
 		if (result[i] == result[i + 1]) {
 			result[i + 1] = bytes::type(uchar(result[i + 1]) ^ 0x10);
 		}
@@ -657,24 +83,6 @@ constexpr auto kClientHelloFragmentDelayMax = crl::time(7);
 	}
 	return result;
 }
-
-
-struct ClientHelloRange {
-	int offset = 0;
-	int length = 0;
-
-	[[nodiscard]] explicit operator bool() const {
-		return length > 0;
-	}
-};
-
-} // namespace
-
-MTPTlsClientHello PrepareClientHelloRules(ProxyTlsProfile profile) {
-	return PrepareClientHelloRulesInternal(profile);
-}
-
-namespace {
 
 [[nodiscard]] bool ShouldPadBeforeSyntheticPsk(ProxyTlsProfile profile) {
 	switch (profile) {
@@ -741,7 +149,7 @@ private:
 		ClientHelloGenerationOptions _options;
 		QByteArray _result;
 		const char *_data = nullptr;
-		int _digestPosition = -1;
+		std::optional<int> _digestPosition;
 		bool _error = false;
 
 	};
@@ -821,7 +229,7 @@ void Generator::Part::writeBlock(const MTPDtlsBlockZero &data) {
 	if (storage.empty()) {
 		return;
 	}
-	if (length == kHelloDigestLength && _digestPosition < 0) {
+	if (length == kClientHelloDigestLength && !_digestPosition) {
 		_digestPosition = already;
 	}
 	bytes::set_with_const(storage, bytes::type(0));
@@ -878,7 +286,7 @@ void Generator::Part::writeBlock(const MTPDtlsBlockPublicKey &data) {
 }
 
 void Generator::Part::writeBlock(const MTPDtlsBlockScope &data) {
-	const auto storage = grow(kLengthSize);
+	const auto storage = grow(kTlsLengthFieldSize);
 	if (storage.empty()) {
 		return;
 	}
@@ -1033,7 +441,7 @@ void Generator::Part::writeSyntheticPskExtension() {
 void Generator::Part::finalize(bytes::const_span key) {
 	if (_error) {
 		return;
-	} else if (_digestPosition < 0) {
+	} else if (!_digestPosition) {
 		_error = true;
 		return;
 	}
@@ -1044,25 +452,25 @@ void Generator::Part::finalize(bytes::const_span key) {
 }
 
 QByteArray Generator::Part::extractDigest() const {
-	if (_digestPosition < 0) {
+	if (!_digestPosition) {
 		return {};
 	}
-	return _result.mid(_digestPosition, kHelloDigestLength);
+	return _result.mid(*_digestPosition, kClientHelloDigestLength);
 }
 
 void Generator::Part::writeDigest(bytes::const_span key) {
-	Expects(_digestPosition >= 0);
+	Expects(_digestPosition.has_value());
 
 	bytes::copy(
-		bytes::make_detached_span(_result).subspan(_digestPosition),
+		bytes::make_detached_span(_result).subspan(*_digestPosition),
 		openssl::HmacSha256(key, bytes::make_span(_result)));
 }
 
 void Generator::Part::injectTimestamp() {
-	Expects(_digestPosition >= 0);
+	Expects(_digestPosition.has_value());
 
 	const auto storage = bytes::make_detached_span(_result).subspan(
-		_digestPosition + kHelloDigestLength - sizeof(int32),
+		*_digestPosition + kClientHelloDigestLength - sizeof(int32),
 		sizeof(int32));
 	auto already = int32();
 	bytes::copy(bytes::object_as_span(&already), storage);
@@ -1091,125 +499,6 @@ ClientHello Generator::take() {
 	return { _result.take(), std::move(digest) };
 }
 
-[[nodiscard]] int ClientHelloRead16(const QByteArray &data, int offset) {
-	if (offset < 0 || offset + 2 > data.size()) {
-		return -1;
-	}
-	return (int(uchar(data[offset])) << 8)
-		| int(uchar(data[offset + 1]));
-}
-
-[[nodiscard]] int ClientHelloRead24(const QByteArray &data, int offset) {
-	if (offset < 0 || offset + 3 > data.size()) {
-		return -1;
-	}
-	return (int(uchar(data[offset])) << 16)
-		| (int(uchar(data[offset + 1])) << 8)
-		| int(uchar(data[offset + 2]));
-}
-
-[[nodiscard]] ClientHelloRange ClientHelloSniHostRange(
-		const QByteArray &data) {
-	if (data.size() < 9 || uchar(data[0]) != 0x16) {
-		return {};
-	}
-	const auto recordLength = ClientHelloRead16(data, 3);
-	const auto recordEnd = 5 + recordLength;
-	if (recordLength < 4 || recordEnd > data.size()) {
-		return {};
-	}
-	auto position = 5;
-	if (uchar(data[position]) != 0x01) {
-		return {};
-	}
-	const auto handshakeLength = ClientHelloRead24(data, position + 1);
-	position += 4;
-	const auto handshakeEnd = position + handshakeLength;
-	if (handshakeLength < 0 || handshakeEnd > recordEnd) {
-		return {};
-	}
-	if (position + 34 > handshakeEnd) {
-		return {};
-	}
-	position += 34;
-	if (position + 1 > handshakeEnd) {
-		return {};
-	}
-	const auto sessionIdLength = int(uchar(data[position++]));
-	if (position + sessionIdLength > handshakeEnd) {
-		return {};
-	}
-	position += sessionIdLength;
-	const auto cipherSuitesLength = ClientHelloRead16(data, position);
-	position += 2;
-	if (cipherSuitesLength < 0
-		|| position + cipherSuitesLength > handshakeEnd) {
-		return {};
-	}
-	position += cipherSuitesLength;
-	if (position + 1 > handshakeEnd) {
-		return {};
-	}
-	const auto compressionLength = int(uchar(data[position++]));
-	if (position + compressionLength > handshakeEnd) {
-		return {};
-	}
-	position += compressionLength;
-	const auto extensionsLength = ClientHelloRead16(data, position);
-	position += 2;
-	const auto extensionsEnd = position + extensionsLength;
-	if (extensionsLength < 0 || extensionsEnd > handshakeEnd) {
-		return {};
-	}
-	while (position + 4 <= extensionsEnd) {
-		const auto type = ClientHelloRead16(data, position);
-		const auto length = ClientHelloRead16(data, position + 2);
-		const auto value = position + 4;
-		const auto next = value + length;
-		if (length < 0 || next > extensionsEnd) {
-			return {};
-		}
-		if (type != 0x0000) {
-			position = next;
-			continue;
-		}
-		const auto listLength = ClientHelloRead16(data, value);
-		auto listPosition = value + 2;
-		const auto listEnd = listPosition + listLength;
-		if (listLength < 0 || listEnd > next) {
-			return {};
-		}
-		while (listPosition + 3 <= listEnd) {
-			const auto nameType = uchar(data[listPosition]);
-			const auto nameLength = ClientHelloRead16(data, listPosition + 1);
-			const auto nameOffset = listPosition + 3;
-			if (nameLength < 0 || nameOffset + nameLength > listEnd) {
-				return {};
-			}
-			if (nameType == 0 && nameLength > 1) {
-				return { nameOffset, nameLength };
-			}
-			listPosition = nameOffset + nameLength;
-		}
-		return {};
-	}
-	return {};
-}
-
-[[nodiscard]] int ClientHelloFragmentSplit(const QByteArray &data) {
-	const auto range = ClientHelloSniHostRange(data);
-	if (range) {
-		return range.offset + 1 + base::RandomIndex(range.length - 1);
-	}
-	const auto size = int(data.size());
-	const auto maxFirst = std::min(768, size - 96);
-	const auto minFirst = std::min(224, maxFirst);
-	const auto fallbackRange = (maxFirst > minFirst)
-		? (maxFirst - minFirst + 1)
-		: 1;
-	return minFirst + base::RandomIndex(fallbackRange);
-}
-
 } // namespace
 
 ClientHello PrepareClientHello(
@@ -1228,19 +517,5 @@ ClientHello PrepareClientHello(
 		options).take();
 }
 
-ClientHelloFragmentationPlan PrepareClientHelloFragmentation(
-		const QByteArray &data,
-		ProxyClientHelloFragmentation mode) {
-	const auto size = int(data.size());
-	if (mode != ProxyClientHelloFragmentation::Soft || size < 384) {
-		return {};
-	}
-	const auto delayRange = int(
-		kClientHelloFragmentDelayMax - kClientHelloFragmentDelayMin + 1);
-	return {
-		ClientHelloFragmentSplit(data),
-		kClientHelloFragmentDelayMin + base::RandomIndex(delayRange),
-	};
-}
 
 } // namespace MTP::details

@@ -10,7 +10,10 @@ DATA_CPP = PROXY_DIR / "data.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
+ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 
 
 def read(path):
@@ -98,11 +101,13 @@ def test_admission_delay_is_queued_not_failed_or_backoff():
 
 def test_route_success_updates_canonical_capability_and_health():
     health = read(ENDPOINT_HEALTH_CPP)
-    tls = read(TLS_SOCKET_CPP)
+    capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
+    tls = read(TLS_SOCKET_RECORDS_CPP)
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     packet = function_body(tls, "bool TlsSocket::checkNextPacket()")
 
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
+    assert "NoteCapabilityMtproxySuccess(" in success
+    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "state.lastFailure = FailureReason::None;" in success
@@ -124,11 +129,11 @@ def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
 
 
 def test_pre_clienthello_timeouts_do_not_rotate_or_escalate_recipes():
-    health = read(ENDPOINT_HEALTH_CPP)
-    cooldown = function_body(health, "bool FailureNeedsCooldown(")
-    recipe = function_body(health, "bool FailureNeedsRecipeEscalation(")
-    rotation = function_body(health, "bool FailureNeedsTlsRotation(")
-    route_only = function_body(health, "bool FailureIsRouteOnly(")
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    cooldown = function_body(policy, "bool FailureNeedsCooldown(")
+    recipe = function_body(policy, "bool FailureNeedsRecipeEscalation(")
+    rotation = function_body(policy, "bool FailureNeedsTlsRotation(")
+    route_only = function_body(policy, "bool FailureIsRouteOnly(")
 
     for reason in ("TcpConnectTimeout", "TcpConnectedNoClientHelloWrite"):
         assert f"case FailureReason::{reason}:" in recipe

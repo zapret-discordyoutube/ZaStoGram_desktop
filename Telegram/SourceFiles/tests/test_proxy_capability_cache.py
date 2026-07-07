@@ -10,7 +10,10 @@ CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
 RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_HEALTH_CAPABILITIES_CPP = (
+    PROXY_DIR / "mtproxy" / "endpoint_health_capabilities.cpp")
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
+TLS_SOCKET_RECORDS_CPP = PROXY_DIR / "mtproxy" / "tls_socket_records.cpp"
 
 
 def read(path):
@@ -48,7 +51,7 @@ def test_capability_cache_module_is_file_backed_and_registered():
     assert 'u"proxy-capabilities.json"_q' in runtime
     assert "cWorkingDir() + u\"tdata/\"_q" in runtime
     assert "QDir().mkpath(" in runtime
-    assert "runtime->proxyCapabilitiesPath" in source
+    assert "runtime->proxyCapabilities().path" in source
     assert "load()" in source
     assert "save()" in source
 
@@ -132,16 +135,21 @@ def test_wss_remote_closed_is_persisted_with_ttl_per_proxy():
 
 def test_mtproxy_success_and_failure_update_capability_routes():
     health = read(ENDPOINT_HEALTH_CPP)
-    tls = read(TLS_SOCKET_CPP)
+    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
+    tls_records = read(TLS_SOCKET_RECORDS_CPP)
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
-    packet_body = function_body(tls, "bool TlsSocket::checkNextPacket()")
+    packet_body = function_body(tls_records, "bool TlsSocket::checkNextPacket()")
 
-    assert '#include "mtproto/proxy/capabilities.h"' in health
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in failure
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in failure
-    assert "RouteKey(report.endpoint.route)" in failure
+    assert '#include "mtproto/proxy/capabilities.h"' in capabilities_bridge
+    assert "NoteCapabilityMtproxyFailure(" in failure
+    assert "NoteCapabilityMtproxySuccess(" in success
+    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in (
+        capabilities_bridge)
+    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in (
+        capabilities_bridge)
+    assert "CapabilityProxyKey(endpoint.canonical)" in capabilities_bridge
+    assert "RouteKey(endpoint.route)" in capabilities_bridge
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "RouteText(report.endpoint)" in success
@@ -149,6 +157,29 @@ def test_mtproxy_success_and_failure_update_capability_routes():
     assert "successRecipeLevel" in success
     assert ".stealth = _stealth" in packet_body
     assert ".sentProfile = _sentTlsProfile" in packet_body
+
+
+def test_endpoint_health_updates_capabilities_after_state_lock_release():
+    health = read(ENDPOINT_HEALTH_CPP)
+    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
+    failure = function_body(health, "void EndpointHealth::reportFailure(")
+    success = function_body(health, "void EndpointHealth::reportSuccess(")
+    stall = function_body(health, "void EndpointHealth::noteRelayStall(")
+
+    assert "ProxyCapabilityCache::Instance()" not in failure
+    assert "ProxyCapabilityCache::Instance()" not in success
+    assert "ProxyCapabilityCache::Instance()" not in stall
+    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in (
+        capabilities_bridge)
+    assert "NoteCapabilityMtproxyFailure(" in failure
+    assert "NoteCapabilityMtproxyRelayFailure(" in failure
+    assert failure.index("lock.unlock();") < failure.index(
+        "NoteCapabilityMtproxyFailure(")
+    assert failure.index("lock.unlock();") < failure.index(
+        "NoteCapabilityMtproxyRelayFailure(")
+    assert success.index("lock.unlock();") < success.index(
+        "NoteCapabilityMtproxySuccess(")
+    assert "lock.unlock();" not in stall
 
 
 def test_mtproxy_relay_success_persists_boring_last_good_path():
@@ -226,6 +257,7 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
     header = read(CAPABILITIES_H)
     source = read(CAPABILITIES_CPP)
     health = read(ENDPOINT_HEALTH_CPP)
+    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     relay_failure = function_body(
         source,
         "void ProxyCapabilityCache::noteMtproxyRelayFailure(")
@@ -237,10 +269,10 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
     assert "card.relayProvenAt = 0;" in relay_failure
     assert "card.lastFailureClass = failureClass;" in relay_failure
     assert "AddRoute(card.badRoutes, routeKey);" in relay_failure
+    assert "NoteCapabilityMtproxyRelayFailure(" in report_failure
+    assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
     assert "ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(" in (
-        report_failure)
-    assert "ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(" in (
-        relay_stall)
+        capabilities_bridge)
     assert "relay_stall" in relay_stall
 
     no_appdata_warning = report_failure.split(
@@ -270,6 +302,7 @@ if __name__ == "__main__":
     test_proxy_capability_key_uses_canonical_identity_not_route_ip()
     test_wss_remote_closed_is_persisted_with_ttl_per_proxy()
     test_mtproxy_success_and_failure_update_capability_routes()
+    test_endpoint_health_updates_capabilities_after_state_lock_release()
     test_mtproxy_relay_success_persists_boring_last_good_path()
     test_legacy_relay_cache_uses_last_success_as_proof_time()
     test_last_good_capability_is_used_before_saved_mtproxy_experiments()

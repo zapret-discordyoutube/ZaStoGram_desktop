@@ -11,21 +11,26 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/openssl_help.h"
 
 #include <algorithm>
+#include <optional>
 
 namespace MTP::details {
 namespace {
 
-[[nodiscard]] int ClientHelloRead16(const QByteArray &data, int offset) {
+[[nodiscard]] std::optional<int> ClientHelloRead16(
+		const QByteArray &data,
+		int offset) {
 	if (offset < 0 || offset + 2 > data.size()) {
-		return -1;
+		return std::nullopt;
 	}
 	return (int(uchar(data[offset])) << 8)
 		| int(uchar(data[offset + 1]));
 }
 
-[[nodiscard]] int ClientHelloRead24(const QByteArray &data, int offset) {
+[[nodiscard]] std::optional<int> ClientHelloRead24(
+		const QByteArray &data,
+		int offset) {
 	if (offset < 0 || offset + 3 > data.size()) {
-		return -1;
+		return std::nullopt;
 	}
 	return (int(uchar(data[offset])) << 16)
 		| (int(uchar(data[offset + 1])) << 8)
@@ -110,11 +115,11 @@ namespace {
 
 [[nodiscard]] bool HasSniHost(const QByteArray &value) {
 	const auto listLength = ClientHelloRead16(value, 0);
-	if (listLength < 0) {
+	if (!listLength) {
 		return false;
 	}
 	auto position = 2;
-	const auto end = position + listLength;
+	const auto end = position + *listLength;
 	if (end > value.size()) {
 		return false;
 	}
@@ -122,20 +127,20 @@ namespace {
 		const auto nameType = uchar(value[position]);
 		const auto nameLength = ClientHelloRead16(value, position + 1);
 		const auto nameOffset = position + 3;
-		if (nameLength < 0 || nameOffset + nameLength > end) {
+		if (!nameLength || nameOffset + *nameLength > end) {
 			return false;
 		}
-		if (nameType == 0 && nameLength > 0) {
+		if (nameType == 0 && *nameLength > 0) {
 			return true;
 		}
-		position = nameOffset + nameLength;
+		position = nameOffset + *nameLength;
 	}
 	return false;
 }
 
 [[nodiscard]] QByteArray FirstAlpn(const QByteArray &value) {
 	const auto listLength = ClientHelloRead16(value, 0);
-	if (listLength < 0 || 2 + listLength > value.size() || listLength < 1) {
+	if (!listLength || 2 + *listLength > value.size() || *listLength < 1) {
 		return {};
 	}
 	const auto length = int(uchar(value[2]));
@@ -152,18 +157,22 @@ void AppendSupportedVersions(ClientHelloFacts &facts, const QByteArray &value) {
 	const auto length = int(uchar(value[0]));
 	for (auto offset = 1; offset + 2 <= value.size() && offset < 1 + length;
 			offset += 2) {
-		facts.supportedVersions.push_back(ClientHelloRead16(value, offset));
+		if (const auto version = ClientHelloRead16(value, offset)) {
+			facts.supportedVersions.push_back(*version);
+		}
 	}
 }
 
 void AppendSignatureAlgorithms(ClientHelloFacts &facts, const QByteArray &value) {
 	const auto length = ClientHelloRead16(value, 0);
-	if (length < 0) {
+	if (!length) {
 		return;
 	}
-	for (auto offset = 2; offset + 2 <= value.size() && offset < 2 + length;
+	for (auto offset = 2; offset + 2 <= value.size() && offset < 2 + *length;
 			offset += 2) {
-		facts.signatureAlgorithms.push_back(ClientHelloRead16(value, offset));
+		if (const auto algorithm = ClientHelloRead16(value, offset)) {
+			facts.signatureAlgorithms.push_back(*algorithm);
+		}
 	}
 }
 
@@ -185,15 +194,19 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 	}
 	const auto handshakeLength = ClientHelloRead24(data, position + 1);
 	position += 4;
-	const auto handshakeEnd = position + handshakeLength;
-	if (handshakeLength < 0 || handshakeEnd > data.size()) {
+	if (!handshakeLength) {
+		return std::nullopt;
+	}
+	const auto handshakeEnd = position + *handshakeLength;
+	if (handshakeEnd > data.size()) {
 		return std::nullopt;
 	}
 	auto result = ClientHelloFacts();
-	result.legacyVersion = ClientHelloRead16(data, position);
-	if (result.legacyVersion < 0) {
+	const auto legacyVersion = ClientHelloRead16(data, position);
+	if (!legacyVersion) {
 		return std::nullopt;
 	}
+	result.legacyVersion = *legacyVersion;
 	position += 2 + 32;
 	if (position >= handshakeEnd) {
 		return std::nullopt;
@@ -204,17 +217,23 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 	}
 	position += sessionIdLength;
 	const auto cipherSuitesLength = ClientHelloRead16(data, position);
-	position += 2;
-	if (cipherSuitesLength < 0
-		|| cipherSuitesLength % 2
-		|| position + cipherSuitesLength > handshakeEnd) {
+	if (!cipherSuitesLength) {
 		return std::nullopt;
 	}
-	for (auto offset = position; offset < position + cipherSuitesLength;
-			offset += 2) {
-		result.cipherSuites.push_back(ClientHelloRead16(data, offset));
+	position += 2;
+	if (*cipherSuitesLength % 2
+		|| position + *cipherSuitesLength > handshakeEnd) {
+		return std::nullopt;
 	}
-	position += cipherSuitesLength;
+	for (auto offset = position; offset < position + *cipherSuitesLength;
+			offset += 2) {
+		if (const auto cipher = ClientHelloRead16(data, offset)) {
+			result.cipherSuites.push_back(*cipher);
+		} else {
+			return std::nullopt;
+		}
+	}
+	position += *cipherSuitesLength;
 	if (position >= handshakeEnd) {
 		return result;
 	}
@@ -227,28 +246,34 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 		return result;
 	}
 	const auto extensionsLength = ClientHelloRead16(data, position);
+	if (!extensionsLength) {
+		return std::nullopt;
+	}
 	position += 2;
-	const auto extensionsEnd = position + extensionsLength;
-	if (extensionsLength < 0 || extensionsEnd > handshakeEnd) {
+	const auto extensionsEnd = position + *extensionsLength;
+	if (extensionsEnd > handshakeEnd) {
 		return std::nullopt;
 	}
 	while (position + 4 <= extensionsEnd) {
 		const auto extension = ClientHelloRead16(data, position);
 		const auto length = ClientHelloRead16(data, position + 2);
 		const auto valueOffset = position + 4;
-		const auto next = valueOffset + length;
-		if (extension < 0 || length < 0 || next > extensionsEnd) {
+		if (!extension || !length) {
 			return std::nullopt;
 		}
-		const auto value = data.mid(valueOffset, length);
-		result.extensions.push_back(extension);
-		if (extension == 0x0000) {
+		const auto next = valueOffset + *length;
+		if (next > extensionsEnd) {
+			return std::nullopt;
+		}
+		const auto value = data.mid(valueOffset, *length);
+		result.extensions.push_back(*extension);
+		if (*extension == 0x0000) {
 			result.hasSni = HasSniHost(value);
-		} else if (extension == 0x0010) {
+		} else if (*extension == 0x0010) {
 			result.firstAlpn = FirstAlpn(value);
-		} else if (extension == 0x002B) {
+		} else if (*extension == 0x002B) {
 			AppendSupportedVersions(result, value);
-		} else if (extension == 0x000D) {
+		} else if (*extension == 0x000D) {
 			AppendSignatureAlgorithms(result, value);
 		}
 		position = next;

@@ -17,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
-struct RuntimeEnvironment;
+class RuntimeEnvironment;
 enum class ProxyDiagnosticsPhase;
 
 namespace details {

@@ -108,8 +108,8 @@ void SetProxyCheckProgress(
 			&& (crl::now() - snapshot.lastRelaySuccessAt
 				< kProxyCheckActiveSessionWindow);
 	}
-	const auto status = runtime->connectionStatus
-		? runtime->connectionStatus->proxyStatus()
+	const auto status = runtime->instance().connectionStatus
+		? runtime->instance().connectionStatus->proxyStatus()
 		: ProxyConnectionStatus();
 	return (status.phase == ProxyConnectionPhase::Connected)
 		&& (status.proxy == proxy);
@@ -233,7 +233,7 @@ void StartProxyCheck(
 	const auto connType = (proxy.type == ProxyData::Type::Http)
 		? Variants::Http
 		: Variants::Tcp;
-	const auto dcId = runtime->mainDcId ? runtime->mainDcId() : DcId();
+	const auto dcId = runtime->instance().mainDcId ? runtime->instance().mainDcId() : DcId();
 	const auto checkStealth = MTP::EffectiveProxyStealthOptions(
 		proxy,
 		ProxyData::Settings::Enabled,
@@ -449,10 +449,10 @@ void StartProxyCheck(
 			secret);
 		return;
 	}
-	if (!runtime->dcOptionsLookup) {
+	if (!runtime->instance().dcOptionsLookup) {
 		return;
 	}
-	const auto options = runtime->dcOptionsLookup(dcId, DcType::Regular, true);
+	const auto options = runtime->instance().dcOptionsLookup(dcId, DcType::Regular, true);
 	const auto tryConnect = [&](
 			ProxyCheckConnection &checker,
 			Variants::Address address) {

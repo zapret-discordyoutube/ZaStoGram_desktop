@@ -23,6 +23,7 @@ ADAPTIVE_POLICY_CPP = PROXY_DIR / "mtproxy" / "adaptive_policy.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
+ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp"
 ENDPOINT_IDENTITY_CPP = PROXY_DIR / "mtproxy" / "endpoint_identity.cpp"
 ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
 ROTATION_MANAGER_H = SOURCE_DIR / "core" / "proxy_rotation_manager.h"
@@ -58,7 +59,7 @@ def test_control_plane_is_the_proxy_publication_path():
     source = read(CONTROL_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
     runtime = read(RUNTIME_CPP)
-    report_body = function_body(runtime, "runtime->reportProxyEvent =")
+    report_body = function_body(runtime, "RuntimeEnvironment::RuntimeEnvironment(")
 
     assert "mtproto/proxy/control_plane.cpp" in cmake
     assert "mtproto/proxy/control_plane.h" in cmake
@@ -71,7 +72,7 @@ def test_control_plane_is_the_proxy_publication_path():
     assert "ProxyControlPlane::SubmitFact(runtime, report);" in report_body
     assert "setProxyConnectionStatus(status)" not in report_body
     assert "StatusPhaseFromDiagnostics" not in diagnostics
-    assert "runtime->reportProxyEvent" in diagnostics
+    assert "runtime->diagnostics().reportProxyEvent" in diagnostics
     assert "WriteProxyDiagnosticsLine(runtime, {" in runtime
     assert "ProxyControlPlane::FactFromReport(" in source
 
@@ -335,6 +336,7 @@ def test_admission_keeps_scouts_until_relay_proof():
     control = read(CONTROL_CPP)
     broker = read(CONNECTION_BROKER_CPP)
     health = read(ENDPOINT_HEALTH_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     admit_body = function_body(
         control,
         "ProxyAdmissionDecision ProxyControlPlane::admit(")
@@ -354,8 +356,8 @@ def test_admission_keeps_scouts_until_relay_proof():
     assert "proxyEpoch" in header
     assert "EndpointConcurrencyPolicyFor" in health
     assert "relayProven" in health
-    assert "kUnknownActiveCap" in health
-    assert "kColdActiveCap" in health
+    assert "kUnknownActiveCap" in policy
+    assert "kColdActiveCap" in policy
 
 
 def test_proxy_restart_backoff_is_not_one_ms_herd():
@@ -431,14 +433,14 @@ def test_instance_status_sink_is_private_to_runtime_gateway():
     status_header = read(CONNECTION_STATUS_H)
     control = read(CONTROL_CPP)
 
-    assert "struct RuntimeEnvironment;" in header
+    assert "class RuntimeEnvironment;" in header
     assert "friend class ProxyControlPlane;" not in header
     assert "void setProxyConnectionStatus(ProxyConnectionStatus status);" not in header
     assert "ConnectionStatus &connectionStatus() const;" in header
     assert "void setProxyStatus(ProxyConnectionStatus status);" in status_header
 
     submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
-    assert "runtime->connectionStatus->setProxyStatus(" in submit
+    assert "runtime->instance().connectionStatus->setProxyStatus(" in submit
 
 
 if __name__ == "__main__":

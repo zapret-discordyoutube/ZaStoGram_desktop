@@ -52,10 +52,13 @@ nice_target_sources(test_mtproxy_client_hello ${src_loc}
 PRIVATE
     mtproto/proxy/mtproxy/client_hello_builder.cpp
     mtproto/proxy/mtproxy/client_hello_builder.h
+    mtproto/proxy/mtproxy/client_hello_constants.h
+    mtproto/proxy/mtproxy/client_hello_fragmentation.cpp
     mtproto/proxy/mtproxy/client_hello_facts.cpp
     mtproto/proxy/mtproxy/client_hello_facts.h
     mtproto/proxy/mtproxy/client_hello_profile.cpp
     mtproto/proxy/mtproxy/client_hello_profile.h
+    mtproto/proxy/mtproxy/client_hello_rules.cpp
     tests/test_mtproxy_client_hello.cpp
 )
 

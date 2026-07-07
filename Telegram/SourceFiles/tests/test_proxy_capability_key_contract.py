@@ -6,6 +6,8 @@ PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_HEALTH_CAPABILITIES_CPP = (
+    PROXY_DIR / "mtproxy" / "endpoint_health_capabilities.cpp")
 ENDPOINT_IDENTITY_H = PROXY_DIR / "mtproxy" / "endpoint_identity.h"
 ENDPOINT_IDENTITY_CPP = PROXY_DIR / "mtproxy" / "endpoint_identity.cpp"
 RESOLVING_CONNECTION_CPP = PROXY_DIR / "resolving_connection.cpp"
@@ -123,6 +125,7 @@ def test_capability_writers_and_readers_use_the_matching_keys():
     capabilities = read(CAPABILITIES_CPP)
     header = read(ENDPOINT_IDENTITY_H)
     health = read(ENDPOINT_HEALTH_CPP)
+    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     resolving = read(RESOLVING_CONNECTION_CPP)
     policy = read(TRANSPORT_POLICY_CPP)
 
@@ -130,15 +133,17 @@ def test_capability_writers_and_readers_use_the_matching_keys():
 
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in failure
+    assert "NoteCapabilityMtproxyFailure(" in failure
+    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in capabilities_bridge
     assert "CapabilityProxyKey(report.endpoint.canonical)" in failure
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
+    assert "NoteCapabilityMtproxySuccess(" in success
+    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities_bridge
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
 
     # Writers must not fall back to the health-state EndpointKey, which has
     # an extra proxyKind segment lookup(proxy) can never match.
     for call in ("noteMtproxyFailure(", "noteMtproxySuccess("):
-        callsite = health[health.index(call):]
+        callsite = capabilities_bridge[capabilities_bridge.index(call):]
         callsite = callsite[:callsite.index(";")]
         assert "EndpointKey(" not in callsite.replace("CapabilityProxyKey(", "")
 

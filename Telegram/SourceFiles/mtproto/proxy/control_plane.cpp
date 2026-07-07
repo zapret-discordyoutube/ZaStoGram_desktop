@@ -411,16 +411,16 @@ void ProxyControlPlane::SubmitFact(
 		return;
 	}
 	InvokeQueued(runtime, [=] {
-		const auto current = runtime->connectionStatus
-			? runtime->connectionStatus->proxyStatus()
+		const auto current = runtime->instance().connectionStatus
+			? runtime->instance().connectionStatus->proxyStatus()
 			: ProxyConnectionStatus();
 		auto normalized = fact;
 		NormalizeMtproxyTerminalReason(current, normalized.status);
 		if (ShadowedByFreshRelaySuccess(current, normalized)) {
 			LogShadowedFact(runtime, normalized);
 		}
-		if (runtime->connectionStatus) {
-			runtime->connectionStatus->setProxyStatus(
+		if (runtime->instance().connectionStatus) {
+			runtime->instance().connectionStatus->setProxyStatus(
 				ProxyControlPlane::Reduce(current, normalized));
 		}
 	});

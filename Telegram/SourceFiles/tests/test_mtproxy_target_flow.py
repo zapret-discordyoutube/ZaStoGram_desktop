@@ -13,8 +13,12 @@ TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
+ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
+TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 STATUS_CPP = PROXY_DIR / "status.cpp"
 WINDOW_CONNECTING_CPP = SOURCE_DIR / "window" / "window_connecting_widget.cpp"
 
@@ -146,6 +150,8 @@ def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
 
 def test_route_failure_stays_route_level_and_success_recovers_canonical():
     health = read(ENDPOINT_HEALTH_CPP)
+    capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
 
@@ -176,11 +182,12 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     # A recently-working endpoint whose handshake gets killed probes
     # again quickly with the escalated recipe instead of sitting out
     # the full cooldown; pacing growth keeps the probe rate down.
-    assert "kThrottledRetryCooldown" in failure
+    assert "kThrottledRetryCooldown" in policy
     assert ("if (recentSuccess"
         " && FailureNeedsRecipeEscalation(report.reason)) {") in failure
-    assert "cooldown = std::min(cooldown, kThrottledRetryCooldown);" in failure
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in success
+    assert "cooldown = std::min(cooldown, ThrottledRetryCooldown());" in failure
+    assert "NoteCapabilityMtproxySuccess(" in success
+    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "NoteRouteSuccess(state, report.endpoint.route);" in success
@@ -191,8 +198,9 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
 
 def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
     health = read(ENDPOINT_HEALTH_CPP)
+    health_policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     adaptive = read(ADAPTIVE_POLICY_CPP)
-    tls = read(TLS_SOCKET_CPP)
+    tls_handshake = read(TLS_SOCKET_HANDSHAKE_CPP)
     policy = read(TRANSPORT_POLICY_CPP)
     status = read(STATUS_CPP)
     recipe = function_body(adaptive, "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
@@ -201,9 +209,9 @@ def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
     wss_recommend = function_body(policy, "bool WssNeedsProxyRecommendation(")
 
     assert "FailureNeedsTlsRotation(report.reason)" in health
-    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in health
-    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in tls
-    assert "ApplyAdaptiveRecipe(input)" in tls
+    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in health_policy
+    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in tls_handshake
+    assert "ApplyAdaptiveRecipe(input)" in tls_handshake
     assert "FailureNeedsRecipe(input.lastDiagnostic)" in recipe
     assert recipe.index("FailureNeedsRecipe(input.lastDiagnostic)") < (
         recipe.index("ApplyProxyStealthLevel("))
@@ -220,7 +228,7 @@ def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
 
 def test_logs_and_left_proxy_shield_expose_target_flow_state():
     resolving = read(RESOLVING_CPP)
-    tls = read(TLS_SOCKET_CPP)
+    tls_handshake = read(TLS_SOCKET_HANDSHAKE_CPP)
     window = read(WINDOW_CONNECTING_CPP)
     route_event = function_body(resolving, "void ReportRouteEvent(")
 
@@ -228,8 +236,8 @@ def test_logs_and_left_proxy_shield_expose_target_flow_state():
     assert 'u"tcp_not_connected"_q' in route_event
     assert "ProxyDiagnosticsPhase::RouteSelected" in resolving
     assert "ProxyDiagnosticsPhase::RouteFailed" in resolving
-    assert "ProxyDiagnosticsPhase::StealthRecipeApplied" in tls
-    assert ".phaseAtFailure = input.lastDiagnostic.isEmpty()" in tls
+    assert "ProxyDiagnosticsPhase::StealthRecipeApplied" in tls_handshake
+    assert ".phaseAtFailure = input.lastDiagnostic.isEmpty()" in tls_handshake
     assert "_proxyIcon->moveToLeft(xShift, yShift);" in window
     assert "const auto progressVisible = visible && !_currentLayout.proxyEnabled;" in window
     assert "_proxyIcon->setVisible(_currentLayout.proxyEnabled);" in window
@@ -250,7 +258,7 @@ if __name__ == "__main__":
 
 
 def test_first_app_data_reported_once_per_tls_socket():
-    tls = read(TLS_SOCKET_CPP)
+    tls = read(TLS_SOCKET_RECORDS_CPP)
     body = function_body(tls, "bool TlsSocket::checkNextPacket(")
 
     # FirstDataReceived progress and the health success report must fire

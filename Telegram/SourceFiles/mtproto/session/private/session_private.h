@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/status.h"
+#include "mtproto/session/session_delegate.h"
 #include "mtproto/session/session_state.h"
 #include "base/timer.h"
 
@@ -24,12 +25,13 @@ class BoundKeyCreator;
 } // namespace details
 
 class Instance;
-struct RuntimeEnvironment;
+class RuntimeEnvironment;
 
 namespace details {
 
 class AbstractConnection;
 class SessionData;
+class SessionDelegate;
 class RSAPublicKey;
 struct SessionOptions;
 
@@ -37,6 +39,7 @@ class SessionPrivate final : public QObject {
 public:
 	SessionPrivate(
 		not_null<Instance*> instance,
+		not_null<SessionDelegate*> delegate,
 		not_null<QThread*> thread,
 		std::shared_ptr<SessionData> data,
 		ShiftedDcId shiftedDcId);
@@ -344,6 +347,7 @@ private:
 	};
 
 	const not_null<Instance*> _instance;
+	const not_null<SessionDelegate*> _delegate;
 	const not_null<RuntimeEnvironment*> _runtime;
 	const ShiftedDcId _shiftedDcId = 0;
 	DcType _realDcType = DcType();

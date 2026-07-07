@@ -116,7 +116,7 @@ def test_proxy_status_tracks_phases_and_socket_errors():
     assert "ProxyAuthenticationRequiredError" in abstract_socket_cpp
     assert "ProxyConnectionError::Authentication" in abstract_socket_cpp
     assert "ReportProxyEvent(_runtime, {" in tcp_connection
-    assert "runtime->reportProxyEvent" in diagnostics
+    assert "runtime->diagnostics().reportProxyEvent" in diagnostics
     assert "ProxyConnectionPhase::CheckingTelegram" in control
 
 

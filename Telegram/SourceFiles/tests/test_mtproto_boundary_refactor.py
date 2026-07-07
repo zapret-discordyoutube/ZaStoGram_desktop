@@ -22,8 +22,15 @@ ABSTRACT_CONNECTION_H = MTPROTO_DIR / "transport" / "connection_abstract.h"
 ABSTRACT_CONNECTION_CPP = MTPROTO_DIR / "transport" / "connection_abstract.cpp"
 INSTANCE_CPP = MTPROTO_DIR / "instance" / "mtp_instance.cpp"
 INSTANCE_H = MTPROTO_DIR / "instance" / "mtp_instance.h"
+RPC_ERROR_H = MTPROTO_DIR / "instance" / "rpc_error_handler.h"
+RPC_ERROR_CPP = MTPROTO_DIR / "instance" / "rpc_error_handler.cpp"
+SENDER_CPP = MTPROTO_DIR / "instance" / "sender.cpp"
+SENDER_H = MTPROTO_DIR / "instance" / "sender.h"
 SESSION_CPP = MTPROTO_DIR / "session" / "session.cpp"
+SESSION_H = MTPROTO_DIR / "session" / "session.h"
+SESSION_DELEGATE_H = MTPROTO_DIR / "session" / "session_delegate.h"
 SESSION_PRIVATE_CPP = MTPROTO_DIR / "session" / "private" / "session_private.cpp"
+SESSION_PRIVATE_H = MTPROTO_DIR / "session" / "private" / "session_private.h"
 
 
 def read(path):
@@ -76,21 +83,43 @@ def test_runtime_environment_is_the_app_gateway():
     assert "mtproto/runtime/runtime_environment.h" in cmake
     assert "mtproto/runtime/connection_status.cpp" in cmake
     assert "mtproto/runtime/connection_status.h" in cmake
-    assert "struct RuntimeEnvironment" in header
     assert "struct RuntimeProxySettings" in header
     assert "struct RuntimeDeviceSettings" in header
     assert "struct RuntimeLanguageGateway" in header
     assert "struct RuntimeStorageGateway" in header
     assert "struct RuntimeAppGateway" in header
-    assert "ConnectionStatus *connectionStatus = nullptr" in header
-    assert "Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine" in header
-    assert "Fn<void(ProxyEventReport)> reportProxyEvent" in header
-    assert "Fn<void(QString, QStringList, qint64)> proxyDomainResolved" in header
+    assert "struct RuntimeDiagnosticsGateway" in header
+    assert "struct RuntimeInstanceServices" in header
+    assert "struct RuntimeProxyResolver" in header
+    assert "class RuntimeEnvironment final" in header
+    assert "void bindInstance(RuntimeInstanceServices services);" in header
+    assert "void unbindInstance(ConnectionStatus *status);" in header
+    assert "RuntimeEnvironmentDescriptor" in header
     assert "DefaultRuntimeEnvironment()" in header
     assert "DefaultRuntimeEnvironment()" in source
     assert "class ConnectionStatus final" in status_header
     assert "ConnectionStatus::setProxyStatus(" in status_source
     assert "fields.runtimeEnvironment" in instance
+
+
+def test_runtime_environment_has_no_public_mutable_service_locator_fields():
+    header = read(RUNTIME_H)
+    source = read(RUNTIME_CPP)
+    instance = read(INSTANCE_CPP)
+
+    runtime_body = function_body(header, "class RuntimeEnvironment final")
+
+    assert "public:\n\tRuntimeProxySettings proxy;" not in header
+    assert "ConnectionStatus *connectionStatus = nullptr" not in runtime_body
+    assert "Fn<" not in runtime_body
+    assert "runtime->connectionStatus =" not in instance
+    assert "runtime->mainDcId =" not in instance
+    assert "runtime->dcOptionsLookup =" not in instance
+    assert "runtime->resolveProxyDomain =" not in instance
+    assert "runtime->setGoodProxyDomain =" not in instance
+    assert "runtime->proxyDomainResolved =" not in instance
+    assert "runtime->syncHttpUnixtime =" not in instance
+    assert "InstallDefaultHandlers" not in source
 
 
 def test_lower_mtproto_layers_do_not_include_app_facade():
@@ -132,12 +161,12 @@ def test_proxy_reporting_and_control_plane_do_not_accept_instance():
     assert "not_null<Instance*>" not in diagnostics_cpp
     assert "class Instance;" not in diagnostics_h
     assert "not_null<RuntimeEnvironment*> runtime" in diagnostics_h
-    assert "runtime->reportProxyEvent" in diagnostics_cpp
+    assert "runtime->diagnostics().reportProxyEvent" in diagnostics_cpp
     assert "ProxyControlPlane::SubmitFact(runtime, report)" in runtime_cpp
     assert "SubmitFact(\n\t\tnot_null<RuntimeEnvironment*> runtime" in control_h
     assert "not_null<Instance*>" not in control_h
     assert "not_null<Instance*>" not in control_cpp
-    assert "runtime->connectionStatus->setProxyStatus" in control_cpp
+    assert "runtime->instance().connectionStatus->setProxyStatus" in control_cpp
 
 
 def test_instance_and_session_use_runtime_gateway_for_app_facade():
@@ -181,12 +210,22 @@ def test_instance_and_session_use_runtime_gateway_for_app_facade():
 
 
 def test_on_error_default_is_split_into_helpers():
+    cmake = read(CMAKE)
     instance = read(INSTANCE_CPP)
+    rpc_h = read(RPC_ERROR_H)
+    rpc_cpp = read(RPC_ERROR_CPP)
     body = function_body(
         instance,
         "bool Instance::Private::onErrorDefault(")
 
-    assert len(body.splitlines()) <= 70
+    assert "mtproto/instance/rpc_error_handler.cpp" in cmake
+    assert "mtproto/instance/rpc_error_handler.h" in cmake
+    assert "struct DefaultRpcErrorAction" in rpc_h
+    assert "DefaultRpcErrorAction ClassifyDefaultRpcError(" in rpc_h
+    assert "QRegularExpression" not in instance
+    assert "QRegularExpression" in rpc_cpp
+    assert "ClassifyDefaultRpcError(" in body
+    assert len(body.splitlines()) <= 45
     for helper in (
             "handleMigrationError(",
             "handleMsgWaitError(",
@@ -194,6 +233,53 @@ def test_on_error_default_is_split_into_helpers():
             "handleUnauthorizedError(",
             "handleConnectionInitError("):
         assert helper in body
+
+
+def test_session_callbacks_are_hidden_behind_delegate():
+    cmake = read(CMAKE)
+    instance = read(INSTANCE_CPP)
+    instance_h = read(INSTANCE_H)
+    session_h = read(SESSION_H)
+    session = read(SESSION_CPP)
+    session_private_h = read(SESSION_PRIVATE_H)
+    session_private = read_session_private_sources()
+    delegate = read(SESSION_DELEGATE_H)
+    public_instance = function_body(instance_h, "class Instance : public QObject")
+
+    assert "mtproto/session/session_delegate.h" in cmake
+    assert "class SessionDelegate" in delegate
+    assert "public details::SessionDelegate" in instance
+    assert "not_null<SessionDelegate*> delegate" in session_h
+    assert "const not_null<SessionDelegate*> _delegate;" in session_h
+    assert "const not_null<SessionDelegate*> _delegate;" in session_private_h
+    assert "std::make_unique<Session>(_instance, this" in instance
+    assert "new SessionPrivate(\n\t\t_instance,\n\t\t_delegate," in session
+
+    for hidden in (
+            "resolveProxyDomain(",
+            "setGoodProxyDomain(",
+            "systemLangCode(",
+            "cloudLangCode(",
+            "langPackName(",
+            "dcPersistentKeyChanged(",
+            "dcTemporaryKeyChanged(",
+            "proxyMigrationSucceeded(",
+            "onStateChange(",
+            "onSessionReset(",
+            "hasCallback(",
+            "processCallback(",
+            "processUpdate(",
+            "rpcErrorOccured(",
+            "keyWasPossiblyDestroyed(",
+            "keyDestroyedOnServer(",
+            "badConfigurationError(",
+            "restartedByTimeout("):
+        assert hidden not in public_instance
+
+    assert "_instance->" not in session
+    assert "_instance->" not in session_private
+    assert "delegate->processCallback(" in session
+    assert "_delegate->hasCallback(" in session_private
 
 
 def test_runtime_context_replaces_instance_in_proxy_entrypoints():
@@ -234,11 +320,28 @@ def test_transport_session_leaks_use_neutral_metadata():
     assert "sentEncryptedWithKeyId" not in abstract_cpp
 
 
+def test_sender_header_does_not_pull_instance_facade():
+    cmake = read(CMAKE)
+    instance_h = read(INSTANCE_H)
+    sender_h = read(SENDER_H)
+    sender_cpp = read(SENDER_CPP)
+
+    assert "mtproto/instance/sender.cpp" in cmake
+    assert '#include "mtproto/instance/mtp_instance.h"' not in sender_h
+    assert '#include "mtproto/proxy/data.h"' not in instance_h
+    assert "class Instance;" in sender_h
+    assert "Sender::sendSerializedRequest(" in sender_cpp
+    assert '#include "mtproto/instance/mtp_instance.h"' in sender_cpp
+
+
 if __name__ == "__main__":
     test_runtime_environment_is_the_app_gateway()
+    test_runtime_environment_has_no_public_mutable_service_locator_fields()
     test_lower_mtproto_layers_do_not_include_app_facade()
     test_proxy_reporting_and_control_plane_do_not_accept_instance()
     test_instance_and_session_use_runtime_gateway_for_app_facade()
     test_on_error_default_is_split_into_helpers()
+    test_session_callbacks_are_hidden_behind_delegate()
     test_runtime_context_replaces_instance_in_proxy_entrypoints()
     test_transport_session_leaks_use_neutral_metadata()
+    test_sender_header_does_not_pull_instance_facade()

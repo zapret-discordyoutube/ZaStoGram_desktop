@@ -22,170 +22,200 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 namespace {
 
-void InstallProxySettings(not_null<RuntimeEnvironment*> runtime) {
-	runtime->proxy.enabled = [] {
-		return Core::App().settings().proxy().isEnabled();
-	};
-	runtime->proxy.selected = [] {
-		return Core::App().settings().proxy().selected();
-	};
-	runtime->proxy.settings = [] {
-		return Core::App().settings().proxy().settings();
-	};
-	runtime->proxy.tryIPv6 = [] {
-		return Core::App().settings().proxy().tryIPv6();
-	};
-	runtime->proxy.stealthOptions = [] {
-		return Core::App().settings().proxyStealthOptions();
-	};
-	runtime->proxy.watchConnectionTypeChanges = [](
-			Fn<void()> callback,
-			rpl::lifetime &lifetime) {
-		Core::App().settings().proxy().connectionTypeChanges(
-		) | rpl::on_next([callback = std::move(callback)] {
-			callback();
-		}, lifetime);
-	};
-	runtime->proxy.applyDomainIps = [](
-			const QString &host,
-			const QStringList &ips,
-			crl::time expireAt) {
-		auto &settings = Core::App().settings().proxy();
-		const auto applyToProxy = [&](ProxyData &proxy) {
-			if (!proxy.tryCustomResolve() || proxy.host != host) {
-				return false;
-			}
-			proxy.resolvedExpireAt = expireAt;
-			auto copy = ips;
-			auto &current = proxy.resolvedIPs;
-			const auto i = ranges::remove_if(current, [&](const QString &ip) {
-				const auto index = copy.indexOf(ip);
-				if (index < 0) {
+RuntimeProxySettings CreateProxySettings() {
+	return {
+		.enabled = [] {
+			return Core::App().settings().proxy().isEnabled();
+		},
+		.selected = [] {
+			return Core::App().settings().proxy().selected();
+		},
+		.settings = [] {
+			return Core::App().settings().proxy().settings();
+		},
+		.tryIPv6 = [] {
+			return Core::App().settings().proxy().tryIPv6();
+		},
+		.stealthOptions = [] {
+			return Core::App().settings().proxyStealthOptions();
+		},
+		.watchConnectionTypeChanges = [](
+				Fn<void()> callback,
+				rpl::lifetime &lifetime) {
+			Core::App().settings().proxy().connectionTypeChanges(
+			) | rpl::on_next([callback = std::move(callback)] {
+				callback();
+			}, lifetime);
+		},
+		.applyDomainIps = [](
+				const QString &host,
+				const QStringList &ips,
+				crl::time expireAt) {
+			auto &settings = Core::App().settings().proxy();
+			const auto applyToProxy = [&](ProxyData &proxy) {
+				if (!proxy.tryCustomResolve() || proxy.host != host) {
+					return false;
+				}
+				proxy.resolvedExpireAt = expireAt;
+				auto copy = ips;
+				auto &current = proxy.resolvedIPs;
+				const auto i = ranges::remove_if(current, [&](const QString &ip) {
+					const auto index = copy.indexOf(ip);
+					if (index < 0) {
+						return true;
+					}
+					copy.removeAt(index);
+					return false;
+				});
+				if (i == end(current) && copy.isEmpty()) {
 					return true;
 				}
-				copy.removeAt(index);
-				return false;
-			});
-			if (i == end(current) && copy.isEmpty()) {
+				current.erase(i, end(current));
+				for (const auto &ip : std::as_const(copy)) {
+					proxy.resolvedIPs.push_back(ip);
+				}
 				return true;
+			};
+			for (auto &proxy : settings.list()) {
+				applyToProxy(proxy);
 			}
-			current.erase(i, end(current));
-			for (const auto &ip : std::as_const(copy)) {
-				proxy.resolvedIPs.push_back(ip);
-			}
-			return true;
-		};
-		for (auto &proxy : settings.list()) {
-			applyToProxy(proxy);
-		}
-		auto selected = settings.selected();
-		if (!applyToProxy(selected) || !settings.isEnabled()) {
-			return false;
-		}
-		settings.setSelected(selected);
-		return true;
-	};
-	runtime->proxy.promoteDomainIp = [](
-			const QString &host,
-			const QString &ip) {
-		auto &settings = Core::App().settings().proxy();
-		const auto applyToProxy = [&](ProxyData &proxy) {
-			if (!proxy.tryCustomResolve() || proxy.host != host) {
+			auto selected = settings.selected();
+			if (!applyToProxy(selected) || !settings.isEnabled()) {
 				return false;
 			}
-			auto &current = proxy.resolvedIPs;
-			auto i = ranges::find(current, ip);
-			if (i == end(current) || i == begin(current)) {
+			settings.setSelected(selected);
+			return true;
+		},
+		.promoteDomainIp = [](
+				const QString &host,
+				const QString &ip) {
+			auto &settings = Core::App().settings().proxy();
+			const auto applyToProxy = [&](ProxyData &proxy) {
+				if (!proxy.tryCustomResolve() || proxy.host != host) {
+					return false;
+				}
+				auto &current = proxy.resolvedIPs;
+				auto i = ranges::find(current, ip);
+				if (i == end(current) || i == begin(current)) {
+					return false;
+				}
+				while (i != begin(current)) {
+					const auto j = i--;
+					std::swap(*i, *j);
+				}
+				return true;
+			};
+			for (auto &proxy : settings.list()) {
+				applyToProxy(proxy);
+			}
+			auto selected = settings.selected();
+			if (!applyToProxy(selected) || !settings.isEnabled()) {
 				return false;
 			}
-			while (i != begin(current)) {
-				const auto j = i--;
-				std::swap(*i, *j);
-			}
+			settings.setSelected(selected);
 			return true;
-		};
-		for (auto &proxy : settings.list()) {
-			applyToProxy(proxy);
-		}
-		auto selected = settings.selected();
-		if (!applyToProxy(selected) || !settings.isEnabled()) {
-			return false;
-		}
-		settings.setSelected(selected);
-		return true;
+		},
 	};
 }
 
-void InstallDeviceSettings(not_null<RuntimeEnvironment*> runtime) {
-	runtime->device.model = [] {
-		return Core::App().settings().customDeviceModel();
-	};
-	runtime->device.watchModelChanges = [](
-			Fn<void(QString)> callback,
-			rpl::lifetime &lifetime) {
-		Core::App().settings().customDeviceModelChanges(
-		) | rpl::on_next([callback = std::move(callback)](
-				const QString &value) {
-			callback(value);
-		}, lifetime);
-	};
-}
-
-void InstallLanguageGateway(not_null<RuntimeEnvironment*> runtime) {
-	runtime->language.systemCode = [] {
-		return Lang::GetInstance().systemLangCode();
-	};
-	runtime->language.cloudCode = [] {
-		return Lang::GetInstance().cloudLangCode(Lang::Pack::Current);
-	};
-	runtime->language.packName = [] {
-		return Lang::GetInstance().langPackName();
-	};
-	runtime->language.setSuggested = [](const QString &lang) {
-		Lang::CurrentCloudManager().setSuggestedLanguage(lang);
-	};
-	runtime->language.setCurrentVersions = [](int version, int baseVersion) {
-		Lang::CurrentCloudManager().setCurrentVersions(version, baseVersion);
-	};
-	runtime->language.resetToDefault = [] {
-		Lang::CurrentCloudManager().resetToDefault();
+RuntimeDeviceSettings CreateDeviceSettings() {
+	return {
+		.model = [] {
+			return Core::App().settings().customDeviceModel();
+		},
+		.watchModelChanges = [](
+				Fn<void(QString)> callback,
+				rpl::lifetime &lifetime) {
+			Core::App().settings().customDeviceModelChanges(
+			) | rpl::on_next([callback = std::move(callback)](
+					const QString &value) {
+				callback(value);
+			}, lifetime);
+		},
 	};
 }
 
-void InstallStorageGateway(not_null<RuntimeEnvironment*> runtime) {
-	runtime->storage.writeSettings = [] {
-		Local::writeSettings();
-	};
-	runtime->storage.writeAutoupdatePrefix = [](const QString &prefix) {
-		Local::writeAutoupdatePrefix(prefix);
+RuntimeLanguageGateway CreateLanguageGateway() {
+	return {
+		.systemCode = [] {
+			return Lang::GetInstance().systemLangCode();
+		},
+		.cloudCode = [] {
+			return Lang::GetInstance().cloudLangCode(Lang::Pack::Current);
+		},
+		.packName = [] {
+			return Lang::GetInstance().langPackName();
+		},
+		.setSuggested = [](const QString &lang) {
+			Lang::CurrentCloudManager().setSuggestedLanguage(lang);
+		},
+		.setCurrentVersions = [](int version, int baseVersion) {
+			Lang::CurrentCloudManager().setCurrentVersions(version, baseVersion);
+		},
+		.resetToDefault = [] {
+			Lang::CurrentCloudManager().resetToDefault();
+		},
 	};
 }
 
-void InstallAppGateway(not_null<RuntimeEnvironment*> runtime) {
-	runtime->app.refreshGlobalProxy = [] {
-		Core::App().refreshGlobalProxy();
-	};
-	runtime->app.badMtprotoConfigurationError = [] {
-		Core::App().badMtprotoConfigurationError();
+RuntimeStorageGateway CreateStorageGateway() {
+	return {
+		.writeSettings = [] {
+			Local::writeSettings();
+		},
+		.writeAutoupdatePrefix = [](const QString &prefix) {
+			Local::writeAutoupdatePrefix(prefix);
+		},
 	};
 }
 
-void InstallDefaultHandlers(not_null<RuntimeEnvironment*> runtime) {
-	InstallProxySettings(runtime);
-	InstallDeviceSettings(runtime);
-	InstallLanguageGateway(runtime);
-	InstallStorageGateway(runtime);
-	InstallAppGateway(runtime);
+RuntimeAppGateway CreateAppGateway() {
+	return {
+		.refreshGlobalProxy = [] {
+			Core::App().refreshGlobalProxy();
+		},
+		.badMtprotoConfigurationError = [] {
+			Core::App().badMtprotoConfigurationError();
+		},
+	};
+}
 
-	runtime->writeProxyDiagnosticsLine = [](ProxyDiagnosticsEvent event) {
-		Logs::writeMtproxy(FormatProxyDiagnosticsEvent(event));
+RuntimeDiagnosticsGateway CreateDiagnosticsGateway() {
+	return {
+		.writeProxyDiagnosticsLine = [](ProxyDiagnosticsEvent event) {
+			Logs::writeMtproxy(FormatProxyDiagnosticsEvent(event));
+		},
 	};
-	runtime->proxyCapabilitiesPath = [] {
-		const auto dir = cWorkingDir() + u"tdata/"_q;
-		QDir().mkpath(dir);
-		return dir + u"proxy-capabilities.json"_q;
+}
+
+RuntimeProxyCapabilities CreateProxyCapabilities() {
+	return {
+		.path = [] {
+			const auto dir = cWorkingDir() + u"tdata/"_q;
+			QDir().mkpath(dir);
+			return dir + u"proxy-capabilities.json"_q;
+		},
 	};
-	runtime->reportProxyEvent = [=](ProxyEventReport report) {
+}
+
+RuntimeEnvironmentDescriptor CreateRuntimeDescriptor() {
+	return {
+		.proxy = CreateProxySettings(),
+		.device = CreateDeviceSettings(),
+		.language = CreateLanguageGateway(),
+		.storage = CreateStorageGateway(),
+		.app = CreateAppGateway(),
+		.diagnostics = CreateDiagnosticsGateway(),
+		.proxyCapabilities = CreateProxyCapabilities(),
+	};
+}
+
+} // namespace
+
+RuntimeEnvironment::RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor)
+: _descriptor(std::move(descriptor)) {
+	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
+		const auto runtime = not_null{ this };
 		ProxyControlPlane::SubmitFact(runtime, report);
 		WriteProxyDiagnosticsLine(runtime, {
 			.source = SourceForReport(report),
@@ -218,12 +248,56 @@ void InstallDefaultHandlers(not_null<RuntimeEnvironment*> runtime) {
 	};
 }
 
-} // namespace
+void RuntimeEnvironment::bindInstance(RuntimeInstanceServices services) {
+	Expects(!_instance.connectionStatus);
+
+	_instance = std::move(services);
+}
+
+void RuntimeEnvironment::unbindInstance(ConnectionStatus *status) {
+	if (_instance.connectionStatus == status) {
+		_instance = RuntimeInstanceServices();
+	}
+}
+
+const RuntimeProxySettings &RuntimeEnvironment::proxy() const {
+	return _descriptor.proxy;
+}
+
+const RuntimeDeviceSettings &RuntimeEnvironment::device() const {
+	return _descriptor.device;
+}
+
+const RuntimeLanguageGateway &RuntimeEnvironment::language() const {
+	return _descriptor.language;
+}
+
+const RuntimeStorageGateway &RuntimeEnvironment::storage() const {
+	return _descriptor.storage;
+}
+
+const RuntimeAppGateway &RuntimeEnvironment::app() const {
+	return _descriptor.app;
+}
+
+const RuntimeDiagnosticsGateway &RuntimeEnvironment::diagnostics() const {
+	return _descriptor.diagnostics;
+}
+
+const RuntimeInstanceServices &RuntimeEnvironment::instance() const {
+	return _instance;
+}
+
+const RuntimeProxyResolver &RuntimeEnvironment::proxyResolver() const {
+	return _instance.proxyResolver;
+}
+
+const RuntimeProxyCapabilities &RuntimeEnvironment::proxyCapabilities() const {
+	return _descriptor.proxyCapabilities;
+}
 
 std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment() {
-	auto result = std::make_shared<RuntimeEnvironment>();
-	InstallDefaultHandlers(not_null{ result.get() });
-	return result;
+	return std::make_shared<RuntimeEnvironment>(CreateRuntimeDescriptor());
 }
 
 not_null<RuntimeEnvironment*> DefaultRuntimeEnvironment() {

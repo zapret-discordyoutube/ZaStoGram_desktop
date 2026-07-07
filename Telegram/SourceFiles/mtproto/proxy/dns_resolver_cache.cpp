@@ -114,8 +114,8 @@ void DnsResolverCache::request(
 		PushResult(receiver, std::move(callback), host, cachedIps, cachedExpireAt);
 	} else if (startResolve) {
 		InvokeQueued(runtime, [=] {
-			if (runtime->resolveProxyDomain) {
-				runtime->resolveProxyDomain(host);
+			if (runtime->proxyResolver().resolveDomain) {
+				runtime->proxyResolver().resolveDomain(host);
 			}
 		});
 	}

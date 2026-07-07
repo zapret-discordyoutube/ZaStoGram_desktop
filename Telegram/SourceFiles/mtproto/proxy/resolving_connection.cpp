@@ -639,8 +639,8 @@ void ResolvingConnection::handleConnected(AbstractConnection *child) {
 		const auto good = _proxy.resolvedIPs[_ipIndex];
 		const auto runtime = _runtime;
 		InvokeQueued(runtime, [=] {
-			if (runtime->setGoodProxyDomain) {
-				runtime->setGoodProxyDomain(host, good);
+			if (runtime->proxyResolver().setGoodDomain) {
+				runtime->proxyResolver().setGoodDomain(host, good);
 			}
 		});
 	}

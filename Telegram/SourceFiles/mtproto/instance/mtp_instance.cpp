@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/config/config_loader.h"
+#include "mtproto/instance/rpc_error_handler.h"
 #include "mtproto/instance/sender.h"
 #include "mtproto/session/session_state.h"
 #include "base/unixtime.h"
@@ -51,7 +52,7 @@ int GetNextRequestId() {
 
 } // namespace details
 
-class Instance::Private : private Sender {
+class Instance::Private : private Sender, public details::SessionDelegate {
 public:
 	Private(
 		not_null<Instance*> instance,
@@ -73,6 +74,9 @@ public:
 	[[nodiscard]] bool hasMainDcId() const;
 	[[nodiscard]] DcId mainDcId() const;
 	[[nodiscard]] rpl::producer<DcId> mainDcIdValue() const;
+	[[nodiscard]] QString systemLangCode() const;
+	[[nodiscard]] QString cloudLangCode() const;
+	[[nodiscard]] QString langPackName() const;
 
 	[[nodiscard]] rpl::producer<> writeKeysRequests() const;
 
@@ -196,14 +200,11 @@ private:
 	bool exportFail(const Error &error, const Response &response);
 	bool handleMigrationError(
 		mtpRequestId requestId,
-		const QRegularExpressionMatch &match);
+		DcId migrateDcId);
 	bool handleMsgWaitError(mtpRequestId requestId);
 	bool handleRetryError(
 		mtpRequestId requestId,
-		int code,
-		const QRegularExpressionMatch &floodWait,
-		const QRegularExpressionMatch &floodPremiumWait,
-		const QRegularExpressionMatch &slowmodeWait);
+		const details::DefaultRpcErrorRetry &retry);
 	bool handleUnauthorizedError(
 		const Error &error,
 		const Response &response,
@@ -345,35 +346,42 @@ Instance::Private::Private(
 	Expects(_config != nullptr);
 	Expects(_runtime != nullptr);
 
-	_runtime->connectionStatus = _connectionStatus.get();
-	_runtime->mainDcId = [=] {
-		return mainDcId();
-	};
-	_runtime->dcOptionsLookup = [=](
-			DcId dcId,
-			DcType type,
-			bool throughProxy) {
-		return dcOptions().lookup(dcId, type, throughProxy);
-	};
-	_runtime->resolveProxyDomain = [=](QString host) {
-		resolveProxyDomain(std::move(host));
-	};
-	_runtime->setGoodProxyDomain = [=](QString host, QString ip) {
-		setGoodProxyDomain(std::move(host), std::move(ip));
-	};
-	_runtime->proxyDomainResolved = [=](
-			QString host,
-			QStringList ips,
-			qint64 expireAt) {
-		details::DnsResolverCache::Instance().resolved(host, ips, expireAt);
-		_instance->proxyDomainResolved(
-			std::move(host),
-			std::move(ips),
-			expireAt);
-	};
-	_runtime->syncHttpUnixtime = [=] {
-		syncHttpUnixtime();
-	};
+	_runtime->bindInstance({
+		.connectionStatus = _connectionStatus.get(),
+		.mainDcId = [=] {
+			return mainDcId();
+		},
+		.dcOptionsLookup = [=](
+				DcId dcId,
+				DcType type,
+				bool throughProxy) {
+			return dcOptions().lookup(dcId, type, throughProxy);
+		},
+		.proxyResolver = {
+			.resolveDomain = [=](QString host) {
+				resolveProxyDomain(std::move(host));
+			},
+			.setGoodDomain = [=](QString host, QString ip) {
+				setGoodProxyDomain(std::move(host), std::move(ip));
+			},
+			.domainResolved = [=](
+					QString host,
+					QStringList ips,
+					qint64 expireAt) {
+				details::DnsResolverCache::Instance().resolved(
+					host,
+					ips,
+					expireAt);
+				_instance->proxyDomainResolved(
+					std::move(host),
+					std::move(ips),
+					expireAt);
+			},
+		},
+		.syncHttpUnixtime = [=] {
+			syncHttpUnixtime();
+		},
+	});
 
 	const auto idealThreadPoolSize = QThread::idealThreadCount();
 	_fileSessionThreads.resize(2 * std::max(idealThreadPoolSize / 2, 1));
@@ -391,11 +399,11 @@ Instance::Private::Private(
 	_deviceModelDefault = std::move(fields.deviceModel);
 	_systemVersion = std::move(fields.systemVersion);
 
-	_customDeviceModel = _runtime->device.model
-		? _runtime->device.model()
+	_customDeviceModel = _runtime->device().model
+		? _runtime->device().model()
 		: QString();
-	if (_runtime->device.watchModelChanges) {
-		_runtime->device.watchModelChanges([=](QString value) {
+	if (_runtime->device().watchModelChanges) {
+		_runtime->device().watchModelChanges([=](QString value) {
 			QMutexLocker lock(&_deviceModelMutex);
 			_customDeviceModel = value;
 			lock.unlock();
@@ -425,15 +433,15 @@ Instance::Private::Private(
 		_mainDcIdForced = true;
 	}
 
-	if (_runtime->proxy.watchConnectionTypeChanges) {
-		_runtime->proxy.watchConnectionTypeChanges([=] {
+	if (_runtime->proxy().watchConnectionTypeChanges) {
+		_runtime->proxy().watchConnectionTypeChanges([=] {
 			if (_configLoader) {
 				_configLoader->setProxyEnabled(
-					_runtime->proxy.enabled
-						? _runtime->proxy.enabled()
+					_runtime->proxy().enabled
+						? _runtime->proxy().enabled()
 						: false);
 			}
-			if (!_runtime->proxy.enabled || !_runtime->proxy.enabled()) {
+			if (!_runtime->proxy().enabled || !_runtime->proxy().enabled()) {
 				_connectionStatus->resetProxyStatus();
 			}
 			_connectionStatus->resetNotices();
@@ -472,24 +480,24 @@ void Instance::Private::applyDomainIps(
 		const QString &host,
 		const QStringList &ips,
 		crl::time expireAt) {
-	if (_runtime->proxy.applyDomainIps
-		&& _runtime->proxy.applyDomainIps(host, ips, expireAt)) {
+	if (_runtime->proxy().applyDomainIps
+		&& _runtime->proxy().applyDomainIps(host, ips, expireAt)) {
 		for (const auto &[shiftedDcId, session] : _sessions) {
 			session->refreshOptions();
 		}
 	}
-	if (_runtime->proxyDomainResolved) {
-		_runtime->proxyDomainResolved(host, ips, expireAt);
+	if (_runtime->proxyResolver().domainResolved) {
+		_runtime->proxyResolver().domainResolved(host, ips, expireAt);
 	}
 }
 
 void Instance::Private::setGoodProxyDomain(
 		const QString &host,
 		const QString &ip) {
-	if (_runtime->proxy.promoteDomainIp
-		&& _runtime->proxy.promoteDomainIp(host, ip)
-		&& _runtime->app.refreshGlobalProxy) {
-		_runtime->app.refreshGlobalProxy();
+	if (_runtime->proxy().promoteDomainIp
+		&& _runtime->proxy().promoteDomainIp(host, ip)
+		&& _runtime->app().refreshGlobalProxy) {
+		_runtime->app().refreshGlobalProxy();
 	}
 }
 
@@ -533,6 +541,24 @@ rpl::producer<DcId> Instance::Private::mainDcIdValue() const {
 	return _mainDcId.value();
 }
 
+QString Instance::Private::systemLangCode() const {
+	return _runtime->language().systemCode
+		? _runtime->language().systemCode()
+		: QString();
+}
+
+QString Instance::Private::cloudLangCode() const {
+	return _runtime->language().cloudCode
+		? _runtime->language().cloudCode()
+		: QString();
+}
+
+QString Instance::Private::langPackName() const {
+	return _runtime->language().packName
+		? _runtime->language().packName()
+		: QString();
+}
+
 void Instance::Private::requestConfig() {
 	if (_configLoader || isKeysDestroyer()) {
 		return;
@@ -544,7 +570,7 @@ void Instance::Private::requestConfig() {
 		[=](const Error &error, const Response &) {
 			return configLoadFail(error);
 		},
-		_runtime->proxy.enabled ? _runtime->proxy.enabled() : false);
+		_runtime->proxy().enabled ? _runtime->proxy().enabled() : false);
 	_configLoader->load();
 }
 
@@ -558,8 +584,8 @@ void Instance::Private::setUserPhone(const QString &phone) {
 }
 
 void Instance::Private::badConfigurationError() {
-	if (_mode == Mode::Normal && _runtime->app.badMtprotoConfigurationError) {
-		_runtime->app.badMtprotoConfigurationError();
+	if (_mode == Mode::Normal && _runtime->app().badMtprotoConfigurationError) {
+		_runtime->app().badMtprotoConfigurationError();
 	}
 }
 
@@ -623,8 +649,8 @@ void Instance::Private::requestCDNConfig() {
 		result.match([&](const MTPDcdnConfig &data) {
 			dcOptions().setCDNConfig(data);
 		});
-		if (_runtime->storage.writeSettings) {
-			_runtime->storage.writeSettings();
+		if (_runtime->storage().writeSettings) {
+			_runtime->storage().writeSettings();
 		}
 	}).send();
 }
@@ -643,9 +669,9 @@ void Instance::Private::migrateProxy() {
 	_proxyMigrationActive = true;
 	_connectionStatus->setProxyStatus({
 		.attempt = { .proxyGeneration = _proxyGeneration },
-		.proxy = (_runtime->proxy.enabled && _runtime->proxy.enabled())
-			&& _runtime->proxy.selected
-			? _runtime->proxy.selected()
+		.proxy = (_runtime->proxy().enabled && _runtime->proxy().enabled())
+			&& _runtime->proxy().selected
+			? _runtime->proxy().selected()
 			: ProxyData(),
 	});
 	ConnectionBroker::Instance().cancelByProxyGeneration(
@@ -996,17 +1022,17 @@ void Instance::Private::configLoadDone(const MTPConfig &result) {
 	_config->apply(data);
 
 	const auto lang = qs(data.vsuggested_lang_code().value_or_empty());
-	if (_runtime->language.setSuggested) {
-		_runtime->language.setSuggested(lang);
+	if (_runtime->language().setSuggested) {
+		_runtime->language().setSuggested(lang);
 	}
-	if (_runtime->language.setCurrentVersions) {
-		_runtime->language.setCurrentVersions(
+	if (_runtime->language().setCurrentVersions) {
+		_runtime->language().setCurrentVersions(
 			data.vlang_pack_version().value_or_empty(),
 			data.vbase_lang_pack_version().value_or_empty());
 	}
 	if (const auto prefix = data.vautoupdate_url_prefix()) {
-		if (_runtime->storage.writeAutoupdatePrefix) {
-			_runtime->storage.writeAutoupdatePrefix(qs(*prefix));
+		if (_runtime->storage().writeAutoupdatePrefix) {
+			_runtime->storage().writeAutoupdatePrefix(qs(*prefix));
 		}
 	}
 
@@ -1451,13 +1477,13 @@ bool Instance::Private::exportFail(
 
 bool Instance::Private::handleMigrationError(
 		mtpRequestId requestId,
-		const QRegularExpressionMatch &match) {
+		DcId migrateDcId) {
 	if (!requestId) {
 		return false;
 	}
 
 	auto dcWithShift = ShiftedDcId(0);
-	auto newdcWithShift = ShiftedDcId(match.captured(2).toInt());
+	auto newdcWithShift = ShiftedDcId(migrateDcId);
 	if (const auto shiftedDcId = queryRequestByDc(requestId)) {
 		dcWithShift = *shiftedDcId;
 	} else {
@@ -1543,30 +1569,25 @@ bool Instance::Private::handleMsgWaitError(mtpRequestId requestId) {
 
 bool Instance::Private::handleRetryError(
 		mtpRequestId requestId,
-		int code,
-		const QRegularExpressionMatch &floodWait,
-		const QRegularExpressionMatch &floodPremiumWait,
-		const QRegularExpressionMatch &slowmodeWait) {
+		const details::DefaultRpcErrorRetry &retry) {
 	if (!requestId) {
 		return false;
 	}
 
 	auto secs = 1;
 	auto nonPremiumDelay = false;
-	if (code < 0 || code >= 500) {
+	if (retry.delay == details::DefaultRpcErrorRetry::Delay::Backoff) {
 		const auto it = _requestsDelays.find(requestId);
 		if (it != _requestsDelays.cend()) {
 			secs = (it->second > 60) ? it->second : (it->second *= 2);
 		} else {
 			_requestsDelays.emplace(requestId, secs);
 		}
-	} else if (floodWait.hasMatch()) {
-		secs = floodWait.captured(1).toInt();
-	} else if (floodPremiumWait.hasMatch()) {
-		secs = floodPremiumWait.captured(1).toInt();
+	} else if (retry.delay == details::DefaultRpcErrorRetry::Delay::Exact) {
+		secs = retry.seconds;
+	} else if (retry.delay == details::DefaultRpcErrorRetry::Delay::NonPremium) {
+		secs = retry.seconds;
 		nonPremiumDelay = true;
-	} else if (slowmodeWait.hasMatch()) {
-		secs = slowmodeWait.captured(1).toInt();
 	}
 	const auto sendAt = crl::now() + secs * 1000 + 10;
 	auto it = _delayedRequests.begin();
@@ -1667,58 +1688,35 @@ bool Instance::Private::onErrorDefault(
 		const Error &error,
 		const Response &response) {
 	const auto requestId = response.requestId;
-	const auto &type = error.type();
-	const auto code = error.code();
-	const auto badGuestDc = (code == 400) && (type == u"FILE_ID_INVALID"_q);
-	static const auto MigrateRegExp = QRegularExpression(
-		"^(FILE|PHONE|NETWORK|USER)_MIGRATE_(\\d+)$");
-	static const auto FloodWaitRegExp = QRegularExpression(
-		"^FLOOD_WAIT_(\\d+)$");
-	static const auto FloodPremiumWaitRegExp = QRegularExpression(
-		"^FLOOD_PREMIUM_WAIT_(\\d+)$");
-	static const auto SlowmodeWaitRegExp = QRegularExpression(
-		"^SLOWMODE_WAIT_(\\d+)$");
+	const auto action = details::ClassifyDefaultRpcError(
+		error,
+		_badGuestDcRequests.find(requestId) != _badGuestDcRequests.cend());
+	using Type = details::DefaultRpcErrorAction::Type;
 
-	const auto migrate = MigrateRegExp.match(type);
-	if (migrate.hasMatch()) {
-		return handleMigrationError(requestId, migrate);
-	} else if (type == u"MSG_WAIT_TIMEOUT"_q
-		|| type == u"MSG_WAIT_FAILED"_q) {
+	switch (action.type) {
+	case Type::Migrate:
+		return handleMigrationError(requestId, action.migrateDcId);
+	case Type::MsgWait:
 		return handleMsgWaitError(requestId);
-	}
-
-	const auto floodWait = FloodWaitRegExp.match(type);
-	const auto floodPremiumWait = FloodPremiumWaitRegExp.match(type);
-	const auto slowmodeWait = SlowmodeWaitRegExp.match(type);
-	if (code < 0
-		|| code >= 500
-		|| floodWait.hasMatch()
-		|| floodPremiumWait.hasMatch()
-		|| (slowmodeWait.hasMatch()
-			&& slowmodeWait.captured(1).toInt() < 3)) {
-		return handleRetryError(
-			requestId,
-			code,
-			floodWait,
-			floodPremiumWait,
-			slowmodeWait);
-	} else if ((code == 401 && type != u"AUTH_KEY_PERM_EMPTY"_q)
-		|| (badGuestDc
-			&& _badGuestDcRequests.find(requestId)
-				== _badGuestDcRequests.cend())) {
-		return handleUnauthorizedError(error, response, badGuestDc);
-	} else if (type == u"CONNECTION_NOT_INITED"_q
-		|| type == u"CONNECTION_LAYER_INVALID"_q) {
+	case Type::Retry:
+		return handleRetryError(requestId, action.retry);
+	case Type::Unauthorized:
+		return handleUnauthorizedError(error, response, action.badGuestDc);
+	case Type::ConnectionInit:
 		return handleConnectionInitError(requestId);
-	} else if (type == u"CONNECTION_LANG_CODE_INVALID"_q) {
-		if (_runtime->language.resetToDefault) {
-			_runtime->language.resetToDefault();
+	case Type::ResetLanguage:
+		if (_runtime->language().resetToDefault) {
+			_runtime->language().resetToDefault();
 		}
-	} else if (type == u"FROZEN_METHOD_INVALID"_q) {
+		break;
+	case Type::Frozen:
 		_frozenErrorReceived.fire({});
-	}
-	if (badGuestDc) {
+		break;
+	case Type::ClearBadGuestDc:
 		_badGuestDcRequests.erase(requestId);
+		break;
+	case Type::None:
+		break;
 	}
 	return false;
 }
@@ -1755,7 +1753,7 @@ not_null<Session*> Instance::Private::startSession(ShiftedDcId shiftedDcId) {
 	const auto thread = getThreadForDc(shiftedDcId);
 	const auto result = _sessions.emplace(
 		shiftedDcId,
-		std::make_unique<Session>(_instance, thread, shiftedDcId, dc)
+		std::make_unique<Session>(_instance, this, thread, shiftedDcId, dc)
 	).first->second.get();
 	if (_proxyMigrationActive && result != _mainSession) {
 		result->migrateProxy(_proxyGeneration, false);
@@ -1878,12 +1876,12 @@ void Instance::Private::performKeyDestroy(ShiftedDcId shiftedDcId) {
 		}, [&](const MTPDdestroy_auth_key_none &) {
 			LOG(("MTP Info: key %1 already destroyed.").arg(shiftedDcId));
 		});
-		_instance->keyWasPossiblyDestroyed(shiftedDcId);
+		keyWasPossiblyDestroyed(shiftedDcId);
 		return true;
 	}, [=](const Error &error, const Response &response) {
 		LOG(("MTP Error: key %1 destruction resulted in error: %2"
 			).arg(shiftedDcId).arg(error.type()));
-		_instance->keyWasPossiblyDestroyed(shiftedDcId);
+		keyWasPossiblyDestroyed(shiftedDcId);
 		return true;
 	}, shiftedDcId);
 }
@@ -1968,21 +1966,13 @@ void Instance::Private::prepareToDestroy() {
 			thread->wait();
 		}
 	}
-	_runtime->connectionStatus = nullptr;
+	_runtime->unbindInstance(_connectionStatus.get());
 }
 
 Instance::Instance(Mode mode, Fields &&fields)
 : QObject()
 , _private(std::make_unique<Private>(this, mode, std::move(fields))) {
 	_private->start();
-}
-
-void Instance::resolveProxyDomain(const QString &host) {
-	_private->resolveProxyDomain(host);
-}
-
-void Instance::setGoodProxyDomain(const QString &host, const QString &ip) {
-	_private->setGoodProxyDomain(host, ip);
 }
 
 void Instance::suggestMainDcId(DcId mainDcId) {
@@ -2001,27 +1991,6 @@ rpl::producer<DcId> Instance::mainDcIdValue() const {
 	return _private->mainDcIdValue();
 }
 
-QString Instance::systemLangCode() const {
-	auto &runtime = _private->runtimeEnvironment();
-	return runtime.language.systemCode
-		? runtime.language.systemCode()
-		: QString();
-}
-
-QString Instance::cloudLangCode() const {
-	auto &runtime = _private->runtimeEnvironment();
-	return runtime.language.cloudCode
-		? runtime.language.cloudCode()
-		: QString();
-}
-
-QString Instance::langPackName() const {
-	auto &runtime = _private->runtimeEnvironment();
-	return runtime.language.packName
-		? runtime.language.packName()
-		: QString();
-}
-
 rpl::producer<> Instance::writeKeysRequests() const {
 	return _private->writeKeysRequests();
 }
@@ -2038,16 +2007,8 @@ void Instance::setUserPhone(const QString &phone) {
 	_private->setUserPhone(phone);
 }
 
-void Instance::badConfigurationError() {
-	_private->badConfigurationError();
-}
-
 void Instance::syncHttpUnixtime() {
 	_private->syncHttpUnixtime();
-}
-
-void Instance::restartedByTimeout(ShiftedDcId shiftedDcId) {
-	_private->restartedByTimeout(shiftedDcId);
 }
 
 rpl::producer<ShiftedDcId> Instance::restartsByTimeout() const {
@@ -2080,10 +2041,6 @@ void Instance::restart(ShiftedDcId shiftedDcId) {
 
 void Instance::migrateProxy() {
 	_private->migrateProxy();
-}
-
-void Instance::proxyMigrationSucceeded(uint64 generation) {
-	_private->proxyMigrationSucceeded(generation);
 }
 
 int32 Instance::dcstate(ShiftedDcId shiftedDcId) {
@@ -2124,20 +2081,6 @@ void Instance::reInitConnection(DcId dcId) {
 
 void Instance::logout(Fn<void()> done) {
 	_private->logout(std::move(done));
-}
-
-void Instance::dcPersistentKeyChanged(
-		DcId dcId,
-		const AuthKeyPtr &persistentKey) {
-	_private->dcPersistentKeyChanged(dcId, persistentKey);
-}
-
-void Instance::dcTemporaryKeyChanged(DcId dcId) {
-	_private->dcTemporaryKeyChanged(dcId);
-}
-
-rpl::producer<DcId> Instance::dcTemporaryKeyChanged() const {
-	return _private->dcTemporaryKeyChanged();
 }
 
 AuthKeysList Instance::getKeysForWrite() const {
@@ -2203,43 +2146,8 @@ void Instance::clearGlobalHandlers() {
 	_private->clearGlobalHandlers();
 }
 
-void Instance::onStateChange(ShiftedDcId shiftedDcId, int32 state) {
-	_private->onStateChange(shiftedDcId, state);
-}
-
-void Instance::onSessionReset(ShiftedDcId shiftedDcId) {
-	_private->onSessionReset(shiftedDcId);
-}
-
-bool Instance::hasCallback(mtpRequestId requestId) const {
-	return _private->hasCallback(requestId);
-}
-
-void Instance::processCallback(const Response &response) {
-	_private->processCallback(response);
-}
-
-void Instance::processUpdate(const Response &message) {
-	_private->processUpdate(message);
-}
-
-bool Instance::rpcErrorOccured(
-		const Response &response,
-		const FailHandler &onFail,
-		const Error &error) {
-	return _private->rpcErrorOccured(response, onFail, error);
-}
-
 bool Instance::isKeysDestroyer() const {
 	return _private->isKeysDestroyer();
-}
-
-void Instance::keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId) {
-	_private->keyWasPossiblyDestroyed(shiftedDcId);
-}
-
-void Instance::keyDestroyedOnServer(ShiftedDcId shiftedDcId, uint64 keyId) {
-	_private->keyDestroyedOnServer(shiftedDcId, keyId);
 }
 
 void Instance::sendRequest(

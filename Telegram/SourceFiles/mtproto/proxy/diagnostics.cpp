@@ -444,8 +444,8 @@ void WriteProxyDiagnosticsLine(
 	if (!event.timestamp.isValid()) {
 		event.timestamp = QDateTime::currentDateTime();
 	}
-	if (runtime->writeProxyDiagnosticsLine) {
-		runtime->writeProxyDiagnosticsLine(std::move(event));
+	if (runtime->diagnostics().writeProxyDiagnosticsLine) {
+		runtime->diagnostics().writeProxyDiagnosticsLine(std::move(event));
 	}
 }
 
@@ -461,8 +461,8 @@ void ReportProxyEvent(
 	if (report.proxy.type == ProxyData::Type::None) {
 		return;
 	}
-	if (runtime->reportProxyEvent) {
-		runtime->reportProxyEvent(std::move(report));
+	if (runtime->diagnostics().reportProxyEvent) {
+		runtime->diagnostics().reportProxyEvent(std::move(report));
 	}
 }
 

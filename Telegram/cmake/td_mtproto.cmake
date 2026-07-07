@@ -18,6 +18,8 @@ PRIVATE
     mtproto/auth/mtproto_bound_key_creator.h
     mtproto/auth/mtproto_dc_key_binder.cpp
     mtproto/auth/mtproto_dc_key_binder.h
+    mtproto/auth/mtproto_dc_key_crypto.cpp
+    mtproto/auth/mtproto_dc_key_crypto.h
     mtproto/auth/mtproto_dc_key_creator.cpp
     mtproto/auth/mtproto_dc_key_creator.h
     mtproto/details/mtproto_dcenter.cpp

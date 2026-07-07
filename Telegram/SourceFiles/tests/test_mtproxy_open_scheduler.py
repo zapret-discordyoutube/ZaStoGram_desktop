@@ -89,7 +89,7 @@ def test_connection_broker_reserves_global_open_slot_before_start():
 def test_connection_broker_cancels_by_runtime_environment():
     broker = CONNECTION_BROKER_H.read_text(encoding="utf-8")
 
-    assert "struct RuntimeEnvironment;" in broker
+    assert "class RuntimeEnvironment;" in broker
     assert (
         "void cancelByProxyGeneration("
         "RuntimeEnvironment *runtime, uint64 generation);"

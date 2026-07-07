@@ -141,7 +141,7 @@ def test_proxy_reporting_is_centralized():
     assert '#include "mtproto/proxy/control_plane.h"' in runtime
     assert "ProxyControlPlane::SubmitFact(runtime, report);" in runtime
     assert "setProxyConnectionStatus" not in diagnostics
-    assert "runtime->reportProxyEvent" in diagnostics
+    assert "runtime->diagnostics().reportProxyEvent" in diagnostics
     assert "WriteProxyDiagnosticsLine(runtime, {" in runtime
     assert "report.mtproxyReason" in runtime
     assert "report.attempt" in runtime

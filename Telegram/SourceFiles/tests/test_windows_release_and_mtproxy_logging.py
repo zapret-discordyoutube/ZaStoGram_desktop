@@ -185,7 +185,7 @@ def test_mtproxy_logs_have_release_visible_stream():
     assert "AlwaysWriteLogData(type)" in logs_cpp
     assert "WriteProxyDiagnosticsLine(" in abstract_connection
     assert "WriteProxyDiagnosticsLine(" in abstract_socket
-    assert "runtime->reportProxyEvent" in diagnostics_source
+    assert "runtime->diagnostics().reportProxyEvent" in diagnostics_source
     assert "Logs::writeMtproxy(" in runtime_source
     assert "AddProxyDiagnosticsEvent" not in diagnostics_source
     assert "ProxyDiagnosticsEventsValue" not in diagnostics_source

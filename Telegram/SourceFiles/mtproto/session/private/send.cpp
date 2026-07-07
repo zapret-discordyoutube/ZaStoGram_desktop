@@ -436,10 +436,10 @@ void SessionPrivate::tryToSend() {
 		const auto langPackName = _sessionState.options->langPackName;
 		const auto deviceModel = (_currentDcType == DcType::Cdn)
 			? "n/a"
-			: _instance->deviceModel();
+			: _delegate->deviceModel();
 		const auto systemVersion = (_currentDcType == DcType::Cdn)
 			? "n/a"
-			: _instance->systemVersion();
+			: _delegate->systemVersion();
 		const auto appVersion = ComputeAppVersion();
 		const auto proxyType = _sessionState.options->proxy.type;
 		const auto mtprotoProxy = (proxyType == ProxyData::Type::Mtproto);

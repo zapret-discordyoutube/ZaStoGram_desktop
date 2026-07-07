@@ -9,6 +9,11 @@ DH_UTILS_H = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.h"
 DH_UTILS_CPP = SOURCE_DIR / "mtproto" / "auth" / "mtproto_dh_utils.cpp"
 DC_KEY_CREATOR_CPP = (
     SOURCE_DIR / "mtproto" / "auth" / "mtproto_dc_key_creator.cpp")
+DC_KEY_CRYPTO_H = (
+    SOURCE_DIR / "mtproto" / "auth" / "mtproto_dc_key_crypto.h")
+DC_KEY_CRYPTO_CPP = (
+    SOURCE_DIR / "mtproto" / "auth" / "mtproto_dc_key_crypto.cpp")
+TD_MTPROTO_CMAKE = SOURCE_DIR.parents[1] / "Telegram" / "cmake" / "td_mtproto.cmake"
 CALLS_CALL_H = SOURCE_DIR / "calls" / "calls_call.h"
 CALLS_CALL_CPP = SOURCE_DIR / "calls" / "calls_call.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
@@ -67,6 +72,8 @@ def test_auth_key_handshake_keeps_secret_nonce_out_of_logs():
 
 def test_auth_key_handshake_uses_constant_time_secret_checks():
     source = DC_KEY_CREATOR_CPP.read_text(encoding="utf-8")
+    if DC_KEY_CRYPTO_CPP.exists():
+        source += "\n" + DC_KEY_CRYPTO_CPP.read_text(encoding="utf-8")
 
     assert "ConstantTimeEqual(" in source
     assert "CRYPTO_memcmp(" in source
@@ -75,6 +82,30 @@ def test_auth_key_handshake_uses_constant_time_secret_checks():
     assert "data.vnew_nonce_hash1() != NonceDigest(" not in source
     assert "data.vnew_nonce_hash2() != NonceDigest(" not in source
     assert "data.vnew_nonce_hash3() != NonceDigest(" not in source
+
+
+def test_dc_key_creator_crypto_helpers_are_split_and_registered():
+    assert DC_KEY_CRYPTO_H.exists()
+    assert DC_KEY_CRYPTO_CPP.exists()
+
+    creator = DC_KEY_CREATOR_CPP.read_text(encoding="utf-8")
+    crypto_header = DC_KEY_CRYPTO_H.read_text(encoding="utf-8")
+    crypto_source = DC_KEY_CRYPTO_CPP.read_text(encoding="utf-8")
+    cmake = TD_MTPROTO_CMAKE.read_text(encoding="utf-8")
+
+    assert len(creator.splitlines()) <= 620
+    assert '#include "mtproto/auth/mtproto_dc_key_crypto.h"' in creator
+    assert "mtproto/auth/mtproto_dc_key_crypto.cpp" in cmake
+    assert "mtproto/auth/mtproto_dc_key_crypto.h" in cmake
+    assert "struct ParsedPQ" in crypto_header
+    assert "[[nodiscard]] ParsedPQ FactorizePQ(" in crypto_header
+    assert "[[nodiscard]] bytes::vector EncryptPQInnerRSA(" in crypto_header
+    assert "[[nodiscard]] std::string EncryptClientDHInner(" in crypto_header
+    assert "MTPint128 NonceDigest(" in crypto_header
+    assert "CRYPTO_memcmp(" in crypto_source
+    assert "IsGoodEncryptedInner(" not in creator
+    assert "template <typename PQInnerData>" not in creator
+    assert "FactorizeSmallPQ(" not in creator
 
 
 def test_dh_intermediate_secret_bytes_are_raii_cleansed():
@@ -199,3 +230,10 @@ def class_public_section(text: str, signature: str) -> str:
     public = text.index("public:", start)
     private = text.index("private:", public)
     return text[public:private]
+
+
+if __name__ == "__main__":
+    test_auth_key_handshake_keeps_secret_nonce_out_of_logs()
+    test_auth_key_handshake_uses_constant_time_secret_checks()
+    test_dc_key_creator_crypto_helpers_are_split_and_registered()
+    test_dc_key_creator_cleans_ephemeral_dh_secret_copies()

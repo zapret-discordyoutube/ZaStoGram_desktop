@@ -68,14 +68,16 @@ SessionPrivate::SessionState::SessionState(
 
 SessionPrivate::SessionPrivate(
 	not_null<Instance*> instance,
+	not_null<SessionDelegate*> delegate,
 	not_null<QThread*> thread,
 	std::shared_ptr<SessionData> data,
 	ShiftedDcId shiftedDcId)
 : QObject(nullptr)
 , _instance(instance)
-, _runtime(&instance->runtimeEnvironment())
+, _delegate(delegate)
+, _runtime(&delegate->runtimeEnvironment())
 , _shiftedDcId(shiftedDcId)
-, _realDcType(_instance->dcOptions().dcType(_shiftedDcId))
+, _realDcType(_delegate->dcOptions().dcType(_shiftedDcId))
 , _currentDcType(_realDcType)
 , _state(DisconnectedState)
 , _timing(thread, this)
@@ -101,18 +103,18 @@ SessionPrivate::~SessionPrivate() {
 void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
 	const auto shiftedDcId = _shiftedDcId;
 	InvokeQueued(_runtime, [=, runtime = _runtime] {
-		if (runtime->connectionStatus) {
-			runtime->connectionStatus->setNotice(shiftedDcId, notice);
+		if (runtime->instance().connectionStatus) {
+			runtime->instance().connectionStatus->setNotice(shiftedDcId, notice);
 		}
 	});
 }
 
 void SessionPrivate::reportPingTime(crl::time time) {
 	const auto shiftedDcId = _shiftedDcId;
-	InvokeQueued(_runtime, [=, runtime = _runtime, instance = _instance] {
-		if (runtime->connectionStatus) {
-			runtime->connectionStatus->setSessionPingTime(
-				instance->mainDcId(),
+	InvokeQueued(_runtime, [=, runtime = _runtime, delegate = _delegate] {
+		if (runtime->instance().connectionStatus) {
+			runtime->instance().connectionStatus->setSessionPingTime(
+				delegate->mainDcId(),
 				shiftedDcId,
 				time);
 		}
@@ -162,7 +164,7 @@ int16 SessionPrivate::getProtocolDcId() const {
 	const auto simpleDcId = isTemporaryDcId(dcId)
 		? getRealIdFromTemporaryDcId(dcId)
 		: dcId;
-	const auto testedDcId = _instance->isTestMode()
+	const auto testedDcId = _delegate->isTestMode()
 		? (kTestModeDcIdShift + simpleDcId)
 		: simpleDcId;
 	return (_currentDcType == DcType::MediaCluster)
@@ -265,7 +267,7 @@ uint32 SessionPrivate::nextRequestSeqNumber(bool needAck) {
 }
 
 bool SessionPrivate::realDcTypeChanged() {
-	const auto now = _instance->dcOptions().dcType(_shiftedDcId);
+	const auto now = _delegate->dcOptions().dcType(_shiftedDcId);
 	if (_realDcType == now) {
 		return false;
 	}
