@@ -74,6 +74,8 @@ namespace {
 		return u"stealth_recipe_applied"_q;
 	case ProxyDiagnosticsPhase::TransportFallbackApplied:
 		return u"transport_fallback_applied"_q;
+	case ProxyDiagnosticsPhase::RotationSwitched:
+		return u"rotation_switched"_q;
 	case ProxyDiagnosticsPhase::MtpConnecting:
 		return u"mtp_connecting"_q;
 	case ProxyDiagnosticsPhase::MtpTransportReady:
@@ -259,6 +261,7 @@ namespace {
 	case ProxyDiagnosticsPhase::CanonicalRecovered:
 	case ProxyDiagnosticsPhase::StealthRecipeApplied:
 	case ProxyDiagnosticsPhase::TransportFallbackApplied:
+	case ProxyDiagnosticsPhase::RotationSwitched:
 	case ProxyDiagnosticsPhase::MtpConnecting:
 	case ProxyDiagnosticsPhase::MtpTransportReady:
 	case ProxyDiagnosticsPhase::MtpKeyCreating:

@@ -45,6 +45,7 @@ enum class ProxyDiagnosticsPhase {
 	CanonicalRecovered,
 	StealthRecipeApplied,
 	TransportFallbackApplied,
+	RotationSwitched,
 	MtpConnecting,
 	MtpTransportReady,
 	MtpKeyCreating,

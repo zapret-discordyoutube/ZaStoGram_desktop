@@ -110,8 +110,44 @@ def test_health_request_stays_conservative_without_verified_candidate():
     assert "hasActiveHealthRotationRequest()" in gate
 
 
+def test_switch_grace_period_prevents_rotation_ping_pong():
+    source = read(ROTATION_MANAGER_CPP)
+    header = read(ROTATION_MANAGER_H)
+    switch = function_body(
+        source, "bool ProxyRotationManager::switchToAvailable(")
+    handler = handler_body()
+    stop = function_body(source, "void ProxyRotationManager::stopChecking(")
+
+    # Every switch restarts all sessions of every account; a freshly
+    # selected proxy needs seconds to bring the main session up. Without
+    # a grace period the next probe success sees "still not connected"
+    # and hops again - observed as the selection ping-ponging across the
+    # whole list every ~2 seconds with a restart storm on each hop.
+    assert "kAfterSwitchGracePeriod" in source
+    assert "crl::time _lastSwitchAt = 0;" in header
+    assert "_lastSwitchAt" in switch
+    assert switch.index("kAfterSwitchGracePeriod") < switch.index(
+        "App().setCurrentProxy(")
+
+    # A successful switch stamps the grace period and drops the health
+    # window that belonged to the previous selection.
+    assert "_lastSwitchAt = crl::now();" in switch
+    assert "_healthRotationRequestedUntil = 0;" in switch
+
+    # Warm-up degradation right after a switch must not re-open the
+    # rotation window, and the switch itself must be release-visible in
+    # the proxy diagnostics log.
+    assert "kAfterSwitchGracePeriod" in handler
+    assert "RotationSwitched" in switch
+
+    # The grace period must survive the stopChecking()/startChecking()
+    # cycle that setCurrentProxy() triggers through settingsChanged().
+    assert "_lastSwitchAt" not in stop
+
+
 if __name__ == "__main__":
     test_health_events_are_filtered_to_the_selected_proxy()
     test_selected_endpoint_match_uses_canonical_endpoint_key()
     test_health_request_short_circuits_a_running_switch_wait()
     test_health_request_stays_conservative_without_verified_candidate()
+    test_switch_grace_period_prevents_rotation_ping_pong()

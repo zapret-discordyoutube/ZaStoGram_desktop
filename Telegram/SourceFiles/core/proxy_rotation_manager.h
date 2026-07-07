@@ -81,6 +81,7 @@ private:
 	bool _waitingToSwitch = false;
 	crl::time _healthRotationRequestedUntil = 0;
 	crl::time _switchStartedAt = 0;
+	crl::time _lastSwitchAt = 0;
 	rpl::lifetime _lifetime;
 
 };

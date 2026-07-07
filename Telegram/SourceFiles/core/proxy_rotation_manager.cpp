@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "mtproto/facade.h"
+#include "mtproto/proxy/diagnostics.h"
 
 #include <crl/crl_on_main.h>
 
@@ -30,6 +31,15 @@ constexpr auto kProxyRotationMaxActiveChecks = 2;
 // seconds) otherwise keeps returning to ConnectedState and resetting
 // rotation before it can probe a stable candidate and switch to it.
 constexpr auto kSelectedDegradedObserveWindow = 25 * crl::time(1000);
+
+// After a switch the freshly selected proxy needs time to actually bring
+// the main session to ConnectedState: every switch restarts all sessions
+// of every account, and through an mtproxy that takes seconds. Without
+// this grace period the next probe success (they complete about every
+// check interval) sees "still nobody connected" and switches again -
+// observed as the selection ping-ponging across the whole proxy list
+// every ~2 seconds with a full session-restart storm on each hop.
+constexpr auto kAfterSwitchGracePeriod = 15 * crl::time(1000);
 
 } // namespace
 
@@ -138,6 +148,14 @@ void ProxyRotationManager::reevaluate() {
 void ProxyRotationManager::handleEndpointHealthChanged(
 		MTP::details::MtProxy::EndpointEvent event) {
 	if (!event.rotationAllowed || event.terminalUntil <= crl::now()) {
+		return;
+	}
+	if (_lastSwitchAt
+		&& (crl::now() - _lastSwitchAt < kAfterSwitchGracePeriod)) {
+		// Right after a switch every session of every account reconnects
+		// through the new proxy at once; the transient admission pressure
+		// of that warm-up degrades endpoints for a moment and must not
+		// immediately re-open the rotation window for the next hop.
 		return;
 	}
 	// Admission starvation fires for every endpoint going through the
@@ -396,7 +414,12 @@ bool ProxyRotationManager::switchToAvailable() {
 	if (!_checking) {
 		return false;
 	}
+	if (_lastSwitchAt
+		&& (crl::now() - _lastSwitchAt < kAfterSwitchGracePeriod)) {
+		return false;
+	}
 	const auto &settings = App().settings().proxy();
+	const auto was = settings.selected();
 	for (const auto index : _probeOrder) {
 		if (index < 0 || index >= int(settings.list().size())) {
 			continue;
@@ -410,6 +433,17 @@ bool ProxyRotationManager::switchToAvailable() {
 			continue;
 		}
 		_waitingToSwitch = false;
+		_lastSwitchAt = crl::now();
+		_switchStartedAt = _lastSwitchAt;
+		_healthRotationRequestedUntil = 0;
+		MTP::WriteProxyDiagnosticsLine({
+			.source = MTP::ProxyDiagnosticsSource::MTProxy,
+			.phase = MTP::ProxyDiagnosticsPhase::RotationSwitched,
+			.severity = MTP::ProxyDiagnosticsSeverity::Warning,
+			.proxy = proxy,
+			.message = u"proxy rotation switched from %1"_q.arg(
+				MTP::ProxyDiagnosticsEndpointText(was.host, was.port)),
+		});
 		App().setCurrentProxy(proxy, MTP::ProxyData::Settings::Enabled);
 		App().saveSettingsDelayed();
 		return true;
