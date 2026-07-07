@@ -7,6 +7,7 @@ MTPROTO_DIR = SOURCE_DIR / "mtproto"
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 TD_MTPROTO_CMAKE = ROOT / "Telegram" / "cmake" / "td_mtproto.cmake"
 SETTINGS_EXPERIMENTAL = SOURCE_DIR / "settings" / "settings_experimental.cpp"
+INSTANCE_H = MTPROTO_DIR / "instance" / "mtp_instance.h"
 
 
 def read(path):
@@ -211,3 +212,11 @@ def test_instance_and_runtime_have_strict_folders():
     for path in removed:
         assert not (MTPROTO_DIR / path).exists()
         assert f"mtproto/{path}" not in listed
+
+
+def test_instance_header_declares_dc_id_dependency_directly():
+    header = read(INSTANCE_H)
+
+    assert '#include "mtproto/core_types.h"' in header
+    assert "DcId mainDcId" in header
+    assert "kTemporaryMainDcId" in header
