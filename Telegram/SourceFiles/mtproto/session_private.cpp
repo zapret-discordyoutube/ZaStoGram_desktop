@@ -1365,6 +1365,10 @@ void SessionPrivate::restart() {
 	}
 
 	DEBUG_LOG(("MTP Info: restart timeout: %1ms").arg(_retryTimeout));
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpRestart,
+		ProxyDiagnosticsSeverity::Info,
+		u"restarting (backoff %1ms)"_q.arg(_retryTimeout));
 
 	setState(-_retryTimeout);
 }
@@ -2357,14 +2361,26 @@ SessionPrivate::HandleResult SessionPrivate::handleBindResponse(
 			base::take(_keyCreator)->bindPersistentKey())) {
 			return HandleResult::DestroyTemporaryKey;
 		}
+		logMtprotoEvent(
+			ProxyDiagnosticsPhase::MtpKeyReady,
+			ProxyDiagnosticsSeverity::Info,
+			u"temporary key bound (id %1)"_q.arg(_keyId));
 		_sessionData->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	case DcKeyBindState::DefinitelyDestroyed:
 		if (destroyOldEnoughPersistentKey()) {
+			logMtprotoEvent(
+				ProxyDiagnosticsPhase::MtpBindFailed,
+				ProxyDiagnosticsSeverity::Warning,
+				u"bind failed, persistent key destroyed on server"_q);
 			return HandleResult::DestroyTemporaryKey;
 		}
 		[[fallthrough]];
 	case DcKeyBindState::Failed:
+		logMtprotoEvent(
+			ProxyDiagnosticsPhase::MtpBindFailed,
+			ProxyDiagnosticsSeverity::Warning,
+			u"temporary key bind failed"_q);
 		_sessionData->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	}
@@ -3055,10 +3071,19 @@ void SessionPrivate::handleError(int errorCode) {
 void SessionPrivate::destroyTemporaryKey() {
 	if (_instance->isKeysDestroyer()) {
 		LOG(("MTP Info: -404 error received in destroyer %1, assuming key was destroyed.").arg(_shiftedDcId));
+		logMtprotoEvent(
+			ProxyDiagnosticsPhase::MtpKeyDestroyed,
+			ProxyDiagnosticsSeverity::Info,
+			u"key destroyer confirmed key gone"_q);
 		_instance->keyWasPossiblyDestroyed(_shiftedDcId);
 		return;
 	}
 	LOG(("MTP Info: -404 error received in %1 with temporary key, assuming it was destroyed.").arg(_shiftedDcId));
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpKeyDestroyed,
+		ProxyDiagnosticsSeverity::Warning,
+		u"temporary key (id %1) assumed destroyed by server, recreating"_q
+			.arg(_keyId));
 	releaseKeyCreationOnFail();
 	if (_encryptionKey) {
 		_sessionData->destroyTemporaryKey(_encryptionKey->keyId());
