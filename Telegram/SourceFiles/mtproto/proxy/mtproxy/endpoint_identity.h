@@ -20,6 +20,23 @@ enum class RouteAddressFamily {
 	IPv6,
 };
 
+enum class FailureReason {
+	None,
+	DnsFailed,
+	TcpConnectTimeout,
+	TcpConnectedNoClientHelloWrite,
+	ClientHelloSentNoServerHello,
+	TlsAlertAfterClientHello,
+	ServerHelloHmacMismatch,
+	ServerHelloOkNoAppData,
+	ServerHelloOkNoMtprotoData,
+	AppDataRemoteClosed,
+	ConnectedNoMtprotoData,
+	MtpReceiveTimeoutAfterData,
+	Network,
+	ProxyProtocolBadResponse,
+};
+
 struct CanonicalProxyEndpoint {
 	ProxyData::Type type = ProxyData::Type::None;
 	QString originalHost;

@@ -90,6 +90,8 @@ public:
 		details::MtProxy::RelayStallReport report);
 	[[nodiscard]] static details::MtProxy::Snapshot MtproxyEndpointSnapshot(
 		const details::MtProxy::EndpointId &endpoint);
+	[[nodiscard]] static auto MtproxyEndpointChanges()
+	-> rpl::producer<details::MtProxy::EndpointEvent>;
 	static void SubmitFact(
 		not_null<Instance*> instance,
 		const ProxyEventReport &report);

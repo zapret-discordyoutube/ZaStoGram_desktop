@@ -46,13 +46,16 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "namespace MTP::details::MtProxy" in header
     assert '#include "mtproto/proxy/mtproxy/endpoint_identity.h"' in header
     assert "struct EndpointId" in identity_header
-    assert "enum class FailureReason" in header
-    assert "ServerHelloHmacMismatch" in header
-    assert "ClientHelloSentNoServerHello" in header
-    assert "TlsAlertAfterClientHello" in header
-    assert "ServerHelloOkNoAppData" in header
-    assert "TcpConnectTimeout" in header
-    assert "DnsFailed" in header
+    assert "enum class FailureReason" not in header
+    assert "enum class FailureReason" in identity_header
+    assert identity_header.index("enum class FailureReason") < (
+        identity_header.index("ToLegacyDiagnostic("))
+    assert "ServerHelloHmacMismatch" in identity_header
+    assert "ClientHelloSentNoServerHello" in identity_header
+    assert "TlsAlertAfterClientHello" in identity_header
+    assert "ServerHelloOkNoAppData" in identity_header
+    assert "TcpConnectTimeout" in identity_header
+    assert "DnsFailed" in identity_header
     assert "enum class EndpointUse" in header
     assert "enum class AdmissionAction" in header
     assert "class EndpointAttemptLease" in header
@@ -629,10 +632,12 @@ def test_rotation_manager_is_endpoint_health_aware():
     header = read(ROTATION_MANAGER_H)
     source = read(ROTATION_MANAGER_CPP)
 
-    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in header
+    assert '#include "mtproto/proxy/control_plane.h"' in header
+    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' not in header
     assert "handleEndpointHealthChanged(" in header
     assert "hasActiveHealthRotationRequest() const" in header
-    assert "EndpointHealth::Instance().changes(" in source
+    assert "ProxyControlPlane::MtproxyEndpointChanges(" in source
+    assert "EndpointHealth::Instance().changes(" not in source
     assert "event.rotationAllowed" in source
     assert "_healthRotationRequestedUntil" in source
     assert "!hasActiveHealthRotationRequest()" in source

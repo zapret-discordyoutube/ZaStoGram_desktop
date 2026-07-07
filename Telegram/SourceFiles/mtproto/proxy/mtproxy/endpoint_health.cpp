@@ -683,6 +683,22 @@ void LogProbeAttemptFailure(const FailureReport &report) {
 	});
 }
 
+void LogProbeAttemptSuccess(const SuccessReport &report) {
+	WriteProxyDiagnosticsLine({
+		.source = ProxyDiagnosticsSource::MTProxy,
+		.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
+		.severity = ProxyDiagnosticsSeverity::Info,
+		.transport = ProxyDiagnosticsTransportName(
+			report.endpoint.canonical.proxyKind,
+			report.endpoint.route.transport),
+		.message = u"probe_attempt_succeeded"_q,
+		.canonical = CanonicalText(report.endpoint),
+		.route = RouteText(report.endpoint),
+		.proxyKeyHash = ProxyDiagnosticsKeyHash(
+			EndpointKey(report.endpoint.canonical)),
+	});
+}
+
 } // namespace
 
 EndpointAttemptLease::EndpointAttemptLease(
@@ -1081,6 +1097,10 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 	if (report.lease) {
 		report.lease->release();
+	}
+	if (report.use == EndpointUse::ProxyCheck) {
+		LogProbeAttemptSuccess(report);
+		return;
 	}
 	const auto now = crl::now();
 	const auto key = EndpointKey(report.endpoint);

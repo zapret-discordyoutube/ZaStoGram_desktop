@@ -4,6 +4,7 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
+WIN_WORKFLOW = ROOT / ".github" / "workflows" / "win.yml"
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CONTROL_H = PROXY_DIR / "control_plane.h"
 CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
@@ -17,6 +18,8 @@ CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_IDENTITY_CPP = PROXY_DIR / "mtproxy" / "endpoint_identity.cpp"
+ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
+ROTATION_MANAGER_H = SOURCE_DIR / "core" / "proxy_rotation_manager.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
 RESOLVING_CONNECTION_CPP = PROXY_DIR / "resolving_connection.cpp"
@@ -63,6 +66,45 @@ def test_control_plane_is_the_proxy_publication_path():
     assert "StatusPhaseFromDiagnostics" not in diagnostics
     assert "WriteProxyDiagnosticsLine({" in diagnostics
     assert "ProxyControlPlane::FactFromReport(" in source
+
+
+def test_windows_ci_runs_proxy_control_plane_source_guards_before_build():
+    workflow = read(WIN_WORKFLOW)
+    guard = workflow.split(
+        "- name: Proxy control-plane source guards.", 1)[1].split(
+        "- name: Telegram Desktop build.", 1)[0]
+
+    for script in (
+        "test_connection_broker.py",
+        "test_connection_concurrency_policy.py",
+        "test_mtproto_relay_silence.py",
+        "test_mtproxy_client_hello_profiles.py",
+        "test_mtproxy_endpoint_health.py",
+        "test_mtproxy_endpoint_identity.py",
+        "test_mtproxy_faketls_hardening.py",
+        "test_mtproxy_minimal_hotfix.py",
+        "test_mtproxy_open_scheduler.py",
+        "test_mtproxy_phase_cooldown.py",
+        "test_mtproxy_policy.py",
+        "test_mtproxy_target_flow.py",
+        "test_mtproxy_tls_psk.py",
+        "test_proxy_atomic_switch.py",
+        "test_proxy_capability_cache.py",
+        "test_proxy_capability_key_contract.py",
+        "test_proxy_connection_status.py",
+        "test_proxy_control_plane.py",
+        "test_proxy_control_plane_truth_table.py",
+        "test_proxy_diagnostics.py",
+        "test_proxy_list_checks.py",
+        "test_proxy_logging_events.py",
+        "test_proxy_rotation_health_switch.py",
+        "test_proxy_shield_probe.py",
+        "test_proxy_wss_default.py",
+        "test_session_endpoint_cooldown.py",
+    ):
+        assert f"python Telegram/SourceFiles/tests/{script}" in guard
+    assert workflow.index("- name: Proxy control-plane source guards.") < (
+        workflow.index("- name: Telegram Desktop build."))
 
 
 def test_mtp_first_data_is_relay_success_fact():
@@ -138,7 +180,7 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
     status_h = read(STATUS_H)
     status = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
-    health_h = read(ENDPOINT_HEALTH_H)
+    identity_h = read(PROXY_DIR / "mtproxy" / "endpoint_identity.h")
     identity = read(ENDPOINT_IDENTITY_CPP)
     widget = read(CONNECTING_WIDGET)
     lang = read(LANG)
@@ -159,7 +201,7 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
         "MtpReceiveTimeoutAfterData",
     ):
         assert reason in status_h
-        assert reason in health_h
+        assert reason in identity_h
 
     no_appdata_block = kind_body.split(
         "case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:", 1)[1].split(
@@ -322,15 +364,23 @@ def test_proxy_restart_backoff_is_not_one_ms_herd():
 def test_mtproxy_health_policy_is_control_plane_owned():
     header = read(CONTROL_H)
     control = read(CONTROL_CPP)
+    rotation_header = read(ROTATION_MANAGER_H)
+    rotation = read(ROTATION_MANAGER_CPP)
 
     for name in (
         "ReportMtproxyFailure(",
         "ReportMtproxySuccess(",
         "NoteMtproxyRelayStall(",
         "MtproxyEndpointSnapshot(",
+        "MtproxyEndpointChanges(",
     ):
         assert name in header
         assert f"ProxyControlPlane::{name}" in control
+
+    assert '#include "mtproto/proxy/control_plane.h"' in rotation_header
+    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' not in (
+        rotation_header)
+    assert "ProxyControlPlane::MtproxyEndpointChanges(" in rotation
 
     for source in (SOURCE_DIR / "mtproto").rglob("*.cpp"):
         relative = source.relative_to(SOURCE_DIR)
@@ -343,8 +393,11 @@ def test_mtproxy_health_policy_is_control_plane_owned():
                 "EndpointHealth::Instance().reportFailure(",
                 "EndpointHealth::Instance().reportSuccess(",
                 "EndpointHealth::Instance().noteRelayStall(",
-                "EndpointHealth::Instance().snapshot("):
+                "EndpointHealth::Instance().snapshot(",
+                "EndpointHealth::Instance().changes("):
             assert call not in text, f"{relative} bypasses ProxyControlPlane"
+
+    assert "EndpointHealth::Instance().changes(" not in rotation
 
 
 def test_instance_status_sink_does_not_reduce_control_plane_output_again():
@@ -382,6 +435,7 @@ def test_instance_status_sink_is_private_to_control_plane():
 
 if __name__ == "__main__":
     test_control_plane_is_the_proxy_publication_path()
+    test_windows_ci_runs_proxy_control_plane_source_guards_before_build()
     test_mtp_first_data_is_relay_success_fact()
     test_fresh_relay_success_shadows_late_sibling_failures()
     test_reducer_rejects_older_progress_attempts()

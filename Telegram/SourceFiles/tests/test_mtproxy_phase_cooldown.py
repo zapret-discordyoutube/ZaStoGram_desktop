@@ -3,6 +3,7 @@ from pathlib import Path
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
@@ -37,8 +38,11 @@ def function_body(source, signature):
 
 
 def test_failure_reason_enum_is_phase_specific():
-    header = read(ENDPOINT_HEALTH_H)
+    header = read(ENDPOINT_IDENTITY_H)
 
+    assert "enum class FailureReason" in header
+    assert header.index("enum class FailureReason") < (
+        header.index("ToLegacyDiagnostic("))
     for reason in (
         "DnsFailed",
         "TcpConnectTimeout",

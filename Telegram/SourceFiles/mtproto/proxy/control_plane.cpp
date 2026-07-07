@@ -290,6 +290,11 @@ MtProxy::Snapshot ProxyControlPlane::MtproxyEndpointSnapshot(
 	return MtProxy::EndpointHealth::Instance().snapshot(endpoint);
 }
 
+auto ProxyControlPlane::MtproxyEndpointChanges()
+-> rpl::producer<MtProxy::EndpointEvent> {
+	return MtProxy::EndpointHealth::Instance().changes();
+}
+
 ProxyConnectionStatus ProxyControlPlane::selectedStatus() const {
 	return _selectedStatus;
 }

@@ -51,7 +51,7 @@ ProxyRotationManager::ProxyRotationManager()
 		stopChecking();
 		reevaluate();
 	}, _lifetime);
-	MTP::details::MtProxy::EndpointHealth::Instance().changes(
+	MTP::ProxyControlPlane::MtproxyEndpointChanges(
 	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
 		// Health events fire from session/network threads, while the
 		// manager works with App() settings and accounts - marshal.

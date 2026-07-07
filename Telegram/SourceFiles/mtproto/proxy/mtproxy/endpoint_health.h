@@ -13,23 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
-enum class FailureReason {
-	None,
-	DnsFailed,
-	TcpConnectTimeout,
-	TcpConnectedNoClientHelloWrite,
-	ClientHelloSentNoServerHello,
-	TlsAlertAfterClientHello,
-	ServerHelloHmacMismatch,
-	ServerHelloOkNoAppData,
-	ServerHelloOkNoMtprotoData,
-	AppDataRemoteClosed,
-	ConnectedNoMtprotoData,
-	MtpReceiveTimeoutAfterData,
-	Network,
-	ProxyProtocolBadResponse,
-};
-
 enum class EndpointUse {
 	Main,
 	Media,

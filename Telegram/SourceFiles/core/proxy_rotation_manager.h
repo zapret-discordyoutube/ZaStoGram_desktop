@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "mtproto/proxy/check.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/control_plane.h"
 
 #include <rpl/lifetime.h>
 #include <vector>

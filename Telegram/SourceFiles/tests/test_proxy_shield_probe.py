@@ -193,6 +193,23 @@ def test_proxy_check_failure_is_probe_telemetry_not_canonical_health():
     assert "LogProbeAttemptFailure(report" in report_failure
 
 
+def test_proxy_check_success_is_probe_telemetry_not_canonical_health():
+    source = read(CHECK_CPP)
+    health_source = read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+    start = function_body(source, "void StartProxyCheck(")
+    report_success = function_body(
+        health_source,
+        "void EndpointHealth::reportSuccess(")
+
+    success = start.split("ProxyControlPlane::ReportMtproxySuccess({", 1)[1]
+    assert ".use = MtProxy::EndpointUse::ProxyCheck" in success.split("});", 1)[0]
+    assert "report.use == EndpointUse::ProxyCheck" in report_success
+    assert "LogProbeAttemptSuccess(report" in report_success
+    assert report_success.index("report.use == EndpointUse::ProxyCheck") < (
+        report_success.index("ApplyProxyGeneration(state, report.proxyGeneration)"))
+
+
 def test_connection_box_uses_probe_status_instead_of_spinner_only():
     source = read(CONNECTION_BOX_CPP)
     header = read(CONNECTION_BOX_H)
@@ -231,4 +248,5 @@ if __name__ == "__main__":
     test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start()
     test_probe_attempts_do_not_publish_selected_status()
     test_proxy_check_failure_is_probe_telemetry_not_canonical_health()
+    test_proxy_check_success_is_probe_telemetry_not_canonical_health()
     test_connection_box_uses_probe_status_instead_of_spinner_only()
