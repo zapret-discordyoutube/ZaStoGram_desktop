@@ -66,6 +66,7 @@ def test_capability_card_contains_transport_profile_flags_and_routes():
         "bool syntheticPskAllowed",
         "bool fragmentationAllowed",
         "crl::time lastSuccessAt",
+        "crl::time relayProvenAt",
         "QString lastFailureClass;",
         "std::vector<QString> badRoutes;",
         "std::vector<QString> goodRoutes;",
@@ -84,6 +85,7 @@ def test_capability_card_contains_transport_profile_flags_and_routes():
         '"syntheticPskAllowed"',
         '"fragmentationAllowed"',
         '"lastSuccessAt"',
+        '"relayProvenAt"',
         '"lastFailureClass"',
         '"badRoutes"',
         '"goodRoutes"',
@@ -156,12 +158,14 @@ def test_mtproxy_relay_success_persists_boring_last_good_path():
     assert "QString lastGoodRoute;" in header
     assert "int lastGoodRecipeLevel = 0;" in header
     assert "bool relayProven = false;" in header
+    assert "crl::time relayProvenAt = 0;" in header
     assert "bool autoRotateAllowed = true;" in header
 
     for json_key in (
         '"lastGoodRoute"',
         '"lastGoodRecipeLevel"',
         '"relayProven"',
+        '"relayProvenAt"',
         '"autoRotateAllowed"',
     ):
         assert json_key in read_card
@@ -170,9 +174,11 @@ def test_mtproxy_relay_success_persists_boring_last_good_path():
     assert "const QString &lastGoodRoute" in source
     assert "int recipeLevel" in source
     assert "bool relayProven" in source
+    assert "const auto now = crl::now();" in success
     assert "card.lastGoodRoute = lastGoodRoute;" in success
     assert "card.lastGoodRecipeLevel = recipeLevel;" in success
     assert "card.relayProven = relayProven;" in success
+    assert "card.relayProvenAt = relayProven ? now : 0;" in success
     assert "card.autoRotateAllowed = false;" in success
     assert "card.syntheticPskAllowed = stealth.syntheticPsk;" in success
     assert ("card.fragmentationAllowed = (stealth.clientHelloFragmentation\n"
@@ -182,24 +188,77 @@ def test_mtproxy_relay_success_persists_boring_last_good_path():
     assert "card.fragmentationAllowed = true;" not in success
 
 
-def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
-	source = read(TRANSPORT_POLICY_CPP)
-	body = function_body(source, "ProxyStealthOptions EffectiveProxyStealthOptions(")
-	mtproxy_branch = body.split(
-		"proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
-		"if (settings == ProxyData::Settings::Enabled", 1)[0]
+def test_legacy_relay_cache_uses_last_success_as_proof_time():
+    source = read(CAPABILITIES_CPP)
+    read_card = function_body(source, "ProxyCapabilityCard ReadCard(")
 
-	assert "ProxyCapabilityCache::Instance().lookup(proxy)" in body
-	assert "capability.lastGoodTransport" in body
-	assert "ProxyCapabilityTransport::MtproxyFakeTlsTcp" in body
-	assert "capability.relayProven" in body
-	assert "capability.lastGoodRecipeLevel == 0" in body
-	assert "!capability.autoRotateAllowed" in body
-	assert "capability.lastGoodProfile" in body
-	assert "CompatStrictProxyStealthOptions(std::move(result))" in body
-	assert "capability.syntheticPskAllowed" not in mtproxy_branch
-	assert "capability.fragmentationAllowed" not in mtproxy_branch
-	assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
+    assert "const auto relayProvenAt = crl::time(" in read_card
+    assert "object.value(\"relayProvenAt\").toDouble()" in read_card
+    assert "result.relayProven" in read_card
+    assert "result.lastSuccessAt" in read_card
+
+
+def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
+    source = read(TRANSPORT_POLICY_CPP)
+    body = function_body(source, "ProxyStealthOptions EffectiveProxyStealthOptions(")
+    mtproxy_branch = body.split(
+        "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
+        "if (settings == ProxyData::Settings::Enabled", 1)[0]
+
+    assert "ProxyCapabilityCache::Instance().lookup(proxy)" in body
+    assert "capability.lastGoodTransport" in body
+    assert "ProxyCapabilityTransport::MtproxyFakeTlsTcp" in body
+    assert "capability.relayProven" in body
+    assert "FreshMtproxyRelayProof(card)" in read(CAPABILITIES_CPP)
+    assert "capability.lastGoodRecipeLevel == 0" in body
+    assert "!capability.autoRotateAllowed" in body
+    assert "capability.lastGoodProfile" in body
+    assert "CompatStrictProxyStealthOptions(std::move(result))" in body
+    assert "capability.syntheticPskAllowed" not in mtproxy_branch
+    assert "capability.fragmentationAllowed" not in mtproxy_branch
+    assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
+
+
+def test_relay_data_degradation_invalidates_persisted_relay_proof():
+    header = read(CAPABILITIES_H)
+    source = read(CAPABILITIES_CPP)
+    health = read(ENDPOINT_HEALTH_CPP)
+    relay_failure = function_body(
+        source,
+        "void ProxyCapabilityCache::noteMtproxyRelayFailure(")
+    report_failure = function_body(health, "void EndpointHealth::reportFailure(")
+    relay_stall = function_body(health, "void EndpointHealth::noteRelayStall(")
+
+    assert "void noteMtproxyRelayFailure(" in header
+    assert "card.relayProven = false;" in relay_failure
+    assert "card.relayProvenAt = 0;" in relay_failure
+    assert "card.lastFailureClass = failureClass;" in relay_failure
+    assert "AddRoute(card.badRoutes, routeKey);" in relay_failure
+    assert "ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(" in (
+        report_failure)
+    assert "ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(" in (
+        relay_stall)
+    assert "relay_stall" in relay_stall
+
+    no_appdata_warning = report_failure.split(
+        "if (SoftNoAppDataFailure(state, report.reason, now)) {", 1)[1].split(
+            "if (FailureIsRouteOnly(report.reason)", 1)[0]
+    assert "noteMtproxyRelayFailure" not in no_appdata_warning
+
+
+def test_hard_mtproxy_failures_invalidate_stale_relay_cache():
+    source = read(CAPABILITIES_CPP)
+    failure = function_body(source, "void ProxyCapabilityCache::noteMtproxyFailure(")
+
+    assert "HardMtproxyFailureInvalidatesRelayProof(" in source
+    assert 'u"client_hello_sent_no_server_hello"_q' in source
+    assert 'u"tls_alert_after_client_hello"_q' in source
+    assert 'u"server_hello_hmac_mismatch"_q' in source
+    assert 'u"server_hello_ok_no_appdata"_q' not in function_body(
+        source,
+        "bool HardMtproxyFailureInvalidatesRelayProof(")
+    assert "card.relayProven = false;" in failure
+    assert "card.relayProvenAt = 0;" in failure
 
 
 if __name__ == "__main__":
@@ -209,4 +268,7 @@ if __name__ == "__main__":
     test_wss_remote_closed_is_persisted_with_ttl_per_proxy()
     test_mtproxy_success_and_failure_update_capability_routes()
     test_mtproxy_relay_success_persists_boring_last_good_path()
+    test_legacy_relay_cache_uses_last_success_as_proof_time()
     test_last_good_capability_is_used_before_saved_mtproxy_experiments()
+    test_relay_data_degradation_invalidates_persisted_relay_proof()
+    test_hard_mtproxy_failures_invalidate_stale_relay_cache()

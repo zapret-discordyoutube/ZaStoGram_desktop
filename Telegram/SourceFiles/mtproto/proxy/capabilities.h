@@ -35,6 +35,7 @@ struct ProxyCapabilityCard {
 	bool syntheticPskAllowed = false;
 	bool fragmentationAllowed = false;
 	crl::time lastSuccessAt = 0;
+	crl::time relayProvenAt = 0;
 	QString lastFailureClass;
 	std::vector<QString> badRoutes;
 	std::vector<QString> goodRoutes;
@@ -59,6 +60,10 @@ public:
 		int recipeLevel,
 		bool relayProven);
 	void noteMtproxyFailure(
+		const QString &proxyKey,
+		const QString &routeKey,
+		const QString &failureClass);
+	void noteMtproxyRelayFailure(
 		const QString &proxyKey,
 		const QString &routeKey,
 		const QString &failureClass);

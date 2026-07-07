@@ -1535,6 +1535,8 @@ PRIVATE
     mtproto/proxy/mtproxy/client_hello_profile.h
     mtproto/proxy/mtproxy/endpoint_health.cpp
     mtproto/proxy/mtproxy/endpoint_health.h
+    mtproto/proxy/mtproxy/endpoint_identity.cpp
+    mtproto/proxy/mtproxy/endpoint_identity.h
     mtproto/proxy/mtproxy/open_scheduler.cpp
     mtproto/proxy/mtproxy/open_scheduler.h
     mtproto/proxy/mtproxy/tls_socket.cpp

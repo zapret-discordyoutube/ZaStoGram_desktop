@@ -10,10 +10,13 @@ CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 STATUS_H = PROXY_DIR / "status.h"
 STATUS_CPP = PROXY_DIR / "status.cpp"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
+INSTANCE_CPP = SOURCE_DIR / "mtproto" / "mtp_instance.cpp"
+INSTANCE_H = SOURCE_DIR / "mtproto" / "mtp_instance.h"
 ADAPTIVE_POLICY_CPP = PROXY_DIR / "mtproxy" / "adaptive_policy.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
+ENDPOINT_IDENTITY_CPP = PROXY_DIR / "mtproxy" / "endpoint_identity.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
 RESOLVING_CONNECTION_CPP = PROXY_DIR / "resolving_connection.cpp"
@@ -79,7 +82,7 @@ def test_mtp_first_data_is_relay_success_fact():
 
 def test_fresh_relay_success_shadows_late_sibling_failures():
     source = read(CONTROL_CPP)
-    status = read(STATUS_CPP)
+    status_header = read(STATUS_H)
     reducer = function_body(
         source,
         "ProxyConnectionStatus ProxyControlPlane::Reduce(")
@@ -92,9 +95,24 @@ def test_fresh_relay_success_shadows_late_sibling_failures():
         shadow_helper)
     assert "return current;" in reducer.split(
         "ShadowedByFreshRelaySuccess(current, fact)", 1)[1]
-    assert "FreshRelaySuccess" in source
+    assert "RelaySuccessIsFresh" in source
     assert "shadowed_by_fresh_success" in source
-    assert "successUntil" in status
+    assert "successUntil" in status_header
+
+
+def test_reducer_rejects_older_progress_attempts():
+    source = read(CONTROL_CPP)
+    reducer = function_body(
+        source,
+        "ProxyConnectionStatus ProxyControlPlane::Reduce(")
+    apply = function_body(source, "ProxyConnectionStatus ApplySelectedStatusUpdate(")
+
+    assert "bool IsOlderAttempt(" in source
+    assert "IsOlderAttempt(current.attempt, update.attempt)" in apply
+    assert apply.index(
+        "IsOlderAttempt(current.attempt, update.attempt)") < apply.index(
+            "!IsMtproxyTerminalFailure(current.mtproxyReason)")
+    assert "ApplySelectedStatusUpdate(" in reducer
 
 
 def test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source():
@@ -121,7 +139,7 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
     status = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
     health_h = read(ENDPOINT_HEALTH_H)
-    health = read(ENDPOINT_HEALTH_CPP)
+    identity = read(ENDPOINT_IDENTITY_CPP)
     widget = read(CONNECTING_WIDGET)
     lang = read(LANG)
     kind_body = function_body(
@@ -130,9 +148,9 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
     reason_text = function_body(
         diagnostics,
         "QString MtproxyReasonText(")
-    legacy = function_body(health, "QString ToLegacyDiagnostic(")
+    legacy = function_body(identity, "QString ToLegacyDiagnostic(")
     terminal = function_body(
-        health, "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
+        identity, "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
 
     for reason in (
         "ClientHelloSentNoServerHello",
@@ -250,6 +268,16 @@ def test_session_receive_timeout_reports_stage_specific_terminal_status():
     assert "MtProxy::FailureReason::ServerHelloOkNoMtprotoData" in (
         wait_received)
     assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
+    relay_stall_call = wait_received.split(
+        "ProxyControlPlane::NoteMtproxyRelayStall(", 1)[1].split("});", 1)[0]
+    assert ".proxyGeneration = _connectionMtproxyAttempt.proxyGeneration" in (
+        relay_stall_call)
+    assert ".attemptId = _connectionMtproxyAttempt.attemptId" in (
+        relay_stall_call)
+    assert ".proxyEpoch = _connectionMtproxyAttempt.proxyEpoch" in (
+        relay_stall_call)
+    assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in (
+        relay_stall_call)
 
 
 def test_admission_keeps_scouts_until_relay_proof():
@@ -319,14 +347,50 @@ def test_mtproxy_health_policy_is_control_plane_owned():
             assert call not in text, f"{relative} bypasses ProxyControlPlane"
 
 
+def test_instance_status_sink_does_not_reduce_control_plane_output_again():
+    control = read(CONTROL_CPP)
+    status_header = read(STATUS_H)
+    status_source = read(STATUS_CPP)
+    instance = read(INSTANCE_CPP)
+    submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
+    sink = function_body(instance, "void Instance::Private::setProxyConnectionStatus(")
+
+    assert "ProxyControlPlane::Reduce(current, normalized)" in submit
+    assert "ApplySelectedStatusUpdate(" in control
+    assert "ApplyProxyConnectionStatusUpdate(" not in status_header
+    assert "ApplyProxyConnectionStatusUpdate(" not in status_source
+    assert "ApplyProxyConnectionStatusUpdate(" not in sink
+    assert "_proxyConnectionStatus = status;" in sink
+
+
+def test_instance_status_sink_is_private_to_control_plane():
+    header = read(INSTANCE_H)
+    control = read(CONTROL_CPP)
+
+    assert "class ProxyControlPlane;" in header
+    assert "friend class ProxyControlPlane;" in header
+    assert "void setProxyConnectionStatus(ProxyConnectionStatus status);" in header
+
+    setter = header.index(
+        "void setProxyConnectionStatus(ProxyConnectionStatus status);")
+    private_section = header.rindex("private:")
+    assert setter > private_section
+
+    submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
+    assert "instance->setProxyConnectionStatus(" in submit
+
+
 if __name__ == "__main__":
     test_control_plane_is_the_proxy_publication_path()
     test_mtp_first_data_is_relay_success_fact()
     test_fresh_relay_success_shadows_late_sibling_failures()
+    test_reducer_rejects_older_progress_attempts()
     test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source()
+    test_instance_status_sink_is_private_to_control_plane()
     test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct()
     test_serverhello_progress_prevents_no_serverhello_terminal_repaint()
     test_session_receive_timeout_reports_stage_specific_terminal_status()
     test_admission_keeps_scouts_until_relay_proof()
     test_proxy_restart_backoff_is_not_one_ms_herd()
     test_mtproxy_health_policy_is_control_plane_owned()
+    test_instance_status_sink_does_not_reduce_control_plane_output_again()

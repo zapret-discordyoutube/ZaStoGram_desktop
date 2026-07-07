@@ -25,6 +25,7 @@ namespace MTP {
 namespace {
 
 constexpr auto kMaxStoredRoutes = 16;
+constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
 
 [[nodiscard]] QByteArray BytesToQByteArray(bytes::const_span data) {
 	auto result = QByteArray();
@@ -201,6 +202,13 @@ constexpr auto kMaxStoredRoutes = 16;
 		"fragmentationAllowed").toBool(false);
 	result.lastSuccessAt = crl::time(
 		object.value("lastSuccessAt").toDouble());
+	const auto relayProvenAt = crl::time(
+		object.value("relayProvenAt").toDouble());
+	result.relayProvenAt = relayProvenAt
+		? relayProvenAt
+		: result.relayProven
+		? result.lastSuccessAt
+		: 0;
 	result.lastFailureClass = object.value(
 		"lastFailureClass").toString();
 	result.badRoutes = ReadStringVector(object, "badRoutes");
@@ -225,6 +233,7 @@ constexpr auto kMaxStoredRoutes = 16;
 	result.insert("syntheticPskAllowed", card.syntheticPskAllowed);
 	result.insert("fragmentationAllowed", card.fragmentationAllowed);
 	result.insert("lastSuccessAt", double(card.lastSuccessAt));
+	result.insert("relayProvenAt", double(card.relayProvenAt));
 	result.insert("lastFailureClass", card.lastFailureClass);
 	result.insert("badRoutes", WriteStringVector(card.badRoutes));
 	result.insert("goodRoutes", WriteStringVector(card.goodRoutes));
@@ -253,6 +262,29 @@ void RemoveRoute(std::vector<QString> &routes, const QString &routeKey) {
 	}
 }
 
+[[nodiscard]] bool FreshMtproxyRelayProof(
+		const ProxyCapabilityCard &card) {
+	return card.relayProven
+		&& card.relayProvenAt
+		&& (crl::now() - card.relayProvenAt <= kMtproxyRelayProofTtl);
+}
+
+[[nodiscard]] ProxyCapabilityCard CardWithAgedRelayProof(
+		ProxyCapabilityCard card) {
+	if (!FreshMtproxyRelayProof(card)) {
+		card.relayProven = false;
+		card.relayProvenAt = 0;
+	}
+	return card;
+}
+
+[[nodiscard]] bool HardMtproxyFailureInvalidatesRelayProof(
+		const QString &failureClass) {
+	return (failureClass == u"client_hello_sent_no_server_hello"_q)
+		|| (failureClass == u"tls_alert_after_client_hello"_q)
+		|| (failureClass == u"server_hello_hmac_mismatch"_q);
+}
+
 } // namespace
 
 ProxyCapabilityCache &ProxyCapabilityCache::Instance() {
@@ -269,7 +301,7 @@ ProxyCapabilityCard ProxyCapabilityCache::lookup(const QString &proxyKey) {
 	load();
 	const auto i = _cards.find(proxyKey);
 	if (i != end(_cards)) {
-		return i->second;
+		return CardWithAgedRelayProof(i->second);
 	}
 	auto result = ProxyCapabilityCard();
 	result.proxyKey = proxyKey;
@@ -311,6 +343,7 @@ void ProxyCapabilityCache::noteMtproxySuccess(
 	}
 	QMutexLocker lock(&_mutex);
 	load();
+	const auto now = crl::now();
 	auto &card = _cards[proxyKey];
 	card.proxyKey = proxyKey;
 	card.lastGoodTransport = ProxyCapabilityTransport::MtproxyFakeTlsTcp;
@@ -318,8 +351,9 @@ void ProxyCapabilityCache::noteMtproxySuccess(
 	card.lastGoodProfile = sentProfile;
 	card.lastGoodRecipeLevel = recipeLevel;
 	card.relayProven = relayProven;
+	card.relayProvenAt = relayProven ? now : 0;
 	card.autoRotateAllowed = false;
-	card.lastSuccessAt = crl::now();
+	card.lastSuccessAt = now;
 	card.lastFailureClass.clear();
 	card.syntheticPskAllowed = stealth.syntheticPsk;
 	card.fragmentationAllowed = (stealth.clientHelloFragmentation
@@ -341,7 +375,30 @@ void ProxyCapabilityCache::noteMtproxyFailure(
 	auto &card = _cards[proxyKey];
 	card.proxyKey = proxyKey;
 	card.lastFailureClass = failureClass;
+	if (HardMtproxyFailureInvalidatesRelayProof(failureClass)) {
+		card.relayProven = false;
+		card.relayProvenAt = 0;
+	}
 	AddRoute(card.badRoutes, routeKey);
+	save();
+}
+
+void ProxyCapabilityCache::noteMtproxyRelayFailure(
+		const QString &proxyKey,
+		const QString &routeKey,
+		const QString &failureClass) {
+	if (proxyKey.isEmpty()) {
+		return;
+	}
+	QMutexLocker lock(&_mutex);
+	load();
+	auto &card = _cards[proxyKey];
+	card.proxyKey = proxyKey;
+	card.relayProven = false;
+	card.relayProvenAt = 0;
+	card.lastFailureClass = failureClass;
+	AddRoute(card.badRoutes, routeKey);
+	RemoveRoute(card.goodRoutes, routeKey);
 	save();
 }
 

@@ -327,11 +327,12 @@ bool SessionPrivate::appendTestConnection(
 					std::move(start.endpoint),
 					start.use,
 					std::move(start.lease),
-					{
-						.proxyGeneration = start.proxyGeneration,
-						.proxyEpoch = start.proxyEpoch,
-						.attemptId = start.attemptId,
-					},
+						{
+							.proxyGeneration = start.proxyGeneration,
+							.proxyEpoch = start.proxyEpoch,
+							.successEpoch = start.successEpoch,
+							.attemptId = start.attemptId,
+						},
 					start.attemptStartedAt,
 					start.stealth);
 			},
@@ -528,8 +529,10 @@ void SessionPrivate::reportMtproxyConnectionUsable(
 	ProxyControlPlane::ReportMtproxySuccess({
 		.endpoint = connection.mtproxyEndpoint,
 		.use = connection.mtproxyUse,
+		.proxyGeneration = connection.mtproxyAttempt.proxyGeneration,
 		.attemptId = connection.mtproxyAttempt.attemptId,
 		.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
+		.successEpoch = connection.mtproxyAttempt.successEpoch,
 		.attemptStartedAt = connection.mtproxyAttemptStartedAt,
 	});
 }
@@ -1583,14 +1586,23 @@ void SessionPrivate::waitReceivedFailed() {
 			.endpoint = _connectionMtproxyEndpoint,
 			.use = _connectionMtproxyUse,
 			.reason = MtProxy::FailureReason::ServerHelloOkNoMtprotoData,
-			.attemptId = _connectionMtproxyAttempt.attemptId,
-			.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
-			.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
-		});
-	} else if (mtproxyConnection) {
-		ProxyControlPlane::NoteMtproxyRelayStall(
-			_connectionMtproxyEndpoint);
-	}
+				.proxyGeneration = _connectionMtproxyAttempt.proxyGeneration,
+				.attemptId = _connectionMtproxyAttempt.attemptId,
+				.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+				.successEpoch = _connectionMtproxyAttempt.successEpoch,
+				.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
+			});
+			} else if (mtproxyConnection) {
+			ProxyControlPlane::NoteMtproxyRelayStall({
+				.endpoint = _connectionMtproxyEndpoint,
+				.use = _connectionMtproxyUse,
+					.proxyGeneration = _connectionMtproxyAttempt.proxyGeneration,
+					.attemptId = _connectionMtproxyAttempt.attemptId,
+					.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+					.successEpoch = _connectionMtproxyAttempt.successEpoch,
+					.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
+				});
+			}
 	doDisconnect();
 	if (silentMtproxyConnection
 		&& (_mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
@@ -1691,12 +1703,14 @@ void SessionPrivate::connectingTimedOut() {
 	for (const auto &connection : _testConnections) {
 		if (!MtProxy::EndpointEmpty(connection.mtproxyEndpoint)
 			&& connection.mtproxyEndpoint.canonical.domainFromSecret.isEmpty()) {
-				ProxyControlPlane::ReportMtproxyFailure({
-					.endpoint = connection.mtproxyEndpoint,
-					.use = connection.mtproxyUse,
-					.reason = MtProxy::FailureReason::TcpConnectTimeout,
+			ProxyControlPlane::ReportMtproxyFailure({
+				.endpoint = connection.mtproxyEndpoint,
+				.use = connection.mtproxyUse,
+				.reason = MtProxy::FailureReason::TcpConnectTimeout,
+					.proxyGeneration = connection.mtproxyAttempt.proxyGeneration,
 					.attemptId = connection.mtproxyAttempt.attemptId,
 					.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
+					.successEpoch = connection.mtproxyAttempt.successEpoch,
 					.attemptStartedAt = connection.mtproxyAttemptStartedAt,
 				});
 		}
@@ -1897,11 +1911,13 @@ void SessionPrivate::handleReceived() {
 					ProxyControlPlane::ReportMtproxySuccess({
 						.endpoint = _connectionMtproxyEndpoint,
 						.use = _connectionMtproxyUse,
-						.attemptId = _connectionMtproxyAttempt.attemptId,
-						.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
-						.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
-						.scope = MtProxy::SuccessScope::Relay,
-					});
+							.proxyGeneration = _connectionMtproxyAttempt.proxyGeneration,
+							.attemptId = _connectionMtproxyAttempt.attemptId,
+							.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+							.successEpoch = _connectionMtproxyAttempt.successEpoch,
+							.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
+							.scope = MtProxy::SuccessScope::Relay,
+						});
 				}
 			}
 
@@ -2812,6 +2828,7 @@ void SessionPrivate::onConnected(
 	const auto mtproxyAttempt = ProxyConnectionAttempt{
 		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
 		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
+		.successEpoch = i->mtproxyLease.successEpoch(),
 		.attemptId = i->mtproxyLease.attemptId(),
 	};
 	const auto mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
@@ -2884,6 +2901,7 @@ void SessionPrivate::confirmBestConnection() {
 	_connectionMtproxyAttempt = {
 		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
 		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
+		.successEpoch = i->mtproxyLease.successEpoch(),
 		.attemptId = i->mtproxyLease.attemptId(),
 	};
 	_connectionMtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
@@ -3169,33 +3187,37 @@ void SessionPrivate::onError(
 				.use = found->mtproxyUse,
 				.reason = MtProxy::FailureReasonFromErrorCode(errorCode),
 				.lease = &found->mtproxyLease,
-				.attemptId = found->mtproxyAttempt.attemptId,
-				.proxyEpoch = found->mtproxyAttempt.proxyEpoch,
-				.attemptStartedAt = found->mtproxyAttemptStartedAt,
-			});
+					.proxyGeneration = found->mtproxyAttempt.proxyGeneration,
+					.attemptId = found->mtproxyAttempt.attemptId,
+					.proxyEpoch = found->mtproxyAttempt.proxyEpoch,
+					.successEpoch = found->mtproxyAttempt.successEpoch,
+					.attemptStartedAt = found->mtproxyAttemptStartedAt,
+				});
 		}
 	} else if (_connection.get() == connection.get()
 		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint)) {
 		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
-		if (reason != MtProxy::FailureReason::None) {
-			const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
-				_connectionMtproxyEndpoint);
-			const auto ignoreRemoteClosed = (reason
-					== MtProxy::FailureReason::AppDataRemoteClosed)
-				&& snapshot.healthy
-				&& !snapshot.halfOpen;
-			if (!ignoreRemoteClosed) {
-				ProxyControlPlane::ReportMtproxyFailure({
-					.endpoint = _connectionMtproxyEndpoint,
-					.use = _connectionMtproxyUse,
-					.reason = reason,
-					.attemptId = _connectionMtproxyAttempt.attemptId,
-					.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
-					.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
-				});
+			if (reason != MtProxy::FailureReason::None) {
+				const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
+					_connectionMtproxyEndpoint);
+				const auto ignoreRemoteClosed = (reason
+						== MtProxy::FailureReason::AppDataRemoteClosed)
+					&& snapshot.healthy
+					&& !snapshot.halfOpen;
+				if (!ignoreRemoteClosed) {
+					ProxyControlPlane::ReportMtproxyFailure({
+						.endpoint = _connectionMtproxyEndpoint,
+						.use = _connectionMtproxyUse,
+						.reason = reason,
+							.proxyGeneration = _connectionMtproxyAttempt.proxyGeneration,
+							.attemptId = _connectionMtproxyAttempt.attemptId,
+							.proxyEpoch = _connectionMtproxyAttempt.proxyEpoch,
+							.successEpoch = _connectionMtproxyAttempt.successEpoch,
+							.attemptStartedAt = _connectionMtproxyAttemptStartedAt,
+						});
+				}
 			}
 		}
-	}
 	removeTestConnection(connection);
 
 	if (_testConnections.empty() && _connectionBrokerTickets.empty()) {

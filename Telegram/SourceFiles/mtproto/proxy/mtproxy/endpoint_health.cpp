@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
-#include "mtproto/connection_abstract.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
@@ -15,10 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/timer.h"
 
-#include <QtCore/QCryptographicHash>
 #include <QtCore/QMutex>
-#include <QtNetwork/QAbstractSocket>
-#include <QtNetwork/QHostAddress>
 #include <rpl/event_stream.h>
 
 #include <map>
@@ -84,6 +80,7 @@ struct EndpointState {
 	crl::time nextHandshakeAt = 0;
 	bool healthy = false;
 	bool halfOpen = false;
+	uint64 proxyGeneration = 0;
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
 	std::map<uint64, crl::time> attemptStarts;
@@ -123,61 +120,16 @@ struct CapabilitySuccess {
 	bool relayProven = false;
 };
 
+struct CapabilityFailure {
+	QString proxyKey;
+	QString routeKey;
+	QString diagnostic;
+};
+
 QMutex StatesMutex;
 std::map<QString, EndpointState> States;
 std::map<QString, RouteState> Routes;
 rpl::event_stream<EndpointEvent> Events;
-
-[[nodiscard]] QByteArray BytesToQByteArray(bytes::const_span data) {
-	auto result = QByteArray();
-	result.reserve(int(data.size()));
-	for (const auto byte : data) {
-		result.append(char(gsl::to_integer<unsigned char>(byte)));
-	}
-	return result;
-}
-
-[[nodiscard]] QString HashBytes(bytes::const_span data) {
-	const auto hash = QCryptographicHash::hash(
-		BytesToQByteArray(data),
-		QCryptographicHash::Sha256);
-	return QString::fromLatin1(hash.toHex());
-}
-
-[[nodiscard]] QString HashText(const QString &text) {
-	const auto hash = QCryptographicHash::hash(
-		text.toUtf8(),
-		QCryptographicHash::Sha256);
-	return QString::fromLatin1(hash.toHex());
-}
-
-[[nodiscard]] QString DomainFromSecret(bytes::const_span secret) {
-	if (secret.size() <= 17) {
-		return QString();
-	}
-	return QString::fromUtf8(BytesToQByteArray(secret.subspan(17)));
-}
-
-[[nodiscard]] QString ProxyIdentityHost(const ProxyData &proxy) {
-	return proxy.originalHost.isEmpty()
-		? proxy.host
-		: proxy.originalHost;
-}
-
-[[nodiscard]] RouteAddressFamily AddressFamilyFor(const QString &address) {
-	if (address.isEmpty()) {
-		return RouteAddressFamily::Unknown;
-	}
-	const auto parsed = QHostAddress(address);
-	switch (parsed.protocol()) {
-	case QAbstractSocket::IPv4Protocol:
-		return RouteAddressFamily::IPv4;
-	case QAbstractSocket::IPv6Protocol:
-		return RouteAddressFamily::IPv6;
-	default:
-		return RouteAddressFamily::Host;
-	}
-}
 
 void NoteRouteFailure(
 		EndpointState &state,
@@ -340,6 +292,28 @@ void NoteRouteSuccess(EndpointState &state, const RouteEndpoint &route) {
 	return false;
 }
 
+[[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason) {
+	switch (reason) {
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::ServerHelloOkNoMtprotoData:
+	case FailureReason::ConnectedNoMtprotoData:
+	case FailureReason::MtpReceiveTimeoutAfterData:
+		return true;
+	case FailureReason::None:
+	case FailureReason::DnsFailed:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::Network:
+	case FailureReason::ProxyProtocolBadResponse:
+		return false;
+	}
+	return false;
+}
+
 void DowngradeRecipeForRelayStall(
 		EndpointState &state,
 		FailureReason reason) {
@@ -413,10 +387,88 @@ void DowngradeRecipeForRelayStall(
 	return (i != end(state.attemptStarts)) ? i->second : crl::time();
 }
 
+[[nodiscard]] crl::time AttemptStartedAt(
+		const SuccessReport &report,
+		const EndpointState &state) {
+	if (report.attemptStartedAt) {
+		return report.attemptStartedAt;
+	}
+	if (report.lease && report.lease->startedAt()) {
+		return report.lease->startedAt();
+	}
+	const auto attemptId = report.attemptId
+		? report.attemptId
+		: report.lease
+		? report.lease->attemptId()
+		: uint64();
+	if (!attemptId) {
+		return 0;
+	}
+	const auto i = state.attemptStarts.find(attemptId);
+	return (i != end(state.attemptStarts)) ? i->second : crl::time();
+}
+
+[[nodiscard]] bool ReportEpochIsStale(
+		uint64 proxyEpoch,
+		const EndpointState &state) {
+	return proxyEpoch && proxyEpoch < state.proxyEpoch;
+}
+
+[[nodiscard]] bool ReportSuccessEpochIsStale(
+		uint64 successEpoch,
+		const EndpointState &state) {
+	return state.successEpoch && successEpoch < state.successEpoch;
+}
+
+[[nodiscard]] bool ReportGenerationIsStale(
+		uint64 proxyGeneration,
+		const EndpointState &state) {
+	return proxyGeneration && proxyGeneration < state.proxyGeneration;
+}
+
+void ApplyProxyGeneration(
+		EndpointState &state,
+		uint64 proxyGeneration) {
+	if (!proxyGeneration || proxyGeneration <= state.proxyGeneration) {
+		return;
+	}
+	state.proxyGeneration = proxyGeneration;
+	state.attemptStarts.clear();
+	state.active = 0;
+}
+
 [[nodiscard]] bool FailureFromStaleAttempt(
 		const FailureReport &report,
 		const EndpointState &state) {
+	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
+		return true;
+	}
+	if (ReportEpochIsStale(report.proxyEpoch, state)) {
+		return true;
+	}
+	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
+		return true;
+	}
 	if (!state.lastRelaySuccessAt || !FailureCanBeStale(report.reason)) {
+		return false;
+	}
+	const auto startedAt = AttemptStartedAt(report, state);
+	return startedAt && (startedAt < state.lastRelaySuccessAt);
+}
+
+[[nodiscard]] bool SuccessFromStaleAttempt(
+		const SuccessReport &report,
+		const EndpointState &state) {
+	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
+		return true;
+	}
+	if (ReportEpochIsStale(report.proxyEpoch, state)) {
+		return true;
+	}
+	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
+		return true;
+	}
+	if (!state.lastRelaySuccessAt) {
 		return false;
 	}
 	const auto startedAt = AttemptStartedAt(report, state);
@@ -544,6 +596,8 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 		.lastRelaySuccessAt = state.lastRelaySuccessAt,
 		.lastGoodProfile = state.lastGoodProfile,
 		.lastGoodRoute = state.lastGoodRoute,
+		.relayProven = state.relayProven,
+		.proxyGeneration = state.proxyGeneration,
 		.proxyEpoch = state.proxyEpoch,
 		.attemptId = state.lastAttemptId,
 	};
@@ -610,16 +664,39 @@ void LogStaleAttemptFailure(
 	});
 }
 
+void LogProbeAttemptFailure(const FailureReport &report) {
+	WriteProxyDiagnosticsLine({
+		.source = ProxyDiagnosticsSource::MTProxy,
+		.phase = ProxyDiagnosticsPhase::RouteFailed,
+		.severity = ProxyDiagnosticsSeverity::Info,
+		.error = ToProxyConnectionError(report.reason),
+		.mtproxyReason = ToProxyMtproxyTerminalReason(report.reason),
+		.transport = ProxyDiagnosticsTransportName(
+			report.endpoint.canonical.proxyKind,
+			report.endpoint.route.transport),
+		.message = u"probe_attempt_failed"_q,
+		.canonical = CanonicalText(report.endpoint),
+		.route = RouteText(report.endpoint),
+		.proxyKeyHash = ProxyDiagnosticsKeyHash(
+			EndpointKey(report.endpoint.canonical)),
+		.phaseAtFailure = ToLegacyDiagnostic(report.reason),
+	});
+}
+
 } // namespace
 
 EndpointAttemptLease::EndpointAttemptLease(
-	QString key,
-	uint64 attemptId,
-	uint64 proxyEpoch,
-	crl::time startedAt)
+		QString key,
+		uint64 attemptId,
+		uint64 proxyGeneration,
+		uint64 proxyEpoch,
+		uint64 successEpoch,
+		crl::time startedAt)
 : _key(std::move(key))
 , _attemptId(attemptId)
+, _proxyGeneration(proxyGeneration)
 , _proxyEpoch(proxyEpoch)
+, _successEpoch(successEpoch)
 , _startedAt(startedAt)
 , _active(true) {
 }
@@ -628,7 +705,9 @@ EndpointAttemptLease::EndpointAttemptLease(
 		EndpointAttemptLease &&other) noexcept
 : _key(std::move(other._key))
 , _attemptId(base::take(other._attemptId))
+, _proxyGeneration(base::take(other._proxyGeneration))
 , _proxyEpoch(base::take(other._proxyEpoch))
+, _successEpoch(base::take(other._successEpoch))
 , _startedAt(base::take(other._startedAt))
 , _active(base::take(other._active)) {
 }
@@ -639,7 +718,9 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		release();
 		_key = std::move(other._key);
 		_attemptId = base::take(other._attemptId);
+		_proxyGeneration = base::take(other._proxyGeneration);
 		_proxyEpoch = base::take(other._proxyEpoch);
+		_successEpoch = base::take(other._successEpoch);
 		_startedAt = base::take(other._startedAt);
 		_active = base::take(other._active);
 	}
@@ -677,8 +758,16 @@ uint64 EndpointAttemptLease::attemptId() const {
 	return _attemptId;
 }
 
+uint64 EndpointAttemptLease::proxyGeneration() const {
+	return _proxyGeneration;
+}
+
 uint64 EndpointAttemptLease::proxyEpoch() const {
 	return _proxyEpoch;
+}
+
+uint64 EndpointAttemptLease::successEpoch() const {
+	return _successEpoch;
 }
 
 crl::time EndpointAttemptLease::startedAt() const {
@@ -700,12 +789,15 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		QMutexLocker lock(&StatesMutex);
 		auto &state = States[key];
 		state.endpoint = request.endpoint;
+		ApplyProxyGeneration(state, request.proxyGeneration);
 		PruneExpiredAttempts(state, now);
 		result.stealth = request.stealth;
 		result.effectiveTlsProfile = ResolveEffectiveTlsProfile(
 			request.configuredTlsProfile,
 			key);
+		result.proxyGeneration = request.proxyGeneration;
 		result.proxyEpoch = state.proxyEpoch;
+		result.successEpoch = state.successEpoch;
 		const auto policy = EndpointConcurrencyPolicyFor(
 			state,
 			request.use,
@@ -766,12 +858,16 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 			result.attemptId = ++state.lastAttemptId;
 			state.attemptStarts.emplace(result.attemptId, attemptStartedAt);
 			state.active = int(state.attemptStarts.size());
+			result.proxyGeneration = request.proxyGeneration;
 			result.proxyEpoch = state.proxyEpoch;
+			result.successEpoch = state.successEpoch;
 			result.attemptStartedAt = attemptStartedAt;
 			result.lease = EndpointAttemptLease(
 				key,
 				result.attemptId,
+				request.proxyGeneration,
 				state.proxyEpoch,
+				state.successEpoch,
 				attemptStartedAt);
 		}
 	}
@@ -786,11 +882,17 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 
 void EndpointHealth::reportFailure(FailureReport report) {
 	if (report.lease) {
+		if (!report.proxyGeneration) {
+			report.proxyGeneration = report.lease->proxyGeneration();
+		}
 		if (!report.attemptId) {
 			report.attemptId = report.lease->attemptId();
 		}
 		if (!report.proxyEpoch) {
 			report.proxyEpoch = report.lease->proxyEpoch();
+		}
+		if (!report.successEpoch) {
+			report.successEpoch = report.lease->successEpoch();
 		}
 		if (!report.attemptStartedAt) {
 			report.attemptStartedAt = report.lease->startedAt();
@@ -802,11 +904,16 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	if (report.reason == FailureReason::None) {
 		return;
 	}
+	if (report.use == EndpointUse::ProxyCheck) {
+		LogProbeAttemptFailure(report);
+		return;
+	}
 	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
 	auto event = EndpointEvent();
+	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
 	if (FailureFromStaleAttempt(report, state)) {
@@ -815,6 +922,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		LogStaleAttemptFailure(report, recipeLevel);
 		return;
 	}
+	ApplyProxyGeneration(state, report.proxyGeneration);
 	state.endpoint = report.endpoint;
 	if (report.reason != FailureReason::ServerHelloOkNoAppData
 		&& report.reason != FailureReason::ServerHelloOkNoMtprotoData
@@ -924,6 +1032,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		.rotationAllowed = needsCooldown && !noAppDataWarning,
 	};
 	const auto degraded = needsCooldown && !noAppDataWarning;
+	if (degraded && RelayFailureInvalidatesCapability(report.reason)) {
+		capabilityRelayFailure = CapabilityFailure{
+			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+			.routeKey = RouteKey(report.endpoint.route),
+			.diagnostic = diagnostic,
+		};
+	}
 	auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 		degraded
 			? ProxyDiagnosticsPhase::CanonicalDegraded
@@ -936,17 +1051,29 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			? u"mtproxy canonical endpoint degraded"_q
 			: u"mtproxy endpoint failure"_q);
 	lock.unlock();
+	if (capabilityRelayFailure) {
+		ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(
+			capabilityRelayFailure->proxyKey,
+			capabilityRelayFailure->routeKey,
+			capabilityRelayFailure->diagnostic);
+	}
 	WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
 	Events.fire(std::move(event));
 }
 
 void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (report.lease) {
+		if (!report.proxyGeneration) {
+			report.proxyGeneration = report.lease->proxyGeneration();
+		}
 		if (!report.attemptId) {
 			report.attemptId = report.lease->attemptId();
 		}
 		if (!report.proxyEpoch) {
 			report.proxyEpoch = report.lease->proxyEpoch();
+		}
+		if (!report.successEpoch) {
+			report.successEpoch = report.lease->successEpoch();
 		}
 		if (!report.attemptStartedAt) {
 			report.attemptStartedAt = report.lease->startedAt();
@@ -958,11 +1085,14 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto now = crl::now();
 	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
-	NoteConnectSuccess(report.endpoint);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
 	QMutexLocker lock(&StatesMutex);
 	auto &state = States[key];
+	if (SuccessFromStaleAttempt(report, state)) {
+		return;
+	}
+	ApplyProxyGeneration(state, report.proxyGeneration);
 	state.endpoint = report.endpoint;
 	const auto successRecipeLevel = state.recipeLevel;
 	const auto wasDegraded = (state.lastFailure != FailureReason::None)
@@ -978,6 +1108,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		state.relayProven = true;
 		state.lastRelaySuccessAt = now;
 		++state.successEpoch;
+		++state.proxyEpoch;
 		state.lastGoodProfile = report.sentProfile;
 		state.lastGoodRoute = report.endpoint.route;
 		capabilitySuccess = CapabilitySuccess{
@@ -990,14 +1121,23 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.relayProven = true,
 		};
 	}
-	if (report.scope == SuccessScope::Handshake
-		&& (state.lastFailure == FailureReason::ServerHelloOkNoMtprotoData
-			|| state.lastFailure == FailureReason::ConnectedNoMtprotoData)) {
+	const auto relaySilenceFailure
+		= (state.lastFailure == FailureReason::ServerHelloOkNoMtprotoData)
+		|| (state.lastFailure == FailureReason::ConnectedNoMtprotoData);
+	if (report.scope == SuccessScope::FakeTlsAppData
+		&& relaySilenceFailure) {
+		lock.unlock();
+		NoteConnectSuccess(report.endpoint);
+		return;
+	}
+	if (report.scope == SuccessScope::Handshake && relaySilenceFailure) {
 		// A handshake success cannot clear a relay-silence cooldown: on a
 		// dead relay every reconnect handshakes fine, and treating that
 		// as recovery would repaint the endpoint green each cycle and
 		// keep the sessions hammering it forever. Only an actual MTProto
 		// payload (SuccessScope::Relay) proves the endpoint end-to-end.
+		lock.unlock();
+		NoteConnectSuccess(report.endpoint);
 		return;
 	}
 	state.lastFailure = FailureReason::None;
@@ -1014,6 +1154,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			u"mtproxy canonical endpoint recovered"_q);
 	}
 	lock.unlock();
+	NoteConnectSuccess(report.endpoint);
 	if (capabilitySuccess) {
 		ProxyCapabilityCache::Instance().noteMtproxySuccess(
 			capabilitySuccess->proxyKey,
@@ -1029,16 +1170,48 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 }
 
-void EndpointHealth::noteRelayStall(const EndpointId &endpoint) {
+void EndpointHealth::noteRelayStall(RelayStallReport report) {
 	// An established connection that had already received MTProto data
 	// went silent mid-session. That is not a failure of any particular
 	// connect attempt (no cooldown, reconnects stay allowed), but the
 	// relay is no longer proven: the reconnect wave that follows must go
 	// out as scouts, not as the full healthy-cap herd.
-	QMutexLocker lock(&StatesMutex);
-	const auto i = States.find(EndpointKey(endpoint));
-	if (i != end(States)) {
-		i->second.relayProven = false;
+	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
+	auto staleReport = FailureReport{
+		.endpoint = report.endpoint,
+		.use = report.use,
+		.reason = FailureReason::MtpReceiveTimeoutAfterData,
+		.proxyGeneration = report.proxyGeneration,
+		.attemptId = report.attemptId,
+		.proxyEpoch = report.proxyEpoch,
+		.successEpoch = report.successEpoch,
+		.attemptStartedAt = report.attemptStartedAt,
+	};
+	{
+		QMutexLocker lock(&StatesMutex);
+		const auto i = States.find(EndpointKey(report.endpoint));
+		if (i != end(States)) {
+			auto &state = i->second;
+			if (FailureFromStaleAttempt(staleReport, state)) {
+				const auto recipeLevel = state.recipeLevel;
+				lock.unlock();
+				LogStaleAttemptFailure(staleReport, recipeLevel);
+				return;
+			}
+			ApplyProxyGeneration(state, report.proxyGeneration);
+			state.relayProven = false;
+		}
+		capabilityRelayFailure = CapabilityFailure{
+			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+			.routeKey = RouteKey(report.endpoint.route),
+			.diagnostic = u"relay_stall"_q,
+		};
+	}
+	if (capabilityRelayFailure) {
+		ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(
+			capabilityRelayFailure->proxyKey,
+			capabilityRelayFailure->routeKey,
+			capabilityRelayFailure->diagnostic);
 	}
 }
 
@@ -1069,239 +1242,6 @@ void EndpointHealth::releaseAttempt(
 	}
 	i->second.attemptStarts.erase(attemptId);
 	i->second.active = int(i->second.attemptStarts.size());
-}
-
-EndpointId EndpointIdFromProxy(
-		const ProxyData &proxy,
-		const ProxyStealthOptions &stealth,
-		const QString &address,
-		int port) {
-	auto result = EndpointId();
-	result.canonical.type = proxy.type;
-	result.canonical.originalHost = ProxyIdentityHost(proxy);
-	result.canonical.port = int(proxy.port);
-	result.canonical.proxyKind = proxy.type;
-	result.route = RouteEndpointFromAddress(
-		address.isEmpty() ? result.canonical.originalHost : address,
-		port ? port : int(proxy.port),
-		stealth.transport,
-		address.isEmpty() ? QString() : result.canonical.originalHost);
-	if (proxy.type == ProxyData::Type::Mtproto) {
-		const auto secret = proxy.secretFromMtprotoPassword();
-		if (!secret.empty()) {
-			result.canonical.secretHash = HashBytes(secret);
-			result.canonical.domainFromSecret = DomainFromSecret(secret);
-			return result;
-		}
-	}
-	result.canonical.secretHash = HashText(proxy.password);
-	return result;
-}
-
-EndpointId EndpointIdFromAddress(
-		const QString &address,
-		int port,
-		bytes::const_span secret,
-		ProxyTransport transport) {
-	auto result = EndpointId();
-	result.canonical.type = ProxyData::Type::Mtproto;
-	result.canonical.originalHost = address;
-	result.canonical.port = port;
-	result.canonical.secretHash = HashBytes(secret);
-	result.canonical.domainFromSecret = DomainFromSecret(secret);
-	result.canonical.proxyKind = ProxyData::Type::Mtproto;
-	result.route = RouteEndpointFromAddress(address, port, transport);
-	return result;
-}
-
-RouteEndpoint RouteEndpointFromAddress(
-		const QString &address,
-		int port,
-		ProxyTransport transport,
-		const QString &resolvedFromHost) {
-	return {
-		.address = address,
-		.port = port,
-		.addressFamily = AddressFamilyFor(address),
-		.transport = transport,
-		.resolvedFromHost = resolvedFromHost,
-	};
-}
-
-bool EndpointEmpty(const CanonicalProxyEndpoint &endpoint) {
-	return endpoint.originalHost.isEmpty() || endpoint.port <= 0;
-}
-
-bool EndpointEmpty(const EndpointId &endpoint) {
-	return EndpointEmpty(endpoint.canonical);
-}
-
-QString EndpointKey(const CanonicalProxyEndpoint &endpoint) {
-	if (EndpointEmpty(endpoint)) {
-		return QString();
-	}
-	return endpoint.originalHost
-		+ u":%1:"_q.arg(endpoint.port)
-		+ QString::number(int(endpoint.type))
-		+ ':'
-		+ QString::number(int(endpoint.proxyKind))
-		+ ':'
-		+ endpoint.secretHash
-		+ ':'
-		+ endpoint.domainFromSecret;
-}
-
-QString EndpointKey(const EndpointId &endpoint) {
-	return EndpointKey(endpoint.canonical);
-}
-
-QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint) {
-	// Must produce exactly the key ProxyCapabilityKey(proxy) produces for
-	// the same proxy, or ProxyCapabilityCache lookups never find the cards
-	// written here: host:port:type:secretHash:domain, no proxyKind segment.
-	if (EndpointEmpty(endpoint)) {
-		return QString();
-	}
-	return endpoint.originalHost
-		+ ':'
-		+ QString::number(endpoint.port)
-		+ ':'
-		+ QString::number(int(endpoint.type))
-		+ ':'
-		+ endpoint.secretHash
-		+ ':'
-		+ endpoint.domainFromSecret;
-}
-
-QString RouteKey(const RouteEndpoint &route) {
-	if (route.address.isEmpty() || route.port <= 0) {
-		return QString();
-	}
-	return route.address
-		+ u":%1:"_q.arg(route.port)
-		+ QString::number(int(route.addressFamily))
-		+ ':'
-		+ QString::number(int(route.transport))
-		+ ':'
-		+ route.resolvedFromHost;
-}
-
-QString RouteKey(const EndpointId &endpoint) {
-	return RouteKey(endpoint.route);
-}
-
-QString ToLegacyDiagnostic(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::DnsFailed:
-		return u"dns_failed"_q;
-	case FailureReason::TcpConnectTimeout:
-		return u"tcp_connect_timeout"_q;
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-		return u"tcp_connected_no_client_hello_write"_q;
-	case FailureReason::ClientHelloSentNoServerHello:
-		return u"client_hello_sent_no_server_hello"_q;
-	case FailureReason::TlsAlertAfterClientHello:
-		return u"tls_alert_after_client_hello"_q;
-	case FailureReason::ServerHelloHmacMismatch:
-		return u"server_hello_hmac_mismatch"_q;
-	case FailureReason::ServerHelloOkNoAppData:
-		return u"server_hello_ok_no_appdata"_q;
-	case FailureReason::ServerHelloOkNoMtprotoData:
-		return u"server_hello_ok_no_mtproto_data"_q;
-	case FailureReason::AppDataRemoteClosed:
-		return u"appdata_remote_closed"_q;
-	case FailureReason::ConnectedNoMtprotoData:
-		return u"connected_no_mtproto_data"_q;
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return u"mtp_receive_timeout_after_data"_q;
-	case FailureReason::Network:
-		return u"network_error"_q;
-	case FailureReason::ProxyProtocolBadResponse:
-		return u"proxy_protocol_bad_response"_q;
-	case FailureReason::None:
-		return QString();
-	}
-	return QString();
-}
-
-FailureReason FailureReasonFromErrorCode(int errorCode) {
-	if (errorCode == AbstractConnection::kErrorCodeOther) {
-		return FailureReason::None;
-	}
-	switch (errorCode) {
-	case QAbstractSocket::HostNotFoundError:
-	case QAbstractSocket::ProxyNotFoundError:
-		return FailureReason::DnsFailed;
-	case QAbstractSocket::SocketTimeoutError:
-	case QAbstractSocket::ProxyConnectionTimeoutError:
-		return FailureReason::TcpConnectTimeout;
-	case QAbstractSocket::RemoteHostClosedError:
-	case QAbstractSocket::ProxyConnectionClosedError:
-		return FailureReason::AppDataRemoteClosed;
-	case QAbstractSocket::NetworkError:
-		return FailureReason::Network;
-	}
-	return FailureReason::None;
-}
-
-ProxyConnectionError ToProxyConnectionError(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::DnsFailed:
-		return ProxyConnectionError::HostNotFound;
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return ProxyConnectionError::Timeout;
-	case FailureReason::AppDataRemoteClosed:
-		return ProxyConnectionError::RemoteClosed;
-	case FailureReason::Network:
-		return ProxyConnectionError::Network;
-	case FailureReason::ProxyProtocolBadResponse:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-		return ProxyConnectionError::BadResponse;
-	case FailureReason::None:
-		return ProxyConnectionError::None;
-	}
-	return ProxyConnectionError::Unknown;
-}
-
-ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
-		FailureReason reason) {
-	switch (reason) {
-	case FailureReason::DnsFailed:
-		return ProxyMtproxyTerminalReason::DnsFailed;
-	case FailureReason::TcpConnectTimeout:
-		return ProxyMtproxyTerminalReason::TcpConnectTimeout;
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-		return ProxyMtproxyTerminalReason::TcpConnectedNoClientHelloWrite;
-	case FailureReason::ClientHelloSentNoServerHello:
-		return ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello;
-	case FailureReason::TlsAlertAfterClientHello:
-		return ProxyMtproxyTerminalReason::TlsAlertAfterClientHello;
-	case FailureReason::ServerHelloHmacMismatch:
-		return ProxyMtproxyTerminalReason::ServerHelloHmacMismatch;
-	case FailureReason::ServerHelloOkNoAppData:
-		return ProxyMtproxyTerminalReason::ServerHelloOkNoAppData;
-	case FailureReason::ServerHelloOkNoMtprotoData:
-		return ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData;
-	case FailureReason::AppDataRemoteClosed:
-		return ProxyMtproxyTerminalReason::AppDataRemoteClosed;
-	case FailureReason::ConnectedNoMtprotoData:
-		return ProxyMtproxyTerminalReason::ConnectedNoMtprotoData;
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData;
-	case FailureReason::ProxyProtocolBadResponse:
-		return ProxyMtproxyTerminalReason::ProxyProtocolBadResponse;
-	case FailureReason::None:
-	case FailureReason::Network:
-		return ProxyMtproxyTerminalReason::None;
-	}
-	return ProxyMtproxyTerminalReason::None;
 }
 
 } // namespace MTP::details::MtProxy

@@ -3,6 +3,10 @@ from pathlib import Path
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+ROOT = SOURCE_DIR.parents[1]
+CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
+ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
+ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
@@ -31,30 +35,39 @@ def function_body(source, signature):
 
 
 def test_endpoint_identity_is_split_into_canonical_and_route():
-    header = read(ENDPOINT_HEALTH_H)
+    cmake = read(CMAKE)
+    identity_header = read(ENDPOINT_IDENTITY_H)
+    health_header = read(ENDPOINT_HEALTH_H)
 
-    assert "struct CanonicalProxyEndpoint" in header
-    assert "ProxyData::Type type" in header
-    assert "QString originalHost;" in header
-    assert "QString secretHash;" in header
-    assert "QString domainFromSecret;" in header
-    assert "ProxyData::Type proxyKind" in header
-    assert "enum class RouteAddressFamily" in header
-    assert "struct RouteEndpoint" in header
-    assert "QString address;" in header
-    assert "RouteAddressFamily addressFamily" in header
-    assert "ProxyTransport transport" in header
-    assert "QString resolvedFromHost;" in header
-    assert "CanonicalProxyEndpoint canonical;" in header
-    assert "RouteEndpoint route;" in header
-    assert "QString resolvedHost;" not in header
-    assert "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)" in header
-    assert "QString RouteKey(const RouteEndpoint &route)" in header
-    assert "bool EndpointEmpty(const EndpointId &endpoint)" in header
+    assert "mtproto/proxy/mtproxy/endpoint_identity.cpp" in cmake
+    assert "mtproto/proxy/mtproxy/endpoint_identity.h" in cmake
+    assert '#include "mtproto/proxy/mtproxy/endpoint_identity.h"' in health_header
+    assert "struct CanonicalProxyEndpoint" not in health_header
+    assert "EndpointId EndpointIdFromProxy(" not in health_header
+    assert "struct CanonicalProxyEndpoint" in identity_header
+    assert "ProxyData::Type type" in identity_header
+    assert "QString originalHost;" in identity_header
+    assert "QString secretHash;" in identity_header
+    assert "QString domainFromSecret;" in identity_header
+    assert "ProxyData::Type proxyKind" in identity_header
+    assert "enum class RouteAddressFamily" in identity_header
+    assert "struct RouteEndpoint" in identity_header
+    assert "QString address;" in identity_header
+    assert "RouteAddressFamily addressFamily" in identity_header
+    assert "ProxyTransport transport" in identity_header
+    assert "QString resolvedFromHost;" in identity_header
+    assert "CanonicalProxyEndpoint canonical;" in identity_header
+    assert "RouteEndpoint route;" in identity_header
+    assert "QString resolvedHost;" not in identity_header
+    assert "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)" in (
+        identity_header)
+    assert "QString RouteKey(const RouteEndpoint &route)" in identity_header
+    assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
 
 
 def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
-    source = read(ENDPOINT_HEALTH_CPP)
+    source = read(ENDPOINT_IDENTITY_CPP)
+    health = read(ENDPOINT_HEALTH_CPP)
     body = function_body(source, "EndpointId EndpointIdFromProxy(")
     canonical_key = function_body(
         source,
@@ -77,6 +90,9 @@ def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
     assert "route.resolvedFromHost" in route_key
     assert "route.transport" in route_key
     assert "route.addressFamily" in route_key
+    assert "EndpointId EndpointIdFromProxy(" not in health
+    assert "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)" not in (
+        health)
 
 
 def test_route_success_promotes_to_canonical_but_route_failure_stays_local():

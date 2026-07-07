@@ -35,6 +35,8 @@ public:
 		details::HandshakeGateLease handshakeGate;
 		details::MtProxy::EndpointId mtproxyEndpoint;
 		details::MtProxy::EndpointAttemptLease mtproxyLease;
+		ProxyStealthOptions mtproxyStealth;
+		ProxyTlsProfile mtproxySentProfile = ProxyTlsProfile::Auto;
 		Fn<void(ProxyCheckStatus status)> progress;
 		QString probeKey;
 		ProxyCheckStatus progressStatus = ProxyCheckStatus::Idle;

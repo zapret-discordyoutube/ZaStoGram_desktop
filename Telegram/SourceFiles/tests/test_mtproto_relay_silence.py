@@ -172,10 +172,18 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
 
     # A mid-session silence of an established connection clears the proof
     # without any cooldown - reconnects stay allowed, just as scouts.
-    assert "void noteRelayStall(" in header
+    assert "struct RelayStallReport" in header
+    assert "void noteRelayStall(RelayStallReport report)" in header
     assert "relayProven = false;" in stall
+    assert "FailureFromStaleAttempt(staleReport, state)" in stall
     assert "terminalUntil" not in stall
     assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
+    assert ".proxyGeneration = _connectionMtproxyAttempt.proxyGeneration" in (
+        wait_received)
+    assert ".attemptId = _connectionMtproxyAttempt.attemptId" in wait_received
+    assert ".proxyEpoch = _connectionMtproxyAttempt.proxyEpoch" in wait_received
+    assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in (
+        wait_received)
 
 
 def test_established_idle_close_is_not_a_health_failure():

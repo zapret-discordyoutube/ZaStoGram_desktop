@@ -48,6 +48,7 @@ struct ConnectionStart {
 	MtProxy::EndpointAttemptLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 };
 
@@ -114,6 +115,7 @@ private:
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay);
 	void start(ConnectionTicketId id);
+	void releaseAdmission(const std::shared_ptr<RequestState> &state);
 	void notify(
 		const std::shared_ptr<RequestState> &state,
 		ConnectionBrokerDecision decision);

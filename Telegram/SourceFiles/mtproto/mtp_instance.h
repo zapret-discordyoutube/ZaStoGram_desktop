@@ -22,6 +22,7 @@ namespace MTP {
 // this header reaches almost every TU. Include it where the values are used.
 enum class ConnectionNotice;
 struct ProxyConnectionStatus;
+class ProxyControlPlane;
 
 namespace details {
 
@@ -110,7 +111,6 @@ public:
 	[[nodiscard]] ProxyConnectionStatus proxyConnectionStatus() const;
 	[[nodiscard]] auto proxyConnectionStatusValue() const
 	-> rpl::producer<ProxyConnectionStatus>;
-	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	[[nodiscard]] ConnectionNotice connectionNotice() const;
 	[[nodiscard]] auto connectionNoticeValue() const
 	-> rpl::producer<ConnectionNotice>;
@@ -255,6 +255,9 @@ Q_SIGNALS:
 		qint64 expireAt);
 
 private:
+	friend class ProxyControlPlane;
+
+	void setProxyConnectionStatus(ProxyConnectionStatus status);
 	void sendRequest(
 		mtpRequestId requestId,
 		details::SerializedRequest &&request,

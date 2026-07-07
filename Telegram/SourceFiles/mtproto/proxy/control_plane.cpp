@@ -18,6 +18,10 @@ namespace MtProxy = details::MtProxy;
 
 constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 
+[[nodiscard]] bool IsSuccess(const ProxyConnectionStatus &status) {
+	return status.phase == ProxyConnectionPhase::Connected;
+}
+
 [[nodiscard]] ProxyAdmissionAction AdmissionActionFromMtproxy(
 		MtProxy::AdmissionAction action) {
 	switch (action) {
@@ -43,7 +47,69 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 	if (update.proxyGeneration != current.proxyGeneration) {
 		return update.proxyGeneration > current.proxyGeneration;
 	}
-	return update.proxyEpoch > current.proxyEpoch;
+	if (update.proxyEpoch != current.proxyEpoch) {
+		return update.proxyEpoch > current.proxyEpoch;
+	}
+	return update.successEpoch > current.successEpoch;
+}
+
+[[nodiscard]] bool IsNewerAttempt(
+		const ProxyConnectionAttempt &current,
+		const ProxyConnectionAttempt &update) {
+	if (update.proxyGeneration != current.proxyGeneration) {
+		return update.proxyGeneration > current.proxyGeneration;
+	}
+	if (update.proxyEpoch != current.proxyEpoch) {
+		return update.proxyEpoch > current.proxyEpoch;
+	}
+	if (update.successEpoch != current.successEpoch) {
+		return update.successEpoch > current.successEpoch;
+	}
+	return update.attemptId > current.attemptId;
+}
+
+[[nodiscard]] bool IsOlderAttempt(
+		const ProxyConnectionAttempt &current,
+		const ProxyConnectionAttempt &update) {
+	if (current.proxyGeneration
+		&& update.proxyGeneration != current.proxyGeneration) {
+		return false;
+	}
+	if (current.proxyEpoch && !update.proxyEpoch) {
+		return true;
+	}
+	if (update.proxyEpoch && update.proxyEpoch < current.proxyEpoch) {
+		return true;
+	}
+	if (update.proxyEpoch != current.proxyEpoch) {
+		return false;
+	}
+	if (current.successEpoch && !update.successEpoch) {
+		return true;
+	}
+	if (update.successEpoch && update.successEpoch < current.successEpoch) {
+		return true;
+	}
+	if (update.successEpoch != current.successEpoch) {
+		return false;
+	}
+	return current.attemptId
+		&& update.attemptId
+		&& (update.attemptId < current.attemptId);
+}
+
+[[nodiscard]] bool IsOlderProxyGeneration(
+		const ProxyConnectionAttempt &current,
+		const ProxyConnectionAttempt &update) {
+	return current.proxyGeneration
+		&& (!update.proxyGeneration
+			|| (update.proxyGeneration < current.proxyGeneration));
+}
+
+[[nodiscard]] bool StickyWindowActive(
+		const ProxyConnectionStatus &status) {
+	return status.terminalUntil
+		&& (status.terminalUntil > crl::now());
 }
 
 [[nodiscard]] bool RelaySuccessIsFresh(
@@ -127,6 +193,34 @@ void LogShadowedFact(const ProxyFact &fact) {
 	});
 }
 
+[[nodiscard]] ProxyConnectionStatus ApplySelectedStatusUpdate(
+		const ProxyConnectionStatus &current,
+		ProxyConnectionStatus update) {
+	if (IsOlderProxyGeneration(current.attempt, update.attempt)) {
+		return current;
+	}
+	if (IsOlderAttempt(current.attempt, update.attempt)) {
+		return current;
+	}
+	if (RelaySuccessIsFresh(current)
+		&& IsTerminalFailure(update)
+		&& !IsNewerProxyEpoch(current.attempt, update.attempt)) {
+		return current;
+	}
+	if (!IsMtproxyTerminalFailure(current.mtproxyReason)) {
+		return update;
+	}
+	if (IsSuccess(update)
+		|| IsMtproxyTerminalFailure(update.mtproxyReason)
+		|| IsNewerAttempt(current.attempt, update.attempt)) {
+		return update;
+	}
+	if (StickyWindowActive(current)) {
+		return current;
+	}
+	return update;
+}
+
 } // namespace
 
 void ProxyControlPlane::submitFact(ProxyFact fact) {
@@ -159,6 +253,7 @@ ProxyAdmissionDecision ProxyControlPlane::Admit(
 		.use = request.use,
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
+		.proxyGeneration = request.proxyGeneration,
 	});
 	return {
 		.action = AdmissionActionFromMtproxy(admission.action),
@@ -167,8 +262,10 @@ ProxyAdmissionDecision ProxyControlPlane::Admit(
 		.stealth = admission.stealth,
 		.effectiveTlsProfile = admission.effectiveTlsProfile,
 		.lease = std::move(admission.lease),
+		.proxyGeneration = admission.proxyGeneration,
 		.attemptId = admission.attemptId,
 		.proxyEpoch = admission.proxyEpoch,
+		.successEpoch = admission.successEpoch,
 		.attemptStartedAt = admission.attemptStartedAt,
 	};
 }
@@ -184,8 +281,8 @@ void ProxyControlPlane::ReportMtproxySuccess(
 }
 
 void ProxyControlPlane::NoteMtproxyRelayStall(
-		const MtProxy::EndpointId &endpoint) {
-	MtProxy::EndpointHealth::Instance().noteRelayStall(endpoint);
+		MtProxy::RelayStallReport report) {
+	MtProxy::EndpointHealth::Instance().noteRelayStall(std::move(report));
 }
 
 MtProxy::Snapshot ProxyControlPlane::MtproxyEndpointSnapshot(
@@ -241,9 +338,12 @@ ProxyFact ProxyControlPlane::FactFromReport(
 	case ProxyDiagnosticsPhase::Failed:
 		fact.status.phase = ProxyConnectionPhase::Failed;
 		return fact;
-	case ProxyDiagnosticsPhase::None:
 	case ProxyDiagnosticsPhase::ProxyCheckStarted:
 	case ProxyDiagnosticsPhase::ProxyCheckFinished:
+		fact.status.error = ProxyConnectionError::None;
+		fact.status.mtproxyReason = ProxyMtproxyTerminalReason::None;
+		return fact;
+	case ProxyDiagnosticsPhase::None:
 	case ProxyDiagnosticsPhase::AdmissionQueued:
 	case ProxyDiagnosticsPhase::AdmissionStarted:
 	case ProxyDiagnosticsPhase::AdmissionCancelled:
@@ -290,7 +390,7 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 	if (ShadowedByFreshRelaySuccess(current, fact)) {
 		return current;
 	}
-	return ApplyProxyConnectionStatusUpdate(
+	return ApplySelectedStatusUpdate(
 		current,
 		std::move(fact.status));
 }
@@ -309,7 +409,8 @@ void ProxyControlPlane::SubmitFact(
 		if (ShadowedByFreshRelaySuccess(current, normalized)) {
 			LogShadowedFact(normalized);
 		}
-		instance->setProxyConnectionStatus(Reduce(current, normalized));
+		instance->setProxyConnectionStatus(
+			ProxyControlPlane::Reduce(current, normalized));
 	});
 }
 

@@ -110,6 +110,7 @@ enum class ProxyConnectionStatusTone {
 struct ProxyConnectionAttempt {
 	uint64 proxyGeneration = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	uint64 attemptId = 0;
 	QString connectionId;
 	bool probe = false;
@@ -117,6 +118,7 @@ struct ProxyConnectionAttempt {
 	bool operator==(const ProxyConnectionAttempt &other) const {
 		return (proxyGeneration == other.proxyGeneration)
 			&& (proxyEpoch == other.proxyEpoch)
+			&& (successEpoch == other.successEpoch)
 			&& (attemptId == other.attemptId)
 			&& (connectionId == other.connectionId)
 			&& (probe == other.probe);
@@ -157,8 +159,5 @@ struct ProxyConnectionStatus {
 	ProxyConnectionStatusKind kind);
 [[nodiscard]] ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 	const ProxyConnectionStatus &status);
-[[nodiscard]] ProxyConnectionStatus ApplyProxyConnectionStatusUpdate(
-	const ProxyConnectionStatus &current,
-	ProxyConnectionStatus update);
 
 } // namespace MTP

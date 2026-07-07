@@ -6,6 +6,8 @@ PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_IDENTITY_H = PROXY_DIR / "mtproxy" / "endpoint_identity.h"
+ENDPOINT_IDENTITY_CPP = PROXY_DIR / "mtproxy" / "endpoint_identity.cpp"
 RESOLVING_CONNECTION_CPP = PROXY_DIR / "resolving_connection.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 
@@ -49,11 +51,11 @@ def test_capability_writer_key_matches_reader_key_format():
     # (host:port:type:secretHash:domain) or goodRoutes/lastGoodTransport
     # learning silently becomes dead code.
     capabilities = read(CAPABILITIES_CPP)
-    health = read(ENDPOINT_HEALTH_CPP)
+    identity = read(ENDPOINT_IDENTITY_CPP)
 
     reader = function_body(capabilities, "QString ProxyCapabilityKey(")
     writer = function_body(
-        health,
+        identity,
         "QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint)")
 
     reader_return = return_statement(reader, "return host")
@@ -89,12 +91,12 @@ def test_capability_key_components_compute_identical_values():
     # of helpers must stay textually identical so both sides hash the same
     # inputs to the same values.
     capabilities = read(CAPABILITIES_CPP)
-    health = read(ENDPOINT_HEALTH_CPP)
+    identity = read(ENDPOINT_IDENTITY_CPP)
 
     assert function_body(
         capabilities, "QString ProxyCapabilityHost(",
     ) == function_body(
-        health, "QString ProxyIdentityHost(",
+        identity, "QString ProxyIdentityHost(",
     )
     for helper in (
         "QString DomainFromSecret(",
@@ -102,9 +104,9 @@ def test_capability_key_components_compute_identical_values():
         "QString HashText(",
     ):
         assert function_body(capabilities, helper) == function_body(
-            health, helper)
+            identity, helper)
 
-    from_proxy = function_body(health, "EndpointId EndpointIdFromProxy(")
+    from_proxy = function_body(identity, "EndpointId EndpointIdFromProxy(")
     secret_hash = function_body(
         capabilities, "QString ProxyCapabilitySecretHash(")
     assert "result.canonical.secretHash = HashBytes(secret);" in from_proxy
@@ -119,7 +121,7 @@ def test_capability_key_components_compute_identical_values():
 
 def test_capability_writers_and_readers_use_the_matching_keys():
     capabilities = read(CAPABILITIES_CPP)
-    header = read(ENDPOINT_HEALTH_H)
+    header = read(ENDPOINT_IDENTITY_H)
     health = read(ENDPOINT_HEALTH_CPP)
     resolving = read(RESOLVING_CONNECTION_CPP)
     policy = read(TRANSPORT_POLICY_CPP)

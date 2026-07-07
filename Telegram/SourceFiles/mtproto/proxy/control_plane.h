@@ -39,6 +39,7 @@ struct ProxyAdmissionRequest {
 	details::MtProxy::EndpointUse use = details::MtProxy::EndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	uint64 proxyGeneration = 0;
 	bool relayProofRequired = false;
 	bool relayProven = false;
 	int active = 0;
@@ -54,8 +55,10 @@ struct ProxyAdmissionDecision {
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
 	details::MtProxy::EndpointAttemptLease lease;
+	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 };
 
@@ -84,7 +87,7 @@ public:
 	static void ReportMtproxySuccess(
 		details::MtProxy::SuccessReport report);
 	static void NoteMtproxyRelayStall(
-		const details::MtProxy::EndpointId &endpoint);
+		details::MtProxy::RelayStallReport report);
 	[[nodiscard]] static details::MtProxy::Snapshot MtproxyEndpointSnapshot(
 		const details::MtProxy::EndpointId &endpoint);
 	static void SubmitFact(

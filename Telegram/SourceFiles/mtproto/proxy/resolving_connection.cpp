@@ -92,8 +92,10 @@ void ReportRouteFailureToHealth(
 	ProxyControlPlane::ReportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex),
 		.reason = reason,
+		.proxyGeneration = attempt.proxyGeneration,
 		.attemptId = attempt.attemptId,
 		.proxyEpoch = attempt.proxyEpoch,
+		.successEpoch = attempt.successEpoch,
 		.attemptStartedAt = attemptStartedAt,
 	});
 }
@@ -109,8 +111,10 @@ void ReportAllRoutesFailed(
 	ProxyControlPlane::ReportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForProxy(proxy),
 		.reason = reason,
+		.proxyGeneration = attempt.proxyGeneration,
 		.attemptId = attempt.attemptId,
 		.proxyEpoch = attempt.proxyEpoch,
+		.successEpoch = attempt.successEpoch,
 		.attemptStartedAt = attemptStartedAt,
 		.routesExhausted = true,
 	});
@@ -478,7 +482,12 @@ void ResolvingConnection::domainResolved(
 			ProxyControlPlane::ReportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
-			});
+					.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+					.attemptId = _mtproxyAttempt.attemptId,
+					.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+					.successEpoch = _mtproxyAttempt.successEpoch,
+					.attemptStartedAt = _mtproxyAttemptStartedAt,
+				});
 		}
 		ReportProxyEvent(_instance, {
 			.phase = ProxyDiagnosticsPhase::Failed,
@@ -690,6 +699,11 @@ void ResolvingConnection::connectToServer(
 			ProxyControlPlane::ReportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
+				.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+				.attemptId = _mtproxyAttempt.attemptId,
+				.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+				.successEpoch = _mtproxyAttempt.successEpoch,
+				.attemptStartedAt = _mtproxyAttemptStartedAt,
 			});
 		}
 		ReportProxyEvent(_instance, {

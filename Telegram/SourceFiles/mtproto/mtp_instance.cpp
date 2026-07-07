@@ -747,9 +747,6 @@ void Instance::Private::setProxyConnectionStatus(
 			return;
 		}
 	}
-	status = ApplyProxyConnectionStatusUpdate(
-		_proxyConnectionStatus.current(),
-		std::move(status));
 	if (status == _proxyConnectionStatus.current()) {
 		return;
 	}

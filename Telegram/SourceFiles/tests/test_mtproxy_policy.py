@@ -79,6 +79,8 @@ def test_proxy_module_sources_are_registered_for_build():
         "mtproto/proxy/mtproxy/client_hello_profile.h",
         "mtproto/proxy/mtproxy/endpoint_health.cpp",
         "mtproto/proxy/mtproxy/endpoint_health.h",
+        "mtproto/proxy/mtproxy/endpoint_identity.cpp",
+        "mtproto/proxy/mtproxy/endpoint_identity.h",
         "mtproto/proxy/mtproxy/tls_socket.cpp",
         "mtproto/proxy/mtproxy/tls_socket.h",
         "mtproto/proxy/wss/socket.cpp",

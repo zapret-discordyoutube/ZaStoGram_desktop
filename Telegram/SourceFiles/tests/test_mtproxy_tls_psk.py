@@ -139,9 +139,10 @@ def test_synthetic_psk_offer_failures_clear_remaining_tickets():
         "ClientHelloSentNoServerHello",
         "TlsAlertAfterClientHello",
         "ServerHelloHmacMismatch",
-        "ServerHelloOkNoAppData",
     ):
         assert f"case MtProxy::FailureReason::{reason}:" in clear_helper
+    assert "case MtProxy::FailureReason::ServerHelloOkNoAppData:" not in (
+        clear_helper)
     assert "ClearSyntheticPskTickets(" in clear_helper
     assert "_syntheticPskOffered = false;" in clear_helper
 

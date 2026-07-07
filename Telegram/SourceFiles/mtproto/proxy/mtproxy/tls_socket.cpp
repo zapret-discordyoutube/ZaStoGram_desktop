@@ -347,7 +347,6 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
 	case MtProxy::FailureReason::TlsAlertAfterClientHello:
 	case MtProxy::FailureReason::ServerHelloHmacMismatch:
-	case MtProxy::FailureReason::ServerHelloOkNoAppData:
 		ClearSyntheticPskTickets(
 			MtProxy::EndpointKey(_endpointId.canonical),
 			domainFromSecret(),
@@ -674,21 +673,23 @@ bool TlsSocket::checkNextPacket() {
 			}
 			_incomingGoodDataOffset = fullHeader;
 			_incomingGoodDataLimit = length;
-			if (!_firstAppDataReceived) {
-				_firstAppDataReceived = true;
-				_firstAppDataAt = crl::now();
-				_phase = HandshakePhase::FirstDataReceived;
-				connectionProgress(_phase);
-				ProxyControlPlane::ReportMtproxySuccess({
-					.endpoint = _endpointId,
-					.use = _endpointUse,
-					.stealth = _stealth,
-					.sentProfile = _sentTlsProfile,
-					.attemptId = _mtproxyAttempt.attemptId,
-					.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-					.attemptStartedAt = _mtproxyAttemptStartedAt,
-					.scope = MtProxy::SuccessScope::Relay,
-				});
+				if (!_firstAppDataReceived) {
+					_firstAppDataReceived = true;
+					_firstAppDataAt = crl::now();
+					_phase = HandshakePhase::FirstDataReceived;
+					connectionProgress(_phase);
+					ProxyControlPlane::ReportMtproxySuccess({
+						.endpoint = _endpointId,
+						.use = _endpointUse,
+						.stealth = _stealth,
+						.sentProfile = _sentTlsProfile,
+							.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+							.attemptId = _mtproxyAttempt.attemptId,
+							.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+							.successEpoch = _mtproxyAttempt.successEpoch,
+							.attemptStartedAt = _mtproxyAttemptStartedAt,
+							.scope = MtProxy::SuccessScope::FakeTlsAppData,
+						});
 				NoteSyntheticPskDataPathSuccess(
 					MtProxy::EndpointKey(_endpointId.canonical),
 					domainFromSecret(),
@@ -744,8 +745,10 @@ void TlsSocket::timedOut() {
 		.reason = reason,
 		.configuredTlsProfile = _tlsProfile,
 		.sentProfile = _sentTlsProfile,
+		.proxyGeneration = _mtproxyAttempt.proxyGeneration,
 		.attemptId = _mtproxyAttempt.attemptId,
 		.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+		.successEpoch = _mtproxyAttempt.successEpoch,
 		.attemptStartedAt = _mtproxyAttemptStartedAt,
 	});
 	_state = State::Error;
@@ -985,10 +988,12 @@ void TlsSocket::handleError(int errorCode) {
 			.reason = reason,
 			.configuredTlsProfile = _tlsProfile,
 			.sentProfile = _sentTlsProfile,
-			.attemptId = _mtproxyAttempt.attemptId,
-			.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-			.attemptStartedAt = _mtproxyAttemptStartedAt,
-		});
+				.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+				.attemptId = _mtproxyAttempt.attemptId,
+				.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+				.successEpoch = _mtproxyAttempt.successEpoch,
+				.attemptStartedAt = _mtproxyAttemptStartedAt,
+			});
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _socket.errorString());

@@ -4,8 +4,10 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
+CONTROL_H = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.h"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
+ENDPOINT_HEALTH_H = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h"
 SESSION_H = SOURCE_DIR / "mtproto" / "session_private.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session_private.cpp"
 PROXY_CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
@@ -119,6 +121,42 @@ def test_broker_drains_every_queue_independently():
     assert "void ConnectionBroker::drainQueue(" in source
 
 
+def test_broker_claims_front_request_before_admission():
+    source = BROKER_CPP.read_text(encoding="utf-8")
+    control_header = CONTROL_H.read_text(encoding="utf-8")
+    health_header = ENDPOINT_HEALTH_H.read_text(encoding="utf-8")
+    request_state = source.split(
+        "struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
+    drain_body = function_body(source, "void ConnectionBroker::drainQueue(")
+    schedule_body = function_body(source, "void ConnectionBroker::scheduleStart(")
+
+    assert "uint64 proxyGeneration = 0;" in control_header
+    assert "uint64 proxyGeneration = 0;" in health_header
+    assert "bool admissionInProgress = false;" in request_state
+    assert "state->admissionInProgress" in drain_body
+    assert drain_body.index("state->admissionInProgress = true;") < (
+        drain_body.index("ProxyControlPlane::Admit({"))
+    after_admit = drain_body.split("ProxyControlPlane::Admit({", 1)[1]
+    assert ".proxyGeneration = state->proxyGeneration" in after_admit
+    assert "state->admissionInProgress = false;" in after_admit
+    assert "state->startScheduled = true;" in drain_body
+    assert "state->startScheduled = true;" not in schedule_body
+
+
+def test_broker_cancel_releases_admitted_lease_immediately():
+    source = BROKER_CPP.read_text(encoding="utf-8")
+    cancel_body = function_body(source, "void ConnectionBroker::cancel(")
+    generation_cancel_body = function_body(
+        source,
+        "void ConnectionBroker::cancelByProxyGeneration(")
+
+    assert "void ConnectionBroker::releaseAdmission(" in source
+    assert "state->admission->lease.release();" in source
+    assert "state->admission.reset();" in source
+    assert "releaseAdmission(cancelled);" in cancel_body
+    assert "releaseAdmission(state);" in generation_cancel_body
+
+
 def test_proxy_check_uses_connection_broker_proxy_check_queue():
     header = PROXY_CHECK_H.read_text(encoding="utf-8")
     source = PROXY_CHECK_CPP.read_text(encoding="utf-8")
@@ -168,4 +206,6 @@ if __name__ == "__main__":
     test_session_pending_broker_tickets_keep_connecting_without_timeout_loop()
     test_session_queued_broker_tickets_have_hard_deadline()
     test_broker_drains_every_queue_independently()
+    test_broker_claims_front_request_before_admission()
+    test_broker_cancel_releases_admitted_lease_immediately()
     test_proxy_check_uses_connection_broker_proxy_check_queue()

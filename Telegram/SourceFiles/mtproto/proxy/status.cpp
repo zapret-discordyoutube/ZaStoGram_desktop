@@ -7,64 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/status.h"
 
-#include "base/timer.h"
-
 namespace MTP {
-namespace {
-
-[[nodiscard]] bool IsSuccess(const ProxyConnectionStatus &status) {
-	return status.phase == ProxyConnectionPhase::Connected;
-}
-
-[[nodiscard]] bool IsTerminalFailure(
-		const ProxyConnectionStatus &status) {
-	return (status.error != ProxyConnectionError::None)
-		|| IsMtproxyTerminalFailure(status.mtproxyReason);
-}
-
-[[nodiscard]] bool IsNewerAttempt(
-		const ProxyConnectionAttempt &current,
-		const ProxyConnectionAttempt &update) {
-	if (update.proxyGeneration != current.proxyGeneration) {
-		return update.proxyGeneration > current.proxyGeneration;
-	}
-	if (update.proxyEpoch != current.proxyEpoch) {
-		return update.proxyEpoch > current.proxyEpoch;
-	}
-	return update.attemptId > current.attemptId;
-}
-
-[[nodiscard]] bool IsNewerProxyEpoch(
-		const ProxyConnectionAttempt &current,
-		const ProxyConnectionAttempt &update) {
-	if (update.proxyGeneration != current.proxyGeneration) {
-		return update.proxyGeneration > current.proxyGeneration;
-	}
-	return update.proxyEpoch > current.proxyEpoch;
-}
-
-[[nodiscard]] bool IsOlderProxyGeneration(
-		const ProxyConnectionAttempt &current,
-		const ProxyConnectionAttempt &update) {
-	return current.proxyGeneration
-		&& (!update.proxyGeneration
-			|| (update.proxyGeneration < current.proxyGeneration));
-}
-
-[[nodiscard]] bool StickyWindowActive(
-		const ProxyConnectionStatus &status) {
-	return status.terminalUntil
-		&& (status.terminalUntil > crl::now());
-}
-
-[[nodiscard]] bool FreshRelaySuccess(
-		const ProxyConnectionStatus &status) {
-	return IsSuccess(status)
-		&& status.successUntil
-		&& (status.successUntil > crl::now());
-}
-
-} // namespace
 
 bool IsMtproxyTerminalFailure(ProxyMtproxyTerminalReason reason) {
 	return reason != ProxyMtproxyTerminalReason::None;
@@ -232,31 +175,6 @@ ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 		const ProxyConnectionStatus &status) {
 	return ProxyConnectionStatusToneFor(ProxyConnectionStatusKindFor(status));
-}
-
-ProxyConnectionStatus ApplyProxyConnectionStatusUpdate(
-		const ProxyConnectionStatus &current,
-		ProxyConnectionStatus update) {
-	if (IsOlderProxyGeneration(current.attempt, update.attempt)) {
-		return current;
-	}
-	if (FreshRelaySuccess(current)
-		&& IsTerminalFailure(update)
-		&& !IsNewerProxyEpoch(current.attempt, update.attempt)) {
-		return current;
-	}
-	if (!IsMtproxyTerminalFailure(current.mtproxyReason)) {
-		return update;
-	}
-	if (IsSuccess(update)
-		|| IsMtproxyTerminalFailure(update.mtproxyReason)
-		|| IsNewerAttempt(current.attempt, update.attempt)) {
-		return update;
-	}
-	if (StickyWindowActive(current)) {
-		return current;
-	}
-	return update;
 }
 
 } // namespace MTP

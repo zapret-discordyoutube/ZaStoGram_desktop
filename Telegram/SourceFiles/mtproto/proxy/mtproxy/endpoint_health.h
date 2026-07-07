@@ -7,9 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "base/bytes.h"
-#include "mtproto/proxy/data.h"
-#include "mtproto/proxy/status.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
 
 #include <rpl/producer.h>
 
@@ -46,57 +44,6 @@ enum class AdmissionAction {
 	SkipCooldown,
 };
 
-enum class RouteAddressFamily {
-	Unknown,
-	Host,
-	IPv4,
-	IPv6,
-};
-
-struct CanonicalProxyEndpoint {
-	ProxyData::Type type = ProxyData::Type::None;
-	QString originalHost;
-	int port = 0;
-	QString secretHash;
-	QString domainFromSecret;
-	ProxyData::Type proxyKind = ProxyData::Type::None;
-
-	bool operator==(const CanonicalProxyEndpoint &other) const {
-		return (type == other.type)
-			&& (originalHost == other.originalHost)
-			&& (port == other.port)
-			&& (secretHash == other.secretHash)
-			&& (domainFromSecret == other.domainFromSecret)
-			&& (proxyKind == other.proxyKind);
-	}
-};
-
-struct RouteEndpoint {
-	QString address;
-	int port = 0;
-	RouteAddressFamily addressFamily = RouteAddressFamily::Unknown;
-	ProxyTransport transport = ProxyTransport::Tcp;
-	QString resolvedFromHost;
-
-	bool operator==(const RouteEndpoint &other) const {
-		return (address == other.address)
-			&& (port == other.port)
-			&& (addressFamily == other.addressFamily)
-			&& (transport == other.transport)
-			&& (resolvedFromHost == other.resolvedFromHost);
-	}
-};
-
-struct EndpointId {
-	CanonicalProxyEndpoint canonical;
-	RouteEndpoint route;
-
-	bool operator==(const EndpointId &other) const {
-		return (canonical == other.canonical)
-			&& (route == other.route);
-	}
-};
-
 class EndpointHealth;
 
 class EndpointAttemptLease final {
@@ -111,7 +58,9 @@ public:
 	void release();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] uint64 attemptId() const;
+	[[nodiscard]] uint64 proxyGeneration() const;
 	[[nodiscard]] uint64 proxyEpoch() const;
+	[[nodiscard]] uint64 successEpoch() const;
 	[[nodiscard]] crl::time startedAt() const;
 
 private:
@@ -120,12 +69,16 @@ private:
 	EndpointAttemptLease(
 		QString key,
 		uint64 attemptId,
+		uint64 proxyGeneration,
 		uint64 proxyEpoch,
+		uint64 successEpoch,
 		crl::time startedAt);
 
 	QString _key;
 	uint64 _attemptId = 0;
+	uint64 _proxyGeneration = 0;
 	uint64 _proxyEpoch = 0;
+	uint64 _successEpoch = 0;
 	crl::time _startedAt = 0;
 	bool _active = false;
 };
@@ -135,6 +88,7 @@ struct AdmissionRequest {
 	EndpointUse use = EndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	uint64 proxyGeneration = 0;
 };
 
 struct Admission {
@@ -144,8 +98,10 @@ struct Admission {
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease lease;
+	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 };
 
@@ -156,8 +112,10 @@ struct FailureReport {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 
 	// Every resolved route of the endpoint has been tried and failed.
@@ -169,16 +127,17 @@ struct FailureReport {
 };
 
 // Success evidence comes from two different layers with different meaning.
-// Handshake: the proxy accepted our TCP/TLS handshake (first FakeTLS app
-// data frame, or a plain-obfuscated transport connect). Proves the
-// fingerprint and the route, so it may reset recipe escalation - but says
-// nothing about whether Telegram data actually flows through the relay.
+// Handshake: the proxy accepted our TCP/TLS handshake. FakeTlsAppData: the
+// server sent the first FakeTLS app-data frame. Both prove the fingerprint
+// and route, so they may reset recipe escalation - but they say nothing
+// about whether Telegram data actually flows through the relay.
 // Relay: an MTProto payload was actually received through the proxy. Only
-// this proves the endpoint end-to-end and may clear a relay-silence
-// cooldown; otherwise every reconnect of a dead relay would repaint the
-// endpoint green and the sessions would hammer it forever.
+// this proves the endpoint end-to-end and may clear a relay-silence cooldown;
+// otherwise every reconnect of a dead relay would repaint the endpoint green
+// and the sessions would hammer it forever.
 enum class SuccessScope {
 	Handshake,
+	FakeTlsAppData,
 	Relay,
 };
 
@@ -188,10 +147,22 @@ struct SuccessReport {
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
+	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 	SuccessScope scope = SuccessScope::Handshake;
+};
+
+struct RelayStallReport {
+	EndpointId endpoint;
+	EndpointUse use = EndpointUse::Main;
+	uint64 proxyGeneration = 0;
+	uint64 attemptId = 0;
+	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
+	crl::time attemptStartedAt = 0;
 };
 
 struct Snapshot {
@@ -208,6 +179,8 @@ struct Snapshot {
 	crl::time lastRelaySuccessAt = 0;
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
 	RouteEndpoint lastGoodRoute;
+	bool relayProven = false;
+	uint64 proxyGeneration = 0;
 	uint64 proxyEpoch = 0;
 	uint64 attemptId = 0;
 };
@@ -226,7 +199,7 @@ public:
 	[[nodiscard]] Admission admit(const AdmissionRequest &request);
 	void reportFailure(FailureReport report);
 	void reportSuccess(SuccessReport report);
-	void noteRelayStall(const EndpointId &endpoint);
+	void noteRelayStall(RelayStallReport report);
 	[[nodiscard]] Snapshot snapshot(const EndpointId &endpoint) const;
 	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;
 
@@ -236,39 +209,6 @@ private:
 	void releaseAttempt(const QString &key, uint64 attemptId);
 };
 
-[[nodiscard]] EndpointId EndpointIdFromProxy(
-	const ProxyData &proxy,
-	const ProxyStealthOptions &stealth,
-	const QString &address = QString(),
-	int port = 0);
-[[nodiscard]] EndpointId EndpointIdFromAddress(
-	const QString &address,
-	int port,
-	bytes::const_span secret,
-	ProxyTransport transport);
-[[nodiscard]] RouteEndpoint RouteEndpointFromAddress(
-	const QString &address,
-	int port,
-	ProxyTransport transport,
-	const QString &resolvedFromHost = QString());
-[[nodiscard]] bool EndpointEmpty(const CanonicalProxyEndpoint &endpoint);
-[[nodiscard]] bool EndpointEmpty(const EndpointId &endpoint);
-[[nodiscard]] QString EndpointKey(const CanonicalProxyEndpoint &endpoint);
-[[nodiscard]] QString EndpointKey(const EndpointId &endpoint);
-
-// Key for ProxyCapabilityCache cards, matching ProxyCapabilityKey(proxy)
-// so that cards written from endpoint health reports are found by
-// ProxyCapabilityCache::lookup(proxy). Distinct from EndpointKey, which
-// keys the in-memory health state and diagnostics.
-[[nodiscard]] QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint);
-[[nodiscard]] QString RouteKey(const RouteEndpoint &route);
-[[nodiscard]] QString RouteKey(const EndpointId &endpoint);
-[[nodiscard]] QString ToLegacyDiagnostic(FailureReason reason);
-[[nodiscard]] FailureReason FailureReasonFromErrorCode(int errorCode);
-[[nodiscard]] ProxyConnectionError ToProxyConnectionError(
-	FailureReason reason);
-[[nodiscard]] ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
-	FailureReason reason);
 [[nodiscard]] crl::time ConnectionSpacing(ProxyConnectionPattern pattern);
 
 } // namespace MTP::details::MtProxy

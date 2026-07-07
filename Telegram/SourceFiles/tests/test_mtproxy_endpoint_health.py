@@ -5,6 +5,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
 DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
@@ -34,13 +35,17 @@ def read(path):
 
 def test_endpoint_health_module_is_registered_and_owns_state():
     header = read(ENDPOINT_HEALTH_H)
+    identity_header = read(ENDPOINT_IDENTITY_H)
     source = read(ENDPOINT_HEALTH_CPP)
     cmake = read(CMAKE)
 
     assert "mtproto/proxy/mtproxy/endpoint_health.cpp" in cmake
     assert "mtproto/proxy/mtproxy/endpoint_health.h" in cmake
+    assert "mtproto/proxy/mtproxy/endpoint_identity.cpp" in cmake
+    assert "mtproto/proxy/mtproxy/endpoint_identity.h" in cmake
     assert "namespace MTP::details::MtProxy" in header
-    assert "struct EndpointId" in header
+    assert '#include "mtproto/proxy/mtproxy/endpoint_identity.h"' in header
+    assert "struct EndpointId" in identity_header
     assert "enum class FailureReason" in header
     assert "ServerHelloHmacMismatch" in header
     assert "ClientHelloSentNoServerHello" in header
@@ -101,16 +106,16 @@ def test_session_private_admission_gates_before_socket_creation():
 def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
     data_header = read(DATA_H)
     data_source = read(DATA_CPP)
-    header = read(ENDPOINT_HEALTH_H)
-    source = read(ENDPOINT_HEALTH_CPP)
+    identity_header = read(ENDPOINT_IDENTITY_H)
+    identity_source = read(MTPROXY_DIR / "endpoint_identity.cpp")
     direct_body = function_body(data_source, "ProxyData ToDirectIpProxy(")
-    body = function_body(source, "EndpointId EndpointIdFromProxy(")
-    key_body = function_body(source, "QString EndpointKey(")
+    body = function_body(identity_source, "EndpointId EndpointIdFromProxy(")
+    key_body = function_body(identity_source, "QString EndpointKey(")
 
     assert "QString originalHost;" in data_header
-    assert "struct CanonicalProxyEndpoint" in header
-    assert "struct RouteEndpoint" in header
-    assert "QString resolvedHost;" not in header
+    assert "struct CanonicalProxyEndpoint" in identity_header
+    assert "struct RouteEndpoint" in identity_header
+    assert "QString resolvedHost;" not in identity_header
     assert "result.originalHost = proxy.originalHost.isEmpty()" in direct_body
     assert "? proxy.host" in direct_body
     assert ": proxy.originalHost;" in direct_body
@@ -211,14 +216,24 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in header
     assert "RouteEndpoint lastGoodRoute;" in header
     assert "uint64 attemptId = 0;" in header
+    assert "uint64 proxyGeneration = 0;" in header
     assert "uint64 proxyEpoch = 0;" in header
+    assert "uint64 successEpoch = 0;" in header
     assert "crl::time attemptStartedAt = 0;" in header
+    assert "uint64 proxyGeneration() const" in header
+    assert "uint64 successEpoch() const" in header
     assert "crl::time startedAt() const" in header
 
     assert "const auto attemptStartedAt = now;" in admit_body
+    assert "result.proxyGeneration = request.proxyGeneration;" in admit_body
+    assert "result.successEpoch = state.successEpoch;" in admit_body
     assert "state.attemptStarts.emplace(result.attemptId, attemptStartedAt);" in (
         admit_body)
     assert "result.attemptStartedAt = attemptStartedAt;" in admit_body
+    assert "uint64 proxyGeneration," in source
+    assert "_proxyGeneration(proxyGeneration)" in source
+    assert "uint64 successEpoch," in source
+    assert "_successEpoch(successEpoch)" in source
     assert "crl::time startedAt)" in source
     assert "_startedAt(startedAt)" in source
 
@@ -234,19 +249,31 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "setMtproxyAttempt(" in append_body
 
     assert ".attemptId = _mtproxyAttempt.attemptId" in tls_timeout
+    assert ".proxyGeneration = _mtproxyAttempt.proxyGeneration" in tls_timeout
     assert ".proxyEpoch = _mtproxyAttempt.proxyEpoch" in tls_timeout
+    assert ".successEpoch = _mtproxyAttempt.successEpoch" in tls_timeout
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_timeout
     assert ".attemptId = _mtproxyAttempt.attemptId" in tls_error
+    assert ".proxyGeneration = _mtproxyAttempt.proxyGeneration" in tls_error
+    assert ".successEpoch = _mtproxyAttempt.successEpoch" in tls_error
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_error
 
-    assert "SuccessScope::Relay" in tls_packet
+    assert "FakeTlsAppData," in header
+    assert "SuccessScope::FakeTlsAppData" in tls_packet
+    assert "SuccessScope::Relay" not in tls_packet
     assert ".attemptId = _mtproxyAttempt.attemptId" in tls_packet
+    assert ".proxyGeneration = _mtproxyAttempt.proxyGeneration" in tls_packet
+    assert ".successEpoch = _mtproxyAttempt.successEpoch" in tls_packet
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_packet
     assert ".attemptId = _connectionMtproxyAttempt.attemptId" in session
+    assert ".proxyGeneration = _connectionMtproxyAttempt.proxyGeneration" in session
+    assert ".successEpoch = _connectionMtproxyAttempt.successEpoch" in session
     assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in session
     assert "ProxyControlPlane::ReportMtproxySuccess({" in handle_received
     assert ".attemptId = _connectionMtproxyAttempt.attemptId" in handle_received
     assert ".proxyEpoch = _connectionMtproxyAttempt.proxyEpoch" in (
+        handle_received)
+    assert ".successEpoch = _connectionMtproxyAttempt.successEpoch" in (
         handle_received)
     assert ".attemptStartedAt = _connectionMtproxyAttemptStartedAt" in (
         handle_received)
@@ -281,6 +308,61 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "LogStaleAttemptFailure(report, recipeLevel);" in report_failure
     assert "return;" in report_failure.split(
         "LogStaleAttemptFailure(report, recipeLevel);", 1)[1].split("}", 1)[0]
+
+
+def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
+    header = read(ENDPOINT_HEALTH_H)
+    source = read(ENDPOINT_HEALTH_CPP)
+    report_failure = function_body(source, "void EndpointHealth::reportFailure(")
+    report_success = function_body(source, "void EndpointHealth::reportSuccess(")
+    report_epoch_stale = function_body(source, "bool ReportEpochIsStale(")
+    stale_failure = function_body(source, "bool FailureFromStaleAttempt(")
+    stale_success = function_body(source, "bool SuccessFromStaleAttempt(")
+
+    assert "uint64 proxyEpoch = 0;" in header
+    assert "uint64 successEpoch = 0;" in header
+    assert "uint64 proxyGeneration = 0;" in header
+    assert "uint64 proxyEpoch = 1;" in source
+    assert "uint64 successEpoch = 0;" in source
+    assert "uint64 proxyGeneration = 0;" in source
+    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
+        stale_failure)
+    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
+        stale_success)
+    assert "ReportEpochIsStale(report.proxyEpoch, state)" in stale_failure
+    assert "ReportEpochIsStale(report.proxyEpoch, state)" in stale_success
+    assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in (
+        stale_failure)
+    assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in (
+        stale_success)
+    assert "proxyEpoch&&proxyEpoch<state.proxyEpoch" in (
+        "".join(report_epoch_stale.split()))
+    report_success_epoch_stale = function_body(
+        source,
+        "bool ReportSuccessEpochIsStale(")
+    assert "successEpoch&&successEpoch<state.successEpoch" in (
+        "".join(report_success_epoch_stale.split()))
+    relay_success_block = report_success.split(
+        "if (report.scope == SuccessScope::Relay) {", 1)[1].split(
+            "capabilitySuccess = CapabilitySuccess{", 1)[0]
+    assert "++state.proxyEpoch;" in relay_success_block
+    faketls_block = report_success.split(
+        "if (report.scope == SuccessScope::FakeTlsAppData", 1)[1].split(
+            "return;", 1)[0]
+    assert "++state.proxyEpoch;" not in faketls_block
+    assert "state.relayProven = true;" not in faketls_block
+
+    failure_stale_check = report_failure.index(
+        "if (FailureFromStaleAttempt(report, state)) {")
+    failure_state_write = report_failure.index("state.endpoint = report.endpoint;")
+    assert failure_stale_check < failure_state_write
+
+    success_stale_check = report_success.index(
+        "if (SuccessFromStaleAttempt(report, state)) {")
+    success_state_write = report_success.index("state.endpoint = report.endpoint;")
+    success_scheduler = report_success.index("NoteConnectSuccess(report.endpoint);")
+    assert success_stale_check < success_state_write
+    assert success_stale_check < success_scheduler
 
 
 def test_serverhello_ok_no_appdata_is_warning_not_fatal():
@@ -387,7 +469,8 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "_endpointUse = protocolForFiles" in source
     assert ".use = _endpointUse" in source
     assert ".use = MtProxy::EndpointUse::Main" not in source
-    assert "ToLegacyDiagnostic(FailureReason reason)" in read(ENDPOINT_HEALTH_CPP)
+    assert "ToLegacyDiagnostic(FailureReason reason)" in read(
+        MTPROXY_DIR / "endpoint_identity.cpp")
     assert "ProxyControlPlane::ReportMtproxyFailure(" in error_body
     assert "MtproxyNoteEndpointFailure(" not in source
     assert "MtproxyNoteEndpointSuccess(" not in source
@@ -452,9 +535,10 @@ def test_appdata_remote_closed_is_mtproxy_terminal_reason():
     status_source = read(SOURCE_DIR / "mtproto" / "proxy" / "status.cpp")
     diagnostics = read(SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp")
     source = read(ENDPOINT_HEALTH_CPP)
+    identity_source = read(MTPROXY_DIR / "endpoint_identity.cpp")
     cooldown_body = function_body(source, "bool FailureNeedsCooldown(")
     terminal_body = function_body(
-        source,
+        identity_source,
         "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
 
     assert "AppDataRemoteClosed," in status_header
@@ -576,6 +660,7 @@ if __name__ == "__main__":
     test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni()
     test_session_private_reports_success_and_failure_to_endpoint_health()
     test_relay_success_shadows_older_attempt_failures()
+    test_relay_success_advances_attempt_epoch_and_shadows_old_reports()
     test_serverhello_ok_no_appdata_is_warning_not_fatal()
     test_session_does_not_punish_remote_closed_after_usable_success()
     test_tls_socket_reports_typed_terminal_reasons()

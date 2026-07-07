@@ -75,8 +75,25 @@ def test_proxy_check_dedupes_clicks_and_short_circuits_active_session():
 
     assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in active
     assert "endpoint)" in active
+    assert "snapshot.relayProven" in active
     assert "snapshot.lastRelaySuccessAt" in active
     assert "kProxyCheckActiveSessionWindow" in active
+
+
+def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
+    source = read(CHECK_CPP)
+    health_header = read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h")
+    health_source = read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+    active = function_body(source, "bool ActiveSessionProvesProxy(")
+    snapshot = function_body(health_source, "Snapshot MakeSnapshot(")
+
+    assert "bool relayProven = false;" in health_header
+    assert ".relayProven = state.relayProven," in snapshot
+    assert "snapshot.relayProven" in active
+    assert active.index("snapshot.relayProven") < active.index(
+        "snapshot.lastRelaySuccessAt")
 
 
 def test_proxy_check_queue_is_progress_not_failure():
@@ -109,12 +126,18 @@ def test_proxy_check_reports_progressive_fake_tls_phases():
     assert "ProxyCheckStatus::FirstMtprotoPayload" in start
     assert start.index("ProxyCheckStatus::FirstMtprotoPayload") < (
         start.index("proxy check succeeded"))
+    assert ".scope = MtProxy::SuccessScope::Relay" in start
+    assert ".stealth = state->mtproxyStealth" in start
+    assert ".sentProfile = state->mtproxySentProfile" in start
 
 
 def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
     source = read(CHECK_CPP)
+    header = read(CHECK_H)
     start = function_body(source, "void StartProxyCheck(")
 
+    assert "ProxyStealthOptions mtproxyStealth;" in header
+    assert "ProxyTlsProfile mtproxySentProfile" in header
     assert "raw->setMtproxyAttempt({" in start
     assert ".proxyGeneration = start.proxyGeneration" in start
     assert ".proxyEpoch = start.proxyEpoch" in start
@@ -122,6 +145,8 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
     assert ".connectionId = raw->debugId()" in start
     assert ".probe = true" in start
     assert "start.attemptStartedAt" in start
+    assert "state->mtproxyStealth = start.stealth;" in start
+    assert "state->mtproxySentProfile = start.effectiveTlsProfile;" in start
     assert "state->networkStarted = true;" in start
     assert "QTimer::singleShot(int(kProxyCheckUiTimeout), raw," in start
     hard_timeout = start.split(
@@ -136,12 +161,36 @@ def test_probe_attempts_do_not_publish_selected_status():
     reduce_body = function_body(
         control,
         "ProxyConnectionStatus ProxyControlPlane::Reduce(")
+    fact_body = function_body(
+        control,
+        "ProxyFact ProxyControlPlane::FactFromReport(")
 
     assert "bool probe = false;" in status
     assert "&& (probe == other.probe)" in status
     assert "fact.status.attempt.probe" in reduce_body
     assert "return current;" in reduce_body.split(
         "fact.status.attempt.probe", 1)[1].split("}", 1)[0]
+    finished = fact_body.split(
+        "case ProxyDiagnosticsPhase::ProxyCheckFinished:", 1)[1].split(
+        "case ProxyDiagnosticsPhase::AdmissionQueued:", 1)[0]
+    assert "fact.status.error = ProxyConnectionError::None;" in finished
+    assert "fact.status.mtproxyReason = ProxyMtproxyTerminalReason::None;" in (
+        finished)
+
+
+def test_proxy_check_failure_is_probe_telemetry_not_canonical_health():
+    source = read(CHECK_CPP)
+    health_source = read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+    start = function_body(source, "void StartProxyCheck(")
+    report_failure = function_body(
+        health_source,
+        "void EndpointHealth::reportFailure(")
+
+    failure = start.split("ProxyControlPlane::ReportMtproxyFailure({", 1)[1]
+    assert ".use = MtProxy::EndpointUse::ProxyCheck" in failure.split("});", 1)[0]
+    assert "report.use == EndpointUse::ProxyCheck" in report_failure
+    assert "LogProbeAttemptFailure(report" in report_failure
 
 
 def test_connection_box_uses_probe_status_instead_of_spinner_only():
@@ -176,8 +225,10 @@ def test_connection_box_uses_probe_status_instead_of_spinner_only():
 if __name__ == "__main__":
     test_proxy_check_has_dedicated_probe_status_model()
     test_proxy_check_dedupes_clicks_and_short_circuits_active_session()
+    test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only()
     test_proxy_check_queue_is_progress_not_failure()
     test_proxy_check_reports_progressive_fake_tls_phases()
     test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start()
     test_probe_attempts_do_not_publish_selected_status()
+    test_proxy_check_failure_is_probe_telemetry_not_canonical_health()
     test_connection_box_uses_probe_status_instead_of_spinner_only()

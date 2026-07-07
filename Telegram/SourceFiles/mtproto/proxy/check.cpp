@@ -103,6 +103,7 @@ void SetProxyCheckProgress(
 			endpoint);
 		return snapshot.healthy
 			&& !snapshot.halfOpen
+			&& snapshot.relayProven
 			&& snapshot.lastRelaySuccessAt
 			&& (crl::now() - snapshot.lastRelaySuccessAt
 				< kProxyCheckActiveSessionWindow);
@@ -324,7 +325,10 @@ void StartProxyCheck(
 				ProxyControlPlane::ReportMtproxySuccess({
 					.endpoint = state->mtproxyEndpoint,
 					.use = MtProxy::EndpointUse::ProxyCheck,
+					.stealth = state->mtproxyStealth,
+					.sentProfile = state->mtproxySentProfile,
 					.lease = &state->mtproxyLease,
+					.scope = MtProxy::SuccessScope::Relay,
 				});
 			}
 			ReportProxyEvent(mtproto, {
@@ -381,13 +385,16 @@ void StartProxyCheck(
 				}
 				state->mtproxyEndpoint = start.endpoint;
 				state->mtproxyLease = std::move(start.lease);
+				state->mtproxyStealth = start.stealth;
+				state->mtproxySentProfile = start.effectiveTlsProfile;
 				state->networkStarted = true;
-				raw->setMtproxyAttempt({
-					.proxyGeneration = start.proxyGeneration,
-					.proxyEpoch = start.proxyEpoch,
-					.attemptId = start.attemptId,
-					.connectionId = raw->debugId(),
-					.probe = true,
+					raw->setMtproxyAttempt({
+						.proxyGeneration = start.proxyGeneration,
+						.proxyEpoch = start.proxyEpoch,
+						.successEpoch = start.successEpoch,
+						.attemptId = start.attemptId,
+						.connectionId = raw->debugId(),
+						.probe = true,
 				}, start.attemptStartedAt);
 				SetProxyCheckProgress(state, ProxyCheckStatus::Resolving);
 				raw->connectToServer(

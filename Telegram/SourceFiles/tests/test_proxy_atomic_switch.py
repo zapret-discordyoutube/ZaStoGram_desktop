@@ -13,6 +13,7 @@ BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
+CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 
 
@@ -118,20 +119,24 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "state->proxyGeneration < generation" in cancel_body
     assert "state->active = false;" in cancel_body
     assert "AdmissionCancelled" in cancel_body
-    assert "start.proxyGeneration = state->proxyGeneration;" in start_body
+    assert "start.proxyGeneration = admission" in start_body
+    assert "? admission->proxyGeneration" in start_body
+    assert ": state->proxyGeneration;" in start_body
 
 
 def test_status_reducer_shadows_old_proxy_generation_facts():
     status_h = read(STATUS_H)
     status = read(STATUS_CPP)
+    control = read(CONTROL_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
 
     assert "uint64 proxyGeneration = 0;" in status_h
     assert "proxyGeneration == other.proxyGeneration" in status_h
-    assert "update.proxyGeneration != current.proxyGeneration" in status
-    assert "update.proxyGeneration > current.proxyGeneration" in status
-    assert "!update.proxyGeneration" in status
-    assert "update.proxyGeneration < current.proxyGeneration" in status
+    assert "update.proxyGeneration != current.proxyGeneration" in control
+    assert "update.proxyGeneration > current.proxyGeneration" in control
+    assert "!update.proxyGeneration" in control
+    assert "update.proxyGeneration < current.proxyGeneration" in control
+    assert "ApplyProxyConnectionStatusUpdate(" not in status
     assert "generation=%1" in diagnostics
 
 

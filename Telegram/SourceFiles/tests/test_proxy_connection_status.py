@@ -48,7 +48,7 @@ def test_proxy_status_model_is_exposed_to_ui():
     assert "ProxyMtproxyTerminalReason mtproxyReason" in status_header
     assert "ProxyConnectionAttempt attempt" in status_header
     assert "crl::time terminalUntil" in status_header
-    assert "ApplyProxyConnectionStatusUpdate(" in status_header
+    assert "crl::time successUntil" in status_header
     assert "struct ProxyConnectionStatus" not in abstract_connection
     assert '#include "mtproto/proxy/status.h"' not in instance_header
     assert "struct ProxyConnectionStatus;" in instance_header
@@ -105,13 +105,19 @@ def test_proxy_status_tracks_phases_and_socket_errors():
 def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():
     status_header = STATUS_H.read_text(encoding="utf-8")
     diagnostics = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
-    source = INSTANCE_CPP.read_text(encoding="utf-8")
+    instance = INSTANCE_CPP.read_text(encoding="utf-8")
+    control = CONTROL_CPP.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
+    sink = function_body(instance, "void Instance::Private::setProxyConnectionStatus(")
 
     assert "ServerHelloHmacMismatch" in status_header
     assert "IsMtproxyTerminalFailure(" in status_header
-    assert "ApplyProxyConnectionStatusUpdate(" in source
-    assert "ApplyProxyConnectionStatusUpdate(" in status_header
+    assert "ProxyControlPlane::Reduce(current, normalized)" in control
+    assert "ApplySelectedStatusUpdate(" in control
+    assert "ApplyProxyConnectionStatusUpdate(" not in sink
+    assert "ApplyProxyConnectionStatusUpdate(" not in status_header
+    assert "ApplyProxyConnectionStatusUpdate(" not in STATUS_CPP.read_text(
+        encoding="utf-8")
     assert "report.mtproxyReason" in diagnostics
     assert "report.attempt" in diagnostics
     assert "ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch" in widget

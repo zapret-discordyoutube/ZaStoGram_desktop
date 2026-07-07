@@ -50,6 +50,7 @@ struct ConnectionBroker::RequestState {
 	bool active = true;
 	bool queuedNotified = false;
 	bool startAfterNotified = false;
+	bool admissionInProgress = false;
 	bool startScheduled = false;
 };
 
@@ -176,6 +177,7 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 			ProxyDiagnosticsPhase::AdmissionCancelled,
 			{},
 			u"mtproxy admission cancelled"_q);
+		releaseAdmission(cancelled);
 	}
 }
 
@@ -209,6 +211,7 @@ void ConnectionBroker::cancelByProxyGeneration(
 			ProxyDiagnosticsPhase::AdmissionCancelled,
 			{},
 			u"mtproxy admission cancelled by proxy switch"_q);
+		releaseAdmission(state);
 	}
 }
 
@@ -250,28 +253,44 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 			front->active = false;
 			queue.pending.pop_front();
 		}
-		if (!state || state->admission || state->startScheduled) {
+		if (!state
+			|| state->admission
+			|| state->admissionInProgress
+			|| state->startScheduled) {
 			return;
 		}
+		state->admissionInProgress = true;
 	}
 
 	if (MtProxy::EndpointEmpty(state->request.endpoint)) {
+		{
+			QMutexLocker lock(&_mutex);
+			state->admissionInProgress = false;
+			if (!state->active
+				|| !state->request.context
+				|| state->startScheduled) {
+				return;
+			}
+			state->startScheduled = true;
+		}
 		scheduleStart(state, state->request.notBefore);
 		return;
 	}
 
 	auto admission = ProxyControlPlane::Admit({
 		.endpoint = state->request.endpoint,
-		.use = state->request.use,
-		.stealth = state->request.stealth,
-		.configuredTlsProfile = state->request.configuredTlsProfile,
-	});
+			.use = state->request.use,
+			.stealth = state->request.stealth,
+			.configuredTlsProfile = state->request.configuredTlsProfile,
+			.proxyGeneration = state->proxyGeneration,
+		});
 	if (admission.action == ProxyAdmissionAction::StartNow) {
 		const auto openDelay = MtProxy::ReserveOpenSlot(
 			state->request.endpoint,
 			state->request.connectionPattern,
 			state->request.notBefore);
 		auto keepAdmission = false;
+		auto notifyStartAfter = false;
 		{
 			QMutexLocker lock(&_mutex);
 			const auto &queue = queueFor(use);
@@ -281,13 +300,21 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 				&& state->request.context;
 			if (keepAdmission) {
 				state->admission = std::move(admission);
+				state->admissionInProgress = false;
+				state->startScheduled = true;
+				notifyStartAfter = (openDelay > 0)
+					&& !state->startAfterNotified;
+				if (notifyStartAfter) {
+					state->startAfterNotified = true;
+				}
+			} else {
+				state->admissionInProgress = false;
 			}
 		}
 		if (!keepAdmission) {
 			return;
 		}
-		if (openDelay > 0 && !state->startAfterNotified) {
-			state->startAfterNotified = true;
+		if (notifyStartAfter) {
 			notify(state, {
 				.action = ConnectionBrokerAction::StartAfter,
 				.retryAfter = openDelay,
@@ -300,8 +327,29 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 	const auto delay = admission.retryAfter > 0
 		? admission.retryAfter
 		: kFallbackQueuedRetry;
-	if (!state->queuedNotified) {
-		state->queuedNotified = true;
+	auto keepQueued = false;
+	auto notifyQueued = false;
+	{
+		QMutexLocker lock(&_mutex);
+		const auto &queue = queueFor(use);
+		keepQueued = !queue.pending.empty()
+			&& queue.pending.front() == state
+			&& state->active
+			&& state->request.context;
+		if (keepQueued) {
+			state->admissionInProgress = false;
+			notifyQueued = !state->queuedNotified;
+			if (notifyQueued) {
+				state->queuedNotified = true;
+			}
+		} else {
+			state->admissionInProgress = false;
+		}
+	}
+	if (!keepQueued) {
+		return;
+	}
+	if (notifyQueued) {
 		notify(state, {
 			.action = ConnectionBrokerAction::Queued,
 			.retryAfter = delay,
@@ -332,7 +380,6 @@ void ConnectionBroker::scheduleStart(
 		cancel(state->id);
 		return;
 	}
-	state->startScheduled = true;
 	QTimer::singleShot(TimerDelay(delay), state->request.context, [=] {
 		if (state->active) {
 			ConnectionBroker::Instance().start(state->id);
@@ -376,7 +423,9 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 	auto admission = std::move(state->admission);
 	auto start = ConnectionStart();
 	start.ticketId = id;
-	start.proxyGeneration = state->proxyGeneration;
+	start.proxyGeneration = admission
+		? admission->proxyGeneration
+		: state->proxyGeneration;
 	start.endpoint = request.endpoint;
 	start.use = request.use;
 	start.stealth = admission ? admission->stealth : request.stealth;
@@ -385,6 +434,7 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 		: request.configuredTlsProfile;
 	start.attemptId = admission ? admission->attemptId : 0;
 	start.proxyEpoch = admission ? admission->proxyEpoch : 0;
+	start.successEpoch = admission ? admission->successEpoch : 0;
 	start.attemptStartedAt = admission ? admission->attemptStartedAt : 0;
 	if (admission) {
 		start.lease = std::move(admission->lease);
@@ -393,6 +443,18 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 		request.start(std::move(start));
 	}
 	drain();
+}
+
+void ConnectionBroker::releaseAdmission(
+		const std::shared_ptr<RequestState> &state) {
+	if (!state) {
+		return;
+	}
+	state->admissionInProgress = false;
+	if (state->admission) {
+		state->admission->lease.release();
+		state->admission.reset();
+	}
 }
 
 void ConnectionBroker::notify(
