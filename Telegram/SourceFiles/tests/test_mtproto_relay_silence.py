@@ -143,6 +143,39 @@ def test_session_reports_silence_and_recovers_temporary_key():
         "SuccessScope::Relay")
 
 
+def test_full_concurrency_needs_relay_proof_not_just_handshakes():
+    health = read(ENDPOINT_HEALTH_CPP)
+    header = read(ENDPOINT_HEALTH_H)
+    session = read(SESSION_CPP)
+    policy = function_body(
+        health, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+    success = function_body(health, "void EndpointHealth::reportSuccess(")
+    failure = function_body(health, "void EndpointHealth::reportFailure(")
+    stall = function_body(health, "void EndpointHealth::noteRelayStall(")
+    wait_received = function_body(
+        session, "void SessionPrivate::waitReceivedFailed(")
+
+    # After a relay stall a dozen sessions reconnect at once; releasing
+    # the full healthy cap on a mere TLS handshake success re-triggers
+    # the proxy-side throttle and sustains the stall. Full concurrency
+    # requires an actually received MTProto payload (relay proof).
+    assert "state.relayProven" in policy
+    assert "state.healthy && state.relayProven" in policy
+    assert policy.index("state.healthy && state.relayProven") < policy.index(
+        "kHealthyActiveCap")
+    assert "state.relayProven = true;" in success
+    assert success.index("SuccessScope::Relay") < success.index(
+        "state.relayProven = true;")
+    assert "state.relayProven = false;" in failure
+
+    # A mid-session silence of an established connection clears the proof
+    # without any cooldown - reconnects stay allowed, just as scouts.
+    assert "void noteRelayStall(" in header
+    assert "relayProven = false;" in stall
+    assert "terminalUntil" not in stall
+    assert "noteRelayStall(" in wait_received
+
+
 def test_established_idle_close_is_not_a_health_failure():
     tls_socket = read(TLS_SOCKET_CPP)
     handle_error = function_body(

@@ -210,6 +210,7 @@ public:
 	[[nodiscard]] Admission admit(const AdmissionRequest &request);
 	void reportFailure(FailureReport report);
 	void reportSuccess(SuccessReport report);
+	void noteRelayStall(const EndpointId &endpoint);
 	[[nodiscard]] Snapshot snapshot(const EndpointId &endpoint) const;
 	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;
 

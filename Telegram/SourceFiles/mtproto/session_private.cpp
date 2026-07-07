@@ -1464,9 +1464,10 @@ void SessionPrivate::waitReceivedFailed() {
 			_waitForReceived * 2,
 			kMaxReceiveTimeout);
 	}
-	const auto silentMtproxyConnection = !_mtprotoDataReceived
-		&& _connection
+	const auto mtproxyConnection = _connection
 		&& !MtProxy::EndpointEmpty(_connectionMtproxyEndpoint);
+	const auto silentMtproxyConnection = mtproxyConnection
+		&& !_mtprotoDataReceived;
 	if (silentMtproxyConnection) {
 		++_mtprotoSilentTimeouts;
 	}
@@ -1483,6 +1484,9 @@ void SessionPrivate::waitReceivedFailed() {
 			.use = _connectionMtproxyUse,
 			.reason = MtProxy::FailureReason::ConnectedNoMtprotoData,
 		});
+	} else if (mtproxyConnection) {
+		MtProxy::EndpointHealth::Instance().noteRelayStall(
+			_connectionMtproxyEndpoint);
 	}
 	doDisconnect();
 	if (silentMtproxyConnection

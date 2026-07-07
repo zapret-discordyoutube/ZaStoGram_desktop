@@ -92,6 +92,7 @@ struct EndpointState {
 	crl::time lastDenialRotationSignal = 0;
 	crl::time lastSuccessAt = 0;
 	int exhaustedSinceSuccess = 0;
+	bool relayProven = false;
 };
 
 struct RouteState {
@@ -364,11 +365,18 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 	case FailureReason::ProxyProtocolBadResponse:
 		break;
 	}
-	if (state.healthy) {
+	if (state.healthy && state.relayProven) {
 		policy.activeCap = kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
 		policy.retryAfter = kHealthyHandshakeSpacing;
 	} else {
+		// Full concurrency needs relay proof, not just green handshakes:
+		// after a relay stall a dozen sessions reconnect at once, and
+		// releasing the full herd on a mere TLS success re-triggers the
+		// proxy-side throttle, hangs the fake-pq checks and repeats the
+		// cycle (observed as 30-70 handshakes/min for many minutes).
+		// Until an MTProto payload actually comes through, only a couple
+		// of scouts go out and the rest wait in the broker queue.
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
 	}
@@ -640,6 +648,10 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	state.lastFailure = report.reason;
 	state.lastDiagnostic = diagnostic;
+	if (report.reason == FailureReason::ServerHelloOkNoAppData
+		|| report.reason == FailureReason::ConnectedNoMtprotoData) {
+		state.relayProven = false;
+	}
 	const auto policy = EndpointConcurrencyPolicyFor(state);
 	if (policy.recipeEscalationAllowed && state.recipeLevel < 4) {
 		++state.recipeLevel;
@@ -715,6 +727,9 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	state.recipeLevel = 0;
 	state.lastSuccessAt = crl::now();
 	state.exhaustedSinceSuccess = 0;
+	if (report.scope == SuccessScope::Relay) {
+		state.relayProven = true;
+	}
 	if (report.scope == SuccessScope::Handshake
 		&& state.lastFailure == FailureReason::ConnectedNoMtprotoData) {
 		// A handshake success cannot clear a relay-silence cooldown: on a
@@ -738,6 +753,19 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			u"mtproxy canonical endpoint recovered"_q);
 		lock.unlock();
 		WriteProxyDiagnosticsLine(std::move(diagnosticsEvent));
+	}
+}
+
+void EndpointHealth::noteRelayStall(const EndpointId &endpoint) {
+	// An established connection that had already received MTProto data
+	// went silent mid-session. That is not a failure of any particular
+	// connect attempt (no cooldown, reconnects stay allowed), but the
+	// relay is no longer proven: the reconnect wave that follows must go
+	// out as scouts, not as the full healthy-cap herd.
+	QMutexLocker lock(&StatesMutex);
+	const auto i = States.find(EndpointKey(endpoint));
+	if (i != end(States)) {
+		i->second.relayProven = false;
 	}
 }
 
