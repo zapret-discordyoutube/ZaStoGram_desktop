@@ -139,17 +139,6 @@ def body_after(text: str, signature: str) -> str:
     raise AssertionError(f"body not found for {signature}")
 
 
-if __name__ == "__main__":
-    test_mtproxy_open_scheduler_module_is_registered()
-    test_connection_spread_defaults_to_browser_and_manual_toggle_is_soft()
-    test_scheduler_defines_safe_open_gap_and_off_bypass()
-    test_adaptive_recipe_uses_ladder_for_spacing()
-    test_connection_broker_reserves_global_open_slot_before_start()
-    test_connection_broker_qualifies_mtp_instance_inside_class_scope()
-    test_live_mtproxy_connects_through_connection_broker_before_syn()
-    test_proxy_check_uses_same_connection_broker_before_syn()
-
-
 def test_scheduler_paces_adaptively_on_connect_timeouts():
     header = SCHEDULER_H.read_text(encoding="utf-8")
     source = SCHEDULER_CPP.read_text(encoding="utf-8")
@@ -180,3 +169,16 @@ def test_scheduler_limits_open_bursts_per_endpoint():
     assert "burstSpacing" in source
     # Burst pacing only engages after a real timeout, not preemptively.
     assert "state.adaptiveSpacing > 0" in source
+
+
+if __name__ == "__main__":
+    test_mtproxy_open_scheduler_module_is_registered()
+    test_connection_spread_defaults_to_browser_and_manual_toggle_is_soft()
+    test_scheduler_defines_safe_open_gap_and_off_bypass()
+    test_adaptive_recipe_uses_ladder_for_spacing()
+    test_connection_broker_reserves_global_open_slot_before_start()
+    test_connection_broker_cancels_by_runtime_environment()
+    test_live_mtproxy_connects_through_connection_broker_before_syn()
+    test_proxy_check_uses_same_connection_broker_before_syn()
+    test_scheduler_paces_adaptively_on_connect_timeouts()
+    test_scheduler_limits_open_bursts_per_endpoint()
