@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "menu/menu_action_with_thumbnail.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "storage/file_upload.h"
 #include "storage/localimageloader.h"
 #include "styles/style_menu_icons.h"

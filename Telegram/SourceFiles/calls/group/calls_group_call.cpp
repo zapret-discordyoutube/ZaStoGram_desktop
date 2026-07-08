@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_updates.h"
 #include "apiwrap.h"
 #include "mtproto/dc_id.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "lang/lang_keys.h"
 #include "lang/lang_hardcoded.h"
 #include "boxes/peers/edit_participants_box.h" // SubscribeToMigration.

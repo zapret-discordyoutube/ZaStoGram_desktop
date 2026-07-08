@@ -363,7 +363,11 @@ def test_sources_that_call_instance_main_dc_include_instance_header():
     offenders = []
     for path in SOURCE_DIR.rglob("*.cpp"):
         source = read(path)
-        if ".instance().mainDcId(" not in source:
+        if not any(call in source for call in (
+            ".instance().mainDcId(",
+            ".mtp().mainDcId(",
+            "->mtp().mainDcId(",
+        )):
             continue
         if '#include "mtproto/instance/mtp_instance.h"' not in source:
             offenders.append(path.relative_to(SOURCE_DIR).as_posix())

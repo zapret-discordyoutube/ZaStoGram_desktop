@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_user.h"
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "storage/storage_domain.h"
 #include "storage/storage_account.h"
 #include "storage/localstorage.h"
