@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QPointer>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QDnsLookup>
+#include <memory>
 
 namespace MTP::details {
 
@@ -35,15 +37,11 @@ public:
 
 private:
 	enum class Type {
-		Mozilla,
-		Google,
-		RemoteConfig,
-		FireStore,
+		Doh,
 	};
 	struct Attempt {
 		Type type;
-		QString data;
-		QString host;
+		DohProvider provider;
 	};
 
 	SpecialConfigRequest(
@@ -57,12 +55,15 @@ private:
 		const QString &domainString,
 		const QString &phone);
 
+	void startSystemTxtLookup();
+	void systemTxtLookupFinished();
+	void startWebRequests();
 	void sendNextRequest();
 	void performRequest(const Attempt &attempt);
 	void requestFinished(Type type, not_null<QNetworkReply*> reply);
 	void handleHeaderUnixtime(not_null<QNetworkReply*> reply);
 	QByteArray finalizeRequest(not_null<QNetworkReply*> reply);
-	void handleResponse(const QByteArray &bytes);
+	bool handleResponse(const QByteArray &bytes);
 	bool decryptSimpleConfig(const QByteArray &bytes);
 
 	Fn<void(
@@ -76,6 +77,7 @@ private:
 	MTPhelp_ConfigSimple _simpleConfig;
 
 	QNetworkAccessManager _manager;
+	std::unique_ptr<QDnsLookup> _systemLookup;
 	std::vector<Attempt> _attempts;
 	std::vector<ServiceWebRequest> _requests;
 

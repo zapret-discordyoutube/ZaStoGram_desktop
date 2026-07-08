@@ -56,12 +56,12 @@ TlsSocket::TlsSocket(
 	_endpointUse = protocolForFiles
 		? MtProxy::EndpointUse::Media
 		: MtProxy::EndpointUse::Main;
-	_pacingTimer = runtime->async().makeTimer(this, [=] { sendOutgoing(); });
+	_pacingTimer = runtime->async().makeTimer(thread, [=] { sendOutgoing(); });
 	_clientHelloTimer = runtime->async().makeTimer(
-		this,
+		thread,
 		[=] { sendClientHello(); });
 	_clientHelloFragmentTimer = runtime->async().makeTimer(
-		this,
+		thread,
 		[=] { writeClientHelloTail(); });
 
 	_transport->moveToThread(thread);
@@ -131,7 +131,7 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
 	case MtProxy::FailureReason::TlsAlertAfterClientHello:
 	case MtProxy::FailureReason::ServerHelloHmacMismatch:
-		ClearSyntheticPskTickets(
+		_runtime->proxyServices().syntheticPsks().clear(
 			MtProxy::EndpointKey(_endpointId.canonical),
 			domainFromSecret(),
 			_sentTlsProfile);

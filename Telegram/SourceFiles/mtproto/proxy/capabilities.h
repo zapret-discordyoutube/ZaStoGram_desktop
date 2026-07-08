@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/basic_types.h"
 #include "mtproto/proxy/data.h"
 
 #include <QtCore/QMutex>
@@ -44,7 +45,7 @@ struct ProxyCapabilityCard {
 
 class ProxyCapabilityCache final {
 public:
-	[[nodiscard]] static ProxyCapabilityCache &Instance();
+	explicit ProxyCapabilityCache(Fn<QString()> path);
 
 	[[nodiscard]] ProxyCapabilityCard lookup(const ProxyData &proxy);
 	[[nodiscard]] ProxyCapabilityCard lookup(const QString &proxyKey);
@@ -69,15 +70,18 @@ public:
 		const QString &failureClass);
 
 private:
+	[[nodiscard]] QString path() const;
+
 	void load();
 	void save();
 
+	Fn<QString()> _path;
 	QMutex _mutex;
 	bool _loaded = false;
 	std::map<QString, ProxyCapabilityCard> _cards;
+
 };
 
 [[nodiscard]] QString ProxyCapabilityKey(const ProxyData &proxy);
-void SetProxyCapabilityPathProvider(Fn<QString()> provider);
 
 } // namespace MTP

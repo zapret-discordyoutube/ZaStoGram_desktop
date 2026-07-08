@@ -25,8 +25,6 @@ namespace {
 
 constexpr auto kMaxStoredRoutes = 16;
 constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
-QMutex CapabilitiesPathProviderMutex;
-Fn<QString()> CapabilitiesPathProvider;
 
 [[nodiscard]] QByteArray BytesToQByteArray(bytes::const_span data) {
 	auto result = QByteArray();
@@ -84,11 +82,6 @@ Fn<QString()> CapabilitiesPathProvider;
 	return secret.empty()
 		? QString()
 		: DomainFromSecret(bytes::make_span(secret));
-}
-
-[[nodiscard]] QString CapabilitiesPath() {
-	QMutexLocker lock(&CapabilitiesPathProviderMutex);
-	return CapabilitiesPathProvider ? CapabilitiesPathProvider() : QString();
 }
 
 [[nodiscard]] QString TransportName(ProxyCapabilityTransport value) {
@@ -287,9 +280,8 @@ void RemoveRoute(std::vector<QString> &routes, const QString &routeKey) {
 
 } // namespace
 
-ProxyCapabilityCache &ProxyCapabilityCache::Instance() {
-	static auto result = ProxyCapabilityCache();
-	return result;
+ProxyCapabilityCache::ProxyCapabilityCache(Fn<QString()> path)
+: _path(std::move(path)) {
 }
 
 ProxyCapabilityCard ProxyCapabilityCache::lookup(const ProxyData &proxy) {
@@ -402,13 +394,17 @@ void ProxyCapabilityCache::noteMtproxyRelayFailure(
 	save();
 }
 
+QString ProxyCapabilityCache::path() const {
+	return _path ? _path() : QString();
+}
+
 void ProxyCapabilityCache::load() {
 	if (_loaded) {
 		return;
 	}
 	_loaded = true;
 	const auto data = [&] {
-		auto file = QFile(CapabilitiesPath());
+		auto file = QFile(path());
 		return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 	}();
 	const auto document = QJsonDocument::fromJson(data);
@@ -434,7 +430,7 @@ void ProxyCapabilityCache::save() {
 	}
 	auto root = QJsonObject();
 	root.insert("cards", cards);
-	auto file = QSaveFile(CapabilitiesPath());
+	auto file = QSaveFile(path());
 	if (file.open(QIODevice::WriteOnly)) {
 		file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
 		file.commit();
@@ -456,11 +452,6 @@ QString ProxyCapabilityKey(const ProxyData &proxy) {
 		+ ProxyCapabilitySecretHash(proxy)
 		+ ':'
 		+ ProxyCapabilityDomain(proxy);
-}
-
-void SetProxyCapabilityPathProvider(Fn<QString()> provider) {
-	QMutexLocker lock(&CapabilitiesPathProviderMutex);
-	CapabilitiesPathProvider = std::move(provider);
 }
 
 } // namespace MTP

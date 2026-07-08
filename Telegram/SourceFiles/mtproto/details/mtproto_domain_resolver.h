@@ -17,9 +17,15 @@ class QHostInfo;
 
 namespace MTP::details {
 
-[[nodiscard]] const std::vector<QString> &DnsDomains();
-[[nodiscard]] QString GenerateDnsRandomPadding();
 [[nodiscard]] QByteArray DnsUserAgent();
+
+struct DohProvider {
+	QString host;
+	QString path;
+};
+
+[[nodiscard]] const std::vector<DohProvider> &DohProviders();
+[[nodiscard]] QByteArray BuildDnsQuery(const QString &domain, int type);
 
 struct DnsEntry {
 	QString data;
@@ -52,14 +58,8 @@ public:
 	void resolve(const QString &domain);
 
 private:
-	enum class Type {
-		Mozilla,
-		Google,
-	};
 	struct Attempt {
-		Type type;
-		QString data;
-		QString host;
+		DohProvider provider;
 	};
 	struct AttemptKey {
 		QString domain;

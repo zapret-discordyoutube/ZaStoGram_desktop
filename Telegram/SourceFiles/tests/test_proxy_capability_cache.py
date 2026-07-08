@@ -7,6 +7,8 @@ CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CAPABILITIES_H = PROXY_DIR / "capabilities.h"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
+PROXY_SERVICES_CPP = PROXY_DIR / "proxy_services.cpp"
+PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
 RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
@@ -39,20 +41,24 @@ def test_capability_cache_module_is_file_backed_and_registered():
     header = read(CAPABILITIES_H)
     source = read(CAPABILITIES_CPP)
     runtime = read(RUNTIME_CPP)
+    services = read(PROXY_SERVICES_CPP)
     cmake = read(CMAKE)
 
     assert "mtproto/proxy/capabilities.cpp" in cmake
     assert "mtproto/proxy/capabilities.h" in cmake
     assert "struct ProxyCapabilityCard" in header
     assert "class ProxyCapabilityCache final" in header
-    assert "ProxyCapabilityCache &Instance()" in header
+    assert "ProxyCapabilityCache &Instance()" not in header
+    assert "ProxyCapabilityCache _capabilities;" in read(PROXY_SERVICES_H)
     assert "QJsonDocument" in source
     assert "QSaveFile" in source
     assert 'u"proxy-capabilities.json"_q' in runtime
     assert "cWorkingDir() + u\"tdata/\"_q" in runtime
     assert "QDir().mkpath(" in runtime
-    assert "SetProxyCapabilityPathProvider(_descriptor.proxyCapabilities.path)" in runtime
-    assert "CapabilitiesPath()" in source
+    assert "_capabilities(runtime->proxyCapabilities().path)" in services
+    assert "SetProxyCapabilityPathProvider" not in runtime
+    assert "CapabilitiesPath()" not in source
+    assert "QString ProxyCapabilityCache::path() const" in source
     assert "load()" in source
     assert "save()" in source
 
@@ -125,9 +131,11 @@ def test_wss_remote_closed_is_persisted_with_ttl_per_proxy():
     allowed_body = function_body(source, "bool ProxyWssAllowed(")
 
     assert "kWssRemoteClosedTtl = crl::time(" in source
-    assert "ProxyCapabilityCache::Instance().noteWssRemoteClosed(" in note_body
+    assert "runtime->proxyServices().capabilities().noteWssRemoteClosed(" in (
+        note_body)
     assert "kWssRemoteClosedTtl" in note_body
-    assert "ProxyCapabilityCache::Instance().wssAllowed(proxy)" in allowed_body
+    assert "runtime->proxyServices().capabilities().wssAllowed(proxy)" in (
+        allowed_body)
     assert "std::set<QString> WssForbiddenProxyKeys" not in source
     assert "QMutex WssForbiddenProxyKeysMutex" not in source
     assert "card.wssAllowed = false;" in capabilities
@@ -145,9 +153,9 @@ def test_mtproxy_success_and_failure_update_capability_routes():
     assert '#include "mtproto/proxy/capabilities.h"' in capabilities_bridge
     assert "NoteCapabilityMtproxyFailure(" in failure
     assert "NoteCapabilityMtproxySuccess(" in success
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in (
+    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities_bridge)
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in (
+    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
         capabilities_bridge)
     assert "CapabilityProxyKey(endpoint.canonical)" in capabilities_bridge
     assert "RouteKey(endpoint.route)" in capabilities_bridge
@@ -167,10 +175,10 @@ def test_endpoint_health_updates_capabilities_after_state_lock_release():
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     stall = function_body(health, "void EndpointHealth::noteRelayStall(")
 
-    assert "ProxyCapabilityCache::Instance()" not in failure
-    assert "ProxyCapabilityCache::Instance()" not in success
-    assert "ProxyCapabilityCache::Instance()" not in stall
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in (
+    assert "proxyServices().capabilities()" not in failure
+    assert "proxyServices().capabilities()" not in success
+    assert "proxyServices().capabilities()" not in stall
+    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities_bridge)
     assert "NoteCapabilityMtproxyFailure(" in failure
     assert "NoteCapabilityMtproxyRelayFailure(" in failure
@@ -240,7 +248,7 @@ def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
         "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
         "if (settings == ProxyData::Settings::Enabled", 1)[0]
 
-    assert "ProxyCapabilityCache::Instance().lookup(proxy)" in body
+    assert "runtime->proxyServices().capabilities().lookup(proxy)" in body
     assert "capability.lastGoodTransport" in body
     assert "ProxyCapabilityTransport::MtproxyFakeTlsTcp" in body
     assert "capability.relayProven" in body
@@ -272,7 +280,7 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
     assert "AddRoute(card.badRoutes, routeKey);" in relay_failure
     assert "NoteCapabilityMtproxyRelayFailure(" in report_failure
     assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
-    assert "ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(" in (
+    assert "runtime->proxyServices().capabilities().noteMtproxyRelayFailure(" in (
         capabilities_bridge)
     assert "relay_stall" in relay_stall
 

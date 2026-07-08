@@ -40,7 +40,7 @@ struct FakeAsync {
 				callback();
 			},
 			.makeTimer = [](
-					not_null<QObject*>,
+					not_null<QThread*>,
 					Fn<void()> callback) {
 				return MTP::RuntimeTimer(
 					[callback = std::move(callback)](crl::time) mutable {

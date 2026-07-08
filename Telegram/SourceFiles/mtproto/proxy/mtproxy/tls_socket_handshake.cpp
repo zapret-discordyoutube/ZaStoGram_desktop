@@ -171,7 +171,7 @@ void TlsSocket::sendClientHello() {
 	auto pskOffer = std::optional<SyntheticPskOffer>();
 	_clientHelloFragmented = false;
 	if (_stealth.syntheticPsk) {
-		pskOffer = PrepareSyntheticPskOffer(
+		pskOffer = _runtime->proxyServices().syntheticPsks().prepareOffer(
 			MtProxy::EndpointKey(_endpointId.canonical),
 			domainFromSecret(),
 			profile);

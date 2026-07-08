@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/basic_types.h"
 #include "mtproto/transport/connection_abstract.h"
-#include "mtproto/proxy/status.h"
+#include "mtproto/runtime/connection_status_types.h"
 
 namespace MTP::details {
 
@@ -24,17 +24,6 @@ enum class HandshakePhase {
 
 class AbstractSocket : protected QObject {
 public:
-	static std::unique_ptr<AbstractSocket> Create(
-		not_null<RuntimeEnvironment*> runtime,
-		not_null<QThread*> thread,
-		const bytes::vector &secret,
-		const ProxyData &proxy,
-		bool protocolForFiles,
-		const ProxyStealthOptions &stealth,
-		int16 protocolDcId = 0,
-		ProxyConnectionAttempt mtproxyAttempt = {},
-		crl::time mtproxyAttemptStartedAt = 0);
-
 	void setDebugId(const QString &id) {
 		_debugId = id;
 	}

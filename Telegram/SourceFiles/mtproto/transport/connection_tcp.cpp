@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/protocol/mtproto_binary.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/socket_factory.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "base/bytes.h"
@@ -580,7 +581,7 @@ void TcpConnection::connectToServer(
 		_port = port;
 		_protocol = Protocol::Create(secret);
 	}
-	_socket = AbstractSocket::Create(
+	_socket = CreateProxyAwareSocket(
 		_runtime,
 		thread(),
 		secret,

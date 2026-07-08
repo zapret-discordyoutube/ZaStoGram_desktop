@@ -38,7 +38,6 @@ constexpr auto kPingSendAfter = 30 * crl::time(1000);
 constexpr auto kPingSendAfterForce = 45 * crl::time(1000);
 constexpr auto kCheckSentRequestTimeout = 10 * crl::time(1000);
 constexpr auto kSendStateRequestWaiting = crl::time(1000);
-constexpr auto kAckSendWaiting = 10 * crl::time(1000);
 constexpr auto kCutContainerOnSize = 16 * 1024;
 
 [[nodiscard]] QString ComputeAppVersion() {
@@ -154,7 +153,7 @@ void SessionPrivate::checkSentRequests() {
 		DEBUG_LOG(("MTP Info: "
 			"Request state while key is not bound, restarting."));
 		restart();
-		_transport._timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
+		_transport.scheduleCheckSentRequests(kCheckSentRequestTimeout);
 		return;
 	}
 	auto requesting = false;
@@ -178,7 +177,7 @@ void SessionPrivate::checkSentRequests() {
 		_sessionState.data->queueSendAnything(kSendStateRequestWaiting);
 	}
 	if (nextTimeout < kCheckSentRequestTimeout) {
-		_transport._timing.checkSentRequestsTimer.callOnce(nextTimeout);
+		_transport.scheduleCheckSentRequests(nextTimeout);
 	}
 }
 
@@ -325,7 +324,7 @@ mtpMsgId SessionPrivate::placeToContainer(
 
 void SessionPrivate::tryToSend() {
 	DEBUG_LOG(("MTP Info: tryToSend for dc %1.").arg(_shiftedDcId));
-	if (!_transport._state.connection) {
+	if (!_transport.connection()) {
 		DEBUG_LOG(("MTP Info: not yet connected in dc %1.").arg(_shiftedDcId));
 		return;
 	} else if (!_sessionState.keyId) {
@@ -372,7 +371,7 @@ void SessionPrivate::tryToSend() {
 			pingRequest = SerializedRequest::Serialize(MTPPing_delay_disconnect(
 				MTP_long(_requestState.pingIdToSend),
 				MTP_int(kPingDelayDisconnect)));
-			_transport._timing.pingSender.callOnce(kPingSendAfterForce);
+			_transport.schedulePing(kPingSendAfterForce);
 		}
 		_requestState.pingSendAt = pingRequest->lastSentTime + kPingSendAfter;
 		_requestState.pingId = base::take(_requestState.pingIdToSend);
@@ -406,7 +405,7 @@ void SessionPrivate::tryToSend() {
 			stateRequest = SerializedRequest::Serialize(MTPMsgsStateReq(
 				MTP_msgs_state_req(MTP_vector<MTPlong>(ids))));
 		}
-		if (_transport._state.connection->serviceRequest()
+		if (_transport.serviceRequest()
 			== AbstractConnection::TransportServiceRequest::HttpWait) {
 			httpWaitRequest = SerializedRequest::Serialize(MTPHttpWait(
 				MTP_http_wait(MTP_int(100), MTP_int(30), MTP_int(25000))));
@@ -711,8 +710,8 @@ void SessionPrivate::tryToSend() {
 			std::move(sentIdsWrap));
 	}
 	if (scheduleCheckSentRequests
-		&& !_transport._timing.checkSentRequestsTimer.isActive()) {
-		_transport._timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
+		&& !_transport.checkSentRequestsTimerActive()) {
+		_transport.scheduleCheckSentRequests(kCheckSentRequestTimeout);
 	}
 	sendSecureRequest(std::move(toSendRequest), needAnyResponse);
 	if (someSkipped) {
@@ -738,7 +737,7 @@ void SessionPrivate::sendPingByTimer() {
 				u"ping unanswered for too long, restarting"_q);
 			return restart();
 		} else {
-			_transport._timing.pingSender.callOnce(mustSendTill - now);
+			_transport.schedulePing(mustSendTill - now);
 		}
 	} else {
 		_sessionState.data->queueNeedToResumeAndSend();
@@ -784,7 +783,10 @@ bool SessionPrivate::sendSecureRequest(
 		bytes::make_span(request->constData(), fullSize),
 		true);
 
-	auto packet = _transport._state.connection->prepareSecurePacket(_sessionState.keyId, msgKey, fullSize);
+	auto packet = _transport.prepareSecurePacket(
+		_sessionState.keyId,
+		msgKey,
+		fullSize);
 	const auto prefix = packet.size();
 	packet.resize(prefix + fullSize);
 
@@ -797,7 +799,7 @@ bool SessionPrivate::sendSecureRequest(
 
 	DEBUG_LOG(("MTP Info: sending request, size: %1, num: %2, time: %3").arg(fullSize + 6).arg((*request)[4]).arg((*request)[5]));
 
-	_transport._state.connection->sendData(
+	_transport.sendData(
 		std::move(packet),
 		{ .keyId = _sessionState.keyId });
 

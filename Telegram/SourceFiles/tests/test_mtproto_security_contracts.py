@@ -199,12 +199,130 @@ def test_special_config_has_no_unreachable_realtime_attempt():
     assert "ParseRealtimeResponse" not in source
 
 
+def test_special_config_uses_system_txt_before_doh_fallback():
+    header = SPECIAL_CONFIG_H.read_text(encoding="utf-8")
+    source = SPECIAL_CONFIG_CPP.read_text(encoding="utf-8")
+    constructor = function_body(
+        source,
+        "SpecialConfigRequest::SpecialConfigRequest(")
+
+    assert "#include <QtNetwork/QDnsLookup>" in source
+    assert "std::unique_ptr<QDnsLookup> _systemLookup;" in header
+    assert "void startSystemTxtLookup();" in header
+    assert "void startWebRequests();" in header
+    assert "void systemTxtLookupFinished();" in header
+
+    assert "startSystemTxtLookup();" in constructor
+    assert "startWebRequests();" in constructor
+    assert "if (_timeDoneCallback) {" in constructor
+    assert "} else {" in constructor
+    assert "systemTxtLookupFinished()" in source
+    system_done = function_body(
+        source,
+        "void SpecialConfigRequest::systemTxtLookupFinished(")
+    assert "if (!entries.empty()" in system_done
+    assert "&& handleResponse(ConcatenateDnsTxtFields(entries)))" in system_done
+    assert "startWebRequests();" in system_done
+
+    assert "QDnsLookup::TXT" in source
+    assert "DohProviders()" in source
+    assert "BuildDnsQuery(_domainString, 16)" in source
+    assert "application/dns-message" in source
+    assert "bool handleResponse(const QByteArray &bytes);" in header
+
+
+def test_special_config_has_no_firebase_or_google_fronting_sources():
+    header = SPECIAL_CONFIG_H.read_text(encoding="utf-8")
+    source = SPECIAL_CONFIG_CPP.read_text(encoding="utf-8")
+
+    assert "RemoteConfig" not in header
+    assert "FireStore" not in header
+    assert "RemoteConfig" not in source
+    assert "FireStore" not in source
+    assert "Firestore" not in source
+    assert "firebase" not in source.lower()
+    assert "googleapis.com" not in source
+    assert "kRemoteProject" not in source
+    assert "kFireProject" not in source
+    assert "kApiKey" not in source
+    assert "kAppId" not in source
+    assert "GenerateInstanceId" not in source
+    assert "DnsDomains()" not in source
+    assert 'setRawHeader("Host"' not in source
+
+
+def test_special_config_uses_local_time_for_signed_config_freshness():
+    source = SPECIAL_CONFIG_CPP.read_text(encoding="utf-8")
+    request_finished = function_body(
+        source,
+        "void SpecialConfigRequest::requestFinished(")
+    handle_response = function_body(
+        source,
+        "bool SpecialConfigRequest::handleResponse(")
+
+    before_time_branch = request_finished.split("if (_timeDoneCallback) {")[0]
+
+    assert "if (_timeDoneCallback) {" in request_finished
+    assert "handleHeaderUnixtime(reply);" not in before_time_branch
+    assert "base::unixtime::http_now()" not in handle_response
+    assert "const auto now = base::unixtime::now();" in handle_response
+
+
+def test_special_config_sets_transfer_timeout_before_sending():
+    source = SPECIAL_CONFIG_CPP.read_text(encoding="utf-8")
+    body = function_body(
+        source,
+        "void SpecialConfigRequest::performRequest(")
+
+    timeout_pos = body.index("request.setTransferTimeout(")
+    send_pos = body.index("payload.isEmpty()")
+
+    assert "kRequestTransferTimeout" in source
+    assert timeout_pos < send_pos
+
+
+def test_special_config_loader_reset_is_queued_from_terminal_callback():
+    source = (SOURCE_DIR / "mtproto" / "config" / "config_loader.cpp"
+        ).read_text(encoding="utf-8")
+    body = function_body(source, "void ConfigLoader::createSpecialLoader()")
+
+    queued_pos = body.index("InvokeQueued(")
+    reset_pos = body.index("_specialLoader = nullptr;")
+
+    assert queued_pos < reset_pos
+
+
 def test_rsa_public_decrypt_logs_decrypt_failures():
     source = RSA_PUBLIC_KEY_CPP.read_text(encoding="utf-8")
     body = function_body(source, "bytes::vector RSAPublicKey::Private::decrypt(")
 
     assert "RSA_public_decrypt failed" in body
     assert "RSA_public_encrypt failed" not in body
+
+
+def test_special_config_decrypts_rsa_block_behind_validated_boundary():
+    source = SPECIAL_CONFIG_CPP.read_text(encoding="utf-8")
+    assert "[[nodiscard]] bytes::vector DecryptSimpleConfigBlock(" in source
+
+    decrypt_body = function_body(
+        source,
+        "[[nodiscard]] bytes::vector DecryptSimpleConfigBlock(")
+    simple_body = function_body(
+        source,
+        "bool SpecialConfigRequest::decryptSimpleConfig(")
+
+    call = "auto decrypted = DecryptSimpleConfigBlock(bytes::make_span(decodedBytes));"
+    call_pos = simple_body.index(call)
+    subspan_pos = simple_body.index("decryptedBytes.subspan(", call_pos)
+
+    assert "kSimpleConfigBlockSize" in source
+    assert "auto publicKey = details::RSAPublicKey(bytes::make_span(kPublicKey));" in decrypt_body
+    assert "auto decrypted = publicKey.decrypt(encrypted);" in decrypt_body
+    assert "decrypted.size() != kSimpleConfigBlockSize" in decrypt_body
+    assert "return {};" in decrypt_body
+    assert "publicKey.decrypt(" not in simple_body
+    assert "decrypted.size()" not in simple_body
+    assert call_pos < subspan_pos
 
 
 def test_wss_connect_to_host_declares_relay_contract():

@@ -65,17 +65,19 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
 
 
 def test_proxy_adapter_is_the_only_session_proxy_global_caller():
-    adapter_h = read(PROXY_ADAPTER_H)
-    adapter_cpp = read(PROXY_ADAPTER_CPP)
+	adapter_h = read(PROXY_ADAPTER_H)
+	adapter_cpp = read(PROXY_ADAPTER_CPP)
 
-    assert '#include "mtproto/session/private/proxy_port.h"' in adapter_h
-    assert "class ProductionSessionProxyPort final" in adapter_h
-    assert "DefaultSessionProxyPort()" in adapter_cpp
-    assert "proxyServices().broker().request(" in adapter_cpp
-    assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
-    assert "proxyServices().control().reportMtproxySuccess(" in adapter_cpp
-    assert "proxyServices().control().reportMtproxyFailure(" in adapter_cpp
-    assert "proxyServices().control().noteMtproxyRelayStall(" in adapter_cpp
-    assert "proxyServices().control().mtproxyEndpointSnapshot(" in adapter_cpp
-    assert "ReportProxyEvent(" in adapter_cpp
-    assert "WriteProxyDiagnosticsLine(" in adapter_cpp
+	assert '#include "mtproto/session/private/proxy_port.h"' not in adapter_h
+	assert "public SessionProxyPort" not in adapter_h
+	assert '#include "mtproto/session/private/proxy_port.h"' in adapter_cpp
+	assert "class ProductionSessionProxyPort final" in adapter_cpp
+	assert "DefaultSessionProxyPort()" in adapter_cpp
+	assert "proxyServices().broker().request(" in adapter_cpp
+	assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
+	assert "proxyServices().control().reportMtproxySuccess(" in adapter_cpp
+	assert "proxyServices().control().reportMtproxyFailure(" in adapter_cpp
+	assert "proxyServices().control().noteMtproxyRelayStall(" in adapter_cpp
+	assert ").mtproxyEndpointSnapshot(endpoint)" in adapter_cpp
+	assert "ReportProxyEvent(" in adapter_cpp
+	assert "WriteProxyDiagnosticsLine(" in adapter_cpp

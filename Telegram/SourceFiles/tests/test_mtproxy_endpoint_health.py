@@ -8,6 +8,9 @@ CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+RUNTIME_PROXY_DATA_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_data.h"
+RUNTIME_PROXY_ENDPOINT_H = (
+    SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h")
 DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
@@ -44,6 +47,7 @@ def read(path):
 def test_endpoint_health_module_is_registered_and_owns_state():
     header = read(ENDPOINT_HEALTH_H)
     identity_header = read(ENDPOINT_IDENTITY_H)
+    endpoint_header = read(RUNTIME_PROXY_ENDPOINT_H)
     source = read(ENDPOINT_HEALTH_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     cmake = read(CMAKE)
@@ -54,17 +58,17 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "mtproto/proxy/mtproxy/endpoint_identity.h" in cmake
     assert "namespace MTP::details::MtProxy" in header
     assert '#include "mtproto/proxy/mtproxy/endpoint_identity.h"' in header
-    assert "struct EndpointId" in identity_header
+    assert "struct EndpointId" in endpoint_header
+    assert "struct EndpointId" not in identity_header
     assert "enum class FailureReason" not in header
-    assert "enum class FailureReason" in identity_header
-    assert identity_header.index("enum class FailureReason") < (
-        identity_header.index("ToLegacyDiagnostic("))
-    assert "ServerHelloHmacMismatch" in identity_header
-    assert "ClientHelloSentNoServerHello" in identity_header
-    assert "TlsAlertAfterClientHello" in identity_header
-    assert "ServerHelloOkNoAppData" in identity_header
-    assert "TcpConnectTimeout" in identity_header
-    assert "DnsFailed" in identity_header
+    assert "enum class FailureReason" in endpoint_header
+    assert "ToLegacyDiagnostic(" in identity_header
+    assert "ServerHelloHmacMismatch" in endpoint_header
+    assert "ClientHelloSentNoServerHello" in endpoint_header
+    assert "TlsAlertAfterClientHello" in endpoint_header
+    assert "ServerHelloOkNoAppData" in endpoint_header
+    assert "TcpConnectTimeout" in endpoint_header
+    assert "DnsFailed" in endpoint_header
     assert "enum class EndpointUse" in header
     assert "enum class AdmissionAction" in header
     assert "class EndpointAttemptLease" in header
@@ -96,7 +100,7 @@ def test_session_private_admission_gates_before_socket_creation():
         "bool SessionTransport::appendTestConnection(")
 
     assert '#include "mtproto/proxy/connection_broker.h"' not in source
-    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
+    assert "SessionProxyLease mtproxyLease;" in header
     assert "std::vector<SessionProxyTicket> brokerTickets;" in header
     assert "base::flat_map<QString, crl::time> _endpointCooldownUntil" not in header
     assert "noteTestConnectionFailure(" not in header
@@ -117,6 +121,7 @@ def test_session_private_admission_gates_before_socket_creation():
 
 def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
     data_header = read(DATA_H)
+    runtime_data_header = read(RUNTIME_PROXY_DATA_H)
     data_source = read(DATA_CPP)
     identity_header = read(ENDPOINT_IDENTITY_H)
     identity_source = read(MTPROXY_DIR / "endpoint_identity.cpp")
@@ -124,9 +129,11 @@ def test_proxy_endpoint_id_uses_decoded_mtproxy_secret_and_sni():
     body = function_body(identity_source, "EndpointId EndpointIdFromProxy(")
     key_body = function_body(identity_source, "QString EndpointKey(")
 
-    assert "QString originalHost;" in data_header
-    assert "struct CanonicalProxyEndpoint" in identity_header
-    assert "struct RouteEndpoint" in identity_header
+    assert "QString originalHost;" in runtime_data_header
+    assert "struct CanonicalProxyEndpoint" in read(RUNTIME_PROXY_ENDPOINT_H)
+    assert "struct RouteEndpoint" in read(RUNTIME_PROXY_ENDPOINT_H)
+    assert "struct CanonicalProxyEndpoint" not in identity_header
+    assert '#include "mtproto/runtime/proxy_data.h"' in data_header
     assert "QString resolvedHost;" not in identity_header
     assert "result.originalHost = proxy.originalHost.isEmpty()" in direct_body
     assert "? proxy.host" in direct_body
@@ -157,16 +164,17 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
 
     assert "MtProxy::EndpointId mtproxyEndpoint;" in header
-    assert "MtProxy::EndpointUse mtproxyUse" in header
+    assert "SessionProxyEndpointUse mtproxyUse" in header
     assert "_owner->_proxyPort->reportConnectTimeout(proxyAttempt(connection));" in timeout_body
     assert "MtProxy::FailureReason::TcpConnectTimeout" in adapter
     assert (
         "!attempt.endpoint.canonical.domainFromSecret.isEmpty()"
         in adapter)
     assert "_owner->_proxyPort->reportConnectionError(" in error_body
-    assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in error_body
+    assert "MtProxy::FailureReasonFromErrorCode(errorCode)" not in error_body
+    assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in adapter
     assert "_state.connection.get() == connection.get()" in error_body
-    assert "MtProxy::EndpointEmpty(_state.mtproxyEndpoint)" in error_body
+    assert "EmptySessionProxyEndpoint(_state.mtproxyEndpoint)" in error_body
     assert "_state.mtproxyEndpoint" in error_body
     assert "_state.mtproxyEndpoint = i->mtproxyEndpoint;" in connected_body
     assert "_state.mtproxyUse = i->mtproxyUse;" in connected_body
@@ -220,6 +228,9 @@ def test_relay_success_shadows_older_attempt_failures():
     tls_packet = function_body(tls_records, "bool TlsSocket::checkNextPacket()")
     session_connected = function_body(session, "void SessionTransport::onConnected(")
     handle_received = function_body(session, "void SessionMessageHandler::handleReceived()")
+    note_payload = function_body(
+        session,
+        "void SessionTransport::noteMtprotoPayloadReceived()")
     append_body = function_body(
         session,
         "bool SessionTransport::appendTestConnection(")
@@ -259,7 +270,7 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "ConnectionStartContext context = {}) override;" in resolving_h
     assert "_mtproxyAttemptStartedAt" in tcp_h
     assert "_mtproxyAttemptStartedAt" in tls_h
-    assert "AbstractSocket::Create(" in tcp_connect
+    assert "CreateProxyAwareSocket(" in tcp_connect
     assert "_mtproxyAttemptStartedAt" in tcp_connect
     assert "_mtproxyAttempt = context.mtproxyAttempt;" in resolving
     assert ".mtproxyAttempt = _mtproxyAttempt" in resolving
@@ -284,8 +295,9 @@ def test_relay_success_shadows_older_attempt_failures():
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_packet
     assert ".attempt = _state.mtproxyAttempt" in session
     assert ".attemptStartedAt = _state.mtproxyAttemptStartedAt" in session
-    assert "_owner->_proxyPort->reportFirstMtprotoPayload(" in handle_received
-    assert "currentProxyAttempt()" in handle_received
+    assert "_owner->_transport.noteMtprotoPayloadReceived();" in handle_received
+    assert "_owner->_proxyPort->reportFirstMtprotoPayload(" in note_payload
+    assert "currentProxyAttempt()" in note_payload
     assert "_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;" in (
         session_connected)
 
@@ -446,15 +458,15 @@ def test_session_does_not_punish_remote_closed_after_usable_success():
     error_body = function_body(source, "void SessionTransport::onError(")
     active_body = error_body.split("_state.connection.get() == connection.get()")[1]
 
-    assert "const auto snapshot =" in active_body
-    assert "_owner->_proxyPort->endpointSnapshot(" in active_body
+    assert "const auto snapshot =" not in active_body
+    assert "_owner->_proxyPort->endpointSnapshot(" not in active_body
     assert "_state.mtproxyEndpoint" in active_body
-    assert "MtProxy::FailureReason::AppDataRemoteClosed" in active_body
-    assert "snapshot.healthy" in active_body
-    assert "!snapshot.halfOpen" in active_body
     assert "_owner->_proxyPort->reportConnectionError(" in active_body
-    assert active_body.index("const auto snapshot =") < active_body.index(
-        "_owner->_proxyPort->reportConnectionError(")
+    assert "true);" in active_body
+    assert "MtProxy::FailureReason::AppDataRemoteClosed" in read(
+        PROXY_ADAPTER_CPP)
+    assert "snapshot.healthy" in read(PROXY_ADAPTER_CPP)
+    assert "!snapshot.halfOpen" in read(PROXY_ADAPTER_CPP)
 
 
 def test_tls_socket_reports_typed_terminal_reasons():
@@ -516,8 +528,12 @@ def test_tls_socket_uses_endpoint_health_key_for_profile_rotation():
     effective_body = function_body(source, "ProxyTlsProfile TlsSocket::effectiveTlsProfile() const")
     recipe_body = function_body(handshake, "void TlsSocket::applyAdaptiveRecipe()")
 
-    assert "const ProxyData &proxy," in abstract_header
-    assert "const auto networkProxy = ToNetworkProxy(proxy);" in abstract_source
+    socket_factory = read(SOURCE_DIR / "mtproto" / "proxy" / "socket_factory.cpp")
+
+    assert "const ProxyData &proxy," not in abstract_header
+    assert "const auto networkProxy = ToNetworkProxy(proxy);" in socket_factory
+    assert "std::make_unique<TlsSocket>" in socket_factory
+    assert "std::make_unique<WssSocket>" in socket_factory
     assert "const ProxyData &proxy," in header
     assert "_endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))" in source
     assert "_endpointKey(MtProxy::EndpointKey(_endpointId.canonical))" in source

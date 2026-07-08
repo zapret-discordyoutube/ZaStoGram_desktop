@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/dc_id.h"
-#include "mtproto/proxy/status.h"
+#include "mtproto/runtime/connection_status_types.h"
 
 namespace MTP {
 

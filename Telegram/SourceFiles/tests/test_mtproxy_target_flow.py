@@ -53,9 +53,11 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
         "if (settings == ProxyData::Settings::Enabled", 1)[0]
 
     assert "EffectiveProxyStealthOptions(" in refresh
-    assert "ProxyCapabilityCache::Instance().lookup(proxy)" in mtproxy_branch
+    assert "runtime->proxyServices().capabilities().lookup(proxy)" in (
+        mtproxy_branch)
     assert mtproxy_branch.index("result.transport = ProxyTransport::Tcp;") < (
-        mtproxy_branch.index("ProxyCapabilityCache::Instance().lookup(proxy)"))
+        mtproxy_branch.index(
+            "runtime->proxyServices().capabilities().lookup(proxy)"))
     assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
     assert "ProxyTlsProfile::ChromeModern" in policy
     assert "capability.lastGoodProfile" in mtproxy_branch
@@ -69,13 +71,17 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
 
 def test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session():
     session = read_session_private_sources()
+    adapter = (PROXY_DIR / "session_proxy_adapter.cpp").read_text(
+        encoding="utf-8")
     append = function_body(session, "bool SessionTransport::appendTestConnection(")
+    broker_request = function_body(adapter, "ConnectionRequest ToBrokerRequest(")
     mtproxy_part = append.split("if (mtproxy) {", 1)[1]
 
-    assert "MtProxy::EndpointIdFromProxy(" in append
-    assert append.index("MtProxy::EndpointIdFromProxy(") < (
-        append.index("_owner->_proxyPort->requestConnection({"))
-    assert ".endpoint = mtproxyEndpoint" in mtproxy_part
+    assert "MtProxy::EndpointIdFromProxy(" not in append
+    assert "MtProxy::EndpointIdFromProxy(" in broker_request
+    assert ".address = ip" in mtproxy_part
+    assert ".port = port" in mtproxy_part
+    assert ".endpoint = std::move(endpoint)" in broker_request
     assert ".proxy = proxy" in mtproxy_part
     assert ".stealth = stealth" in mtproxy_part
     assert ".start = [=](SessionProxyStart start)" in mtproxy_part
@@ -101,7 +107,8 @@ def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
     assert "ConnectionPointer::New<ResolvingConnection>" in abstract
     assert "_runtime->proxyServices().dnsResolver().request(" in constructor
     assert "domainResolved(" in constructor
-    assert "ProxyCapabilityCache::Instance().lookup(_proxy)" in route_order
+    assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in (
+        route_order)
     assert route_order.index("capability.goodRoutes") < (
         route_order.index("for (auto index = 0; index != int(_proxy.resolvedIPs.size())"))
     assert "MtProxy::RouteEndpointFromAddress(" in route_order
@@ -189,7 +196,8 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
         " && FailureNeedsRecipeEscalation(report.reason)) {") in failure
     assert "cooldown = std::min(cooldown, ThrottledRetryCooldown());" in failure
     assert "NoteCapabilityMtproxySuccess(" in success
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities
+    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
+        capabilities)
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "NoteRouteSuccess(*_storage, state, report.endpoint.route);" in success
@@ -221,7 +229,8 @@ def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
     assert 'u"server_hello_ok_no_appdata"_q' not in recipe_gate
     assert 'input.lastDiagnostic == u"server_hello_ok_no_appdata"_q' not in recipe
     assert "proxy.type != ProxyData::Type::Socks5" in wss_allowed
-    assert "!ProxyCapabilityCache::Instance().wssAllowed(proxy)" in wss_allowed
+    assert "!runtime->proxyServices().capabilities().wssAllowed(proxy)" in (
+        wss_allowed)
     assert "proxy.type == ProxyData::Type::None" in wss_recommend
     assert "ProxyConnectionStatusTone::ErrorDns" in status
     assert "ProxyConnectionStatusTone::ErrorTimeout" in status

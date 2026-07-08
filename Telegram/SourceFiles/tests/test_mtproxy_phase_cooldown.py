@@ -4,6 +4,7 @@ from session_private_sources import read_session_private_sources
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+RUNTIME_DIR = SOURCE_DIR / "mtproto" / "runtime"
 ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
@@ -18,6 +19,8 @@ DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+PROXY_ENDPOINT_H = RUNTIME_DIR / "proxy_endpoint.h"
+CONNECTION_STATUS_TYPES_H = RUNTIME_DIR / "connection_status_types.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
 CONNECTING_WIDGET = SOURCE_DIR / "window" / "window_connecting_widget.cpp"
 
@@ -42,11 +45,11 @@ def function_body(source, signature):
 
 
 def test_failure_reason_enum_is_phase_specific():
-    header = read(ENDPOINT_IDENTITY_H)
+    header = read(PROXY_ENDPOINT_H)
 
     assert "enum class FailureReason" in header
     assert header.index("enum class FailureReason") < (
-        header.index("ToLegacyDiagnostic("))
+        header.index("struct CanonicalProxyEndpoint"))
     for reason in (
         "DnsFailed",
         "TcpConnectTimeout",
@@ -180,7 +183,8 @@ def test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile():
         "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
     assert "return false;" in no_appdata_rotation_case.split("}", 1)[0]
 
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in capabilities
+    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
+        capabilities)
     assert "report.reason != FailureReason::ServerHelloOkNoAppData" in report_failure
 
     downgrade_at = report_failure.index(
@@ -212,6 +216,7 @@ def test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile():
 
 def test_logs_and_proxy_status_use_phase_specific_names():
     status_h = read(STATUS_H)
+    status_types = read(CONNECTION_STATUS_TYPES_H)
     status_cpp = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
     widget = read(CONNECTING_WIDGET)
@@ -227,7 +232,7 @@ def test_logs_and_proxy_status_use_phase_specific_names():
         "ProxyProtocolBadResponse",
     ):
         assert f"ProxyMtproxyTerminalReason::{reason}" in status_cpp
-        assert reason in status_h
+        assert reason in status_types
 
     for diagnostic in (
         "dns_failed",
@@ -249,6 +254,7 @@ def test_logs_and_proxy_status_use_phase_specific_names():
         "MtproxyProxyProtocolBadResponse",
     ):
         assert f"ProxyConnectionStatusKind::{kind}" in status_cpp
+        assert kind in status_h
         assert kind in widget
 
     for key in (

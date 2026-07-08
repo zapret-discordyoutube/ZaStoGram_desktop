@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/wss/socket.h"
 #include "mtproto/runtime/runtime_environment.h"
 
@@ -111,6 +112,7 @@ void LogTransportFallback(
 } // namespace
 
 bool ProxyWssAllowed(
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		ProxyData::Settings settings) {
 	if (settings != ProxyData::Settings::Enabled
@@ -119,37 +121,35 @@ bool ProxyWssAllowed(
 	} else if (proxy.type != ProxyData::Type::Socks5) {
 		return false;
 	} else if (IsLocalProxyEndpoint(proxy)
-		|| !ProxyCapabilityCache::Instance().wssAllowed(proxy)) {
+		|| !runtime->proxyServices().capabilities().wssAllowed(proxy)) {
 		return false;
 	}
 	return true;
 }
 
+bool ProxyWssAllowed(
+		const ProxyData &proxy,
+		ProxyData::Settings settings) {
+	return ProxyWssAllowed(DefaultRuntimeEnvironment(), proxy, settings);
+}
+
 void NoteProxyWssRemoteClosed(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy) {
-	(void)runtime;
 	if (!proxy) {
 		return;
 	}
-	ProxyCapabilityCache::Instance().noteWssRemoteClosed(
+	runtime->proxyServices().capabilities().noteWssRemoteClosed(
 		proxy,
 		kWssRemoteClosedTtl);
 }
 
 ProxyTransport EffectiveProxyTransport(
-		const ProxyData &proxy,
-		ProxyData::Settings settings,
-		ProxyTransport saved) {
-	return ProxyWssAllowed(proxy, settings) ? saved : ProxyTransport::Tcp;
-}
-
-ProxyTransport EffectiveProxyTransport(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		ProxyData::Settings settings,
 		ProxyTransport saved) {
-	const auto effective = ProxyWssAllowed(proxy, settings)
+	const auto effective = ProxyWssAllowed(runtime, proxy, settings)
 		? saved
 		: ProxyTransport::Tcp;
 	if (saved == ProxyTransport::Wss && effective != saved) {
@@ -163,37 +163,15 @@ ProxyTransport EffectiveProxyTransport(
 	return effective;
 }
 
-ProxyStealthOptions EffectiveProxyStealthOptions(
+ProxyTransport EffectiveProxyTransport(
 		const ProxyData &proxy,
 		ProxyData::Settings settings,
-		ProxyStealthOptions saved) {
-	auto result = saved;
-	result.transport = EffectiveProxyTransport(
+		ProxyTransport saved) {
+	return EffectiveProxyTransport(
+		DefaultRuntimeEnvironment(),
 		proxy,
 		settings,
-		result.transport);
-	if (settings == ProxyData::Settings::Enabled
-		&& proxy.type == ProxyData::Type::Mtproto) {
-		result.transport = ProxyTransport::Tcp;
-		const auto capability = ProxyCapabilityCache::Instance().lookup(proxy);
-		if (capability.lastGoodTransport
-				== ProxyCapabilityTransport::MtproxyFakeTlsTcp
-			&& capability.relayProven
-			&& capability.lastGoodRecipeLevel == 0
-			&& !capability.autoRotateAllowed
-			&& capability.lastGoodProfile != ProxyTlsProfile::Auto) {
-			return BoringMtproxyStealthOptions(
-				std::move(result),
-				capability.lastGoodProfile);
-		}
-		return BoringMtproxyStealthOptions(std::move(result));
-	}
-	if (settings == ProxyData::Settings::Enabled
-		&& (IsLocalProxyEndpoint(proxy)
-			|| !ProxyWssAllowed(proxy, settings))) {
-		return CompatStrictProxyStealthOptions(std::move(result));
-	}
-	return result;
+		saved);
 }
 
 ProxyStealthOptions EffectiveProxyStealthOptions(
@@ -210,7 +188,7 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 	if (settings == ProxyData::Settings::Enabled
 		&& proxy.type == ProxyData::Type::Mtproto) {
 		result.transport = ProxyTransport::Tcp;
-		const auto capability = ProxyCapabilityCache::Instance().lookup(proxy);
+		const auto capability = runtime->proxyServices().capabilities().lookup(proxy);
 		if (capability.lastGoodTransport
 				== ProxyCapabilityTransport::MtproxyFakeTlsTcp
 			&& capability.relayProven
@@ -225,10 +203,21 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 	}
 	if (settings == ProxyData::Settings::Enabled
 		&& (IsLocalProxyEndpoint(proxy)
-			|| !ProxyWssAllowed(proxy, settings))) {
+			|| !ProxyWssAllowed(runtime, proxy, settings))) {
 		return CompatStrictProxyStealthOptions(std::move(result));
 	}
 	return result;
+}
+
+ProxyStealthOptions EffectiveProxyStealthOptions(
+		const ProxyData &proxy,
+		ProxyData::Settings settings,
+		ProxyStealthOptions saved) {
+	return EffectiveProxyStealthOptions(
+		DefaultRuntimeEnvironment(),
+		proxy,
+		settings,
+		std::move(saved));
 }
 
 WssDcCoverage WssDcCoverageForDc(

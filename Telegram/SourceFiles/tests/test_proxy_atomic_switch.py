@@ -14,6 +14,7 @@ BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
+STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 
@@ -71,6 +72,7 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     append_body = function_body(source, "bool SessionTransport::appendTestConnection(")
     connect_body = function_body(source, "void SessionTransport::connectToServer(")
     received_body = function_body(source, "void SessionMessageHandler::handleReceived()")
+    payload_body = function_body(source, "void SessionTransport::noteMtprotoPayloadReceived()")
     disconnected_body = function_body(source, "void SessionTransport::onDisconnected(")
     error_body = function_body(source, "void SessionTransport::onError(")
 
@@ -91,9 +93,12 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     assert "_state.proxyMigrationScout" in append_body
     assert "_state.brokerTickets.empty()" in append_body
     assert ".proxyGeneration = _state.proxyGeneration" in append_body
-    assert "_owner->_delegate->proxyMigrationSucceeded(" in received_body
-    assert "_owner->_transport._state.proxyGeneration" in received_body
-    assert "_owner->_transport._state.proxyMigrationScout = false;" in received_body
+    assert "_owner->_transport.noteMtprotoPayloadReceived();" in received_body
+    assert "_owner->_transport._state" not in received_body
+    assert "_state.proxyMigrationScout = false;" in payload_body
+    assert "const auto generation = _state.proxyGeneration;" in payload_body
+    assert "InvokeQueued(_owner->_instance, [" in payload_body
+    assert "delegate->proxyMigrationSucceeded(generation);" in payload_body
     assert "_state.proxyMigrationSuspended = false;" in release_body
     assert "connectToServer();" in release_body
     assert "found == end(_state.testConnections)" in disconnected_body
@@ -128,12 +133,14 @@ def test_broker_cancels_old_proxy_generation_tickets():
 
 def test_status_reducer_shadows_old_proxy_generation_facts():
     status_h = read(STATUS_H)
+    status_types_h = read(STATUS_TYPES_H)
     status = read(STATUS_CPP)
     control = read(CONTROL_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
 
-    assert "uint64 proxyGeneration = 0;" in status_h
-    assert "proxyGeneration == other.proxyGeneration" in status_h
+    assert '#include "mtproto/runtime/connection_status_types.h"' in status_h
+    assert "uint64 proxyGeneration = 0;" in status_types_h
+    assert "proxyGeneration == other.proxyGeneration" in status_types_h
     assert "update.proxyGeneration != current.proxyGeneration" in control
     assert "update.proxyGeneration > current.proxyGeneration" in control
     assert "!update.proxyGeneration" in control

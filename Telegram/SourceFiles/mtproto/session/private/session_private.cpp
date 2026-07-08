@@ -34,11 +34,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 namespace details {
-namespace {
-
-constexpr auto kSentContainerLives = 600 * crl::time(1000);
-
-} // namespace
 
 SessionPrivate::SessionState::SessionState(
 		std::shared_ptr<SessionData> data)
@@ -65,7 +60,7 @@ SessionPrivate::SessionPrivate(
 , _realDcType(_delegate->dcOptions().dcType(_shiftedDcId))
 , _currentDcType(_realDcType)
 , _state(DisconnectedState)
-, _transport(this, _runtime)
+, _transport(this, _runtime, thread)
 , _messageHandler(this)
 , _sessionState(std::move(data)) {
 	Expects(_shiftedDcId != 0);
@@ -73,7 +68,7 @@ SessionPrivate::SessionPrivate(
 	moveToThread(thread);
 
 	InvokeQueued(this, [=] {
-		_transport._timing.clearOldContainersTimer.callEach(kSentContainerLives);
+		_transport.startContainerCleanup();
 		_transport.start();
 	});
 }
@@ -82,8 +77,7 @@ SessionPrivate::~SessionPrivate() {
 	releaseKeyCreationOnFail();
 	doDisconnect();
 
-	Expects(!_transport._state.connection);
-	Expects(_transport._state.testConnections.empty());
+	Expects(_transport.empty());
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {
@@ -163,7 +157,7 @@ void SessionPrivate::logMtprotoEvent(
 	_proxyPort->logEvent(
 		_runtime,
 		proxy,
-		_transport._state.mtproxyAttempt,
+		_transport.currentProxyAttempt().attempt,
 		mtprotoLogDc(),
 		phase,
 		severity,
@@ -234,10 +228,7 @@ bool SessionPrivate::setState(int state, int ifState) {
 	}
 	_state = state;
 	if (state < 0) {
-		_transport._timing.retryTimeout = -state;
-		_transport._timing.retryTimer.callOnce(_transport._timing.retryTimeout);
-		_transport._timing.retryWillFinish = crl::now()
-			+ _transport._timing.retryTimeout;
+		_transport.scheduleRetryTimeout(-state);
 	}
 	lock.unlock();
 

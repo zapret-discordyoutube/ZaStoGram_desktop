@@ -1496,6 +1496,9 @@ PRIVATE
     mtproto/transport/connection_http.h
     mtproto/runtime/connection_status.cpp
     mtproto/runtime/connection_status.h
+    mtproto/runtime/connection_status_types.h
+    mtproto/runtime/proxy_endpoint.h
+    mtproto/runtime/proxy_data.h
     mtproto/runtime/runtime_environment.cpp
     mtproto/runtime/runtime_environment.h
     mtproto/proxy/connection_broker.cpp
@@ -1518,6 +1521,8 @@ PRIVATE
     mtproto/proxy/resolving_connection.h
     mtproto/proxy/session_proxy_adapter.cpp
     mtproto/proxy/session_proxy_adapter.h
+    mtproto/proxy/socket_factory.cpp
+    mtproto/proxy/socket_factory.h
     mtproto/transport/connection_tcp.cpp
     mtproto/transport/connection_tcp.h
     mtproto/core_types.h
@@ -1582,6 +1587,7 @@ PRIVATE
     mtproto/session/options.h
     mtproto/session/private/transport.cpp
     mtproto/session/private/transport.h
+    mtproto/session/private/timings.h
     mtproto/session/private/auth_factory.cpp
     mtproto/session/private/auth_factory.h
     mtproto/session/private/connection_factory.cpp

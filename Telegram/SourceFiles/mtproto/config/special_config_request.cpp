@@ -15,14 +15,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/openssl_help.h"
 #include "base/call_delayed.h"
 
-#include <QtCore/QJsonDocument>
-#include <QtCore/QJsonArray>
-#include <QtCore/QJsonObject>
+#include <QtNetwork/QDnsLookup>
 
 namespace MTP::details {
 namespace {
 
 constexpr auto kSendNextTimeout = crl::time(800);
+constexpr auto kRequestTransferTimeout = crl::time(6000);
+constexpr auto kSimpleConfigBase64Size = 344;
+constexpr auto kSimpleConfigBlockSize = 256;
 
 constexpr auto kPublicKey = "\
 -----BEGIN RSA PUBLIC KEY-----\n\
@@ -34,33 +35,6 @@ fDK/NWcvGqa0w/nriMD6mDjKOryamw0OP9QuYgMN0C9xMW9y8SmP4h92OAWodTYg\n\
 Y1hZCxdv6cs5UnW9+PWvS+WIbkh+GaWYxwIDAQAB\n\
 -----END RSA PUBLIC KEY-----\
 "_cs;
-
-const auto kRemoteProject = "peak-vista-421";
-const auto kFireProject = "reserve-5a846";
-const auto kConfigKey = "ipconfig";
-const auto kConfigSubKey = "v3";
-const auto kApiKey = "AIzaSyC2-kAkpDsroixRXw-sTw-Wfqo4NxjMwwM";
-const auto kAppId = "1:560508485281:web:4ee13a6af4e84d49e67ae0";
-
-QString ApiDomain(const QString &service) {
-	return service + ".googleapis.com";
-}
-
-QString GenerateInstanceId() {
-	auto fid = bytes::array<17>();
-	bytes::set_random(fid);
-	fid[0] = (bytes::type(0xF0) & fid[0]) | bytes::type(0x07);
-	return QString::fromLatin1(
-		QByteArray::fromRawData(
-			reinterpret_cast<const char*>(fid.data()),
-			fid.size()
-		).toBase64(QByteArray::Base64UrlEncoding).mid(0, 22));
-}
-
-QString InstanceId() {
-	static const auto result = GenerateInstanceId();
-	return result;
-}
 
 bool CheckPhoneByPrefixesRules(const QString &phone, const QString &rules) {
 	static const auto RegExp = QRegularExpression("[^0-9]");
@@ -88,42 +62,24 @@ QByteArray ConcatenateDnsTxtFields(const std::vector<DnsEntry> &response) {
 	return QStringList(entries.values()).join(QString()).toLatin1();
 }
 
-QByteArray ParseRemoteConfigResponse(const QByteArray &bytes) {
-	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
-	const auto document = QJsonDocument::fromJson(bytes, &error);
-	if (error.error != QJsonParseError::NoError) {
-		LOG(("Config Error: Failed to parse fire response JSON, error: %1"
-			).arg(error.errorString()));
-		return {};
-	} else if (!document.isObject()) {
-		LOG(("Config Error: Not an object received in fire response JSON."));
+[[nodiscard]] bytes::vector DecryptSimpleConfigBlock(
+		bytes::const_span encrypted) {
+	if (encrypted.size() != kSimpleConfigBlockSize) {
+		LOG(("Config Error: Bad data size %1 required %2"
+			).arg(encrypted.size()
+			).arg(kSimpleConfigBlockSize));
 		return {};
 	}
-	return document.object().value(
-		"entries"
-	).toObject().value(
-		u"%1%2"_q.arg(kConfigKey, kConfigSubKey)
-	).toString().toLatin1();
-}
 
-QByteArray ParseFireStoreResponse(const QByteArray &bytes) {
-	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
-	const auto document = QJsonDocument::fromJson(bytes, &error);
-	if (error.error != QJsonParseError::NoError) {
-		LOG(("Config Error: Failed to parse fire response JSON, error: %1"
-			).arg(error.errorString()));
-		return {};
-	} else if (!document.isObject()) {
-		LOG(("Config Error: Not an object received in fire response JSON."));
+	auto publicKey = details::RSAPublicKey(bytes::make_span(kPublicKey));
+	auto decrypted = publicKey.decrypt(encrypted);
+	if (decrypted.size() != kSimpleConfigBlockSize) {
+		LOG(("Config Error: Bad decrypted data size %1 required %2"
+			).arg(decrypted.size()
+			).arg(kSimpleConfigBlockSize));
 		return {};
 	}
-	return document.object().value(
-		"fields"
-	).toObject().value(
-		"data"
-	).toObject().value(
-		"stringValue"
-	).toString().toLatin1();
+	return decrypted;
 }
 
 [[nodiscard]] QDateTime ParseHttpDate(const QString &date) {
@@ -189,44 +145,15 @@ SpecialConfigRequest::SpecialConfigRequest(
 , _domainString(domainString)
 , _phone(phone) {
 	Expects((_callback == nullptr) != (_timeDoneCallback == nullptr));
+	Q_UNUSED(isTestMode);
 
 	_manager.setProxy(QNetworkProxy::NoProxy);
 
-	std::random_device rd;
-	const auto shuffle = [&](int from, int till) {
-		Expects(till > from);
-
-		ranges::shuffle(
-			begin(_attempts) + from,
-			begin(_attempts) + till,
-			std::mt19937(rd()));
-	};
-
-	_attempts = {};
-	_attempts.push_back({ Type::Google, "dns.google.com" });
-	_attempts.push_back({ Type::Mozilla, "mozilla.cloudflare-dns.com" });
-	_attempts.push_back({ Type::RemoteConfig, "firebaseremoteconfig" });
-	if (!_timeDoneCallback) {
-		_attempts.push_back({ Type::FireStore, "firestore" });
-		for (const auto &domain : DnsDomains()) {
-			_attempts.push_back({ Type::FireStore, domain, "firestore" });
-		}
+	if (_timeDoneCallback) {
+		startWebRequests();
+	} else {
+		startSystemTxtLookup();
 	}
-
-	shuffle(0, 2);
-	if (!_timeDoneCallback) {
-		shuffle(_attempts.size() - (int(DnsDomains().size()) + 1), _attempts.size());
-	}
-	if (isTestMode) {
-		_attempts.erase(ranges::remove_if(_attempts, [](
-				const Attempt &attempt) {
-			return (attempt.type != Type::Google)
-				&& (attempt.type != Type::Mozilla);
-		}), _attempts.end());
-	}
-	ranges::reverse(_attempts); // We go from last to first.
-
-	sendNextRequest();
 }
 
 SpecialConfigRequest::SpecialConfigRequest(
@@ -258,6 +185,58 @@ SpecialConfigRequest::SpecialConfigRequest(
 	QString()) {
 }
 
+void SpecialConfigRequest::startSystemTxtLookup() {
+	_systemLookup = std::make_unique<QDnsLookup>(
+		QDnsLookup::TXT,
+		_domainString,
+		this);
+	connect(_systemLookup.get(), &QDnsLookup::finished, this, [=] {
+		systemTxtLookupFinished();
+	});
+	_systemLookup->lookup();
+}
+
+void SpecialConfigRequest::systemTxtLookupFinished() {
+	const auto lookup = base::take(_systemLookup);
+	if (!lookup) {
+		return;
+	}
+	auto entries = std::vector<DnsEntry>();
+	if (lookup->error() == QDnsLookup::NoError) {
+		for (const auto &record : lookup->textRecords()) {
+			for (const auto &value : record.values()) {
+				entries.push_back({
+					QString::fromUtf8(value),
+					crl::time(record.timeToLive())
+				});
+			}
+		}
+	} else {
+		DEBUG_LOG(("Config Error: System TXT lookup failed for %1, error: %2"
+			).arg(_domainString
+			).arg(lookup->errorString()));
+	}
+	if (!entries.empty()
+		&& handleResponse(ConcatenateDnsTxtFields(entries))) {
+		return;
+	}
+	startWebRequests();
+}
+
+void SpecialConfigRequest::startWebRequests() {
+	auto attempts = std::vector<Attempt>();
+	auto providers = DohProviders();
+	std::random_device rd;
+	ranges::shuffle(providers, std::mt19937(rd()));
+	for (const auto &provider : providers) {
+		attempts.push_back({ Type::Doh, provider });
+	}
+	ranges::reverse(attempts); // We go from last to first.
+
+	_attempts = std::move(attempts);
+	sendNextRequest();
+}
+
 void SpecialConfigRequest::sendNextRequest() {
 	Expects(!_attempts.empty());
 
@@ -275,59 +254,25 @@ void SpecialConfigRequest::performRequest(const Attempt &attempt) {
 	const auto type = attempt.type;
 	auto url = QUrl();
 	url.setScheme(u"https"_q);
+	url.setHost(attempt.provider.host);
+	url.setPath(attempt.provider.path);
 	auto request = QNetworkRequest();
-	auto payload = QByteArray();
+	auto payload = BuildDnsQuery(_domainString, 16);
 	switch (type) {
-	case Type::Mozilla: {
-		url.setHost(attempt.data);
-		url.setPath(u"/dns-query"_q);
-		url.setQuery(u"name=%1&type=16&random_padding=%2"_q.arg(
-			_domainString,
-			GenerateDnsRandomPadding()));
-		request.setRawHeader("accept", "application/dns-json");
-	} break;
-	case Type::Google: {
-		url.setHost(attempt.data);
-		url.setPath(u"/resolve"_q);
-		url.setQuery(u"name=%1&type=ANY&random_padding=%2"_q.arg(
-			_domainString,
-			GenerateDnsRandomPadding()));
-		if (!attempt.host.isEmpty()) {
-			const auto host = attempt.host + ".google.com";
-			request.setRawHeader("Host", host.toLatin1());
-		}
-	} break;
-	case Type::RemoteConfig: {
-		url.setHost(ApiDomain(attempt.data));
-		url.setPath((u"/v1/projects/%1/namespaces/firebase:fetch"_q
-		).arg(kRemoteProject));
-		url.setQuery(u"key=%1"_q.arg(kApiKey));
-		payload = u"{\"app_id\":\"%1\",\"app_instance_id\":\"%2\"}"_q.arg(
-			kAppId,
-			InstanceId()).toLatin1();
-		request.setRawHeader("Content-Type", "application/json");
-	} break;
-	case Type::FireStore: {
-		url.setHost(attempt.host.isEmpty()
-			? ApiDomain(attempt.data)
-			: attempt.data);
-		url.setPath((u"/v1/projects/%1/databases/(default)/documents/%2/%3"_q
-		).arg(
-			kFireProject,
-			kConfigKey,
-			kConfigSubKey));
-		if (!attempt.host.isEmpty()) {
-			const auto host = ApiDomain(attempt.host);
-			request.setRawHeader("Host", host.toLatin1());
-		}
+	case Type::Doh: {
+		request.setRawHeader("accept", "application/dns-message");
+		request.setRawHeader("Content-Type", "application/dns-message");
 	} break;
 	default: Unexpected("Type in SpecialConfigRequest::performRequest.");
 	}
+	request.setTransferTimeout(int(kRequestTransferTimeout));
+	if (payload.isEmpty()) {
+		return;
+	}
 	request.setUrl(url);
 	request.setRawHeader("User-Agent", DnsUserAgent());
-	const auto reply = _requests.emplace_back(payload.isEmpty()
-		? _manager.get(request)
-		: _manager.post(request, payload)
+	const auto reply = _requests.emplace_back(
+		_manager.post(request, payload)
 	).reply;
 	connect(reply, &QNetworkReply::finished, this, [=] {
 		requestFinished(type, reply);
@@ -365,24 +310,20 @@ void SpecialConfigRequest::handleHeaderUnixtime(
 void SpecialConfigRequest::requestFinished(
 		Type type,
 		not_null<QNetworkReply*> reply) {
-	handleHeaderUnixtime(reply);
 	const auto result = finalizeRequest(reply);
+	if (_timeDoneCallback) {
+		handleHeaderUnixtime(reply);
+		return;
+	}
 	if (!_callback || result.isEmpty()) {
 		return;
 	}
 
 	switch (type) {
-	case Type::Mozilla:
-	case Type::Google: {
+	case Type::Doh: {
 		constexpr auto kTypeRestriction = 16; // TXT
 		handleResponse(ConcatenateDnsTxtFields(
 			ParseDnsResponse(result, kTypeRestriction)));
-	} break;
-	case Type::RemoteConfig: {
-		handleResponse(ParseRemoteConfigResponse(result));
-	} break;
-	case Type::FireStore: {
-		handleResponse(ParseFireStoreResponse(result));
 	} break;
 	default: Unexpected("Type in SpecialConfigRequest::requestFinished.");
 	}
@@ -417,20 +358,17 @@ bool SpecialConfigRequest::decryptSimpleConfig(const QByteArray &bytes) {
 		cleanBytes.remove(removeFrom - cleanBytes.begin(), cleanBytes.end() - removeFrom);
 	}
 
-	constexpr auto kGoodSizeBase64 = 344;
-	if (cleanBytes.size() != kGoodSizeBase64) {
-		LOG(("Config Error: Bad data size %1 required %2").arg(cleanBytes.size()).arg(kGoodSizeBase64));
+	if (cleanBytes.size() != kSimpleConfigBase64Size) {
+		LOG(("Config Error: Bad data size %1 required %2"
+			).arg(cleanBytes.size()
+			).arg(kSimpleConfigBase64Size));
 		return false;
 	}
-	constexpr auto kGoodSizeData = 256;
 	auto decodedBytes = QByteArray::fromBase64(cleanBytes, QByteArray::Base64Encoding);
-	if (decodedBytes.size() != kGoodSizeData) {
-		LOG(("Config Error: Bad data size %1 required %2").arg(decodedBytes.size()).arg(kGoodSizeData));
+	auto decrypted = DecryptSimpleConfigBlock(bytes::make_span(decodedBytes));
+	if (decrypted.empty()) {
 		return false;
 	}
-
-	auto publicKey = details::RSAPublicKey(bytes::make_span(kPublicKey));
-	auto decrypted = publicKey.decrypt(bytes::make_span(decodedBytes));
 	auto decryptedBytes = gsl::make_span(decrypted);
 
 	auto aesEncryptedBytes = decryptedBytes.subspan(CTRState::KeySize);
@@ -470,24 +408,24 @@ bool SpecialConfigRequest::decryptSimpleConfig(const QByteArray &bytes) {
 	return true;
 }
 
-void SpecialConfigRequest::handleResponse(const QByteArray &bytes) {
+bool SpecialConfigRequest::handleResponse(const QByteArray &bytes) {
 	if (!decryptSimpleConfig(bytes)) {
-		return;
+		return false;
 	}
 	Assert(_simpleConfig.type() == mtpc_help_configSimple);
 	const auto &config = _simpleConfig.c_help_configSimple();
-	const auto now = base::unixtime::http_now();
+	const auto now = base::unixtime::now();
 	if (now > config.vexpires().v) {
 		LOG(("Config Error: "
 			"Bad date frame for simple config: %1-%2, our time is %3."
 			).arg(config.vdate().v
 			).arg(config.vexpires().v
 			).arg(now));
-		return;
+		return false;
 	}
 	if (config.vrules().v.empty()) {
 		LOG(("Config Error: Empty simple config received."));
-		return;
+		return false;
 	}
 	for (const auto &rule : config.vrules().v) {
 		Assert(rule.type() == mtpc_accessPointRule);
@@ -532,6 +470,7 @@ void SpecialConfigRequest::handleResponse(const QByteArray &bytes) {
 		}
 	}
 	_callback(0, std::string(), 0, {});
+	return true;
 }
 
 } // namespace MTP::details

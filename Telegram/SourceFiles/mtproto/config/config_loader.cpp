@@ -7,12 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/config/config_loader.h"
 
+#include "base/invoke_queued.h"
 #include "base/random.h"
-#include "mtproto/dc_id.h"
-#include "mtproto/config/special_config_request.h"
-#include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/config/mtproto_config.h"
+#include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/config/special_config_request.h"
 #include "mtproto/instance/mtp_instance.h"
+#include "mtproto/dc_id.h"
 
 namespace MTP {
 namespace details {
@@ -137,6 +138,8 @@ void ConfigLoader::setPhone(const QString &phone) {
 
 void ConfigLoader::createSpecialLoader() {
 	const auto testMode = _instance->isTestMode();
+	const auto instance = _instance.get();
+	const auto weak = base::make_weak(this);
 	_triedSpecialEndpoints.clear();
 	_specialLoader = std::make_unique<SpecialConfigRequest>([=](
 			DcId dcId,
@@ -144,9 +147,13 @@ void ConfigLoader::createSpecialLoader() {
 			int port,
 			bytes::const_span secret) {
 		if (ip.empty()) {
-			_specialLoader = nullptr;
-		} else {
-			addSpecialEndpoint(dcId, ip, port, secret);
+			InvokeQueued(instance, [=] {
+				if (const auto strong = weak.get()) {
+					strong->_specialLoader = nullptr;
+				}
+			});
+		} else if (const auto strong = weak.get()) {
+			strong->addSpecialEndpoint(dcId, ip, port, secret);
 		}
 	}, testMode, _instance->configValues().txtDomainString, _phone);
 }

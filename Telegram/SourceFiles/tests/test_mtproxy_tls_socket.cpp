@@ -40,7 +40,7 @@ public:
 				timer.callOnce(delay);
 			},
 			.makeTimer = [this](
-					not_null<QObject*>,
+					not_null<QThread*>,
 					Fn<void()> callback) {
 				return makeTimer(std::move(callback));
 			},
@@ -182,9 +182,9 @@ private:
 [[nodiscard]] bool ScenarioTimeoutBeforeServerHello() {
 	auto async = ScriptedAsync();
 	auto fired = false;
-	auto context = QObject();
+	const auto thread = not_null{ QThread::currentThread() };
 	auto timer = async.gateway().makeTimer(
-		not_null{ &context },
+		thread,
 		[&] { fired = true; });
 	timer.callOnce(10);
 	async.advance(9);
@@ -216,9 +216,9 @@ private:
 [[nodiscard]] bool ScenarioReconnectCancelDropsStaleCallbacks() {
 	auto async = ScriptedAsync();
 	auto fired = false;
-	auto context = QObject();
+	const auto thread = not_null{ QThread::currentThread() };
 	auto timer = async.gateway().makeTimer(
-		not_null{ &context },
+		thread,
 		[&] { fired = true; });
 	timer.callOnce(10);
 	timer.cancel();

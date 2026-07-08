@@ -30,8 +30,43 @@ def test_system_dns_is_tried_before_doh():
     system_done = system_done.split("\n}\n")[0]
     assert "resolveByDnsOverHttps" in system_done
 
-    assert "dns.google.com" in source
-    assert "mozilla.cloudflare-dns.com" in source
+    assert "DohProviders()" in source
+
+
+def test_doh_fallback_uses_current_rfc8484_registry():
+    header = read(RESOLVER_H)
+    source = read(RESOLVER_CPP)
+
+    assert "struct DohProvider" in header
+    assert "[[nodiscard]] const std::vector<DohProvider> &DohProviders();" in header
+    assert "BuildDnsQuery(" in header
+    assert "ParseDnsResponse(" in header
+
+    assert "cloudflare-dns.com" in source
+    assert "dns.google" in source
+    assert "dns.quad9.net" in source
+    assert "dns.mullvad.net" in source
+
+    assert "application/dns-message" in source
+    assert "_manager.post(request, payload)" in source
+    assert "BuildDnsQuery(key.domain, key.ipv6 ? 28 : 1)" in source
+
+    assert "application/dns-json" not in source
+    assert "/resolve" not in source
+    assert "mozilla.cloudflare-dns.com" not in source
+
+
+def test_legacy_google_fronting_domains_are_removed():
+    header = read(RESOLVER_H)
+    source = read(RESOLVER_CPP)
+
+    assert "DnsDomains" not in header
+    assert "DnsDomains" not in source
+    assert '"google.com"' not in source
+    assert '"www.google.com"' not in source
+    assert '"google.ru"' not in source
+    assert '"www.google.ru"' not in source
+    assert 'setRawHeader("Host"' not in source
 
 
 def test_doh_failure_does_not_block_retries_forever():
@@ -66,6 +101,19 @@ def test_system_lookups_are_aborted_on_destruction():
     assert "QHostInfo::abortHostLookup" in source
 
 
+def test_type_restriction_checks_type_field_before_dereference():
+    source = read(RESOLVER_CPP)
+
+    type_block = source.split('const auto typeIt = object.find("type");')[1]
+    type_block = type_block.split('const auto dataIt = object.find("data");')[0]
+    end_check = type_block.find("typeIt == object.constEnd()")
+    dereference = type_block.find("(*typeIt)")
+
+    assert dereference != -1
+    assert end_check != -1
+    assert end_check < dereference
+
+
 def test_resolve_outcome_reaches_proxy_diagnostics():
     source = read(RESOLVING_CPP)
 
@@ -87,8 +135,11 @@ def test_cached_negative_dns_does_not_disable_mtproxy_child():
 
 if __name__ == "__main__":
     test_system_dns_is_tried_before_doh()
+    test_doh_fallback_uses_current_rfc8484_registry()
+    test_legacy_google_fronting_domains_are_removed()
     test_doh_failure_does_not_block_retries_forever()
     test_total_resolve_failure_is_reported_to_callback()
     test_system_lookups_are_aborted_on_destruction()
+    test_type_restriction_checks_type_field_before_dereference()
     test_resolve_outcome_reaches_proxy_diagnostics()
     test_cached_negative_dns_does_not_disable_mtproxy_child()

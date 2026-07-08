@@ -22,9 +22,6 @@ public:
 	void resendAll();
 
 private:
-	friend class SessionPrivate;
-	friend class SessionTransport;
-
 	enum class HandleResult {
 		Success,
 		Ignored,

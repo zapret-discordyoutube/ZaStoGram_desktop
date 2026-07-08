@@ -7,14 +7,25 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 
-namespace MTP::details::MtProxy {
+namespace MTP {
+
+class RuntimeEnvironment;
+
+namespace details::MtProxy {
 
 void NoteCapabilityMtproxyFailure(
+	not_null<RuntimeEnvironment*> runtime,
 	const EndpointId &endpoint,
 	const QString &diagnostic);
-void NoteCapabilityMtproxyRelayFailure(const CapabilityFailure &failure);
-void NoteCapabilityMtproxySuccess(const CapabilitySuccess &success);
+void NoteCapabilityMtproxyRelayFailure(
+	not_null<RuntimeEnvironment*> runtime,
+	const CapabilityFailure &failure);
+void NoteCapabilityMtproxySuccess(
+	not_null<RuntimeEnvironment*> runtime,
+	const CapabilitySuccess &success);
 
-} // namespace MTP::details::MtProxy
+} // namespace details::MtProxy
+} // namespace MTP

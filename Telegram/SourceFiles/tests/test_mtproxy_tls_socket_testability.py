@@ -68,7 +68,7 @@ def test_tls_socket_timers_use_runtime_async_gateway():
         ))
 
     assert "class RuntimeTimer final" in runtime_header
-    assert "Fn<RuntimeTimer(not_null<QObject*>, Fn<void()>)> makeTimer;" in (
+    assert "Fn<RuntimeTimer(not_null<QThread*>, Fn<void()>)> makeTimer;" in (
         runtime_header)
     assert ".makeTimer = [](" in runtime_source
     assert "std::make_shared<base::Timer>" in runtime_source
@@ -76,7 +76,7 @@ def test_tls_socket_timers_use_runtime_async_gateway():
     assert "RuntimeTimer _pacingTimer;" in socket_header
     assert "RuntimeTimer _clientHelloTimer;" in socket_header
     assert "RuntimeTimer _clientHelloFragmentTimer;" in socket_header
-    assert "runtime->async().makeTimer(" in socket_source
+    assert "runtime->async().makeTimer(thread," in socket_source
     assert ".setCallback(" not in socket_sources
 
 

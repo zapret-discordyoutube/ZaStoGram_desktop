@@ -86,7 +86,7 @@ bool TlsSocket::checkNextPacket() {
 					.attemptStartedAt = _mtproxyAttemptStartedAt,
 					.scope = MtProxy::SuccessScope::FakeTlsAppData,
 				});
-				NoteSyntheticPskDataPathSuccess(
+				_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(
 					MtProxy::EndpointKey(_endpointId.canonical),
 					domainFromSecret(),
 					_sentTlsProfile);

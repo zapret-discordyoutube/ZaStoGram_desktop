@@ -9,6 +9,63 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details {
 
+SessionProxyLease::Impl::~Impl() = default;
+
+SessionProxyLease::SessionProxyLease(std::unique_ptr<Impl> impl)
+: _impl(std::move(impl)) {
+}
+
+SessionProxyLease::SessionProxyLease(SessionProxyLease &&other) noexcept
+: _impl(std::move(other._impl)) {
+}
+
+SessionProxyLease &SessionProxyLease::operator=(
+		SessionProxyLease &&other) noexcept {
+	if (this != &other) {
+		release();
+		_impl = std::move(other._impl);
+	}
+	return *this;
+}
+
+SessionProxyLease::~SessionProxyLease() {
+	release();
+}
+
+void SessionProxyLease::release() {
+	if (_impl) {
+		_impl->release();
+	}
+}
+
+bool SessionProxyLease::active() const {
+	return _impl ? _impl->active() : false;
+}
+
+uint64 SessionProxyLease::attemptId() const {
+	return _impl ? _impl->attemptId() : 0;
+}
+
+uint64 SessionProxyLease::proxyGeneration() const {
+	return _impl ? _impl->proxyGeneration() : 0;
+}
+
+uint64 SessionProxyLease::proxyEpoch() const {
+	return _impl ? _impl->proxyEpoch() : 0;
+}
+
+uint64 SessionProxyLease::successEpoch() const {
+	return _impl ? _impl->successEpoch() : 0;
+}
+
+crl::time SessionProxyLease::startedAt() const {
+	return _impl ? _impl->startedAt() : 0;
+}
+
+SessionProxyLease::Impl *SessionProxyLease::impl() const {
+	return _impl.get();
+}
+
 SessionProxyTicket::Impl::~Impl() = default;
 
 SessionProxyTicket::SessionProxyTicket(std::unique_ptr<Impl> impl)
@@ -50,7 +107,11 @@ SessionProxyTicket::operator bool() const {
 SessionProxyPort::~SessionProxyPort() = default;
 
 bool EmptySessionProxyAttempt(const SessionProxyAttempt &attempt) {
-	return MtProxy::EndpointEmpty(attempt.endpoint);
+	return EmptySessionProxyEndpoint(attempt.endpoint);
+}
+
+bool EmptySessionProxyEndpoint(const MtProxy::EndpointId &endpoint) {
+	return endpoint.canonical.type == ProxyData::Type::None;
 }
 
 } // namespace MTP::details

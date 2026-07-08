@@ -134,10 +134,12 @@ def test_capability_writers_and_readers_use_the_matching_keys():
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     assert "NoteCapabilityMtproxyFailure(" in failure
-    assert "ProxyCapabilityCache::Instance().noteMtproxyFailure(" in capabilities_bridge
+    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
+        capabilities_bridge)
     assert "CapabilityProxyKey(report.endpoint.canonical)" in failure
     assert "NoteCapabilityMtproxySuccess(" in success
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities_bridge
+    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
+        capabilities_bridge)
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
 
     # Writers must not fall back to the health-state EndpointKey, which has
@@ -153,9 +155,10 @@ def test_capability_writers_and_readers_use_the_matching_keys():
     assert "lookup(ProxyCapabilityKey(proxy))" in lookup
     route_order = function_body(
         resolving, "std::vector<int> ResolvingConnection::routeOrder(")
-    assert "ProxyCapabilityCache::Instance().lookup(_proxy)" in route_order
+    assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in (
+        route_order)
     assert "capability.goodRoutes" in route_order
-    assert "ProxyCapabilityCache::Instance().lookup(proxy)" in policy
+    assert "runtime->proxyServices().capabilities().lookup(proxy)" in policy
 
 
 if __name__ == "__main__":

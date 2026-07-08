@@ -109,11 +109,29 @@ def test_request_registry_owns_rpc_state_and_locks():
 def test_public_instance_and_session_delegate_surfaces_stay_stable():
     instance_header = read(INSTANCE_H)
     delegate = read(SESSION_DELEGATE_H)
+    thread_safe_block = instance_header.split(
+        "\t// Thread-safe.", 1)[1].split("\t// Main thread.", 1)[0]
+    main_thread_block = instance_header.split(
+        "\tvoid addKeysForDestroy(AuthKeysList &&keys);", 1)[1].split(
+            "\tvoid killSession", 1)[0]
 
     assert "request_registry" not in instance_header
     assert "class RequestRegistry" not in instance_header
     assert "sendSerialized(" in instance_header
     assert "sendProtocolMessage(" in instance_header
+
+    for method in (
+            "void restart();",
+            "void restart(ShiftedDcId shiftedDcId);",
+            "void migrateProxy();",
+            "int32 dcstate(ShiftedDcId shiftedDcId = 0);",
+            "QString dctransport(ShiftedDcId shiftedDcId = 0);",
+            "ConnectionStatus &connectionStatus() const;",
+            "void ping();",
+            "void cancel(mtpRequestId requestId);",
+            "int32 state(mtpRequestId requestId);"):
+        assert method not in thread_safe_block
+        assert method in main_thread_block
 
     for callback in (
             "hasCallback(mtpRequestId requestId) const",

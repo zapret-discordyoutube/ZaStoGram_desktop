@@ -271,7 +271,7 @@ std::vector<int> ResolvingConnection::routeOrder() const {
 		}
 	};
 	if (_proxy.type == ProxyData::Type::Mtproto) {
-		const auto capability = ProxyCapabilityCache::Instance().lookup(_proxy);
+		const auto capability = _runtime->proxyServices().capabilities().lookup(_proxy);
 		for (const auto &goodRoute : capability.goodRoutes) {
 			for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
 				const auto route = MtProxy::RouteEndpointFromAddress(

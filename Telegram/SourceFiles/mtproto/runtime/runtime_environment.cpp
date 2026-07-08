@@ -12,7 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "logs.h"
-#include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "base/random.h"
@@ -221,10 +220,10 @@ RuntimeAsyncGateway CreateAsyncGateway() {
 			});
 		},
 		.makeTimer = [](
-				not_null<QObject*> context,
+				not_null<QThread*> thread,
 				Fn<void()> callback) {
 			const auto timer = std::make_shared<base::Timer>(
-				not_null{ context->thread() },
+				thread,
 				std::move(callback));
 			return RuntimeTimer(
 				[timer](crl::time delay) {
@@ -261,7 +260,6 @@ RuntimeEnvironmentDescriptor CreateRuntimeDescriptor() {
 RuntimeEnvironment::RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor)
 : _descriptor(std::move(descriptor))
 , _proxyServices(std::make_unique<ProxyServices>(this)) {
-	SetProxyCapabilityPathProvider(_descriptor.proxyCapabilities.path);
 	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
 		const auto runtime = not_null{ this };
 		proxyServices().control().submitFact(report);

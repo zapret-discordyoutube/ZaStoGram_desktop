@@ -8,27 +8,34 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
 
 #include "mtproto/proxy/capabilities.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 namespace MTP::details::MtProxy {
 
 void NoteCapabilityMtproxyFailure(
+		not_null<RuntimeEnvironment*> runtime,
 		const EndpointId &endpoint,
 		const QString &diagnostic) {
-	ProxyCapabilityCache::Instance().noteMtproxyFailure(
+	runtime->proxyServices().capabilities().noteMtproxyFailure(
 		CapabilityProxyKey(endpoint.canonical),
 		RouteKey(endpoint.route),
 		diagnostic);
 }
 
-void NoteCapabilityMtproxyRelayFailure(const CapabilityFailure &failure) {
-	ProxyCapabilityCache::Instance().noteMtproxyRelayFailure(
+void NoteCapabilityMtproxyRelayFailure(
+		not_null<RuntimeEnvironment*> runtime,
+		const CapabilityFailure &failure) {
+	runtime->proxyServices().capabilities().noteMtproxyRelayFailure(
 		failure.proxyKey,
 		failure.routeKey,
 		failure.diagnostic);
 }
 
-void NoteCapabilityMtproxySuccess(const CapabilitySuccess &success) {
-	ProxyCapabilityCache::Instance().noteMtproxySuccess(
+void NoteCapabilityMtproxySuccess(
+		not_null<RuntimeEnvironment*> runtime,
+		const CapabilitySuccess &success) {
+	runtime->proxyServices().capabilities().noteMtproxySuccess(
 		success.proxyKey,
 		success.routeKey,
 		success.route,

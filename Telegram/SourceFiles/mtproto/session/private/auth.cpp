@@ -84,8 +84,8 @@ void SessionPrivate::checkAuthKey() {
 		ProxyDiagnosticsPhase::MtpTransportReady,
 		ProxyDiagnosticsSeverity::Info,
 		u"transport ready via %1, handshake %2ms, key id %3"_q
-			.arg(_transport._state.connection ? _transport._state.connection->tag() : u"none"_q)
-			.arg(_transport._state.connection ? _transport._state.connection->pingTime() : 0)
+			.arg(_transport.connectionTag())
+			.arg(_transport.connectionPingTime())
 			.arg(_sessionState.keyId));
 	if (_sessionState.keyId) {
 		authKeyChecked();
@@ -98,7 +98,9 @@ void SessionPrivate::checkAuthKey() {
 }
 
 void SessionPrivate::updateAuthKey() {
-	if (_delegate->isKeysDestroyer() || _authState.keyCreator || !_transport._state.connection) {
+	if (_delegate->isKeysDestroyer()
+		|| _authState.keyCreator
+		|| !_transport.connection()) {
 		return;
 	}
 
@@ -128,12 +130,12 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		setCurrentKeyId(0);
 		DEBUG_LOG(("MTP Info: auth_key id for dc %1 changed, restarting..."
 			).arg(_shiftedDcId));
-		if (_transport._state.connection) {
+		if (_transport.connection()) {
 			restart();
 		}
 		return;
 	}
-	if (!_transport._state.connection) {
+	if (!_transport.connection()) {
 		return;
 	}
 	setCurrentKeyId(newKeyId);
@@ -170,7 +172,7 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		_authState.keyCreator->start(
 			BareDcId(_shiftedDcId),
 			getProtocolDcId(),
-			_transport._state.connection.get(),
+			not_null<AbstractConnection*>{ _transport.connection() },
 			&_delegate->dcOptions());
 	} else {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey(), "
@@ -292,7 +294,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 }
 
 void SessionPrivate::authKeyChecked() {
-	connect(_transport._state.connection, &AbstractConnection::receivedData, [=] {
+	connect(_transport.connection(), &AbstractConnection::receivedData, [=] {
 		handleReceived();
 	});
 

@@ -68,26 +68,27 @@ def test_session_auth_factory_owns_bound_key_creator_creation():
 
 
 def test_session_transport_timers_use_runtime_gateway():
-    header = read(TRANSPORT_H)
-    private = read(SESSION_PRIVATE_H)
-    runtime_header = read(SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.h")
-    runtime_source = read(SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp")
+	header = read(TRANSPORT_H)
+	private = read(SESSION_PRIVATE_H)
+	runtime_header = read(SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.h")
+	runtime_source = read(SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp")
 
-    timing = header.split("struct TimingState {", 1)[1].split("\n\t};", 1)[0]
-    assert "RuntimeTimer retryTimer;" in timing
-    assert "RuntimeTimer oldConnectionTimer;" in timing
-    assert "RuntimeTimer waitForConnectedTimer;" in timing
-    assert "RuntimeTimer waitForReceivedTimer;" in timing
-    assert "RuntimeTimer waitForBetterTimer;" in timing
-    assert "RuntimeTimer brokerQueueDeadlineTimer;" in timing
-    assert "RuntimeTimer clearOldContainersTimer;" in timing
-    assert "base::Timer" not in timing
-    assert '#include "base/timer.h"' not in header
-    assert '#include "mtproto/runtime/runtime_environment.h"' in header
-    assert "Fn<void(crl::time)> callEach" in runtime_header
-    assert "void callEach(crl::time delay)" in runtime_header
-    assert "timer->callEach(delay);" in runtime_source
-    assert "not_null<RuntimeEnvironment*> runtime" in header
+	timing = header.split("struct TimingState {", 1)[1].split("\n\t};", 1)[0]
+	assert "RuntimeTimer retryTimer;" in timing
+	assert "RuntimeTimer oldConnectionTimer;" in timing
+	assert "RuntimeTimer waitForConnectedTimer;" in timing
+	assert "RuntimeTimer waitForReceivedTimer;" in timing
+	assert "RuntimeTimer waitForBetterTimer;" in timing
+	assert "RuntimeTimer brokerQueueDeadlineTimer;" in timing
+	assert "RuntimeTimer clearOldContainersTimer;" in timing
+	assert "base::Timer" not in timing
+	assert '#include "base/timer.h"' not in header
+	assert '#include "mtproto/runtime/runtime_environment.h"' in header
+	assert "Fn<void(crl::time)> callEach" in runtime_header
+	assert "void callEach(crl::time delay)" in runtime_header
+	assert "timer->callEach(delay);" in runtime_source
+	assert "not_null<RuntimeEnvironment*> runtime" in header
+	assert "not_null<QThread*> thread" in header
 
 
 def test_mtproto_session_harness_target_is_registered():

@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/session/private/timings.h"
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/config/mtproto_dc_options.h"
@@ -33,8 +34,6 @@ namespace {
 
 constexpr auto kIntSize = static_cast<int>(sizeof(mtpPrime));
 constexpr auto kMaxMessageLength = 16 * 1024 * 1024;
-constexpr auto kSentContainerLives = 600 * crl::time(1000);
-constexpr auto kAckSendWaiting = 10 * crl::time(1000);
 constexpr auto kFastRequestDuration = crl::time(500);
 
 auto SyncTimeRequestDuration = kFastRequestDuration;
@@ -80,9 +79,9 @@ void SessionMessageHandler::clearOldContainers() {
 		_owner->_sessionState.data->queueNeedToResumeAndSend();
 	}
 	if (nextTimeout < kSentContainerLives) {
-		_owner->_transport._timing.clearOldContainersTimer.callOnce(nextTimeout);
-	} else if (!_owner->_transport._timing.clearOldContainersTimer.isActive()) {
-		_owner->_transport._timing.clearOldContainersTimer.callEach(nextTimeout);
+		_owner->_transport.scheduleClearOldContainers(nextTimeout, false);
+	} else if (!_owner->_transport.clearOldContainersTimerActive()) {
+		_owner->_transport.scheduleClearOldContainers(nextTimeout, true);
 	}
 }
 
@@ -91,9 +90,8 @@ void SessionMessageHandler::handleReceived() {
 
 	_owner->_transport.onReceivedSome();
 
-	while (!_owner->_transport._state.connection->received().empty()) {
-		auto intsBuffer = std::move(_owner->_transport._state.connection->received().front());
-		_owner->_transport._state.connection->received().pop_front();
+	while (_owner->_transport.hasReceivedData()) {
+		auto intsBuffer = _owner->_transport.takeReceivedData();
 
 		constexpr auto kExternalHeaderIntsCount = 6U; // 2 auth_key_id, 4 msg_key
 		constexpr auto kEncryptedHeaderIntsCount = 8U; // 2 salt, 2 session, 2 msg_id, 1 seq_no, 1 length
@@ -160,7 +158,7 @@ void SessionMessageHandler::handleReceived() {
 		}
 
 		if (Logs::DebugEnabled()) {
-			_owner->_transport._state.connection->logInfo(u"Decrypted message %1,%2,%3 is %4 len"_q
+			_owner->_transport.logInfo(u"Decrypted message %1,%2,%3 is %4 len"_q
 				.arg(msgId)
 				.arg(seqNo)
 				.arg(Logs::b(needAck))
@@ -255,25 +253,7 @@ void SessionMessageHandler::handleReceived() {
 			}
 			return _owner->restart();
 		}
-		_owner->_transport._timing.retryTimeout = 1; // reset _owner->restart() timer
-
-		if (!_owner->_transport._state.mtprotoDataReceived) {
-			_owner->_transport._state.mtprotoDataReceived = true;
-			_owner->_transport._state.mtprotoSilentTimeouts = 0;
-			if (_owner->_transport._state.proxyMigrationScout) {
-				_owner->_transport._state.proxyMigrationScout = false;
-				_owner->_delegate->proxyMigrationSucceeded(
-					_owner->_transport._state.proxyGeneration);
-			}
-			_owner->logMtprotoEvent(
-				ProxyDiagnosticsPhase::MtpFirstDataReceived,
-				ProxyDiagnosticsSeverity::Info,
-				u"first mtproto payload received"_q);
-			_owner->_proxyPort->reportFirstMtprotoPayload(
-				_owner->_transport.currentProxyAttempt());
-		}
-
-		_owner->_transport._state.startedConnectingAt = crl::time(0);
+		_owner->_transport.noteMtprotoPayloadReceived();
 
 		if (!wasConnected) {
 			if (_owner->getState() == ConnectedState) {
@@ -281,7 +261,7 @@ void SessionMessageHandler::handleReceived() {
 			}
 		}
 	}
-	if (_owner->_transport._state.connection->serviceRequestNeeded(
+	if (_owner->_transport.serviceRequestNeeded(
 			AbstractConnection::TransportServiceRequest::HttpWait)) {
 		_owner->_sessionState.data->queueSendAnything();
 	}

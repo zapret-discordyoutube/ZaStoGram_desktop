@@ -15,9 +15,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonObject>
 #include <QtNetwork/QHostInfo>
+#include <QtNetwork/QHostAddress>
 #include <range/v3/algorithm/shuffle.hpp>
 #include <range/v3/algorithm/reverse.hpp>
 #include <range/v3/algorithm/remove.hpp>
+#include <cstring>
 #include <random>
 
 namespace MTP::details {
@@ -29,63 +31,82 @@ constexpr auto kMaxTimeToLive = 300 * crl::time(1000);
 constexpr auto kSystemDnsTimeToLive = 60 * crl::time(1000);
 constexpr auto kNegativeResolveTtl = crl::time(30 * 1000);
 
-} // namespace
-
-const std::vector<QString> &DnsDomains() {
-	static const auto kResult = std::vector<QString>{
-		"google.com",
-		"www.google.com",
-		"google.ru",
-		"www.google.ru",
-	};
-	return kResult;
+void AppendDnsUInt16(QByteArray &bytes, uint16 value) {
+	bytes.push_back(char((value >> 8) & 0xFF));
+	bytes.push_back(char(value & 0xFF));
 }
 
-QString GenerateDnsRandomPadding() {
-	constexpr char kValid[] = "abcdefghijklmnopqrstuvwxyz"
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-	auto result = QString();
-	const auto count = [&] {
-		constexpr auto kMinPadding = 13;
-		constexpr auto kMaxPadding = 128;
-		while (true) {
-			const auto result = 1 + (base::RandomValue<uchar>() / 2);
-			Assert(result <= kMaxPadding);
-			if (result >= kMinPadding) {
-				return result;
-			}
-		}
-	}();
-	result.resize(count);
-	for (auto &ch : result) {
-		ch = kValid[base::RandomValue<uchar>() % (sizeof(kValid) - 1)];
+[[nodiscard]] bool ReadDnsUInt16(
+		const QByteArray &bytes,
+		int &offset,
+		uint16 &value) {
+	if (offset + 2 > bytes.size()) {
+		return false;
 	}
-	return result;
+	const auto data = reinterpret_cast<const uchar*>(bytes.constData());
+	value = (uint16(data[offset]) << 8) | uint16(data[offset + 1]);
+	offset += 2;
+	return true;
 }
 
-QByteArray DnsUserAgent() {
-	static const auto kResult = QByteArray(
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-		"AppleWebKit/537.36 (KHTML, like Gecko) "
-		"Chrome/149.0.0.0 Safari/537.36");
-	return kResult;
+[[nodiscard]] bool ReadDnsUInt32(
+		const QByteArray &bytes,
+		int &offset,
+		uint32 &value) {
+	auto high = uint16();
+	auto low = uint16();
+	if (!ReadDnsUInt16(bytes, offset, high)
+		|| !ReadDnsUInt16(bytes, offset, low)) {
+		return false;
+	}
+	value = (uint32(high) << 16) | uint32(low);
+	return true;
 }
 
-std::vector<DnsEntry> ParseDnsResponse(
+[[nodiscard]] bool SkipDnsName(const QByteArray &bytes, int &offset) {
+	auto depth = 0;
+	while (offset < bytes.size() && ++depth < 128) {
+		const auto data = reinterpret_cast<const uchar*>(bytes.constData());
+		const auto length = data[offset++];
+		if ((length & 0xC0) == 0xC0) {
+			if (offset >= bytes.size()) {
+				return false;
+			}
+			++offset;
+			return true;
+		} else if (length & 0xC0) {
+			return false;
+		} else if (!length) {
+			return true;
+		} else if (offset + length > bytes.size()) {
+			return false;
+		}
+		offset += length;
+	}
+	return false;
+}
+
+[[nodiscard]] QString ParseTxtData(const QByteArray &bytes) {
+	auto result = QByteArray();
+	auto offset = 0;
+	while (offset < bytes.size()) {
+		const auto length = uchar(bytes[offset++]);
+		if (offset + length > bytes.size()) {
+			return QString();
+		}
+		result.append(bytes.constData() + offset, length);
+		offset += length;
+	}
+	return QString::fromUtf8(result);
+}
+
+[[nodiscard]] std::vector<DnsEntry> ParseDnsJsonResponse(
 		const QByteArray &bytes,
 		std::optional<int> typeRestriction) {
 	if (bytes.isEmpty()) {
 		return {};
 	}
 
-	// Read and store to "result" all the data bytes from the response:
-	// { ..,
-	//   "Answer": [
-	//     { .., "data": "bytes1", "TTL": int, .. },
-	//     { .., "data": "bytes2", "TTL": int, .. }
-	//   ],
-	// .. }
 	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
 	const auto document = QJsonDocument::fromJson(bytes, &error);
 	if (error.error != QJsonParseError::NoError) {
@@ -118,12 +139,17 @@ std::vector<DnsEntry> ParseDnsResponse(
 		const auto object = elem.toObject();
 		if (typeRestriction) {
 			const auto typeIt = object.find("type");
-			const auto type = int(base::SafeRound((*typeIt).toDouble()));
-			if (!(*typeIt).isDouble()) {
+			if (typeIt == object.constEnd()) {
+				LOG(("Config Error: Could not find type field "
+					"in Answer array in dns response JSON."));
+				continue;
+			} else if (!(*typeIt).isDouble()) {
 				LOG(("Config Error: Not a number in type field "
 					"in Answer array in dns response JSON."));
 				continue;
-			} else if (type != *typeRestriction) {
+			}
+			const auto type = int(base::SafeRound((*typeIt).toDouble()));
+			if (type != *typeRestriction) {
 				continue;
 			}
 		}
@@ -143,6 +169,139 @@ std::vector<DnsEntry> ParseDnsResponse(
 			? crl::time(base::SafeRound((*ttlIt).toDouble()))
 			: crl::time(0);
 		result.push_back({ (*dataIt).toString(), ttl });
+	}
+	return result;
+}
+
+} // namespace
+
+const std::vector<DohProvider> &DohProviders() {
+	static const auto kResult = std::vector<DohProvider>{
+		{ u"cloudflare-dns.com"_q, u"/dns-query"_q },
+		{ u"dns.google"_q, u"/dns-query"_q },
+		{ u"dns.quad9.net"_q, u"/dns-query"_q },
+		{ u"dns.mullvad.net"_q, u"/dns-query"_q },
+	};
+	return kResult;
+}
+
+QByteArray BuildDnsQuery(const QString &domain, int type) {
+	auto result = QByteArray();
+	result.reserve(512);
+	AppendDnsUInt16(result, base::RandomValue<uint16>());
+	AppendDnsUInt16(result, 0x0100);
+	AppendDnsUInt16(result, 1);
+	AppendDnsUInt16(result, 0);
+	AppendDnsUInt16(result, 0);
+	AppendDnsUInt16(result, 0);
+	for (const auto &label : domain.split('.', Qt::SkipEmptyParts)) {
+		const auto bytes = label.toUtf8();
+		if (bytes.isEmpty() || bytes.size() > 63) {
+			return {};
+		}
+		result.push_back(char(bytes.size()));
+		result.append(bytes);
+	}
+	result.push_back(char(0));
+	AppendDnsUInt16(result, uint16(type));
+	AppendDnsUInt16(result, 1);
+	return result;
+}
+
+QByteArray DnsUserAgent() {
+	static const auto kResult = QByteArray(
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+		"AppleWebKit/537.36 (KHTML, like Gecko) "
+		"Chrome/149.0.0.0 Safari/537.36");
+	return kResult;
+}
+
+std::vector<DnsEntry> ParseDnsResponse(
+		const QByteArray &bytes,
+		std::optional<int> typeRestriction) {
+	if (bytes.isEmpty()) {
+		return {};
+	}
+	if (bytes.front() == '{') {
+		return ParseDnsJsonResponse(bytes, typeRestriction);
+	}
+	auto offset = 0;
+	auto id = uint16();
+	auto flags = uint16();
+	auto questions = uint16();
+	auto answers = uint16();
+	auto authority = uint16();
+	auto additional = uint16();
+	if (!ReadDnsUInt16(bytes, offset, id)
+		|| !ReadDnsUInt16(bytes, offset, flags)
+		|| !ReadDnsUInt16(bytes, offset, questions)
+		|| !ReadDnsUInt16(bytes, offset, answers)
+		|| !ReadDnsUInt16(bytes, offset, authority)
+		|| !ReadDnsUInt16(bytes, offset, additional)) {
+		LOG(("Config Error: Bad dns response header."));
+		return {};
+	}
+	Q_UNUSED(id);
+	Q_UNUSED(flags);
+	Q_UNUSED(authority);
+	Q_UNUSED(additional);
+	for (auto i = 0; i != questions; ++i) {
+		auto type = uint16();
+		auto queryClass = uint16();
+		if (!SkipDnsName(bytes, offset)
+			|| !ReadDnsUInt16(bytes, offset, type)
+			|| !ReadDnsUInt16(bytes, offset, queryClass)) {
+			LOG(("Config Error: Bad dns response question."));
+			return {};
+		}
+		Q_UNUSED(type);
+		Q_UNUSED(queryClass);
+	}
+	auto result = std::vector<DnsEntry>();
+	for (auto i = 0; i != answers; ++i) {
+		auto type = uint16();
+		auto answerClass = uint16();
+		auto ttl = uint32();
+		auto dataSize = uint16();
+		if (!SkipDnsName(bytes, offset)
+			|| !ReadDnsUInt16(bytes, offset, type)
+			|| !ReadDnsUInt16(bytes, offset, answerClass)
+			|| !ReadDnsUInt32(bytes, offset, ttl)
+			|| !ReadDnsUInt16(bytes, offset, dataSize)
+			|| offset + dataSize > bytes.size()) {
+			LOG(("Config Error: Bad dns response answer."));
+			return {};
+		}
+		const auto dataOffset = offset;
+		offset += dataSize;
+		if (answerClass != 1
+			|| (typeRestriction && type != *typeRestriction)) {
+			continue;
+		}
+		if (type == 1 && dataSize == 4) {
+			const auto data = reinterpret_cast<const uchar*>(
+				bytes.constData() + dataOffset);
+			result.push_back({
+				(u"%1.%2.%3.%4"_q
+				).arg(data[0]
+				).arg(data[1]
+				).arg(data[2]
+				).arg(data[3]),
+				crl::time(ttl)
+			});
+		} else if (type == 28 && dataSize == 16) {
+			auto raw = Q_IPV6ADDR();
+			std::memcpy(raw.c, bytes.constData() + dataOffset, 16);
+			result.push_back({
+				QHostAddress(raw).toString(),
+				crl::time(ttl)
+			});
+		} else if (type == 16) {
+			const auto data = ParseTxtData(bytes.mid(dataOffset, dataSize));
+			if (!data.isEmpty()) {
+				result.push_back({ data, crl::time(ttl) });
+			}
+		}
 	}
 	return result;
 }
@@ -270,32 +429,12 @@ void DomainResolver::resolveByDnsOverHttps(const AttemptKey &key) {
 	}
 
 	auto attempts = std::vector<Attempt>();
-	auto domains = DnsDomains();
+	auto providers = DohProviders();
 	std::random_device rd;
-	ranges::shuffle(domains, std::mt19937(rd()));
-	const auto takeDomain = [&] {
-		const auto result = domains.back();
-		domains.pop_back();
-		return result;
-	};
-	const auto shuffle = [&](int from, int till) {
-		Expects(till > from);
-
-		ranges::shuffle(
-			begin(attempts) + from,
-			begin(attempts) + till,
-			std::mt19937(rd()));
-	};
-
-	attempts.push_back({ Type::Google, "dns.google.com" });
-	attempts.push_back({ Type::Google, takeDomain(), "dns" });
-	attempts.push_back({ Type::Mozilla, "mozilla.cloudflare-dns.com" });
-	while (!domains.empty()) {
-		attempts.push_back({ Type::Google, takeDomain(), "dns" });
+	ranges::shuffle(providers, std::mt19937(rd()));
+	for (const auto &provider : providers) {
+		attempts.push_back({ provider });
 	}
-
-	shuffle(0, 2);
-
 	ranges::reverse(attempts); // We go from last to first.
 
 	_attempts.emplace(key, Attempts{ std::move(attempts) });
@@ -341,38 +480,23 @@ void DomainResolver::performRequest(
 		const Attempt &attempt) {
 	auto url = QUrl();
 	url.setScheme("https");
+	url.setHost(attempt.provider.host);
+	url.setPath(attempt.provider.path);
 	auto request = QNetworkRequest();
-	switch (attempt.type) {
-	case Type::Mozilla: {
-		url.setHost(attempt.data);
-		url.setPath("/dns-query");
-		url.setQuery(QStringLiteral("name=%1&type=%2&random_padding=%3"
-		).arg(key.domain
-		).arg(key.ipv6 ? 28 : 1
-		).arg(GenerateDnsRandomPadding()));
-		request.setRawHeader("accept", "application/dns-json");
-	} break;
-	case Type::Google: {
-		url.setHost(attempt.data);
-		url.setPath("/resolve");
-		url.setQuery(QStringLiteral("name=%1&type=%2&random_padding=%3"
-		).arg(key.domain
-		).arg(key.ipv6 ? 28 : 1
-		).arg(GenerateDnsRandomPadding()));
-		if (!attempt.host.isEmpty()) {
-			const auto host = attempt.host + ".google.com";
-			request.setRawHeader("Host", host.toLatin1());
-		}
-	} break;
-	default: Unexpected("Type in DomainResolver::performRequest.");
+	const auto payload = BuildDnsQuery(key.domain, key.ipv6 ? 28 : 1);
+	if (payload.isEmpty()) {
+		checkAttemptsExhausted(key);
+		return;
 	}
 	request.setUrl(url);
+	request.setRawHeader("accept", "application/dns-message");
+	request.setRawHeader("Content-Type", "application/dns-message");
 	request.setRawHeader("User-Agent", DnsUserAgent());
 	const auto i = _requests.emplace(
 		key,
 		std::vector<ServiceWebRequest>()).first;
 	const auto reply = i->second.emplace_back(
-		_manager.get(request)
+		_manager.post(request, payload)
 	).reply;
 	connect(reply, &QNetworkReply::finished, this, [=] {
 		requestFinished(key, reply);
@@ -426,7 +550,7 @@ void DomainResolver::requestFinished(
 		const AttemptKey &key,
 		not_null<QNetworkReply*> reply) {
 	const auto result = finalizeRequest(key, reply);
-	const auto response = ParseDnsResponse(result);
+	const auto response = ParseDnsResponse(result, key.ipv6 ? 28 : 1);
 	if (response.empty()) {
 		checkAttemptsExhausted(key);
 		return;

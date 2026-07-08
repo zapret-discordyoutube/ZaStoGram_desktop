@@ -7,10 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/proxy_services.h"
 
+#include "mtproto/runtime/runtime_environment.h"
+
 namespace MTP {
 
 ProxyServices::ProxyServices(not_null<RuntimeEnvironment*> runtime)
 : _endpointHealth(runtime)
+, _capabilities(runtime->proxyCapabilities().path)
 , _control(runtime, &_endpointHealth)
 , _broker(runtime)
 , _dnsResolver(runtime) {
@@ -26,6 +29,14 @@ details::ConnectionBroker &ProxyServices::broker() {
 
 details::DnsResolverCache &ProxyServices::dnsResolver() {
 	return _dnsResolver;
+}
+
+ProxyCapabilityCache &ProxyServices::capabilities() {
+	return _capabilities;
+}
+
+details::SyntheticPskCache &ProxyServices::syntheticPsks() {
+	return _syntheticPsks;
 }
 
 } // namespace MTP

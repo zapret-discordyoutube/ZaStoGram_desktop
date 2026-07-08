@@ -8,7 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/runtime/connection_status_types.h"
+#include "mtproto/runtime/proxy_endpoint.h"
 
 #include <QtCore/QPointer>
 
@@ -36,13 +37,68 @@ enum class SessionProxyAdmissionAction {
 struct SessionProxyAdmissionDecision {
 	SessionProxyAdmissionAction action = SessionProxyAdmissionAction::StartNow;
 	crl::time retryAfter = 0;
-	MtProxy::FailureReason blockedBy = MtProxy::FailureReason::None;
+	ProxyConnectionError blockedBy = ProxyConnectionError::None;
+};
+
+enum class SessionProxyEndpointUse {
+	Main,
+	Media,
+	Upload,
+	ProxyCheck,
+};
+
+enum class SessionProxySuccessScope {
+	Handshake,
+	FakeTlsAppData,
+	Relay,
+};
+
+struct SessionProxyEndpointSnapshot {
+	bool healthy = false;
+	bool halfOpen = false;
+};
+
+class SessionProxyLease final {
+public:
+	class Impl {
+	public:
+		virtual ~Impl();
+
+		virtual void release() = 0;
+		[[nodiscard]] virtual bool active() const = 0;
+		[[nodiscard]] virtual uint64 attemptId() const = 0;
+		[[nodiscard]] virtual uint64 proxyGeneration() const = 0;
+		[[nodiscard]] virtual uint64 proxyEpoch() const = 0;
+		[[nodiscard]] virtual uint64 successEpoch() const = 0;
+		[[nodiscard]] virtual crl::time startedAt() const = 0;
+		[[nodiscard]] virtual void *opaque() = 0;
+	};
+
+	SessionProxyLease() = default;
+	explicit SessionProxyLease(std::unique_ptr<Impl> impl);
+	SessionProxyLease(const SessionProxyLease &other) = delete;
+	SessionProxyLease &operator=(const SessionProxyLease &other) = delete;
+	SessionProxyLease(SessionProxyLease &&other) noexcept;
+	SessionProxyLease &operator=(SessionProxyLease &&other) noexcept;
+	~SessionProxyLease();
+
+	void release();
+	[[nodiscard]] bool active() const;
+	[[nodiscard]] uint64 attemptId() const;
+	[[nodiscard]] uint64 proxyGeneration() const;
+	[[nodiscard]] uint64 proxyEpoch() const;
+	[[nodiscard]] uint64 successEpoch() const;
+	[[nodiscard]] crl::time startedAt() const;
+	[[nodiscard]] Impl *impl() const;
+
+private:
+	std::unique_ptr<Impl> _impl;
 };
 
 struct SessionProxyAttempt {
 	RuntimeEnvironment *runtime = nullptr;
 	MtProxy::EndpointId endpoint;
-	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
 	ProxyConnectionAttempt attempt;
 	crl::time attemptStartedAt = 0;
 };
@@ -51,10 +107,10 @@ struct SessionProxyStart {
 	SessionProxyTicketId ticketId = 0;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
-	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
-	MtProxy::EndpointAttemptLease lease;
+	SessionProxyLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
 	uint64 successEpoch = 0;
@@ -63,9 +119,10 @@ struct SessionProxyStart {
 
 struct SessionProxyRequest {
 	uint64 proxyGeneration = 0;
-	MtProxy::EndpointId endpoint;
 	ProxyData proxy;
-	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	QString address;
+	int port = 0;
+	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
@@ -111,19 +168,20 @@ public:
 	virtual void cancelByProxyGeneration(
 		RuntimeEnvironment *runtime,
 		uint64 generation) = 0;
-	[[nodiscard]] virtual MtProxy::Snapshot endpointSnapshot(
+	[[nodiscard]] virtual SessionProxyEndpointSnapshot endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const = 0;
 	virtual void reportConnected(
 		const SessionProxyAttempt &attempt,
-		MtProxy::EndpointAttemptLease *lease,
-		MtProxy::SuccessScope scope) = 0;
+		SessionProxyLease *lease,
+		SessionProxySuccessScope scope) = 0;
 	virtual void reportFirstMtprotoPayload(
 		const SessionProxyAttempt &attempt) = 0;
 	virtual void reportConnectionError(
 		const SessionProxyAttempt &attempt,
-		MtProxy::FailureReason reason,
-		MtProxy::EndpointAttemptLease *lease = nullptr) = 0;
+		int errorCode,
+		SessionProxyLease *lease = nullptr,
+		bool ignoreHealthyRemoteClosed = false) = 0;
 	virtual void reportReceiveTimeout(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
@@ -148,6 +206,8 @@ public:
 [[nodiscard]] SessionProxyPort &DefaultSessionProxyPort();
 [[nodiscard]] bool EmptySessionProxyAttempt(
 	const SessionProxyAttempt &attempt);
+[[nodiscard]] bool EmptySessionProxyEndpoint(
+	const MtProxy::EndpointId &endpoint);
 
 } // namespace details
 } // namespace MTP

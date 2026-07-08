@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/session/private/session_private.h"
+#include "mtproto/session/private/timings.h"
 
 #include "core/version.h"
 #include "mtproto/dc_id.h"
@@ -36,9 +37,7 @@ namespace details {
 namespace {
 
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
-constexpr auto kMinConnectedTimeout = crl::time(1000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
-constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
@@ -74,24 +73,17 @@ bool SessionTransport::appendTestConnection(
 		+ (protocolSecret.empty() ? 0 : 1);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = protocolForFiles
-		? MtProxy::EndpointUse::Media
-		: MtProxy::EndpointUse::Main;
+		? SessionProxyEndpointUse::Media
+		: SessionProxyEndpointUse::Main;
 	if (_state.proxyMigrationScout
 		&& (!_state.brokerTickets.empty() || !_state.testConnections.empty())) {
 		return false;
 	}
-	const auto mtproxyEndpoint = mtproxy
-		? MtProxy::EndpointIdFromProxy(
-			proxy,
-			stealth,
-			ip,
-			port)
-		: MtProxy::EndpointId();
 	const auto protocolDcId = _owner->getProtocolDcId();
 	const auto appendStartedConnection = [=, this](
 			MtProxy::EndpointId startEndpoint,
-			MtProxy::EndpointUse startUse,
-			MtProxy::EndpointAttemptLease startLease,
+			SessionProxyEndpointUse startUse,
+			SessionProxyLease startLease,
 			ProxyConnectionAttempt startAttempt,
 			crl::time startAttemptStartedAt,
 			ProxyStealthOptions startStealth) {
@@ -157,8 +149,9 @@ bool SessionTransport::appendTestConnection(
 	if (mtproxy) {
 		auto ticket = _owner->_proxyPort->requestConnection({
 			.proxyGeneration = _state.proxyGeneration,
-			.endpoint = mtproxyEndpoint,
 			.proxy = proxy,
+			.address = ip,
+			.port = port,
 			.use = mtproxyUse,
 			.stealth = stealth,
 			.configuredTlsProfile = stealth.tlsProfile,
@@ -196,8 +189,8 @@ bool SessionTransport::appendTestConnection(
 	lock.unlock();
 	appendStartedConnection(
 		MtProxy::EndpointId(),
-		MtProxy::EndpointUse::Main,
-		MtProxy::EndpointAttemptLease(),
+		SessionProxyEndpointUse::Main,
+		SessionProxyLease(),
 		{ .proxyGeneration = _state.proxyGeneration },
 		0,
 		stealth);
@@ -213,7 +206,7 @@ void SessionTransport::destroyAllConnections() {
 	_state.brokerTickets.clear();
 	_state.testConnections.clear();
 	_state.mtproxyEndpoint = MtProxy::EndpointId();
-	_state.mtproxyUse = MtProxy::EndpointUse::Main;
+	_state.mtproxyUse = SessionProxyEndpointUse::Main;
 	_state.mtproxyAttempt = {};
 	_state.mtproxyAttemptStartedAt = 0;
 	_state.mtprotoDataReceived = false;
@@ -229,7 +222,7 @@ void SessionTransport::reportMtproxyConnectionUsable(
 	// benign remote_closed. Report success here for every transport once a
 	// connection is actually usable. Skip if already healthy to avoid
 	// redundant capability-cache writes on the FakeTLS path.
-	if (MtProxy::EndpointEmpty(connection.mtproxyEndpoint)) {
+	if (EmptySessionProxyEndpoint(connection.mtproxyEndpoint)) {
 		return;
 	}
 	const auto snapshot = _owner->_proxyPort->endpointSnapshot(
@@ -241,7 +234,7 @@ void SessionTransport::reportMtproxyConnectionUsable(
 	_owner->_proxyPort->reportConnected(
 		proxyAttempt(connection),
 		nullptr,
-		MtProxy::SuccessScope::Handshake);
+		SessionProxySuccessScope::Handshake);
 }
 
 void SessionTransport::removeConnectionBrokerTicket(SessionProxyTicketId id) {
@@ -575,7 +568,7 @@ void SessionTransport::waitReceivedFailed() {
 			kMaxReceiveTimeout);
 	}
 	const auto mtproxyConnection = _state.connection
-		&& !MtProxy::EndpointEmpty(_state.mtproxyEndpoint);
+		&& !EmptySessionProxyEndpoint(_state.mtproxyEndpoint);
 	const auto silentMtproxyConnection = mtproxyConnection
 		&& !_state.mtprotoDataReceived;
 	if (silentMtproxyConnection) {
@@ -851,29 +844,19 @@ void SessionTransport::onError(
 		return;
 	}
 	if (found != end(_state.testConnections)) {
-		if (!MtProxy::EndpointEmpty(found->mtproxyEndpoint)) {
+		if (!EmptySessionProxyEndpoint(found->mtproxyEndpoint)) {
 			_owner->_proxyPort->reportConnectionError(
 				proxyAttempt(*found),
-				MtProxy::FailureReasonFromErrorCode(errorCode),
+				errorCode,
 				&found->mtproxyLease);
 		}
 	} else if (_state.connection.get() == connection.get()
-		&& !MtProxy::EndpointEmpty(_state.mtproxyEndpoint)) {
-		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
-		if (reason != MtProxy::FailureReason::None) {
-			const auto snapshot = _owner->_proxyPort->endpointSnapshot(
-				_owner->_runtime,
-				_state.mtproxyEndpoint);
-			const auto ignoreRemoteClosed = (reason
-					== MtProxy::FailureReason::AppDataRemoteClosed)
-				&& snapshot.healthy
-				&& !snapshot.halfOpen;
-			if (!ignoreRemoteClosed) {
-				_owner->_proxyPort->reportConnectionError(
-					currentProxyAttempt(),
-					reason);
-			}
-		}
+		&& !EmptySessionProxyEndpoint(_state.mtproxyEndpoint)) {
+		_owner->_proxyPort->reportConnectionError(
+			currentProxyAttempt(),
+			errorCode,
+			nullptr,
+			true);
 	}
 	removeTestConnection(connection);
 

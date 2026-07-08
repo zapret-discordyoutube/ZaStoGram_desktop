@@ -10,10 +10,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/basic_types.h"
 #include "mtproto/dc_id.h"
 #include "mtproto/config/mtproto_dc_options.h"
-#include "mtproto/proxy/data.h"
+#include "mtproto/runtime/proxy_data.h"
 #include "rpl/lifetime.h"
 
 #include <QtCore/QObject>
+#include <QtCore/QThread>
 #include <QtCore/QStringList>
 
 #include <memory>
@@ -130,7 +131,7 @@ struct RuntimeAsyncGateway final {
 	Fn<crl::time()> now;
 	Fn<int(int)> randomIndex;
 	Fn<void(crl::time, QObject*, Fn<void()>)> singleShot;
-	Fn<RuntimeTimer(not_null<QObject*>, Fn<void()>)> makeTimer;
+	Fn<RuntimeTimer(not_null<QThread*>, Fn<void()>)> makeTimer;
 };
 
 struct RuntimeEnvironmentDescriptor final {

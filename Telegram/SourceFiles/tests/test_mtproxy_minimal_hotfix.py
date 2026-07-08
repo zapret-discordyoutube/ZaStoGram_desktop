@@ -107,7 +107,8 @@ def test_route_success_updates_canonical_capability_and_health():
     packet = function_body(tls, "bool TlsSocket::checkNextPacket()")
 
     assert "NoteCapabilityMtproxySuccess(" in success
-    assert "ProxyCapabilityCache::Instance().noteMtproxySuccess(" in capabilities
+    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
+        capabilities)
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "state.lastFailure = FailureReason::None;" in success
@@ -122,7 +123,8 @@ def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
 
     assert "proxy.type != ProxyData::Type::Socks5" in allowed
     assert "IsLocalProxyEndpoint(proxy)" in allowed
-    assert "!ProxyCapabilityCache::Instance().wssAllowed(proxy)" in allowed
+    assert "!runtime->proxyServices().capabilities().wssAllowed(proxy)" in (
+        allowed)
     assert "kWssRemoteClosedTtl = crl::time(30 * 60 * 1000)" in policy
     assert "noteWssRemoteClosed(" in note
     assert "kWssRemoteClosedTtl" in note

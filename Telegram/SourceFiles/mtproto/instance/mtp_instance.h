@@ -88,6 +88,7 @@ public:
 	[[nodiscard]] AuthKeysList getKeysForWrite() const;
 	void addKeysForDestroy(AuthKeysList &&keys);
 
+	// Main thread.
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
 	void migrateProxy();
@@ -98,7 +99,6 @@ public:
 	void cancel(mtpRequestId requestId);
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
 
-	// Main thread.
 	void killSession(ShiftedDcId shiftedDcId);
 	void stopSession(ShiftedDcId shiftedDcId);
 	void reInitConnection(DcId dcId);

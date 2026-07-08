@@ -20,6 +20,10 @@ enum class WssDcCoverage {
 };
 
 [[nodiscard]] bool ProxyWssAllowed(
+	not_null<RuntimeEnvironment*> runtime,
+	const ProxyData &proxy,
+	ProxyData::Settings settings);
+[[nodiscard]] bool ProxyWssAllowed(
 	const ProxyData &proxy,
 	ProxyData::Settings settings);
 

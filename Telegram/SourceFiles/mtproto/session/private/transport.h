@@ -20,7 +20,8 @@ class SessionTransport final {
 public:
 	SessionTransport(
 		not_null<SessionPrivate*> owner,
-		not_null<RuntimeEnvironment*> runtime);
+		not_null<RuntimeEnvironment*> runtime,
+		not_null<QThread*> thread);
 
 	void start();
 	void connectToServer(bool afterConfig = false);
@@ -32,6 +33,7 @@ public:
 	void destroyAllConnections();
 	void onSentSome(uint64 size);
 	void onReceivedSome();
+	void startContainerCleanup();
 	void retryByTimer();
 	void waitConnectedFailed();
 	void brokerQueueDeadlineFired();
@@ -41,31 +43,53 @@ public:
 	void confirmBestConnection();
 	void removeTestConnection(not_null<AbstractConnection*> connection);
 	void setRetryTimeout(int timeout);
+	void scheduleRetryTimeout(int timeout);
+	void schedulePing(crl::time timeout);
+	void scheduleCheckSentRequests(crl::time timeout);
+	void scheduleClearOldContainers(crl::time timeout, bool repeated);
+	void resetRetryTimeout();
+	void noteMtprotoPayloadReceived();
+	void logInfo(const QString &message) const;
+	void sendData(
+		mtpBuffer &&buffer,
+		AbstractConnection::SendDataContext context);
 	[[nodiscard]] bool retryTimerActive() const;
+	[[nodiscard]] bool checkSentRequestsTimerActive() const;
+	[[nodiscard]] bool clearOldContainersTimerActive() const;
 	[[nodiscard]] int retryTimeout() const;
 	[[nodiscard]] qint64 retryWillFinish() const;
 	[[nodiscard]] AbstractConnection *connection() const;
+	[[nodiscard]] bool hasReceivedData() const;
+	[[nodiscard]] mtpBuffer takeReceivedData();
 	[[nodiscard]] QString activeTransport() const;
+	[[nodiscard]] QString connectionTag() const;
+	[[nodiscard]] crl::time connectionPingTime() const;
+	[[nodiscard]] AbstractConnection::TransportServiceRequest serviceRequest()
+		const;
+	[[nodiscard]] bool serviceRequestNeeded(
+		AbstractConnection::TransportServiceRequest request) const;
+	[[nodiscard]] mtpBuffer prepareSecurePacket(
+		uint64 keyId,
+		MTPint128 msgKey,
+		uint32 size) const;
 	[[nodiscard]] bool empty() const;
+	[[nodiscard]] SessionProxyAttempt currentProxyAttempt() const;
 
 private:
-	friend class SessionPrivate;
-	friend class SessionMessageHandler;
-
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
 		MtProxy::EndpointId mtproxyEndpoint;
-		MtProxy::EndpointUse mtproxyUse = MtProxy::EndpointUse::Main;
-		MtProxy::EndpointAttemptLease mtproxyLease;
+		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
 		crl::time mtproxyAttemptStartedAt = 0;
 	};
 	struct ConnectionState {
 		ConnectionPointer connection;
 		MtProxy::EndpointId mtproxyEndpoint;
-		MtProxy::EndpointUse mtproxyUse = MtProxy::EndpointUse::Main;
+		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		ProxyConnectionAttempt mtproxyAttempt;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
@@ -80,7 +104,8 @@ private:
 	struct TimingState {
 		TimingState(
 			not_null<RuntimeEnvironment*> runtime,
-			not_null<SessionTransport*> owner);
+			not_null<SessionTransport*> owner,
+			not_null<QThread*> thread);
 
 		RuntimeTimer retryTimer;
 		int retryTimeout = 1;
@@ -118,7 +143,6 @@ private:
 	void armWaitForConnectedTimer();
 	[[nodiscard]] SessionProxyAttempt proxyAttempt(
 		const TestConnection &connection) const;
-	[[nodiscard]] SessionProxyAttempt currentProxyAttempt() const;
 
 	const not_null<SessionPrivate*> _owner;
 	ConnectionState _state;

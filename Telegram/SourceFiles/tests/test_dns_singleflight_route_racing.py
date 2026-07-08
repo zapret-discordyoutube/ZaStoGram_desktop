@@ -84,7 +84,7 @@ def test_route_order_prefers_good_capability_route_before_first_ip():
     source = read(RESOLVING_CPP)
     body = function_body(source, "std::vector<int> ResolvingConnection::routeOrder(")
 
-    assert "ProxyCapabilityCache::Instance().lookup(_proxy)" in body
+    assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in body
     assert "capability.goodRoutes" in body
     assert "MtProxy::RouteEndpointFromAddress(" in body
     assert "MtProxy::RouteKey(" in body

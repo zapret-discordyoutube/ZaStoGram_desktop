@@ -7,59 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 
-#include "mtproto/transport/details/mtproto_tcp_socket.h"
-#include "mtproto/proxy/mtproxy/tls_socket.h"
-#include "mtproto/proxy/wss/socket.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "logs.h"
 
 #include <QtNetwork/QAbstractSocket>
 
 namespace MTP::details {
-
-std::unique_ptr<AbstractSocket> AbstractSocket::Create(
-		not_null<RuntimeEnvironment*> runtime,
-		not_null<QThread*> thread,
-		const bytes::vector &secret,
-		const ProxyData &proxy,
-		bool protocolForFiles,
-		const ProxyStealthOptions &stealth,
-		int16 protocolDcId,
-		ProxyConnectionAttempt mtproxyAttempt,
-		crl::time mtproxyAttemptStartedAt) {
-	const auto networkProxy = ToNetworkProxy(proxy);
-	if (stealth.transport == ProxyTransport::Wss) {
-		auto route = WssCustomRoute(stealth);
-		if (!route) {
-			route = WssOfficialRoute(protocolDcId, protocolForFiles);
-		}
-		if (route) {
-			return std::make_unique<WssSocket>(
-				runtime,
-				thread,
-				networkProxy,
-				protocolForFiles,
-				std::move(*route));
-		}
-	}
-	if (secret.size() >= 21 && secret[0] == bytes::type(0xEE)) {
-		return std::make_unique<TlsSocket>(
-			runtime,
-			thread,
-			secret,
-			proxy,
-			protocolForFiles,
-			stealth,
-			mtproxyAttempt,
-			mtproxyAttemptStartedAt);
-	} else {
-		return std::make_unique<TcpSocket>(
-			runtime,
-			thread,
-			networkProxy,
-			protocolForFiles);
-	}
-}
 
 ProxyConnectionError SocketProxyConnectionError(int errorCode) {
 	if (errorCode == AbstractConnection::kErrorCodeOther) {

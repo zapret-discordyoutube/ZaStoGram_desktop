@@ -10,14 +10,19 @@ CLIENT_HELLO_FRAGMENTATION_CPP = MTPROXY_DIR / "client_hello_fragmentation.cpp"
 CLIENT_HELLO_RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
 TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 TLS_SOCKET_PSK_CPP = MTPROXY_DIR / "tls_socket_psk.cpp"
+TLS_SOCKET_PSK_H = MTPROXY_DIR / "tls_socket_psk.h"
 TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 TCP_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_tcp_socket.h"
-PROXY_DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+PROXY_DATA_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_data.h"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 README = SOURCE_DIR.parents[1] / "README.md"
+
+
+def psk_header():
+    return TLS_SOCKET_PSK_H.read_text(encoding="utf-8")
 
 
 def test_mtproxy_transport_policy_files_live_in_proxy_module():
@@ -86,20 +91,22 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
     hello_digest = function_body(handshake, "void TlsSocket::checkHelloDigest()")
 
-    assert "struct SyntheticPskTicket" in psk
-    assert "struct SyntheticPskCacheEntry" in psk
-    assert "std::map<QString, SyntheticPskCacheEntry>" in psk
+    assert "struct Ticket" in psk_header()
+    assert "class SyntheticPskCache final" in psk_header()
+    assert "std::map<QString, Entry> _entries;" in psk_header()
+    assert "std::map<QString, SyntheticPskCacheEntry>" not in psk
     assert "kSyntheticPskPoolSize" in psk
     assert "kSyntheticPskMinLifetime" in psk
     assert "kSyntheticPskMaxLifetime" in psk
-    assert "PrepareSyntheticPskOffer(" in psk
-    assert "NoteSyntheticPskDataPathSuccess(" in psk
-    assert "ClearSyntheticPskTickets(" in psk
+    assert "SyntheticPskCache::prepareOffer(" in psk
+    assert "SyntheticPskCache::noteDataPathSuccess(" in psk
+    assert "SyntheticPskCache::clear(" in psk
 
     assert "sendClientHello();" in plain_connected
     assert "_sentTlsProfile = profile;" in send_client_hello
     assert "if (_stealth.syntheticPsk)" in send_client_hello
-    assert "PrepareSyntheticPskOffer(" in send_client_hello
+    assert "_runtime->proxyServices().syntheticPsks().prepareOffer(" in (
+        send_client_hello)
     assert "MtProxy::EndpointKey(_endpointId.canonical)" in send_client_hello
     assert "domainFromSecret()" in send_client_hello
     assert "profile" in send_client_hello
@@ -107,18 +114,19 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     assert "_sentTlsProfile" in error_body
 
     assert "NoteSyntheticPskHandshakeSuccess(" not in hello_digest
-    assert "NoteSyntheticPskDataPathSuccess(" not in hello_digest
+    assert "noteDataPathSuccess(" not in hello_digest
 
 
 def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
     source = TLS_SOCKET_RECORDS_CPP.read_text(encoding="utf-8")
     packet_body = function_body(source, "bool TlsSocket::checkNextPacket()")
 
-    assert "NoteSyntheticPskDataPathSuccess(" in source
+    assert "_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(" in (
+        source)
     assert packet_body.index("_phase = HandshakePhase::FirstDataReceived;") < (
-        packet_body.index("NoteSyntheticPskDataPathSuccess("))
+        packet_body.index("noteDataPathSuccess("))
     assert packet_body.index("reportMtproxySuccess({") < (
-        packet_body.index("NoteSyntheticPskDataPathSuccess("))
+        packet_body.index("noteDataPathSuccess("))
 
 
 def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
@@ -157,7 +165,7 @@ def test_synthetic_psk_offer_failures_clear_remaining_tickets():
         assert f"case MtProxy::FailureReason::{reason}:" in clear_helper
     assert "case MtProxy::FailureReason::ServerHelloOkNoAppData:" not in (
         clear_helper)
-    assert "ClearSyntheticPskTickets(" in clear_helper
+    assert "_runtime->proxyServices().syntheticPsks().clear(" in clear_helper
     assert "_syntheticPskOffered = false;" in clear_helper
 
 
@@ -169,7 +177,7 @@ def test_synthetic_psk_uses_cached_identity_and_plausible_age():
         "void Generator::Part::writeSyntheticPskExtension()")
     offer_body = function_body(
         tls_socket,
-        "std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(")
+        "std::optional<SyntheticPskOffer> SyntheticPskCache::prepareOffer(")
 
     assert "const auto binderLengths = std::array{ 32, 48 };" in helper
     assert "!_pskOffer" in helper
@@ -196,7 +204,7 @@ def test_synthetic_psk_ticket_is_consumed_after_offer():
     source = TLS_SOCKET_PSK_CPP.read_text(encoding="utf-8")
     offer_body = function_body(
         source,
-        "std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(")
+        "std::optional<SyntheticPskOffer> SyntheticPskCache::prepareOffer(")
 
     assert "const auto ticket = entry.tickets[index];" in offer_body
     assert "entry.tickets.erase(" in offer_body

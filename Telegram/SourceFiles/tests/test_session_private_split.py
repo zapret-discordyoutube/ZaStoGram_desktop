@@ -11,6 +11,7 @@ SESSION_H = SESSION_PRIVATE_DIR / "session_private.h"
 SESSION_MAIN = SESSION_PRIVATE_DIR / "session_private.cpp"
 SESSION_TRANSPORT = SESSION_PRIVATE_DIR / "transport.cpp"
 SESSION_TRANSPORT_H = SESSION_PRIVATE_DIR / "transport.h"
+SESSION_TIMINGS_H = SESSION_PRIVATE_DIR / "timings.h"
 SESSION_MESSAGE_HANDLER = SESSION_PRIVATE_DIR / "message_handler.cpp"
 SESSION_MESSAGE_HANDLER_H = SESSION_PRIVATE_DIR / "message_handler.h"
 SESSION_PROXY_PORT = SESSION_PRIVATE_DIR / "proxy_port.cpp"
@@ -24,6 +25,7 @@ SESSION_AUTH = SESSION_PRIVATE_DIR / "auth.cpp"
 SPLIT_SOURCES = (
     SESSION_TRANSPORT,
     SESSION_TRANSPORT_H,
+    SESSION_TIMINGS_H,
     SESSION_MESSAGE_HANDLER,
     SESSION_MESSAGE_HANDLER_H,
     SESSION_PROXY_PORT,
@@ -112,8 +114,70 @@ def test_session_private_owns_transport_and_message_handler_components():
     assert "SessionTransport _transport;" in header
     assert "SessionMessageHandler _messageHandler;" in header
     assert "const not_null<SessionProxyPort*> _proxyPort;" in header
-    assert ", _transport(this, _runtime)" in source
+    assert ", _transport(this, _runtime, thread)" in source
     assert ", _messageHandler(this)" in source
+
+
+def test_session_transport_timers_are_bound_to_session_thread():
+    source = read(SESSION_MAIN)
+    transport = read(SESSION_TRANSPORT)
+    transport_h = read(SESSION_TRANSPORT_H)
+
+    assert ", _transport(this, _runtime, thread)" in source
+    assert "not_null<QThread*> thread" in transport_h
+    assert "not_null<QThread*> thread" in transport
+    assert "RuntimeTimer retryTimer;" in transport_h
+    assert "runtime->async().makeTimer(\n\tthread," in transport
+    assert "base::Timer retryTimer;" not in transport_h
+    assert "makeTimer(\n\tnot_null<QObject*>{ owner->_owner.get() }" not in transport
+
+
+def test_session_components_do_not_grant_reciprocal_friend_access():
+    session_h = read(SESSION_H)
+    transport_h = read(SESSION_TRANSPORT_H)
+    message_handler_h = read(SESSION_MESSAGE_HANDLER_H)
+
+    assert "friend class SessionTransport;" in session_h
+    assert "friend class SessionMessageHandler;" in session_h
+    assert "friend class SessionPrivate;" not in transport_h
+    assert "friend class SessionMessageHandler;" not in transport_h
+    assert "friend class SessionPrivate;" not in message_handler_h
+    assert "friend class SessionTransport;" not in message_handler_h
+
+
+def test_session_transport_state_is_changed_through_transport_methods():
+    receive = read(SESSION_RECEIVE)
+    send = read(SESSION_SEND)
+    auth = read(SESSION_AUTH)
+    session_main = read(SESSION_MAIN)
+
+    assert "_owner->_transport._state" not in receive
+    assert "_owner->_transport._timing" not in receive
+    assert "_transport._state" not in send
+    assert "_transport._timing" not in send
+    assert "_transport._state" not in auth
+    assert "_transport._timing" not in auth
+    assert "_transport._state" not in session_main
+    assert "_transport._timing" not in session_main
+
+
+def test_session_shared_timing_constants_are_not_duplicated():
+    timings = read(SESSION_TIMINGS_H)
+    sources = {
+        "transport.cpp": read(SESSION_TRANSPORT),
+        "connection.cpp": read(SESSION_CONNECTION),
+        "send.cpp": read(SESSION_SEND),
+        "receive.cpp": read(SESSION_RECEIVE),
+    }
+
+    assert "constexpr auto kMinConnectedTimeout" in timings
+    assert "constexpr auto kAckSendWaiting" in timings
+    for source in sources.values():
+        assert "constexpr auto kMinConnectedTimeout" not in source
+        assert "constexpr auto kAckSendWaiting" not in source
+    assert "kMinConnectedTimeout" in sources["transport.cpp"]
+    assert "kMinConnectedTimeout" in sources["connection.cpp"]
+    assert "kAckSendWaiting" in sources["receive.cpp"]
 
 
 def test_transport_and_message_handler_own_bulk_methods():

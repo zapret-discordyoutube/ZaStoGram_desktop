@@ -9,12 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/random.h"
 
-#include <QtCore/QMutex>
-
 #include <algorithm>
 #include <array>
-#include <map>
-#include <vector>
 
 namespace MTP::details {
 namespace {
@@ -23,29 +19,15 @@ constexpr auto kSyntheticPskPoolSize = 3;
 constexpr auto kSyntheticPskMinLifetime = crl::time(2 * 60 * 60 * 1000);
 constexpr auto kSyntheticPskMaxLifetime = crl::time(8 * 60 * 60 * 1000);
 
-struct SyntheticPskTicket {
-	bytes::vector identity;
-	uint32 ticketAgeAdd = 0;
-	crl::time issuedAt = 0;
-	crl::time expiresAt = 0;
-	int binderLength = 0;
-};
-
-struct SyntheticPskCacheEntry {
-	std::vector<SyntheticPskTicket> tickets;
-	int nextIndex = 0;
-};
-
-QMutex SyntheticPskCacheMutex;
-std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
-
 [[nodiscard]] uint32 RandomUint32() {
 	auto result = uint32();
 	bytes::set_random(bytes::object_as_span(&result));
 	return result;
 }
 
-[[nodiscard]] QString SyntheticPskCacheKey(
+} // namespace
+
+QString SyntheticPskCache::cacheKey(
 		const QString &endpointKey,
 		bytes::const_span domain,
 		ProxyTlsProfile profile) {
@@ -58,7 +40,7 @@ std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
 			int(domain.size())).toHex());
 }
 
-[[nodiscard]] SyntheticPskTicket MakeSyntheticPskTicket(crl::time now) {
+SyntheticPskCache::Ticket SyntheticPskCache::makeTicket(crl::time now) {
 	const auto identityLengths = std::array{ 32, 105, 256 };
 	const auto binderLengths = std::array{ 32, 48 };
 	const auto identityLength = identityLengths[
@@ -67,7 +49,7 @@ std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
 		base::RandomIndex(binderLengths.size())];
 	const auto lifetimeRange = int(
 		kSyntheticPskMaxLifetime - kSyntheticPskMinLifetime + 1);
-	auto result = SyntheticPskTicket();
+	auto result = Ticket();
 	result.identity.resize(identityLength);
 	bytes::set_random(result.identity);
 	result.ticketAgeAdd = RandomUint32();
@@ -79,8 +61,8 @@ std::map<QString, SyntheticPskCacheEntry> SyntheticPskCache;
 	return result;
 }
 
-void DropExpiredSyntheticPskTickets(
-		SyntheticPskCacheEntry &entry,
+void SyntheticPskCache::dropExpiredTickets(
+		Entry &entry,
 		crl::time now) {
 	for (auto i = entry.tickets.begin(); i != entry.tickets.end();) {
 		if (i->expiresAt <= now) {
@@ -96,9 +78,7 @@ void DropExpiredSyntheticPskTickets(
 	}
 }
 
-} // namespace
-
-[[nodiscard]] std::optional<SyntheticPskOffer> PrepareSyntheticPskOffer(
+std::optional<SyntheticPskOffer> SyntheticPskCache::prepareOffer(
 		const QString &endpointKey,
 		bytes::const_span domain,
 		ProxyTlsProfile profile) {
@@ -106,23 +86,23 @@ void DropExpiredSyntheticPskTickets(
 		return std::nullopt;
 	}
 	const auto now = crl::now();
-	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
-	QMutexLocker lock(&SyntheticPskCacheMutex);
-	const auto i = SyntheticPskCache.find(key);
-	if (i == end(SyntheticPskCache)) {
+	const auto key = cacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&_mutex);
+	const auto i = _entries.find(key);
+	if (i == end(_entries)) {
 		return std::nullopt;
 	}
 	auto &entry = i->second;
-	DropExpiredSyntheticPskTickets(entry, now);
+	dropExpiredTickets(entry, now);
 	if (entry.tickets.empty()) {
-		SyntheticPskCache.erase(i);
+		_entries.erase(i);
 		return std::nullopt;
 	}
 	const auto index = entry.nextIndex;
 	const auto ticket = entry.tickets[index];
 	entry.tickets.erase(entry.tickets.begin() + index);
 	if (entry.tickets.empty()) {
-		SyntheticPskCache.erase(i);
+		_entries.erase(i);
 	} else if (entry.nextIndex >= int(entry.tickets.size())) {
 		entry.nextIndex = 0;
 	}
@@ -135,19 +115,19 @@ void DropExpiredSyntheticPskTickets(
 	};
 }
 
-void ClearSyntheticPskTickets(
+void SyntheticPskCache::clear(
 		const QString &endpointKey,
 		bytes::const_span domain,
 		ProxyTlsProfile profile) {
 	if (endpointKey.isEmpty() || domain.empty()) {
 		return;
 	}
-	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
-	QMutexLocker lock(&SyntheticPskCacheMutex);
-	SyntheticPskCache.erase(key);
+	const auto key = cacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&_mutex);
+	_entries.erase(key);
 }
 
-void NoteSyntheticPskDataPathSuccess(
+void SyntheticPskCache::noteDataPathSuccess(
 		const QString &endpointKey,
 		bytes::const_span domain,
 		ProxyTlsProfile profile) {
@@ -155,12 +135,12 @@ void NoteSyntheticPskDataPathSuccess(
 		return;
 	}
 	const auto now = crl::now();
-	const auto key = SyntheticPskCacheKey(endpointKey, domain, profile);
-	QMutexLocker lock(&SyntheticPskCacheMutex);
-	auto &entry = SyntheticPskCache[key];
-	DropExpiredSyntheticPskTickets(entry, now);
+	const auto key = cacheKey(endpointKey, domain, profile);
+	QMutexLocker lock(&_mutex);
+	auto &entry = _entries[key];
+	dropExpiredTickets(entry, now);
 	while (int(entry.tickets.size()) < kSyntheticPskPoolSize) {
-		entry.tickets.push_back(MakeSyntheticPskTicket(now));
+		entry.tickets.push_back(makeTicket(now));
 	}
 	if (entry.nextIndex >= int(entry.tickets.size())) {
 		entry.nextIndex = 0;

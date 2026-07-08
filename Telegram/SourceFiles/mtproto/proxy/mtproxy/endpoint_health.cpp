@@ -367,6 +367,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		lock.unlock();
 		if (capabilityFailure) {
 			NoteCapabilityMtproxyFailure(
+				_runtime,
 				report.endpoint,
 				capabilityFailure->diagnostic);
 		}
@@ -384,6 +385,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		lock.unlock();
 		if (capabilityFailure) {
 			NoteCapabilityMtproxyFailure(
+				_runtime,
 				report.endpoint,
 				capabilityFailure->diagnostic);
 		}
@@ -397,6 +399,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			lock.unlock();
 			if (capabilityFailure) {
 				NoteCapabilityMtproxyFailure(
+					_runtime,
 					report.endpoint,
 					capabilityFailure->diagnostic);
 			}
@@ -409,6 +412,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		lock.unlock();
 		if (capabilityFailure) {
 			NoteCapabilityMtproxyFailure(
+				_runtime,
 				report.endpoint,
 				capabilityFailure->diagnostic);
 		}
@@ -482,11 +486,12 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	lock.unlock();
 	if (capabilityFailure) {
 		NoteCapabilityMtproxyFailure(
+			_runtime,
 			report.endpoint,
 			capabilityFailure->diagnostic);
 	}
 	if (capabilityRelayFailure) {
-		NoteCapabilityMtproxyRelayFailure(*capabilityRelayFailure);
+		NoteCapabilityMtproxyRelayFailure(_runtime, *capabilityRelayFailure);
 	}
 	if (rotateTlsProfile) {
 		(void)RotateTlsProfileOnFailure(
@@ -600,7 +605,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	lock.unlock();
 	NoteConnectSuccess(report.endpoint);
 	if (capabilitySuccess) {
-		NoteCapabilityMtproxySuccess(*capabilitySuccess);
+		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
@@ -645,7 +650,7 @@ void EndpointHealth::noteRelayStall(RelayStallReport report) {
 		return;
 	}
 	if (capabilityRelayFailure) {
-		NoteCapabilityMtproxyRelayFailure(*capabilityRelayFailure);
+		NoteCapabilityMtproxyRelayFailure(_runtime, *capabilityRelayFailure);
 	}
 }
 

@@ -7,10 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include <crl/crl_time.h>
+
 namespace MTP::details {
 
-class SessionProxyPort;
-
-[[nodiscard]] SessionProxyPort &DefaultSessionProxyPort();
+constexpr auto kAckSendWaiting = 10 * crl::time(1000);
+constexpr auto kMinConnectedTimeout = crl::time(1000);
+constexpr auto kMinReceiveTimeout = crl::time(4000);
+constexpr auto kSentContainerLives = 600 * crl::time(1000);
 
 } // namespace MTP::details

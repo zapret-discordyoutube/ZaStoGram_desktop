@@ -8,6 +8,8 @@ INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 CONNECTION_STATUS_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.h"
 CONNECTION_STATUS_CPP = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.cpp"
+CONNECTION_STATUS_TYPES_H = (
+    SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h")
 ABSTRACT_CONNECTION_H = SOURCE_DIR / "mtproto" / "transport" / "connection_abstract.h"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
@@ -37,6 +39,7 @@ def function_body(source, signature):
 
 def test_proxy_status_model_is_exposed_to_ui():
     status_header = STATUS_H.read_text(encoding="utf-8")
+    status_types_header = CONNECTION_STATUS_TYPES_H.read_text(encoding="utf-8")
     instance_header = INSTANCE_H.read_text(encoding="utf-8")
     connection_status_header = CONNECTION_STATUS_H.read_text(encoding="utf-8")
     connection_status_source = CONNECTION_STATUS_CPP.read_text(
@@ -46,15 +49,16 @@ def test_proxy_status_model_is_exposed_to_ui():
     widget_header = CONNECTING_WIDGET_H.read_text(encoding="utf-8")
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
 
-    assert "struct ProxyConnectionStatus" in status_header
-    assert "enum class ProxyConnectionPhase" in status_header
-    assert "enum class ProxyConnectionError" in status_header
-    assert "enum class ProxyMtproxyTerminalReason" in status_header
-    assert "struct ProxyConnectionAttempt" in status_header
-    assert "ProxyMtproxyTerminalReason mtproxyReason" in status_header
-    assert "ProxyConnectionAttempt attempt" in status_header
-    assert "crl::time terminalUntil" in status_header
-    assert "crl::time successUntil" in status_header
+    assert "struct ProxyConnectionStatus" in status_types_header
+    assert "enum class ProxyConnectionPhase" in status_types_header
+    assert "enum class ProxyConnectionError" in status_types_header
+    assert "enum class ProxyMtproxyTerminalReason" in status_types_header
+    assert "struct ProxyConnectionAttempt" in status_types_header
+    assert "ProxyMtproxyTerminalReason mtproxyReason" in status_types_header
+    assert "ProxyConnectionAttempt attempt" in status_types_header
+    assert "crl::time terminalUntil" in status_types_header
+    assert "crl::time successUntil" in status_types_header
+    assert "struct ProxyConnectionStatus" not in status_header
     assert "struct ProxyConnectionStatus" not in abstract_connection
     assert '#include "mtproto/proxy/status.h"' not in instance_header
     assert "ConnectionStatus &connectionStatus() const" in instance_header
@@ -76,6 +80,7 @@ def test_proxy_status_model_is_exposed_to_ui():
 
 def test_connection_notice_model_is_visible_without_proxy():
     status_header = STATUS_H.read_text(encoding="utf-8")
+    status_types_header = CONNECTION_STATUS_TYPES_H.read_text(encoding="utf-8")
     instance_header = INSTANCE_H.read_text(encoding="utf-8")
     connection_status_source = CONNECTION_STATUS_CPP.read_text(
         encoding="utf-8")
@@ -84,8 +89,9 @@ def test_connection_notice_model_is_visible_without_proxy():
     widget = CONNECTING_WIDGET.read_text(encoding="utf-8")
     lang = LANG.read_text(encoding="utf-8")
 
-    assert "enum class ConnectionNotice" in status_header
-    assert "WssDirectFallback" in status_header
+    assert "enum class ConnectionNotice" in status_types_header
+    assert "WssDirectFallback" in status_types_header
+    assert "enum class ConnectionNotice" not in status_header
     assert "connectionNoticeValue()" not in instance_header
     assert "setConnectionNotice(ShiftedDcId shiftedDcId, ConnectionNotice notice)" not in instance_header
     assert "noticeValue() const" in connection_status_header
@@ -102,15 +108,19 @@ def test_connection_notice_model_is_visible_without_proxy():
 
 def test_proxy_status_tracks_phases_and_socket_errors():
     status_header = STATUS_H.read_text(encoding="utf-8")
+    status_types_header = CONNECTION_STATUS_TYPES_H.read_text(encoding="utf-8")
     abstract_socket_h = ABSTRACT_SOCKET_H.read_text(encoding="utf-8")
     abstract_socket_cpp = ABSTRACT_SOCKET_CPP.read_text(encoding="utf-8")
     control = CONTROL_CPP.read_text(encoding="utf-8")
     diagnostics = DIAGNOSTICS_CPP.read_text(encoding="utf-8")
     tcp_connection = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
 
-    assert "enum class ProxyConnectionPhase" in status_header
-    assert "enum class ProxyConnectionError" in status_header
-    assert '#include "mtproto/proxy/status.h"' in abstract_socket_h
+    assert "enum class ProxyConnectionPhase" in status_types_header
+    assert "enum class ProxyConnectionError" in status_types_header
+    assert "enum class ProxyConnectionPhase" not in status_header
+    assert '#include "mtproto/runtime/connection_status_types.h"' in (
+        abstract_socket_h)
+    assert '#include "mtproto/proxy/status.h"' not in abstract_socket_h
     assert "void connectionProgress(HandshakePhase phase)" in abstract_socket_h
     assert "rpl::producer<HandshakePhase> progress() const" in abstract_socket_h
     assert "ProxyAuthenticationRequiredError" in abstract_socket_cpp
