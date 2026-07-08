@@ -378,6 +378,7 @@ def test_sources_that_call_instance_main_dc_include_instance_header():
         ".mtp().isTestMode(",
         ".mtp().mainDcId(",
         ".mtp().mainDcIdValue(",
+        ".mtp().requestConfig(",
         ".mtp().runtimeEnvironment(",
         "->mtp().config(",
         "->mtp().configValues(",
