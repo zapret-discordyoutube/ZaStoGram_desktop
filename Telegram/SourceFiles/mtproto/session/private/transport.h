@@ -25,6 +25,7 @@ public:
 
 	void start();
 	void connectToServer(bool afterConfig = false);
+	void requestCDNConfig();
 	void restartNow();
 	void migrateProxy(uint64 generation, bool scout);
 	void releaseProxyMigration(uint64 generation);
@@ -131,7 +132,6 @@ private:
 		const bytes::vector &protocolSecret,
 		bool protocolForFiles);
 	void connectingTimedOut();
-	void requestCDNConfig();
 	void handleError(int errorCode);
 	void onError(
 		not_null<AbstractConnection*> connection,

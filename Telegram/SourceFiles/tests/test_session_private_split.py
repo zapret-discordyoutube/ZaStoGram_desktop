@@ -150,6 +150,8 @@ def test_session_transport_state_is_changed_through_transport_methods():
     send = read(SESSION_SEND)
     auth = read(SESSION_AUTH)
     session_main = read(SESSION_MAIN)
+    transport_h = read(SESSION_TRANSPORT_H)
+    transport_public = transport_h.split("public:", 1)[1].split("private:", 1)[0]
 
     assert "_owner->_transport._state" not in receive
     assert "_owner->_transport._timing" not in receive
@@ -159,6 +161,8 @@ def test_session_transport_state_is_changed_through_transport_methods():
     assert "_transport._timing" not in auth
     assert "_transport._state" not in session_main
     assert "_transport._timing" not in session_main
+    assert "void requestCDNConfig();" in transport_public
+    assert "_transport.requestCDNConfig();" in auth
 
 
 def test_session_shared_timing_constants_are_not_duplicated():
