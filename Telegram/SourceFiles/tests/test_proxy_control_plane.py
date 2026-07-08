@@ -410,6 +410,7 @@ def test_mtproxy_health_policy_is_control_plane_owned():
     assert '#include "mtproto/proxy/control_plane.h"' in rotation_header
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' not in (
         rotation_header)
+    assert '#include "mtproto/runtime/runtime_environment.h"' in rotation
     assert "runtimeEnvironment().proxyServices().control().mtproxyEndpointChanges(" in (
         rotation)
 
