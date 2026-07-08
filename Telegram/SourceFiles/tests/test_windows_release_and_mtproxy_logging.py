@@ -149,6 +149,9 @@ def test_windows_sccache_server_is_started_and_cleaned_up():
     assert "SCCACHE_SERVER_PORT=$SCCACHE_SERVER_PORT" in workflow
     assert "${SCCACHE_PATH:-sccache} --start-server" in workflow
     assert "${SCCACHE_PATH:-sccache} --zero-stats" in workflow
+    assert "command -v \"${SCCACHE_PATH:-sccache}\"" in workflow
+    assert "sccache not found, skipping stats" in workflow
+    assert "sccache not found, skipping stop" in workflow
     assert "${SCCACHE_PATH:-sccache} --stop-server || true" in workflow
     assert "SCCACHE_IDLE_TIMEOUT: \"0\"" not in workflow
 

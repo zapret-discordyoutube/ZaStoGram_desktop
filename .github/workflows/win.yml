@@ -703,7 +703,12 @@ jobs:
       - name: sccache stats.
         if: always() && env.ONLY_CACHE == 'false'
         shell: bash
-        run: ${SCCACHE_PATH:-sccache} --show-stats
+        run: |
+          if ! command -v "${SCCACHE_PATH:-sccache}" >/dev/null 2>&1; then
+            echo "sccache not found, skipping stats."
+            exit 0
+          fi
+          ${SCCACHE_PATH:-sccache} --show-stats || true
 
       - name: sccache error log.
         if: always() && env.ONLY_CACHE == 'false'
@@ -713,7 +718,12 @@ jobs:
       - name: Stop sccache server.
         if: always() && env.ONLY_CACHE == 'false'
         shell: bash
-        run: ${SCCACHE_PATH:-sccache} --stop-server || true
+        run: |
+          if ! command -v "${SCCACHE_PATH:-sccache}" >/dev/null 2>&1; then
+            echo "sccache not found, skipping stop."
+            exit 0
+          fi
+          ${SCCACHE_PATH:-sccache} --stop-server || true
 
       - name: Pack signed update.
         if: env.ONLY_CACHE == 'false' && startsWith(github.ref, 'refs/tags/')
