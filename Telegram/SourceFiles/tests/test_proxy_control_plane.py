@@ -14,6 +14,8 @@ CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 STATUS_H = PROXY_DIR / "status.h"
 STATUS_CPP = PROXY_DIR / "status.cpp"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
+STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
+RUNTIME_PROXY_ENDPOINT_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h"
 RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
@@ -137,12 +139,12 @@ def test_mtp_first_data_is_relay_success_fact():
         fact_body)
     assert "fact.status.phase = ProxyConnectionPhase::Connected;" in fact_body
     assert "kFreshRelaySuccessWindow" in source
-    assert "successUntil" in read(STATUS_H)
+    assert "successUntil" in read(STATUS_TYPES_H)
 
 
 def test_fresh_relay_success_shadows_late_sibling_failures():
     source = read(CONTROL_CPP)
-    status_header = read(STATUS_H)
+    status_header = read(STATUS_TYPES_H)
     reducer = function_body(
         source,
         "ProxyConnectionStatus ProxyControlPlane::Reduce(")
@@ -195,10 +197,10 @@ def test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source():
 
 
 def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
-    status_h = read(STATUS_H)
+    status_h = read(STATUS_TYPES_H)
     status = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
-    identity_h = read(PROXY_DIR / "mtproxy" / "endpoint_identity.h")
+    endpoint_h = read(RUNTIME_PROXY_ENDPOINT_H)
     identity = read(ENDPOINT_IDENTITY_CPP)
     widget = read(CONNECTING_WIDGET)
     lang = read(LANG)
@@ -219,7 +221,7 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
         "MtpReceiveTimeoutAfterData",
     ):
         assert reason in status_h
-        assert reason in identity_h
+        assert reason in endpoint_h
 
     no_appdata_block = kind_body.split(
         "case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:", 1)[1].split(

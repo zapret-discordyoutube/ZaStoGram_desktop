@@ -5,6 +5,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
+STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
@@ -166,7 +167,7 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
 
 
 def test_probe_attempts_do_not_publish_selected_status():
-    status = read(STATUS_H)
+    status = read(STATUS_TYPES_H)
     control = read(CONTROL_CPP)
     reduce_body = function_body(
         control,

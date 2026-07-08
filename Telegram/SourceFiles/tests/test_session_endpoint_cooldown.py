@@ -38,7 +38,7 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
 
-    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
+    assert "SessionProxyLease mtproxyLease;" in header
     assert "std::move(start.lease)" in source
     assert "std::vector<SessionProxyTicket> brokerTickets;" in header
     assert "i->mtproxyLease.release();" in source

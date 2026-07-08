@@ -6,7 +6,7 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
-DATA_H = SOURCE_DIR / "mtproto" / "proxy" / "data.h"
+DATA_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_data.h"
 CORE_SETTINGS_CPP = SOURCE_DIR / "core" / "core_settings.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
@@ -101,7 +101,7 @@ def test_live_mtproxy_connects_through_connection_broker_before_syn():
     assert '#include "mtproto/session/private/proxy_port.h"' in session
     assert "_owner->_proxyPort->requestConnection({" in append_body
     assert "MtProxy::ReserveOpenSlot(" not in append_body
-    assert "mtproxyEndpoint" in append_body
+    assert "std::move(start.endpoint)" in append_body
     assert "stealth.connectionPattern" in append_body
     assert ".start = [=](SessionProxyStart start)" in append_body
     assert "weak->connectToServer(" in append_body
