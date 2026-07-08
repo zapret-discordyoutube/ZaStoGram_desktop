@@ -35,6 +35,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_app_config.h"
 #include "mtproto/config/mtproto_config.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
 #include "window/notifications_manager.h"

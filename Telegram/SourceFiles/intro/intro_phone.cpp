@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/session/session_state.h"
 #include "data/data_user.h"
 #include "ui/boxes/confirm_box.h"

@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "ui/chat/chat_style.h"
 
 namespace Main {

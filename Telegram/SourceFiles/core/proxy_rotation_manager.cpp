@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_services.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/session_state.h"
 

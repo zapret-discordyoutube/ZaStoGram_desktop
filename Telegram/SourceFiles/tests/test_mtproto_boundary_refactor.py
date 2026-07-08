@@ -360,14 +360,37 @@ def test_sender_header_does_not_pull_instance_facade():
 
 
 def test_sources_that_call_instance_main_dc_include_instance_header():
+    instance_calls = (
+        ".instance().killSession(",
+        ".instance().mainDcId(",
+        ".instance().mainDcIdValue(",
+        ".instance().nonPremiumDelayedRequests(",
+        ".instance().requestConfig(",
+        ".instance().setMainDcId(",
+        ".instance().setUserPhone(",
+        ".instance().state(",
+        ".instance().stopSession(",
+        ".mtp().config(",
+        ".mtp().configValues(",
+        ".mtp().dcstate(",
+        ".mtp().environment(",
+        ".mtp().isTestMode(",
+        ".mtp().mainDcId(",
+        ".mtp().mainDcIdValue(",
+        ".mtp().runtimeEnvironment(",
+        "->mtp().config(",
+        "->mtp().configValues(",
+        "->mtp().dcstate(",
+        "->mtp().environment(",
+        "->mtp().isTestMode(",
+        "->mtp().mainDcId(",
+        "->mtp().mainDcIdValue(",
+        "->mtp().runtimeEnvironment(",
+    )
     offenders = []
     for path in SOURCE_DIR.rglob("*.cpp"):
         source = read(path)
-        if not any(call in source for call in (
-            ".instance().mainDcId(",
-            ".mtp().mainDcId(",
-            "->mtp().mainDcId(",
-        )):
+        if not any(call in source for call in instance_calls):
             continue
         if '#include "mtproto/instance/mtp_instance.h"' not in source:
             offenders.append(path.relative_to(SOURCE_DIR).as_posix())

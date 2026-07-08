@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/dc_id.h"
 #include "mtproto/auth/mtproto_auth_key.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/protocol/mtproto_response.h"
 #include "main/main_session.h"
 #include "data/data_session.h"

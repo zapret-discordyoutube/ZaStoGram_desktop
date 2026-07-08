@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/session/session_state.h"
 #include "mtproto/config/mtproto_config.h"
