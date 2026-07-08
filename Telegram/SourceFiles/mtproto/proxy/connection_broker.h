@@ -61,7 +61,6 @@ struct ConnectionRequest {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	crl::time notBefore = 0;
-	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
@@ -85,25 +84,26 @@ public:
 private:
 	friend class ConnectionBroker;
 
-	explicit ConnectionTicket(ConnectionTicketId id);
+	ConnectionTicket(ConnectionBroker *broker, ConnectionTicketId id);
 
+	ConnectionBroker *_broker = nullptr;
 	ConnectionTicketId _id = 0;
 };
 
 class ConnectionBroker final {
 public:
-	[[nodiscard]] static ConnectionBroker &Instance();
+	explicit ConnectionBroker(not_null<RuntimeEnvironment*> runtime);
+	ConnectionBroker(const ConnectionBroker &other) = delete;
+	ConnectionBroker &operator=(const ConnectionBroker &other) = delete;
+	~ConnectionBroker();
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
 	void cancel(ConnectionTicketId id);
-	void cancelByProxyGeneration(RuntimeEnvironment *runtime, uint64 generation);
+	void cancelByProxyGeneration(uint64 generation);
 
 private:
 	struct RequestState;
 	struct EndpointQueue;
-
-	ConnectionBroker();
-	~ConnectionBroker();
 
 	[[nodiscard]] EndpointQueue &queueFor(MtProxy::EndpointUse use);
 	void drain();
@@ -131,6 +131,7 @@ private:
 	std::unique_ptr<EndpointQueue> _proxyCheckQueue;
 	ConnectionTicketId _lastTicketId = 0;
 	QMutex _mutex;
+	const not_null<RuntimeEnvironment*> _runtime;
 };
 
 } // namespace details

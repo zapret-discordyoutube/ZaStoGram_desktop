@@ -10,15 +10,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "base/algorithm.h"
-
-#include <QtCore/QTimer>
 
 #include <algorithm>
 #include <array>
 #include <deque>
-#include <limits>
 #include <optional>
 #include <vector>
 
@@ -32,13 +30,6 @@ constexpr auto kQueuePriorityOrder = std::array{
 	MtProxy::EndpointUse::Media,
 	MtProxy::EndpointUse::Upload,
 };
-
-[[nodiscard]] int TimerDelay(crl::time delay) {
-	return int(std::clamp(
-		delay,
-		crl::time(0),
-		crl::time(std::numeric_limits<int>::max())));
-}
 
 } // namespace
 
@@ -80,17 +71,23 @@ struct ConnectionBroker::EndpointQueue {
 }
 
 
-ConnectionTicket::ConnectionTicket(ConnectionTicketId id) : _id(id) {
+ConnectionTicket::ConnectionTicket(
+	ConnectionBroker *broker,
+	ConnectionTicketId id)
+: _broker(broker)
+, _id(id) {
 }
 
 ConnectionTicket::ConnectionTicket(ConnectionTicket &&other) noexcept
-: _id(base::take(other._id)) {
+: _broker(base::take(other._broker))
+, _id(base::take(other._id)) {
 }
 
 ConnectionTicket &ConnectionTicket::operator=(
 		ConnectionTicket &&other) noexcept {
 	if (this != &other) {
 		cancel();
+		_broker = base::take(other._broker);
 		_id = base::take(other._id);
 	}
 	return *this;
@@ -101,9 +98,10 @@ ConnectionTicket::~ConnectionTicket() {
 }
 
 void ConnectionTicket::cancel() {
-	if (_id) {
-		ConnectionBroker::Instance().cancel(base::take(_id));
+	if (_broker && _id) {
+		_broker->cancel(base::take(_id));
 	}
+	_broker = nullptr;
 }
 
 ConnectionTicketId ConnectionTicket::id() const {
@@ -114,17 +112,13 @@ ConnectionTicket::operator bool() const {
 	return _id != 0;
 }
 
-ConnectionBroker &ConnectionBroker::Instance() {
-	static auto result = ConnectionBroker();
-	return result;
-}
-
-ConnectionBroker::ConnectionBroker()
+ConnectionBroker::ConnectionBroker(not_null<RuntimeEnvironment*> runtime)
 : _mainQueue(std::make_unique<EndpointQueue>(MtProxy::EndpointUse::Main))
 , _mediaQueue(std::make_unique<EndpointQueue>(MtProxy::EndpointUse::Media))
 , _uploadQueue(std::make_unique<EndpointQueue>(MtProxy::EndpointUse::Upload))
 , _proxyCheckQueue(
-	std::make_unique<EndpointQueue>(MtProxy::EndpointUse::ProxyCheck)) {
+	std::make_unique<EndpointQueue>(MtProxy::EndpointUse::ProxyCheck))
+, _runtime(runtime) {
 }
 
 ConnectionBroker::~ConnectionBroker() = default;
@@ -137,13 +131,13 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 	{
 		QMutexLocker lock(&_mutex);
 		state->id = ++_lastTicketId;
-		state->createdAt = crl::now();
 		state->request = std::move(request);
+		state->createdAt = _runtime->async().now();
 		state->proxyGeneration = state->request.proxyGeneration;
 		queueFor(state->request.use).pending.push_back(state);
 	}
 	scheduleDrain(state, 0);
-	return ConnectionTicket(state->id);
+	return ConnectionTicket(this, state->id);
 }
 
 void ConnectionBroker::cancel(ConnectionTicketId id) {
@@ -182,9 +176,7 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 	}
 }
 
-void ConnectionBroker::cancelByProxyGeneration(
-		RuntimeEnvironment *runtime,
-		uint64 generation) {
+void ConnectionBroker::cancelByProxyGeneration(uint64 generation) {
 	auto cancelled = std::vector<std::shared_ptr<RequestState>>();
 	{
 		QMutexLocker lock(&_mutex);
@@ -195,8 +187,7 @@ void ConnectionBroker::cancelByProxyGeneration(
 				_uploadQueue.get() }) {
 			for (auto i = begin(queue->pending); i != end(queue->pending);) {
 				const auto &state = *i;
-				if (state->request.runtime == runtime
-					&& state->proxyGeneration < generation) {
+				if (state->proxyGeneration < generation) {
 					state->active = false;
 					cancelled.push_back(state);
 					i = queue->pending.erase(i);
@@ -278,15 +269,16 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 		return;
 	}
 
-	auto admission = ProxyControlPlane::Admit({
+	auto admission = _runtime->proxyServices().control().admit({
 		.endpoint = state->request.endpoint,
-			.use = state->request.use,
-			.stealth = state->request.stealth,
-			.configuredTlsProfile = state->request.configuredTlsProfile,
-			.proxyGeneration = state->proxyGeneration,
-		});
+		.use = state->request.use,
+		.stealth = state->request.stealth,
+		.configuredTlsProfile = state->request.configuredTlsProfile,
+		.proxyGeneration = state->proxyGeneration,
+	});
 	if (admission.action == ProxyAdmissionAction::StartNow) {
 		const auto openDelay = MtProxy::ReserveOpenSlot(
+			_runtime,
 			state->request.endpoint,
 			state->request.connectionPattern,
 			state->request.notBefore);
@@ -367,9 +359,9 @@ void ConnectionBroker::scheduleDrain(
 		cancel(state->id);
 		return;
 	}
-	QTimer::singleShot(TimerDelay(delay), state->request.context, [=] {
+	_runtime->async().singleShot(delay, state->request.context, [=] {
 		if (state->active) {
-			ConnectionBroker::Instance().drain();
+			drain();
 		}
 	});
 }
@@ -381,9 +373,9 @@ void ConnectionBroker::scheduleStart(
 		cancel(state->id);
 		return;
 	}
-	QTimer::singleShot(TimerDelay(delay), state->request.context, [=] {
+	_runtime->async().singleShot(delay, state->request.context, [=] {
 		if (state->active) {
-			ConnectionBroker::Instance().start(state->id);
+			start(state->id);
 		}
 	});
 }
@@ -481,18 +473,18 @@ void ConnectionBroker::reportAdmissionEvent(
 		ProxyDiagnosticsPhase phase,
 		ConnectionBrokerDecision decision,
 		const QString &message) {
-	if (!state->request.runtime || !state->request.proxy) {
+	if (!state->request.proxy) {
 		return;
 	}
 	const auto profile = state->admission
 		? state->admission->effectiveTlsProfile
 		: state->request.configuredTlsProfile;
-	ReportProxyEvent(not_null<RuntimeEnvironment*>(state->request.runtime), {
+	ReportProxyEvent(_runtime, {
 		.phase = phase,
 		.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
 			decision.blockedBy),
 		.terminalUntil = decision.retryAfter > 0
-			? (crl::now() + decision.retryAfter)
+			? (_runtime->async().now() + decision.retryAfter)
 			: 0,
 		.severity = (phase == ProxyDiagnosticsPhase::AdmissionStarted)
 			? ProxyDiagnosticsSeverity::Info
@@ -508,7 +500,7 @@ void ConnectionBroker::reportAdmissionEvent(
 		.profile = ProxyDiagnosticsTlsProfileName(profile),
 		.recipeLevel = int(state->request.stealth.level),
 		.queueMs = state->createdAt
-			? (crl::now() - state->createdAt)
+			? (_runtime->async().now() - state->createdAt)
 			: crl::time(0),
 	});
 }

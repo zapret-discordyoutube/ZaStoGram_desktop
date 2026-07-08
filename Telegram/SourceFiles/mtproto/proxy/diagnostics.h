@@ -139,10 +139,8 @@ struct ProxyEventReport {
 void WriteProxyDiagnosticsLine(
 	not_null<RuntimeEnvironment*> runtime,
 	ProxyDiagnosticsEvent event);
-void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event);
 void ReportProxyEvent(
 	not_null<RuntimeEnvironment*> runtime,
 	ProxyEventReport report);
-void ReportProxyEvent(ProxyEventReport report);
 
 } // namespace MTP

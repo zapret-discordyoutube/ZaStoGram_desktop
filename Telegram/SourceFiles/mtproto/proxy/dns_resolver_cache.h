@@ -7,10 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/basic_types.h"
+
 #include <QtCore/QObject>
 #include <QtCore/QStringList>
 
 #include <functional>
+#include <memory>
 
 namespace MTP {
 
@@ -29,10 +32,12 @@ class DnsResolverCache final {
 public:
 	using Callback = std::function<void(QString, QStringList, qint64)>;
 
-	[[nodiscard]] static DnsResolverCache &Instance();
+	explicit DnsResolverCache(not_null<RuntimeEnvironment*> runtime);
+	DnsResolverCache(const DnsResolverCache &other) = delete;
+	DnsResolverCache &operator=(const DnsResolverCache &other) = delete;
+	~DnsResolverCache();
 
 	void request(
-		RuntimeEnvironment *runtime,
 		QObject *receiver,
 		const QString &host,
 		Callback callback);
@@ -42,7 +47,10 @@ public:
 		qint64 expireAt);
 
 private:
-	void connectRuntime(RuntimeEnvironment *runtime);
+	struct Storage;
+
+	const not_null<RuntimeEnvironment*> _runtime;
+	const std::unique_ptr<Storage> _storage;
 };
 
 } // namespace details

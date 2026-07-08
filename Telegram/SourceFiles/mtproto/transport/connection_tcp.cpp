@@ -550,12 +550,15 @@ void TcpConnection::connectToServer(
 		int port,
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
-		bool protocolForFiles) {
+		bool protocolForFiles,
+		ConnectionStartContext context) {
 	Expects(_address.isEmpty());
 	Expects(_port == 0);
 	Expects(_protocol == nullptr);
 	Expects(_protocolDcId == 0);
 
+	_mtproxyAttempt = context.mtproxyAttempt;
+	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
 	const auto secret = (_proxy.type == ProxyData::Type::Mtproto)
 		? _proxy.secretFromMtprotoPassword()
 		: protocolSecret;
@@ -578,6 +581,7 @@ void TcpConnection::connectToServer(
 		_protocol = Protocol::Create(secret);
 	}
 	_socket = AbstractSocket::Create(
+		_runtime,
 		thread(),
 		secret,
 		_proxy,
@@ -748,13 +752,6 @@ HandshakePhase TcpConnection::handshakePhase() const {
 	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
 }
 
-void TcpConnection::setMtproxyAttempt(
-		ProxyConnectionAttempt attempt,
-		crl::time startedAt) {
-	_mtproxyAttempt = attempt;
-	_mtproxyAttemptStartedAt = startedAt;
-}
-
 bool TcpConnection::isConnected() const {
 	return (_status == Status::Ready);
 }
@@ -794,7 +791,7 @@ void TcpConnection::socketError(int errorCode) {
 	const auto transport = _socket->transportName();
 	if (transport == u"WSS"_q
 		&& proxyError == ProxyConnectionError::RemoteClosed) {
-		NoteProxyWssRemoteClosed(_proxy);
+		NoteProxyWssRemoteClosed(_runtime, _proxy);
 	}
 	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Failed,

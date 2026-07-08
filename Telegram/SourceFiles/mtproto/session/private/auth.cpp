@@ -8,13 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/private/session_private.h"
 
 #include "core/version.h"
-#include "mtproto/auth/mtproto_bound_key_creator.h"
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/control_plane.h"
-#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
@@ -80,7 +76,7 @@ SessionPrivate::HandleResult SessionPrivate::handleBindResponse(
 		_sessionState.data->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	}
-	Unexpected("Result of BoundKeyCreator::handleBindResponse.");
+	Unexpected("Result of SessionBoundKeyCreator::handleBindResponse.");
 }
 
 void SessionPrivate::checkAuthKey() {
@@ -88,8 +84,8 @@ void SessionPrivate::checkAuthKey() {
 		ProxyDiagnosticsPhase::MtpTransportReady,
 		ProxyDiagnosticsSeverity::Info,
 		u"transport ready via %1, handshake %2ms, key id %3"_q
-			.arg(_connectionState.connection ? _connectionState.connection->tag() : u"none"_q)
-			.arg(_connectionState.connection ? _connectionState.connection->pingTime() : 0)
+			.arg(_transport._state.connection ? _transport._state.connection->tag() : u"none"_q)
+			.arg(_transport._state.connection ? _transport._state.connection->pingTime() : 0)
 			.arg(_sessionState.keyId));
 	if (_sessionState.keyId) {
 		authKeyChecked();
@@ -102,7 +98,7 @@ void SessionPrivate::checkAuthKey() {
 }
 
 void SessionPrivate::updateAuthKey() {
-	if (_delegate->isKeysDestroyer() || _authState.keyCreator || !_connectionState.connection) {
+	if (_delegate->isKeysDestroyer() || _authState.keyCreator || !_transport._state.connection) {
 		return;
 	}
 
@@ -132,12 +128,12 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		setCurrentKeyId(0);
 		DEBUG_LOG(("MTP Info: auth_key id for dc %1 changed, restarting..."
 			).arg(_shiftedDcId));
-		if (_connectionState.connection) {
+		if (_transport._state.connection) {
 			restart();
 		}
 		return;
 	}
-	if (!_connectionState.connection) {
+	if (!_transport._state.connection) {
 		return;
 	}
 	setCurrentKeyId(newKeyId);
@@ -174,7 +170,7 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		_authState.keyCreator->start(
 			BareDcId(_shiftedDcId),
 			getProtocolDcId(),
-			_connectionState.connection.get(),
+			_transport._state.connection.get(),
 			&_delegate->dcOptions());
 	} else {
 		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey(), "
@@ -226,7 +222,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 
 	using Result = DcKeyResult;
 	using Error = DcKeyError;
-	auto delegate = BoundKeyCreator::Delegate();
+	auto delegate = SessionAuthKeyDelegate();
 	delegate.unboundReady = [=](base::expected<Result, Error> result) {
 		if (!result) {
 			releaseKeyCreationOnFail();
@@ -287,7 +283,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 	auto request = DcKeyRequest();
 	request.persistentNeeded = (acquired == CreatingKeyType::Persistent);
 	request.temporaryExpiresIn = kTemporaryExpiresIn;
-	_authState.keyCreator = std::make_unique<BoundKeyCreator>(
+	_authState.keyCreator = _authKeyFactory->create(
 		request,
 		std::move(delegate));
 	const auto forceUseRegular = (_realDcType == DcType::MediaCluster)
@@ -296,7 +292,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 }
 
 void SessionPrivate::authKeyChecked() {
-	connect(_connectionState.connection, &AbstractConnection::receivedData, [=] {
+	connect(_transport._state.connection, &AbstractConnection::receivedData, [=] {
 		handleReceived();
 	});
 
@@ -310,7 +306,7 @@ void SessionPrivate::authKeyChecked() {
 				: u"requesting server salt"_q));
 
 	if (_sessionState.sessionSalt && setState(ConnectedState)) {
-		resendAll();
+		_messageHandler.resendAll();
 	} // else receive salt in bad_server_salt first, then try to send all the requests
 
 	_requestState.pingIdToSend = base::RandomValue<uint64>(); // get server_salt

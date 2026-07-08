@@ -13,10 +13,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 
 TcpSocket::TcpSocket(
+	not_null<RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
 	const QNetworkProxy &proxy,
 	bool protocolForFiles)
-: AbstractSocket(thread) {
+: AbstractSocket(runtime, thread) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
 	if (protocolForFiles) {

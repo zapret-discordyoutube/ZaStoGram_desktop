@@ -1502,6 +1502,8 @@ PRIVATE
     mtproto/proxy/connection_broker.h
     mtproto/proxy/control_plane.cpp
     mtproto/proxy/control_plane.h
+    mtproto/proxy/proxy_services.cpp
+    mtproto/proxy/proxy_services.h
     mtproto/proxy/capabilities.cpp
     mtproto/proxy/capabilities.h
     mtproto/proxy/data.cpp
@@ -1514,6 +1516,8 @@ PRIVATE
     mtproto/proxy/status.h
     mtproto/proxy/resolving_connection.cpp
     mtproto/proxy/resolving_connection.h
+    mtproto/proxy/session_proxy_adapter.cpp
+    mtproto/proxy/session_proxy_adapter.h
     mtproto/transport/connection_tcp.cpp
     mtproto/transport/connection_tcp.h
     mtproto/core_types.h
@@ -1526,6 +1530,8 @@ PRIVATE
     mtproto/proxy/handshake_gate.h
     mtproto/instance/mtp_instance.cpp
     mtproto/instance/mtp_instance.h
+    mtproto/instance/request_registry.cpp
+    mtproto/instance/request_registry.h
     mtproto/instance/rpc_error_handler.cpp
     mtproto/instance/rpc_error_handler.h
     mtproto/instance/sender.cpp
@@ -1563,6 +1569,8 @@ PRIVATE
     mtproto/proxy/mtproxy/tls_socket_psk.cpp
     mtproto/proxy/mtproxy/tls_socket_psk.h
     mtproto/proxy/mtproxy/tls_socket_records.cpp
+    mtproto/proxy/mtproxy/tls_socket_transport.cpp
+    mtproto/proxy/mtproxy/tls_socket_transport.h
     mtproto/proxy/mtproxy/tls_socket_utils.h
     mtproto/proxy/wss/socket.cpp
     mtproto/proxy/wss/socket.h
@@ -1572,6 +1580,16 @@ PRIVATE
     mtproto/session/session.h
     mtproto/session/session_state.h
     mtproto/session/options.h
+    mtproto/session/private/transport.cpp
+    mtproto/session/private/transport.h
+    mtproto/session/private/auth_factory.cpp
+    mtproto/session/private/auth_factory.h
+    mtproto/session/private/connection_factory.cpp
+    mtproto/session/private/connection_factory.h
+    mtproto/session/private/message_handler.cpp
+    mtproto/session/private/message_handler.h
+    mtproto/session/private/proxy_port.cpp
+    mtproto/session/private/proxy_port.h
     mtproto/session/private/auth.cpp
     mtproto/session/private/connection.cpp
     mtproto/session/private/session_private.cpp

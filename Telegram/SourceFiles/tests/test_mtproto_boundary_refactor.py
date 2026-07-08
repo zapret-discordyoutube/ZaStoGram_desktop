@@ -7,6 +7,9 @@ ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 MTPROTO_DIR = SOURCE_DIR / "mtproto"
 PROXY_DIR = MTPROTO_DIR / "proxy"
+PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
+PROXY_SERVICES_CPP = PROXY_DIR / "proxy_services.cpp"
+SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 RUNTIME_H = MTPROTO_DIR / "runtime" / "runtime_environment.h"
 RUNTIME_CPP = MTPROTO_DIR / "runtime" / "runtime_environment.cpp"
 CONNECTION_STATUS_H = MTPROTO_DIR / "runtime" / "connection_status.h"
@@ -75,6 +78,7 @@ def test_runtime_environment_is_the_app_gateway():
     cmake = read(CMAKE)
     header = read(RUNTIME_H)
     source = read(RUNTIME_CPP)
+    services_header = read(PROXY_SERVICES_H)
     status_header = read(CONNECTION_STATUS_H)
     status_source = read(CONNECTION_STATUS_CPP)
     instance = read(INSTANCE_CPP)
@@ -83,6 +87,8 @@ def test_runtime_environment_is_the_app_gateway():
     assert "mtproto/runtime/runtime_environment.h" in cmake
     assert "mtproto/runtime/connection_status.cpp" in cmake
     assert "mtproto/runtime/connection_status.h" in cmake
+    assert "mtproto/proxy/proxy_services.cpp" in cmake
+    assert "mtproto/proxy/proxy_services.h" in cmake
     assert "struct RuntimeProxySettings" in header
     assert "struct RuntimeDeviceSettings" in header
     assert "struct RuntimeLanguageGateway" in header
@@ -92,6 +98,12 @@ def test_runtime_environment_is_the_app_gateway():
     assert "struct RuntimeInstanceServices" in header
     assert "struct RuntimeProxyResolver" in header
     assert "class RuntimeEnvironment final" in header
+    assert "class ProxyServices;" in header
+    assert "[[nodiscard]] ProxyServices &proxyServices() const;" in header
+    assert "class ProxyServices final" in services_header
+    assert "ProxyControlPlane &control();" in services_header
+    assert "details::ConnectionBroker &broker();" in services_header
+    assert "details::DnsResolverCache &dnsResolver();" in services_header
     assert "void bindInstance(RuntimeInstanceServices services);" in header
     assert "void unbindInstance(ConnectionStatus *status);" in header
     assert "RuntimeEnvironmentDescriptor" in header
@@ -156,17 +168,17 @@ def test_proxy_reporting_and_control_plane_do_not_accept_instance():
     control_cpp = read(CONTROL_CPP)
     runtime_cpp = read(RUNTIME_CPP)
 
-    assert "void ReportProxyEvent(ProxyEventReport report);" in diagnostics_h
+    assert "void ReportProxyEvent(ProxyEventReport report);" not in diagnostics_h
     assert "not_null<Instance*>" not in diagnostics_h
     assert "not_null<Instance*>" not in diagnostics_cpp
     assert "class Instance;" not in diagnostics_h
     assert "not_null<RuntimeEnvironment*> runtime" in diagnostics_h
     assert "runtime->diagnostics().reportProxyEvent" in diagnostics_cpp
-    assert "ProxyControlPlane::SubmitFact(runtime, report)" in runtime_cpp
-    assert "SubmitFact(\n\t\tnot_null<RuntimeEnvironment*> runtime" in control_h
+    assert "proxyServices().control().submitFact(report)" in runtime_cpp
+    assert "void submitFact(const ProxyEventReport &report);" in control_h
     assert "not_null<Instance*>" not in control_h
     assert "not_null<Instance*>" not in control_cpp
-    assert "runtime->instance().connectionStatus->setProxyStatus" in control_cpp
+    assert "_runtime->instance().connectionStatus->setProxyStatus" in control_cpp
 
 
 def test_instance_and_session_use_runtime_gateway_for_app_facade():
@@ -287,14 +299,21 @@ def test_runtime_context_replaces_instance_in_proxy_entrypoints():
     dns_h = read(DNS_H)
     check_h = read(CHECK_H)
     session = read_session_private_sources()
+    adapter = read(SESSION_PROXY_ADAPTER_CPP)
 
-    assert "RuntimeEnvironment *runtime = nullptr;" in broker_h
-    assert "cancelByProxyGeneration(RuntimeEnvironment *runtime" in broker_h
-    assert "void request(\n\t\tRuntimeEnvironment *runtime" in dns_h
+    assert "RuntimeEnvironment *runtime = nullptr;" not in broker_h
+    assert "explicit ConnectionBroker(not_null<RuntimeEnvironment*> runtime);" in (
+        broker_h)
+    assert "cancelByProxyGeneration(RuntimeEnvironment *runtime" not in broker_h
+    assert "void cancelByProxyGeneration(uint64 generation);" in broker_h
+    assert "void request(\n\t\tQObject *receiver" in dns_h
     assert "void StartProxyCheck(\n\tnot_null<RuntimeEnvironment*> runtime" in check_h
-    assert ".runtime = _runtime" in session
-    assert "AbstractConnection::Create(\n\t\t\t\t_runtime" in session
-    assert "ConnectionBroker::Instance().request({" in session
+    assert "_connectionFactory->create(\n\t\t\t\t_owner->_runtime" in session
+    assert "SessionProxyPort" in session
+    assert "proxyServices().broker().request(" in adapter
+    assert "proxyServices().control().reportMtproxySuccess(" in adapter
+    assert "ConnectionBroker::Instance()" not in session
+    assert "DnsResolverCache::Instance()" not in session
     assert ".instance = _instance" not in session
 
 
@@ -313,6 +332,12 @@ def test_transport_session_leaks_use_neutral_metadata():
     assert "struct SendDataContext" in abstract_h
     assert "uint64 keyId = 0;" in abstract_h
     assert "sendData(mtpBuffer &&buffer, SendDataContext context)" in abstract_h
+    assert "struct ConnectionStartContext" in abstract_h
+    assert "ProxyConnectionAttempt mtproxyAttempt;" in abstract_h
+    assert "ConnectionStartContext context = {}" in abstract_h
+    assert "setMtproxyAttempt" not in abstract_h
+    assert "setMtproxyAttempt" not in abstract_cpp
+    assert "setMtproxyAttempt(" not in session
     assert "TransportServiceRequest::HttpWait" in session
     assert ".keyId = _sessionState.keyId" in session
     assert "usingHttpWait" not in session

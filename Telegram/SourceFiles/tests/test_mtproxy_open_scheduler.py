@@ -77,7 +77,7 @@ def test_connection_broker_reserves_global_open_slot_before_start():
 
     assert '#include "mtproto/proxy/mtproxy/open_scheduler.h"' in broker
     assert '#include "mtproto/proxy/control_plane.h"' in broker
-    assert "ProxyControlPlane::Admit({" in drain_body
+    assert "_runtime->proxyServices().control().admit({" in drain_body
     assert "MtProxy::ReserveOpenSlot(" in drain_body
     assert "state->request.connectionPattern" in drain_body
     assert "state->request.notBefore" in drain_body
@@ -90,23 +90,20 @@ def test_connection_broker_cancels_by_runtime_environment():
     broker = CONNECTION_BROKER_H.read_text(encoding="utf-8")
 
     assert "class RuntimeEnvironment;" in broker
-    assert (
-        "void cancelByProxyGeneration("
-        "RuntimeEnvironment *runtime, uint64 generation);"
-    ) in broker
+    assert "void cancelByProxyGeneration(uint64 generation);" in broker
     assert "MTP::Instance" not in broker
 
 
 def test_live_mtproxy_connects_through_connection_broker_before_syn():
     session = read_session_private_sources()
-    append_body = body_after(session, "bool SessionPrivate::appendTestConnection")
+    append_body = body_after(session, "bool SessionTransport::appendTestConnection")
 
-    assert '#include "mtproto/proxy/connection_broker.h"' in session
-    assert "ConnectionBroker::Instance().request({" in append_body
+    assert '#include "mtproto/session/private/proxy_port.h"' in session
+    assert "_owner->_proxyPort->requestConnection({" in append_body
     assert "MtProxy::ReserveOpenSlot(" not in append_body
     assert "mtproxyEndpoint" in append_body
     assert "stealth.connectionPattern" in append_body
-    assert ".start = [=](ConnectionStart start)" in append_body
+    assert ".start = [=](SessionProxyStart start)" in append_body
     assert "weak->connectToServer(" in append_body
 
 
@@ -114,10 +111,9 @@ def test_proxy_check_uses_same_connection_broker_before_syn():
     proxy_check = PROXY_CHECK_CPP.read_text(encoding="utf-8")
     start_body = body_after(proxy_check, "void StartProxyCheck")
 
-    assert '#include "mtproto/proxy/connection_broker.h"' in (
-        SOURCE_DIR / "mtproto" / "proxy" / "check.h").read_text(encoding="utf-8")
+    assert '#include "mtproto/proxy/proxy_services.h"' in proxy_check
     assert "MtProxy::EndpointIdFromProxy(proxy, checkStealth)" in start_body
-    assert "details::ConnectionBroker::Instance().request({" in start_body
+    assert "runtime->proxyServices().broker().request({" in start_body
     assert "MtProxy::ReserveOpenSlot(" not in start_body
     assert "checkStealth.connectionPattern" in start_body
     assert ".notBefore = gateDelay" in start_body

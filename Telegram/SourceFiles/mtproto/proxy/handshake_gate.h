@@ -12,6 +12,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <crl/crl_time.h>
 
 namespace MTP {
+
+class RuntimeEnvironment;
+
 namespace details {
 
 class HandshakeGateLease final {
@@ -27,7 +30,8 @@ public:
 	void release();
 
 private:
-	friend HandshakeGateLease ReserveHandshakeGate();
+	friend HandshakeGateLease ReserveHandshakeGate(
+		not_null<RuntimeEnvironment*> runtime);
 
 	explicit HandshakeGateLease(crl::time delay);
 
@@ -36,8 +40,10 @@ private:
 
 };
 
-[[nodiscard]] HandshakeGateLease ReserveHandshakeGate();
+[[nodiscard]] HandshakeGateLease ReserveHandshakeGate(
+	not_null<RuntimeEnvironment*> runtime);
 [[nodiscard]] HandshakeGateLease ReserveHandshakeGateForProxy(
+	not_null<RuntimeEnvironment*> runtime,
 	const ProxyData &proxy);
 
 } // namespace details

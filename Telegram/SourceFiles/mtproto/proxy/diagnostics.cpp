@@ -449,12 +449,6 @@ void WriteProxyDiagnosticsLine(
 	}
 }
 
-void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event) {
-	WriteProxyDiagnosticsLine(
-		DefaultRuntimeEnvironment(),
-		std::move(event));
-}
-
 void ReportProxyEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		ProxyEventReport report) {
@@ -464,10 +458,6 @@ void ReportProxyEvent(
 	if (runtime->diagnostics().reportProxyEvent) {
 		runtime->diagnostics().reportProxyEvent(std::move(report));
 	}
-}
-
-void ReportProxyEvent(ProxyEventReport report) {
-	ReportProxyEvent(DefaultRuntimeEnvironment(), std::move(report));
 }
 
 } // namespace MTP

@@ -8,10 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
+#include "base/basic_types.h"
 
 #include <rpl/producer.h>
 
+#include <memory>
+
+namespace MTP {
+class RuntimeEnvironment;
+} // namespace MTP
+
 namespace MTP::details::MtProxy {
+
+struct EndpointHealthStorage;
 
 enum class EndpointUse {
 	Main,
@@ -50,6 +59,7 @@ private:
 	friend class EndpointHealth;
 
 	EndpointAttemptLease(
+		EndpointHealth *owner,
 		QString key,
 		uint64 attemptId,
 		uint64 proxyGeneration,
@@ -57,6 +67,7 @@ private:
 		uint64 successEpoch,
 		crl::time startedAt);
 
+	EndpointHealth *_owner = nullptr;
 	QString _key;
 	uint64 _attemptId = 0;
 	uint64 _proxyGeneration = 0;
@@ -177,7 +188,10 @@ struct EndpointEvent {
 
 class EndpointHealth final {
 public:
-	[[nodiscard]] static EndpointHealth &Instance();
+	explicit EndpointHealth(not_null<RuntimeEnvironment*> runtime);
+	EndpointHealth(const EndpointHealth &other) = delete;
+	EndpointHealth &operator=(const EndpointHealth &other) = delete;
+	~EndpointHealth();
 
 	[[nodiscard]] Admission admit(const AdmissionRequest &request);
 	void reportFailure(FailureReport report);
@@ -190,6 +204,10 @@ private:
 	friend class EndpointAttemptLease;
 
 	void releaseAttempt(const QString &key, uint64 attemptId);
+	void fireEndpointEventOnMain(EndpointEvent event);
+
+	const not_null<RuntimeEnvironment*> _runtime;
+	const std::unique_ptr<EndpointHealthStorage> _storage;
 };
 
 [[nodiscard]] crl::time ConnectionSpacing(ProxyConnectionPattern pattern);

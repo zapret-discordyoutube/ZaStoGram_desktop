@@ -8,11 +8,28 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 namespace MTP::details::MtProxy {
 
+class OpenScheduler final {
+public:
+	explicit OpenScheduler(const RuntimeAsyncGateway &async);
+	explicit OpenScheduler(not_null<RuntimeEnvironment*> runtime);
+
+	[[nodiscard]] crl::time ReserveOpenSlot(
+		const EndpointId &endpoint,
+		ProxyConnectionPattern pattern,
+		crl::time notBefore = 0);
+
+private:
+	RuntimeAsyncGateway _async;
+
+};
+
 [[nodiscard]] crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern);
 [[nodiscard]] crl::time ReserveOpenSlot(
+	not_null<RuntimeEnvironment*> runtime,
 	const EndpointId &endpoint,
 	ProxyConnectionPattern pattern,
 	crl::time notBefore = 0);

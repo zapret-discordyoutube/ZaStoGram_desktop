@@ -607,7 +607,7 @@ def test_source_seams_match_truth_table_contract():
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "bool admissionInProgress = false;" in broker
     assert broker.index("state->admissionInProgress = true;") < (
-        broker.index("ProxyControlPlane::Admit({"))
+        broker.index("_runtime->proxyServices().control().admit({"))
     assert "releaseAdmission(cancelled);" in broker
     assert "noteMtproxyRelayFailure(" in capabilities
     assert "card.relayProven = false;" in capabilities

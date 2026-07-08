@@ -11,9 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
-#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
@@ -57,8 +58,8 @@ constexpr auto kServerHelloDigestPosition = 11;
 } // namespace
 
 void TlsSocket::applyAdaptiveRecipe() {
-	const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
-		_endpointId);
+	auto &control = _runtime->proxyServices().control();
+	const auto snapshot = control.mtproxyEndpointSnapshot(_endpointId);
 	if (!snapshot.recipeLevel) {
 		return;
 	}
@@ -83,7 +84,7 @@ void TlsSocket::applyAdaptiveRecipe() {
 	}
 	_timing = recipe.stealth.timing;
 	_stealth = recipe.stealth;
-	WriteProxyDiagnosticsLine({
+	WriteProxyDiagnosticsLine(_runtime, {
 		.source = ProxyDiagnosticsSource::MTProxy,
 		.phase = ProxyDiagnosticsPhase::StealthRecipeApplied,
 		.severity = ProxyDiagnosticsSeverity::Info,
@@ -117,12 +118,12 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 		data,
 		_clientHelloFragmentation);
 	if (!plan) {
-		_socket.write(data);
+		_transport->write(data.constData(), data.size());
 		return;
 	}
 	_clientHelloFragmented = true;
-	_socket.write(data.constData(), plan.firstSize);
-	_socket.flush();
+	_transport->write(data.constData(), plan.firstSize);
+	_transport->flush();
 	_clientHelloTail = data.mid(plan.firstSize);
 	if (plan.secondDelay > 0) {
 		_clientHelloFragmentTimer.callOnce(plan.secondDelay);
@@ -136,7 +137,7 @@ void TlsSocket::writeClientHelloTail() {
 	if (tail.isEmpty()) {
 		return;
 	}
-	_socket.write(
+	_transport->write(
 		tail.constData(),
 		tail.size());
 }
@@ -233,10 +234,10 @@ void TlsSocket::readHello() {
 		_serverHelloLength = parts1Size;
 	}
 	while (!requiredHelloPartReady()) {
-		if (!_socket.bytesAvailable()) {
+		if (!_transport->bytesAvailable()) {
 			return;
 		}
-		_incoming.append(_socket.readAll());
+		_incoming.append(_transport->readAll());
 	}
 	checkHelloParts12(parts1Size);
 }

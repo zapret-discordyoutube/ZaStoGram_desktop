@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 class ConnectionStatus;
+class ProxyServices;
 struct ProxyDiagnosticsEvent;
 struct ProxyEventReport;
 
@@ -82,6 +83,56 @@ struct RuntimeProxyCapabilities final {
 	Fn<QString()> path;
 };
 
+class RuntimeTimer final {
+public:
+	RuntimeTimer() = default;
+	RuntimeTimer(
+		Fn<void(crl::time)> callOnce,
+		Fn<void(crl::time)> callEach,
+		Fn<void()> cancel,
+		Fn<bool()> isActive)
+	: _callOnce(std::move(callOnce))
+	, _callEach(std::move(callEach))
+	, _cancel(std::move(cancel))
+	, _isActive(std::move(isActive)) {
+	}
+
+	void callOnce(crl::time delay) {
+		if (_callOnce) {
+			_callOnce(delay);
+		}
+	}
+
+	void callEach(crl::time delay) {
+		if (_callEach) {
+			_callEach(delay);
+		}
+	}
+
+	void cancel() {
+		if (_cancel) {
+			_cancel();
+		}
+	}
+
+	[[nodiscard]] bool isActive() const {
+		return _isActive ? _isActive() : false;
+	}
+
+private:
+	Fn<void(crl::time)> _callOnce;
+	Fn<void(crl::time)> _callEach;
+	Fn<void()> _cancel;
+	Fn<bool()> _isActive;
+};
+
+struct RuntimeAsyncGateway final {
+	Fn<crl::time()> now;
+	Fn<int(int)> randomIndex;
+	Fn<void(crl::time, QObject*, Fn<void()>)> singleShot;
+	Fn<RuntimeTimer(not_null<QObject*>, Fn<void()>)> makeTimer;
+};
+
 struct RuntimeEnvironmentDescriptor final {
 	RuntimeProxySettings proxy;
 	RuntimeDeviceSettings device;
@@ -90,6 +141,7 @@ struct RuntimeEnvironmentDescriptor final {
 	RuntimeAppGateway app;
 	RuntimeDiagnosticsGateway diagnostics;
 	RuntimeProxyCapabilities proxyCapabilities;
+	RuntimeAsyncGateway async;
 };
 
 class RuntimeEnvironment final : public QObject {
@@ -108,9 +160,12 @@ public:
 	[[nodiscard]] const RuntimeInstanceServices &instance() const;
 	[[nodiscard]] const RuntimeProxyResolver &proxyResolver() const;
 	[[nodiscard]] const RuntimeProxyCapabilities &proxyCapabilities() const;
+	[[nodiscard]] const RuntimeAsyncGateway &async() const;
+	[[nodiscard]] ProxyServices &proxyServices() const;
 
 private:
 	RuntimeEnvironmentDescriptor _descriptor;
+	std::unique_ptr<ProxyServices> _proxyServices;
 	RuntimeInstanceServices _instance;
 };
 

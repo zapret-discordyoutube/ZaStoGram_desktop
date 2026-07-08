@@ -78,5 +78,6 @@ private:
 };
 
 [[nodiscard]] QString ProxyCapabilityKey(const ProxyData &proxy);
+void SetProxyCapabilityPathProvider(Fn<QString()> provider);
 
 } // namespace MTP

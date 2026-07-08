@@ -69,6 +69,10 @@ public:
 	struct SendDataContext {
 		uint64 keyId = 0;
 	};
+	struct ConnectionStartContext {
+		ProxyConnectionAttempt mtproxyAttempt;
+		crl::time mtproxyAttemptStartedAt = 0;
+	};
 
 	enum class TransportServiceRequest {
 		None,
@@ -106,13 +110,11 @@ public:
 		int port,
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
-		bool protocolForFiles) = 0;
+		bool protocolForFiles,
+		ConnectionStartContext context = {}) = 0;
 	virtual void timedOut() {
 	}
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const;
-	virtual void setMtproxyAttempt(
-		ProxyConnectionAttempt attempt,
-		crl::time startedAt);
 	[[nodiscard]] virtual bool isConnected() const = 0;
 	[[nodiscard]] virtual TransportServiceRequest serviceRequest() const {
 		return TransportServiceRequest::None;

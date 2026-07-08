@@ -65,6 +65,100 @@ void SessionData::notifyConnectionInited(const SessionOptions &options) {
 	}
 }
 
+auto SessionData::takeToSendBatch(int sizeLimit) -> ToSendBatch {
+	auto result = ToSendBatch();
+	QWriteLocker lock(&_toSendLock);
+	auto sendingFrom = begin(_toSend);
+	auto sendingTill = end(_toSend);
+	auto combinedLength = 0;
+	for (auto i = sendingFrom; i != sendingTill; ++i) {
+		combinedLength += i->second->size();
+		if (combinedLength >= sizeLimit) {
+			++i;
+			if (i != sendingTill) {
+				sendingTill = i;
+				result.someSkipped = true;
+			}
+			break;
+		}
+	}
+	result.requests.reserve(sendingTill - sendingFrom);
+	for (auto i = sendingFrom; i != sendingTill; ++i) {
+		result.requests.emplace_back(i->first, i->second);
+	}
+	_toSend.erase(sendingFrom, sendingTill);
+	return result;
+}
+
+std::optional<SessionData::SentRequest> SessionData::takeSentRequest(
+		mtpMsgId msgId) {
+	QWriteLocker lock(&_haveSentLock);
+	const auto i = _haveSent.find(msgId);
+	if (i == end(_haveSent)) {
+		return std::nullopt;
+	}
+	auto result = SentRequest{
+		.msgId = msgId,
+		.request = i->second,
+	};
+	_haveSent.erase(i);
+	return result;
+}
+
+std::vector<SessionData::SentRequest> SessionData::takeAllSentRequests() {
+	auto result = std::vector<SentRequest>();
+	QWriteLocker lock(&_haveSentLock);
+	result.reserve(_haveSent.size());
+	for (auto &[msgId, request] : _haveSent) {
+		result.push_back({
+			.msgId = msgId,
+			.request = std::move(request),
+		});
+	}
+	_haveSent.clear();
+	return result;
+}
+
+std::optional<SerializedRequest> SessionData::takeToSendRequest(
+		mtpRequestId requestId) {
+	QWriteLocker lock(&_toSendLock);
+	const auto i = _toSend.find(requestId);
+	if (i == end(_toSend)) {
+		return std::nullopt;
+	}
+	auto result = i->second;
+	_toSend.erase(i);
+	return result;
+}
+
+void SessionData::enqueueToSend(const SerializedRequest &request) {
+	QWriteLocker lock(&_toSendLock);
+	auto queued = request;
+	_toSend.emplace(queued->requestId, queued);
+	queued.setMsgId(0);
+	queued.setSeqNo(0);
+}
+
+void SessionData::enqueueResentRequest(const SerializedRequest &request) {
+	QWriteLocker lock(&_toSendLock);
+	_toSend.emplace(request->requestId, request);
+}
+
+void SessionData::removeToSend(mtpRequestId requestId) {
+	QWriteLocker lock(&_toSendLock);
+	_toSend.remove(requestId);
+}
+
+void SessionData::removeSent(mtpMsgId msgId) {
+	QWriteLocker lock(&_haveSentLock);
+	_haveSent.remove(msgId);
+}
+
+bool SessionData::hasToSend(mtpRequestId requestId) {
+	QReadLocker lock(&_toSendLock);
+	return _toSend.contains(requestId);
+}
+
 void SessionData::queueTryToReceive() {
 	withSession([](not_null<Session*> session) {
 		session->tryToReceive();
@@ -299,6 +393,7 @@ void Session::refreshOptions() {
 		? runtime.proxy().stealthOptions()
 		: ProxyStealthOptions();
 	options.stealth = MTP::EffectiveProxyStealthOptions(
+		&runtime,
 		options.proxy,
 		proxySettings,
 		stealthOptions);
@@ -399,12 +494,10 @@ void Session::resetDone() {
 
 void Session::cancel(mtpRequestId requestId, mtpMsgId msgId) {
 	if (requestId) {
-		QWriteLocker locker(_data->toSendMutex());
-		_data->toSendMap().remove(requestId);
+		_data->removeToSend(requestId);
 	}
 	if (msgId) {
-		QWriteLocker locker(_data->haveSentMutex());
-		_data->haveSentMap().remove(msgId);
+		_data->removeSent(msgId);
 	}
 }
 
@@ -437,8 +530,7 @@ int32 Session::requestState(mtpRequestId requestId) const {
 		return MTP::RequestSent;
 	}
 
-	QWriteLocker locker(_data->toSendMutex());
-	return _data->toSendMap().contains(requestId)
+	return _data->hasToSend(requestId)
 		? MTP::RequestSending
 		: MTP::RequestSent;
 }
@@ -473,13 +565,7 @@ void Session::sendPrepared(
 		crl::time msCanWait) {
 	DEBUG_LOG(("MTP Info: adding request to toSendMap, msCanWait %1"
 		).arg(msCanWait));
-	{
-		QWriteLocker locker(_data->toSendMutex());
-		auto queued = request;
-		_data->toSendMap().emplace(queued->requestId, queued);
-		queued.setMsgId(0);
-		queued.setSeqNo(0);
-	}
+	_data->enqueueToSend(request);
 
 	DEBUG_LOG(("MTP Info: added, requestId %1").arg(request->requestId));
 	if (msCanWait >= 0) {

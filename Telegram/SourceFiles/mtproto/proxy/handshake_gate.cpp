@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/handshake_gate.h"
 
-#include "base/random.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <algorithm>
 #include <atomic>
@@ -24,13 +24,15 @@ constexpr auto kHandshakeGateJitterLimit = crl::time(100);
 
 std::atomic<int> ActiveHandshakeGateLeases = 0;
 
-[[nodiscard]] crl::time ComputeDelay(int active) {
+[[nodiscard]] crl::time ComputeDelay(
+		not_null<RuntimeEnvironment*> runtime,
+		int active) {
 	const auto over = std::max(0, active - kHandshakeGateCap);
 	if (!over) {
 		return 0;
 	}
-	const auto jitter = crl::time(base::RandomIndex(
-		int(kHandshakeGateJitterLimit) + 1));
+	const auto jitter = crl::time(
+		runtime->async().randomIndex(int(kHandshakeGateJitterLimit) + 1));
 	return std::min(
 		kHandshakeGateMaxDelay,
 		over * kHandshakeGateStep + jitter);
@@ -84,15 +86,17 @@ void HandshakeGateLease::release() {
 	_active = false;
 }
 
-HandshakeGateLease ReserveHandshakeGate() {
+HandshakeGateLease ReserveHandshakeGate(not_null<RuntimeEnvironment*> runtime) {
 	const auto active = ActiveHandshakeGateLeases.fetch_add(
 		1, std::memory_order_relaxed) + 1;
-	return HandshakeGateLease(ComputeDelay(active));
+	return HandshakeGateLease(ComputeDelay(runtime, active));
 }
 
-HandshakeGateLease ReserveHandshakeGateForProxy(const ProxyData &proxy) {
+HandshakeGateLease ReserveHandshakeGateForProxy(
+		not_null<RuntimeEnvironment*> runtime,
+		const ProxyData &proxy) {
 	return (proxy.type != ProxyData::Type::None)
-		? ReserveHandshakeGate()
+		? ReserveHandshakeGate(runtime)
 		: HandshakeGateLease();
 }
 

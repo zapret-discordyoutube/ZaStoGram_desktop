@@ -13,9 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/control_plane.h"
-#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
@@ -157,7 +154,7 @@ void SessionPrivate::checkSentRequests() {
 		DEBUG_LOG(("MTP Info: "
 			"Request state while key is not bound, restarting."));
 		restart();
-		_timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
+		_transport._timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
 		return;
 	}
 	auto requesting = false;
@@ -181,7 +178,7 @@ void SessionPrivate::checkSentRequests() {
 		_sessionState.data->queueSendAnything(kSendStateRequestWaiting);
 	}
 	if (nextTimeout < kCheckSentRequestTimeout) {
-		_timing.checkSentRequestsTimer.callOnce(nextTimeout);
+		_transport._timing.checkSentRequestsTimer.callOnce(nextTimeout);
 	}
 }
 
@@ -328,7 +325,7 @@ mtpMsgId SessionPrivate::placeToContainer(
 
 void SessionPrivate::tryToSend() {
 	DEBUG_LOG(("MTP Info: tryToSend for dc %1.").arg(_shiftedDcId));
-	if (!_connectionState.connection) {
+	if (!_transport._state.connection) {
 		DEBUG_LOG(("MTP Info: not yet connected in dc %1.").arg(_shiftedDcId));
 		return;
 	} else if (!_sessionState.keyId) {
@@ -375,7 +372,7 @@ void SessionPrivate::tryToSend() {
 			pingRequest = SerializedRequest::Serialize(MTPPing_delay_disconnect(
 				MTP_long(_requestState.pingIdToSend),
 				MTP_int(kPingDelayDisconnect)));
-			_timing.pingSender.callOnce(kPingSendAfterForce);
+			_transport._timing.pingSender.callOnce(kPingSendAfterForce);
 		}
 		_requestState.pingSendAt = pingRequest->lastSentTime + kPingSendAfter;
 		_requestState.pingId = base::take(_requestState.pingIdToSend);
@@ -409,7 +406,7 @@ void SessionPrivate::tryToSend() {
 			stateRequest = SerializedRequest::Serialize(MTPMsgsStateReq(
 				MTP_msgs_state_req(MTP_vector<MTPlong>(ids))));
 		}
-		if (_connectionState.connection->serviceRequest()
+		if (_transport._state.connection->serviceRequest()
 			== AbstractConnection::TransportServiceRequest::HttpWait) {
 			httpWaitRequest = SerializedRequest::Serialize(MTPHttpWait(
 				MTP_http_wait(MTP_int(100), MTP_int(30), MTP_int(25000))));
@@ -466,288 +463,256 @@ void SessionPrivate::tryToSend() {
 	}
 
 	auto needAnyResponse = false;
-	auto someSkipped = false;
+	auto toSendBatch = sendAll
+		? _sessionState.data->takeToSendBatch(kCutContainerOnSize)
+		: SessionData::ToSendBatch();
+	auto &toSend = toSendBatch.requests;
+	const auto someSkipped = toSendBatch.someSkipped;
 	SerializedRequest toSendRequest;
-	{
-		QWriteLocker locker1(_sessionState.data->toSendMutex());
 
-		auto scheduleCheckSentRequests = false;
+	auto scheduleCheckSentRequests = false;
+	auto totalSending = int(toSend.size());
+	const auto sendingCount = totalSending;
+	if (pingRequest) ++totalSending;
+	if (ackRequest) ++totalSending;
+	if (resendRequest) ++totalSending;
+	if (stateRequest) ++totalSending;
+	if (httpWaitRequest) ++totalSending;
+	if (bindDcKeyRequest) ++totalSending;
 
-		auto toSendDummy = base::flat_map<mtpRequestId, SerializedRequest>();
-		auto &toSend = sendAll
-			? _sessionState.data->toSendMap()
-			: toSendDummy;
-		if (!sendAll) {
-			locker1.unlock();
+	if (!totalSending) {
+		return;
+	}
+
+	const auto first = pingRequest
+		? pingRequest
+		: ackRequest
+		? ackRequest
+		: resendRequest
+		? resendRequest
+		: stateRequest
+		? stateRequest
+		: httpWaitRequest
+		? httpWaitRequest
+		: bindDcKeyRequest
+		? bindDcKeyRequest
+		: toSend.front().second;
+	if (totalSending == 1 && !first->forceSendInContainer) {
+		toSendRequest = first;
+
+		const auto msgId = prepareToSend(
+			toSendRequest,
+			base::unixtime::mtproto_msg_id(),
+			forceNewMsgId && !bindDcKeyRequest);
+		if (bindDcKeyRequest) {
+			_authState.bindMsgId = msgId;
+			_authState.bindMessageSent = crl::now();
+			needAnyResponse = true;
+		} else if (pingRequest) {
+			_requestState.pingMsgId = msgId;
+			needAnyResponse = true;
+		} else if (stateRequest || resendRequest) {
+			_requestState.stateAndResendRequests.emplace(
+				msgId,
+				stateRequest ? stateRequest : resendRequest);
+			needAnyResponse = true;
 		}
 
-		auto totalSending = int(toSend.size());
-		auto sendingFrom = begin(toSend);
-		auto sendingTill = end(toSend);
-		auto combinedLength = 0;
-		for (auto i = sendingFrom; i != sendingTill; ++i) {
-			combinedLength += i->second->size();
-			if (combinedLength >= kCutContainerOnSize) {
-				++i;
-				if (const auto skipping = int(sendingTill - i)) {
-					sendingTill = i;
-					totalSending -= skipping;
-					Assert(totalSending > 0);
-					someSkipped = true;
+		if (toSendRequest->requestId) {
+			if (toSendRequest.needAck()) {
+				toSendRequest->lastSentTime = crl::now();
+
+				QWriteLocker locker(_sessionState.data->haveSentMutex());
+				auto &haveSent = _sessionState.data->haveSentMap();
+				RegisterSentRequest(haveSent, toSendRequest, msgId);
+				scheduleCheckSentRequests = true;
+
+				const auto wrapLayer = needsLayer && toSendRequest->needsLayer;
+				if (toSendRequest->after) {
+					const auto toSendSize = tl::count_length(toSendRequest) >> 2;
+					auto wrappedRequest = SerializedRequest::Prepare(
+						toSendSize,
+						toSendSize + 3);
+					wrappedRequest->resize(
+						SerializedRequest::kMessageIdPosition);
+					AppendInvokeAfter(
+						wrappedRequest,
+						toSendRequest,
+						haveSent);
+					toSendRequest = std::move(wrappedRequest);
 				}
-				break;
+				if (wrapLayer) {
+					const auto noWrapSize = (tl::count_length(toSendRequest) >> 2);
+					const auto toSendSize = noWrapSize + initSizeInInts;
+					auto wrappedRequest = SerializedRequest::Prepare(toSendSize);
+					auto layerPrefix = mtpBuffer();
+					layerPrefix.reserve(initSizeInInts);
+					layerPrefix.push_back(mtpc_invokeWithLayer);
+					layerPrefix.push_back(kCurrentLayer);
+					initWrapper.write<mtpBuffer>(layerPrefix);
+					wrappedRequest->resize(
+						SerializedRequest::kMessageIdPosition);
+					AppendInvokeWithLayer(
+						wrappedRequest,
+						toSendRequest,
+						gsl::make_span(layerPrefix));
+					toSendRequest = std::move(wrappedRequest);
+				}
+
+				needAnyResponse = true;
+			} else {
+				_requestState.ackedIds.emplace(msgId, toSendRequest->requestId);
 			}
 		}
-		auto sendingRange = ranges::make_subrange(sendingFrom, sendingTill);
-		const auto sendingCount = totalSending;
-		if (pingRequest) ++totalSending;
-		if (ackRequest) ++totalSending;
-		if (resendRequest) ++totalSending;
-		if (stateRequest) ++totalSending;
-		if (httpWaitRequest) ++totalSending;
-		if (bindDcKeyRequest) ++totalSending;
-
-		if (!totalSending) {
-			return; // nothing to send
+	} else {
+		bool willNeedInit = false;
+		uint32 containerSize = 1 + 1;
+		if (pingRequest) containerSize += pingRequest.messageSize();
+		if (ackRequest) containerSize += ackRequest.messageSize();
+		if (resendRequest) containerSize += resendRequest.messageSize();
+		if (stateRequest) containerSize += stateRequest.messageSize();
+		if (httpWaitRequest) containerSize += httpWaitRequest.messageSize();
+		if (bindDcKeyRequest) containerSize += bindDcKeyRequest.messageSize();
+		for (const auto &[requestId, request] : toSend) {
+			containerSize += request.messageSize();
+			if (needsLayer && request->needsLayer) {
+				containerSize += initSizeInInts;
+				willNeedInit = true;
+			}
 		}
+		mtpBuffer initSerialized;
+		if (willNeedInit) {
+			initSerialized.reserve(initSizeInInts);
+			initSerialized.push_back(mtpc_invokeWithLayer);
+			initSerialized.push_back(kCurrentLayer);
+			initWrapper.write<mtpBuffer>(initSerialized);
+		}
+		toSendRequest = SerializedRequest::Prepare(
+			containerSize,
+			containerSize + 3 * sendingCount);
+		toSendRequest->push_back(mtpc_msg_container);
+		toSendRequest->push_back(totalSending);
 
-		const auto first = pingRequest
-			? pingRequest
-			: ackRequest
-			? ackRequest
-			: resendRequest
-			? resendRequest
-			: stateRequest
-			? stateRequest
-			: httpWaitRequest
-			? httpWaitRequest
-			: bindDcKeyRequest
-			? bindDcKeyRequest
-			: sendingRange.begin()->second;
-		if (totalSending == 1 && !first->forceSendInContainer) {
-			toSendRequest = first;
-			if (sendAll) {
-				toSend.erase(sendingFrom, sendingTill);
-				locker1.unlock();
-			}
+		auto bigMsgId = base::unixtime::mtproto_msg_id();
 
-			const auto msgId = prepareToSend(
-				toSendRequest,
-				base::unixtime::mtproto_msg_id(),
-				forceNewMsgId && !bindDcKeyRequest);
-			if (bindDcKeyRequest) {
-				_authState.bindMsgId = msgId;
-				_authState.bindMessageSent = crl::now();
-				needAnyResponse = true;
-			} else if (pingRequest) {
-				_requestState.pingMsgId = msgId;
-				needAnyResponse = true;
-			} else if (stateRequest || resendRequest) {
-				_requestState.stateAndResendRequests.emplace(
-					msgId,
-					stateRequest ? stateRequest : resendRequest);
-				needAnyResponse = true;
-			}
+		QWriteLocker locker(_sessionState.data->haveSentMutex());
+		auto &haveSent = _sessionState.data->haveSentMap();
 
-			if (toSendRequest->requestId) {
-				if (toSendRequest.needAck()) {
-					toSendRequest->lastSentTime = crl::now();
+		auto sentIdsWrap = SentContainer();
+		sentIdsWrap.sent = crl::now();
+		sentIdsWrap.messages.reserve(totalSending);
 
-					QWriteLocker locker2(_sessionState.data->haveSentMutex());
-					auto &haveSent = _sessionState.data->haveSentMap();
-					RegisterSentRequest(haveSent, toSendRequest, msgId);
-					scheduleCheckSentRequests = true;
-
-					const auto wrapLayer = needsLayer && toSendRequest->needsLayer;
-					if (toSendRequest->after) {
-						const auto toSendSize = tl::count_length(toSendRequest) >> 2;
-						auto wrappedRequest = SerializedRequest::Prepare(
-							toSendSize,
-							toSendSize + 3);
-						wrappedRequest->resize(
-							SerializedRequest::kMessageIdPosition);
-						AppendInvokeAfter(
-							wrappedRequest,
-							toSendRequest,
-							haveSent);
-						toSendRequest = std::move(wrappedRequest);
-					}
-					if (wrapLayer) {
-						const auto noWrapSize = (tl::count_length(toSendRequest) >> 2);
-						const auto toSendSize = noWrapSize + initSizeInInts;
-						auto wrappedRequest = SerializedRequest::Prepare(toSendSize);
-						auto layerPrefix = mtpBuffer();
-						layerPrefix.reserve(initSizeInInts);
-						layerPrefix.push_back(mtpc_invokeWithLayer);
-						layerPrefix.push_back(kCurrentLayer);
-						initWrapper.write<mtpBuffer>(layerPrefix);
-						wrappedRequest->resize(
-							SerializedRequest::kMessageIdPosition);
-						AppendInvokeWithLayer(
-							wrappedRequest,
-							toSendRequest,
-							gsl::make_span(layerPrefix));
-						toSendRequest = std::move(wrappedRequest);
-					}
-
-					needAnyResponse = true;
-				} else {
-					_requestState.ackedIds.emplace(msgId, toSendRequest->requestId);
-				}
-			}
-		} else { // send in container
-			bool willNeedInit = false;
-			uint32 containerSize = 1 + 1; // cons + vector size
-			if (pingRequest) containerSize += pingRequest.messageSize();
-			if (ackRequest) containerSize += ackRequest.messageSize();
-			if (resendRequest) containerSize += resendRequest.messageSize();
-			if (stateRequest) containerSize += stateRequest.messageSize();
-			if (httpWaitRequest) containerSize += httpWaitRequest.messageSize();
-			if (bindDcKeyRequest) containerSize += bindDcKeyRequest.messageSize();
-			for (const auto &[requestId, request] : sendingRange) {
-				containerSize += request.messageSize();
-				if (needsLayer && request->needsLayer) {
-					containerSize += initSizeInInts;
-					willNeedInit = true;
-				}
-			}
-			mtpBuffer initSerialized;
-			if (willNeedInit) {
-				initSerialized.reserve(initSizeInInts);
-				initSerialized.push_back(mtpc_invokeWithLayer);
-				initSerialized.push_back(kCurrentLayer);
-				initWrapper.write<mtpBuffer>(initSerialized);
-			}
-			// prepare container + each in invoke after
-			toSendRequest = SerializedRequest::Prepare(
-				containerSize,
-				containerSize + 3 * sendingCount);
-			toSendRequest->push_back(mtpc_msg_container);
-			toSendRequest->push_back(totalSending);
-
-			// check for a valid container
-			auto bigMsgId = base::unixtime::mtproto_msg_id();
-
-			// the fact of this lock is used in replaceMsgId()
-			QWriteLocker locker2(_sessionState.data->haveSentMutex());
-			auto &haveSent = _sessionState.data->haveSentMap();
-
-			// prepare sent container
-			auto sentIdsWrap = SentContainer();
-			sentIdsWrap.sent = crl::now();
-			sentIdsWrap.messages.reserve(totalSending);
-
-			if (bindDcKeyRequest) {
-				_authState.bindMsgId = placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					false,
-					bindDcKeyRequest);
-				_authState.bindMessageSent = crl::now();
-				sentIdsWrap.messages.push_back(_authState.bindMsgId);
-				needAnyResponse = true;
-			}
-			if (pingRequest) {
-				_requestState.pingMsgId = placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					forceNewMsgId,
-					pingRequest);
-				sentIdsWrap.messages.push_back(_requestState.pingMsgId);
-				needAnyResponse = true;
-			}
-
-			for (auto &[requestId, request] : sendingRange) {
-				const auto msgId = prepareToSend(
-					request,
-					bigMsgId,
-					forceNewMsgId);
-				if (msgId >= bigMsgId) {
-					bigMsgId = base::unixtime::mtproto_msg_id();
-				}
-				bool added = false;
-				if (request->requestId) {
-					if (request.needAck()) {
-						request->lastSentTime = crl::now();
-						const auto registeredMsgId = RegisterSentRequest(
-							haveSent,
-							request,
-							msgId);
-						const auto requestNeedsLayer = needsLayer
-							&& request->needsLayer;
-						if (request->after) {
-							AppendInvokeAfter(
-								toSendRequest,
-								request,
-								haveSent,
-								requestNeedsLayer
-									? gsl::make_span(initSerialized)
-									: gsl::span<const mtpPrime>());
-							added = true;
-						} else if (requestNeedsLayer) {
-							AppendInvokeWithLayer(
-								toSendRequest,
-								request,
-								gsl::make_span(initSerialized));
-							added = true;
-						}
-
-						sentIdsWrap.messages.push_back(registeredMsgId);
-						scheduleCheckSentRequests = true;
-						needAnyResponse = true;
-					} else {
-						_requestState.ackedIds.emplace(msgId, request->requestId);
-					}
-				}
-				if (!added) {
-					AppendContainerMessage(toSendRequest, request);
-				}
-			}
-			toSend.erase(sendingFrom, sendingTill);
-
-			if (stateRequest) {
-				const auto msgId = placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					forceNewMsgId,
-					stateRequest);
-				_requestState.stateAndResendRequests.emplace(msgId, stateRequest);
-				needAnyResponse = true;
-			}
-			if (resendRequest) {
-				const auto msgId = placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					forceNewMsgId,
-					resendRequest);
-				_requestState.stateAndResendRequests.emplace(msgId, resendRequest);
-				needAnyResponse = true;
-			}
-			if (ackRequest) {
-				placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					forceNewMsgId,
-					ackRequest);
-			}
-			if (httpWaitRequest) {
-				placeToContainer(
-					toSendRequest,
-					bigMsgId,
-					forceNewMsgId,
-					httpWaitRequest);
-			}
-
-			const auto containerMsgId = prepareToSend(
+		if (bindDcKeyRequest) {
+			_authState.bindMsgId = placeToContainer(
 				toSendRequest,
 				bigMsgId,
-				forceNewMsgId);
-			_requestState.sentContainers.emplace(containerMsgId, std::move(sentIdsWrap));
+				false,
+				bindDcKeyRequest);
+			_authState.bindMessageSent = crl::now();
+			sentIdsWrap.messages.push_back(_authState.bindMsgId);
+			needAnyResponse = true;
+		}
+		if (pingRequest) {
+			_requestState.pingMsgId = placeToContainer(
+				toSendRequest,
+				bigMsgId,
+				forceNewMsgId,
+				pingRequest);
+			sentIdsWrap.messages.push_back(_requestState.pingMsgId);
+			needAnyResponse = true;
+		}
 
-			if (scheduleCheckSentRequests && !_timing.checkSentRequestsTimer.isActive()) {
-				_timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
+		for (auto &[requestId, request] : toSend) {
+			const auto msgId = prepareToSend(
+				request,
+				bigMsgId,
+				forceNewMsgId);
+			if (msgId >= bigMsgId) {
+				bigMsgId = base::unixtime::mtproto_msg_id();
+			}
+			bool added = false;
+			if (request->requestId) {
+				if (request.needAck()) {
+					request->lastSentTime = crl::now();
+					const auto registeredMsgId = RegisterSentRequest(
+						haveSent,
+						request,
+						msgId);
+					const auto requestNeedsLayer = needsLayer
+						&& request->needsLayer;
+					if (request->after) {
+						AppendInvokeAfter(
+							toSendRequest,
+							request,
+							haveSent,
+							requestNeedsLayer
+								? gsl::make_span(initSerialized)
+								: gsl::span<const mtpPrime>());
+						added = true;
+					} else if (requestNeedsLayer) {
+						AppendInvokeWithLayer(
+							toSendRequest,
+							request,
+							gsl::make_span(initSerialized));
+						added = true;
+					}
+
+					sentIdsWrap.messages.push_back(registeredMsgId);
+					scheduleCheckSentRequests = true;
+					needAnyResponse = true;
+				} else {
+					_requestState.ackedIds.emplace(msgId, request->requestId);
+				}
+			}
+			if (!added) {
+				AppendContainerMessage(toSendRequest, request);
 			}
 		}
+
+		if (stateRequest) {
+			const auto msgId = placeToContainer(
+				toSendRequest,
+				bigMsgId,
+				forceNewMsgId,
+				stateRequest);
+			_requestState.stateAndResendRequests.emplace(msgId, stateRequest);
+			needAnyResponse = true;
+		}
+		if (resendRequest) {
+			const auto msgId = placeToContainer(
+				toSendRequest,
+				bigMsgId,
+				forceNewMsgId,
+				resendRequest);
+			_requestState.stateAndResendRequests.emplace(msgId, resendRequest);
+			needAnyResponse = true;
+		}
+		if (ackRequest) {
+			placeToContainer(
+				toSendRequest,
+				bigMsgId,
+				forceNewMsgId,
+				ackRequest);
+		}
+		if (httpWaitRequest) {
+			placeToContainer(
+				toSendRequest,
+				bigMsgId,
+				forceNewMsgId,
+				httpWaitRequest);
+		}
+
+		const auto containerMsgId = prepareToSend(
+			toSendRequest,
+			bigMsgId,
+			forceNewMsgId);
+		_requestState.sentContainers.emplace(
+			containerMsgId,
+			std::move(sentIdsWrap));
+	}
+	if (scheduleCheckSentRequests
+		&& !_transport._timing.checkSentRequestsTimer.isActive()) {
+		_transport._timing.checkSentRequestsTimer.callOnce(kCheckSentRequestTimeout);
 	}
 	sendSecureRequest(std::move(toSendRequest), needAnyResponse);
 	if (someSkipped) {
@@ -773,7 +738,7 @@ void SessionPrivate::sendPingByTimer() {
 				u"ping unanswered for too long, restarting"_q);
 			return restart();
 		} else {
-			_timing.pingSender.callOnce(mustSendTill - now);
+			_transport._timing.pingSender.callOnce(mustSendTill - now);
 		}
 	} else {
 		_sessionState.data->queueNeedToResumeAndSend();
@@ -819,7 +784,7 @@ bool SessionPrivate::sendSecureRequest(
 		bytes::make_span(request->constData(), fullSize),
 		true);
 
-	auto packet = _connectionState.connection->prepareSecurePacket(_sessionState.keyId, msgKey, fullSize);
+	auto packet = _transport._state.connection->prepareSecurePacket(_sessionState.keyId, msgKey, fullSize);
 	const auto prefix = packet.size();
 	packet.resize(prefix + fullSize);
 
@@ -832,7 +797,7 @@ bool SessionPrivate::sendSecureRequest(
 
 	DEBUG_LOG(("MTP Info: sending request, size: %1, num: %2, time: %3").arg(fullSize + 6).arg((*request)[4]).arg((*request)[5]));
 
-	_connectionState.connection->sendData(
+	_transport._state.connection->sendData(
 		std::move(packet),
 		{ .keyId = _sessionState.keyId });
 

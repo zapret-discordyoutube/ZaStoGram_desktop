@@ -9,14 +9,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/transport/details/mtproto_tcp_socket.h"
-#include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/adaptive_policy.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/unixtime.h"
-
-
 
 namespace MTP::details {
 namespace {
@@ -26,19 +25,25 @@ constexpr auto kEstablishedIdleCloseAge = crl::time(20 * 1000);
 } // namespace
 
 TlsSocket::TlsSocket(
+	not_null<RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
 	const ProxyData &proxy,
 	bool protocolForFiles,
 	const ProxyStealthOptions &stealth,
 	ProxyConnectionAttempt mtproxyAttempt,
-	crl::time mtproxyAttemptStartedAt)
-	: AbstractSocket(thread)
+	crl::time mtproxyAttemptStartedAt,
+	std::unique_ptr<TlsSocketTransport> transport)
+	: AbstractSocket(runtime, thread)
 	, _secret(secret)
 	, _endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))
 	, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical))
 	, _mtproxyAttempt(mtproxyAttempt)
-	, _mtproxyAttemptStartedAt(mtproxyAttemptStartedAt) {
+	, _mtproxyAttemptStartedAt(mtproxyAttemptStartedAt)
+	, _transport(
+		transport
+			? std::move(transport)
+			: CreateTlsSocketTransport()) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
 
 	_recordSizing = RecordSizing(int(stealth.recordSizing));
@@ -51,17 +56,21 @@ TlsSocket::TlsSocket(
 	_endpointUse = protocolForFiles
 		? MtProxy::EndpointUse::Media
 		: MtProxy::EndpointUse::Main;
-	_pacingTimer.setCallback([=] { sendOutgoing(); });
-	_clientHelloTimer.setCallback([=] { sendClientHello(); });
-	_clientHelloFragmentTimer.setCallback([=] { writeClientHelloTail(); });
+	_pacingTimer = runtime->async().makeTimer(this, [=] { sendOutgoing(); });
+	_clientHelloTimer = runtime->async().makeTimer(
+		this,
+		[=] { sendClientHello(); });
+	_clientHelloFragmentTimer = runtime->async().makeTimer(
+		this,
+		[=] { writeClientHelloTail(); });
 
-	_socket.moveToThread(thread);
-	_socket.setProxy(ToNetworkProxy(proxy));
+	_transport->moveToThread(thread);
+	_transport->setProxy(ToNetworkProxy(proxy));
 	if (protocolForFiles) {
-		_socket.setSocketOption(
+		_transport->setSocketOption(
 			QAbstractSocket::SendBufferSizeSocketOption,
 			kFilesSendBufferSize);
-		_socket.setSocketOption(
+		_transport->setSocketOption(
 			QAbstractSocket::ReceiveBufferSizeSocketOption,
 			kFilesReceiveBufferSize);
 	}
@@ -70,23 +79,14 @@ TlsSocket::TlsSocket(
 			InvokeQueued(this, [=] { handler(args...); });
 		};
 	};
-	using Error = QAbstractSocket::SocketError;
-	connect(
-		&_socket,
-		&QTcpSocket::connected,
-		wrap([=] { plainConnected(); }));
-	connect(
-		&_socket,
-		&QTcpSocket::disconnected,
-		wrap([=] { plainDisconnected(); }));
-	connect(
-		&_socket,
-		&QTcpSocket::readyRead,
-		wrap([=] { plainReadyRead(); }));
-	connect(
-		&_socket,
-		&QAbstractSocket::errorOccurred,
-		wrap([=](Error e) { handleError(e); }));
+	_transport->setCallbacks({
+		.connected = wrap([=] { plainConnected(); }),
+		.disconnected = wrap([=] { plainDisconnected(); }),
+		.readyRead = wrap([=] { plainReadyRead(); }),
+		.error = wrap([=](QAbstractSocket::SocketError e) {
+			handleError(e);
+		}),
+	});
 }
 
 bytes::const_span TlsSocket::domainFromSecret() const {
@@ -161,7 +161,7 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 		port,
 		_stealth.transport,
 		_endpointId.canonical.originalHost);
-	_socket.connectToHost(address, port);
+	_transport->connectToHost(address, port);
 }
 
 bool TlsSocket::isGoodStartNonce(bytes::const_span nonce) {
@@ -176,7 +176,7 @@ void TlsSocket::timedOut() {
 	const auto reason = failureReason();
 	_failureReason = reason;
 	clearSyntheticPskOnFailure(reason);
-	ProxyControlPlane::ReportMtproxyFailure({
+	_runtime->proxyServices().control().reportMtproxyFailure({
 		.endpoint = _endpointId,
 		.use = _endpointUse,
 		.reason = reason,
@@ -196,7 +196,7 @@ bool TlsSocket::isConnected() {
 }
 
 int32 TlsSocket::debugState() {
-	return _socket.state();
+	return _transport->state();
 }
 
 QString TlsSocket::debugPostfix() const {
@@ -212,7 +212,7 @@ ProxyMtproxyTerminalReason TlsSocket::mtproxyTerminalReason() const {
 }
 
 crl::time TlsSocket::mtproxyTerminalUntil() const {
-	return ProxyControlPlane::MtproxyEndpointSnapshot(
+	return _runtime->proxyServices().control().mtproxyEndpointSnapshot(
 		_endpointId).terminalUntil;
 }
 
@@ -246,21 +246,21 @@ void TlsSocket::handleError(int errorCode) {
 			|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
 			|| reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
 		_syncTimeRequests.fire({});
-		ProxyControlPlane::ReportMtproxyFailure({
+		_runtime->proxyServices().control().reportMtproxyFailure({
 			.endpoint = _endpointId,
 			.use = _endpointUse,
 			.reason = reason,
 			.configuredTlsProfile = _tlsProfile,
 			.sentProfile = _sentTlsProfile,
-				.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-				.attemptId = _mtproxyAttempt.attemptId,
-				.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-				.successEpoch = _mtproxyAttempt.successEpoch,
-				.attemptStartedAt = _mtproxyAttemptStartedAt,
-			});
+			.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+			.attemptId = _mtproxyAttempt.attemptId,
+			.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+			.successEpoch = _mtproxyAttempt.successEpoch,
+			.attemptStartedAt = _mtproxyAttemptStartedAt,
+		});
 	}
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
-		logError(errorCode, _socket.errorString());
+		logError(errorCode, _transport->errorString());
 	}
 	_state = State::Error;
 	_error.fire_copy(errorCode);

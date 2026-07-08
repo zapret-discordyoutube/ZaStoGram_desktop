@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/wss/socket.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QMutex>
 #include <QtCore/QSet>
@@ -65,6 +66,7 @@ QSet<QString> transportFallbackLogged;
 }
 
 void LogTransportFallback(
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		ProxyTransport saved,
 		ProxyTransport effective,
@@ -88,7 +90,7 @@ void LogTransportFallback(
 		}
 		transportFallbackLogged.insert(key);
 	}
-	WriteProxyDiagnosticsLine({
+	WriteProxyDiagnosticsLine(runtime, {
 		.source = (proxy.type == ProxyData::Type::Mtproto)
 			? ProxyDiagnosticsSource::MTProxy
 			: ProxyDiagnosticsSource::Network,
@@ -123,7 +125,10 @@ bool ProxyWssAllowed(
 	return true;
 }
 
-void NoteProxyWssRemoteClosed(const ProxyData &proxy) {
+void NoteProxyWssRemoteClosed(
+		not_null<RuntimeEnvironment*> runtime,
+		const ProxyData &proxy) {
+	(void)runtime;
 	if (!proxy) {
 		return;
 	}
@@ -136,11 +141,20 @@ ProxyTransport EffectiveProxyTransport(
 		const ProxyData &proxy,
 		ProxyData::Settings settings,
 		ProxyTransport saved) {
+	return ProxyWssAllowed(proxy, settings) ? saved : ProxyTransport::Tcp;
+}
+
+ProxyTransport EffectiveProxyTransport(
+		not_null<RuntimeEnvironment*> runtime,
+		const ProxyData &proxy,
+		ProxyData::Settings settings,
+		ProxyTransport saved) {
 	const auto effective = ProxyWssAllowed(proxy, settings)
 		? saved
 		: ProxyTransport::Tcp;
 	if (saved == ProxyTransport::Wss && effective != saved) {
 		LogTransportFallback(
+			runtime,
 			proxy,
 			saved,
 			effective,
@@ -155,6 +169,41 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 		ProxyStealthOptions saved) {
 	auto result = saved;
 	result.transport = EffectiveProxyTransport(
+		proxy,
+		settings,
+		result.transport);
+	if (settings == ProxyData::Settings::Enabled
+		&& proxy.type == ProxyData::Type::Mtproto) {
+		result.transport = ProxyTransport::Tcp;
+		const auto capability = ProxyCapabilityCache::Instance().lookup(proxy);
+		if (capability.lastGoodTransport
+				== ProxyCapabilityTransport::MtproxyFakeTlsTcp
+			&& capability.relayProven
+			&& capability.lastGoodRecipeLevel == 0
+			&& !capability.autoRotateAllowed
+			&& capability.lastGoodProfile != ProxyTlsProfile::Auto) {
+			return BoringMtproxyStealthOptions(
+				std::move(result),
+				capability.lastGoodProfile);
+		}
+		return BoringMtproxyStealthOptions(std::move(result));
+	}
+	if (settings == ProxyData::Settings::Enabled
+		&& (IsLocalProxyEndpoint(proxy)
+			|| !ProxyWssAllowed(proxy, settings))) {
+		return CompatStrictProxyStealthOptions(std::move(result));
+	}
+	return result;
+}
+
+ProxyStealthOptions EffectiveProxyStealthOptions(
+		not_null<RuntimeEnvironment*> runtime,
+		const ProxyData &proxy,
+		ProxyData::Settings settings,
+		ProxyStealthOptions saved) {
+	auto result = saved;
+	result.transport = EffectiveProxyTransport(
+		runtime,
 		proxy,
 		settings,
 		result.transport);

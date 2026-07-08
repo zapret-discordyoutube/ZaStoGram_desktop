@@ -9,6 +9,12 @@ MTPROTO_DIR = SOURCE_DIR / "mtproto"
 SESSION_PRIVATE_DIR = MTPROTO_DIR / "session" / "private"
 SESSION_H = SESSION_PRIVATE_DIR / "session_private.h"
 SESSION_MAIN = SESSION_PRIVATE_DIR / "session_private.cpp"
+SESSION_TRANSPORT = SESSION_PRIVATE_DIR / "transport.cpp"
+SESSION_TRANSPORT_H = SESSION_PRIVATE_DIR / "transport.h"
+SESSION_MESSAGE_HANDLER = SESSION_PRIVATE_DIR / "message_handler.cpp"
+SESSION_MESSAGE_HANDLER_H = SESSION_PRIVATE_DIR / "message_handler.h"
+SESSION_PROXY_PORT = SESSION_PRIVATE_DIR / "proxy_port.cpp"
+SESSION_PROXY_PORT_H = SESSION_PRIVATE_DIR / "proxy_port.h"
 SESSION_CONNECTION = SESSION_PRIVATE_DIR / "connection.cpp"
 SESSION_SEND = SESSION_PRIVATE_DIR / "send.cpp"
 SESSION_RECEIVE = SESSION_PRIVATE_DIR / "receive.cpp"
@@ -16,6 +22,12 @@ SESSION_AUTH = SESSION_PRIVATE_DIR / "auth.cpp"
 
 
 SPLIT_SOURCES = (
+    SESSION_TRANSPORT,
+    SESSION_TRANSPORT_H,
+    SESSION_MESSAGE_HANDLER,
+    SESSION_MESSAGE_HANDLER_H,
+    SESSION_PROXY_PORT,
+    SESSION_PROXY_PORT_H,
     SESSION_CONNECTION,
     SESSION_SEND,
     SESSION_RECEIVE,
@@ -65,18 +77,22 @@ def test_session_private_split_sources_are_registered():
 
 def test_session_private_header_groups_private_state():
     header = read(SESSION_H)
+    transport = read(SESSION_TRANSPORT_H)
 
     for name in (
-        "ConnectionState",
-        "TimingState",
         "RequestState",
         "SessionState",
         "AuthState",
     ):
         assert f"struct {name}" in header
 
-    assert "ConnectionState _connectionState;" in header
-    assert "TimingState _timing;" in header
+    for name in (
+        "TestConnection",
+        "ConnectionState",
+        "TimingState",
+    ):
+        assert f"struct {name}" in transport
+
     assert "RequestState _requestState;" in header
     assert "SessionState _sessionState;" in header
     assert "AuthState _authState;" in header
@@ -86,14 +102,55 @@ def test_session_private_header_groups_private_state():
     assert not declarations_named(header, "_keyCreator")
 
 
+def test_session_private_owns_transport_and_message_handler_components():
+    header = read(SESSION_H)
+    source = read(SESSION_MAIN)
+
+    assert '#include "mtproto/session/private/transport.h"' in header
+    assert '#include "mtproto/session/private/message_handler.h"' in header
+    assert '#include "mtproto/session/private/proxy_port.h"' in header
+    assert "SessionTransport _transport;" in header
+    assert "SessionMessageHandler _messageHandler;" in header
+    assert "const not_null<SessionProxyPort*> _proxyPort;" in header
+    assert ", _transport(this, _runtime)" in source
+    assert ", _messageHandler(this)" in source
+
+
+def test_transport_and_message_handler_own_bulk_methods():
+    transport = read(SESSION_TRANSPORT)
+    transport_h = read(SESSION_TRANSPORT_H)
+    message_handler = read(SESSION_MESSAGE_HANDLER)
+    message_handler_h = read(SESSION_MESSAGE_HANDLER_H)
+    connection = read(SESSION_CONNECTION)
+    receive = read(SESSION_RECEIVE)
+    header = read(SESSION_H)
+
+    assert "class SessionTransport final" in transport_h
+    assert "SessionTransport::SessionTransport(" in transport
+    assert "SessionTransport::appendTestConnection(" in connection
+    assert "SessionTransport::connectToServer(" in connection
+    assert "SessionTransport::waitReceivedFailed(" in connection
+    assert "SessionTransport::onError(" in connection
+    assert "class SessionMessageHandler final" in message_handler_h
+    assert "enum class HandleResult" in message_handler_h
+    assert "struct OuterInfo" in message_handler_h
+    assert "SessionMessageHandler::handleOneReceived(" in receive
+    assert "SessionMessageHandler::handleMsgContainer(" in receive
+    assert "SessionMessageHandler::handleRpcResult(" in receive
+    assert "SessionPrivate::handleOneReceived(" not in receive
+    assert "SessionPrivate::handleMsgContainer(" not in receive
+    assert "SessionPrivate::handleRpcResult(" not in receive
+    assert "HandleResult handleOneReceived(" not in header
+    assert "HandleResult handleMsgContainer(" not in header
+    assert "HandleResult handleRpcResult(" not in header
+
+
 def test_session_private_main_keeps_only_glue_not_bulk_modules():
     source = read(SESSION_MAIN)
 
     forbidden_signatures = (
         "bool SessionPrivate::appendTestConnection(",
-        "void SessionPrivate::connectToServer(",
         "void SessionPrivate::tryToSend(",
-        "void SessionPrivate::handleReceived(",
         "SessionPrivate::HandleResult SessionPrivate::handleOneReceived(",
         "void SessionPrivate::applyAuthKey(",
     )
@@ -109,7 +166,7 @@ def test_receive_dispatcher_is_short_and_delegates_cases():
     source = read(SESSION_RECEIVE)
     body = function_body(
         source,
-        "SessionPrivate::HandleResult SessionPrivate::handleOneReceived(")
+        "SessionMessageHandler::HandleResult SessionMessageHandler::handleOneReceived(")
 
     assert len(body.splitlines()) <= 90
 
@@ -130,7 +187,7 @@ def test_receive_dispatcher_is_short_and_delegates_cases():
     for constructor, handler in handlers:
         assert f"case {constructor}:" in body
         assert f"return {handler}(" in body
-        assert f"SessionPrivate::HandleResult SessionPrivate::{handler}(" in source
+        assert f"SessionMessageHandler::HandleResult SessionMessageHandler::{handler}(" in source
 
     assert "return handleUpdates(" in body
-    assert "SessionPrivate::HandleResult SessionPrivate::handleUpdates(" in source
+    assert "SessionMessageHandler::HandleResult SessionMessageHandler::handleUpdates(" in source

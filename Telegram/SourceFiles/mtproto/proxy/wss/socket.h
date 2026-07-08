@@ -41,6 +41,7 @@ struct WssRoute {
 class WssSocket final : public AbstractSocket {
 public:
 	WssSocket(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const QNetworkProxy &proxy,
 		bool protocolForFiles,

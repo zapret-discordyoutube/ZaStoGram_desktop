@@ -16,6 +16,7 @@ namespace MTP::details {
 class TcpSocket final : public AbstractSocket {
 public:
 	TcpSocket(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const QNetworkProxy &proxy,
 		bool protocolForFiles);

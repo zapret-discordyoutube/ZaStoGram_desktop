@@ -88,7 +88,7 @@ def test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe():
 def test_admission_delay_is_queued_not_failed_or_backoff():
     session = read_session_private_sources()
     broker = read(CONNECTION_BROKER_CPP)
-    append = function_body(session, "bool SessionPrivate::appendTestConnection(")
+    append = function_body(session, "bool SessionTransport::appendTestConnection(")
     notify = function_body(broker, "void ConnectionBroker::notify(")
 
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
@@ -112,7 +112,7 @@ def test_route_success_updates_canonical_capability_and_health():
     assert "RouteKey(report.endpoint.route)" in success
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.healthy = true;" in success
-    assert "ProxyControlPlane::ReportMtproxySuccess({" in packet
+    assert "reportMtproxySuccess({" in packet
 
 
 def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():

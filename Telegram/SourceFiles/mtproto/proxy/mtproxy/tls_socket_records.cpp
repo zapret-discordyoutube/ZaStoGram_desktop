@@ -10,7 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
-#include "mtproto/proxy/control_plane.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
 
@@ -39,7 +40,7 @@ void TlsSocket::readData() {
 	if (!isConnected()) {
 		return;
 	}
-	_incoming.append(_socket.readAll());
+	_incoming.append(_transport->readAll());
 	if (!checkNextPacket()) {
 		handleError();
 	} else if (hasBytesAvailable()) {
@@ -73,7 +74,7 @@ bool TlsSocket::checkNextPacket() {
 				_firstAppDataAt = crl::now();
 				_phase = HandshakePhase::FirstDataReceived;
 				connectionProgress(_phase);
-				ProxyControlPlane::ReportMtproxySuccess({
+				_runtime->proxyServices().control().reportMtproxySuccess({
 					.endpoint = _endpointId,
 					.use = _endpointUse,
 					.stealth = _stealth,
@@ -204,23 +205,25 @@ void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	}
 	if (_timing == ProxyTiming::Off) {
 		if (!prefix.empty()) {
-			_socket.write(kClientPrefix.data(), kClientPrefix.size());
+			_transport->write(kClientPrefix.data(), kClientPrefix.size());
 		}
 		while (!buffer.empty()) {
 			const auto cap = nextRecordPayloadSize();
 			const auto write = std::min(
 				cap - int(prefix.size()),
 				int(buffer.size()));
-			_socket.write(kClientHeader.data(), kClientHeader.size());
+			_transport->write(kClientHeader.data(), kClientHeader.size());
 			const auto size = qToBigEndian(uint16(prefix.size() + write));
-			_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
+			_transport->write(
+				reinterpret_cast<const char*>(&size),
+				sizeof(size));
 			if (!prefix.empty()) {
-				_socket.write(
+				_transport->write(
 					reinterpret_cast<const char*>(prefix.data()),
 					prefix.size());
 				prefix = bytes::const_span();
 			}
-			_socket.write(
+			_transport->write(
 				reinterpret_cast<const char*>(buffer.data()),
 				write);
 			buffer = buffer.subspan(write);
@@ -230,7 +233,7 @@ void TlsSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 		return;
 	}
 	if (!prefix.empty() && !_clientPrefixSent) {
-		_socket.write(kClientPrefix.data(), kClientPrefix.size());
+		_transport->write(kClientPrefix.data(), kClientPrefix.size());
 		_clientPrefixSent = true;
 	}
 	if (!prefix.empty()) {
@@ -251,17 +254,19 @@ void TlsSocket::sendOutgoing() {
 		const auto cap = nextRecordPayloadSize();
 		const auto available = int(_outgoing.size()) - _outgoingOffset;
 		const auto take = std::min(cap, available);
-		_socket.write(kClientHeader.data(), kClientHeader.size());
+		_transport->write(kClientHeader.data(), kClientHeader.size());
 		const auto size = qToBigEndian(uint16(take));
-		_socket.write(reinterpret_cast<const char*>(&size), sizeof(size));
-		_socket.write(_outgoing.constData() + _outgoingOffset, take);
+		_transport->write(
+			reinterpret_cast<const char*>(&size),
+			sizeof(size));
+		_transport->write(_outgoing.constData() + _outgoingOffset, take);
 		_outgoingOffset += take;
 		_firstAppDataSent = true;
 		++_startupCoverFrames;
 		if (_outgoingOffset < _outgoing.size()) {
 			const auto delay = recordPacingDelay();
 			if (delay > 0) {
-				_socket.flush();
+				_transport->flush();
 				_pacingTimer.callOnce(delay);
 				return;
 			}

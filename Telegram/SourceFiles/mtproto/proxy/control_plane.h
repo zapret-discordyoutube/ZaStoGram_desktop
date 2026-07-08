@@ -15,6 +15,9 @@ namespace MTP {
 
 struct ProxyEventReport;
 class RuntimeEnvironment;
+namespace details::MtProxy {
+class EndpointHealth;
+} // namespace details::MtProxy
 
 enum class ProxyControlPlaneSuccessScope {
 	None,
@@ -70,7 +73,11 @@ struct ProxyEndpointSnapshot {
 
 class ProxyControlPlane final {
 public:
-	void submitFact(ProxyFact fact);
+	explicit ProxyControlPlane(
+		not_null<RuntimeEnvironment*> runtime,
+		not_null<details::MtProxy::EndpointHealth*> endpointHealth);
+
+	void submitFact(const ProxyEventReport &report);
 	[[nodiscard]] ProxyAdmissionDecision admit(ProxyAdmissionRequest request);
 	[[nodiscard]] ProxyConnectionStatus selectedStatus() const;
 	[[nodiscard]] ProxyEndpointSnapshot endpointSnapshot() const;
@@ -80,23 +87,20 @@ public:
 	[[nodiscard]] static ProxyConnectionStatus Reduce(
 		const ProxyConnectionStatus &current,
 		ProxyFact fact);
-	[[nodiscard]] static ProxyAdmissionDecision Admit(
-		ProxyAdmissionRequest request);
-	static void ReportMtproxyFailure(
+	void reportMtproxyFailure(
 		details::MtProxy::FailureReport report);
-	static void ReportMtproxySuccess(
+	void reportMtproxySuccess(
 		details::MtProxy::SuccessReport report);
-	static void NoteMtproxyRelayStall(
+	void noteMtproxyRelayStall(
 		details::MtProxy::RelayStallReport report);
-	[[nodiscard]] static details::MtProxy::Snapshot MtproxyEndpointSnapshot(
+	[[nodiscard]] details::MtProxy::Snapshot mtproxyEndpointSnapshot(
 		const details::MtProxy::EndpointId &endpoint);
-	[[nodiscard]] static auto MtproxyEndpointChanges()
+	[[nodiscard]] auto mtproxyEndpointChanges()
 	-> rpl::producer<details::MtProxy::EndpointEvent>;
-	static void SubmitFact(
-		not_null<RuntimeEnvironment*> runtime,
-		const ProxyEventReport &report);
 
 private:
+	const not_null<RuntimeEnvironment*> _runtime;
+	const not_null<details::MtProxy::EndpointHealth*> _endpointHealth;
 	ProxyConnectionStatus _selectedStatus;
 	ProxyEndpointSnapshot _endpointSnapshot;
 };

@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
+class RuntimeEnvironment;
+
 enum class WssDcCoverage {
 	Unavailable,
 	Official,
@@ -21,14 +23,26 @@ enum class WssDcCoverage {
 	const ProxyData &proxy,
 	ProxyData::Settings settings);
 
-void NoteProxyWssRemoteClosed(const ProxyData &proxy);
+void NoteProxyWssRemoteClosed(
+	not_null<RuntimeEnvironment*> runtime,
+	const ProxyData &proxy);
 
 [[nodiscard]] ProxyTransport EffectiveProxyTransport(
 	const ProxyData &proxy,
 	ProxyData::Settings settings,
 	ProxyTransport saved);
+[[nodiscard]] ProxyTransport EffectiveProxyTransport(
+	not_null<RuntimeEnvironment*> runtime,
+	const ProxyData &proxy,
+	ProxyData::Settings settings,
+	ProxyTransport saved);
 
 [[nodiscard]] ProxyStealthOptions EffectiveProxyStealthOptions(
+	const ProxyData &proxy,
+	ProxyData::Settings settings,
+	ProxyStealthOptions saved);
+[[nodiscard]] ProxyStealthOptions EffectiveProxyStealthOptions(
+	not_null<RuntimeEnvironment*> runtime,
 	const ProxyData &proxy,
 	ProxyData::Settings settings,
 	ProxyStealthOptions saved);

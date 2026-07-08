@@ -144,11 +144,12 @@ std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
 }
 
 WssSocket::WssSocket(
+	not_null<RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
 	const QNetworkProxy &proxy,
 	bool protocolForFiles,
 	WssRoute route)
-: AbstractSocket(thread)
+: AbstractSocket(runtime, thread)
 , _route(std::move(route)) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);

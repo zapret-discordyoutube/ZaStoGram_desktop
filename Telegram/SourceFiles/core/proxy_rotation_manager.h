@@ -19,6 +19,10 @@ namespace Main {
 class Account;
 } // namespace Main
 
+namespace MTP {
+class RuntimeEnvironment;
+} // namespace MTP
+
 namespace Core {
 
 class ProxyRotationManager final : public base::has_weak_ptr {
@@ -47,6 +51,8 @@ private:
 	[[nodiscard]] Entry &ensure(const MTP::ProxyData &proxy);
 
 	void reevaluate();
+	void subscribeEndpointHealth();
+	void clearEndpointHealthSubscription();
 	void handleEndpointHealthChanged(
 		MTP::details::MtProxy::EndpointEvent event);
 	[[nodiscard]] bool isSelectedProxyEndpoint(
@@ -82,6 +88,8 @@ private:
 	crl::time _healthRotationRequestedUntil = 0;
 	crl::time _switchStartedAt = 0;
 	crl::time _lastSwitchAt = 0;
+	MTP::RuntimeEnvironment *_endpointHealthRuntime = nullptr;
+	rpl::lifetime _endpointHealthLifetime;
 	rpl::lifetime _lifetime;
 
 };

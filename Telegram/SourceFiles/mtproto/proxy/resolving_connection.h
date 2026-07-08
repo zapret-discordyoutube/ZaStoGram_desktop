@@ -35,12 +35,10 @@ public:
 		int port,
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
-		bool protocolForFiles) override;
+		bool protocolForFiles,
+		ConnectionStartContext context = {}) override;
 	bool isConnected() const override;
 	void timedOut() override;
-	void setMtproxyAttempt(
-		ProxyConnectionAttempt attempt,
-		crl::time startedAt) override;
 
 	int32 debugState() const override;
 

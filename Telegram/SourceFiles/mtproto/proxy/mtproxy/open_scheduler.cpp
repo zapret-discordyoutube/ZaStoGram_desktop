@@ -7,8 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 
-#include "base/random.h"
-
 #include <QtCore/QMutex>
 
 #include <algorithm>
@@ -40,11 +38,21 @@ struct OpenState {
 QMutex OpenStatesMutex;
 std::map<QString, OpenState> OpenStates;
 
-[[nodiscard]] crl::time OpenJitter() {
-	return crl::time(base::RandomIndex(int(kOpenSpacingJitter) + 1));
+[[nodiscard]] OpenScheduler &DefaultOpenScheduler(
+		not_null<RuntimeEnvironment*> runtime) {
+	static auto Result = OpenScheduler(runtime);
+	return Result;
 }
 
 } // namespace
+
+OpenScheduler::OpenScheduler(const RuntimeAsyncGateway &async)
+: _async(async) {
+}
+
+OpenScheduler::OpenScheduler(not_null<RuntimeEnvironment*> runtime)
+: OpenScheduler(runtime->async()) {
+}
 
 crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern) {
 	switch (pattern) {
@@ -57,7 +65,7 @@ crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern) {
 	return crl::time(0);
 }
 
-crl::time ReserveOpenSlot(
+crl::time OpenScheduler::ReserveOpenSlot(
 		const EndpointId &endpoint,
 		ProxyConnectionPattern pattern,
 		crl::time notBefore) {
@@ -66,7 +74,7 @@ crl::time ReserveOpenSlot(
 		return notBefore;
 	}
 	const auto patternSpacing = OpenConnectionSpacing(pattern);
-	const auto now = crl::now();
+	const auto now = _async.now();
 	const auto earliest = now + std::max(crl::time(0), notBefore);
 	auto result = crl::time(0);
 	QMutexLocker lock(&OpenStatesMutex);
@@ -89,11 +97,24 @@ crl::time ReserveOpenSlot(
 		burstSpacing });
 	const auto openAt = std::max(earliest, state.nextOpenAt);
 	if (spacing > 0) {
-		state.nextOpenAt = openAt + spacing + OpenJitter();
+		const auto jitter = crl::time(
+			_async.randomIndex(int(kOpenSpacingJitter) + 1));
+		state.nextOpenAt = openAt + spacing + jitter;
 	}
 	state.recentOpens.push_back(openAt);
 	result = std::max(crl::time(0), openAt - now);
 	return result;
+}
+
+crl::time ReserveOpenSlot(
+		not_null<RuntimeEnvironment*> runtime,
+		const EndpointId &endpoint,
+		ProxyConnectionPattern pattern,
+		crl::time notBefore) {
+	return DefaultOpenScheduler(runtime).ReserveOpenSlot(
+		endpoint,
+		pattern,
+		notBefore);
 }
 
 void NoteConnectTimeout(const EndpointId &endpoint) {

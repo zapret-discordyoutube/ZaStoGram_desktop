@@ -134,7 +134,9 @@ def test_tcp_route_failures_rotate_routes_without_canonical_cooldown():
 
     assert "FailureReason::TcpConnectTimeout" in route_only
     assert "FailureReason::TcpConnectedNoClientHelloWrite" in route_only
-    assert "NoteRouteFailure(state, report.endpoint.route, report.reason);" in failure
+    assert (
+        "NoteRouteFailure(*_storage, state, report.endpoint.route, report.reason);"
+    ) in failure
     # Route-only failures skip canonical degradation while other routes
     # remain, but degrade the canonical once every route has been tried.
     assert ("if (FailureIsRouteOnly(report.reason)"

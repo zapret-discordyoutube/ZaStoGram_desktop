@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 
 std::unique_ptr<AbstractSocket> AbstractSocket::Create(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const ProxyData &proxy,
@@ -34,6 +35,7 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		}
 		if (route) {
 			return std::make_unique<WssSocket>(
+				runtime,
 				thread,
 				networkProxy,
 				protocolForFiles,
@@ -42,6 +44,7 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 	}
 	if (secret.size() >= 21 && secret[0] == bytes::type(0xEE)) {
 		return std::make_unique<TlsSocket>(
+			runtime,
 			thread,
 			secret,
 			proxy,
@@ -51,6 +54,7 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 			mtproxyAttemptStartedAt);
 	} else {
 		return std::make_unique<TcpSocket>(
+			runtime,
 			thread,
 			networkProxy,
 			protocolForFiles);
@@ -94,7 +98,7 @@ void AbstractSocket::logError(int errorCode, const QString &errorText) {
 	const auto log = [&](const QString &message) {
 		const auto full = QString("Socket %1 Error: ").arg(_debugId) + message;
 		if (_debugId.contains(u"mtproxy "_q)) {
-			WriteProxyDiagnosticsLine({
+			WriteProxyDiagnosticsLine(_runtime, {
 				.source = ProxyDiagnosticsSource::MTProxy,
 				.phase = ProxyDiagnosticsPhase::Failed,
 				.severity = ProxyDiagnosticsSeverity::Error,

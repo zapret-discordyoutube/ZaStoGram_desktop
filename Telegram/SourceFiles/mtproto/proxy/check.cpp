@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -99,8 +100,8 @@ void SetProxyCheckProgress(
 		const ProxyStealthOptions &stealth) {
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto endpoint = MtProxy::EndpointIdFromProxy(proxy, stealth);
-		const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
-			endpoint);
+		const auto &control = runtime->proxyServices().control();
+		const auto snapshot = control.mtproxyEndpointSnapshot(endpoint);
 		return snapshot.healthy
 			&& !snapshot.halfOpen
 			&& snapshot.relayProven
@@ -235,6 +236,7 @@ void StartProxyCheck(
 		: Variants::Tcp;
 	const auto dcId = runtime->instance().mainDcId ? runtime->instance().mainDcId() : DcId();
 	const auto checkStealth = MTP::EffectiveProxyStealthOptions(
+		runtime,
 		proxy,
 		ProxyData::Settings::Enabled,
 		stealth);
@@ -272,7 +274,7 @@ void StartProxyCheck(
 		state->connectionTicket.cancel();
 		state->handshakeGate.release();
 		if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
-			ProxyControlPlane::ReportMtproxyFailure({
+			runtime->proxyServices().control().reportMtproxyFailure({
 				.endpoint = state->mtproxyEndpoint,
 				.use = MtProxy::EndpointUse::ProxyCheck,
 				.reason = ProxyCheckFailureReason(error),
@@ -301,7 +303,9 @@ void StartProxyCheck(
 		RetainActiveProxyCheckKey(probeKey);
 		state->progressStatus = ProxyCheckStatus::Idle;
 		state->networkStarted = false;
-		auto handshakeGate = details::ReserveHandshakeGateForProxy(proxy);
+		auto handshakeGate = details::ReserveHandshakeGateForProxy(
+			runtime,
+			proxy);
 		state->connection = Connection::Create(
 			runtime,
 			connType,
@@ -324,7 +328,7 @@ void StartProxyCheck(
 			state->connectionTicket.cancel();
 			state->handshakeGate.release();
 			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
-				ProxyControlPlane::ReportMtproxySuccess({
+				runtime->proxyServices().control().reportMtproxySuccess({
 					.endpoint = state->mtproxyEndpoint,
 					.use = MtProxy::EndpointUse::ProxyCheck,
 					.stealth = state->mtproxyStealth,
@@ -370,7 +374,7 @@ void StartProxyCheck(
 		const auto endpoint = (proxy.type == ProxyData::Type::Mtproto)
 			? MtProxy::EndpointIdFromProxy(proxy, checkStealth)
 			: MtProxy::EndpointId();
-		state->connectionTicket = details::ConnectionBroker::Instance().request({
+		state->connectionTicket = runtime->proxyServices().broker().request({
 			.endpoint = endpoint,
 			.proxy = proxy,
 			.use = MtProxy::EndpointUse::ProxyCheck,
@@ -378,7 +382,6 @@ void StartProxyCheck(
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.connectionPattern = checkStealth.connectionPattern,
 			.notBefore = gateDelay,
-			.runtime = runtime,
 			.context = raw,
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
@@ -390,21 +393,24 @@ void StartProxyCheck(
 				state->mtproxyStealth = start.stealth;
 				state->mtproxySentProfile = start.effectiveTlsProfile;
 				state->networkStarted = true;
-				raw->setMtproxyAttempt({
-					.proxyGeneration = start.proxyGeneration,
-					.proxyEpoch = start.proxyEpoch,
-					.successEpoch = start.successEpoch,
-					.attemptId = start.attemptId,
-					.connectionId = raw->debugId(),
-					.probe = true,
-				}, start.attemptStartedAt);
 				SetProxyCheckProgress(state, ProxyCheckStatus::Resolving);
 				raw->connectToServer(
 					address,
 					port,
 					secret,
 					dcId,
-					false);
+					false,
+					{
+						.mtproxyAttempt = {
+							.proxyGeneration = start.proxyGeneration,
+							.proxyEpoch = start.proxyEpoch,
+							.successEpoch = start.successEpoch,
+							.attemptId = start.attemptId,
+							.connectionId = raw->debugId(),
+							.probe = true,
+						},
+						.mtproxyAttemptStartedAt = start.attemptStartedAt,
+					});
 				QTimer::singleShot(int(kProxyCheckUiTimeout), raw, [=] {
 					if (state->connection.get() != raw
 						|| state->finished

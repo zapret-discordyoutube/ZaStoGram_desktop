@@ -75,7 +75,7 @@ def test_proxy_check_dedupes_clicks_and_short_circuits_active_session():
     assert "return;" in start.split(
         "ProxyCheckStatus::ConnectedByActiveSession", 1)[1].split("}", 1)[0]
 
-    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in active
+    assert "control.mtproxyEndpointSnapshot(" in active
     assert "endpoint)" in active
     assert "snapshot.relayProven" in active
     assert "snapshot.lastRelaySuccessAt" in active
@@ -137,7 +137,7 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
     header = read(CHECK_H)
     start = function_body(source, "void StartProxyCheck(")
     request = start.split(
-        "ConnectionBroker::Instance().request({", 1)[1].split(
+        "runtime->proxyServices().broker().request({", 1)[1].split(
         ".start = ", 1)[0]
 
     assert "ProxyStealthOptions mtproxyStealth;" in header
@@ -146,9 +146,9 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
         ".proxy = proxy")
     assert request.index(".proxy = proxy") < request.index(
         ".use = MtProxy::EndpointUse::ProxyCheck")
-    assert request.index(".notBefore = gateDelay") < request.index(
-        ".runtime = runtime")
-    assert "raw->setMtproxyAttempt({" in start
+    assert ".runtime = runtime" not in request
+    assert "raw->setMtproxyAttempt({" not in start
+    assert ".mtproxyAttempt = {" in start
     assert ".proxyGeneration = start.proxyGeneration" in start
     assert ".proxyEpoch = start.proxyEpoch" in start
     assert ".attemptId = start.attemptId" in start
@@ -197,10 +197,10 @@ def test_proxy_check_failure_is_probe_telemetry_not_canonical_health():
         health_source,
         "void EndpointHealth::reportFailure(")
 
-    failure = start.split("ProxyControlPlane::ReportMtproxyFailure({", 1)[1]
+    failure = start.split("reportMtproxyFailure({", 1)[1]
     assert ".use = MtProxy::EndpointUse::ProxyCheck" in failure.split("});", 1)[0]
     assert "report.use == EndpointUse::ProxyCheck" in report_failure
-    assert "LogProbeAttemptFailure(report" in report_failure
+    assert "LogProbeAttemptFailure(_runtime, report" in report_failure
 
 
 def test_proxy_check_success_is_probe_telemetry_not_canonical_health():
@@ -212,10 +212,10 @@ def test_proxy_check_success_is_probe_telemetry_not_canonical_health():
         health_source,
         "void EndpointHealth::reportSuccess(")
 
-    success = start.split("ProxyControlPlane::ReportMtproxySuccess({", 1)[1]
+    success = start.split("reportMtproxySuccess({", 1)[1]
     assert ".use = MtProxy::EndpointUse::ProxyCheck" in success.split("});", 1)[0]
     assert "report.use == EndpointUse::ProxyCheck" in report_success
-    assert "LogProbeAttemptSuccess(report" in report_success
+    assert "LogProbeAttemptSuccess(_runtime, report" in report_success
     assert report_success.index("report.use == EndpointUse::ProxyCheck") < (
         report_success.index("ApplyProxyGeneration(state, report.proxyGeneration)"))
 

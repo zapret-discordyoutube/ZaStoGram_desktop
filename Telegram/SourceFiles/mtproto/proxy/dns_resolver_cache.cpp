@@ -15,7 +15,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QPointer>
 
 #include <map>
-#include <set>
 #include <vector>
 
 namespace MTP::details {
@@ -40,10 +39,6 @@ struct DnsResolverEntry {
 	std::vector<DnsResolverSubscriber> subscribers;
 };
 
-QMutex EntriesMutex;
-std::map<QString, DnsResolverEntry> Entries;
-std::set<RuntimeEnvironment*> ConnectedRuntimes;
-
 void PushResult(
 		QPointer<QObject> receiver,
 		DnsResolverCache::Callback callback,
@@ -62,28 +57,33 @@ void PushResult(
 
 } // namespace
 
-DnsResolverCache &DnsResolverCache::Instance() {
-	static auto result = DnsResolverCache();
-	return result;
+struct DnsResolverCache::Storage {
+	QMutex mutex;
+	std::map<QString, DnsResolverEntry> entries;
+};
+
+DnsResolverCache::DnsResolverCache(not_null<RuntimeEnvironment*> runtime)
+: _runtime(runtime)
+, _storage(std::make_unique<Storage>()) {
 }
 
+DnsResolverCache::~DnsResolverCache() = default;
+
 void DnsResolverCache::request(
-		RuntimeEnvironment *runtime,
 		QObject *receiver,
 		const QString &host,
 		Callback callback) {
-	if (!runtime || !receiver || host.isEmpty()) {
+	if (!receiver || host.isEmpty()) {
 		return;
 	}
-	connectRuntime(runtime);
 
 	auto cachedIps = QStringList();
 	auto cachedExpireAt = qint64(0);
 	auto useCached = false;
 	auto startResolve = false;
 	{
-		QMutexLocker lock(&EntriesMutex);
-		auto &entry = Entries[host];
+		QMutexLocker lock(&_storage->mutex);
+		auto &entry = _storage->entries[host];
 		const auto now = crl::now();
 		if ((entry.state == DnsResolverCacheState::Fresh
 				|| entry.state == DnsResolverCacheState::Negative)
@@ -113,9 +113,9 @@ void DnsResolverCache::request(
 	if (useCached) {
 		PushResult(receiver, std::move(callback), host, cachedIps, cachedExpireAt);
 	} else if (startResolve) {
-		InvokeQueued(runtime, [=] {
-			if (runtime->proxyResolver().resolveDomain) {
-				runtime->proxyResolver().resolveDomain(host);
+		InvokeQueued(_runtime, [=] {
+			if (_runtime->proxyResolver().resolveDomain) {
+				_runtime->proxyResolver().resolveDomain(host);
 			}
 		});
 	}
@@ -127,8 +127,8 @@ void DnsResolverCache::resolved(
 		qint64 expireAt) {
 	auto subscribers = std::vector<DnsResolverSubscriber>();
 	{
-		QMutexLocker lock(&EntriesMutex);
-		auto &entry = Entries[host];
+		QMutexLocker lock(&_storage->mutex);
+		auto &entry = _storage->entries[host];
 		entry.state = ips.empty()
 			? DnsResolverCacheState::Negative
 			: DnsResolverCacheState::Fresh;
@@ -145,25 +145,6 @@ void DnsResolverCache::resolved(
 			ips,
 			expireAt);
 	}
-}
-
-void DnsResolverCache::connectRuntime(RuntimeEnvironment *runtime) {
-	auto shouldConnect = false;
-	{
-		QMutexLocker lock(&EntriesMutex);
-		shouldConnect = ConnectedRuntimes.insert(runtime).second;
-	}
-	if (!shouldConnect) {
-		return;
-	}
-
-	// A destroyed runtime (e.g. a keys-destroyer one) must be forgotten,
-	// otherwise a new runtime allocated at the same address would be
-	// skipped above and its resolutions would never reach the cache.
-	QObject::connect(runtime, &QObject::destroyed, [=] {
-		QMutexLocker lock(&EntriesMutex);
-		ConnectedRuntimes.erase(runtime);
-	});
 }
 
 } // namespace MTP::details

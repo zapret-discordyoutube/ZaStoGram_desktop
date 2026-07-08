@@ -25,6 +25,7 @@ enum class HandshakePhase {
 class AbstractSocket : protected QObject {
 public:
 	static std::unique_ptr<AbstractSocket> Create(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const ProxyData &proxy,
@@ -38,7 +39,10 @@ public:
 		_debugId = id;
 	}
 
-	explicit AbstractSocket(not_null<QThread*> thread) {
+	AbstractSocket(
+		not_null<RuntimeEnvironment*> runtime,
+		not_null<QThread*> thread)
+	: _runtime(runtime) {
 		moveToThread(thread);
 	}
 	virtual ~AbstractSocket() = default;
@@ -106,6 +110,7 @@ protected:
 	rpl::event_stream<int> _error;
 	rpl::event_stream<> _syncTimeRequests;
 	rpl::event_stream<HandshakePhase> _progress;
+	const not_null<RuntimeEnvironment*> _runtime;
 
 };
 

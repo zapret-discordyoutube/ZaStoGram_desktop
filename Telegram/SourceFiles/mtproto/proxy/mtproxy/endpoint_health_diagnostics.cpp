@@ -49,9 +49,10 @@ namespace MTP::details::MtProxy {
 }
 
 void LogStaleAttemptFailure(
+		not_null<RuntimeEnvironment*> runtime,
 		const FailureReport &report,
 		int recipeLevel) {
-	WriteProxyDiagnosticsLine({
+	WriteProxyDiagnosticsLine(runtime, {
 		.source = ProxyDiagnosticsSource::MTProxy,
 		.phase = ProxyDiagnosticsPhase::RouteFailed,
 		.severity = ProxyDiagnosticsSeverity::Info,
@@ -70,8 +71,10 @@ void LogStaleAttemptFailure(
 	});
 }
 
-void LogProbeAttemptFailure(const FailureReport &report) {
-	WriteProxyDiagnosticsLine({
+void LogProbeAttemptFailure(
+		not_null<RuntimeEnvironment*> runtime,
+		const FailureReport &report) {
+	WriteProxyDiagnosticsLine(runtime, {
 		.source = ProxyDiagnosticsSource::MTProxy,
 		.phase = ProxyDiagnosticsPhase::RouteFailed,
 		.severity = ProxyDiagnosticsSeverity::Info,
@@ -89,8 +92,10 @@ void LogProbeAttemptFailure(const FailureReport &report) {
 	});
 }
 
-void LogProbeAttemptSuccess(const SuccessReport &report) {
-	WriteProxyDiagnosticsLine({
+void LogProbeAttemptSuccess(
+		not_null<RuntimeEnvironment*> runtime,
+		const SuccessReport &report) {
+	WriteProxyDiagnosticsLine(runtime, {
 		.source = ProxyDiagnosticsSource::MTProxy,
 		.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 		.severity = ProxyDiagnosticsSeverity::Info,

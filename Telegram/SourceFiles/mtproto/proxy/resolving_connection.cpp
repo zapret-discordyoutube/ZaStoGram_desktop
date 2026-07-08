@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
 
 #include <algorithm>
@@ -81,6 +82,7 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 // A route attempt destroyed by our own timeout never produces a socket
 // error, so nothing else reports it to EndpointHealth - do it here.
 void ReportRouteFailureToHealth(
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		int ipIndex,
 		MtProxy::FailureReason reason,
@@ -89,7 +91,7 @@ void ReportRouteFailureToHealth(
 	if (proxy.type != ProxyData::Type::Mtproto) {
 		return;
 	}
-	ProxyControlPlane::ReportMtproxyFailure({
+	runtime->proxyServices().control().reportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex),
 		.reason = reason,
 		.proxyGeneration = attempt.proxyGeneration,
@@ -101,6 +103,7 @@ void ReportRouteFailureToHealth(
 }
 
 void ReportAllRoutesFailed(
+		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		MtProxy::FailureReason reason,
 		ProxyConnectionAttempt attempt,
@@ -108,7 +111,7 @@ void ReportAllRoutesFailed(
 	if (proxy.type != ProxyData::Type::Mtproto) {
 		return;
 	}
-	ProxyControlPlane::ReportMtproxyFailure({
+	runtime->proxyServices().control().reportMtproxyFailure({
 		.endpoint = MtproxyEndpointIdForProxy(proxy),
 		.reason = reason,
 		.proxyGeneration = attempt.proxyGeneration,
@@ -182,8 +185,7 @@ ResolvingConnection::ResolvingConnection(
 			.message = u"resolving proxy host"_q,
 		});
 		const auto host = proxy.host;
-		DnsResolverCache::Instance().request(
-			runtime,
+		_runtime->proxyServices().dnsResolver().request(
 			this,
 			host,
 			[=](QString host, QStringList ips, qint64 expireAt) {
@@ -208,9 +210,6 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 	auto attempt = RouteAttempt();
 	attempt.ipIndex = ipIndex;
 	attempt.child = _child->clone(ToDirectIpProxy(_proxy, ipIndex));
-	attempt.child->setMtproxyAttempt(
-		_mtproxyAttempt,
-		_mtproxyAttemptStartedAt);
 	const auto raw = attempt.child.get();
 	connect(
 		raw,
@@ -246,7 +245,11 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 			_port,
 			_protocolSecret,
 			_protocolDcId,
-			_protocolForFiles);
+			_protocolForFiles,
+			{
+				.mtproxyAttempt = _mtproxyAttempt,
+				.mtproxyAttemptStartedAt = _mtproxyAttemptStartedAt,
+			});
 		CONNECTION_LOG_INFO("Resolving connected a new child: "
 			+ attempt.child->debugId());
 	}
@@ -292,19 +295,6 @@ std::vector<int> ResolvingConnection::routeOrder() const {
 
 int ResolvingConnection::activeRouteAttempts() const {
 	return int(_routeAttempts.size());
-}
-
-void ResolvingConnection::setMtproxyAttempt(
-		ProxyConnectionAttempt attempt,
-		crl::time startedAt) {
-	_mtproxyAttempt = attempt;
-	_mtproxyAttemptStartedAt = startedAt;
-	if (_child) {
-		_child->setMtproxyAttempt(attempt, startedAt);
-	}
-	for (auto &routeAttempt : _routeAttempts) {
-		routeAttempt.child->setMtproxyAttempt(attempt, startedAt);
-	}
 }
 
 ResolvingConnection::RouteAttempt *ResolvingConnection::findRouteAttempt(
@@ -441,6 +431,7 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		// timedOut() below - reporting them here as well would degrade
 		// the canonical endpoint twice for one failed cycle.
 		ReportRouteFailureToHealth(
+			_runtime,
 			_proxy,
 			ipIndex,
 			reason,
@@ -457,6 +448,7 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	_routeAttempts.erase(victim);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
 		ReportAllRoutesFailed(
+			_runtime,
 			_proxy,
 			reason,
 			_mtproxyAttempt,
@@ -478,15 +470,15 @@ void ResolvingConnection::domainResolved(
 	_proxy.resolvedExpireAt = expireAt;
 	if (ips.empty()) {
 		if (_proxy.type == ProxyData::Type::Mtproto) {
-			ProxyControlPlane::ReportMtproxyFailure({
+			_runtime->proxyServices().control().reportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
-					.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-					.attemptId = _mtproxyAttempt.attemptId,
-					.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-					.successEpoch = _mtproxyAttempt.successEpoch,
-					.attemptStartedAt = _mtproxyAttemptStartedAt,
-				});
+				.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+				.attemptId = _mtproxyAttempt.attemptId,
+				.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+				.successEpoch = _mtproxyAttempt.successEpoch,
+				.attemptStartedAt = _mtproxyAttemptStartedAt,
+			});
 		}
 		ReportProxyEvent(_runtime, {
 			.phase = ProxyDiagnosticsPhase::Failed,
@@ -562,6 +554,7 @@ void ResolvingConnection::handleError(
 				reason = MtProxy::FailureReason::TcpConnectTimeout;
 			}
 			ReportAllRoutesFailed(
+				_runtime,
 				_proxy,
 				reason,
 				_mtproxyAttempt,
@@ -696,10 +689,13 @@ void ResolvingConnection::connectToServer(
 		int port,
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
-		bool protocolForFiles) {
+		bool protocolForFiles,
+		ConnectionStartContext context) {
+	_mtproxyAttempt = context.mtproxyAttempt;
+	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
 	if (!_child) {
 		if (_proxy.type == ProxyData::Type::Mtproto) {
-			ProxyControlPlane::ReportMtproxyFailure({
+			_runtime->proxyServices().control().reportMtproxyFailure({
 				.endpoint = MtproxyEndpointIdForProxy(_proxy),
 				.reason = MtProxy::FailureReason::DnsFailed,
 				.proxyGeneration = _mtproxyAttempt.proxyGeneration,

@@ -121,7 +121,9 @@ void HttpConnection::connectToServer(
 		int port,
 		const bytes::vector &protocolSecret,
 		int16 protocolDcId,
-		bool protocolForFiles) {
+		bool protocolForFiles,
+		ConnectionStartContext context) {
+	_mtproxyAttempt = context.mtproxyAttempt;
 	_address = address;
 	connect(
 		&_manager,
@@ -347,12 +349,6 @@ void HttpConnection::requestFinished(QNetworkReply *reply) {
 
 crl::time HttpConnection::pingTime() const {
 	return isConnected() ? _pingTime : crl::time(0);
-}
-
-void HttpConnection::setMtproxyAttempt(
-		ProxyConnectionAttempt attempt,
-		crl::time) {
-	_mtproxyAttempt = attempt;
 }
 
 crl::time HttpConnection::fullConnectTimeout() const {

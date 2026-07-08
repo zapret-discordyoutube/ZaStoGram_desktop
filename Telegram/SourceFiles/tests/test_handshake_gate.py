@@ -10,6 +10,8 @@ GATE_H = PROXY_DIR / "handshake_gate.h"
 GATE_CPP = PROXY_DIR / "handshake_gate.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
+TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
+SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 PROXY_CHECK_H = PROXY_DIR / "check.h"
 PROXY_CHECK_CPP = PROXY_DIR / "check.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
@@ -34,7 +36,8 @@ def test_gate_lease_api_and_constants():
     assert "[[nodiscard]] crl::time delay() const;" in header
     assert "void release();" in header
     assert "~HandshakeGateLease();" in header
-    assert "[[nodiscard]] HandshakeGateLease ReserveHandshakeGate();" in header
+    assert "[[nodiscard]] HandshakeGateLease ReserveHandshakeGate(" in header
+    assert "not_null<RuntimeEnvironment*> runtime" in header
     assert "[[nodiscard]] HandshakeGateLease ReserveHandshakeGateForProxy(" in header
     assert "std::atomic<int>" in source
     assert "kHandshakeGateCap = 3" in source
@@ -49,13 +52,18 @@ def test_gate_lease_api_and_constants():
 
 def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
+    transport_header = TRANSPORT_H.read_text(encoding="utf-8")
+    adapter = SESSION_PROXY_ADAPTER_CPP.read_text(encoding="utf-8")
     source = read_session_private_sources()
 
-    assert '#include "mtproto/proxy/connection_broker.h"' in header
-    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in header
+    assert '#include "mtproto/session/private/proxy_port.h"' in header
+    assert "not_null<SessionProxyPort*> _proxyPort;" in header
+    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in transport_header
+    assert "std::vector<SessionProxyTicket> brokerTickets;" in transport_header
     assert "ReserveHandshakeGateForProxy(_sessionState.options->proxy)" not in source
     assert "EndpointHealth::Instance().admit(" not in source
-    assert "ConnectionBroker::Instance().request({" in source
+    assert "_proxyPort->requestConnection({" in source
+    assert "proxyServices().broker().request(" in adapter
     assert "std::move(start.lease)" in source
 
 
@@ -63,11 +71,11 @@ def test_remove_connection_releases_before_erasing():
     source = read_session_private_sources()
     body = body_after(
         source,
-        "void SessionPrivate::removeTestConnection")
+        "void SessionTransport::removeTestConnection")
 
     assert "i->mtproxyLease.release();" in body
     assert body.index("i->mtproxyLease.release();") < body.index(
-        "_connectionState.testConnections.erase(")
+        "_state.testConnections.erase(")
 
 
 def test_proxy_check_connection_holds_gate_lease():
@@ -104,10 +112,11 @@ def test_proxy_check_starts_are_soft_gated():
     start_body = body_after(proxy_check, "void StartProxyCheck")
 
     assert '#include <QtCore/QTimer>' in proxy_check
-    assert "details::ReserveHandshakeGateForProxy(proxy)" in start_body
+    assert "details::ReserveHandshakeGateForProxy(" in start_body
+    assert "runtime,\n\t\t\tproxy)" in start_body
     assert "const auto state = checker.state();" in start_body
     assert "const auto gateDelay = state->handshakeGate.delay();" in start_body
-    assert "details::ConnectionBroker::Instance().request({" in start_body
+    assert "runtime->proxyServices().broker().request({" in start_body
     assert ".notBefore = gateDelay" in start_body
     assert "MtProxy::EndpointUse::ProxyCheck" in start_body
     assert "state->handshakeGate.release();" in start_body

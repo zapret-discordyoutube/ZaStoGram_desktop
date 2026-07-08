@@ -81,7 +81,7 @@ def test_cached_negative_dns_does_not_disable_mtproxy_child():
     assert "cachedNegative" not in constructor
     assert "_child = nullptr" not in constructor
     assert "proxy.resolvedIPs.empty()" in constructor
-    assert "DnsResolverCache::Instance().request(" in constructor
+    assert "_runtime->proxyServices().dnsResolver().request(" in constructor
     assert "instance->resolveProxyDomain(host);" not in constructor
 
 

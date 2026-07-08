@@ -77,8 +77,8 @@ def test_tls_socket_reports_endpoint_state_through_endpoint_health():
     assert "CooldownMsForEndpoint(" not in tls_sources
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in (
         MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")
-    assert "ProxyControlPlane::ReportMtproxyFailure(" in tls_sources
-    assert "ProxyControlPlane::ReportMtproxySuccess(" in tls_sources
+    assert "reportMtproxyFailure(" in tls_sources
+    assert "reportMtproxySuccess(" in tls_sources
     assert "MtproxyNoteEndpointFailure(" not in tls_sources
     assert "MtproxyNoteEndpointSuccess(" not in tls_sources
     assert "MtproxyRotateTlsProfileOnFailure(" not in tls_sources

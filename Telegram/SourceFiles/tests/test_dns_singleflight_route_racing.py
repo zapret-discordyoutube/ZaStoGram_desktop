@@ -58,7 +58,7 @@ def test_resolving_connection_subscribes_to_dns_cache_instead_of_resolving():
     constructor = constructor.split("\n}\n")[0]
 
     assert '#include "mtproto/proxy/dns_resolver_cache.h"' in source
-    assert "DnsResolverCache::Instance().request(" in constructor
+    assert "_runtime->proxyServices().dnsResolver().request(" in constructor
     assert "&Instance::proxyDomainResolved" not in constructor
     assert "instance->resolveProxyDomain(host);" not in constructor
     assert "domainResolved(" in constructor

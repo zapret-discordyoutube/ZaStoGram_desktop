@@ -13,9 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/control_plane.h"
-#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
@@ -59,16 +56,16 @@ base::options::toggle OptionPreferIPv6({
 
 } // namespace
 
-bool SessionPrivate::appendTestConnection(
+bool SessionTransport::appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
 		bool protocolForFiles) {
-	QWriteLocker lock(&_stateMutex);
+	QWriteLocker lock(&_owner->_stateMutex);
 
-	const auto proxy = _sessionState.options->proxy;
-	const auto stealth = _sessionState.options->stealth;
+	const auto proxy = _owner->_sessionState.options->proxy;
+	const auto stealth = _owner->_sessionState.options->stealth;
 	const auto endpoint = ip.isEmpty()
 		? (proxy.host + ':' + QString::number(proxy.port))
 		: (ip + ':' + QString::number(port));
@@ -79,8 +76,8 @@ bool SessionPrivate::appendTestConnection(
 	const auto mtproxyUse = protocolForFiles
 		? MtProxy::EndpointUse::Media
 		: MtProxy::EndpointUse::Main;
-	if (_connectionState.proxyMigrationScout
-		&& (!_connectionState.brokerTickets.empty() || !_connectionState.testConnections.empty())) {
+	if (_state.proxyMigrationScout
+		&& (!_state.brokerTickets.empty() || !_state.testConnections.empty())) {
 		return false;
 	}
 	const auto mtproxyEndpoint = mtproxy
@@ -90,7 +87,7 @@ bool SessionPrivate::appendTestConnection(
 			ip,
 			port)
 		: MtProxy::EndpointId();
-	const auto protocolDcId = getProtocolDcId();
+	const auto protocolDcId = _owner->getProtocolDcId();
 	const auto appendStartedConnection = [=, this](
 			MtProxy::EndpointId startEndpoint,
 			MtProxy::EndpointUse startUse,
@@ -98,12 +95,12 @@ bool SessionPrivate::appendTestConnection(
 			ProxyConnectionAttempt startAttempt,
 			crl::time startAttemptStartedAt,
 			ProxyStealthOptions startStealth) {
-		QWriteLocker lock(&_stateMutex);
-		_connectionState.testConnections.push_back({
-			AbstractConnection::Create(
-				_runtime,
+		QWriteLocker lock(&_owner->_stateMutex);
+		_state.testConnections.push_back({
+			_owner->_connectionFactory->create(
+				_owner->_runtime,
 				protocol,
-				thread(),
+				_owner->thread(),
 				protocolSecret,
 				proxy,
 				startStealth),
@@ -115,12 +112,11 @@ bool SessionPrivate::appendTestConnection(
 			startAttempt,
 			startAttemptStartedAt
 		});
-		const auto weak = _connectionState.testConnections.back().data.get();
-		weak->setMtproxyAttempt(startAttempt, startAttemptStartedAt);
-		connect(weak, &AbstractConnection::error, [=](int errorCode) {
+		const auto weak = _state.testConnections.back().data.get();
+		QObject::connect(weak, &AbstractConnection::error, [=](int errorCode) {
 			onError(weak, errorCode);
 		});
-		connect(weak, &AbstractConnection::receivedSome, [=] {
+		QObject::connect(weak, &AbstractConnection::receivedSome, [=] {
 			onReceivedSome();
 		});
 		_timing.firstSentAt = 0;
@@ -129,14 +125,14 @@ bool SessionPrivate::appendTestConnection(
 			DEBUG_LOG(("This connection marked as not old!"));
 		}
 		_timing.oldConnectionTimer.callOnce(kMarkConnectionOldTimeout);
-		connect(weak, &AbstractConnection::connected, [=] {
+		QObject::connect(weak, &AbstractConnection::connected, [=] {
 			onConnected(weak);
 		});
-		connect(weak, &AbstractConnection::disconnected, [=] {
+		QObject::connect(weak, &AbstractConnection::disconnected, [=] {
 			onDisconnected(weak);
 		});
-		connect(weak, &AbstractConnection::syncTimeRequest, [=] {
-			InvokeQueued(_runtime, [runtime = _runtime] {
+		QObject::connect(weak, &AbstractConnection::syncTimeRequest, [=] {
+			InvokeQueued(_owner->_runtime, [runtime = _owner->_runtime] {
 				if (runtime->instance().syncHttpUnixtime) {
 					runtime->instance().syncHttpUnixtime();
 				}
@@ -148,26 +144,30 @@ bool SessionPrivate::appendTestConnection(
 				port,
 				protocolSecret,
 				protocolDcId,
-				protocolForFiles);
+				protocolForFiles,
+				{
+					.mtproxyAttempt = startAttempt,
+					.mtproxyAttemptStartedAt = startAttemptStartedAt,
+				});
 		};
-		InvokeQueued(_connectionState.testConnections.back().data, start);
+		InvokeQueued(_state.testConnections.back().data, start);
 		armWaitForConnectedTimer();
 	};
 
 	if (mtproxy) {
-		auto ticket = ConnectionBroker::Instance().request({
-			.proxyGeneration = _connectionState.proxyGeneration,
+		auto ticket = _owner->_proxyPort->requestConnection({
+			.proxyGeneration = _state.proxyGeneration,
 			.endpoint = mtproxyEndpoint,
 			.proxy = proxy,
 			.use = mtproxyUse,
 			.stealth = stealth,
 			.configuredTlsProfile = stealth.tlsProfile,
 			.connectionPattern = stealth.connectionPattern,
-			.runtime = _runtime,
-			.context = this,
-			.start = [=](ConnectionStart start) mutable {
+			.runtime = _owner->_runtime,
+			.context = _owner,
+			.start = [=](SessionProxyStart start) mutable {
 				removeConnectionBrokerTicket(start.ticketId);
-				if (start.proxyGeneration != _connectionState.proxyGeneration) {
+				if (start.proxyGeneration != _state.proxyGeneration) {
 					return;
 				}
 				appendStartedConnection(
@@ -183,13 +183,13 @@ bool SessionPrivate::appendTestConnection(
 					start.attemptStartedAt,
 					start.stealth);
 			},
-			.status = [=](ConnectionBrokerDecision) {
+			.status = [=](SessionProxyAdmissionDecision) {
 			},
 		});
 		if (!ticket) {
 			return false;
 		}
-		_connectionState.brokerTickets.push_back(std::move(ticket));
+		_state.brokerTickets.push_back(std::move(ticket));
 		return true;
 	}
 
@@ -198,29 +198,29 @@ bool SessionPrivate::appendTestConnection(
 		MtProxy::EndpointId(),
 		MtProxy::EndpointUse::Main,
 		MtProxy::EndpointAttemptLease(),
-		{ .proxyGeneration = _connectionState.proxyGeneration },
+		{ .proxyGeneration = _state.proxyGeneration },
 		0,
 		stealth);
 	return true;
 }
 
-void SessionPrivate::destroyAllConnections() {
-	clearUnboundKeyCreator();
+void SessionTransport::destroyAllConnections() {
+	_owner->clearUnboundKeyCreator();
 	_timing.waitForBetterTimer.cancel();
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
-	_connectionState.brokerTickets.clear();
-	_connectionState.testConnections.clear();
-	_connectionState.mtproxyEndpoint = MtProxy::EndpointId();
-	_connectionState.mtproxyUse = MtProxy::EndpointUse::Main;
-	_connectionState.mtproxyAttempt = {};
-	_connectionState.mtproxyAttemptStartedAt = 0;
-	_connectionState.mtprotoDataReceived = false;
-	_connectionState.connection = nullptr;
+	_state.brokerTickets.clear();
+	_state.testConnections.clear();
+	_state.mtproxyEndpoint = MtProxy::EndpointId();
+	_state.mtproxyUse = MtProxy::EndpointUse::Main;
+	_state.mtproxyAttempt = {};
+	_state.mtproxyAttemptStartedAt = 0;
+	_state.mtprotoDataReceived = false;
+	_state.connection = nullptr;
 }
 
-void SessionPrivate::reportMtproxyConnectionUsable(
+void SessionTransport::reportMtproxyConnectionUsable(
 		const TestConnection &connection) {
 	// EndpointHealth only learns an endpoint is healthy from TlsSocket's
 	// first-app-data on the FakeTLS path; plain-obfuscated (dd-secret)
@@ -232,44 +232,40 @@ void SessionPrivate::reportMtproxyConnectionUsable(
 	if (MtProxy::EndpointEmpty(connection.mtproxyEndpoint)) {
 		return;
 	}
-	const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
+	const auto snapshot = _owner->_proxyPort->endpointSnapshot(
+		_owner->_runtime,
 		connection.mtproxyEndpoint);
 	if (snapshot.healthy && !snapshot.halfOpen) {
 		return;
 	}
-	ProxyControlPlane::ReportMtproxySuccess({
-		.endpoint = connection.mtproxyEndpoint,
-		.use = connection.mtproxyUse,
-		.proxyGeneration = connection.mtproxyAttempt.proxyGeneration,
-		.attemptId = connection.mtproxyAttempt.attemptId,
-		.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
-		.successEpoch = connection.mtproxyAttempt.successEpoch,
-		.attemptStartedAt = connection.mtproxyAttemptStartedAt,
-	});
+	_owner->_proxyPort->reportConnected(
+		proxyAttempt(connection),
+		nullptr,
+		MtProxy::SuccessScope::Handshake);
 }
 
-void SessionPrivate::removeConnectionBrokerTicket(ConnectionTicketId id) {
+void SessionTransport::removeConnectionBrokerTicket(SessionProxyTicketId id) {
 	const auto i = ranges::find(
-		_connectionState.brokerTickets,
+		_state.brokerTickets,
 		id,
-		[](const ConnectionTicket &ticket) { return ticket.id(); });
-	if (i != end(_connectionState.brokerTickets)) {
-		_connectionState.brokerTickets.erase(i);
+		[](const SessionProxyTicket &ticket) { return ticket.id(); });
+	if (i != end(_state.brokerTickets)) {
+		_state.brokerTickets.erase(i);
 	}
-	if (_connectionState.brokerTickets.empty()) {
+	if (_state.brokerTickets.empty()) {
 		_timing.brokerQueueDeadlineTimer.cancel();
 	}
 }
 
-void SessionPrivate::armWaitForConnectedTimer() {
+void SessionTransport::armWaitForConnectedTimer() {
 	// A proxied connect needs its whole budget (tcp connect with SYN
 	// retransmits plus the FakeTLS handshake) - killing it after
 	// kMinConnectedTimeout only burns a handshake against the DPI and
 	// reconnects, and repeated fresh handshakes are exactly what gets
 	// proxies throttled. Direct connections keep the short first wait.
-	if (_sessionState.options && (_sessionState.options->proxy.type != ProxyData::Type::None)) {
+	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {
 		auto minWait = crl::time(0);
-		for (const auto &connection : _connectionState.testConnections) {
+		for (const auto &connection : _state.testConnections) {
 			accumulate_max(minWait, connection.data->fullConnectTimeout());
 		}
 		accumulate_max(_timing.waitForConnected, minWait);
@@ -279,9 +275,9 @@ void SessionPrivate::armWaitForConnectedTimer() {
 	}
 }
 
-void SessionPrivate::retryByTimer() {
-	const auto proxied = _sessionState.options
-		&& (_sessionState.options->proxy.type != ProxyData::Type::None);
+void SessionTransport::retryByTimer() {
+	const auto proxied = _owner->_sessionState.options
+		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None);
 	const auto maxTimeout = proxied ? kProxyReconnectMaxTimeout : 64000;
 	if (_timing.retryTimeout < 3) {
 		++_timing.retryTimeout;
@@ -293,56 +289,56 @@ void SessionPrivate::retryByTimer() {
 	connectToServer();
 }
 
-void SessionPrivate::restartNow() {
+void SessionTransport::restartNow() {
 	_timing.retryTimeout = 1;
 	_timing.retryTimer.cancel();
 	restart();
 }
 
-void SessionPrivate::migrateProxy(uint64 generation, bool scout) {
-	_connectionState.proxyGeneration = generation;
-	_connectionState.proxyMigrationScout = scout;
-	_connectionState.proxyMigrationSuspended = !scout;
-	_connectionState.mtproxyAttempt = { .proxyGeneration = generation };
-	_sessionState.options = std::make_unique<SessionOptions>(_sessionState.data->options());
+void SessionTransport::migrateProxy(uint64 generation, bool scout) {
+	_state.proxyGeneration = generation;
+	_state.proxyMigrationScout = scout;
+	_state.proxyMigrationSuspended = !scout;
+	_state.mtproxyAttempt = { .proxyGeneration = generation };
+	_owner->_sessionState.options = std::make_unique<SessionOptions>(_owner->_sessionState.data->options());
 	_timing.retryTimer.cancel();
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.waitForBetterTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpRestart,
 		ProxyDiagnosticsSeverity::Info,
 		scout
 			? u"proxy_switch_main_scout"_q
 			: u"suspended_by_proxy_switch"_q);
 	destroyAllConnections();
-	_connectionState.mtproxyAttempt = { .proxyGeneration = generation };
-	setState(DisconnectedState);
+	_state.mtproxyAttempt = { .proxyGeneration = generation };
+	_owner->setState(DisconnectedState);
 	if (!scout) {
 		return;
 	}
 	connectToServer();
 }
 
-void SessionPrivate::releaseProxyMigration(uint64 generation) {
-	if (generation != _connectionState.proxyGeneration || !_connectionState.proxyMigrationSuspended) {
+void SessionTransport::releaseProxyMigration(uint64 generation) {
+	if (generation != _state.proxyGeneration || !_state.proxyMigrationSuspended) {
 		return;
 	}
-	_connectionState.proxyMigrationSuspended = false;
-	_connectionState.proxyMigrationScout = false;
-	_connectionState.mtproxyAttempt = { .proxyGeneration = generation };
+	_state.proxyMigrationSuspended = false;
+	_state.proxyMigrationScout = false;
+	_state.mtproxyAttempt = { .proxyGeneration = generation };
 	connectToServer();
 }
 
-void SessionPrivate::connectToServer(bool afterConfig) {
-	if (_connectionState.proxyMigrationSuspended) {
+void SessionTransport::connectToServer(bool afterConfig) {
+	if (_state.proxyMigrationSuspended) {
 		return;
 	}
 	if (afterConfig
-		&& (!_connectionState.testConnections.empty()
-			|| !_connectionState.brokerTickets.empty()
-			|| _connectionState.connection)) {
+		&& (!_state.testConnections.empty()
+			|| !_state.brokerTickets.empty()
+			|| _state.connection)) {
 		// A queued broker ticket means this session is already mid-connect
 		// (mtproxy sessions sit with empty _testConnections while waiting on
 		// admission); an afterConfig re-entry must not tear it down and lose
@@ -352,42 +348,42 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 
 	destroyAllConnections();
 
-	if (realDcTypeChanged() && _authState.keyCreator) {
-		destroyTemporaryKey();
+	if (_owner->realDcTypeChanged() && _owner->_authState.keyCreator) {
+		_owner->destroyTemporaryKey();
 		return;
 	}
 
-	_sessionState.options = std::make_unique<SessionOptions>(_sessionState.data->options());
-	setConnectionNotice(MTP::ConnectionNotice::None);
+	_owner->_sessionState.options = std::make_unique<SessionOptions>(_owner->_sessionState.data->options());
+	_owner->setConnectionNotice(MTP::ConnectionNotice::None);
 
-	if (_sessionState.options->proxy.type == ProxyData::Type::None
-		&& _sessionState.options->stealth.transport != ProxyTransport::Wss) {
+	if (_owner->_sessionState.options->proxy.type == ProxyData::Type::None
+		&& _owner->_sessionState.options->stealth.transport != ProxyTransport::Wss) {
 		DEBUG_LOG(("MTP Info: proxy required, "
 			"waiting for a proxy before connecting."));
-		setState(-kWaitForProxyTimeout);
+		_owner->setState(-kWaitForProxyTimeout);
 		return;
 	}
 
-	const auto bareDc = BareDcId(_shiftedDcId);
+	const auto bareDc = BareDcId(_owner->_shiftedDcId);
 
-	_currentDcType = tryAcquireKeyCreation();
-	if (_currentDcType == DcType::Cdn && !_delegate->isKeysDestroyer()) {
-		if (!_delegate->dcOptions().hasCDNKeysForDc(bareDc)) {
+	_owner->_currentDcType = _owner->tryAcquireKeyCreation();
+	if (_owner->_currentDcType == DcType::Cdn && !_owner->_delegate->isKeysDestroyer()) {
+		if (!_owner->_delegate->dcOptions().hasCDNKeysForDc(bareDc)) {
 			requestCDNConfig();
 			return;
 		}
 	}
-	const auto protocolForFiles = isMediaClusterDcId(_shiftedDcId)
-		|| (_realDcType == DcType::Cdn);
-	const auto protocolDcId = getProtocolDcId();
-	setConnectionNotice(WssNeedsProxyRecommendation(
-		_sessionState.options->proxy,
-		_sessionState.options->stealth,
+	const auto protocolForFiles = isMediaClusterDcId(_owner->_shiftedDcId)
+		|| (_owner->_realDcType == DcType::Cdn);
+	const auto protocolDcId = _owner->getProtocolDcId();
+	_owner->setConnectionNotice(WssNeedsProxyRecommendation(
+		_owner->_sessionState.options->proxy,
+		_owner->_sessionState.options->stealth,
 		protocolDcId,
 		protocolForFiles)
 		? MTP::ConnectionNotice::WssDirectFallback
 		: MTP::ConnectionNotice::None);
-	if (_sessionState.options->proxy.type == ProxyData::Type::Mtproto) {
+	if (_owner->_sessionState.options->proxy.type == ProxyData::Type::Mtproto) {
 		// host, port, secret for mtproto proxy are taken from proxy.
 		if (!appendTestConnection(
 				DcOptions::Variants::Tcp,
@@ -399,15 +395,15 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		}
 	} else {
 		using Variants = DcOptions::Variants;
-		const auto special = (_currentDcType == DcType::Temporary);
-		const auto variants = _delegate->dcOptions().lookup(
+		const auto special = (_owner->_currentDcType == DcType::Temporary);
+		const auto variants = _owner->_delegate->dcOptions().lookup(
 			bareDc,
-			_currentDcType,
-			_sessionState.options->proxy.type != ProxyData::Type::None);
-		const auto useIPv4 = special ? true : _sessionState.options->useIPv4;
-		const auto useIPv6 = special ? false : _sessionState.options->useIPv6;
-		const auto useTcp = special ? true : _sessionState.options->useTcp;
-		const auto useHttp = special ? false : _sessionState.options->useHttp;
+			_owner->_currentDcType,
+			_owner->_sessionState.options->proxy.type != ProxyData::Type::None);
+		const auto useIPv4 = special ? true : _owner->_sessionState.options->useIPv4;
+		const auto useIPv6 = special ? false : _owner->_sessionState.options->useIPv6;
+		const auto useTcp = special ? true : _owner->_sessionState.options->useTcp;
+		const auto useHttp = special ? false : _owner->_sessionState.options->useHttp;
 		const auto skipAddress = !useIPv4
 			? Variants::IPv4
 			: !useIPv6
@@ -437,29 +433,29 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			}
 		}
 	}
-	if (_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()) {
-		if (_delegate->isKeysDestroyer()) {
-			LOG(("MTP Error: DC %1 options for not found for auth key destruction!").arg(_shiftedDcId));
-			_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
+	if (_state.testConnections.empty() && _state.brokerTickets.empty()) {
+		if (_owner->_delegate->isKeysDestroyer()) {
+			LOG(("MTP Error: DC %1 options for not found for auth key destruction!").arg(_owner->_shiftedDcId));
+			_owner->_delegate->keyWasPossiblyDestroyed(_owner->_shiftedDcId);
 			return;
 		} else if (afterConfig) {
-			LOG(("MTP Error: DC %1 options for not found right after config load!").arg(_shiftedDcId));
+			LOG(("MTP Error: DC %1 options for not found right after config load!").arg(_owner->_shiftedDcId));
 			return restart();
 		}
-		DEBUG_LOG(("MTP Info: DC %1 options not found, waiting for config").arg(_shiftedDcId));
-		InvokeQueued(_instance, [delegate = _delegate] {
+		DEBUG_LOG(("MTP Info: DC %1 options not found, waiting for config").arg(_owner->_shiftedDcId));
+		InvokeQueued(_owner->_instance, [delegate = _owner->_delegate] {
 			delegate->requestConfig();
 		});
 		return;
 	}
 	DEBUG_LOG(("Connection Info: Connecting to %1 with %2 test connections."
-		).arg(_shiftedDcId
-		).arg(_connectionState.testConnections.size()));
+		).arg(_owner->_shiftedDcId
+		).arg(_state.testConnections.size()));
 
-	if (!_connectionState.startedConnectingAt) {
-		_connectionState.startedConnectingAt = crl::now();
-	} else if (crl::now() - _connectionState.startedConnectingAt > kRequestConfigTimeout) {
-		InvokeQueued(_instance, [delegate = _delegate] {
+	if (!_state.startedConnectingAt) {
+		_state.startedConnectingAt = crl::now();
+	} else if (crl::now() - _state.startedConnectingAt > kRequestConfigTimeout) {
+		InvokeQueued(_owner->_instance, [delegate = _owner->_delegate] {
 			delegate->requestConfigIfOld();
 		});
 	}
@@ -467,30 +463,30 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	_timing.retryTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpConnecting,
 		ProxyDiagnosticsSeverity::Info,
 		u"connecting (sockets: %1, broker queued: %2)"_q
-			.arg(_connectionState.testConnections.size())
-			.arg(_connectionState.brokerTickets.size()));
+			.arg(_state.testConnections.size())
+			.arg(_state.brokerTickets.size()));
 
-	setState(ConnectingState);
+	_owner->setState(ConnectingState);
 
-	_authState.bindMsgId = 0;
-	_requestState.pingId = _requestState.pingMsgId = _requestState.pingIdToSend = _requestState.pingSendAt = 0;
-	_requestState.pingSentTime = 0;
-	reportPingTime(0);
+	_owner->_authState.bindMsgId = 0;
+	_owner->_requestState.pingId = _owner->_requestState.pingMsgId = _owner->_requestState.pingIdToSend = _owner->_requestState.pingSendAt = 0;
+	_owner->_requestState.pingSentTime = 0;
+	_owner->reportPingTime(0);
 	_timing.pingSender.cancel();
 
-	if (!_connectionState.testConnections.empty()) {
+	if (!_state.testConnections.empty()) {
 		armWaitForConnectedTimer();
 	}
-	if (!_connectionState.brokerTickets.empty()) {
+	if (!_state.brokerTickets.empty()) {
 		_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);
 	}
 }
 
-void SessionPrivate::restart() {
+void SessionTransport::restart() {
 	DEBUG_LOG(("MTP Info: restarting Connection"));
 
 	_timing.waitForReceivedTimer.cancel();
@@ -498,28 +494,28 @@ void SessionPrivate::restart() {
 
 	doDisconnect();
 
-	if (_sessionState.needReset) {
-		resetSession();
+	if (_owner->_sessionState.needReset) {
+		_owner->resetSession();
 	}
 	if (_timing.retryTimer.isActive()) {
 		return;
 	}
-	if (_sessionState.options
-		&& (_sessionState.options->proxy.type != ProxyData::Type::None)
+	if (_owner->_sessionState.options
+		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)
 		&& (_timing.retryTimeout < kProxyReconnectMinTimeout)) {
 		_timing.retryTimeout = kProxyReconnectMinTimeout;
 	}
 
 	DEBUG_LOG(("MTP Info: restart timeout: %1ms").arg(_timing.retryTimeout));
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpRestart,
 		ProxyDiagnosticsSeverity::Info,
 		u"restarting (backoff %1ms)"_q.arg(_timing.retryTimeout));
 
-	setState(-_timing.retryTimeout);
+	_owner->setState(-_timing.retryTimeout);
 }
 
-void SessionPrivate::onSentSome(uint64 size) {
+void SessionTransport::onSentSome(uint64 size) {
 	if (!_timing.waitForReceivedTimer.isActive()) {
 		auto remain = static_cast<uint64>(_timing.waitForReceived);
 		if (!_timing.oldConnection) {
@@ -542,7 +538,7 @@ void SessionPrivate::onSentSome(uint64 size) {
 	}
 }
 
-void SessionPrivate::onReceivedSome() {
+void SessionTransport::onReceivedSome() {
 	if (_timing.oldConnection) {
 		_timing.oldConnection = false;
 		DEBUG_LOG(("This connection marked as not old!"));
@@ -562,15 +558,15 @@ void SessionPrivate::onReceivedSome() {
 	}
 }
 
-void SessionPrivate::markConnectionOld() {
+void SessionTransport::markConnectionOld() {
 	_timing.oldConnection = true;
 	_timing.waitForReceived = kMinReceiveTimeout;
 	DEBUG_LOG(("This connection marked as old! _waitForReceived now %1ms"
 		).arg(_timing.waitForReceived));
 }
 
-void SessionPrivate::waitReceivedFailed() {
-	Expects(_sessionState.options != nullptr);
+void SessionTransport::waitReceivedFailed() {
+	Expects(_owner->_sessionState.options != nullptr);
 
 	DEBUG_LOG(("MTP Info: bad connection, _waitForReceived: %1ms").arg(_timing.waitForReceived));
 	if (_timing.waitForReceived < kMaxReceiveTimeout) {
@@ -578,103 +574,73 @@ void SessionPrivate::waitReceivedFailed() {
 			_timing.waitForReceived * 2,
 			kMaxReceiveTimeout);
 	}
-	const auto mtproxyConnection = _connectionState.connection
-		&& !MtProxy::EndpointEmpty(_connectionState.mtproxyEndpoint);
+	const auto mtproxyConnection = _state.connection
+		&& !MtProxy::EndpointEmpty(_state.mtproxyEndpoint);
 	const auto silentMtproxyConnection = mtproxyConnection
-		&& !_connectionState.mtprotoDataReceived;
+		&& !_state.mtprotoDataReceived;
 	if (silentMtproxyConnection) {
-		++_connectionState.mtprotoSilentTimeouts;
+		++_state.mtprotoSilentTimeouts;
 	}
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpReceiveTimeout,
 		ProxyDiagnosticsSeverity::Warning,
 		u"no mtproto data in %1ms (received before: %2, silent strikes: %3)"_q
 			.arg(_timing.waitForReceived)
-			.arg(_connectionState.mtprotoDataReceived ? u"yes"_q : u"no"_q)
-			.arg(_connectionState.mtprotoSilentTimeouts));
+			.arg(_state.mtprotoDataReceived ? u"yes"_q : u"no"_q)
+			.arg(_state.mtprotoSilentTimeouts));
 	if (mtproxyConnection) {
-		const auto mtproxyReason = silentMtproxyConnection
-			? ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData
-			: ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData;
-		ReportProxyEvent(_runtime, {
-			.phase = ProxyDiagnosticsPhase::Failed,
-			.error = ProxyConnectionError::Timeout,
-			.mtproxyReason = mtproxyReason,
-			.attempt = _connectionState.mtproxyAttempt,
-			.severity = ProxyDiagnosticsSeverity::Warning,
-			.proxy = _sessionState.options->proxy,
-			.dc = mtprotoLogDc(),
-			.message = silentMtproxyConnection
-				? u"proxy connected, mtproto data stalled"_q
-				: u"mtp receive timeout after relay data"_q,
-		});
-	}
-	if (silentMtproxyConnection) {
-		ProxyControlPlane::ReportMtproxyFailure({
-			.endpoint = _connectionState.mtproxyEndpoint,
-			.use = _connectionState.mtproxyUse,
-			.reason = MtProxy::FailureReason::ServerHelloOkNoMtprotoData,
-			.proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration,
-			.attemptId = _connectionState.mtproxyAttempt.attemptId,
-			.proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch,
-			.successEpoch = _connectionState.mtproxyAttempt.successEpoch,
-			.attemptStartedAt = _connectionState.mtproxyAttemptStartedAt,
-		});
-	} else if (mtproxyConnection) {
-		ProxyControlPlane::NoteMtproxyRelayStall({
-			.endpoint = _connectionState.mtproxyEndpoint,
-			.use = _connectionState.mtproxyUse,
-			.proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration,
-			.attemptId = _connectionState.mtproxyAttempt.attemptId,
-			.proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch,
-			.successEpoch = _connectionState.mtproxyAttempt.successEpoch,
-			.attemptStartedAt = _connectionState.mtproxyAttemptStartedAt,
-		});
+		_owner->_proxyPort->reportReceiveTimeout(
+			_owner->_runtime,
+			_owner->_sessionState.options->proxy,
+			_owner->mtprotoLogDc(),
+			currentProxyAttempt(),
+			_state.mtprotoDataReceived,
+			_state.mtprotoSilentTimeouts);
 	}
 	doDisconnect();
 	if (silentMtproxyConnection
-		&& (_connectionState.mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
-		_connectionState.mtprotoSilentTimeouts = 0;
+		&& (_state.mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
+		_state.mtprotoSilentTimeouts = 0;
 		LOG(("MTP Info: dc %1 connected but received nothing %2 times, "
 			"assuming the temporary key was silently destroyed."
-			).arg(_shiftedDcId
+			).arg(_owner->_shiftedDcId
 			).arg(kSilentTimeoutsToAssumeKeyDestroyed));
-		return destroyTemporaryKey();
+		return _owner->destroyTemporaryKey();
 	}
 	if (_timing.retryTimer.isActive()) {
 		return;
 	}
 
-	if (_sessionState.options->proxy.type != ProxyData::Type::None) {
+	if (_owner->_sessionState.options->proxy.type != ProxyData::Type::None) {
 		if (_timing.retryTimeout < kProxyReconnectMinTimeout) {
 			_timing.retryTimeout = kProxyReconnectMinTimeout;
 		}
 		DEBUG_LOG(("MTP Info: proxy reconnect backoff %1ms!"
 			).arg(_timing.retryTimeout));
-		setState(-_timing.retryTimeout);
+		_owner->setState(-_timing.retryTimeout);
 	} else {
 		DEBUG_LOG(("MTP Info: immediate restart!"));
-		InvokeQueued(this, [=] { connectToServer(); });
+		InvokeQueued(_owner, [=] { connectToServer(); });
 	}
 
-	const auto instance = _instance;
-	const auto delegate = _delegate;
-	const auto shiftedDcId = _shiftedDcId;
+	const auto instance = _owner->_instance;
+	const auto delegate = _owner->_delegate;
+	const auto shiftedDcId = _owner->_shiftedDcId;
 	InvokeQueued(instance, [=] {
 		delegate->restartedByTimeout(shiftedDcId);
 	});
 }
 
-void SessionPrivate::waitConnectedFailed() {
+void SessionTransport::waitConnectedFailed() {
 	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(_timing.waitForConnected));
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpConnectTimeout,
 		ProxyDiagnosticsSeverity::Warning,
 		u"connect budget %1ms expired (sockets: %2)"_q
 			.arg(_timing.waitForConnected)
-			.arg(_connectionState.testConnections.size()));
+			.arg(_state.testConnections.size()));
 	auto maxTimeout = kMaxConnectedTimeout;
-	for (const auto &connection : _connectionState.testConnections) {
+	for (const auto &connection : _state.testConnections) {
 		accumulate_max(maxTimeout, connection.data->fullConnectTimeout());
 	}
 	if (_timing.waitForConnected < maxTimeout) {
@@ -683,28 +649,28 @@ void SessionPrivate::waitConnectedFailed() {
 
 	connectingTimedOut();
 
-	if (_sessionState.options
-		&& (_sessionState.options->proxy.type != ProxyData::Type::None)
+	if (_owner->_sessionState.options
+		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)
 		&& !_timing.retryTimer.isActive()) {
 		if (_timing.retryTimeout < kProxyReconnectMinTimeout) {
 			_timing.retryTimeout = kProxyReconnectMinTimeout;
 		}
 		DEBUG_LOG(("MTP Info: proxy reconnect backoff %1ms!"
 			).arg(_timing.retryTimeout));
-		setState(-_timing.retryTimeout);
+		_owner->setState(-_timing.retryTimeout);
 	} else {
 		DEBUG_LOG(("MTP Info: immediate restart!"));
-		InvokeQueued(this, [=] { connectToServer(); });
+			InvokeQueued(_owner, [=] { connectToServer(); });
 	}
 }
 
-void SessionPrivate::brokerQueueDeadlineFired() {
-	if (_connectionState.brokerTickets.empty() || !_connectionState.testConnections.empty()) {
+void SessionTransport::brokerQueueDeadlineFired() {
+	if (_state.brokerTickets.empty() || !_state.testConnections.empty()) {
 		return;
 	}
 	DEBUG_LOG(("MTP Info: broker ticket not started in %1ms, reconnecting"
 		).arg(kBrokerQueueHardDeadline));
-	logMtprotoEvent(
+	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpBrokerTimeout,
 		ProxyDiagnosticsSeverity::Warning,
 		u"broker ticket not started in %1ms, reconnecting"_q
@@ -712,56 +678,44 @@ void SessionPrivate::brokerQueueDeadlineFired() {
 
 	doDisconnect();
 
-	if (_sessionState.options
-		&& (_sessionState.options->proxy.type != ProxyData::Type::None)
+	if (_owner->_sessionState.options
+		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)
 		&& !_timing.retryTimer.isActive()) {
 		if (_timing.retryTimeout < kProxyReconnectMinTimeout) {
 			_timing.retryTimeout = kProxyReconnectMinTimeout;
 		}
-		setState(-_timing.retryTimeout);
+		_owner->setState(-_timing.retryTimeout);
 	} else if (!_timing.retryTimer.isActive()) {
-		InvokeQueued(this, [=] { connectToServer(); });
+		InvokeQueued(_owner, [=] { connectToServer(); });
 	}
 }
 
-void SessionPrivate::waitBetterFailed() {
+void SessionTransport::waitBetterFailed() {
 	confirmBestConnection();
 }
 
-void SessionPrivate::connectingTimedOut() {
-	for (const auto &connection : _connectionState.testConnections) {
-		if (!MtProxy::EndpointEmpty(connection.mtproxyEndpoint)
-			&& connection.mtproxyEndpoint.canonical.domainFromSecret.isEmpty()) {
-			ProxyControlPlane::ReportMtproxyFailure({
-				.endpoint = connection.mtproxyEndpoint,
-				.use = connection.mtproxyUse,
-				.reason = MtProxy::FailureReason::TcpConnectTimeout,
-				.proxyGeneration = connection.mtproxyAttempt.proxyGeneration,
-				.attemptId = connection.mtproxyAttempt.attemptId,
-				.proxyEpoch = connection.mtproxyAttempt.proxyEpoch,
-				.successEpoch = connection.mtproxyAttempt.successEpoch,
-				.attemptStartedAt = connection.mtproxyAttemptStartedAt,
-			});
-		}
+void SessionTransport::connectingTimedOut() {
+	for (const auto &connection : _state.testConnections) {
+		_owner->_proxyPort->reportConnectTimeout(proxyAttempt(connection));
 		connection.data->timedOut();
 	}
 	doDisconnect();
 }
 
-void SessionPrivate::doDisconnect() {
+void SessionTransport::doDisconnect() {
 	destroyAllConnections();
-	setState(DisconnectedState);
+	_owner->setState(DisconnectedState);
 }
 
-void SessionPrivate::requestCDNConfig() {
-	InvokeQueued(_instance, [delegate = _delegate] {
+void SessionTransport::requestCDNConfig() {
+	InvokeQueued(_owner->_instance, [delegate = _owner->_delegate] {
 		delegate->requestCDNConfig();
 	});
 }
 
-void SessionPrivate::onConnected(
+void SessionTransport::onConnected(
 		not_null<AbstractConnection*> connection) {
-	disconnect(connection, &AbstractConnection::connected, nullptr, nullptr);
+	QObject::disconnect(connection, &AbstractConnection::connected, nullptr, nullptr);
 	if (!connection->isConnected()) {
 		LOG(("Connection Error: not connected in onConnected(), "
 			"state: %1").arg(connection->debugState()));
@@ -772,10 +726,10 @@ void SessionPrivate::onConnected(
 	_timing.waitForConnectedTimer.cancel();
 
 	const auto i = ranges::find(
-		_connectionState.testConnections,
+		_state.testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	Assert(i != end(_connectionState.testConnections));
+	Assert(i != end(_state.testConnections));
 	const auto mtproxyAttempt = ProxyConnectionAttempt{
 		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
 		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
@@ -787,9 +741,9 @@ void SessionPrivate::onConnected(
 	reportMtproxyConnectionUsable(*i);
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
-		_connectionState.testConnections,
+		_state.testConnections,
 		[&](const TestConnection &test) { return test.priority > my; });
-	if (j != end(_connectionState.testConnections)) {
+	if (j != end(_state.testConnections)) {
 		DEBUG_LOG(("MTP Info: connection %1 succeed, waiting for %2.").arg(
 			i->data->tag(),
 			j->data->tag()));
@@ -797,50 +751,50 @@ void SessionPrivate::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_timing.waitForBetterTimer.cancel();
-		_connectionState.mtproxyEndpoint = i->mtproxyEndpoint;
-		_connectionState.mtproxyUse = i->mtproxyUse;
-		_connectionState.mtproxyAttempt = mtproxyAttempt;
-		_connectionState.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;
-		_connectionState.connection = std::move(i->data);
-		_connectionState.brokerTickets.clear();
-		_connectionState.testConnections.clear();
-		checkAuthKey();
+		_state.mtproxyEndpoint = i->mtproxyEndpoint;
+		_state.mtproxyUse = i->mtproxyUse;
+		_state.mtproxyAttempt = mtproxyAttempt;
+		_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;
+		_state.connection = std::move(i->data);
+		_state.brokerTickets.clear();
+		_state.testConnections.clear();
+		_owner->checkAuthKey();
 	}
 }
 
-void SessionPrivate::onDisconnected(
+void SessionTransport::onDisconnected(
 		not_null<AbstractConnection*> connection) {
 	const auto found = ranges::find(
-		_connectionState.testConnections,
+		_state.testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	if (found == end(_connectionState.testConnections)
-		&& _connectionState.connection.get() != connection.get()) {
+	if (found == end(_state.testConnections)
+		&& _state.connection.get() != connection.get()) {
 		return;
 	}
 	removeTestConnection(connection);
 
-	if (_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()) {
+	if (_state.testConnections.empty() && _state.brokerTickets.empty()) {
 		destroyAllConnections();
 		restart();
-	} else if (!_connectionState.testConnections.empty()) {
+	} else if (!_state.testConnections.empty()) {
 		confirmBestConnection();
 	}
 }
 
-void SessionPrivate::confirmBestConnection() {
+void SessionTransport::confirmBestConnection() {
 	if (_timing.waitForBetterTimer.isActive()) {
 		return;
 	}
 	const auto i = ranges::max_element(
-		_connectionState.testConnections,
+		_state.testConnections,
 		std::less<>(),
 		[](const TestConnection &test) {
 			return test.data->isConnected()
 				? test.priority
 				: -1;
 		});
-	Assert(i != end(_connectionState.testConnections));
+	Assert(i != end(_state.testConnections));
 	if (!i->data->isConnected()) {
 		return;
 	}
@@ -849,108 +803,95 @@ void SessionPrivate::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	reportMtproxyConnectionUsable(*i);
-	_connectionState.mtproxyAttempt = {
+	_state.mtproxyAttempt = {
 		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
 		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
 		.successEpoch = i->mtproxyLease.successEpoch(),
 		.attemptId = i->mtproxyLease.attemptId(),
 	};
-	_connectionState.mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
-	_connectionState.mtproxyEndpoint = i->mtproxyEndpoint;
-	_connectionState.mtproxyUse = i->mtproxyUse;
-	_connectionState.connection = std::move(i->data);
-	_connectionState.brokerTickets.clear();
-	_connectionState.testConnections.clear();
+	_state.mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
+	_state.mtproxyEndpoint = i->mtproxyEndpoint;
+	_state.mtproxyUse = i->mtproxyUse;
+	_state.connection = std::move(i->data);
+	_state.brokerTickets.clear();
+	_state.testConnections.clear();
 
-	checkAuthKey();
+	_owner->checkAuthKey();
 }
 
-void SessionPrivate::removeTestConnection(
+void SessionTransport::removeTestConnection(
 		not_null<AbstractConnection*> connection) {
 	const auto i = ranges::find(
-		_connectionState.testConnections,
+		_state.testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	if (i != end(_connectionState.testConnections)) {
+	if (i != end(_state.testConnections)) {
 		i->mtproxyLease.release();
-		_connectionState.testConnections.erase(i);
+		_state.testConnections.erase(i);
 	}
 }
 
-void SessionPrivate::onError(
+void SessionTransport::onError(
 		not_null<AbstractConnection*> connection,
 		qint32 errorCode) {
 	if (errorCode == -429) {
 		LOG(("Protocol Error: -429 flood code returned!"));
 	} else if (errorCode == -444) {
 		LOG(("Protocol Error: -444 bad dc_id code returned!"));
-		InvokeQueued(_instance, [delegate = _delegate] {
+		InvokeQueued(_owner->_instance, [delegate = _owner->_delegate] {
 			delegate->badConfigurationError();
 		});
 	}
 	const auto found = ranges::find(
-		_connectionState.testConnections,
+		_state.testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	if (found == end(_connectionState.testConnections)
-		&& _connectionState.connection.get() != connection.get()) {
+	if (found == end(_state.testConnections)
+		&& _state.connection.get() != connection.get()) {
 		return;
 	}
-	if (found != end(_connectionState.testConnections)) {
+	if (found != end(_state.testConnections)) {
 		if (!MtProxy::EndpointEmpty(found->mtproxyEndpoint)) {
-			ProxyControlPlane::ReportMtproxyFailure({
-				.endpoint = found->mtproxyEndpoint,
-				.use = found->mtproxyUse,
-				.reason = MtProxy::FailureReasonFromErrorCode(errorCode),
-				.lease = &found->mtproxyLease,
-				.proxyGeneration = found->mtproxyAttempt.proxyGeneration,
-				.attemptId = found->mtproxyAttempt.attemptId,
-				.proxyEpoch = found->mtproxyAttempt.proxyEpoch,
-				.successEpoch = found->mtproxyAttempt.successEpoch,
-				.attemptStartedAt = found->mtproxyAttemptStartedAt,
-			});
+			_owner->_proxyPort->reportConnectionError(
+				proxyAttempt(*found),
+				MtProxy::FailureReasonFromErrorCode(errorCode),
+				&found->mtproxyLease);
 		}
-	} else if (_connectionState.connection.get() == connection.get()
-		&& !MtProxy::EndpointEmpty(_connectionState.mtproxyEndpoint)) {
+	} else if (_state.connection.get() == connection.get()
+		&& !MtProxy::EndpointEmpty(_state.mtproxyEndpoint)) {
 		const auto reason = MtProxy::FailureReasonFromErrorCode(errorCode);
 		if (reason != MtProxy::FailureReason::None) {
-			const auto snapshot = ProxyControlPlane::MtproxyEndpointSnapshot(
-				_connectionState.mtproxyEndpoint);
+			const auto snapshot = _owner->_proxyPort->endpointSnapshot(
+				_owner->_runtime,
+				_state.mtproxyEndpoint);
 			const auto ignoreRemoteClosed = (reason
 					== MtProxy::FailureReason::AppDataRemoteClosed)
 				&& snapshot.healthy
 				&& !snapshot.halfOpen;
 			if (!ignoreRemoteClosed) {
-				ProxyControlPlane::ReportMtproxyFailure({
-					.endpoint = _connectionState.mtproxyEndpoint,
-					.use = _connectionState.mtproxyUse,
-					.reason = reason,
-					.proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration,
-					.attemptId = _connectionState.mtproxyAttempt.attemptId,
-					.proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch,
-					.successEpoch = _connectionState.mtproxyAttempt.successEpoch,
-					.attemptStartedAt = _connectionState.mtproxyAttemptStartedAt,
-				});
+				_owner->_proxyPort->reportConnectionError(
+					currentProxyAttempt(),
+					reason);
 			}
 		}
 	}
 	removeTestConnection(connection);
 
-	if (_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()) {
+	if (_state.testConnections.empty() && _state.brokerTickets.empty()) {
 		handleError(errorCode);
-	} else if (!_connectionState.testConnections.empty()) {
+	} else if (!_state.testConnections.empty()) {
 		confirmBestConnection();
 	}
 }
 
-void SessionPrivate::handleError(int errorCode) {
+void SessionTransport::handleError(int errorCode) {
 	destroyAllConnections();
 	_timing.waitForConnectedTimer.cancel();
 
 	if (errorCode == -404) {
-		destroyTemporaryKey();
+		_owner->destroyTemporaryKey();
 	} else {
-		MTP_LOG(_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));
+		MTP_LOG(_owner->_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));
 		return restart();
 	}
 }

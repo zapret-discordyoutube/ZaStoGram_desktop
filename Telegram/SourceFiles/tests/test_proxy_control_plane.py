@@ -7,6 +7,8 @@ ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 WIN_WORKFLOW = ROOT / ".github" / "workflows" / "win.yml"
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
+PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
+PROXY_SERVICES_CPP = PROXY_DIR / "proxy_services.cpp"
 CONTROL_H = PROXY_DIR / "control_plane.h"
 CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
 STATUS_H = PROXY_DIR / "status.h"
@@ -21,6 +23,7 @@ CONNECTION_STATUS_H = (
     SOURCE_DIR / "mtproto" / "runtime" / "connection_status.h")
 ADAPTIVE_POLICY_CPP = PROXY_DIR / "mtproxy" / "adaptive_policy.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
+SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp"
@@ -55,6 +58,7 @@ def function_body(source, signature):
 
 def test_control_plane_is_the_proxy_publication_path():
     cmake = read(CMAKE)
+    services_header = read(PROXY_SERVICES_H)
     header = read(CONTROL_H)
     source = read(CONTROL_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
@@ -63,13 +67,18 @@ def test_control_plane_is_the_proxy_publication_path():
 
     assert "mtproto/proxy/control_plane.cpp" in cmake
     assert "mtproto/proxy/control_plane.h" in cmake
+    assert "mtproto/proxy/proxy_services.cpp" in cmake
+    assert "mtproto/proxy/proxy_services.h" in cmake
+    assert "class ProxyServices final" in services_header
+    assert "ProxyControlPlane &control();" in services_header
     assert "class ProxyControlPlane final" in header
-    assert "submitFact(ProxyFact fact)" in header
+    assert "explicit ProxyControlPlane(" in header
+    assert "submitFact(const ProxyEventReport &report)" in header
     assert "admit(ProxyAdmissionRequest request)" in header
     assert "selectedStatus() const" in header
     assert "endpointSnapshot() const" in header
-    assert '#include "mtproto/proxy/control_plane.h"' in runtime
-    assert "ProxyControlPlane::SubmitFact(runtime, report);" in report_body
+    assert '#include "mtproto/proxy/proxy_services.h"' in runtime
+    assert "proxyServices().control().submitFact(report);" in report_body
     assert "setProxyConnectionStatus(status)" not in report_body
     assert "StatusPhaseFromDiagnostics" not in diagnostics
     assert "runtime->diagnostics().reportProxyEvent" in diagnostics
@@ -305,29 +314,39 @@ def test_serverhello_progress_prevents_no_serverhello_terminal_repaint():
 
 def test_session_receive_timeout_reports_stage_specific_terminal_status():
     session = read_session_private_sources()
+    adapter = read(SESSION_PROXY_ADAPTER_CPP)
     wait_received = function_body(
         session,
-        "void SessionPrivate::waitReceivedFailed(")
+        "void SessionTransport::waitReceivedFailed(")
+    report_timeout = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportReceiveTimeout(")
+    relay_stall = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportRelayStall(")
 
     assert "ProxyDiagnosticsPhase::MtpReceiveTimeout" in wait_received
-    assert "ProxyDiagnosticsPhase::Failed" in wait_received
-    assert "ProxyConnectionError::Timeout" in wait_received
+    assert "_owner->_proxyPort->reportReceiveTimeout(" in wait_received
+    assert "ProxyDiagnosticsPhase::Failed" in report_timeout
+    assert "ProxyConnectionError::Timeout" in report_timeout
     assert "ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData" in (
-        wait_received)
+        report_timeout)
     assert "ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData" in (
-        wait_received)
+        report_timeout)
     assert "MtProxy::FailureReason::ServerHelloOkNoMtprotoData" in (
-        wait_received)
-    assert "ProxyControlPlane::NoteMtproxyRelayStall(" in wait_received
-    relay_stall_call = wait_received.split(
-        "ProxyControlPlane::NoteMtproxyRelayStall(", 1)[1].split("});", 1)[0]
-    assert ".proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration" in (
+        report_timeout)
+    assert "reportRelayStall(attempt);" in report_timeout
+    assert "proxyServices().control().noteMtproxyRelayStall(" in relay_stall
+    relay_stall_call = relay_stall.split(
+        "proxyServices().control().noteMtproxyRelayStall(", 1
+        )[1].split("});", 1)[0]
+    assert ".proxyGeneration = attempt.attempt.proxyGeneration" in (
         relay_stall_call)
-    assert ".attemptId = _connectionState.mtproxyAttempt.attemptId" in (
+    assert ".attemptId = attempt.attempt.attemptId" in (
         relay_stall_call)
-    assert ".proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch" in (
+    assert ".proxyEpoch = attempt.attempt.proxyEpoch" in (
         relay_stall_call)
-    assert ".attemptStartedAt = _connectionState.mtproxyAttemptStartedAt" in (
+    assert ".attemptStartedAt = attempt.attemptStartedAt" in (
         relay_stall_call)
 
 
@@ -344,12 +363,11 @@ def test_admission_keeps_scouts_until_relay_proof():
     assert "struct ProxyAdmissionRequest" in header
     assert "struct ProxyAdmissionDecision" in header
     assert "ProxyAdmissionDecision admit(" in header
-    assert "static ProxyAdmissionDecision Admit(" in header
     assert '#include "mtproto/proxy/control_plane.h"' in broker
-    assert "ProxyControlPlane::Admit({" in broker
+    assert "_runtime->proxyServices().control().admit({" in broker
     assert "EndpointHealth::Instance().admit" not in broker
-    assert "EndpointHealth::Instance().admit" in control
-    assert "return Admit(std::move(request));" in admit_body
+    assert "EndpointHealth::Instance().admit" not in control
+    assert "_endpointHealth->admit({" in admit_body
     assert "MtProxy::EndpointAttemptLease lease" in header
     assert "MtProxy::FailureReason blockedBy" in header
     assert "effectiveTlsProfile" in header
@@ -362,7 +380,7 @@ def test_admission_keeps_scouts_until_relay_proof():
 
 def test_proxy_restart_backoff_is_not_one_ms_herd():
     session = read_session_private_sources()
-    restart_body = function_body(session, "void SessionPrivate::restart(")
+    restart_body = function_body(session, "void SessionTransport::restart(")
 
     assert "_sessionState.options->proxy.type != ProxyData::Type::None" in restart_body
     assert "_timing.retryTimeout < kProxyReconnectMinTimeout" in restart_body
@@ -378,11 +396,11 @@ def test_mtproxy_health_policy_is_control_plane_owned():
     rotation = read(ROTATION_MANAGER_CPP)
 
     for name in (
-        "ReportMtproxyFailure(",
-        "ReportMtproxySuccess(",
-        "NoteMtproxyRelayStall(",
-        "MtproxyEndpointSnapshot(",
-        "MtproxyEndpointChanges(",
+        "reportMtproxyFailure(",
+        "reportMtproxySuccess(",
+        "noteMtproxyRelayStall(",
+        "mtproxyEndpointSnapshot(",
+        "mtproxyEndpointChanges(",
     ):
         assert name in header
         assert f"ProxyControlPlane::{name}" in control
@@ -390,7 +408,8 @@ def test_mtproxy_health_policy_is_control_plane_owned():
     assert '#include "mtproto/proxy/control_plane.h"' in rotation_header
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' not in (
         rotation_header)
-    assert "ProxyControlPlane::MtproxyEndpointChanges(" in rotation
+    assert "runtimeEnvironment().proxyServices().control().mtproxyEndpointChanges(" in (
+        rotation)
 
     for source in (SOURCE_DIR / "mtproto").rglob("*.cpp"):
         relative = source.relative_to(SOURCE_DIR)
@@ -415,7 +434,7 @@ def test_instance_status_sink_does_not_reduce_control_plane_output_again():
     status_header = read(STATUS_H)
     status_source = read(STATUS_CPP)
     connection_status = read(CONNECTION_STATUS_CPP)
-    submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
+    submit = function_body(control, "void ProxyControlPlane::submitFact(")
     sink = function_body(
         connection_status,
         "void ConnectionStatus::setProxyStatus(")
@@ -439,8 +458,8 @@ def test_instance_status_sink_is_private_to_runtime_gateway():
     assert "ConnectionStatus &connectionStatus() const;" in header
     assert "void setProxyStatus(ProxyConnectionStatus status);" in status_header
 
-    submit = function_body(control, "void ProxyControlPlane::SubmitFact(")
-    assert "runtime->instance().connectionStatus->setProxyStatus(" in submit
+    submit = function_body(control, "void ProxyControlPlane::submitFact(")
+    assert "_runtime->instance().connectionStatus->setProxyStatus(" in submit
 
 
 if __name__ == "__main__":

@@ -12,12 +12,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "logs.h"
-#include "mtproto/proxy/control_plane.h"
+#include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "base/random.h"
+#include "base/timer.h"
 #include "settings.h"
 #include "storage/localstorage.h"
 
 #include <QtCore/QDir>
+#include <QtCore/QTimer>
 
 namespace MTP {
 namespace {
@@ -198,6 +202,47 @@ RuntimeProxyCapabilities CreateProxyCapabilities() {
 	};
 }
 
+RuntimeAsyncGateway CreateAsyncGateway() {
+	return {
+		.now = [] {
+			return crl::now();
+		},
+		.randomIndex = [](int limit) {
+			return base::RandomIndex(limit);
+		},
+		.singleShot = [](
+				crl::time delay,
+				QObject *context,
+				Fn<void()> callback) {
+			QTimer::singleShot(TimerDelay(delay), context, [
+				callback = std::move(callback)
+			] {
+				callback();
+			});
+		},
+		.makeTimer = [](
+				not_null<QObject*> context,
+				Fn<void()> callback) {
+			const auto timer = std::make_shared<base::Timer>(
+				not_null{ context->thread() },
+				std::move(callback));
+			return RuntimeTimer(
+				[timer](crl::time delay) {
+					timer->callOnce(delay);
+				},
+				[timer](crl::time delay) {
+					timer->callEach(delay);
+				},
+				[timer] {
+					timer->cancel();
+				},
+				[timer] {
+					return timer->isActive();
+				});
+		},
+	};
+}
+
 RuntimeEnvironmentDescriptor CreateRuntimeDescriptor() {
 	return {
 		.proxy = CreateProxySettings(),
@@ -207,16 +252,19 @@ RuntimeEnvironmentDescriptor CreateRuntimeDescriptor() {
 		.app = CreateAppGateway(),
 		.diagnostics = CreateDiagnosticsGateway(),
 		.proxyCapabilities = CreateProxyCapabilities(),
+		.async = CreateAsyncGateway(),
 	};
 }
 
 } // namespace
 
 RuntimeEnvironment::RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor)
-: _descriptor(std::move(descriptor)) {
+: _descriptor(std::move(descriptor))
+, _proxyServices(std::make_unique<ProxyServices>(this)) {
+	SetProxyCapabilityPathProvider(_descriptor.proxyCapabilities.path);
 	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
 		const auto runtime = not_null{ this };
-		ProxyControlPlane::SubmitFact(runtime, report);
+		proxyServices().control().submitFact(report);
 		WriteProxyDiagnosticsLine(runtime, {
 			.source = SourceForReport(report),
 			.phase = report.phase,
@@ -294,6 +342,14 @@ const RuntimeProxyResolver &RuntimeEnvironment::proxyResolver() const {
 
 const RuntimeProxyCapabilities &RuntimeEnvironment::proxyCapabilities() const {
 	return _descriptor.proxyCapabilities;
+}
+
+const RuntimeAsyncGateway &RuntimeEnvironment::async() const {
+	return _descriptor.async;
+}
+
+ProxyServices &RuntimeEnvironment::proxyServices() const {
+	return *_proxyServices;
 }
 
 std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment() {

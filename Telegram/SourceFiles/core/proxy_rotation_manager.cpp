@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/session/session_state.h"
 
 #include <algorithm>
@@ -48,10 +49,6 @@ ProxyRotationManager::ProxyRotationManager()
 	) | rpl::on_next([=] {
 		stopChecking();
 		reevaluate();
-	}, _lifetime);
-	MTP::ProxyControlPlane::MtproxyEndpointChanges(
-	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
-		handleEndpointHealthChanged(std::move(event));
 	}, _lifetime);
 }
 
@@ -120,14 +117,17 @@ auto ProxyRotationManager::ensure(
 
 void ProxyRotationManager::reevaluate() {
 	if (!shouldObserve()) {
+		clearEndpointHealthSubscription();
 		stopChecking();
 		return;
 	}
 	const auto accounts = productionAccounts();
 	if (accounts.empty()) {
+		clearEndpointHealthSubscription();
 		stopChecking();
 		return;
 	}
+	subscribeEndpointHealth();
 	const auto stateProj = [](not_null<Main::Account*> account) {
 		return account->mtp().dcstate();
 	};
@@ -137,6 +137,24 @@ void ProxyRotationManager::reevaluate() {
 		return;
 	}
 	startChecking();
+}
+
+void ProxyRotationManager::subscribeEndpointHealth() {
+	auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
+	if (_endpointHealthRuntime == &runtime) {
+		return;
+	}
+	_endpointHealthRuntime = &runtime;
+	_endpointHealthLifetime.destroy();
+	accountForChecks()->mtp().runtimeEnvironment().proxyServices().control().mtproxyEndpointChanges(
+	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
+		handleEndpointHealthChanged(std::move(event));
+	}, _endpointHealthLifetime);
+}
+
+void ProxyRotationManager::clearEndpointHealthSubscription() {
+	_endpointHealthRuntime = nullptr;
+	_endpointHealthLifetime.destroy();
 }
 
 void ProxyRotationManager::handleEndpointHealthChanged(
@@ -430,7 +448,8 @@ bool ProxyRotationManager::switchToAvailable() {
 		_lastSwitchAt = crl::now();
 		_switchStartedAt = _lastSwitchAt;
 		_healthRotationRequestedUntil = 0;
-		MTP::WriteProxyDiagnosticsLine({
+		auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
+		MTP::WriteProxyDiagnosticsLine(not_null{ &runtime }, {
 			.source = MTP::ProxyDiagnosticsSource::MTProxy,
 			.phase = MTP::ProxyDiagnosticsPhase::RotationSwitched,
 			.severity = MTP::ProxyDiagnosticsSeverity::Warning,

@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 #include "mtproto/proxy/diagnostics.h"
 
+namespace MTP {
+class RuntimeEnvironment;
+} // namespace MTP
+
 namespace MTP::details::MtProxy {
 
 [[nodiscard]] QString CanonicalText(const EndpointId &endpoint);
@@ -20,9 +24,14 @@ namespace MTP::details::MtProxy {
 	FailureReason reason,
 	const QString &message);
 void LogStaleAttemptFailure(
+	not_null<RuntimeEnvironment*> runtime,
 	const FailureReport &report,
 	int recipeLevel);
-void LogProbeAttemptFailure(const FailureReport &report);
-void LogProbeAttemptSuccess(const SuccessReport &report);
+void LogProbeAttemptFailure(
+	not_null<RuntimeEnvironment*> runtime,
+	const FailureReport &report);
+void LogProbeAttemptSuccess(
+	not_null<RuntimeEnvironment*> runtime,
+	const SuccessReport &report);
 
 } // namespace MTP::details::MtProxy

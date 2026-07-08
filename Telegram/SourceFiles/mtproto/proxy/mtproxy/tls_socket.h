@@ -7,25 +7,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "mtproto/proxy/mtproxy/tls_socket_transport.h"
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
-#include "base/timer.h"
 
-#include <QtNetwork/QTcpSocket>
+#include <memory>
 
 namespace MTP::details {
 
 class TlsSocket final : public AbstractSocket {
 public:
 	TlsSocket(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const ProxyData &proxy,
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
 		ProxyConnectionAttempt mtproxyAttempt,
-		crl::time mtproxyAttemptStartedAt);
+		crl::time mtproxyAttemptStartedAt,
+		std::unique_ptr<TlsSocketTransport> transport = nullptr);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -98,7 +100,7 @@ private:
 	ProxyConnectionAttempt _mtproxyAttempt;
 	crl::time _mtproxyAttemptStartedAt = 0;
 	ProxyStealthOptions _stealth;
-	QTcpSocket _socket;
+	std::unique_ptr<TlsSocketTransport> _transport;
 	State _state = State::NotConnected;
 	QByteArray _incoming;
 	int _incomingGoodDataOffset = 0;
@@ -125,9 +127,9 @@ private:
 	bool _firstAppDataReceived = false;
 	crl::time _firstAppDataAt = 0;
 	QByteArray _clientHelloTail;
-	base::Timer _pacingTimer;
-	base::Timer _clientHelloTimer;
-	base::Timer _clientHelloFragmentTimer;
+	RuntimeTimer _pacingTimer;
+	RuntimeTimer _clientHelloTimer;
+	RuntimeTimer _clientHelloFragmentTimer;
 	MtProxy::FailureReason _failureReason = MtProxy::FailureReason::None;
 	HandshakePhase _phase = HandshakePhase::None;
 

@@ -226,17 +226,36 @@ void LogShadowedFact(
 
 } // namespace
 
-void ProxyControlPlane::submitFact(ProxyFact fact) {
-	_selectedStatus = Reduce(_selectedStatus, std::move(fact));
-	_endpointSnapshot.proxy = _selectedStatus.proxy;
-	_endpointSnapshot.status = _selectedStatus;
-	_endpointSnapshot.relayProven = RelaySuccessIsFresh(_selectedStatus);
+ProxyControlPlane::ProxyControlPlane(
+	not_null<RuntimeEnvironment*> runtime,
+	not_null<MtProxy::EndpointHealth*> endpointHealth)
+: _runtime(runtime)
+, _endpointHealth(endpointHealth) {
 }
 
 ProxyAdmissionDecision ProxyControlPlane::admit(
 		ProxyAdmissionRequest request) {
 	if (!MtProxy::EndpointEmpty(request.endpoint)) {
-		return Admit(std::move(request));
+		auto admission = _endpointHealth->admit({
+			.endpoint = request.endpoint,
+			.use = request.use,
+			.stealth = request.stealth,
+			.configuredTlsProfile = request.configuredTlsProfile,
+			.proxyGeneration = request.proxyGeneration,
+		});
+		return {
+			.action = AdmissionActionFromMtproxy(admission.action),
+			.retryAfter = admission.retryAfter,
+			.blockedBy = admission.blockedBy,
+			.stealth = admission.stealth,
+			.effectiveTlsProfile = admission.effectiveTlsProfile,
+			.lease = std::move(admission.lease),
+			.proxyGeneration = admission.proxyGeneration,
+			.attemptId = admission.attemptId,
+			.proxyEpoch = admission.proxyEpoch,
+			.successEpoch = admission.successEpoch,
+			.attemptStartedAt = admission.attemptStartedAt,
+		};
 	}
 	if (request.relayProofRequired
 		&& !request.relayProven
@@ -249,53 +268,29 @@ ProxyAdmissionDecision ProxyControlPlane::admit(
 	return {};
 }
 
-ProxyAdmissionDecision ProxyControlPlane::Admit(
-		ProxyAdmissionRequest request) {
-	auto admission = MtProxy::EndpointHealth::Instance().admit({
-		.endpoint = request.endpoint,
-		.use = request.use,
-		.stealth = request.stealth,
-		.configuredTlsProfile = request.configuredTlsProfile,
-		.proxyGeneration = request.proxyGeneration,
-	});
-	return {
-		.action = AdmissionActionFromMtproxy(admission.action),
-		.retryAfter = admission.retryAfter,
-		.blockedBy = admission.blockedBy,
-		.stealth = admission.stealth,
-		.effectiveTlsProfile = admission.effectiveTlsProfile,
-		.lease = std::move(admission.lease),
-		.proxyGeneration = admission.proxyGeneration,
-		.attemptId = admission.attemptId,
-		.proxyEpoch = admission.proxyEpoch,
-		.successEpoch = admission.successEpoch,
-		.attemptStartedAt = admission.attemptStartedAt,
-	};
-}
-
-void ProxyControlPlane::ReportMtproxyFailure(
+void ProxyControlPlane::reportMtproxyFailure(
 		MtProxy::FailureReport report) {
-	MtProxy::EndpointHealth::Instance().reportFailure(std::move(report));
+	_endpointHealth->reportFailure(std::move(report));
 }
 
-void ProxyControlPlane::ReportMtproxySuccess(
+void ProxyControlPlane::reportMtproxySuccess(
 		MtProxy::SuccessReport report) {
-	MtProxy::EndpointHealth::Instance().reportSuccess(std::move(report));
+	_endpointHealth->reportSuccess(std::move(report));
 }
 
-void ProxyControlPlane::NoteMtproxyRelayStall(
+void ProxyControlPlane::noteMtproxyRelayStall(
 		MtProxy::RelayStallReport report) {
-	MtProxy::EndpointHealth::Instance().noteRelayStall(std::move(report));
+	_endpointHealth->noteRelayStall(std::move(report));
 }
 
-MtProxy::Snapshot ProxyControlPlane::MtproxyEndpointSnapshot(
+MtProxy::Snapshot ProxyControlPlane::mtproxyEndpointSnapshot(
 		const MtProxy::EndpointId &endpoint) {
-	return MtProxy::EndpointHealth::Instance().snapshot(endpoint);
+	return _endpointHealth->snapshot(endpoint);
 }
 
-auto ProxyControlPlane::MtproxyEndpointChanges()
+auto ProxyControlPlane::mtproxyEndpointChanges()
 -> rpl::producer<MtProxy::EndpointEvent> {
-	return MtProxy::EndpointHealth::Instance().changes();
+	return _endpointHealth->changes();
 }
 
 ProxyConnectionStatus ProxyControlPlane::selectedStatus() const {
@@ -403,25 +398,28 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 		std::move(fact.status));
 }
 
-void ProxyControlPlane::SubmitFact(
-		not_null<RuntimeEnvironment*> runtime,
-		const ProxyEventReport &report) {
+void ProxyControlPlane::submitFact(const ProxyEventReport &report) {
 	auto fact = FactFromReport(report);
 	if (EmptyFact(fact)) {
 		return;
 	}
-	InvokeQueued(runtime, [=] {
-		const auto current = runtime->instance().connectionStatus
-			? runtime->instance().connectionStatus->proxyStatus()
+	InvokeQueued(_runtime, [=] {
+		const auto current = _runtime->instance().connectionStatus
+			? _runtime->instance().connectionStatus->proxyStatus()
 			: ProxyConnectionStatus();
 		auto normalized = fact;
 		NormalizeMtproxyTerminalReason(current, normalized.status);
 		if (ShadowedByFreshRelaySuccess(current, normalized)) {
-			LogShadowedFact(runtime, normalized);
+			LogShadowedFact(_runtime, normalized);
 		}
-		if (runtime->instance().connectionStatus) {
-			runtime->instance().connectionStatus->setProxyStatus(
-				ProxyControlPlane::Reduce(current, normalized));
+		if (_runtime->instance().connectionStatus) {
+			const auto reduced = ProxyControlPlane::Reduce(current, normalized);
+			_selectedStatus = reduced;
+			_endpointSnapshot.proxy = reduced.proxy;
+			_endpointSnapshot.status = reduced;
+			_endpointSnapshot.relayProven = RelaySuccessIsFresh(reduced);
+			_runtime->instance().connectionStatus->setProxyStatus(
+				reduced);
 		}
 	});
 }

@@ -113,10 +113,10 @@ def test_mtproxy_admission_delays_are_logged_as_queued_status():
         encoding="utf-8")
     append_body = function_body(
         source,
-        "bool SessionPrivate::appendTestConnection(")
+        "bool SessionTransport::appendTestConnection(")
 
-    assert "ConnectionBroker::Instance().request({" in append_body
-    assert ".status = [=](ConnectionBrokerDecision)" in append_body
+    assert "_owner->_proxyPort->requestConnection({" in append_body
+    assert ".status = [=](SessionProxyAdmissionDecision)" in append_body
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
     assert "ProxyDiagnosticsPhase::Connecting" not in function_body(
         broker,

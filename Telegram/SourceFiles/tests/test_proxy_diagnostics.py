@@ -134,14 +134,17 @@ def test_proxy_reporting_is_centralized():
     assert "ProxyMtproxyTerminalReason mtproxyReason" in header
     assert "ProxyConnectionAttempt attempt" in header
     assert "void ReportProxyEvent(" in header
+    assert "void ReportProxyEvent(ProxyEventReport report);" not in header
+    assert "void WriteProxyDiagnosticsLine(ProxyDiagnosticsEvent event);" not in header
     assert "class ProxyControlPlane final" in control_header
     assert "ProxyControlPlane::FactFromReport(" in control_source
     assert "StatusPhaseFromDiagnostics" not in diagnostics
     assert "SourceForProxy" in diagnostics
-    assert '#include "mtproto/proxy/control_plane.h"' in runtime
-    assert "ProxyControlPlane::SubmitFact(runtime, report);" in runtime
+    assert '#include "mtproto/proxy/proxy_services.h"' in runtime
+    assert "proxyServices().control().submitFact(report);" in runtime
     assert "setProxyConnectionStatus" not in diagnostics
     assert "runtime->diagnostics().reportProxyEvent" in diagnostics
+    assert "DefaultRuntimeEnvironment()" not in diagnostics
     assert "WriteProxyDiagnosticsLine(runtime, {" in runtime
     assert "report.mtproxyReason" in runtime
     assert "report.attempt" in runtime

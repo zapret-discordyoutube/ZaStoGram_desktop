@@ -14,9 +14,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/control_plane.h"
-#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -39,27 +36,9 @@ namespace MTP {
 namespace details {
 namespace {
 
-constexpr auto kMinConnectedTimeout = crl::time(1000);
-constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kSentContainerLives = 600 * crl::time(1000);
 
 } // namespace
-
-SessionPrivate::TimingState::TimingState(
-		not_null<QThread*> thread,
-		not_null<SessionPrivate*> owner)
-: retryTimer(thread, [=] { owner->retryByTimer(); })
-, oldConnectionTimer(thread, [=] { owner->markConnectionOld(); })
-, waitForConnectedTimer(thread, [=] { owner->waitConnectedFailed(); })
-, waitForReceivedTimer(thread, [=] { owner->waitReceivedFailed(); })
-, waitForBetterTimer(thread, [=] { owner->waitBetterFailed(); })
-, brokerQueueDeadlineTimer(thread, [=] { owner->brokerQueueDeadlineFired(); })
-, waitForReceived(kMinReceiveTimeout)
-, waitForConnected(kMinConnectedTimeout)
-, pingSender(thread, [=] { owner->sendPingByTimer(); })
-, checkSentRequestsTimer(thread, [=] { owner->checkSentRequests(); })
-, clearOldContainersTimer(thread, [=] { owner->clearOldContainers(); }) {
-}
 
 SessionPrivate::SessionState::SessionState(
 		std::shared_ptr<SessionData> data)
@@ -71,24 +50,31 @@ SessionPrivate::SessionPrivate(
 	not_null<SessionDelegate*> delegate,
 	not_null<QThread*> thread,
 	std::shared_ptr<SessionData> data,
-	ShiftedDcId shiftedDcId)
+	ShiftedDcId shiftedDcId,
+	not_null<SessionProxyPort*> proxyPort,
+	not_null<SessionConnectionFactory*> connectionFactory,
+	not_null<SessionAuthKeyFactory*> authKeyFactory)
 : QObject(nullptr)
 , _instance(instance)
 , _delegate(delegate)
 , _runtime(&delegate->runtimeEnvironment())
+, _proxyPort(proxyPort)
+, _connectionFactory(connectionFactory)
+, _authKeyFactory(authKeyFactory)
 , _shiftedDcId(shiftedDcId)
 , _realDcType(_delegate->dcOptions().dcType(_shiftedDcId))
 , _currentDcType(_realDcType)
 , _state(DisconnectedState)
-, _timing(thread, this)
+, _transport(this, _runtime)
+, _messageHandler(this)
 , _sessionState(std::move(data)) {
 	Expects(_shiftedDcId != 0);
 
 	moveToThread(thread);
 
 	InvokeQueued(this, [=] {
-		_timing.clearOldContainersTimer.callEach(kSentContainerLives);
-		connectToServer();
+		_transport._timing.clearOldContainersTimer.callEach(kSentContainerLives);
+		_transport.start();
 	});
 }
 
@@ -96,8 +82,44 @@ SessionPrivate::~SessionPrivate() {
 	releaseKeyCreationOnFail();
 	doDisconnect();
 
-	Expects(!_connectionState.connection);
-	Expects(_connectionState.testConnections.empty());
+	Expects(!_transport._state.connection);
+	Expects(_transport._state.testConnections.empty());
+}
+
+void SessionPrivate::connectToServer(bool afterConfig) {
+	_transport.connectToServer(afterConfig);
+}
+
+void SessionPrivate::doDisconnect() {
+	_transport.doDisconnect();
+}
+
+void SessionPrivate::restart() {
+	_transport.restart();
+}
+
+void SessionPrivate::restartNow() {
+	_transport.restartNow();
+}
+
+void SessionPrivate::migrateProxy(uint64 generation, bool scout) {
+	_transport.migrateProxy(generation, scout);
+}
+
+void SessionPrivate::releaseProxyMigration(uint64 generation) {
+	_transport.releaseProxyMigration(generation);
+}
+
+void SessionPrivate::onSentSome(uint64 size) {
+	_transport.onSentSome(size);
+}
+
+void SessionPrivate::onReceivedSome() {
+	_transport.onReceivedSome();
+}
+
+void SessionPrivate::handleReceived() {
+	_messageHandler.handleReceived();
 }
 
 void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
@@ -138,25 +160,14 @@ void SessionPrivate::logMtprotoEvent(
 		ProxyDiagnosticsSeverity severity,
 		const QString &message) const {
 	const auto proxy = _sessionState.options ? _sessionState.options->proxy : ProxyData();
-	if (proxy.type == ProxyData::Type::None) {
-		WriteProxyDiagnosticsLine(_runtime, {
-			.source = ProxyDiagnosticsSource::MTP,
-			.phase = phase,
-			.severity = severity,
-			.proxy = proxy,
-			.dc = mtprotoLogDc(),
-			.message = message,
-		});
-		return;
-	}
-	ReportProxyEvent(_runtime, {
-		.phase = phase,
-		.attempt = _connectionState.mtproxyAttempt,
-		.severity = severity,
-		.proxy = proxy,
-		.dc = mtprotoLogDc(),
-		.message = message,
-	});
+	_proxyPort->logEvent(
+		_runtime,
+		proxy,
+		_transport._state.mtproxyAttempt,
+		mtprotoLogDc(),
+		phase,
+		severity,
+		message);
 }
 
 int16 SessionPrivate::getProtocolDcId() const {
@@ -173,7 +184,7 @@ int16 SessionPrivate::getProtocolDcId() const {
 }
 
 void SessionPrivate::cdnConfigChanged() {
-	connectToServer(true);
+	_transport.connectToServer(true);
 }
 
 int32 SessionPrivate::getShiftedDcId() const {
@@ -181,16 +192,16 @@ int32 SessionPrivate::getShiftedDcId() const {
 }
 
 void SessionPrivate::dcOptionsChanged() {
-	_timing.retryTimeout = 1;
-	connectToServer(true);
+	_transport.setRetryTimeout(1);
+	_transport.connectToServer(true);
 }
 
 int32 SessionPrivate::getState() const {
 	QReadLocker lock(&_stateMutex);
 	int32 result = _state;
 	if (_state < 0) {
-		if (_timing.retryTimer.isActive()) {
-			result = int32(crl::now() - _timing.retryWillFinish);
+		if (_transport.retryTimerActive()) {
+			result = int32(crl::now() - _transport.retryWillFinish());
 			if (result >= 0) {
 				result = -1;
 			}
@@ -201,12 +212,12 @@ int32 SessionPrivate::getState() const {
 
 QString SessionPrivate::transport() const {
 	QReadLocker lock(&_stateMutex);
-	if (!_connectionState.connection || (_state < 0)) {
+	if (!_transport.connection() || (_state < 0)) {
 		return QString();
 	}
 
 	Assert(_sessionState.options != nullptr);
-	return _connectionState.connection->transport();
+	return _transport.activeTransport();
 }
 
 bool SessionPrivate::setState(int state, int ifState) {
@@ -223,9 +234,10 @@ bool SessionPrivate::setState(int state, int ifState) {
 	}
 	_state = state;
 	if (state < 0) {
-		_timing.retryTimeout = -state;
-		_timing.retryTimer.callOnce(_timing.retryTimeout);
-		_timing.retryWillFinish = crl::now() + _timing.retryTimeout;
+		_transport._timing.retryTimeout = -state;
+		_transport._timing.retryTimer.callOnce(_transport._timing.retryTimeout);
+		_transport._timing.retryWillFinish = crl::now()
+			+ _transport._timing.retryTimeout;
 	}
 	lock.unlock();
 

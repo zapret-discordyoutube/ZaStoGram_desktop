@@ -30,11 +30,14 @@ def test_mtproxy_transport_policy_files_live_in_proxy_module():
 
 
 def test_qtcp_socket_members_have_direct_header_include():
-    for path in (TLS_SOCKET_H, TCP_SOCKET_H):
-        header = path.read_text(encoding="utf-8")
+    tcp_header = TCP_SOCKET_H.read_text(encoding="utf-8")
+    tls_header = TLS_SOCKET_H.read_text(encoding="utf-8")
 
-        assert "#include <QtNetwork/QTcpSocket>" in header
-        assert "QTcpSocket _socket;" in header
+    assert "#include <QtNetwork/QTcpSocket>" in tcp_header
+    assert "QTcpSocket _socket;" in tcp_header
+    assert "#include <QtNetwork/QTcpSocket>" not in tls_header
+    assert "QTcpSocket _socket;" not in tls_header
+    assert "std::unique_ptr<TlsSocketTransport> _transport;" in tls_header
 
 
 def test_server_hello_length_uses_non_narrow_storage():
@@ -114,7 +117,7 @@ def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
     assert "NoteSyntheticPskDataPathSuccess(" in source
     assert packet_body.index("_phase = HandshakePhase::FirstDataReceived;") < (
         packet_body.index("NoteSyntheticPskDataPathSuccess("))
-    assert packet_body.index("ReportMtproxySuccess({") < (
+    assert packet_body.index("reportMtproxySuccess({") < (
         packet_body.index("NoteSyntheticPskDataPathSuccess("))
 
 
@@ -244,7 +247,7 @@ def test_client_hello_fragmentation_targets_sni_hostname():
     assert "base::RandomIndex(delayRange)" in plan_body
     assert "secondDelay" in builder_header
     assert "QByteArray _clientHelloTail;" in header
-    assert "base::Timer _clientHelloFragmentTimer;" in header
+    assert "RuntimeTimer _clientHelloFragmentTimer;" in header
     assert "PrepareClientHelloFragmentation(" in write_body
     assert "plan.firstSize" in write_body
     assert "_clientHelloFragmentTimer.callOnce(plan.secondDelay);" in write_body
@@ -314,7 +317,8 @@ def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
     assert "CompatibilityTlsProfile(\n\t\t\tinput.effectiveTlsProfile," in adaptive_source
     assert "ProxyTlsProfile _preparedTlsProfile" in header
     assert "bool _usePreparedTlsProfile" in header
-    assert "ProxyControlPlane::MtproxyEndpointSnapshot(" in recipe_body
+    assert "proxyServices().control()" in recipe_body
+    assert "mtproxyEndpointSnapshot(" in recipe_body
     assert "input.recipeLevel = snapshot.recipeLevel;" in recipe_body
     assert "input.lastDiagnostic = snapshot.lastDiagnostic;" in recipe_body
     assert "input.effectiveTlsProfile = effectiveTlsProfile();" in recipe_body

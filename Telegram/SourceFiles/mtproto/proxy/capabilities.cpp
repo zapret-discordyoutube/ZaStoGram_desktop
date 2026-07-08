@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/qt/qt_string_view.h"
-#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -26,6 +25,8 @@ namespace {
 
 constexpr auto kMaxStoredRoutes = 16;
 constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
+QMutex CapabilitiesPathProviderMutex;
+Fn<QString()> CapabilitiesPathProvider;
 
 [[nodiscard]] QByteArray BytesToQByteArray(bytes::const_span data) {
 	auto result = QByteArray();
@@ -86,10 +87,8 @@ constexpr auto kMtproxyRelayProofTtl = crl::time(24 * 60 * 60 * 1000);
 }
 
 [[nodiscard]] QString CapabilitiesPath() {
-	const auto runtime = DefaultRuntimeEnvironment();
-	return runtime->proxyCapabilities().path
-		? runtime->proxyCapabilities().path()
-		: QString();
+	QMutexLocker lock(&CapabilitiesPathProviderMutex);
+	return CapabilitiesPathProvider ? CapabilitiesPathProvider() : QString();
 }
 
 [[nodiscard]] QString TransportName(ProxyCapabilityTransport value) {
@@ -457,6 +456,11 @@ QString ProxyCapabilityKey(const ProxyData &proxy) {
 		+ ProxyCapabilitySecretHash(proxy)
 		+ ':'
 		+ ProxyCapabilityDomain(proxy);
+}
+
+void SetProxyCapabilityPathProvider(Fn<QString()> provider) {
+	QMutexLocker lock(&CapabilitiesPathProviderMutex);
+	CapabilitiesPathProvider = std::move(provider);
 }
 
 } // namespace MTP

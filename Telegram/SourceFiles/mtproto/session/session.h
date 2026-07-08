@@ -15,6 +15,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QTimer>
 
+#include <optional>
+#include <utility>
+#include <vector>
+
 namespace MTP {
 
 class Instance;
@@ -61,6 +65,16 @@ public:
 	explicit SessionData(not_null<Session*> creator) : _owner(creator) {
 	}
 
+	struct SentRequest {
+		mtpMsgId msgId = 0;
+		SerializedRequest request;
+	};
+
+	struct ToSendBatch {
+		std::vector<std::pair<mtpRequestId, SerializedRequest>> requests;
+		bool someSkipped = false;
+	};
+
 	void notifyConnectionInited(const SessionOptions &options);
 	void setOptions(SessionOptions options) {
 		QWriteLocker locker(&_optionsLock);
@@ -90,6 +104,17 @@ public:
 	std::vector<Response> &haveReceivedMessages() {
 		return _receivedMessages;
 	}
+
+	[[nodiscard]] ToSendBatch takeToSendBatch(int sizeLimit);
+	[[nodiscard]] std::optional<SentRequest> takeSentRequest(mtpMsgId msgId);
+	[[nodiscard]] std::vector<SentRequest> takeAllSentRequests();
+	[[nodiscard]] std::optional<SerializedRequest> takeToSendRequest(
+		mtpRequestId requestId);
+	void enqueueToSend(const SerializedRequest &request);
+	void enqueueResentRequest(const SerializedRequest &request);
+	void removeToSend(mtpRequestId requestId);
+	void removeSent(mtpMsgId msgId);
+	[[nodiscard]] bool hasToSend(mtpRequestId requestId);
 
 	// SessionPrivate -> Session interface.
 	void queueTryToReceive();
@@ -123,10 +148,10 @@ private:
 	mutable QReadWriteLock _optionsLock;
 
 	base::flat_map<mtpRequestId, SerializedRequest> _toSend; // map of request_id -> request, that is waiting to be sent
-	QReadWriteLock _toSendLock;
+	mutable QReadWriteLock _toSendLock;
 
 	base::flat_map<mtpMsgId, SerializedRequest> _haveSent; // map of msg_id -> request, that was sent
-	QReadWriteLock _haveSentLock;
+	mutable QReadWriteLock _haveSentLock;
 
 	std::vector<Response> _receivedMessages; // list of responses / updates that should be processed in the main thread
 	QReadWriteLock _haveReceivedLock;

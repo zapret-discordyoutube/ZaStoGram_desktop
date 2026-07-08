@@ -7,6 +7,9 @@ SESSION_PRIVATE_DIR = MTPROTO_DIR / "session" / "private"
 
 SESSION_PRIVATE_SOURCES = (
     SESSION_PRIVATE_DIR / "session_private.cpp",
+    SESSION_PRIVATE_DIR / "transport.cpp",
+    SESSION_PRIVATE_DIR / "message_handler.cpp",
+    SESSION_PRIVATE_DIR / "proxy_port.cpp",
     SESSION_PRIVATE_DIR / "connection.cpp",
     SESSION_PRIVATE_DIR / "send.cpp",
     SESSION_PRIVATE_DIR / "receive.cpp",

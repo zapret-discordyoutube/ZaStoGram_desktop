@@ -8,7 +8,7 @@ INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "session.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
-SESSION_PRIVATE_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
+SESSION_TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
@@ -57,22 +57,22 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     assert "_mtp->reInitConnection(_mtp->mainDcId());" not in watcher
     assert "++_proxyGeneration;" in migrate
     assert "_proxyMigrationActive = true;" in migrate
-    assert "ConnectionBroker::Instance().cancelByProxyGeneration(" in migrate
+    assert "_runtime->proxyServices().broker().cancelByProxyGeneration(" in migrate
     assert "session->migrateProxy(" in migrate
     assert "session.get() == _mainSession" in migrate
     assert "session->restart();" not in migrate
 
 
 def test_session_proxy_switch_suspends_old_generation_silently():
-    header = read(SESSION_PRIVATE_H)
+    header = read(SESSION_TRANSPORT_H)
     source = read_session_private_sources()
-    switch_body = function_body(source, "void SessionPrivate::migrateProxy(")
-    release_body = function_body(source, "void SessionPrivate::releaseProxyMigration(")
-    append_body = function_body(source, "bool SessionPrivate::appendTestConnection(")
-    connect_body = function_body(source, "void SessionPrivate::connectToServer(")
-    received_body = function_body(source, "void SessionPrivate::handleReceived()")
-    disconnected_body = function_body(source, "void SessionPrivate::onDisconnected(")
-    error_body = function_body(source, "void SessionPrivate::onError(")
+    switch_body = function_body(source, "void SessionTransport::migrateProxy(")
+    release_body = function_body(source, "void SessionTransport::releaseProxyMigration(")
+    append_body = function_body(source, "bool SessionTransport::appendTestConnection(")
+    connect_body = function_body(source, "void SessionTransport::connectToServer(")
+    received_body = function_body(source, "void SessionMessageHandler::handleReceived()")
+    disconnected_body = function_body(source, "void SessionTransport::onDisconnected(")
+    error_body = function_body(source, "void SessionTransport::onError(")
 
     assert "void migrateProxy(uint64 generation, bool scout);" in header
     assert "void releaseProxyMigration(uint64 generation);" in header
@@ -87,21 +87,22 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     assert "ProxyControlPlane::ReportMtproxyFailure" not in switch_body
     assert "restart();" not in switch_body
     assert "setState(-_timing.retryTimeout)" not in switch_body
-    assert "if (_connectionState.proxyMigrationSuspended) {" in connect_body
-    assert "_connectionState.proxyMigrationScout" in append_body
-    assert "_connectionState.brokerTickets.empty()" in append_body
-    assert ".proxyGeneration = _connectionState.proxyGeneration" in append_body
-    assert "_delegate->proxyMigrationSucceeded(_connectionState.proxyGeneration);" in received_body
-    assert "_connectionState.proxyMigrationScout = false;" in received_body
-    assert "_connectionState.proxyMigrationSuspended = false;" in release_body
+    assert "if (_state.proxyMigrationSuspended) {" in connect_body
+    assert "_state.proxyMigrationScout" in append_body
+    assert "_state.brokerTickets.empty()" in append_body
+    assert ".proxyGeneration = _state.proxyGeneration" in append_body
+    assert "_owner->_delegate->proxyMigrationSucceeded(" in received_body
+    assert "_owner->_transport._state.proxyGeneration" in received_body
+    assert "_owner->_transport._state.proxyMigrationScout = false;" in received_body
+    assert "_state.proxyMigrationSuspended = false;" in release_body
     assert "connectToServer();" in release_body
-    assert "found == end(_connectionState.testConnections)" in disconnected_body
-    assert "_connectionState.connection.get() != connection.get()" in disconnected_body
-    assert disconnected_body.index("_connectionState.connection.get() != connection.get()") < (
+    assert "found == end(_state.testConnections)" in disconnected_body
+    assert "_state.connection.get() != connection.get()" in disconnected_body
+    assert disconnected_body.index("_state.connection.get() != connection.get()") < (
         disconnected_body.index("restart();"))
-    assert "found == end(_connectionState.testConnections)" in error_body
-    assert "_connectionState.connection.get() != connection.get()" in error_body
-    assert error_body.index("_connectionState.connection.get() != connection.get()") < (
+    assert "found == end(_state.testConnections)" in error_body
+    assert "_state.connection.get() != connection.get()" in error_body
+    assert error_body.index("_state.connection.get() != connection.get()") < (
         error_body.index("handleError(errorCode);"))
 
 
@@ -116,7 +117,7 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "void cancelByProxyGeneration(" in header
     assert "uint64 proxyGeneration = 0;" in request_state
     assert "state->proxyGeneration = state->request.proxyGeneration;" in source
-    assert "state->request.runtime == runtime" in cancel_body
+    assert "state->request.runtime" not in cancel_body
     assert "state->proxyGeneration < generation" in cancel_body
     assert "state->active = false;" in cancel_body
     assert "AdmissionCancelled" in cancel_body

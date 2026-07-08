@@ -191,11 +191,6 @@ HandshakePhase AbstractConnection::handshakePhase() const {
 	return HandshakePhase::None;
 }
 
-void AbstractConnection::setMtproxyAttempt(
-		ProxyConnectionAttempt,
-		crl::time) {
-}
-
 bool AbstractConnection::serviceRequestNeeded(
 		TransportServiceRequest request) const {
 	return serviceRequest() == request;

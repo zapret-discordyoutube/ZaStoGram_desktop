@@ -11,6 +11,7 @@ BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 ENDPOINT_HEALTH_H = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
+SESSION_TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 PROXY_CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
 PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
@@ -24,8 +25,11 @@ def test_connection_broker_is_registered_owner_seam():
     assert "mtproto/proxy/connection_broker.cpp" in cmake
     assert "mtproto/proxy/connection_broker.h" in cmake
     assert "class ConnectionBroker final" in header
+    assert "explicit ConnectionBroker(not_null<RuntimeEnvironment*> runtime);" in header
+    assert "[[nodiscard]] static ConnectionBroker &Instance();" not in header
     assert "ConnectionTicket request(ConnectionRequest request);" in header
     assert "void cancel(ConnectionTicketId id);" in header
+    assert "void cancelByProxyGeneration(uint64 generation);" in header
     assert "enum class ConnectionBrokerAction" in header
     for action in ("StartNow", "Queued", "StartAfter", "Rejected"):
         assert action in header
@@ -34,31 +38,32 @@ def test_connection_broker_is_registered_owner_seam():
     assert "std::unique_ptr<EndpointQueue> _mediaQueue;" in header
     assert "std::unique_ptr<EndpointQueue> _proxyCheckQueue;" in header
     assert '#include "mtproto/proxy/control_plane.h"' in source
-    assert "ProxyControlPlane::Admit({" in source
+    assert "_runtime->proxyServices().control().admit({" in source
     assert "MtProxy::ReserveOpenSlot(" in source
 
 
 def test_session_private_queues_admission_without_retry_backoff():
-    header = SESSION_H.read_text(encoding="utf-8")
+    header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
     broker = BROKER_CPP.read_text(encoding="utf-8")
     append_body = function_body(
         source,
-        "bool SessionPrivate::appendTestConnection(")
+        "bool SessionTransport::appendTestConnection(")
     notify_body = function_body(broker, "void ConnectionBroker::notify(")
     report_body = function_body(
         broker,
         "void ConnectionBroker::reportAdmissionEvent(")
 
-    assert '#include "mtproto/proxy/connection_broker.h"' in source
-    assert "std::vector<ConnectionTicket> brokerTickets;" in header
-    assert "ConnectionBroker::Instance().request({" in append_body
+    assert '#include "mtproto/proxy/connection_broker.h"' not in source
+    assert "std::vector<SessionProxyTicket> brokerTickets;" in header
+    assert "_owner->_proxyPort->requestConnection({" in append_body
+    assert "ConnectionBroker::Instance()" not in source
     assert "EndpointHealth::Instance().admit(" not in append_body
     assert "EndpointHealth::Instance().admit(" not in broker
     assert "setState(-int(admission.retryAfter));" not in append_body
     assert "ConnectionBrokerAction::Queued" in notify_body
     assert "ConnectionBrokerAction::StartAfter" in notify_body
-    assert ".start = [=](ConnectionStart start)" in append_body
+    assert ".start = [=](SessionProxyStart start)" in append_body
     assert "removeConnectionBrokerTicket(start.ticketId);" in append_body
     assert "appendStartedConnection(" in append_body
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in notify_body
@@ -70,37 +75,37 @@ def test_session_private_queues_admission_without_retry_backoff():
 
 
 def test_session_pending_broker_tickets_keep_connecting_without_timeout_loop():
-    header = SESSION_H.read_text(encoding="utf-8")
+    header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
-    connect_body = function_body(source, "void SessionPrivate::connectToServer(")
-    destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
+    connect_body = function_body(source, "void SessionTransport::connectToServer(")
+    destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
 
-    assert "void removeConnectionBrokerTicket(ConnectionTicketId id);" in header
+    assert "void removeConnectionBrokerTicket(SessionProxyTicketId id);" in header
     assert "void armWaitForConnectedTimer();" in header
-    assert "_connectionState.testConnections.empty() && _connectionState.brokerTickets.empty()" in connect_body
-    assert "if (!_connectionState.testConnections.empty()) {\n\t\tarmWaitForConnectedTimer();" in connect_body
-    assert "_connectionState.brokerTickets.clear();" in destroy_body
+    assert "|| !_state.brokerTickets.empty()" in connect_body
+    assert "if (!_state.testConnections.empty()) {\n\t\tarmWaitForConnectedTimer();" in connect_body
+    assert "_state.brokerTickets.clear();" in destroy_body
     assert "removeConnectionBrokerTicket(start.ticketId);" in source
     assert "armWaitForConnectedTimer();" in source
 
 
 def test_session_queued_broker_tickets_have_hard_deadline():
-    header = SESSION_H.read_text(encoding="utf-8")
+    header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
-    connect_body = function_body(source, "void SessionPrivate::connectToServer(")
-    destroy_body = function_body(source, "void SessionPrivate::destroyAllConnections()")
+    connect_body = function_body(source, "void SessionTransport::connectToServer(")
+    destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
     remove_body = function_body(
         source,
-        "void SessionPrivate::removeConnectionBrokerTicket(")
+        "void SessionTransport::removeConnectionBrokerTicket(")
     deadline_body = function_body(
         source,
-        "void SessionPrivate::brokerQueueDeadlineFired()")
+        "void SessionTransport::brokerQueueDeadlineFired()")
 
     # A queued ticket is not a failure and must not churn the retry loop,
     # but it may not hang the session forever either: arm a generous hard
     # deadline while only broker tickets are pending, tear down and retry
     # with fresh options (picking up a rotated proxy) when it fires.
-    assert "base::Timer brokerQueueDeadlineTimer;" in header
+    assert "RuntimeTimer brokerQueueDeadlineTimer;" in header
     assert "void brokerQueueDeadlineFired();" in header
     assert "kBrokerQueueHardDeadline = 90 * crl::time(1000)" in source
     assert (
@@ -137,8 +142,9 @@ def test_broker_claims_front_request_before_admission():
     assert "bool admissionInProgress = false;" in request_state
     assert "state->admissionInProgress" in drain_body
     assert drain_body.index("state->admissionInProgress = true;") < (
-        drain_body.index("ProxyControlPlane::Admit({"))
-    after_admit = drain_body.split("ProxyControlPlane::Admit({", 1)[1]
+        drain_body.index("_runtime->proxyServices().control().admit({"))
+    after_admit = drain_body.split(
+        "_runtime->proxyServices().control().admit({", 1)[1]
     assert ".proxyGeneration = state->proxyGeneration" in after_admit
     assert "state->admissionInProgress = false;" in after_admit
     assert "state->startScheduled = true;" in drain_body
@@ -166,7 +172,8 @@ def test_proxy_check_uses_connection_broker_proxy_check_queue():
 
     assert '#include "mtproto/proxy/connection_broker.h"' in header
     assert "details::ConnectionTicket connectionTicket;" in header
-    assert "details::ConnectionBroker::Instance().request({" in start_body
+    assert "runtime->proxyServices().broker().request({" in start_body
+    assert "ConnectionBroker::Instance()" not in source
     assert "MtProxy::EndpointUse::ProxyCheck" in start_body
     assert "MtProxy::ReserveOpenSlot(" not in start_body
     assert "state->mtproxyLease = std::move(start.lease);" in start_body
@@ -179,7 +186,7 @@ def test_proxy_check_connection_request_designators_match_struct_order():
     start_body = function_body(source, "void StartProxyCheck(")
     request = block_after(
         start_body,
-        "details::ConnectionBroker::Instance().request(").split(
+        "runtime->proxyServices().broker().request(").split(
         ".start = ", 1)[0]
     designators = [
         match.group(1)

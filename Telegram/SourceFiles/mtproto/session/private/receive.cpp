@@ -13,10 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/control_plane.h"
-#include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/config/mtproto_dc_options.h"
@@ -54,12 +50,12 @@ auto SyncTimeRequestDuration = kFastRequestDuration;
 
 } // namespace
 
-void SessionPrivate::clearOldContainers() {
+void SessionMessageHandler::clearOldContainers() {
 	auto resent = false;
 	auto nextTimeout = kSentContainerLives;
 	const auto now = crl::now();
 	const auto checkTime = now - kSentContainerLives;
-	for (auto i = _requestState.sentContainers.begin(); i != _requestState.sentContainers.end();) {
+	for (auto i = _owner->_requestState.sentContainers.begin(); i != _owner->_requestState.sentContainers.end();) {
 		if (i->second.sent <= checkTime) {
 			DEBUG_LOG(("MTP Info: Removing old container with resending %1, "
 				"sent: %2, now: %3, current unixtime: %4"
@@ -69,7 +65,7 @@ void SessionPrivate::clearOldContainers() {
 				).arg(base::unixtime::now()));
 
 			const auto ids = std::move(i->second.messages);
-			i = _requestState.sentContainers.erase(i);
+			i = _owner->_requestState.sentContainers.erase(i);
 
 			resent = resent || !ids.empty();
 			for (const auto innerMsgId : ids) {
@@ -81,23 +77,23 @@ void SessionPrivate::clearOldContainers() {
 		}
 	}
 	if (resent) {
-		_sessionState.data->queueNeedToResumeAndSend();
+		_owner->_sessionState.data->queueNeedToResumeAndSend();
 	}
 	if (nextTimeout < kSentContainerLives) {
-		_timing.clearOldContainersTimer.callOnce(nextTimeout);
-	} else if (!_timing.clearOldContainersTimer.isActive()) {
-		_timing.clearOldContainersTimer.callEach(nextTimeout);
+		_owner->_transport._timing.clearOldContainersTimer.callOnce(nextTimeout);
+	} else if (!_owner->_transport._timing.clearOldContainersTimer.isActive()) {
+		_owner->_transport._timing.clearOldContainersTimer.callEach(nextTimeout);
 	}
 }
 
-void SessionPrivate::handleReceived() {
-	Expects(_sessionState.encryptionKey != nullptr);
+void SessionMessageHandler::handleReceived() {
+	Expects(_owner->_sessionState.encryptionKey != nullptr);
 
-	onReceivedSome();
+	_owner->_transport.onReceivedSome();
 
-	while (!_connectionState.connection->received().empty()) {
-		auto intsBuffer = std::move(_connectionState.connection->received().front());
-		_connectionState.connection->received().pop_front();
+	while (!_owner->_transport._state.connection->received().empty()) {
+		auto intsBuffer = std::move(_owner->_transport._state.connection->received().front());
+		_owner->_transport._state.connection->received().pop_front();
 
 		constexpr auto kExternalHeaderIntsCount = 6U; // 2 auth_key_id, 4 msg_key
 		constexpr auto kEncryptedHeaderIntsCount = 8U; // 2 salt, 2 session, 2 msg_id, 1 seq_no, 1 length
@@ -107,13 +103,13 @@ void SessionPrivate::handleReceived() {
 		auto ints = intsBuffer.constData();
 		if ((intsCount < kMinimalIntsCount) || (intsCount > kMaxMessageLength / kIntSize)) {
 			LOG(("TCP Error: bad message received, len %1").arg(intsCount * kIntSize));
-			return restart();
+			return _owner->restart();
 		}
 		const auto receivedKeyId = binary::Read<uint64>(
 			bytes::make_span(intsBuffer));
-		if (_sessionState.keyId != receivedKeyId) {
-			LOG(("TCP Error: bad auth_key_id %1 instead of %2 received").arg(_sessionState.keyId).arg(receivedKeyId));
-			return restart();
+		if (_owner->_sessionState.keyId != receivedKeyId) {
+			LOG(("TCP Error: bad auth_key_id %1 instead of %2 received").arg(_owner->_sessionState.keyId).arg(receivedKeyId));
+			return _owner->restart();
 		}
 
 		constexpr auto kMinPaddingSize = 12U;
@@ -127,7 +123,7 @@ void SessionPrivate::handleReceived() {
 			bytes::make_span(intsBuffer),
 			2 * kIntSize);
 
-		aesIgeDecrypt(encryptedInts, decryptedBuffer.data(), encryptedBytesCount, _sessionState.encryptionKey, msgKey);
+		aesIgeDecrypt(encryptedInts, decryptedBuffer.data(), encryptedBytesCount, _owner->_sessionState.encryptionKey, msgKey);
 
 		auto decrypted = mtpBuffer(encryptedIntsCount);
 		binary::Copy(
@@ -147,12 +143,12 @@ void SessionPrivate::handleReceived() {
 		// Can underflow, but it is an unsigned type, so we just check the range later.
 		auto paddingSize = static_cast<uint32>(encryptedBytesCount) - static_cast<uint32>(fullDataLength);
 
-		if (!_sessionState.encryptionKey->validateMsgKey(
+		if (!_owner->_sessionState.encryptionKey->validateMsgKey(
 				msgKey,
 				bytes::make_span(decrypted),
 				false)) {
 			LOG(("TCP Error: bad SHA256 hash after aesDecrypt in message"));
-			return restart();
+			return _owner->restart();
 		}
 
 		if ((messageLength > kMaxMessageLength)
@@ -160,20 +156,20 @@ void SessionPrivate::handleReceived() {
 			|| (paddingSize < kMinPaddingSize)
 			|| (paddingSize > kMaxPaddingSize)) {
 			LOG(("TCP Error: bad msg_len received %1, data size: %2").arg(messageLength).arg(encryptedBytesCount));
-			return restart();
+			return _owner->restart();
 		}
 
 		if (Logs::DebugEnabled()) {
-			_connectionState.connection->logInfo(u"Decrypted message %1,%2,%3 is %4 len"_q
+			_owner->_transport._state.connection->logInfo(u"Decrypted message %1,%2,%3 is %4 len"_q
 				.arg(msgId)
 				.arg(seqNo)
 				.arg(Logs::b(needAck))
 				.arg(fullDataLength));
 		}
 
-		if (session != _sessionState.sessionId) {
+		if (session != _owner->_sessionState.sessionId) {
 			LOG(("MTP Error: bad server session received"));
-			return restart();
+			return _owner->restart();
 		}
 
 		const auto serverTime = int32(msgId >> 32);
@@ -181,7 +177,7 @@ void SessionPrivate::handleReceived() {
 		if (!isReply && ((msgId & 0x03) != 3)) {
 			LOG(("MTP Error: bad msg_id %1 in message received").arg(msgId));
 
-			return restart();
+			return _owner->restart();
 		}
 
 		const auto clientTime = base::unixtime::now();
@@ -191,37 +187,37 @@ void SessionPrivate::handleReceived() {
 			DEBUG_LOG(("MTP Info: bad server time from msg_id: %1, my time: %2").arg(serverTime).arg(clientTime));
 		}
 
-		bool wasConnected = (getState() == ConnectedState);
-		if (serverSalt != _sessionState.sessionSalt) {
+		bool wasConnected = (_owner->getState() == ConnectedState);
+		if (serverSalt != _owner->_sessionState.sessionSalt) {
 			if (!badTime) {
-				DEBUG_LOG(("MTP Info: other salt received... received: %1, my salt: %2, updating...").arg(serverSalt).arg(_sessionState.sessionSalt));
-				_sessionState.sessionSalt = serverSalt;
+				DEBUG_LOG(("MTP Info: other salt received... received: %1, my salt: %2, updating...").arg(serverSalt).arg(_owner->_sessionState.sessionSalt));
+				_owner->_sessionState.sessionSalt = serverSalt;
 
-				if (setState(ConnectedState, ConnectingState)) {
+				if (_owner->setState(ConnectedState, ConnectingState)) {
 					resendAll();
 				}
 			} else {
-				DEBUG_LOG(("MTP Info: other salt received... received: %1, my salt: %2").arg(serverSalt).arg(_sessionState.sessionSalt));
+				DEBUG_LOG(("MTP Info: other salt received... received: %1, my salt: %2").arg(serverSalt).arg(_owner->_sessionState.sessionSalt));
 			}
 		} else {
 			serverSalt = 0; // dont pass to handle method, so not to lock in setSalt()
 		}
 
-		if (needAck) _requestState.ackData.push_back(MTP_long(msgId));
+		if (needAck) _owner->_requestState.ackData.push_back(MTP_long(msgId));
 
 		auto res = HandleResult::Success; // if no need to handle, then succeed
 		auto from = decrypted.constData() + kEncryptedHeaderIntsCount;
 		auto end = from + (messageLength / kIntSize);
 		auto sfrom = from - (SerializedRequest::kMessageBodyPosition
 			- SerializedRequest::kMessageIdPosition);
-		MTP_LOG(_shiftedDcId, ("Recv: ")
+		MTP_LOG(_owner->_shiftedDcId, ("Recv: ")
 			+ DumpToText(sfrom, end)
 			+ QString(" (dc:%1,key:%2,session:%3)"
-			).arg(AbstractConnection::ProtocolDcDebugId(getProtocolDcId())
-			).arg(_sessionState.encryptionKey->keyId()
-			).arg(_sessionState.sessionId));
+			).arg(AbstractConnection::ProtocolDcDebugId(_owner->getProtocolDcId())
+			).arg(_owner->_sessionState.encryptionKey->keyId()
+			).arg(_owner->_sessionState.sessionId));
 
-		const auto registered = _requestState.receivedIds.registerMsgId(
+		const auto registered = _owner->_requestState.receivedIds.registerMsgId(
 			msgId,
 			needAck);
 		if (registered == ReceivedIdsManager::Result::Success) {
@@ -234,73 +230,64 @@ void SessionPrivate::handleReceived() {
 		} else if (registered == ReceivedIdsManager::Result::TooOld) {
 			res = HandleResult::ResetSession;
 		}
-		_requestState.receivedIds.shrink();
+		_owner->_requestState.receivedIds.shrink();
 
 		// send acks
-		if (const auto toAckSize = _requestState.ackData.size()) {
-			DEBUG_LOG(("MTP Info: will send %1 acks, ids: %2").arg(toAckSize).arg(LogIdsVector(_requestState.ackData)));
-			_sessionState.data->queueSendAnything(kAckSendWaiting);
+		if (const auto toAckSize = _owner->_requestState.ackData.size()) {
+			DEBUG_LOG(("MTP Info: will send %1 acks, ids: %2").arg(toAckSize).arg(LogIdsVector(_owner->_requestState.ackData)));
+			_owner->_sessionState.data->queueSendAnything(kAckSendWaiting);
 		}
 
-		auto lock = QReadLocker(_sessionState.data->haveReceivedMutex());
-		const auto tryToReceive = !_sessionState.data->haveReceivedMessages().empty();
+		auto lock = QReadLocker(_owner->_sessionState.data->haveReceivedMutex());
+		const auto tryToReceive = !_owner->_sessionState.data->haveReceivedMessages().empty();
 		lock.unlock();
 
 		if (tryToReceive) {
-			DEBUG_LOG(("MTP Info: queueTryToReceive() - need to parse in another thread, %1 messages.").arg(_sessionState.data->haveReceivedMessages().size()));
-			_sessionState.data->queueTryToReceive();
+			DEBUG_LOG(("MTP Info: queueTryToReceive() - need to parse in another thread, %1 messages.").arg(_owner->_sessionState.data->haveReceivedMessages().size()));
+			_owner->_sessionState.data->queueTryToReceive();
 		}
 
 		if (res != HandleResult::Success && res != HandleResult::Ignored) {
 			if (res == HandleResult::DestroyTemporaryKey) {
-				destroyTemporaryKey();
+				_owner->destroyTemporaryKey();
 			} else if (res == HandleResult::ResetSession) {
-				_sessionState.needReset = true;
+				_owner->_sessionState.needReset = true;
 			}
-			return restart();
+			return _owner->restart();
 		}
-		_timing.retryTimeout = 1; // reset restart() timer
+		_owner->_transport._timing.retryTimeout = 1; // reset _owner->restart() timer
 
-		if (!_connectionState.mtprotoDataReceived) {
-			_connectionState.mtprotoDataReceived = true;
-			_connectionState.mtprotoSilentTimeouts = 0;
-			if (_connectionState.proxyMigrationScout) {
-				_connectionState.proxyMigrationScout = false;
-				_delegate->proxyMigrationSucceeded(_connectionState.proxyGeneration);
+		if (!_owner->_transport._state.mtprotoDataReceived) {
+			_owner->_transport._state.mtprotoDataReceived = true;
+			_owner->_transport._state.mtprotoSilentTimeouts = 0;
+			if (_owner->_transport._state.proxyMigrationScout) {
+				_owner->_transport._state.proxyMigrationScout = false;
+				_owner->_delegate->proxyMigrationSucceeded(
+					_owner->_transport._state.proxyGeneration);
 			}
-			logMtprotoEvent(
+			_owner->logMtprotoEvent(
 				ProxyDiagnosticsPhase::MtpFirstDataReceived,
 				ProxyDiagnosticsSeverity::Info,
 				u"first mtproto payload received"_q);
-			if (!MtProxy::EndpointEmpty(_connectionState.mtproxyEndpoint)) {
-				ProxyControlPlane::ReportMtproxySuccess({
-					.endpoint = _connectionState.mtproxyEndpoint,
-					.use = _connectionState.mtproxyUse,
-					.proxyGeneration = _connectionState.mtproxyAttempt.proxyGeneration,
-					.attemptId = _connectionState.mtproxyAttempt.attemptId,
-					.proxyEpoch = _connectionState.mtproxyAttempt.proxyEpoch,
-					.successEpoch = _connectionState.mtproxyAttempt.successEpoch,
-					.attemptStartedAt = _connectionState.mtproxyAttemptStartedAt,
-					.scope = MtProxy::SuccessScope::Relay,
-				});
-			}
+			_owner->_proxyPort->reportFirstMtprotoPayload(
+				_owner->_transport.currentProxyAttempt());
 		}
 
-		_connectionState.startedConnectingAt = crl::time(0);
+		_owner->_transport._state.startedConnectingAt = crl::time(0);
 
 		if (!wasConnected) {
-			if (getState() == ConnectedState) {
-				_sessionState.data->queueNeedToResumeAndSend();
+			if (_owner->getState() == ConnectedState) {
+				_owner->_sessionState.data->queueNeedToResumeAndSend();
 			}
 		}
 	}
-	if (_connectionState.connection->serviceRequestNeeded(
+	if (_owner->_transport._state.connection->serviceRequestNeeded(
 			AbstractConnection::TransportServiceRequest::HttpWait)) {
-		_sessionState.data->queueSendAnything();
+		_owner->_sessionState.data->queueSendAnything();
 	}
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleOneReceived(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -350,7 +337,7 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 	return handleUpdates(from, end, msgId, info);
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleGzipPacked(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleGzipPacked(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -363,7 +350,7 @@ SessionPrivate::HandleResult SessionPrivate::handleGzipPacked(
 	return handleOneReceived(response.data(), response.data() + response.size(), msgId, info);
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgContainer(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgContainer(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -405,7 +392,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgContainer(
 		}
 
 		bool needAck = (inSeqNo.v & 0x01);
-		if (needAck) _requestState.ackData.push_back(inMsgId);
+		if (needAck) _owner->_requestState.ackData.push_back(inMsgId);
 
 		DEBUG_LOG(("Message Info: message from container, msg_id: %1, needAck: %2").arg(inMsgId.v).arg(Logs::b(needAck)));
 
@@ -415,7 +402,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgContainer(
 		}
 
 		auto res = HandleResult::Success; // if no need to handle, then succeed
-		const auto registered = _requestState.receivedIds.registerMsgId(
+		const auto registered = _owner->_requestState.receivedIds.registerMsgId(
 			inMsgId.v,
 			needAck);
 		if (registered == ReceivedIdsManager::Result::Success) {
@@ -433,7 +420,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgContainer(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgsAck(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgsAck(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -460,7 +447,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgsAck(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleBadMsgNotification(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -486,8 +473,8 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 			|| (errorCode == 64); // bad container
 		if (errorCode == 64) { // bad container!
 			if (Logs::DebugEnabled()) {
-				const auto i = _requestState.sentContainers.find(resendId);
-				if (i == _requestState.sentContainers.end()) {
+				const auto i = _owner->_requestState.sentContainers.find(resendId);
+				if (i == _owner->_requestState.sentContainers.end()) {
 					LOG(("Message Error: Container not found!"));
 				} else {
 					auto idsList = QStringList();
@@ -499,7 +486,7 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 			}
 		}
 
-		if (!wasSent(resendId)) {
+		if (!_owner->wasSent(resendId)) {
 			DEBUG_LOG(("Message Error: "
 				"such message was not sent recently %1").arg(resendId));
 			return info.badTime
@@ -509,7 +496,7 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 
 		if (needResend) { // bad msg_id or bad container
 			if (info.serverSalt) {
-				_sessionState.sessionSalt = info.serverSalt;
+				_owner->_sessionState.sessionSalt = info.serverSalt;
 			}
 
 			correctUnixtimeWithBadLocal(info.serverTime);
@@ -520,12 +507,12 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 		} else { // must create new session, because msg_id and msg_seqno are inconsistent
 			if (info.badTime) {
 				if (info.serverSalt) {
-					_sessionState.sessionSalt = info.serverSalt;
+					_owner->_sessionState.sessionSalt = info.serverSalt;
 				}
 				correctUnixtimeWithBadLocal(info.serverTime);
 				info.badTime = false;
 			}
-			if (_authState.bindMsgId) {
+			if (_owner->_authState.bindMsgId) {
 				LOG(("Message Info: bad message notification received"
 					" while binding temp key, restarting."));
 				return HandleResult::RestartConnection;
@@ -535,8 +522,8 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 		}
 	} else { // fatal (except 48, but it must not get here)
 		const auto badMsgId = mtpMsgId(data.vbad_msg_id().v);
-		const auto requestId = wasSent(resendId);
-		if (_authState.bindMsgId) {
+		const auto requestId = _owner->wasSent(resendId);
+		if (_owner->_authState.bindMsgId) {
 			LOG(("Message Error: fatal bad message notification received"
 				" while binding temp key, restarting."));
 			return HandleResult::RestartConnection;
@@ -554,8 +541,8 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 			)).write(reply);
 
 			// Save rpc_error for processing in the main thread.
-			QWriteLocker locker(_sessionState.data->haveReceivedMutex());
-			_sessionState.data->haveReceivedMessages().push_back({
+			QWriteLocker locker(_owner->_sessionState.data->haveReceivedMutex());
+			_owner->_sessionState.data->haveReceivedMessages().push_back({
 				.reply = std::move(reply),
 				.outerMsgId = info.outerMsgId,
 				.requestId = requestId,
@@ -571,7 +558,7 @@ SessionPrivate::HandleResult SessionPrivate::handleBadMsgNotification(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleBadServerSalt(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleBadServerSalt(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -584,22 +571,22 @@ SessionPrivate::HandleResult SessionPrivate::handleBadServerSalt(
 	DEBUG_LOG(("Message Info: bad server salt received (error_code %4) for msg_id = %1, seq_no = %2, new salt: %3").arg(data.vbad_msg_id().v).arg(data.vbad_msg_seqno().v).arg(data.vnew_server_salt().v).arg(data.verror_code().v));
 
 	const auto resendId = data.vbad_msg_id().v;
-	if (!wasSent(resendId)) {
+	if (!_owner->wasSent(resendId)) {
 		DEBUG_LOG(("Message Error: such message was not sent recently %1").arg(resendId));
 		return (info.badTime ? HandleResult::Ignored : HandleResult::Success);
 	}
 
-	_sessionState.sessionSalt = data.vnew_server_salt().v;
+	_owner->_sessionState.sessionSalt = data.vnew_server_salt().v;
 
 	// Don't force time update here.
 	base::unixtime::update(info.serverTime);
 
-	if (_authState.bindMsgId) {
+	if (_owner->_authState.bindMsgId) {
 		LOG(("Message Info: bad_server_salt received while binding temp key, restarting."));
 		return HandleResult::RestartConnection;
 	}
 
-	if (setState(ConnectedState, ConnectingState)) {
+	if (_owner->setState(ConnectedState, ConnectingState)) {
 		resendAll();
 	}
 
@@ -610,7 +597,7 @@ SessionPrivate::HandleResult SessionPrivate::handleBadServerSalt(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgsStateInfo(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgsStateInfo(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -625,8 +612,8 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgsStateInfo(
 	auto &states = data.vinfo().v;
 
 	DEBUG_LOG(("Message Info: msg state received, msgId %1, reqMsgId: %2, HEX states %3").arg(msgId).arg(reqMsgId).arg(Logs::mb(states.data(), states.length()).str()));
-	const auto i = _requestState.stateAndResendRequests.find(reqMsgId);
-	if (i == _requestState.stateAndResendRequests.end()) {
+	const auto i = _owner->_requestState.stateAndResendRequests.find(reqMsgId);
+	if (i == _owner->_requestState.stateAndResendRequests.end()) {
 		DEBUG_LOG(("Message Error: such message was not sent recently %1").arg(reqMsgId));
 		return info.badTime
 			? HandleResult::Ignored
@@ -634,7 +621,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgsStateInfo(
 	}
 	if (info.badTime) {
 		if (info.serverSalt) {
-			_sessionState.sessionSalt = info.serverSalt; // requestsFixTimeSalt with no lookup
+			_owner->_sessionState.sessionSalt = info.serverSalt; // requestsFixTimeSalt with no lookup
 		}
 		correctUnixtimeWithBadLocal(info.serverTime);
 
@@ -668,7 +655,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgsStateInfo(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgsAllInfo(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgsAllInfo(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -695,7 +682,7 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgsAllInfo(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgDetailedInfo(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgDetailedInfo(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -720,16 +707,16 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgDetailedInfo(
 	requestsAcked(ids);
 
 	const auto resMsgId = data.vanswer_msg_id();
-	if (_requestState.receivedIds.lookup(resMsgId.v) != ReceivedIdsManager::State::NotFound) {
-		_requestState.ackData.push_back(resMsgId);
+	if (_owner->_requestState.receivedIds.lookup(resMsgId.v) != ReceivedIdsManager::State::NotFound) {
+		_owner->_requestState.ackData.push_back(resMsgId);
 	} else {
 		DEBUG_LOG(("Message Info: answer message %1 was not received, requesting...").arg(resMsgId.v));
-		_requestState.resendData.push_back(resMsgId);
+		_owner->_requestState.resendData.push_back(resMsgId);
 	}
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleMsgNewDetailedInfo(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleMsgNewDetailedInfo(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -747,16 +734,16 @@ SessionPrivate::HandleResult SessionPrivate::handleMsgNewDetailedInfo(
 	DEBUG_LOG(("Message Info: msg new detailed info, answerId %2, status %3, bytes %4").arg(data.vanswer_msg_id().v).arg(data.vstatus().v).arg(data.vbytes().v));
 
 	const auto resMsgId = data.vanswer_msg_id();
-	if (_requestState.receivedIds.lookup(resMsgId.v) != ReceivedIdsManager::State::NotFound) {
-		_requestState.ackData.push_back(resMsgId);
+	if (_owner->_requestState.receivedIds.lookup(resMsgId.v) != ReceivedIdsManager::State::NotFound) {
+		_owner->_requestState.ackData.push_back(resMsgId);
 	} else {
 		DEBUG_LOG(("Message Info: answer message %1 was not received, requesting...").arg(resMsgId.v));
-		_requestState.resendData.push_back(resMsgId);
+		_owner->_requestState.resendData.push_back(resMsgId);
 	}
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleRpcResult(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleRpcResult(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -806,7 +793,7 @@ SessionPrivate::HandleResult SessionPrivate::handleRpcResult(
 		// the initConnection, so we're not sure yet that it was inited.
 		// Wait till a good response is received.
 	} else {
-		_sessionState.data->notifyConnectionInited(*_sessionState.options);
+		_owner->_sessionState.data->notifyConnectionInited(*_owner->_sessionState.options);
 	}
 	requestsAcked(ids, true);
 
@@ -814,11 +801,11 @@ SessionPrivate::HandleResult SessionPrivate::handleRpcResult(
 	if (bindResult != HandleResult::Ignored) {
 		return bindResult;
 	}
-	const auto requestId = wasSent(requestMsgId);
+	const auto requestId = _owner->wasSent(requestMsgId);
 	if (requestId && requestId != mtpRequestId(0xFFFFFFFF)) {
 		// Save rpc_result for processing in the main thread.
-		QWriteLocker locker(_sessionState.data->haveReceivedMutex());
-		_sessionState.data->haveReceivedMessages().push_back({
+		QWriteLocker locker(_owner->_sessionState.data->haveReceivedMutex());
+		_owner->_sessionState.data->haveReceivedMessages().push_back({
 			.reply = std::move(response),
 			.outerMsgId = info.outerMsgId,
 			.requestId = requestId,
@@ -829,7 +816,7 @@ SessionPrivate::HandleResult SessionPrivate::handleRpcResult(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleNewSessionCreated(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleNewSessionCreated(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -851,13 +838,13 @@ SessionPrivate::HandleResult SessionPrivate::handleNewSessionCreated(
 	}
 
 	DEBUG_LOG(("Message Info: new server session created, unique_id %1, first_msg_id %2, server_salt %3").arg(data.vunique_id().v).arg(data.vfirst_msg_id().v).arg(data.vserver_salt().v));
-	_sessionState.sessionSalt = data.vserver_salt().v;
+	_owner->_sessionState.sessionSalt = data.vserver_salt().v;
 
 	mtpMsgId firstMsgId = data.vfirst_msg_id().v;
 	QVector<quint64> toResend;
 	{
-		QReadLocker locker(_sessionState.data->haveSentMutex());
-		const auto &haveSent = _sessionState.data->haveSentMap();
+		QReadLocker locker(_owner->_sessionState.data->haveSentMutex());
+		const auto &haveSent = _owner->_sessionState.data->haveSentMap();
 		toResend.reserve(haveSent.size());
 		for (const auto &[msgId, request] : haveSent) {
 			if (msgId >= firstMsgId) {
@@ -879,15 +866,15 @@ SessionPrivate::HandleResult SessionPrivate::handleNewSessionCreated(
 	}
 
 	// Notify main process about new session - need to get difference.
-	QWriteLocker locker(_sessionState.data->haveReceivedMutex());
-	_sessionState.data->haveReceivedMessages().push_back({
+	QWriteLocker locker(_owner->_sessionState.data->haveReceivedMutex());
+	_owner->_sessionState.data->haveReceivedMessages().push_back({
 		.reply = update,
 		.outerMsgId = info.outerMsgId,
 	});
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handlePong(
+SessionMessageHandler::HandleResult SessionMessageHandler::handlePong(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -899,15 +886,15 @@ SessionPrivate::HandleResult SessionPrivate::handlePong(
 	const auto &data(msg.c_pong());
 	DEBUG_LOG(("Message Info: pong received, msg_id: %1, ping_id: %2").arg(data.vmsg_id().v).arg(data.vping_id().v));
 
-	if (!wasSent(data.vmsg_id().v)) {
+	if (!_owner->wasSent(data.vmsg_id().v)) {
 		DEBUG_LOG(("Message Error: such msg_id %1 ping_id %2 was not sent recently").arg(data.vmsg_id().v).arg(data.vping_id().v));
 		return HandleResult::Ignored;
 	}
-	if (data.vping_id().v == _requestState.pingId) {
-		if (_requestState.pingSentTime) {
-			reportPingTime(crl::now() - base::take(_requestState.pingSentTime));
+	if (data.vping_id().v == _owner->_requestState.pingId) {
+		if (_owner->_requestState.pingSentTime) {
+			_owner->reportPingTime(crl::now() - base::take(_owner->_requestState.pingSentTime));
 		}
-		_requestState.pingId = 0;
+		_owner->_requestState.pingId = 0;
 	} else {
 		DEBUG_LOG(("Message Info: just pong..."));
 	}
@@ -924,7 +911,7 @@ SessionPrivate::HandleResult SessionPrivate::handlePong(
 	return HandleResult::Success;
 }
 
-SessionPrivate::HandleResult SessionPrivate::handleUpdates(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleUpdates(
 		const mtpPrime *from,
 		const mtpPrime *end,
 		uint64 msgId,
@@ -934,7 +921,7 @@ SessionPrivate::HandleResult SessionPrivate::handleUpdates(
 		return HandleResult::ResetSession;
 	}
 
-	if (_currentDcType == DcType::Regular) {
+	if (_owner->_currentDcType == DcType::Regular) {
 		mtpBuffer update(end - from);
 		if (end > from) {
 			binary::Copy(
@@ -943,20 +930,20 @@ SessionPrivate::HandleResult SessionPrivate::handleUpdates(
 		}
 
 		// Notify main process about the new updates.
-		QWriteLocker locker(_sessionState.data->haveReceivedMutex());
-		_sessionState.data->haveReceivedMessages().push_back({
+		QWriteLocker locker(_owner->_sessionState.data->haveReceivedMutex());
+		_owner->_sessionState.data->haveReceivedMessages().push_back({
 			.reply = update,
 			.outerMsgId = info.outerMsgId,
 		});
 	} else {
 		LOG(("Message Error: unexpected updates in dcType: %1"
-			).arg(static_cast<int>(_currentDcType)));
+			).arg(static_cast<int>(_owner->_currentDcType)));
 	}
 
 	return HandleResult::Success;
 }
 
-mtpBuffer SessionPrivate::ungzip(const mtpPrime *from, const mtpPrime *end) const {
+mtpBuffer SessionMessageHandler::ungzip(const mtpPrime *from, const mtpPrime *end) const {
 	mtpBuffer result; // * 4 because of mtpPrime type
 	result.resize(0);
 
@@ -1008,12 +995,12 @@ mtpBuffer SessionPrivate::ungzip(const mtpPrime *from, const mtpPrime *end) cons
 	return result;
 }
 
-bool SessionPrivate::requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info) {
+bool SessionMessageHandler::requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info) {
 	for (const auto &id : ids) {
-		if (wasSent(id.v)) {
+		if (_owner->wasSent(id.v)) {
 			// Found such msg_id in recent acked or in recent sent requests.
 			if (info.serverSalt) {
-				_sessionState.sessionSalt = info.serverSalt;
+				_owner->_sessionState.sessionSalt = info.serverSalt;
 			}
 			correctUnixtimeWithBadLocal(info.serverTime);
 			return true;
@@ -1022,13 +1009,13 @@ bool SessionPrivate::requestsFixTimeSalt(const QVector<MTPlong> &ids, const Oute
 	return false;
 }
 
-void SessionPrivate::correctUnixtimeByFastRequest(
+void SessionMessageHandler::correctUnixtimeByFastRequest(
 		const QVector<MTPlong> &ids,
 		TimeId serverTime) {
 	const auto now = crl::now();
 
-	QReadLocker locker(_sessionState.data->haveSentMutex());
-	const auto &haveSent = _sessionState.data->haveSentMap();
+	QReadLocker locker(_owner->_sessionState.data->haveSentMutex());
+	const auto &haveSent = _owner->_sessionState.data->haveSentMap();
 	for (const auto &id : ids) {
 		const auto i = haveSent.find(id.v);
 		if (i == haveSent.end()) {
@@ -1046,84 +1033,82 @@ void SessionPrivate::correctUnixtimeByFastRequest(
 	}
 }
 
-void SessionPrivate::correctUnixtimeWithBadLocal(TimeId serverTime) {
+void SessionMessageHandler::correctUnixtimeWithBadLocal(TimeId serverTime) {
 	SyncTimeRequestDuration = kFastRequestDuration;
 	base::unixtime::update(serverTime, true);
 }
 
-void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse) {
+void SessionMessageHandler::requestsAcked(const QVector<MTPlong> &ids, bool byResponse) {
 	DEBUG_LOG(("Message Info: requests acked, ids %1").arg(LogIdsVector(ids)));
 
 	QVector<MTPlong> toAckMore;
+	auto resentAcked = std::vector<std::pair<mtpMsgId, mtpRequestId>>();
 	{
-		QWriteLocker locker2(_sessionState.data->haveSentMutex());
-		auto &haveSent = _sessionState.data->haveSentMap();
+		QWriteLocker locker2(_owner->_sessionState.data->haveSentMutex());
+		auto &haveSent = _owner->_sessionState.data->haveSentMap();
 
 		for (const auto &wrappedMsgId : ids) {
 			const auto msgId = wrappedMsgId.v;
-			if (const auto i = _requestState.sentContainers.find(msgId); i != end(_requestState.sentContainers)) {
+			if (const auto i = _owner->_requestState.sentContainers.find(msgId); i != end(_owner->_requestState.sentContainers)) {
 				DEBUG_LOG(("Message Info: container ack received, msgId %1").arg(msgId));
 				const auto &list = i->second.messages;
 				toAckMore.reserve(toAckMore.size() + list.size());
 				for (const auto msgId : list) {
 					toAckMore.push_back(MTP_long(msgId));
 				}
-				_requestState.sentContainers.erase(i);
+				_owner->_requestState.sentContainers.erase(i);
 				continue;
 			}
-			if (const auto i = _requestState.stateAndResendRequests.find(msgId); i != end(_requestState.stateAndResendRequests)) {
-				_requestState.stateAndResendRequests.erase(i);
+			if (const auto i = _owner->_requestState.stateAndResendRequests.find(msgId); i != end(_owner->_requestState.stateAndResendRequests)) {
+				_owner->_requestState.stateAndResendRequests.erase(i);
 				continue;
 			}
 			if (const auto i = haveSent.find(msgId); i != end(haveSent)) {
 				const auto requestId = i->second->requestId;
 
-				if (!byResponse && _delegate->hasCallback(requestId)) {
+				if (!byResponse && _owner->_delegate->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
 					continue;
 				}
 				haveSent.erase(i);
 
-				_requestState.ackedIds.emplace(msgId, requestId);
+				_owner->_requestState.ackedIds.emplace(msgId, requestId);
 				continue;
 			}
 			DEBUG_LOG(("Message Info: msgId %1 was not found in recent sent, while acking requests, searching in resend...").arg(msgId));
-			if (const auto i = _requestState.resendingIds.find(msgId); i != end(_requestState.resendingIds)) {
+			if (const auto i = _owner->_requestState.resendingIds.find(msgId); i != end(_owner->_requestState.resendingIds)) {
 				const auto requestId = i->second;
 
-				if (!byResponse && _delegate->hasCallback(requestId)) {
+				if (!byResponse && _owner->_delegate->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
 					continue;
 				}
-				_requestState.resendingIds.erase(i);
-
-				QWriteLocker locker4(_sessionState.data->toSendMutex());
-				auto &toSend = _sessionState.data->toSendMap();
-				const auto j = toSend.find(requestId);
-				if (j == end(toSend)) {
-					DEBUG_LOG(("Message Info: msgId %1 was found in recent resent, requestId %2 was not found in prepared to send").arg(msgId).arg(requestId));
-					continue;
-				}
-				if (j->second->requestId != requestId) {
-					DEBUG_LOG(("Message Error: for msgId %1 found resent request, requestId %2, contains requestId %3").arg(msgId).arg(requestId).arg(j->second->requestId));
-				} else {
-					DEBUG_LOG(("Message Info: acked msgId %1 that was prepared to resend, requestId %2").arg(msgId).arg(requestId));
-				}
-
-				_requestState.ackedIds.emplace(msgId, j->second->requestId);
-
-				toSend.erase(j);
+				_owner->_requestState.resendingIds.erase(i);
+				resentAcked.emplace_back(msgId, requestId);
 				continue;
 			}
 			DEBUG_LOG(("Message Info: msgId %1 was not found in recent resent either").arg(msgId));
 		}
 	}
+	for (const auto &[msgId, requestId] : resentAcked) {
+		const auto request = _owner->_sessionState.data->takeToSendRequest(requestId);
+		if (!request) {
+			DEBUG_LOG(("Message Info: msgId %1 was found in recent resent, requestId %2 was not found in prepared to send").arg(msgId).arg(requestId));
+			continue;
+		}
+		if ((*request)->requestId != requestId) {
+			DEBUG_LOG(("Message Error: for msgId %1 found resent request, requestId %2, contains requestId %3").arg(msgId).arg(requestId).arg((*request)->requestId));
+		} else {
+			DEBUG_LOG(("Message Info: acked msgId %1 that was prepared to resend, requestId %2").arg(msgId).arg(requestId));
+		}
+		_owner->_requestState.ackedIds.emplace(msgId, (*request)->requestId);
+	}
 
-	auto ackedCount = _requestState.ackedIds.size();
+	auto ackedCount = _owner->_requestState.ackedIds.size();
 	if (ackedCount > kIdsBufferSize) {
 		DEBUG_LOG(("Message Info: removing some old acked sent msgIds %1").arg(ackedCount - kIdsBufferSize));
 		while (ackedCount-- > kIdsBufferSize) {
-			_requestState.ackedIds.erase(_requestState.ackedIds.begin());
+			_owner->_requestState.ackedIds.erase(_owner->_requestState.ackedIds.begin());
 		}
 	}
 
@@ -1132,7 +1117,7 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 	}
 }
 
-void SessionPrivate::handleMsgsStates(const QVector<MTPlong> &ids, const QByteArray &states) {
+void SessionMessageHandler::handleMsgsStates(const QVector<MTPlong> &ids, const QByteArray &states) {
 	const auto idsCount = ids.size();
 	if (!idsCount) {
 		DEBUG_LOG(("Message Info: void ids vector in handleMsgsStates()"));
@@ -1149,11 +1134,11 @@ void SessionPrivate::handleMsgsStates(const QVector<MTPlong> &ids, const QByteAr
 		const auto state = states[i];
 		const auto requestMsgId = ids[i].v;
 		{
-			QReadLocker locker(_sessionState.data->haveSentMutex());
-			if (!_sessionState.data->haveSentMap().contains(requestMsgId)) {
+			QReadLocker locker(_owner->_sessionState.data->haveSentMutex());
+			if (!_owner->_sessionState.data->haveSentMap().contains(requestMsgId)) {
 				DEBUG_LOG(("Message Info: state was received for msgId %1, but request is not found, looking in resent requests...").arg(requestMsgId));
-				const auto reqIt = _requestState.resendingIds.find(requestMsgId);
-				if (reqIt != _requestState.resendingIds.cend()) {
+				const auto reqIt = _owner->_requestState.resendingIds.find(requestMsgId);
+				if (reqIt != _owner->_requestState.resendingIds.cend()) {
 					if ((state & 0x07) != 0x04) { // was received
 						DEBUG_LOG(("Message Info: state was received for msgId %1, state %2, already resending in container").arg(requestMsgId).arg((int32)state));
 					} else {
@@ -1177,71 +1162,58 @@ void SessionPrivate::handleMsgsStates(const QVector<MTPlong> &ids, const QByteAr
 	requestsAcked(acked);
 }
 
-void SessionPrivate::clearSpecialMsgId(mtpMsgId msgId) {
-	if (msgId == _requestState.pingMsgId) {
-		_requestState.pingMsgId = 0;
-		_requestState.pingId = 0;
-		_requestState.pingSentTime = 0;
-	} else if (msgId == _authState.bindMsgId) {
-		_authState.bindMsgId = 0;
+void SessionMessageHandler::clearSpecialMsgId(mtpMsgId msgId) {
+	if (msgId == _owner->_requestState.pingMsgId) {
+		_owner->_requestState.pingMsgId = 0;
+		_owner->_requestState.pingId = 0;
+		_owner->_requestState.pingSentTime = 0;
+	} else if (msgId == _owner->_authState.bindMsgId) {
+		_owner->_authState.bindMsgId = 0;
 	}
 }
 
-void SessionPrivate::resend(mtpMsgId msgId, crl::time msCanWait) {
+void SessionMessageHandler::resend(mtpMsgId msgId, crl::time msCanWait) {
 	const auto guard = gsl::finally([&] {
 		clearSpecialMsgId(msgId);
 		if (msCanWait >= 0) {
-			_sessionState.data->queueSendAnything(msCanWait);
+			_owner->_sessionState.data->queueSendAnything(msCanWait);
 		}
 	});
 
-	if (const auto i = _requestState.sentContainers.find(msgId); i != end(_requestState.sentContainers)) {
+	if (const auto i = _owner->_requestState.sentContainers.find(msgId); i != end(_owner->_requestState.sentContainers)) {
 		DEBUG_LOG(("Message Info: resending container, msgId %1").arg(msgId));
 		const auto ids = std::move(i->second.messages);
-		_requestState.sentContainers.erase(i);
+		_owner->_requestState.sentContainers.erase(i);
 
 		for (const auto innerMsgId : ids) {
 			resend(innerMsgId, -1);
 		}
 		return;
 	}
-	auto lock = QWriteLocker(_sessionState.data->haveSentMutex());
-	auto &haveSent = _sessionState.data->haveSentMap();
-	auto i = haveSent.find(msgId);
-	if (i == haveSent.end()) {
+	const auto sent = _owner->_sessionState.data->takeSentRequest(msgId);
+	if (!sent) {
 		return;
 	}
-	auto request = i->second;
-	haveSent.erase(i);
-	lock.unlock();
+	auto request = sent->request;
 
 	request->lastSentTime = crl::now();
 	request->forceSendInContainer = true;
-	_requestState.resendingIds.emplace(msgId, request->requestId);
-	{
-		QWriteLocker locker(_sessionState.data->toSendMutex());
-		_sessionState.data->toSendMap().emplace(request->requestId, request);
-	}
+	_owner->_requestState.resendingIds.emplace(msgId, request->requestId);
+	_owner->_sessionState.data->enqueueResentRequest(request);
 }
 
-void SessionPrivate::resendAll() {
-	auto lock = QWriteLocker(_sessionState.data->haveSentMutex());
-	auto haveSent = base::take(_sessionState.data->haveSentMap());
-	lock.unlock();
-	{
-		auto lock = QWriteLocker(_sessionState.data->toSendMutex());
-		auto &toSend = _sessionState.data->toSendMap();
-		const auto now = crl::now();
-		for (auto &[msgId, request] : haveSent) {
-			const auto requestId = request->requestId;
-			request->lastSentTime = now;
-			request->forceSendInContainer = true;
-			_requestState.resendingIds.emplace(msgId, requestId);
-			toSend.emplace(requestId, std::move(request));
-		}
+void SessionMessageHandler::resendAll() {
+	auto haveSent = _owner->_sessionState.data->takeAllSentRequests();
+	const auto now = crl::now();
+	for (auto &sent : haveSent) {
+		const auto requestId = sent.request->requestId;
+		sent.request->lastSentTime = now;
+		sent.request->forceSendInContainer = true;
+		_owner->_requestState.resendingIds.emplace(sent.msgId, requestId);
+		_owner->_sessionState.data->enqueueResentRequest(sent.request);
 	}
 
-	_sessionState.data->queueSendAnything();
+	_owner->_sessionState.data->queueSendAnything();
 }
 
 mtpRequestId SessionPrivate::wasSent(mtpMsgId msgId) const {
