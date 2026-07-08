@@ -155,7 +155,7 @@ gsl::span<const mtpPrime> AbstractConnection::parseNotSecureResponse(
 			).arg(Logs::mb(answer, len * sizeof(mtpPrime)).str()));
 		return {};
 	}
-	return gsl::make_span(answer + 5, answerLen);
+	return gsl::make_span(answer + 5, answerLen / sizeof(mtpPrime));
 }
 
 mtpBuffer AbstractConnection::preparePQFake(const MTPint128 &nonce) const {

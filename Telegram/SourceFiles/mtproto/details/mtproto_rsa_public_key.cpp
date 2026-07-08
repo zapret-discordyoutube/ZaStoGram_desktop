@@ -156,8 +156,8 @@ bytes::vector RSAPublicKey::Private::decrypt(bytes::const_span data) const {
 		return {};
 	} else if (auto zeroBytes = kDecryptSize - res) {
 		auto resultBytes = gsl::make_span(result);
-		bytes::move(resultBytes.subspan(zeroBytes - res, res), resultBytes.subspan(0, res));
-		bytes::set_with_const(resultBytes.subspan(0, zeroBytes - res), gsl::byte{});
+		bytes::move(resultBytes.subspan(zeroBytes, res), resultBytes.subspan(0, res));
+		bytes::set_with_const(resultBytes.subspan(0, zeroBytes), gsl::byte{});
 	}
 	return result;
 }

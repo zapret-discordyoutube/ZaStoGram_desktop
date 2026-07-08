@@ -301,6 +301,12 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 }
 
 void TlsSocket::checkHelloDigest() {
+	if (_serverHelloLength
+		< kServerHelloDigestPosition + kClientHelloDigestLength) {
+		logError(888, "Bad Server Hello length.");
+		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
+		return;
+	}
 	const auto fulldata = bytes::make_detached_span(_incoming).subspan(
 		0,
 		kClientHelloDigestLength + _serverHelloLength);

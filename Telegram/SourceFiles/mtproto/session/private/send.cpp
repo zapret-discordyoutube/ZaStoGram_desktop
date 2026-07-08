@@ -132,15 +132,13 @@ void AppendInvokeAfter(
 	AppendInnerHeader(to, from);
 	if (!bodyPrefix.empty()) {
 		AddInnerMessageLength(to, start, bodyPrefix.size());
+		binary::AppendPrimes(*to, bodyPrefix);
 	}
 	if (wrapAfter) {
 		AddInnerMessageLength(to, start, kInvokeAfterPrimes);
 		AddOuterContainerLength(to, start, kInvokeAfterPrimes);
 		to->push_back(mtpPrime(mtpc_invokeAfterMsg));
 		binary::AppendBytes(*to, binary::AsBytes(&afterId));
-	}
-	if (!bodyPrefix.empty()) {
-		binary::AppendPrimes(*to, bodyPrefix);
 	}
 	to.appendBodyFrom(from);
 }
