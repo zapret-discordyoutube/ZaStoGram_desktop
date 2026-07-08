@@ -159,7 +159,7 @@ bool SessionTransport::appendTestConnection(
 			.configuredTlsProfile = stealth.tlsProfile,
 			.connectionPattern = stealth.connectionPattern,
 			.runtime = _owner->_runtime,
-			.context = _owner,
+			.context = static_cast<QObject*>(_owner.get()),
 			.start = [=](SessionProxyStart start) mutable {
 				removeConnectionBrokerTicket(start.ticketId);
 				if (start.proxyGeneration != _state.proxyGeneration) {

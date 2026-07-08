@@ -216,6 +216,7 @@ def test_session_private_main_keeps_only_glue_not_bulk_modules():
         "bool SessionPrivate::appendTestConnection(",
         "void SessionPrivate::tryToSend(",
         "SessionPrivate::HandleResult SessionPrivate::handleOneReceived(",
+        "SessionPrivate::HandleResult SessionPrivate::handleBindResponse(",
         "void SessionPrivate::applyAuthKey(",
     )
     for signature in forbidden_signatures:
@@ -224,6 +225,10 @@ def test_session_private_main_keeps_only_glue_not_bulk_modules():
     assert "SessionPrivate::SessionPrivate(" in source
     assert "SessionPrivate::~SessionPrivate(" in source
     assert "void SessionPrivate::logMtprotoEvent(" in source
+    assert (
+        "SessionMessageHandler::HandleResult "
+        "SessionMessageHandler::handleBindResponse("
+    ) in read(SESSION_AUTH)
 
 
 def test_receive_dispatcher_is_short_and_delegates_cases():

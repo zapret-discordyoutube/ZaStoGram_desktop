@@ -39,31 +39,34 @@ constexpr auto kKeyOldEnoughForDestroy = 60 * crl::time(1000);
 
 } // namespace
 
-SessionPrivate::HandleResult SessionPrivate::handleBindResponse(
+SessionMessageHandler::HandleResult SessionMessageHandler::handleBindResponse(
 		mtpMsgId requestMsgId,
 		const mtpBuffer &response) {
-	if (!_authState.keyCreator || !_authState.bindMsgId || _authState.bindMsgId != requestMsgId) {
+	if (!_owner->_authState.keyCreator
+		|| !_owner->_authState.bindMsgId
+		|| _owner->_authState.bindMsgId != requestMsgId) {
 		return HandleResult::Ignored;
 	}
-	_authState.bindMsgId = 0;
+	_owner->_authState.bindMsgId = 0;
 
-	const auto result = _authState.keyCreator->handleBindResponse(response);
+	const auto result = _owner->_authState.keyCreator->handleBindResponse(
+		response);
 	switch (result) {
 	case DcKeyBindState::Success:
-		if (!_sessionState.data->releaseKeyCreationOnDone(
-			_sessionState.encryptionKey,
-			base::take(_authState.keyCreator)->bindPersistentKey())) {
+		if (!_owner->_sessionState.data->releaseKeyCreationOnDone(
+			_owner->_sessionState.encryptionKey,
+			base::take(_owner->_authState.keyCreator)->bindPersistentKey())) {
 			return HandleResult::DestroyTemporaryKey;
 		}
-		logMtprotoEvent(
+		_owner->logMtprotoEvent(
 			ProxyDiagnosticsPhase::MtpKeyReady,
 			ProxyDiagnosticsSeverity::Info,
-			u"temporary key bound (id %1)"_q.arg(_sessionState.keyId));
-		_sessionState.data->queueNeedToResumeAndSend();
+			u"temporary key bound (id %1)"_q.arg(_owner->_sessionState.keyId));
+		_owner->_sessionState.data->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	case DcKeyBindState::DefinitelyDestroyed:
-		if (destroyOldEnoughPersistentKey()) {
-			logMtprotoEvent(
+		if (_owner->destroyOldEnoughPersistentKey()) {
+			_owner->logMtprotoEvent(
 				ProxyDiagnosticsPhase::MtpBindFailed,
 				ProxyDiagnosticsSeverity::Warning,
 				u"bind failed, persistent key destroyed on server"_q);
@@ -71,11 +74,11 @@ SessionPrivate::HandleResult SessionPrivate::handleBindResponse(
 		}
 		[[fallthrough]];
 	case DcKeyBindState::Failed:
-		logMtprotoEvent(
+		_owner->logMtprotoEvent(
 			ProxyDiagnosticsPhase::MtpBindFailed,
 			ProxyDiagnosticsSeverity::Warning,
 			u"temporary key bind failed"_q);
-		_sessionState.data->queueNeedToResumeAndSend();
+		_owner->_sessionState.data->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	}
 	Unexpected("Result of SessionBoundKeyCreator::handleBindResponse.");
@@ -233,7 +236,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 			if (result.error() == Error::UnknownPublicKey) {
 				if (_realDcType == DcType::Cdn) {
 					LOG(("Warning: CDN public RSA key not found"));
-					requestCDNConfig();
+					_transport.requestCDNConfig();
 					return;
 				}
 				LOG(("AuthKey Error: could not choose public RSA key"));

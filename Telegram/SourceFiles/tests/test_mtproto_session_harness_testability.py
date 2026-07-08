@@ -74,6 +74,9 @@ def test_session_runtime_bound_sources_include_complete_types():
     assert '#include "mtproto/protocol/mtproto_serialized_request.h"' in read(
         AUTH_FACTORY_CPP)
 
+    connection = read(CONNECTION_CPP)
+    assert ".context = static_cast<QObject*>(_owner.get())," in connection
+
     for path in (SESSION_CPP, AUTH_CPP, CONNECTION_CPP, TRANSPORT_CPP):
         assert '#include "mtproto/instance/mtp_instance.h"' in read(path)
 
