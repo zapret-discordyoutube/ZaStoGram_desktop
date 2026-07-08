@@ -284,7 +284,7 @@ void ProxyControlPlane::noteMtproxyRelayStall(
 }
 
 MtProxy::Snapshot ProxyControlPlane::mtproxyEndpointSnapshot(
-		const MtProxy::EndpointId &endpoint) {
+		const MtProxy::EndpointId &endpoint) const {
 	return _endpointHealth->snapshot(endpoint);
 }
 

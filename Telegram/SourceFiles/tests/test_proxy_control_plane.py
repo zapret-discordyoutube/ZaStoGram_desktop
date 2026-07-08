@@ -407,6 +407,14 @@ def test_mtproxy_health_policy_is_control_plane_owned():
         assert name in header
         assert f"ProxyControlPlane::{name}" in control
 
+    assert (
+        "details::MtProxy::Snapshot mtproxyEndpointSnapshot(\n"
+        "\t\tconst details::MtProxy::EndpointId &endpoint) const;"
+    ) in header
+    assert (
+        "MtProxy::Snapshot ProxyControlPlane::mtproxyEndpointSnapshot(\n"
+        "\t\tconst MtProxy::EndpointId &endpoint) const"
+    ) in control
     assert '#include "mtproto/proxy/control_plane.h"' in rotation_header
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' not in (
         rotation_header)

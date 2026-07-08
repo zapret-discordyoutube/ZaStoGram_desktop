@@ -94,7 +94,7 @@ public:
 	void noteMtproxyRelayStall(
 		details::MtProxy::RelayStallReport report);
 	[[nodiscard]] details::MtProxy::Snapshot mtproxyEndpointSnapshot(
-		const details::MtProxy::EndpointId &endpoint);
+		const details::MtProxy::EndpointId &endpoint) const;
 	[[nodiscard]] auto mtproxyEndpointChanges()
 	-> rpl::producer<details::MtProxy::EndpointEvent>;
 

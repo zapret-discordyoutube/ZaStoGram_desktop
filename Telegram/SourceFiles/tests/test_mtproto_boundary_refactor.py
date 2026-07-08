@@ -111,6 +111,7 @@ def test_runtime_environment_is_the_app_gateway():
     assert "DefaultRuntimeEnvironment()" in source
     assert "class ConnectionStatus final" in status_header
     assert "ConnectionStatus::setProxyStatus(" in status_source
+    assert '#include "mtproto/auth/mtproto_auth_key.h"' in instance
     assert "fields.runtimeEnvironment" in instance
 
 
