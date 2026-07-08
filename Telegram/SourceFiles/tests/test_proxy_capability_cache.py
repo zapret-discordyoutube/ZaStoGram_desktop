@@ -51,7 +51,8 @@ def test_capability_cache_module_is_file_backed_and_registered():
     assert 'u"proxy-capabilities.json"_q' in runtime
     assert "cWorkingDir() + u\"tdata/\"_q" in runtime
     assert "QDir().mkpath(" in runtime
-    assert "runtime->proxyCapabilities().path" in source
+    assert "SetProxyCapabilityPathProvider(_descriptor.proxyCapabilities.path)" in runtime
+    assert "CapabilitiesPath()" in source
     assert "load()" in source
     assert "save()" in source
 

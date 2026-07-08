@@ -15,6 +15,7 @@ TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
+PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
@@ -265,10 +266,14 @@ def test_logs_and_proxy_status_use_phase_specific_names():
 def test_proxy_check_and_session_timeout_use_phase_reasons():
     session = read_session_private_sources()
     check = read(CHECK_CPP)
-    timeout_body = function_body(session, "void SessionPrivate::connectingTimedOut()")
+    adapter = read(PROXY_ADAPTER_CPP)
+    timeout_body = function_body(session, "void SessionTransport::connectingTimedOut()")
+    report_timeout = function_body(
+        adapter, "void ProductionSessionProxyPort::reportConnectTimeout(")
     check_reason = function_body(check, "MtProxy::FailureReason ProxyCheckFailureReason(")
 
-    assert "MtProxy::FailureReason::TcpConnectTimeout" in timeout_body
+    assert "reportConnectTimeout(proxyAttempt(connection))" in timeout_body
+    assert "MtProxy::FailureReason::TcpConnectTimeout" in report_timeout
     assert "MtProxy::FailureReason::TcpConnectTimeout" in check_reason
     assert "MtProxy::FailureReason::DnsFailed" in check_reason
     assert "MtProxy::FailureReason::AppDataRemoteClosed" in check_reason

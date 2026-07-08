@@ -105,11 +105,11 @@ def test_admission_queue_and_start_are_logged_not_failed():
     assert "ProxyDiagnosticsPhase::AdmissionStarted" in broker
     assert "ProxyDiagnosticsPhase::AdmissionCancelled" in broker
     assert "queueMs =" in broker
-    assert "request.runtime" in broker
+    assert "_runtime->proxyServices().control().admit(" in broker
     assert "request.instance" not in broker
 
-    append_body = function_body(session, "bool SessionPrivate::appendTestConnection(")
-    status_body = append_body.split(".status = [=](ConnectionBrokerDecision")[1]
+    append_body = function_body(session, "bool SessionTransport::appendTestConnection(")
+    status_body = append_body.split(".status = [=](SessionProxyAdmissionDecision")[1]
     assert "ProxyDiagnosticsPhase::Connecting" not in status_body
     assert "mtproxy admission queued" not in status_body
     assert "ProxyDiagnosticsPhase::Failed" not in status_body
