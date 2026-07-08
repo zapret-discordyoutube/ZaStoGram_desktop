@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/instance/mtp_instance.h"
@@ -1828,7 +1829,7 @@ Core::FileLocation Account::readFileLocation(MediaKey location) {
 EncryptionKey Account::cacheKey() const {
 	Expects(_localKey != nullptr);
 
-	return EncryptionKey(bytes::make_vector(_localKey->data()));
+	return EncryptionKey(bytes::make_vector(_localKey->_key));
 }
 
 EncryptionKey Account::cacheBigFileKey() const {

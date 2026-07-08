@@ -28,6 +28,7 @@ WSS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "wss" / "socket.cpp"
 WSS_TEST = SOURCE_DIR / "tests" / "test_proxy_wss_default.py"
 WINDOW_SESSION_CONTROLLER_CPP = (
     SOURCE_DIR / "window" / "window_session_controller.cpp")
+STORAGE_ACCOUNT_CPP = SOURCE_DIR / "storage" / "storage_account.cpp"
 
 
 def test_type_utils_declares_direct_scheme_dependency():
@@ -45,10 +46,16 @@ def test_window_session_controller_does_not_justify_calls_include_stale():
 def test_auth_key_raw_byte_hatches_are_not_public_api():
     header = AUTH_KEY_H.read_text(encoding="utf-8")
     public_api = class_public_section(header, "class AuthKey")
+    storage_account = STORAGE_ACCOUNT_CPP.read_text(encoding="utf-8")
 
     assert "partForMsgKey(" not in public_api
     assert "void write(QDataStream &to) const;" not in public_api
     assert "[[nodiscard]] bytes::const_span data() const;" not in public_api
+    assert "class Account;" in header
+    assert "friend class ::Storage::Account;" in header
+    assert '#include "mtproto/auth/mtproto_auth_key.h"' in storage_account
+    assert "EncryptionKey(bytes::make_vector(_localKey->_key))" in storage_account
+    assert "_localKey->data()" not in storage_account
 
 
 def test_auth_key_cleans_secret_and_compares_in_constant_time():

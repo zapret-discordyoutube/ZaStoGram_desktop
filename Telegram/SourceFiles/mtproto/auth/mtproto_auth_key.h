@@ -17,6 +17,7 @@ class Account;
 } // namespace Main
 
 namespace Storage {
+class Account;
 class Domain;
 } // namespace Storage
 
@@ -65,6 +66,7 @@ public:
 
 private:
 	friend class ::Main::Account;
+	friend class ::Storage::Account;
 	friend class ::Storage::Domain;
 
 	void countKeyId();
