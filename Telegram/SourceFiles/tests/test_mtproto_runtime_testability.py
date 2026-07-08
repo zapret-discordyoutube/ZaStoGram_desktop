@@ -35,7 +35,7 @@ def test_runtime_environment_exposes_async_gateway():
     assert ".async = CreateAsyncGateway()" in source
     assert "crl::now();" in source
     assert "base::RandomIndex(limit);" in source
-    assert "QTimer::singleShot(TimerDelay(delay)" in source
+    assert "QTimer::singleShot(int(delay)" in source
 
 
 def test_connection_broker_uses_runtime_async_gateway():

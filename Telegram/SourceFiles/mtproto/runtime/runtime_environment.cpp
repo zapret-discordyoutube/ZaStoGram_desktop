@@ -213,7 +213,7 @@ RuntimeAsyncGateway CreateAsyncGateway() {
 				crl::time delay,
 				QObject *context,
 				Fn<void()> callback) {
-			QTimer::singleShot(TimerDelay(delay), context, [
+			QTimer::singleShot(int(delay), context, [
 				callback = std::move(callback)
 			] {
 				callback();

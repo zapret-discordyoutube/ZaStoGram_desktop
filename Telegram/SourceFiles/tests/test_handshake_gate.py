@@ -11,6 +11,7 @@ GATE_CPP = PROXY_DIR / "handshake_gate.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
+PROXY_PORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "proxy_port.h"
 SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 PROXY_CHECK_H = PROXY_DIR / "check.h"
 PROXY_CHECK_CPP = PROXY_DIR / "check.cpp"
@@ -53,12 +54,15 @@ def test_gate_lease_api_and_constants():
 def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
     transport_header = TRANSPORT_H.read_text(encoding="utf-8")
+    proxy_port_header = PROXY_PORT_H.read_text(encoding="utf-8")
     adapter = SESSION_PROXY_ADAPTER_CPP.read_text(encoding="utf-8")
     source = read_session_private_sources()
 
     assert '#include "mtproto/session/private/proxy_port.h"' in header
     assert "not_null<SessionProxyPort*> _proxyPort;" in header
-    assert "MtProxy::EndpointAttemptLease mtproxyLease;" in transport_header
+    assert "class SessionProxyLease final" in proxy_port_header
+    assert "SessionProxyLease mtproxyLease;" in transport_header
+    assert "MtProxy::EndpointAttemptLease mtproxyLease;" not in transport_header
     assert "std::vector<SessionProxyTicket> brokerTickets;" in transport_header
     assert "ReserveHandshakeGateForProxy(_sessionState.options->proxy)" not in source
     assert "EndpointHealth::Instance().admit(" not in source
