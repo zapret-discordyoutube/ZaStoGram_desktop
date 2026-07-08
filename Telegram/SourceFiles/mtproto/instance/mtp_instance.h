@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/core_types.h"
+#include "mtproto/dc_id.h"
 #include "mtproto/protocol/mtproto_serialized_request.h"
 #include "mtproto/protocol/mtproto_response.h"
 

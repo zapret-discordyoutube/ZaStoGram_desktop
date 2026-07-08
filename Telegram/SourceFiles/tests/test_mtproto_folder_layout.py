@@ -217,6 +217,6 @@ def test_instance_and_runtime_have_strict_folders():
 def test_instance_header_declares_dc_id_dependency_directly():
     header = read(INSTANCE_H)
 
-    assert '#include "mtproto/core_types.h"' in header
+    assert '#include "mtproto/dc_id.h"' in header
     assert "DcId mainDcId" in header
     assert "kTemporaryMainDcId" in header
