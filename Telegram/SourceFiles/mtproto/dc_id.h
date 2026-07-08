@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
+constexpr auto kTemporaryMainDcId = DcId(1000);
+
 constexpr ShiftedDcId configDcId(DcId dcId) {
 	return ShiftDcId(dcId, kConfigDcShift);
 }

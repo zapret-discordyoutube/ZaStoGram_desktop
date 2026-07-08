@@ -52,7 +52,6 @@ constexpr auto kMaxMediaDcCount = 0x10;
 constexpr auto kBaseDownloadDcShift = 0x10;
 constexpr auto kBaseUploadDcShift = 0x20;
 constexpr auto kDestroyKeyStartDcShift = 0x100;
-constexpr auto kTemporaryMainDcId = DcId(1000);
 
 constexpr DcId BareDcId(ShiftedDcId shiftedDcId) {
 	return (shiftedDcId % kDcShift);

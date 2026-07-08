@@ -17,11 +17,13 @@ def test_facade_module_is_split_by_responsibility():
     assert not (MTPROTO_DIR / "facade.cpp").exists()
 
     dc_id = read(MTPROTO_DIR / "dc_id.h")
+    core_types = read(MTPROTO_DIR / "core_types.h")
     pause_header = read(MTPROTO_DIR / "session" / "pause_state.h")
     pause_source = read(MTPROTO_DIR / "session" / "pause_state.cpp")
     session_state = read(MTPROTO_DIR / "session" / "session_state.h")
 
     for symbol in (
+        "constexpr auto kTemporaryMainDcId = DcId(1000);",
         "configDcId",
         "downloadDcId",
         "uploadDcId",
@@ -34,6 +36,7 @@ def test_facade_module_is_split_by_responsibility():
     assert "PauseLevel" not in dc_id
     assert "ConnectedState" not in dc_id
     assert '#include "mtproto/instance/mtp_instance.h"' not in dc_id
+    assert "kTemporaryMainDcId" not in core_types
 
     for symbol in ("paused()", "pause()", "unpause()", "unpaused()"):
         assert symbol in pause_header
