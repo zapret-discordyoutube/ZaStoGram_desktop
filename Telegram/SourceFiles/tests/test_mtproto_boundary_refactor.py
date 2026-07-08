@@ -359,6 +359,18 @@ def test_sender_header_does_not_pull_instance_facade():
     assert '#include "mtproto/instance/mtp_instance.h"' in sender_cpp
 
 
+def test_sources_that_call_instance_main_dc_include_instance_header():
+    offenders = []
+    for path in SOURCE_DIR.rglob("*.cpp"):
+        source = read(path)
+        if ".instance().mainDcId(" not in source:
+            continue
+        if '#include "mtproto/instance/mtp_instance.h"' not in source:
+            offenders.append(path.relative_to(SOURCE_DIR).as_posix())
+
+    assert offenders == []
+
+
 if __name__ == "__main__":
     test_runtime_environment_is_the_app_gateway()
     test_runtime_environment_has_no_public_mutable_service_locator_fields()
@@ -368,5 +380,6 @@ if __name__ == "__main__":
     test_on_error_default_is_split_into_helpers()
     test_session_callbacks_are_hidden_behind_delegate()
     test_runtime_context_replaces_instance_in_proxy_entrypoints()
+    test_sources_that_call_instance_main_dc_include_instance_header()
     test_transport_session_leaks_use_neutral_metadata()
     test_sender_header_does_not_pull_instance_facade()

@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/core_cloud_password.h"
 #include "core/update_checker.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "base/unixtime.h"
 #include "qr/qr_generate.h"
 #include "platform/platform_webauthn.h"

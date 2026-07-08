@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/notify/data_notify_settings.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "storage/file_upload.h"
 #include "storage/localimageloader.h"
 
