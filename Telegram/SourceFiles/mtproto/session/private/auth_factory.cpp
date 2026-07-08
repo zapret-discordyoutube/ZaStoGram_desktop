@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/private/auth_factory.h"
 
 #include "mtproto/auth/mtproto_bound_key_creator.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
 
 namespace MTP::details {
 namespace {

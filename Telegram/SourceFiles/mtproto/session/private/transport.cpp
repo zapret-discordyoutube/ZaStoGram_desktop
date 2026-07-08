@@ -8,6 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/private/session_private.h"
 #include "mtproto/session/private/timings.h"
 
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/proxy/diagnostics.h"
+
 namespace MTP::details {
 
 SessionTransport::TimingState::TimingState(

@@ -7,10 +7,13 @@ CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
 TESTS_CMAKE = ROOT / "Telegram" / "cmake" / "tests.cmake"
 SESSION_DIR = SOURCE_DIR / "mtproto" / "session" / "private"
 
+SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
 CONNECTION_CPP = SESSION_DIR / "connection.cpp"
+TRANSPORT_CPP = SESSION_DIR / "transport.cpp"
 TRANSPORT_H = SESSION_DIR / "transport.h"
 SESSION_PRIVATE_H = SESSION_DIR / "session_private.h"
 AUTH_CPP = SESSION_DIR / "auth.cpp"
+SEND_CPP = SESSION_DIR / "send.cpp"
 CONNECTION_FACTORY_H = SESSION_DIR / "connection_factory.h"
 CONNECTION_FACTORY_CPP = SESSION_DIR / "connection_factory.cpp"
 AUTH_FACTORY_H = SESSION_DIR / "auth_factory.h"
@@ -65,6 +68,17 @@ def test_session_auth_factory_owns_bound_key_creator_creation():
     for path in (AUTH_FACTORY_H, AUTH_FACTORY_CPP):
         relative = path.relative_to(SOURCE_DIR).as_posix()
         assert relative in cmake
+
+
+def test_session_runtime_bound_sources_include_complete_types():
+    assert '#include "mtproto/protocol/mtproto_serialized_request.h"' in read(
+        AUTH_FACTORY_CPP)
+
+    for path in (SESSION_CPP, AUTH_CPP, CONNECTION_CPP, TRANSPORT_CPP):
+        assert '#include "mtproto/instance/mtp_instance.h"' in read(path)
+
+    for path in (AUTH_CPP, CONNECTION_CPP, SEND_CPP, TRANSPORT_CPP):
+        assert '#include "mtproto/proxy/diagnostics.h"' in read(path)
 
 
 def test_session_transport_timers_use_runtime_gateway():

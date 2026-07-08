@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
