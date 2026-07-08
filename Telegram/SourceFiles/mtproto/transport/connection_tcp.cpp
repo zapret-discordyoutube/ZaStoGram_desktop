@@ -441,7 +441,9 @@ mtpBuffer TcpConnection::parsePacket(bytes::const_span bytes) {
 		return mtpBuffer(1, first);
 	}
 	auto result = mtpBuffer(primes);
-	binary::Copy(bytes::make_span(result), packet);
+	binary::Copy(
+		bytes::make_span(result),
+		packet.subspan(0, primes * sizeof(mtpPrime)));
 	return result;
 }
 
