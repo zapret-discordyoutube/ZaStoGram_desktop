@@ -59,12 +59,14 @@ def test_storage_owns_primary_mtproto_media_download_pipeline():
 def test_storage_owns_primary_media_upload_pipeline():
     upload = read(FILE_UPLOAD_H) + "\n" + read(FILE_UPLOAD_CPP)
     upload_header = read(FILE_UPLOAD_H)
+    upload_source = read(FILE_UPLOAD_CPP)
 
     assert "class Uploader final" in upload
     assert "MTPupload_SaveFilePart" in upload
     assert "MTPupload_SaveBigFilePart" in upload
     assert "kUseBigFilesFrom" in upload
     assert '#include "mtproto/protocol/mtproto_response.h"' in upload_header
+    assert '#include "mtproto/instance/mtp_instance.h"' in upload_source
 
 
 def test_primary_media_pipeline_does_not_include_dedicated_loader():
