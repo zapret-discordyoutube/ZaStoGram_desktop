@@ -73,6 +73,7 @@ def test_tls_socket_timers_use_runtime_async_gateway():
     assert ".makeTimer = [](" in runtime_source
     assert "std::make_shared<base::Timer>" in runtime_source
     assert "base::Timer" not in socket_header
+    assert '#include "mtproto/runtime/runtime_environment.h"' in socket_header
     assert "RuntimeTimer _pacingTimer;" in socket_header
     assert "RuntimeTimer _clientHelloTimer;" in socket_header
     assert "RuntimeTimer _clientHelloFragmentTimer;" in socket_header

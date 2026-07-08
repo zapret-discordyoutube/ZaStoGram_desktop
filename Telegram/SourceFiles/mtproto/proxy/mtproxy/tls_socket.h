@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <memory>
 
