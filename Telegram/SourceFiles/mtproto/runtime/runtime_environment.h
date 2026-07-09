@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/basic_types.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/dc_id.h"
-#include "mtproto/runtime/proxy_data.h"
+#include "mtproto/runtime/connection_status_types.h"
 #include "rpl/lifetime.h"
 
 #include <QtCore/QObject>

@@ -25,6 +25,7 @@ def test_runtime_environment_exposes_async_gateway():
     header = read(RUNTIME_H)
     source = read(RUNTIME_CPP)
 
+    assert '#include "mtproto/runtime/connection_status_types.h"' in header
     assert "struct RuntimeAsyncGateway final" in header
     assert "Fn<crl::time()> now;" in header
     assert "Fn<int(int)> randomIndex;" in header
