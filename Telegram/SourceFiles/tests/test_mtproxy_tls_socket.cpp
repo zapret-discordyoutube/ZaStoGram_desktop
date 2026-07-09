@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket_transport.h"
+#include "mtproto/proxy/mtproxy/tls_socket_utils.h"
 #include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QByteArray>
@@ -123,8 +124,11 @@ public:
 	}
 
 	qint64 write(const char *data, qint64 size) override {
-		outgoing.append(data, size);
-		return size;
+		const auto accepted = (writeLimit >= 0)
+			? std::min(size, writeLimit)
+			: size;
+		outgoing.append(data, accepted);
+		return accepted;
 	}
 
 	void flush() override {
@@ -157,6 +161,7 @@ public:
 	QAbstractSocket::SocketState socketState
 		= QAbstractSocket::UnconnectedState;
 	bool flushed = false;
+	qint64 writeLimit = -1;
 
 private:
 	MTP::details::TlsSocketTransportCallbacks _callbacks;
@@ -213,6 +218,27 @@ private:
 	return transport.outgoing == QByteArray("\x16\x03\x03", 3);
 }
 
+[[nodiscard]] bool ScenarioPartialClientHelloWrite() {
+	auto transport = FakeTlsSocketTransport();
+	transport.writeLimit = 2;
+	const auto accepted = transport.write("\x16\x03\x03", 3);
+	return accepted == 2
+		&& transport.outgoing == QByteArray("\x16\x03", 2);
+}
+
+[[nodiscard]] bool ScenarioResponseClassification() {
+	using MTP::details::FakeTlsResponseClass;
+	return FakeTlsResponseClass(QByteArrayView(), 0) == u"zero"_q
+		&& FakeTlsResponseClass(QByteArrayView("\x16\x03", 2), 2)
+			== u"partial_tls_header"_q
+		&& FakeTlsResponseClass(
+			QByteArrayView("\x16\x03\x03\x00\x20", 5),
+			5) == u"partial_tls_record"_q
+		&& FakeTlsResponseClass(
+			QByteArrayView("\x15\x03\x03\x00\x02", 5),
+			5) == u"tls_alert"_q;
+}
+
 [[nodiscard]] bool ScenarioReconnectCancelDropsStaleCallbacks() {
 	auto async = ScriptedAsync();
 	auto fired = false;
@@ -237,6 +263,10 @@ int main(int, char *[]) {
 		return Fail("TLS alert after ClientHello scenario failed");
 	} else if (!ScenarioNoAppData()) {
 		return Fail("no app-data scenario failed");
+	} else if (!ScenarioPartialClientHelloWrite()) {
+		return Fail("partial ClientHello write scenario failed");
+	} else if (!ScenarioResponseClassification()) {
+		return Fail("response classification scenario failed");
 	} else if (!ScenarioReconnectCancelDropsStaleCallbacks()) {
 		return Fail("reconnect/cancel scenario failed");
 	}

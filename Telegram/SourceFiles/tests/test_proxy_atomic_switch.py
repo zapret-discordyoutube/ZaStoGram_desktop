@@ -81,7 +81,7 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     assert "uint64 proxyGeneration = 0;" in header
     assert "bool proxyMigrationSuspended = false;" in header
     assert "bool proxyMigrationScout = false;" in header
-    assert "destroyAllConnections();" in switch_body
+    assert "destroyAllConnections(ProxyCloseOrigin::ProxySwitch);" in switch_body
     assert "_timing.retryTimer.cancel();" in switch_body
     assert "suspended_by_proxy_switch" in switch_body
     assert "if (!scout) {" in switch_body

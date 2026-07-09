@@ -73,7 +73,10 @@ def test_tls_socket_reports_endpoint_state_through_endpoint_health():
     assert "class EndpointHealth" in endpoint_header
     assert "recipeLevel" in endpoint_header
     assert "lastDiagnostic" in endpoint_header
-    assert "RotateTlsProfileOnFailure(" in endpoint_source
+    assert "RotateTlsProfileOnFailure(" not in endpoint_source
+    assert "BuildAttemptPlan(request, state.recipeLevel)" in endpoint_source
+    assert "ProxyTlsProfile::ChromeModern" in ENDPOINT_HEALTH_POLICY_CPP.read_text(
+        encoding="utf-8")
     assert "CooldownMsForEndpoint(" not in tls_sources
     assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in (
         MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")

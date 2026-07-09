@@ -41,5 +41,7 @@ namespace MTP::details::MtProxy {
 	FailureReason reason);
 [[nodiscard]] ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 	FailureReason reason);
+[[nodiscard]] FailureReason FromProxyMtproxyTerminalReason(
+	ProxyMtproxyTerminalReason reason);
 
 } // namespace MTP::details::MtProxy

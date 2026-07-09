@@ -11,7 +11,7 @@ TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 
 
-def test_auto_rotate_profile_changes_are_hysteresis_gated():
+def test_auto_rotate_profile_is_not_used_by_automatic_endpoint_recovery():
     source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
     endpoint_health = ENDPOINT_HEALTH_CPP.read_text(encoding="utf-8")
     rotate_body = function_body(
@@ -22,7 +22,10 @@ def test_auto_rotate_profile_changes_are_hysteresis_gated():
     assert "kAutoRotateMinDwell" in source
     assert "state.profileFailures < kAutoRotateFailureThreshold" in rotate_body
     assert "now - state.profileChangedAt < kAutoRotateMinDwell" in rotate_body
-    assert "RotateTlsProfileOnFailure(" in endpoint_health
+    assert "RotateTlsProfileOnFailure(" not in endpoint_health
+    assert "BuildAttemptPlan(request, state.recipeLevel)" in endpoint_health
+    assert "ProxyTlsProfile::ChromeModern" in (
+        MTPROXY_DIR / "endpoint_health_policy.cpp").read_text(encoding="utf-8")
 
 
 def test_adaptive_policy_does_not_enable_pacing_as_a_recovery_recipe():
@@ -87,24 +90,18 @@ def test_post_handshake_failure_does_not_rotate_client_hello_profile():
     assert "FailureNeedsTlsProfileRotation(" in header
     assert "FailureNeedsTlsProfileRotation(diagnostic)" in rotation_body
     assert 'u"server_hello_ok_no_appdata"_q' not in predicate_body
-    assert "RotateTlsProfileOnFailure(" in report_failure
+    assert "RotateTlsProfileOnFailure(" not in report_failure
 
 
-def test_prepared_adaptive_profile_is_used_for_client_hello():
+def test_immutable_admission_profile_is_used_for_client_hello():
     source = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
     header = (MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")
-    recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
     send_body = function_body(source, "void TlsSocket::sendClientHello()")
-    disconnect_body = function_body(source, "void TlsSocket::plainDisconnected()")
 
-    assert "ProxyTlsProfile _preparedTlsProfile" in header
-    assert "bool _usePreparedTlsProfile = false;" in header
-    assert "_preparedTlsProfile = recipe.stealth.tlsProfile;" in recipe_body
-    assert "_usePreparedTlsProfile = true;" in recipe_body
-    assert "? _preparedTlsProfile" in send_body
-    assert ": effectiveTlsProfile()" in send_body
-    assert "_usePreparedTlsProfile = false;" in send_body
-    assert "_usePreparedTlsProfile = false;" in disconnect_body
+    assert "MtProxyAttemptPlan _mtproxyPlan;" in header
+    assert "ProxyTlsProfile _preparedTlsProfile" not in header
+    assert "applyAdaptiveRecipe" not in source
+    assert "const auto profile = effectiveTlsProfile();" in send_body
 
 
 def test_mtproxy_admission_delays_are_logged_as_queued_status():
@@ -170,10 +167,10 @@ def body_from_brace(text: str, brace: int) -> str:
 
 
 if __name__ == "__main__":
-    test_auto_rotate_profile_changes_are_hysteresis_gated()
+    test_auto_rotate_profile_is_not_used_by_automatic_endpoint_recovery()
     test_adaptive_policy_does_not_enable_pacing_as_a_recovery_recipe()
     test_adaptive_recipe_ladder_keeps_experimental_flags_manual()
     test_post_handshake_failure_does_not_rotate_client_hello_profile()
-    test_prepared_adaptive_profile_is_used_for_client_hello()
+    test_immutable_admission_profile_is_used_for_client_hello()
     test_mtproxy_admission_delays_are_logged_as_queued_status()
     test_adaptive_recipe_ignores_non_recipe_diagnostic_with_stale_level()

@@ -142,11 +142,14 @@ def test_scheduler_paces_adaptively_on_connect_timeouts():
     # Failure-driven pacing is independent of the stealth pattern: with
     # the pattern Off a throttling proxy must still get a growing gap
     # between new opens, and successes must shrink it back to zero.
-    assert "void NoteConnectTimeout(const EndpointId &endpoint);" in header
-    assert "void NoteConnectSuccess(const EndpointId &endpoint);" in header
+    assert "void NoteConnectTimeout(" in header
+    assert "not_null<RuntimeEnvironment*> runtime" in header
+    assert "void NoteConnectSuccess(" in header
     assert "constexpr auto kAdaptiveSpacingMin = crl::time(500)" in source
     assert "constexpr auto kAdaptiveSpacingMax = crl::time(6000)" in source
-    assert "crl::time adaptiveSpacing = 0;" in source
+    context = (SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context_p.h").read_text(encoding="utf-8")
+    assert "crl::time adaptiveSpacing = 0;" in context
     assert "state.adaptiveSpacing * 2" in source
     assert "state.adaptiveSpacing / 2" in source
 
@@ -160,7 +163,9 @@ def test_scheduler_limits_open_bursts_per_endpoint():
     assert "constexpr auto kOpenBurstCount = 3;" in source
     assert "constexpr auto kOpenBurstWindow = crl::time(10 * 1000);" in source
     assert "constexpr auto kOpenBurstSpacing = crl::time(2500);" in source
-    assert "std::deque<crl::time> recentOpens;" in source
+    context = (SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context_p.h").read_text(encoding="utf-8")
+    assert "std::deque<crl::time> recentOpens;" in context
     assert "state.recentOpens.pop_front();" in source
     assert "burstSpacing" in source
     # Burst pacing only engages after a real timeout, not preemptively.

@@ -17,6 +17,7 @@ enum class StartResult : uchar;
 
 namespace MTP {
 enum class Environment : uchar;
+class ProxyEndpointContext;
 } // namespace MTP
 
 namespace Main {
@@ -47,6 +48,10 @@ public:
 
 	[[nodiscard]] Storage::Domain &local() const {
 		return *_local;
+	}
+	[[nodiscard]] auto proxyEndpointContext() const
+		-> std::shared_ptr<MTP::ProxyEndpointContext> {
+		return _proxyEndpointContext;
 	}
 
 	[[nodiscard]] auto accounts() const
@@ -95,6 +100,7 @@ private:
 
 	const QString _dataName;
 	const std::unique_ptr<Storage::Domain> _local;
+	const std::shared_ptr<MTP::ProxyEndpointContext> _proxyEndpointContext;
 
 	std::vector<AccountWithIndex> _accounts;
 	rpl::event_stream<> _accountsChanges;

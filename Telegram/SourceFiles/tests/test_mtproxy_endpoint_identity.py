@@ -105,10 +105,12 @@ def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
 def test_route_success_promotes_to_canonical_but_route_failure_stays_local():
     source = read(ENDPOINT_HEALTH_CPP)
     state = read(ENDPOINT_HEALTH_STATE_H)
+    context = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context_p.h")
     failure = function_body(source, "void EndpointHealth::reportFailure(")
     success = function_body(source, "void EndpointHealth::reportSuccess(")
 
-    assert "std::map<QString, RouteState> routes;" in source
+    assert "std::map<QString, RouteState> routes;" in context
     assert "std::set<QString> routeKeys;" in state
     assert "RouteKey(report.endpoint.route)" in failure
     assert "NoteRouteFailure(" in failure

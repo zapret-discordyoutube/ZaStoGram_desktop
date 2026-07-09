@@ -58,6 +58,8 @@ public:
 	virtual void connectToHost(const QString &address, int port) = 0;
 	[[nodiscard]] virtual bool isGoodStartNonce(bytes::const_span nonce) = 0;
 	virtual void timedOut() = 0;
+	virtual void markProxyMtprotoPayloadReceived() {
+	}
 	[[nodiscard]] virtual bool isConnected() = 0;
 	[[nodiscard]] virtual bool hasBytesAvailable() = 0;
 	[[nodiscard]] virtual int64 read(bytes::span buffer) = 0;
@@ -81,6 +83,9 @@ public:
 	}
 	[[nodiscard]] virtual crl::time mtproxyTerminalUntil() const {
 		return 0;
+	}
+	[[nodiscard]] virtual ProxyTransportFailure proxyTransportFailure() const {
+		return {};
 	}
 
 protected:

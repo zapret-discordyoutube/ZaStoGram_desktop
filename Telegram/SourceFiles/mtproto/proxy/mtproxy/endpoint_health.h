@@ -7,27 +7,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "base/basic_types.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
+#include "mtproto/runtime/connection_status_types.h"
 
 #include <rpl/producer.h>
 
 #include <memory>
 
 namespace MTP {
+class ProxyEndpointContext;
 class RuntimeEnvironment;
 } // namespace MTP
 
 namespace MTP::details::MtProxy {
 
-struct EndpointHealthStorage;
-
-enum class EndpointUse {
-	Main,
-	Media,
-	Upload,
-	ProxyCheck,
-};
+using EndpointUse = ProxyConnectionUse;
 
 enum class AdmissionAction {
 	StartNow,
@@ -49,6 +44,7 @@ public:
 
 	void release();
 	[[nodiscard]] bool active() const;
+	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;
 	[[nodiscard]] uint64 proxyEpoch() const;
@@ -59,27 +55,31 @@ private:
 	friend class EndpointHealth;
 
 	EndpointAttemptLease(
-		EndpointHealth *owner,
+		std::shared_ptr<ProxyEndpointContext> context,
 		QString key,
+		ProxyRuntimeId runtimeId,
 		uint64 attemptId,
 		uint64 proxyGeneration,
 		uint64 proxyEpoch,
 		uint64 successEpoch,
 		crl::time startedAt);
 
-	EndpointHealth *_owner = nullptr;
+	std::shared_ptr<ProxyEndpointContext> _context;
 	QString _key;
+	ProxyRuntimeId _runtimeId = 0;
 	uint64 _attemptId = 0;
 	uint64 _proxyGeneration = 0;
 	uint64 _proxyEpoch = 0;
 	uint64 _successEpoch = 0;
 	crl::time _startedAt = 0;
 	bool _active = false;
+
 };
 
 struct AdmissionRequest {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
+	ProxyRuntimeId runtimeId = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	uint64 proxyGeneration = 0;
@@ -91,7 +91,9 @@ struct Admission {
 	FailureReason blockedBy = FailureReason::None;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
+	MtProxyAttemptPlan plan;
 	EndpointAttemptLease lease;
+	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
@@ -102,6 +104,7 @@ struct Admission {
 struct FailureReport {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
+	ProxyRuntimeId runtimeId = 0;
 	FailureReason reason = FailureReason::None;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
@@ -138,6 +141,7 @@ enum class SuccessScope {
 struct SuccessReport {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
+	ProxyRuntimeId runtimeId = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile sentProfile = ProxyTlsProfile::Auto;
 	EndpointAttemptLease *lease = nullptr;
@@ -152,6 +156,7 @@ struct SuccessReport {
 struct RelayStallReport {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
+	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
@@ -188,7 +193,9 @@ struct EndpointEvent {
 
 class EndpointHealth final {
 public:
-	explicit EndpointHealth(not_null<RuntimeEnvironment*> runtime);
+	EndpointHealth(
+		not_null<RuntimeEnvironment*> runtime,
+		std::shared_ptr<ProxyEndpointContext> context);
 	EndpointHealth(const EndpointHealth &other) = delete;
 	EndpointHealth &operator=(const EndpointHealth &other) = delete;
 	~EndpointHealth();
@@ -201,13 +208,12 @@ public:
 	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;
 
 private:
-	friend class EndpointAttemptLease;
-
-	void releaseAttempt(const QString &key, uint64 attemptId);
 	void fireEndpointEventOnMain(EndpointEvent event);
 
 	const not_null<RuntimeEnvironment*> _runtime;
-	const std::unique_ptr<EndpointHealthStorage> _storage;
+	const std::shared_ptr<ProxyEndpointContext> _context;
+	const ProxyRuntimeId _runtimeId = 0;
+
 };
 
 [[nodiscard]] crl::time ConnectionSpacing(ProxyConnectionPattern pattern);

@@ -34,6 +34,34 @@ constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
 
 } // namespace
 
+MtProxyAttemptPlan BuildAttemptPlan(
+		const AdmissionRequest &request,
+		int recipeLevel) {
+	auto plan = MtProxyAttemptPlan();
+	plan.admitted = true;
+	plan.recipeLevel = std::clamp(recipeLevel, 0, 2);
+	plan.configuredTlsProfile = request.configuredTlsProfile;
+	plan.effectiveTlsProfile = ProxyTlsProfile::ChromeModern;
+	plan.stealth = request.stealth;
+	plan.stealth.level = (plan.recipeLevel == 0)
+		? ProxyStealthLevel::CompatStrict
+		: (plan.recipeLevel == 1)
+		? ProxyStealthLevel::CompatModern
+		: ProxyStealthLevel::DpiAdaptiveHandshake;
+	plan.stealth.tlsProfile = plan.effectiveTlsProfile;
+	plan.stealth.clientHelloFragmentation = (plan.recipeLevel >= 2)
+		? ProxyClientHelloFragmentation::Soft
+		: ProxyClientHelloFragmentation::Off;
+	plan.stealth.connectionPattern = (plan.recipeLevel >= 1)
+		? ProxyConnectionPattern::Soft
+		: ProxyConnectionPattern::Off;
+	plan.stealth.recordSizing = ProxyRecordSizing::Off;
+	plan.stealth.timing = ProxyTiming::Off;
+	plan.stealth.startupCover = ProxyStartupCover::Off;
+	plan.stealth.syntheticPsk = false;
+	return plan;
+}
+
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason) {
 	switch (reason) {
 	case FailureReason::DnsFailed:
@@ -132,28 +160,6 @@ constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
 	return false;
 }
 
-[[nodiscard]] bool FailureDowngradesRecipe(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
 [[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason) {
 	switch (reason) {
 	case FailureReason::ServerHelloOkNoAppData:
@@ -176,19 +182,13 @@ constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
 	return false;
 }
 
-void DowngradeRecipeForRelayStall(
-		EndpointState &state,
-		FailureReason reason) {
-	if (FailureDowngradesRecipe(reason) && state.recipeLevel > 0) {
-		--state.recipeLevel;
-	}
-}
-
 [[nodiscard]] bool FailureCanBeStale(FailureReason reason) {
 	switch (reason) {
 	case FailureReason::TcpConnectTimeout:
 	case FailureReason::TcpConnectedNoClientHelloWrite:
 	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
 	case FailureReason::ServerHelloOkNoAppData:
 	case FailureReason::ServerHelloOkNoMtprotoData:
 	case FailureReason::ConnectedNoMtprotoData:
@@ -196,8 +196,6 @@ void DowngradeRecipeForRelayStall(
 		return true;
 	case FailureReason::None:
 	case FailureReason::DnsFailed:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
 	case FailureReason::AppDataRemoteClosed:
 	case FailureReason::Network:
 	case FailureReason::ProxyProtocolBadResponse:
@@ -254,7 +252,9 @@ crl::time ThrottledRetryCooldown() {
 		return 0;
 	}
 	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts)) ? i->second : crl::time();
+	return (i != end(state.attemptStarts))
+		? i->second.startedAt
+		: crl::time();
 }
 
 [[nodiscard]] crl::time AttemptStartedAt(
@@ -275,7 +275,9 @@ crl::time ThrottledRetryCooldown() {
 		return 0;
 	}
 	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts)) ? i->second : crl::time();
+	return (i != end(state.attemptStarts))
+		? i->second.startedAt
+		: crl::time();
 }
 
 [[nodiscard]] bool ReportEpochIsStale(
@@ -292,25 +294,28 @@ crl::time ThrottledRetryCooldown() {
 
 [[nodiscard]] bool ReportGenerationIsStale(
 		uint64 proxyGeneration,
+		ProxyRuntimeId runtimeId,
 		const EndpointState &state) {
-	return proxyGeneration && proxyGeneration < state.proxyGeneration;
+	const auto i = state.generations.find(runtimeId);
+	return proxyGeneration
+		&& i != end(state.generations)
+		&& proxyGeneration < i->second;
 }
 
 void ApplyProxyGeneration(
 		EndpointState &state,
+		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration) {
-	if (!proxyGeneration || proxyGeneration <= state.proxyGeneration) {
-		return;
-	}
-	state.proxyGeneration = proxyGeneration;
-	state.attemptStarts.clear();
-	state.active = 0;
+	ApplyRuntimeProxyGeneration(state, runtimeId, proxyGeneration);
 }
 
 [[nodiscard]] bool FailureFromStaleAttempt(
 		const FailureReport &report,
 		const EndpointState &state) {
-	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
+	if (ReportGenerationIsStale(
+			report.proxyGeneration,
+			report.runtimeId,
+			state)) {
 		return true;
 	}
 	if (ReportEpochIsStale(report.proxyEpoch, state)) {
@@ -319,17 +324,26 @@ void ApplyProxyGeneration(
 	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
 		return true;
 	}
-	if (!state.lastRelaySuccessAt || !FailureCanBeStale(report.reason)) {
+	if (!FailureCanBeStale(report.reason)) {
+		return false;
+	}
+	const auto successAt = FailureNeedsRecipeEscalation(report.reason)
+		? state.lastSuccessAt
+		: state.lastRelaySuccessAt;
+	if (!successAt) {
 		return false;
 	}
 	const auto startedAt = AttemptStartedAt(report, state);
-	return startedAt && (startedAt < state.lastRelaySuccessAt);
+	return startedAt && (startedAt < successAt);
 }
 
 [[nodiscard]] bool SuccessFromStaleAttempt(
 		const SuccessReport &report,
 		const EndpointState &state) {
-	if (ReportGenerationIsStale(report.proxyGeneration, state)) {
+	if (ReportGenerationIsStale(
+			report.proxyGeneration,
+			report.runtimeId,
+			state)) {
 		return true;
 	}
 	if (ReportEpochIsStale(report.proxyEpoch, state)) {
@@ -347,7 +361,7 @@ void ApplyProxyGeneration(
 
 void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
-		if (now - i->second > kAttemptHardTtl) {
+		if (now - i->second.startedAt > kAttemptHardTtl) {
 			i = state.attemptStarts.erase(i);
 		} else {
 			++i;
@@ -451,7 +465,10 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 	return policy;
 }
 
-[[nodiscard]] Snapshot MakeSnapshot(const EndpointState &state) {
+[[nodiscard]] Snapshot MakeSnapshot(
+		const EndpointState &state,
+		ProxyRuntimeId runtimeId) {
+	const auto generation = state.generations.find(runtimeId);
 	return {
 		.endpoint = state.endpoint,
 		.lastFailure = state.lastFailure,
@@ -467,7 +484,9 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 		.lastGoodProfile = state.lastGoodProfile,
 		.lastGoodRoute = state.lastGoodRoute,
 		.relayProven = state.relayProven,
-		.proxyGeneration = state.proxyGeneration,
+		.proxyGeneration = (generation != end(state.generations))
+			? generation->second
+			: uint64(),
 		.proxyEpoch = state.proxyEpoch,
 		.attemptId = state.lastAttemptId,
 	};
@@ -483,6 +502,5 @@ crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
 	}
 	return crl::time(0);
 }
-
 
 } // namespace MTP::details::MtProxy

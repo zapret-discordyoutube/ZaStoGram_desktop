@@ -199,6 +199,9 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 			ProxyDiagnosticsPhase::MtpFirstDataReceived,
 			ProxyDiagnosticsSeverity::Info,
 			u"first mtproto payload received"_q);
+		if (_state.connection) {
+			_state.connection->markProxyMtprotoPayloadReceived();
+		}
 		_owner->_proxyPort->reportFirstMtprotoPayload(currentProxyAttempt());
 	}
 	_state.startedConnectingAt = crl::time(0);
@@ -206,21 +209,33 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 
 SessionProxyAttempt SessionTransport::proxyAttempt(
 		const TestConnection &connection) const {
+	const auto attempt = connection.data
+		? connection.data->proxyConnectionAttempt()
+		: connection.mtproxyAttempt;
 	return {
 		.runtime = _owner->_runtime,
 		.endpoint = connection.mtproxyEndpoint,
 		.use = connection.mtproxyUse,
-		.attempt = connection.mtproxyAttempt,
+		.attempt = attempt,
+		.plan = connection.mtproxyPlan,
+		.transport = connection.data->proxyTransportFailure(),
 		.attemptStartedAt = connection.mtproxyAttemptStartedAt,
 	};
 }
 
 SessionProxyAttempt SessionTransport::currentProxyAttempt() const {
+	const auto attempt = _state.connection
+		? _state.connection->proxyConnectionAttempt()
+		: _state.mtproxyAttempt;
 	return {
 		.runtime = _owner->_runtime,
 		.endpoint = _state.mtproxyEndpoint,
 		.use = _state.mtproxyUse,
-		.attempt = _state.mtproxyAttempt,
+		.attempt = attempt,
+		.plan = _state.mtproxyPlan,
+		.transport = _state.connection
+			? _state.connection->proxyTransportFailure()
+			: ProxyTransportFailure(),
 		.attemptStartedAt = _state.mtproxyAttemptStartedAt,
 	};
 }

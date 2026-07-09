@@ -58,6 +58,8 @@ enum class ProxyDiagnosticsPhase {
 	MtpBindFailed,
 	MtpKeyDestroyed,
 	MtpRestart,
+	AttemptSummary,
+	Liveness,
 };
 
 enum class ProxyDiagnosticsSeverity {
@@ -85,13 +87,36 @@ struct ProxyDiagnosticsEvent {
 	QString route;
 	QString proxyKeyHash;
 	QString profile;
-	int recipeLevel = 0;
-	bool pskOffered = false;
-	bool pskOfferedKnown = false;
-	bool fragmentedClientHello = false;
-	bool fragmentedClientHelloKnown = false;
+	QString configuredProfile;
+	QString effectiveProfile;
+	std::optional<int> recipeLevel;
+	std::optional<bool> pskOffered;
+	std::optional<bool> fragmentedClientHello;
 	QString phaseAtFailure;
-	crl::time queueMs = 0;
+	std::optional<crl::time> queueMs;
+	std::optional<int> clientHelloBytes;
+	std::optional<int> clientHelloWrites;
+	std::optional<qint64> clientHelloAcceptedBytes;
+	std::optional<int> clientHelloFragmentSplit;
+	std::optional<crl::time> clientHelloFragmentDelayMs;
+	std::optional<qint64> rxAfterClientHello;
+	QString rxClass;
+	QString tlsRecordType;
+	QString tlsRecordVersion;
+	std::optional<int> tlsRecordLength;
+	QString responsePrefixHash;
+	std::optional<int> sniLength;
+	QString sniHash;
+	QString parserStage;
+	std::optional<ProxyCloseOrigin> closeOrigin;
+	std::optional<crl::time> dnsMs;
+	std::optional<crl::time> tcpMs;
+	std::optional<crl::time> firstRxMs;
+	std::optional<crl::time> serverHelloMs;
+	std::optional<crl::time> appDataMs;
+	std::optional<crl::time> mtprotoMs;
+	std::optional<crl::time> totalMs;
+	int traceSchema = 0;
 	QDateTime timestamp;
 };
 
@@ -112,16 +137,40 @@ struct ProxyEventReport {
 	QString route;
 	QString proxyKeyHash;
 	QString profile;
-	int recipeLevel = 0;
-	bool pskOffered = false;
-	bool pskOfferedKnown = false;
-	bool fragmentedClientHello = false;
-	bool fragmentedClientHelloKnown = false;
+	QString configuredProfile;
+	QString effectiveProfile;
+	std::optional<int> recipeLevel;
+	std::optional<bool> pskOffered;
+	std::optional<bool> fragmentedClientHello;
 	QString phaseAtFailure;
-	crl::time queueMs = 0;
+	std::optional<crl::time> queueMs;
+	std::optional<int> clientHelloBytes;
+	std::optional<int> clientHelloWrites;
+	std::optional<qint64> clientHelloAcceptedBytes;
+	std::optional<int> clientHelloFragmentSplit;
+	std::optional<crl::time> clientHelloFragmentDelayMs;
+	std::optional<qint64> rxAfterClientHello;
+	QString rxClass;
+	QString tlsRecordType;
+	QString tlsRecordVersion;
+	std::optional<int> tlsRecordLength;
+	QString responsePrefixHash;
+	std::optional<int> sniLength;
+	QString sniHash;
+	QString parserStage;
+	std::optional<ProxyCloseOrigin> closeOrigin;
+	std::optional<crl::time> dnsMs;
+	std::optional<crl::time> tcpMs;
+	std::optional<crl::time> firstRxMs;
+	std::optional<crl::time> serverHelloMs;
+	std::optional<crl::time> appDataMs;
+	std::optional<crl::time> mtprotoMs;
+	std::optional<crl::time> totalMs;
+	int traceSchema = 0;
 };
 
 [[nodiscard]] QString ProxyDiagnosticsKeyHash(const QString &key);
+[[nodiscard]] QString ProxyDiagnosticsProxyKeyHash(const ProxyData &proxy);
 [[nodiscard]] QString ProxyDiagnosticsEndpointText(
 	const QString &host,
 	int port);
@@ -140,6 +189,12 @@ void WriteProxyDiagnosticsLine(
 	not_null<RuntimeEnvironment*> runtime,
 	ProxyDiagnosticsEvent event);
 void ReportProxyEvent(
+	not_null<RuntimeEnvironment*> runtime,
+	ProxyEventReport report);
+[[nodiscard]] bool ReportProxyAttemptSummary(
+	not_null<RuntimeEnvironment*> runtime,
+	ProxyEventReport report);
+void ReportProxyLiveness(
 	not_null<RuntimeEnvironment*> runtime,
 	ProxyEventReport report);
 

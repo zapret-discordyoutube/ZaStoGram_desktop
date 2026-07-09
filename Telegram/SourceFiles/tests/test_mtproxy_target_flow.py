@@ -94,8 +94,12 @@ def test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
 def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
     abstract = read(ABSTRACT_CONNECTION_CPP)
     resolving = read(RESOLVING_CPP)
-    constructor = resolving.split("ResolvingConnection::ResolvingConnection(")[1]
-    constructor = constructor.split("\n}\n", 1)[0]
+    connect = function_body(
+        resolving,
+        "void ResolvingConnection::connectToServer(")
+    start_resolving = function_body(
+        resolving,
+        "void ResolvingConnection::startResolving()")
     route_order = function_body(
         resolving,
         "std::vector<int> ResolvingConnection::routeOrder(")
@@ -105,8 +109,10 @@ def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
 
     assert "proxy.tryCustomResolve()" in abstract
     assert "ConnectionPointer::New<ResolvingConnection>" in abstract
-    assert "_runtime->proxyServices().dnsResolver().request(" in constructor
-    assert "domainResolved(" in constructor
+    assert connect.index("_mtproxyAttempt = context.mtproxyAttempt;") < (
+        connect.index("startResolving();"))
+    assert "_runtime->proxyServices().dnsResolver().request(" in start_resolving
+    assert "domainResolved(" in start_resolving
     assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in (
         route_order)
     assert route_order.index("capability.goodRoutes") < (
@@ -148,11 +154,13 @@ def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
         ".canonical = CanonicalText(state->request.endpoint)",
         ".route = RouteText(state->request.endpoint)",
         ".proxyKeyHash = EndpointHash(state->request.endpoint)",
-        ".profile = ProxyDiagnosticsTlsProfileName(profile)",
-        ".recipeLevel = int(state->request.stealth.level)",
+        ".configuredProfile = ProxyDiagnosticsTlsProfileName(",
+        ".effectiveProfile = state->admission",
+        ".recipeLevel = state->admission",
         ".queueMs = state->createdAt",
     ):
         assert field in event
+    assert ".profile =" not in event
 
 
 def test_route_failure_stays_route_level_and_success_recovers_canonical():
@@ -163,15 +171,15 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     success = function_body(health, "void EndpointHealth::reportSuccess(")
 
     assert (
-        "NoteRouteFailure(*_storage, state, report.endpoint.route, report.reason);"
+        "NoteRouteFailure(storage, state, report.endpoint.route, report.reason);"
         in failure)
     assert failure.index("NoteRouteFailure(") < (
         failure.index("FailureIsRouteOnly(report.reason)"))
     assert ("if (FailureIsRouteOnly(report.reason)"
         " && !report.routesExhausted)") in failure
-    assert "HasHealthyRoute(*_storage, state)" in failure
+    assert "HasHealthyRoute(storage, state)" in failure
     assert "!report.routesExhausted" in failure
-    assert failure.index("HasHealthyRoute(*_storage, state)") < (
+    assert failure.index("HasHealthyRoute(storage, state)") < (
         failure.index("state.lastFailure = report.reason;"))
     # With every route tried and failed the canonical endpoint must
     # degrade: cooldown applied and rotation allowed.
@@ -200,34 +208,32 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
         capabilities)
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
-    assert "NoteRouteSuccess(*_storage, state, report.endpoint.route);" in success
+    assert "NoteRouteSuccess(storage, state, report.endpoint.route);" in success
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.recipeLevel = 0;" in success
     assert "state.healthy = true;" in success
 
 
-def test_stealth_escalates_after_phase_failures_before_any_wss_fallback():
+def test_safe_attempt_plan_escalates_before_any_wss_fallback():
     health = read(ENDPOINT_HEALTH_CPP)
     health_policy = read(ENDPOINT_HEALTH_POLICY_CPP)
-    adaptive = read(ADAPTIVE_POLICY_CPP)
-    tls_handshake = read(TLS_SOCKET_HANDSHAKE_CPP)
+    tls_socket = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "tls_socket.cpp")
     policy = read(TRANSPORT_POLICY_CPP)
     status = read(STATUS_CPP)
-    recipe = function_body(adaptive, "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
-    recipe_gate = function_body(adaptive, "bool FailureNeedsRecipe(")
+    attempt_plan = function_body(
+        health_policy,
+        "MtProxyAttemptPlan BuildAttemptPlan(")
     wss_allowed = function_body(policy, "bool ProxyWssAllowed(")
     wss_recommend = function_body(policy, "bool WssNeedsProxyRecommendation(")
 
-    assert "FailureNeedsTlsRotation(report.reason)" in health
+    assert "state.recipeLevel < 2" in health
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in health_policy
-    assert "proxyServices().control()" in tls_handshake
-    assert "mtproxyEndpointSnapshot(" in tls_handshake
-    assert "ApplyAdaptiveRecipe(input)" in tls_handshake
-    assert "FailureNeedsRecipe(input.lastDiagnostic)" in recipe
-    assert recipe.index("FailureNeedsRecipe(input.lastDiagnostic)") < (
-        recipe.index("ApplyProxyStealthLevel("))
-    assert 'u"server_hello_ok_no_appdata"_q' not in recipe_gate
-    assert 'input.lastDiagnostic == u"server_hello_ok_no_appdata"_q' not in recipe
+    assert "ProxyTlsProfile::ChromeModern" in attempt_plan
+    assert "ProxyConnectionPattern::Soft" in attempt_plan
+    assert "ProxyClientHelloFragmentation::Soft" in attempt_plan
+    assert "plan.stealth.syntheticPsk = false;" in attempt_plan
+    assert "NormalizeAttemptPlan" in tls_socket
     assert "proxy.type != ProxyData::Type::Socks5" in wss_allowed
     assert "!runtime->proxyServices().capabilities().wssAllowed(proxy)" in (
         wss_allowed)
@@ -248,8 +254,8 @@ def test_logs_and_left_proxy_shield_expose_target_flow_state():
     assert 'u"tcp_not_connected"_q' in route_event
     assert "ProxyDiagnosticsPhase::RouteSelected" in resolving
     assert "ProxyDiagnosticsPhase::RouteFailed" in resolving
-    assert "ProxyDiagnosticsPhase::StealthRecipeApplied" in tls_handshake
-    assert ".phaseAtFailure = input.lastDiagnostic.isEmpty()" in tls_handshake
+    assert "ProxyDiagnosticsPhase::ClientHelloSent" in tls_handshake
+    assert "reportTransportEvent(" in tls_handshake
     assert "_proxyIcon->moveToLeft(xShift, yShift);" in window
     assert "const auto progressVisible = visible && !_currentLayout.proxyEnabled;" in window
     assert "_proxyIcon->setVisible(_currentLayout.proxyEnabled);" in window
@@ -265,7 +271,7 @@ if __name__ == "__main__":
     test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded()
     test_broker_queues_by_priority_and_logs_queue_as_non_failure()
     test_route_failure_stays_route_level_and_success_recovers_canonical()
-    test_stealth_escalates_after_phase_failures_before_any_wss_fallback()
+    test_safe_attempt_plan_escalates_before_any_wss_fallback()
     test_logs_and_left_proxy_shield_expose_target_flow_state()
 
 
@@ -347,8 +353,8 @@ def test_proxied_connects_get_their_full_time_budget():
     assert "kOnlyRouteAttemptTimeout" in refresh
     assert "_nextRoutePosition >= int(_routeOrder.size())" in refresh
     # Health reports feed the adaptive open pacing.
-    assert "NoteConnectTimeout(report.endpoint);" in failure
-    assert "NoteConnectSuccess(report.endpoint);" in success
+    assert "NoteConnectTimeout(_runtime, report.endpoint);" in failure
+    assert "NoteConnectSuccess(_runtime, report.endpoint);" in success
 
 
 def test_stealth_option_changes_restart_proxy_connections():

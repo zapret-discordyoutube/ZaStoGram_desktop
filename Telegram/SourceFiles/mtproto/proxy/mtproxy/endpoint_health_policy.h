@@ -12,13 +12,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details::MtProxy {
 
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason);
+[[nodiscard]] MtProxyAttemptPlan BuildAttemptPlan(
+	const AdmissionRequest &request,
+	int recipeLevel);
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason);
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason);
 [[nodiscard]] bool FailureIsRouteOnly(FailureReason reason);
 [[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason);
-void DowngradeRecipeForRelayStall(
-	EndpointState &state,
-	FailureReason reason);
 [[nodiscard]] bool SoftNoAppDataFailure(
 	const EndpointState &state,
 	FailureReason reason,
@@ -30,6 +30,7 @@ void DowngradeRecipeForRelayStall(
 	int consecutiveFailures);
 void ApplyProxyGeneration(
 	EndpointState &state,
+	ProxyRuntimeId runtimeId,
 	uint64 proxyGeneration);
 [[nodiscard]] bool FailureFromStaleAttempt(
 	const FailureReport &report,
@@ -45,6 +46,8 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now);
 	const EndpointState &state,
 	EndpointUse use,
 	crl::time now);
-[[nodiscard]] Snapshot MakeSnapshot(const EndpointState &state);
+[[nodiscard]] Snapshot MakeSnapshot(
+	const EndpointState &state,
+	ProxyRuntimeId runtimeId);
 
 } // namespace MTP::details::MtProxy

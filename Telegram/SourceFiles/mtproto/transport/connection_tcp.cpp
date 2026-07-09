@@ -7,17 +7,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/transport/connection_tcp.h"
 
-#include "mtproto/transport/details/mtproto_abstract_socket.h"
-#include "mtproto/protocol/mtproto_binary.h"
-#include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/socket_factory.h"
-#include "mtproto/proxy/transport_policy.h"
-#include "mtproto/runtime/runtime_environment.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
-#include "base/random.h"
 #include "base/qthelp_url.h"
+#include "base/random.h"
+#include "mtproto/protocol/mtproto_binary.h"
+#include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
+#include "mtproto/proxy/socket_factory.h"
+#include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/runtime_environment.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
 
 namespace MTP {
 namespace details {
@@ -561,6 +562,7 @@ void TcpConnection::connectToServer(
 	Expects(_protocolDcId == 0);
 
 	_mtproxyAttempt = context.mtproxyAttempt;
+	_mtproxyPlan = context.mtproxyPlan;
 	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
 	const auto secret = (_proxy.type == ProxyData::Type::Mtproto)
 		? _proxy.secretFromMtprotoPassword()
@@ -592,6 +594,7 @@ void TcpConnection::connectToServer(
 		_stealth,
 		protocolDcId,
 		_mtproxyAttempt,
+		_mtproxyPlan,
 		_mtproxyAttemptStartedAt);
 	_protocolDcId = protocolDcId;
 
@@ -604,6 +607,8 @@ void TcpConnection::connectToServer(
 			_address)
 		.arg(_port)
 		.arg(postfix.isEmpty() ? _protocol->debugPostfix() : postfix);
+	_mtproxyAttempt.connectionId = _debugId;
+	_runtime->proxyEndpointContext().updateTraceAttempt(_mtproxyAttempt);
 	_socket->setDebugId(_debugId);
 
 	CONNECTION_LOG_INFO("Connecting...");
@@ -751,8 +756,22 @@ void TcpConnection::timedOut() {
 	});
 }
 
+void TcpConnection::markProxyMtprotoPayloadReceived() {
+	if (_socket) {
+		_socket->markProxyMtprotoPayloadReceived();
+	}
+}
+
 HandshakePhase TcpConnection::handshakePhase() const {
 	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
+}
+
+ProxyConnectionAttempt TcpConnection::proxyConnectionAttempt() const {
+	return _mtproxyAttempt;
+}
+
+ProxyTransportFailure TcpConnection::proxyTransportFailure() const {
+	return _socket ? _socket->proxyTransportFailure() : ProxyTransportFailure();
 }
 
 bool TcpConnection::isConnected() const {

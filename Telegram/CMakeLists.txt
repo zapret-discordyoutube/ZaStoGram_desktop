@@ -1507,6 +1507,9 @@ PRIVATE
     mtproto/proxy/control_plane.h
     mtproto/proxy/proxy_services.cpp
     mtproto/proxy/proxy_services.h
+    mtproto/proxy/proxy_endpoint_context.cpp
+    mtproto/proxy/proxy_endpoint_context.h
+    mtproto/proxy/proxy_endpoint_context_p.h
     mtproto/proxy/capabilities.cpp
     mtproto/proxy/capabilities.h
     mtproto/proxy/data.cpp
@@ -1569,6 +1572,7 @@ PRIVATE
     mtproto/proxy/mtproxy/open_scheduler.cpp
     mtproto/proxy/mtproxy/open_scheduler.h
     mtproto/proxy/mtproxy/tls_socket.cpp
+    mtproto/proxy/mtproxy/tls_socket_diagnostics.cpp
     mtproto/proxy/mtproxy/tls_socket.h
     mtproto/proxy/mtproxy/tls_socket_handshake.cpp
     mtproto/proxy/mtproxy/tls_socket_psk.cpp

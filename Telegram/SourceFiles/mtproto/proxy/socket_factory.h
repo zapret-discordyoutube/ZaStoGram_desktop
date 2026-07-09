@@ -20,6 +20,7 @@ namespace MTP::details {
 	const ProxyStealthOptions &stealth,
 	int16 protocolDcId = 0,
 	ProxyConnectionAttempt mtproxyAttempt = {},
+	MtProxyAttemptPlan mtproxyPlan = {},
 	crl::time mtproxyAttemptStartedAt = 0);
 
 } // namespace MTP::details

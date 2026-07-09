@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 
 #include <QtCore/QLatin1String>
+#include <QtCore/QByteArrayView>
 #include <QtCore/QtEndian>
 
 namespace MTP::details {
@@ -33,6 +34,36 @@ namespace MTP::details {
 [[nodiscard]] inline int ReadPartLength(bytes::const_span data, int offset) {
 	const auto storage = data.subspan(offset, sizeof(uint16));
 	return qFromBigEndian(binary::Read<uint16>(storage));
+}
+
+[[nodiscard]] inline QString FakeTlsResponseClass(
+		QByteArrayView prefix,
+		qint64 totalBytes) {
+	if (!totalBytes) {
+		return u"zero"_q;
+	}
+	if (prefix.startsWith("HTTP/")
+		|| prefix.startsWith("GET ")
+		|| prefix.startsWith("POST ")) {
+		return u"http_like"_q;
+	}
+	if (prefix.size() < 5) {
+		return u"partial_tls_header"_q;
+	}
+	const auto type = uchar(prefix[0]);
+	if (type == 0x15) {
+		return u"tls_alert"_q;
+	}
+	const auto recordLength = (int(uchar(prefix[3])) << 8)
+		| int(uchar(prefix[4]));
+	if (totalBytes < 5 + recordLength) {
+		return u"partial_tls_record"_q;
+	} else if (type == 0x16) {
+		return u"tls_handshake"_q;
+	} else if (type == 0x17) {
+		return u"tls_appdata"_q;
+	}
+	return u"non_tls"_q;
 }
 
 } // namespace MTP::details

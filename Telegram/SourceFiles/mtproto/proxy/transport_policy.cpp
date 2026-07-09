@@ -75,11 +75,7 @@ void LogTransportFallback(
 	if (!proxy || saved == effective) {
 		return;
 	}
-	const auto proxyKeyHash = ProxyDiagnosticsKeyHash(
-		QString::number(int(proxy.type))
-		+ ':' + (proxy.originalHost.isEmpty() ? proxy.host : proxy.originalHost)
-		+ u":%1:"_q.arg(proxy.port)
-		+ proxy.password);
+	const auto proxyKeyHash = ProxyDiagnosticsProxyKeyHash(proxy);
 	const auto key = proxyKeyHash
 		+ ':' + QString::number(int(saved))
 		+ ':' + QString::number(int(effective))

@@ -106,7 +106,8 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
 
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
     assert "policy.recipeEscalationAllowed" in report_failure
-    assert "FailureNeedsTlsRotation(report.reason)" in source
+    assert "FailureNeedsTlsRotation(report.reason)" not in source
+    assert "state.recipeLevel < 2" in report_failure
     assert "FailureNeedsRecipe(diagnostic)" not in source
     assert "FailureNeedsTlsProfileRotation(diagnostic)" not in source
 
@@ -141,13 +142,12 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     assert 'u"server_hello_ok_no_appdata"_q' not in adaptive_rotation
 
 
-def test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile():
+def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     health = read(ENDPOINT_HEALTH_CPP)
     capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     adaptive = read(ADAPTIVE_POLICY_CPP)
     report_failure = function_body(health, "void EndpointHealth::reportFailure(")
-    downgrade = function_body(policy_source, "void DowngradeRecipeForRelayStall(")
     policy = function_body(
         policy_source,
         "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
@@ -187,20 +187,11 @@ def test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile():
         capabilities)
     assert "report.reason != FailureReason::ServerHelloOkNoAppData" in report_failure
 
-    downgrade_at = report_failure.index(
-        "DowngradeRecipeForRelayStall(state, report.reason);")
-    cooldown_echo_at = report_failure.index("if (state.terminalUntil > now) {")
-    increment_at = report_failure.index("++state.recipeLevel;")
-    rotation_at = report_failure.index("FailureNeedsTlsRotation(report.reason)")
-    assert downgrade_at < cooldown_echo_at
-    assert downgrade_at < increment_at
-    assert downgrade_at < rotation_at
-
-    assert "FailureDowngradesRecipe(reason)" in downgrade
-    assert "--state.recipeLevel;" in downgrade
-    after_downgrade = report_failure.split(
-        "DowngradeRecipeForRelayStall(state, report.reason);", 1)[1]
-    assert "++state.recipeLevel;" in after_downgrade
+    assert "FailureNeedsTlsRotation(report.reason)" not in report_failure
+    assert "DowngradeRecipeForRelayStall" not in policy_source
+    assert "--state.recipeLevel;" not in policy_source
+    assert "DowngradeRecipeForRelayStall" not in report_failure
+    assert "++state.recipeLevel;" in report_failure
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
 
     assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
@@ -291,6 +282,6 @@ if __name__ == "__main__":
     test_failure_reason_enum_is_phase_specific()
     test_tls_socket_reports_timeout_by_handshake_phase()
     test_phase_cooldown_and_recipe_policy_is_reason_based()
-    test_serverhello_ok_no_appdata_downgrades_recipe_and_keeps_profile()
+    test_serverhello_ok_no_appdata_keeps_recipe_and_profile()
     test_logs_and_proxy_status_use_phase_specific_names()
     test_proxy_check_and_session_timeout_use_phase_reasons()

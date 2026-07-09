@@ -14,6 +14,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
+struct EndpointAttemptState {
+	ProxyRuntimeId runtimeId = 0;
+	uint64 proxyGeneration = 0;
+	crl::time startedAt = 0;
+};
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
@@ -26,10 +32,10 @@ struct EndpointState {
 	crl::time nextHandshakeAt = 0;
 	bool healthy = false;
 	bool halfOpen = false;
-	uint64 proxyGeneration = 0;
+	std::map<ProxyRuntimeId, uint64> generations;
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
-	std::map<uint64, crl::time> attemptStarts;
+	std::map<uint64, EndpointAttemptState> attemptStarts;
 	crl::time deniedSince = 0;
 	crl::time lastDenialRotationSignal = 0;
 	crl::time lastSuccessAt = 0;
@@ -40,6 +46,30 @@ struct EndpointState {
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
 	RouteEndpoint lastGoodRoute;
 };
+
+inline void ApplyRuntimeProxyGeneration(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration) {
+	if (!runtimeId || !proxyGeneration) {
+		return;
+	}
+	auto &generation = state.generations[runtimeId];
+	if (proxyGeneration <= generation) {
+		return;
+	}
+	generation = proxyGeneration;
+	for (auto i = begin(state.attemptStarts);
+			i != end(state.attemptStarts);) {
+		if (i->second.runtimeId == runtimeId
+			&& i->second.proxyGeneration < proxyGeneration) {
+			i = state.attemptStarts.erase(i);
+		} else {
+			++i;
+		}
+	}
+	state.active = int(state.attemptStarts.size());
+}
 
 struct RouteState {
 	RouteEndpoint route;
@@ -71,6 +101,5 @@ struct CapabilityFailure {
 	QString routeKey;
 	QString diagnostic;
 };
-
 
 } // namespace MTP::details::MtProxy

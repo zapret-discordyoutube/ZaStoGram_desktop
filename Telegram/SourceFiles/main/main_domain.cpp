@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/instance/mtp_instance.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 #include "storage/storage_domain.h"
 #include "storage/storage_account.h"
 #include "storage/localstorage.h"
@@ -31,7 +32,8 @@ namespace Main {
 
 Domain::Domain(const QString &dataName)
 : _dataName(dataName)
-, _local(std::make_unique<Storage::Domain>(this, dataName)) {
+, _local(std::make_unique<Storage::Domain>(this, dataName))
+, _proxyEndpointContext(MTP::CreateProxyEndpointContext()) {
 	_active.changes(
 	) | rpl::take(1) | rpl::on_next([=] {
 		// In case we had a legacy passcoded app we start settings here.

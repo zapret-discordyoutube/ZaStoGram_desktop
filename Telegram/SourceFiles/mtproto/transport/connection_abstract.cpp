@@ -191,6 +191,14 @@ HandshakePhase AbstractConnection::handshakePhase() const {
 	return HandshakePhase::None;
 }
 
+ProxyConnectionAttempt AbstractConnection::proxyConnectionAttempt() const {
+	return {};
+}
+
+ProxyTransportFailure AbstractConnection::proxyTransportFailure() const {
+	return {};
+}
+
 bool AbstractConnection::serviceRequestNeeded(
 		TransportServiceRequest request) const {
 	return serviceRequest() == request;

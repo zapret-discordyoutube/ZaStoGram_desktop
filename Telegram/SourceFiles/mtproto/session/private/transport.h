@@ -31,7 +31,8 @@ public:
 	void releaseProxyMigration(uint64 generation);
 	void restart();
 	void doDisconnect();
-	void destroyAllConnections();
+	void destroyAllConnections(
+		ProxyCloseOrigin origin = ProxyCloseOrigin::OwnerDestroyed);
 	void onSentSome(uint64 size);
 	void onReceivedSome();
 	void startContainerCleanup();
@@ -85,6 +86,7 @@ private:
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
+		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 	};
 	struct ConnectionState {
@@ -92,6 +94,7 @@ private:
 		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		ProxyConnectionAttempt mtproxyAttempt;
+		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
 		bool proxyMigrationSuspended = false;

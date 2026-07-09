@@ -71,6 +71,7 @@ public:
 	};
 	struct ConnectionStartContext {
 		ProxyConnectionAttempt mtproxyAttempt;
+		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 	};
 
@@ -114,7 +115,11 @@ public:
 		ConnectionStartContext context = {}) = 0;
 	virtual void timedOut() {
 	}
+	virtual void markProxyMtprotoPayloadReceived() {
+	}
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const;
+	[[nodiscard]] virtual ProxyConnectionAttempt proxyConnectionAttempt() const;
+	[[nodiscard]] virtual ProxyTransportFailure proxyTransportFailure() const;
 	[[nodiscard]] virtual bool isConnected() const = 0;
 	[[nodiscard]] virtual TransportServiceRequest serviceRequest() const {
 		return TransportServiceRequest::None;

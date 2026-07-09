@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/timer.h"
 #include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/transport/connection_abstract.h"
-#include "base/timer.h"
 
 #include <vector>
 
@@ -39,6 +39,9 @@ public:
 		ConnectionStartContext context = {}) override;
 	bool isConnected() const override;
 	void timedOut() override;
+	void markProxyMtprotoPayloadReceived() override;
+	ProxyConnectionAttempt proxyConnectionAttempt() const override;
+	ProxyTransportFailure proxyTransportFailure() const override;
 
 	int32 debugState() const override;
 
@@ -49,8 +52,10 @@ private:
 	struct RouteAttempt {
 		ConnectionPointer child;
 		int ipIndex = -1;
+		uint64 routeAttemptId = 0;
 	};
 
+	void startResolving();
 	void startRouteAttempts();
 	void startNextRouteAttempt();
 	void scheduleRouteRace();
@@ -85,7 +90,12 @@ private:
 	int16 _protocolDcId = 0;
 	bool _protocolForFiles = false;
 	ProxyConnectionAttempt _mtproxyAttempt;
+	MtProxyAttemptPlan _mtproxyPlan;
+	ProxyTransportFailure _lastFailure;
+	uint64 _lastRouteAttemptId = 0;
 	crl::time _mtproxyAttemptStartedAt = 0;
+	crl::time _resolvingStartedAt = 0;
+	std::optional<crl::time> _dnsDuration;
 	base::Timer _timeoutTimer;
 	base::Timer _routeRaceTimer;
 

@@ -8,8 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
-#include "mtproto/dc_id.h"
 #include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/dc_id.h"
 #include "mtproto/runtime/proxy_data.h"
 #include "rpl/lifetime.h"
 
@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 class ConnectionStatus;
+class ProxyEndpointContext;
 class ProxyServices;
 struct ProxyDiagnosticsEvent;
 struct ProxyEventReport;
@@ -125,6 +126,7 @@ private:
 	Fn<void(crl::time)> _callEach;
 	Fn<void()> _cancel;
 	Fn<bool()> _isActive;
+
 };
 
 struct RuntimeAsyncGateway final {
@@ -147,7 +149,10 @@ struct RuntimeEnvironmentDescriptor final {
 
 class RuntimeEnvironment final : public QObject {
 public:
-	explicit RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor);
+	RuntimeEnvironment(
+		RuntimeEnvironmentDescriptor descriptor,
+		std::shared_ptr<ProxyEndpointContext> endpointContext = nullptr);
+	~RuntimeEnvironment();
 
 	void bindInstance(RuntimeInstanceServices services);
 	void unbindInstance(ConnectionStatus *status);
@@ -163,14 +168,23 @@ public:
 	[[nodiscard]] const RuntimeProxyCapabilities &proxyCapabilities() const;
 	[[nodiscard]] const RuntimeAsyncGateway &async() const;
 	[[nodiscard]] ProxyServices &proxyServices() const;
+	[[nodiscard]] ProxyRuntimeId proxyRuntimeId() const;
+	[[nodiscard]] ProxyEndpointContext &proxyEndpointContext() const;
+	[[nodiscard]] auto proxyEndpointContextShared() const
+		-> std::shared_ptr<ProxyEndpointContext>;
 
 private:
+	std::shared_ptr<ProxyEndpointContext> _proxyEndpointContext;
+	ProxyRuntimeId _proxyRuntimeId = 0;
 	RuntimeEnvironmentDescriptor _descriptor;
 	std::unique_ptr<ProxyServices> _proxyServices;
 	RuntimeInstanceServices _instance;
+
 };
 
 [[nodiscard]] std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment();
+[[nodiscard]] std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment(
+	std::shared_ptr<ProxyEndpointContext> endpointContext);
 [[nodiscard]] not_null<RuntimeEnvironment*> DefaultRuntimeEnvironment();
 
 } // namespace MTP

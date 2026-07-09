@@ -40,7 +40,9 @@ void TlsSocket::readData() {
 	if (!isConnected()) {
 		return;
 	}
-	_incoming.append(_transport->readAll());
+	const auto received = _transport->readAll();
+	noteIncoming(received);
+	_incoming.append(received);
 	if (!checkNextPacket()) {
 		handleError();
 	} else if (hasBytesAvailable()) {
@@ -74,9 +76,14 @@ bool TlsSocket::checkNextPacket() {
 				_firstAppDataAt = crl::now();
 				_phase = HandshakePhase::FirstDataReceived;
 				connectionProgress(_phase);
+				reportTransportEvent(
+					ProxyDiagnosticsPhase::Connected,
+					ProxyDiagnosticsSeverity::Info,
+					u"mtproxy first tls appdata received"_q);
 				_runtime->proxyServices().control().reportMtproxySuccess({
 					.endpoint = _endpointId,
 					.use = _endpointUse,
+					.runtimeId = _mtproxyAttempt.runtimeId,
 					.stealth = _stealth,
 					.sentProfile = _sentTlsProfile,
 					.proxyGeneration = _mtproxyAttempt.proxyGeneration,
@@ -86,10 +93,12 @@ bool TlsSocket::checkNextPacket() {
 					.attemptStartedAt = _mtproxyAttemptStartedAt,
 					.scope = MtProxy::SuccessScope::FakeTlsAppData,
 				});
-				_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(
-					MtProxy::EndpointKey(_endpointId.canonical),
-					domainFromSecret(),
-					_sentTlsProfile);
+				if (!IsProxyCheck(_endpointUse)) {
+					_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(
+						MtProxy::EndpointKey(_endpointId.canonical),
+						domainFromSecret(),
+						_sentTlsProfile);
+				}
 			}
 		} else {
 			offset += kServerHeader.size() + kTlsLengthFieldSize + length;

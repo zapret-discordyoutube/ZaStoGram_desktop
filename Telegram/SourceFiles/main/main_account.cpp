@@ -410,7 +410,8 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 
 	auto fields = base::take(_mtpFields);
 	fields.config = std::move(config);
-	fields.runtimeEnvironment = MTP::CreateRuntimeEnvironment();
+	fields.runtimeEnvironment = MTP::CreateRuntimeEnvironment(
+		domain().proxyEndpointContext());
 	fields.deviceModel = Platform::DeviceModelPretty();
 	fields.systemVersion = Platform::SystemVersionPretty();
 	_mtp = std::make_unique<MTP::Instance>(
@@ -557,7 +558,8 @@ void Account::destroyMtpKeys(MTP::AuthKeysList &&keys) {
 
 	destroyFields.mainDcId = MTP::Instance::Fields::kNoneMainDc;
 	destroyFields.config = std::make_unique<MTP::Config>(_mtp->config());
-	destroyFields.runtimeEnvironment = MTP::CreateRuntimeEnvironment();
+	destroyFields.runtimeEnvironment = MTP::CreateRuntimeEnvironment(
+		domain().proxyEndpointContext());
 	destroyFields.keys = std::move(keys);
 	destroyFields.deviceModel = Platform::DeviceModelPretty();
 	destroyFields.systemVersion = Platform::SystemVersionPretty();

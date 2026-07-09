@@ -72,11 +72,11 @@ def test_diagnostics_declares_structured_proxy_events_and_context():
         "QString route",
         "QString proxyKeyHash",
         "QString profile",
-        "int recipeLevel",
-        "bool pskOffered",
-        "bool fragmentedClientHello",
+        "std::optional<int> recipeLevel",
+        "std::optional<bool> pskOffered",
+        "std::optional<bool> fragmentedClientHello",
         "QString phaseAtFailure",
-        "crl::time queueMs",
+        "std::optional<crl::time> queueMs",
     ):
         assert field in header
 
@@ -118,7 +118,10 @@ def test_admission_queue_and_start_are_logged_not_failed():
 def test_route_canonical_recipe_and_fallback_events_are_emitted():
     resolving = read(RESOLVING_CPP)
     endpoint_health = read(ENDPOINT_HEALTH_CPP)
-    tls_socket = read(TLS_SOCKET_HANDSHAKE_CPP)
+    tls_socket = read(TLS_SOCKET_HANDSHAKE_CPP) + read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp") + read(
+        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "tls_socket_diagnostics.cpp")
     transport_policy = read(TRANSPORT_POLICY_CPP)
 
     assert "ProxyDiagnosticsPhase::RouteSelected" in resolving
@@ -131,10 +134,13 @@ def test_route_canonical_recipe_and_fallback_events_are_emitted():
     assert "ProxyDiagnosticsPhase::CanonicalRecovered" in endpoint_health
     assert "WriteProxyDiagnosticsLine(" in endpoint_health
 
-    assert "ProxyDiagnosticsPhase::StealthRecipeApplied" in tls_socket
-    assert ".pskOffered = _syntheticPskOffered" in tls_socket
-    assert ".fragmentedClientHello = _clientHelloFragmented" in tls_socket
-    assert "HandshakePhaseText(" in tls_socket
+    assert "ProxyDiagnosticsPhase::ClientHelloSent" in tls_socket
+    assert "std::make_optional(_syntheticPskOffered)" in tls_socket
+    assert "std::make_optional(_clientHelloFragmented)" in tls_socket
+    assert ".rxClass = clientHelloKnown ? responseClass() : QString()" in (
+        tls_socket)
+    assert ".clientHelloFragmentSplit = _clientHelloFragmented" in tls_socket
+    assert ".parserStage = proxyTransportFailure().parserStage" in tls_socket
 
     assert "ProxyDiagnosticsPhase::TransportFallbackApplied" in transport_policy
     assert "transportFallbackLogged" in transport_policy

@@ -89,6 +89,9 @@ PRIVATE
     mtproto/proxy/mtproxy/endpoint_identity.h
     mtproto/proxy/mtproxy/open_scheduler.cpp
     mtproto/proxy/mtproxy/open_scheduler.h
+    mtproto/proxy/proxy_endpoint_context.cpp
+    mtproto/proxy/proxy_endpoint_context.h
+    mtproto/proxy/proxy_endpoint_context_p.h
     tests/test_mtproxy_open_scheduler.cpp
 )
 
@@ -105,6 +108,34 @@ set_target_properties(
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_dependencies(Telegram test_mtproxy_open_scheduler)
+
+add_executable(test_mtproxy_endpoint_context WIN32)
+init_target(test_mtproxy_endpoint_context "(tests)")
+
+target_include_directories(test_mtproxy_endpoint_context PRIVATE ${src_loc})
+
+nice_target_sources(test_mtproxy_endpoint_context ${src_loc}
+PRIVATE
+    mtproto/proxy/mtproxy/endpoint_health_state.h
+    mtproto/proxy/proxy_endpoint_context.cpp
+    mtproto/proxy/proxy_endpoint_context.h
+    mtproto/proxy/proxy_endpoint_context_p.h
+    tests/test_mtproxy_endpoint_context.cpp
+)
+
+target_link_libraries(test_mtproxy_endpoint_context
+PRIVATE
+    desktop-app::lib_base
+    desktop-app::lib_crl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_mtproxy_endpoint_context
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_dependencies(Telegram test_mtproxy_endpoint_context)
 
 add_executable(test_mtproxy_tls_socket WIN32)
 init_target(test_mtproxy_tls_socket "(tests)")
@@ -127,6 +158,7 @@ PRIVATE
     mtproto/proxy/mtproxy/endpoint_identity.cpp
     mtproto/proxy/mtproxy/endpoint_identity.h
     mtproto/proxy/mtproxy/tls_socket.cpp
+    mtproto/proxy/mtproxy/tls_socket_diagnostics.cpp
     mtproto/proxy/mtproxy/tls_socket.h
     mtproto/proxy/mtproxy/tls_socket_handshake.cpp
     mtproto/proxy/mtproxy/tls_socket_psk.cpp
@@ -135,6 +167,9 @@ PRIVATE
     mtproto/proxy/mtproxy/tls_socket_transport.cpp
     mtproto/proxy/mtproxy/tls_socket_transport.h
     mtproto/proxy/mtproxy/tls_socket_utils.h
+    mtproto/proxy/proxy_endpoint_context.cpp
+    mtproto/proxy/proxy_endpoint_context.h
+    mtproto/proxy/proxy_endpoint_context_p.h
     tests/test_mtproxy_tls_socket.cpp
 )
 

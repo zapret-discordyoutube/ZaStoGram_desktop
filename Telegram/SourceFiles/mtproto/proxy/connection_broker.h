@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "base/basic_types.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include <QtCore/QMutex>
 #include <QtCore/QPointer>
@@ -21,7 +21,6 @@ class RuntimeEnvironment;
 enum class ProxyDiagnosticsPhase;
 
 namespace details {
-
 
 using ConnectionTicketId = uint64;
 
@@ -40,11 +39,13 @@ struct ConnectionBrokerDecision {
 
 struct ConnectionStart {
 	ConnectionTicketId ticketId = 0;
+	ProxyConnectionAttempt attempt;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
+	MtProxyAttemptPlan plan;
 	MtProxy::EndpointAttemptLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
@@ -88,6 +89,7 @@ private:
 
 	ConnectionBroker *_broker = nullptr;
 	ConnectionTicketId _id = 0;
+
 };
 
 class ConnectionBroker final {
@@ -100,6 +102,7 @@ public:
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
 	void cancel(ConnectionTicketId id);
 	void cancelByProxyGeneration(uint64 generation);
+	void cancelByOwnerDestruction();
 
 private:
 	struct RequestState;
@@ -132,6 +135,7 @@ private:
 	ConnectionTicketId _lastTicketId = 0;
 	QMutex _mutex;
 	const not_null<RuntimeEnvironment*> _runtime;
+
 };
 
 } // namespace details

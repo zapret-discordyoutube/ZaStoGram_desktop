@@ -300,4 +300,37 @@ ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 	return ProxyMtproxyTerminalReason::None;
 }
 
+FailureReason FromProxyMtproxyTerminalReason(
+		ProxyMtproxyTerminalReason reason) {
+	switch (reason) {
+	case ProxyMtproxyTerminalReason::None:
+		return FailureReason::None;
+	case ProxyMtproxyTerminalReason::DnsFailed:
+		return FailureReason::DnsFailed;
+	case ProxyMtproxyTerminalReason::TcpConnectTimeout:
+		return FailureReason::TcpConnectTimeout;
+	case ProxyMtproxyTerminalReason::TcpConnectedNoClientHelloWrite:
+		return FailureReason::TcpConnectedNoClientHelloWrite;
+	case ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello:
+		return FailureReason::ClientHelloSentNoServerHello;
+	case ProxyMtproxyTerminalReason::TlsAlertAfterClientHello:
+		return FailureReason::TlsAlertAfterClientHello;
+	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
+		return FailureReason::ServerHelloHmacMismatch;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
+		return FailureReason::ServerHelloOkNoAppData;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:
+		return FailureReason::ServerHelloOkNoMtprotoData;
+	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
+		return FailureReason::AppDataRemoteClosed;
+	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
+		return FailureReason::ConnectedNoMtprotoData;
+	case ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData:
+		return FailureReason::MtpReceiveTimeoutAfterData;
+	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
+		return FailureReason::ProxyProtocolBadResponse;
+	}
+	return FailureReason::Network;
+}
+
 } // namespace MTP::details::MtProxy

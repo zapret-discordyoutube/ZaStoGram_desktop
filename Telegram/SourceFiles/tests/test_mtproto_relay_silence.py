@@ -6,6 +6,8 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
+RUNTIME_PROXY_ENDPOINT_H = (
+    SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h")
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
@@ -40,13 +42,13 @@ def function_body(source, signature):
 
 
 def test_relay_silence_reason_is_wired_through_all_mappings():
-    identity_h = read(ENDPOINT_IDENTITY_H)
+    endpoint_h = read(RUNTIME_PROXY_ENDPOINT_H)
     identity = read(ENDPOINT_IDENTITY_CPP)
     status_h = read(STATUS_H)
     status_cpp = read(STATUS_CPP)
     diagnostics = read(DIAGNOSTICS_CPP)
 
-    assert "ConnectedNoMtprotoData," in identity_h
+    assert "ConnectedNoMtprotoData," in endpoint_h
     assert "ConnectedNoMtprotoData," in status_h
 
     legacy = function_body(identity, "QString ToLegacyDiagnostic(")
@@ -143,20 +145,22 @@ def test_session_reports_silence_and_recovers_temporary_key():
     report_timeout = function_body(
         adapter,
         "void ProductionSessionProxyPort::reportReceiveTimeout(")
-    assert ("MtProxy::FailureReason::ServerHelloOkNoMtprotoData"
+    assert ("ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData"
         in report_timeout)
+    assert "MtProxy::FromProxyMtprotoTerminalReason(reason)" in report_timeout
     assert ("ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData"
         in report_timeout)
     assert "return _owner->destroyTemporaryKey();" in wait_received
 
     # Only a handled MTProto message counts as relay proof; it resets the
     # silence counter and reports relay-scope success.
-    receive = read(RECEIVE_CPP)
+    transport = read(
+        SOURCE_DIR / "mtproto" / "session" / "private" / "transport.cpp")
     first_payload = function_body(
         adapter,
         "void ProductionSessionProxyPort::reportFirstMtprotoPayload(")
     assert "SuccessScope::Relay" in first_payload
-    assert receive.index("_timing.retryTimeout = 1;") < receive.index(
+    assert transport.index("_timing.retryTimeout = 1;") < transport.index(
         "reportFirstMtprotoPayload(")
 
 

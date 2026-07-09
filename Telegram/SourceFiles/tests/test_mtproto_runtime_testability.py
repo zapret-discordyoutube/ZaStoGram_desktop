@@ -45,7 +45,8 @@ def test_connection_broker_uses_runtime_async_gateway():
     assert "_runtime->async().singleShot(" in source
     assert "QTimer::singleShot" not in source
     assert "MtProxy::ReserveOpenSlot(" in source
-    assert "MtProxy::ReserveOpenSlot(\n\t\t\t_runtime" in source
+    assert "IsProxyCheck(state->request.use)" in source
+    assert "\t\t\t: MtProxy::ReserveOpenSlot(" in source
 
 
 def test_open_scheduler_is_injectable_and_has_cpp_smoke_test():
@@ -58,7 +59,8 @@ def test_open_scheduler_is_injectable_and_has_cpp_smoke_test():
     assert "explicit OpenScheduler(not_null<RuntimeEnvironment*> runtime);" in header
     assert "ReserveOpenSlot(\n\tnot_null<RuntimeEnvironment*> runtime" in header
     assert "OpenScheduler::ReserveOpenSlot(" in source
-    assert "OpenScheduler(runtime->async())" in source
+    assert "OpenScheduler(runtime)" in source
+    assert "runtime->proxyEndpointContextShared()" in source
     assert "_async.now()" in source
     assert "_async.randomIndex(" in source
     assert "test_mtproxy_open_scheduler" in cmake

@@ -45,6 +45,9 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 [[nodiscard]] bool IsNewerProxyEpoch(
 		const ProxyConnectionAttempt &current,
 		const ProxyConnectionAttempt &update) {
+	if (current.runtimeId && update.runtimeId != current.runtimeId) {
+		return false;
+	}
 	if (update.proxyGeneration != current.proxyGeneration) {
 		return update.proxyGeneration > current.proxyGeneration;
 	}
@@ -57,6 +60,9 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 [[nodiscard]] bool IsNewerAttempt(
 		const ProxyConnectionAttempt &current,
 		const ProxyConnectionAttempt &update) {
+	if (current.runtimeId && update.runtimeId != current.runtimeId) {
+		return false;
+	}
 	if (update.proxyGeneration != current.proxyGeneration) {
 		return update.proxyGeneration > current.proxyGeneration;
 	}
@@ -72,6 +78,9 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 [[nodiscard]] bool IsOlderAttempt(
 		const ProxyConnectionAttempt &current,
 		const ProxyConnectionAttempt &update) {
+	if (current.runtimeId && update.runtimeId != current.runtimeId) {
+		return false;
+	}
 	if (current.proxyGeneration
 		&& update.proxyGeneration != current.proxyGeneration) {
 		return false;
@@ -102,6 +111,9 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 [[nodiscard]] bool IsOlderProxyGeneration(
 		const ProxyConnectionAttempt &current,
 		const ProxyConnectionAttempt &update) {
+	if (current.runtimeId && update.runtimeId != current.runtimeId) {
+		return false;
+	}
 	return current.proxyGeneration
 		&& (!update.proxyGeneration
 			|| (update.proxyGeneration < current.proxyGeneration));
@@ -140,24 +152,6 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 		return false;
 	}
 	return false;
-}
-
-void NormalizeMtproxyTerminalReason(
-		const ProxyConnectionStatus &current,
-		ProxyConnectionStatus &status) {
-	if (status.mtproxyReason
-		!= ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello) {
-		return;
-	}
-	if (!(current.attempt == status.attempt)) {
-		return;
-	}
-	if (current.phase != ProxyConnectionPhase::CheckingTelegram
-		&& current.phase != ProxyConnectionPhase::Connected) {
-		return;
-	}
-	status.mtproxyReason = ProxyMtproxyTerminalReason::ServerHelloOkNoAppData;
-	status.error = ProxyConnectionError::None;
 }
 
 [[nodiscard]] bool ShadowedByFreshRelaySuccess(
@@ -239,6 +233,7 @@ ProxyAdmissionDecision ProxyControlPlane::admit(
 		auto admission = _endpointHealth->admit({
 			.endpoint = request.endpoint,
 			.use = request.use,
+			.runtimeId = request.runtimeId,
 			.stealth = request.stealth,
 			.configuredTlsProfile = request.configuredTlsProfile,
 			.proxyGeneration = request.proxyGeneration,
@@ -249,7 +244,9 @@ ProxyAdmissionDecision ProxyControlPlane::admit(
 			.blockedBy = admission.blockedBy,
 			.stealth = admission.stealth,
 			.effectiveTlsProfile = admission.effectiveTlsProfile,
+			.plan = admission.plan,
 			.lease = std::move(admission.lease),
+			.runtimeId = admission.runtimeId,
 			.proxyGeneration = admission.proxyGeneration,
 			.attemptId = admission.attemptId,
 			.proxyEpoch = admission.proxyEpoch,
@@ -368,6 +365,10 @@ ProxyFact ProxyControlPlane::FactFromReport(
 	case ProxyDiagnosticsPhase::MtpBindFailed:
 	case ProxyDiagnosticsPhase::MtpKeyDestroyed:
 	case ProxyDiagnosticsPhase::MtpRestart:
+	case ProxyDiagnosticsPhase::AttemptSummary:
+	case ProxyDiagnosticsPhase::Liveness:
+		fact.status.error = ProxyConnectionError::None;
+		fact.status.mtproxyReason = ProxyMtproxyTerminalReason::None;
 		return fact;
 	}
 	return fact;
@@ -379,7 +380,7 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 	if (EmptyFact(fact)) {
 		return current;
 	}
-	if (fact.status.attempt.probe) {
+	if (IsProxyCheck(fact.status.attempt.use)) {
 		return current;
 	}
 	if (IsRelayDataStall(fact.status)) {
@@ -389,7 +390,6 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 		fact.status.phase = ProxyConnectionPhase::Connected;
 		fact.status.successUntil = crl::now() + kFreshRelaySuccessWindow;
 	}
-	NormalizeMtproxyTerminalReason(current, fact.status);
 	if (ShadowedByFreshRelaySuccess(current, fact)) {
 		return current;
 	}
@@ -407,13 +407,11 @@ void ProxyControlPlane::submitFact(const ProxyEventReport &report) {
 		const auto current = _runtime->instance().connectionStatus
 			? _runtime->instance().connectionStatus->proxyStatus()
 			: ProxyConnectionStatus();
-		auto normalized = fact;
-		NormalizeMtproxyTerminalReason(current, normalized.status);
-		if (ShadowedByFreshRelaySuccess(current, normalized)) {
-			LogShadowedFact(_runtime, normalized);
+		if (ShadowedByFreshRelaySuccess(current, fact)) {
+			LogShadowedFact(_runtime, fact);
 		}
 		if (_runtime->instance().connectionStatus) {
-			const auto reduced = ProxyControlPlane::Reduce(current, normalized);
+			const auto reduced = ProxyControlPlane::Reduce(current, fact);
 			_selectedStatus = reduced;
 			_endpointSnapshot.proxy = reduced.proxy;
 			_endpointSnapshot.status = reduced;

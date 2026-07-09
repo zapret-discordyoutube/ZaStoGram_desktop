@@ -7,20 +7,43 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
-#include "mtproto/proxy/mtproxy/tls_socket_psk.h"
-#include "mtproto/transport/details/mtproto_tcp_socket.h"
-#include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/adaptive_policy.h"
-#include "mtproto/proxy/proxy_services.h"
-#include "mtproto/runtime/runtime_environment.h"
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/unixtime.h"
+#include "mtproto/proxy/mtproxy/tls_socket_psk.h"
+#include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
+#include "mtproto/proxy/proxy_services.h"
+#include "mtproto/runtime/runtime_environment.h"
+#include "mtproto/transport/details/mtproto_tcp_socket.h"
 
 namespace MTP::details {
 namespace {
 
 constexpr auto kEstablishedIdleCloseAge = crl::time(20 * 1000);
+
+[[nodiscard]] MtProxyAttemptPlan NormalizeAttemptPlan(
+		MtProxyAttemptPlan plan,
+		const ProxyStealthOptions &fallback) {
+	if (plan.admitted) {
+		return plan;
+	}
+	plan.admitted = true;
+	plan.recipeLevel = 0;
+	plan.configuredTlsProfile = fallback.tlsProfile;
+	plan.effectiveTlsProfile = ProxyTlsProfile::ChromeModern;
+	plan.stealth = fallback;
+	plan.stealth.level = ProxyStealthLevel::CompatStrict;
+	plan.stealth.tlsProfile = plan.effectiveTlsProfile;
+	plan.stealth.clientHelloFragmentation
+		= ProxyClientHelloFragmentation::Off;
+	plan.stealth.connectionPattern = ProxyConnectionPattern::Off;
+	plan.stealth.recordSizing = ProxyRecordSizing::Off;
+	plan.stealth.timing = ProxyTiming::Off;
+	plan.stealth.startupCover = ProxyStartupCover::Off;
+	plan.stealth.syntheticPsk = false;
+	return plan;
+}
 
 } // namespace
 
@@ -32,30 +55,36 @@ TlsSocket::TlsSocket(
 	bool protocolForFiles,
 	const ProxyStealthOptions &stealth,
 	ProxyConnectionAttempt mtproxyAttempt,
+	MtProxyAttemptPlan mtproxyPlan,
 	crl::time mtproxyAttemptStartedAt,
 	std::unique_ptr<TlsSocketTransport> transport)
-	: AbstractSocket(runtime, thread)
-	, _secret(secret)
-	, _endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))
-	, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical))
-	, _mtproxyAttempt(mtproxyAttempt)
-	, _mtproxyAttemptStartedAt(mtproxyAttemptStartedAt)
-	, _transport(
+: AbstractSocket(runtime, thread)
+, _secret(secret)
+, _proxy(proxy)
+, _endpointId(MtProxy::EndpointIdFromProxy(proxy, stealth))
+, _endpointKey(MtProxy::EndpointKey(_endpointId.canonical))
+, _mtproxyAttempt(mtproxyAttempt)
+, _mtproxyPlan(NormalizeAttemptPlan(std::move(mtproxyPlan), stealth))
+, _mtproxyAttemptStartedAt(mtproxyAttemptStartedAt)
+, _transport(
 		transport
 			? std::move(transport)
 			: CreateTlsSocketTransport()) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
+	if (!_mtproxyAttemptStartedAt) {
+		_mtproxyAttemptStartedAt = crl::now();
+	}
 
-	_recordSizing = RecordSizing(int(stealth.recordSizing));
-	_startupCover = StartupCover(int(stealth.startupCover));
-	_clientHelloFragmentation = stealth.clientHelloFragmentation;
-	_connectionPattern = stealth.connectionPattern;
-	_tlsProfile = stealth.tlsProfile;
-	_timing = stealth.timing;
-	_stealth = stealth;
-	_endpointUse = protocolForFiles
-		? MtProxy::EndpointUse::Media
-		: MtProxy::EndpointUse::Main;
+	const auto &planned = _mtproxyPlan.stealth;
+	_recordSizing = RecordSizing(int(planned.recordSizing));
+	_startupCover = StartupCover(int(planned.startupCover));
+	_clientHelloFragmentation = planned.clientHelloFragmentation;
+	_connectionPattern = planned.connectionPattern;
+	_tlsProfile = _mtproxyPlan.effectiveTlsProfile;
+	_configuredTlsProfile = _mtproxyPlan.configuredTlsProfile;
+	_timing = planned.timing;
+	_stealth = planned;
+	_endpointUse = _mtproxyAttempt.use;
 	_pacingTimer = runtime->async().makeTimer(thread, [=] { sendOutgoing(); });
 	_clientHelloTimer = runtime->async().makeTimer(
 		thread,
@@ -98,10 +127,7 @@ bytes::const_span TlsSocket::keyFromSecret() const {
 }
 
 ProxyTlsProfile TlsSocket::effectiveTlsProfile() const {
-	if (_usePreparedTlsProfile) {
-		return _preparedTlsProfile;
-	}
-	return ResolveEffectiveTlsProfile(_tlsProfile, _endpointKey);
+	return _tlsProfile;
 }
 
 MtProxy::FailureReason TlsSocket::failureReason() const {
@@ -114,7 +140,9 @@ MtProxy::FailureReason TlsSocket::failureReason() const {
 	case HandshakePhase::TcpConnected:
 		return MtProxy::FailureReason::TcpConnectedNoClientHelloWrite;
 	case HandshakePhase::ClientHelloSent:
-		return MtProxy::FailureReason::ClientHelloSentNoServerHello;
+		return (_clientHelloAcceptedBytes > 0)
+			? MtProxy::FailureReason::ClientHelloSentNoServerHello
+			: MtProxy::FailureReason::TcpConnectedNoClientHelloWrite;
 	case HandshakePhase::ServerHelloOk:
 		return MtProxy::FailureReason::ServerHelloOkNoAppData;
 	case HandshakePhase::FirstDataReceived:
@@ -124,7 +152,7 @@ MtProxy::FailureReason TlsSocket::failureReason() const {
 }
 
 bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
-	if (!_syntheticPskOffered) {
+	if (!_syntheticPskOffered || IsProxyCheck(_endpointUse)) {
 		return false;
 	}
 	switch (reason) {
@@ -173,14 +201,23 @@ void TlsSocket::timedOut() {
 	if (_state == State::Error) {
 		return;
 	}
-	const auto reason = failureReason();
+	auto reason = failureReason();
+	if (reason == MtProxy::FailureReason::None
+		&& _phase == HandshakePhase::FirstDataReceived) {
+		reason = _mtprotoPayloadReceived
+			? MtProxy::FailureReason::MtpReceiveTimeoutAfterData
+			: MtProxy::FailureReason::ServerHelloOkNoMtprotoData;
+	}
 	_failureReason = reason;
+	_connectionError = ProxyConnectionError::Timeout;
+	_closeOrigin = ProxyCloseOrigin::LocalTimeout;
 	clearSyntheticPskOnFailure(reason);
 	_runtime->proxyServices().control().reportMtproxyFailure({
 		.endpoint = _endpointId,
 		.use = _endpointUse,
+		.runtimeId = _mtproxyAttempt.runtimeId,
 		.reason = reason,
-		.configuredTlsProfile = _tlsProfile,
+		.configuredTlsProfile = _configuredTlsProfile,
 		.sentProfile = _sentTlsProfile,
 		.proxyGeneration = _mtproxyAttempt.proxyGeneration,
 		.attemptId = _mtproxyAttempt.attemptId,
@@ -188,11 +225,24 @@ void TlsSocket::timedOut() {
 		.successEpoch = _mtproxyAttempt.successEpoch,
 		.attemptStartedAt = _mtproxyAttemptStartedAt,
 	});
+	const auto terminalPhase = (_mtproxyAttempt.traceId
+		&& !_runtime->proxyEndpointContext().traceActive(
+			_mtproxyAttempt.traceId))
+		? ProxyDiagnosticsPhase::Liveness
+		: ProxyDiagnosticsPhase::Failed;
+	reportTransportEvent(
+		terminalPhase,
+		ProxyDiagnosticsSeverity::Error,
+		u"mtproxy transport timed out"_q);
 	_state = State::Error;
 }
 
 bool TlsSocket::isConnected() {
 	return (_state == State::Connected);
+}
+
+void TlsSocket::markProxyMtprotoPayloadReceived() {
+	_mtprotoPayloadReceived = true;
 }
 
 int32 TlsSocket::debugState() {
@@ -218,13 +268,25 @@ crl::time TlsSocket::mtproxyTerminalUntil() const {
 
 void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {
 	_failureReason = reason;
+	_closeOrigin = ProxyCloseOrigin::ProtocolRejected;
 	handleError(errorCode);
 }
 
 void TlsSocket::handleError(int errorCode) {
+	if (_phase == HandshakePhase::None) {
+		_connectionError = SocketProxyConnectionError(errorCode);
+	}
+	if (_closeOrigin == ProxyCloseOrigin::None) {
+		_closeOrigin = (errorCode == QAbstractSocket::RemoteHostClosedError
+			|| errorCode == QAbstractSocket::ProxyConnectionClosedError)
+			? ProxyCloseOrigin::PeerClosed
+			: ProxyCloseOrigin::NetworkError;
+	}
 	auto reason = failureReason();
 	if (reason == MtProxy::FailureReason::None && _firstAppDataReceived) {
-		reason = MtProxy::FailureReason::AppDataRemoteClosed;
+		reason = _mtprotoPayloadReceived
+			? MtProxy::FailureReason::AppDataRemoteClosed
+			: MtProxy::FailureReason::ServerHelloOkNoMtprotoData;
 	}
 	_failureReason = reason;
 	// Proxies routinely close idle established connections (observed
@@ -249,8 +311,9 @@ void TlsSocket::handleError(int errorCode) {
 		_runtime->proxyServices().control().reportMtproxyFailure({
 			.endpoint = _endpointId,
 			.use = _endpointUse,
+			.runtimeId = _mtproxyAttempt.runtimeId,
 			.reason = reason,
-			.configuredTlsProfile = _tlsProfile,
+			.configuredTlsProfile = _configuredTlsProfile,
 			.sentProfile = _sentTlsProfile,
 			.proxyGeneration = _mtproxyAttempt.proxyGeneration,
 			.attemptId = _mtproxyAttempt.attemptId,
@@ -262,6 +325,15 @@ void TlsSocket::handleError(int errorCode) {
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _transport->errorString());
 	}
+	const auto terminalPhase = (_mtproxyAttempt.traceId
+		&& !_runtime->proxyEndpointContext().traceActive(
+			_mtproxyAttempt.traceId))
+		? ProxyDiagnosticsPhase::Liveness
+		: ProxyDiagnosticsPhase::Failed;
+	reportTransportEvent(
+		terminalPhase,
+		ProxyDiagnosticsSeverity::Error,
+		u"mtproxy transport failed"_q);
 	_state = State::Error;
 	_error.fire_copy(errorCode);
 }

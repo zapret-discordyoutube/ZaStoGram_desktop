@@ -69,7 +69,7 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "ServerHelloOkNoAppData" in endpoint_header
     assert "TcpConnectTimeout" in endpoint_header
     assert "DnsFailed" in endpoint_header
-    assert "enum class EndpointUse" in header
+    assert "using EndpointUse = ProxyConnectionUse;" in header
     assert "enum class AdmissionAction" in header
     assert "class EndpointAttemptLease" in header
     assert "class EndpointHealth" in header
@@ -161,15 +161,17 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     confirm_body = function_body(source, "void SessionTransport::confirmBestConnection()")
     error_body = function_body(source, "void SessionTransport::onError(")
     remove_body = function_body(source, "void SessionTransport::removeTestConnection(")
-    destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
+    destroy_body = function_body(
+        source,
+        "void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin)")
 
     assert "MtProxy::EndpointId mtproxyEndpoint;" in header
     assert "SessionProxyEndpointUse mtproxyUse" in header
     assert "_owner->_proxyPort->reportConnectTimeout(proxyAttempt(connection));" in timeout_body
     assert "MtProxy::FailureReason::TcpConnectTimeout" in adapter
-    assert (
-        "!attempt.endpoint.canonical.domainFromSecret.isEmpty()"
-        in adapter)
+    assert timeout_body.index("connection.data->timedOut();") < timeout_body.index(
+        "reportConnectTimeout(proxyAttempt(connection));")
+    assert "const auto typed = attempt.transport.reason;" in adapter
     assert "_owner->_proxyPort->reportConnectionError(" in error_body
     assert "MtProxy::FailureReasonFromErrorCode(errorCode)" not in error_body
     assert "MtProxy::FailureReasonFromErrorCode(errorCode)" in adapter
@@ -255,8 +257,9 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "const auto attemptStartedAt = now;" in admit_body
     assert "result.proxyGeneration = request.proxyGeneration;" in admit_body
     assert "result.successEpoch = state.successEpoch;" in admit_body
-    assert "state.attemptStarts.emplace(result.attemptId, attemptStartedAt);" in (
+    assert "state.attemptStarts.emplace(result.attemptId, EndpointAttemptState{" in (
         admit_body)
+    assert ".runtimeId = runtimeId" in admit_body
     assert "result.attemptStartedAt = attemptStartedAt;" in admit_body
     assert "uint64 proxyGeneration," in source
     assert "_proxyGeneration(proxyGeneration)" in source
@@ -273,7 +276,7 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "CreateProxyAwareSocket(" in tcp_connect
     assert "_mtproxyAttemptStartedAt" in tcp_connect
     assert "_mtproxyAttempt = context.mtproxyAttempt;" in resolving
-    assert ".mtproxyAttempt = _mtproxyAttempt" in resolving
+    assert ".mtproxyAttempt = routeConnectionAttempt" in resolving
     assert ".mtproxyAttempt = startAttempt" in append_body
 
     assert ".attemptId = _mtproxyAttempt.attemptId" in tls_timeout
@@ -293,7 +296,8 @@ def test_relay_success_shadows_older_attempt_failures():
     assert ".proxyGeneration = _mtproxyAttempt.proxyGeneration" in tls_packet
     assert ".successEpoch = _mtproxyAttempt.successEpoch" in tls_packet
     assert ".attemptStartedAt = _mtproxyAttemptStartedAt" in tls_packet
-    assert ".attempt = _state.mtproxyAttempt" in session
+    assert "_state.connection->proxyConnectionAttempt()" in session
+    assert ".attempt = attempt" in session
     assert ".attemptStartedAt = _state.mtproxyAttemptStartedAt" in session
     assert "_owner->_transport.noteMtprotoPayloadReceived();" in handle_received
     assert "_owner->_proxyPort->reportFirstMtprotoPayload(" in note_payload
@@ -348,11 +352,9 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     assert "uint64 proxyGeneration = 0;" in header
     assert "uint64 proxyEpoch = 1;" in state_source
     assert "uint64 successEpoch = 0;" in state_source
-    assert "uint64 proxyGeneration = 0;" in state_source
-    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
-        stale_failure)
-    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in (
-        stale_success)
+    assert "std::map<ProxyRuntimeId, uint64> generations;" in state_source
+    assert "report.runtimeId" in stale_failure
+    assert "report.runtimeId" in stale_success
     assert "ReportEpochIsStale(report.proxyEpoch, state)" in stale_failure
     assert "ReportEpochIsStale(report.proxyEpoch, state)" in stale_success
     assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in (
@@ -384,7 +386,8 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     success_stale_check = report_success.index(
         "if (SuccessFromStaleAttempt(report, state)) {")
     success_state_write = report_success.index("state.endpoint = report.endpoint;")
-    success_scheduler = report_success.index("NoteConnectSuccess(report.endpoint);")
+    success_scheduler = report_success.index(
+        "NoteConnectSuccess(_runtime, report.endpoint);")
     assert success_stale_check < success_state_write
     assert success_stale_check < success_scheduler
 
@@ -495,7 +498,7 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
     assert "MtProxy::FailureReason::ProxyProtocolBadResponse" in parts12_body
     assert "reportMtproxySuccess(" in records
-    assert "_endpointUse = protocolForFiles" in source
+    assert "_endpointUse = _mtproxyAttempt.use;" in source
     assert ".use = _endpointUse" in tls_sources
     assert ".use = MtProxy::EndpointUse::Main" not in tls_sources
     assert "ToLegacyDiagnostic(FailureReason reason)" in read(
@@ -503,10 +506,11 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "reportMtproxyFailure(" in error_body
     assert "MtproxyNoteEndpointFailure(" not in source
     assert "MtproxyNoteEndpointSuccess(" not in source
-    assert "const auto reason = failureReason();" in timeout_body
+    assert "auto reason = failureReason();" in timeout_body
+    assert "ServerHelloOkNoMtprotoData" in timeout_body
     assert "reportMtproxyFailure(" in timeout_body
     assert ".reason = reason" in timeout_body
-    assert ".configuredTlsProfile = _tlsProfile" in timeout_body
+    assert ".configuredTlsProfile = _configuredTlsProfile" in timeout_body
     assert ".sentProfile = _sentTlsProfile" in timeout_body
     assert "MtProxy::FailureReason::Timeout" not in timeout_body
     assert tcp_timeout_body.index("_socket->timedOut();") < (
@@ -518,7 +522,7 @@ def test_tls_socket_reports_typed_terminal_reasons():
     assert "MtproxyRotateTlsProfileOnFailure(" not in tls_sources
 
 
-def test_tls_socket_uses_endpoint_health_key_for_profile_rotation():
+def test_tls_socket_uses_immutable_admission_plan():
     abstract_header = read(ABSTRACT_SOCKET_H)
     abstract_source = read(ABSTRACT_SOCKET_CPP)
     source = read(TLS_SOCKET_CPP)
@@ -526,8 +530,6 @@ def test_tls_socket_uses_endpoint_health_key_for_profile_rotation():
     header = read(TLS_SOCKET_H)
     connect_body = function_body(source, "void TlsSocket::connectToHost(")
     effective_body = function_body(source, "ProxyTlsProfile TlsSocket::effectiveTlsProfile() const")
-    recipe_body = function_body(handshake, "void TlsSocket::applyAdaptiveRecipe()")
-
     socket_factory = read(SOURCE_DIR / "mtproto" / "proxy" / "socket_factory.cpp")
 
     assert "const ProxyData &proxy," not in abstract_header
@@ -543,9 +545,10 @@ def test_tls_socket_uses_endpoint_health_key_for_profile_rotation():
     assert "_endpointId.resolvedPort = port;" not in connect_body
     assert "_endpointKey = MtProxy::EndpointKey(_endpointId);" not in connect_body
     assert 'address + u":%1"_q.arg(port)' not in connect_body
-    assert "ResolveEffectiveTlsProfile(_tlsProfile, _endpointKey)" in (
-        effective_body)
-    assert "input.endpointKey = _endpointKey;" in recipe_body
+    assert "return _tlsProfile;" in effective_body
+    assert "applyAdaptiveRecipe" not in handshake
+    assert "_mtproxyPlan(NormalizeAttemptPlan(" in source
+    assert "MtProxyAttemptPlan mtproxyPlan" in header
 
 
 def test_adaptive_policy_no_longer_owns_endpoint_cooldown():
@@ -593,12 +596,20 @@ def test_dns_negative_result_is_ttl_cached_and_reported_to_health():
     constructor = function_body(
         resolving,
         "ResolvingConnection::ResolvingConnection(")
+    start_resolving = function_body(
+        resolving,
+        "void ResolvingConnection::startResolving(")
+    connect = function_body(
+        resolving,
+        "void ResolvingConnection::connectToServer(")
     assert "cachedNegative" not in constructor
     assert "_child = nullptr;" not in constructor
-    assert "proxy.resolvedIPs.empty()" in constructor
-    assert "_runtime->proxyServices().dnsResolver().request(" in constructor
+    assert "_proxy.resolvedIPs.empty()" in connect
+    assert "_runtime->proxyServices().dnsResolver().request(" in start_resolving
+    assert connect.index("_mtproxyAttempt = context.mtproxyAttempt;") < (
+        connect.index("startResolving();"))
     assert "DnsResolverCache::Instance()" not in resolving
-    assert "instance->resolveProxyDomain(host);" not in constructor
+    assert "instance->resolveProxyDomain(host);" not in start_resolving
     assert "MtProxy::FailureReason::DnsFailed" in resolving
     assert "ProxyMtproxyTerminalReason::DnsFailed" in resolving
     assert "emitError(kErrorCodeOther);" in resolving
@@ -634,15 +645,16 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
     source = read(ENDPOINT_HEALTH_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
+    context = read(SOURCE_DIR / "mtproto" / "proxy" / "proxy_endpoint_context.cpp")
     release_body = function_body(
-        source,
-        "void EndpointHealth::releaseAttempt(")
+        context,
+        "void ProxyEndpointContext::releaseEndpointAttempt(")
 
     # A leaked lease must not pin the endpoint at its active cap forever:
     # attempts have a hard TTL, pruned on every admit.
     assert "kAttemptHardTtl = crl::time(120 * 1000)" in policy
     assert "PruneExpiredAttempts(state, now);" in admit_body
-    assert "state.attemptStarts.emplace(result.attemptId, attemptStartedAt);" in (
+    assert "state.attemptStarts.emplace(result.attemptId, EndpointAttemptState{" in (
         admit_body)
     assert "attemptStarts.erase(attemptId);" in release_body
 
@@ -665,17 +677,17 @@ def test_endpoint_health_events_are_published_on_main_thread():
     changes_body = function_body(source, "auto EndpointHealth::changes() const")
 
     assert '#include <crl/crl_on_main.h>' in source
-    assert "EndpointHealth::EndpointHealth(not_null<RuntimeEnvironment*> runtime)" in (
-        source)
+    assert "EndpointHealth::EndpointHealth(" in source
+    assert "std::shared_ptr<ProxyEndpointContext> context" in source
     assert "[[nodiscard]] static EndpointHealth &Instance();" not in read(
         ENDPOINT_HEALTH_H)
-    assert "crl::on_main([=, event = std::move(event)]() mutable {" in publisher
-    assert "_storage->events.fire(std::move(event));" in publisher
+    assert "crl::on_main([context, event = std::move(event)]() mutable {" in publisher
+    assert "context->storage().events.fire(std::move(event));" in publisher
     assert "fireEndpointEventOnMain(std::move(*rotationEvent));" in admit_body
     assert "fireEndpointEventOnMain(std::move(event));" in failure_body
     assert "_storage->events.fire(" not in admit_body
     assert "_storage->events.fire(" not in failure_body
-    assert "return _storage->events.events();" in changes_body
+    assert "return _context->storage().events.events();" in changes_body
     assert "crl::on_main(base::make_weak(this)" not in manager
 
 
@@ -720,7 +732,7 @@ if __name__ == "__main__":
     test_serverhello_ok_no_appdata_is_warning_not_fatal()
     test_session_does_not_punish_remote_closed_after_usable_success()
     test_tls_socket_reports_typed_terminal_reasons()
-    test_tls_socket_uses_endpoint_health_key_for_profile_rotation()
+    test_tls_socket_uses_immutable_admission_plan()
     test_adaptive_policy_no_longer_owns_endpoint_cooldown()
     test_appdata_remote_closed_is_mtproxy_terminal_reason()
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()

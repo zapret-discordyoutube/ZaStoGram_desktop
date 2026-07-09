@@ -156,7 +156,7 @@ def test_synthetic_psk_offer_failures_clear_remaining_tickets():
     assert "_syntheticPskOffered = false;" in disconnected_body
     assert "clearSyntheticPskOnFailure(reason)" in error_body
     assert "clearSyntheticPskOnFailure(reason)" in timeout_body
-    assert "if (!_syntheticPskOffered)" in clear_helper
+    assert "if (!_syntheticPskOffered || IsProxyCheck(_endpointUse))" in clear_helper
     for reason in (
         "ClientHelloSentNoServerHello",
         "TlsAlertAfterClientHello",
@@ -309,29 +309,19 @@ def test_stealth_record_timing_and_startup_cover_default_off():
     assert 'read(\n\t\t"mtproxy/startupCover",\n\t\tint(result.startupCover),' in settings
 
 
-def test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics():
+def test_admission_plan_drives_tls_socket_spacing_and_diagnostics():
     header = TLS_SOCKET_H.read_text(encoding="utf-8")
     source = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
     socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
-    adaptive_header = ADAPTIVE_POLICY_H.read_text(encoding="utf-8")
-    adaptive_source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-    recipe_body = function_body(source, "void TlsSocket::applyAdaptiveRecipe()")
     connected_body = function_body(source, "void TlsSocket::plainConnected()")
     error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
     parts12_body = function_body(source, "void TlsSocket::checkHelloParts12(int parts1Size)")
     digest_body = function_body(source, "void TlsSocket::checkHelloDigest()")
 
-    assert "ProxyTlsProfile effectiveTlsProfile" in adaptive_header
-    assert "CompatibilityTlsProfile(\n\t\t\tinput.effectiveTlsProfile," in adaptive_source
-    assert "ProxyTlsProfile _preparedTlsProfile" in header
-    assert "bool _usePreparedTlsProfile" in header
-    assert "proxyServices().control()" in recipe_body
-    assert "mtproxyEndpointSnapshot(" in recipe_body
-    assert "input.recipeLevel = snapshot.recipeLevel;" in recipe_body
-    assert "input.lastDiagnostic = snapshot.lastDiagnostic;" in recipe_body
-    assert "input.effectiveTlsProfile = effectiveTlsProfile();" in recipe_body
-    assert "_preparedTlsProfile = recipe.stealth.tlsProfile;" in recipe_body
-    assert "_connectionPattern = recipe.stealth.connectionPattern;" in recipe_body
+    assert "MtProxyAttemptPlan _mtproxyPlan;" in header
+    assert "ProxyTlsProfile _configuredTlsProfile" in header
+    assert "applyAdaptiveRecipe" not in source
+    assert "reportTransportEvent(" in source
     assert "const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);" in connected_body
     assert "_clientHelloTimer.callOnce(delay);" in connected_body
     assert "_sentTlsProfile" in error_body
@@ -380,4 +370,4 @@ if __name__ == "__main__":
     test_mtproxy_profile_wording_does_not_claim_ja4_validation()
     test_manual_tls_profiles_have_independent_transport_cases()
     test_stealth_record_timing_and_startup_cover_default_off()
-    test_adaptive_recipe_drives_tls_socket_profile_spacing_and_diagnostics()
+    test_admission_plan_drives_tls_socket_spacing_and_diagnostics()

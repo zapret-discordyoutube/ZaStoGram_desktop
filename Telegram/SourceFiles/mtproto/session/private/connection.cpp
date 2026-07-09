@@ -74,7 +74,10 @@ bool SessionTransport::appendTestConnection(
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
 		+ (protocolSecret.empty() ? 0 : 1);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
-	const auto mtproxyUse = protocolForFiles
+	const auto mtproxyUse = isUploadDcId(_owner->_shiftedDcId)
+		? SessionProxyEndpointUse::Upload
+		: (isMediaClusterDcId(_owner->_shiftedDcId)
+			|| _owner->_realDcType == DcType::Cdn)
 		? SessionProxyEndpointUse::Media
 		: SessionProxyEndpointUse::Main;
 	if (_state.proxyMigrationScout
@@ -87,6 +90,7 @@ bool SessionTransport::appendTestConnection(
 			SessionProxyEndpointUse startUse,
 			SessionProxyLease startLease,
 			ProxyConnectionAttempt startAttempt,
+			MtProxyAttemptPlan startPlan,
 			crl::time startAttemptStartedAt,
 			ProxyStealthOptions startStealth) {
 		QWriteLocker lock(&_owner->_stateMutex);
@@ -104,6 +108,7 @@ bool SessionTransport::appendTestConnection(
 			startUse,
 			std::move(startLease),
 			startAttempt,
+			startPlan,
 			startAttemptStartedAt
 		});
 		const auto weak = _state.testConnections.back().data.get();
@@ -141,6 +146,7 @@ bool SessionTransport::appendTestConnection(
 				protocolForFiles,
 				{
 					.mtproxyAttempt = startAttempt,
+					.mtproxyPlan = startPlan,
 					.mtproxyAttemptStartedAt = startAttemptStartedAt,
 				});
 		};
@@ -169,12 +175,8 @@ bool SessionTransport::appendTestConnection(
 					std::move(start.endpoint),
 					start.use,
 					std::move(start.lease),
-					{
-						.proxyGeneration = start.proxyGeneration,
-						.proxyEpoch = start.proxyEpoch,
-						.successEpoch = start.successEpoch,
-						.attemptId = start.attemptId,
-					},
+					start.attempt,
+					start.plan,
 					start.attemptStartedAt,
 					start.stealth);
 			},
@@ -194,22 +196,32 @@ bool SessionTransport::appendTestConnection(
 		SessionProxyEndpointUse::Main,
 		SessionProxyLease(),
 		{ .proxyGeneration = _state.proxyGeneration },
+		MtProxyAttemptPlan(),
 		0,
 		stealth);
 	return true;
 }
 
-void SessionTransport::destroyAllConnections() {
+void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_owner->clearUnboundKeyCreator();
 	_timing.waitForBetterTimer.cancel();
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
 	_state.brokerTickets.clear();
+	for (const auto &connection : _state.testConnections) {
+		_owner->_proxyPort->reportAttemptCancelled(
+			proxyAttempt(connection),
+			origin);
+	}
+	_owner->_proxyPort->reportAttemptCancelled(
+		currentProxyAttempt(),
+		origin);
 	_state.testConnections.clear();
 	_state.mtproxyEndpoint = MtProxy::EndpointId();
 	_state.mtproxyUse = SessionProxyEndpointUse::Main;
 	_state.mtproxyAttempt = {};
+	_state.mtproxyPlan = {};
 	_state.mtproxyAttemptStartedAt = 0;
 	_state.mtprotoDataReceived = false;
 	_state.connection = nullptr;
@@ -307,7 +319,7 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 		scout
 			? u"proxy_switch_main_scout"_q
 			: u"suspended_by_proxy_switch"_q);
-	destroyAllConnections();
+	destroyAllConnections(ProxyCloseOrigin::ProxySwitch);
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
 	_owner->setState(DisconnectedState);
 	if (!scout) {
@@ -341,7 +353,7 @@ void SessionTransport::connectToServer(bool afterConfig) {
 		return;
 	}
 
-	destroyAllConnections();
+	destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);
 
 	if (_owner->realDcTypeChanged() && _owner->_authState.keyCreator) {
 		_owner->destroyTemporaryKey();
@@ -691,8 +703,8 @@ void SessionTransport::waitBetterFailed() {
 
 void SessionTransport::connectingTimedOut() {
 	for (const auto &connection : _state.testConnections) {
-		_owner->_proxyPort->reportConnectTimeout(proxyAttempt(connection));
 		connection.data->timedOut();
+		_owner->_proxyPort->reportConnectTimeout(proxyAttempt(connection));
 	}
 	doDisconnect();
 }
@@ -725,12 +737,10 @@ void SessionTransport::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_state.testConnections));
-	const auto mtproxyAttempt = ProxyConnectionAttempt{
-		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
-		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
-		.successEpoch = i->mtproxyLease.successEpoch(),
-		.attemptId = i->mtproxyLease.attemptId(),
-	};
+	auto mtproxyAttempt = i->mtproxyAttempt;
+	mtproxyAttempt.proxyEpoch = i->mtproxyLease.proxyEpoch();
+	mtproxyAttempt.successEpoch = i->mtproxyLease.successEpoch();
+	mtproxyAttempt.attemptId = i->mtproxyLease.attemptId();
 	const auto mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
 	i->mtproxyLease.release();
 	reportMtproxyConnectionUsable(*i);
@@ -749,6 +759,7 @@ void SessionTransport::onConnected(
 		_state.mtproxyEndpoint = i->mtproxyEndpoint;
 		_state.mtproxyUse = i->mtproxyUse;
 		_state.mtproxyAttempt = mtproxyAttempt;
+		_state.mtproxyPlan = i->mtproxyPlan;
 		_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;
 		_state.connection = std::move(i->data);
 		_state.brokerTickets.clear();
@@ -798,12 +809,11 @@ void SessionTransport::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	reportMtproxyConnectionUsable(*i);
-	_state.mtproxyAttempt = {
-		.proxyGeneration = i->mtproxyAttempt.proxyGeneration,
-		.proxyEpoch = i->mtproxyLease.proxyEpoch(),
-		.successEpoch = i->mtproxyLease.successEpoch(),
-		.attemptId = i->mtproxyLease.attemptId(),
-	};
+	_state.mtproxyAttempt = i->mtproxyAttempt;
+	_state.mtproxyPlan = i->mtproxyPlan;
+	_state.mtproxyAttempt.proxyEpoch = i->mtproxyLease.proxyEpoch();
+	_state.mtproxyAttempt.successEpoch = i->mtproxyLease.successEpoch();
+	_state.mtproxyAttempt.attemptId = i->mtproxyLease.attemptId();
 	_state.mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
 	_state.mtproxyEndpoint = i->mtproxyEndpoint;
 	_state.mtproxyUse = i->mtproxyUse;
@@ -850,6 +860,7 @@ void SessionTransport::onError(
 			_owner->_proxyPort->reportConnectionError(
 				proxyAttempt(*found),
 				errorCode,
+				connection->proxyTransportFailure(),
 				&found->mtproxyLease);
 		}
 	} else if (_state.connection.get() == connection.get()
@@ -857,6 +868,7 @@ void SessionTransport::onError(
 		_owner->_proxyPort->reportConnectionError(
 			currentProxyAttempt(),
 			errorCode,
+			connection->proxyTransportFailure(),
 			nullptr,
 			true);
 	}

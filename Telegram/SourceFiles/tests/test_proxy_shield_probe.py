@@ -149,12 +149,11 @@ def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
         ".use = MtProxy::EndpointUse::ProxyCheck")
     assert ".runtime = runtime" not in request
     assert "raw->setMtproxyAttempt({" not in start
-    assert ".mtproxyAttempt = {" in start
-    assert ".proxyGeneration = start.proxyGeneration" in start
-    assert ".proxyEpoch = start.proxyEpoch" in start
-    assert ".attemptId = start.attemptId" in start
-    assert ".connectionId = raw->debugId()" in start
-    assert ".probe = true" in start
+    assert "state->mtproxyAttempt = start.attempt" in start
+    assert ".mtproxyAttempt = state->mtproxyAttempt" in start
+    assert ".mtproxyPlan = start.plan" in start
+    assert "state->mtproxyAttempt = start.attempt;" in start
+    assert "state->mtproxyPlan = start.plan;" in start
     assert "start.attemptStartedAt" in start
     assert "state->mtproxyStealth = start.stealth;" in start
     assert "state->mtproxySentProfile = start.effectiveTlsProfile;" in start
@@ -176,11 +175,11 @@ def test_probe_attempts_do_not_publish_selected_status():
         control,
         "ProxyFact ProxyControlPlane::FactFromReport(")
 
-    assert "bool probe = false;" in status
-    assert "&& (probe == other.probe)" in status
-    assert "fact.status.attempt.probe" in reduce_body
+    assert "ProxyConnectionUse use = ProxyConnectionUse::Main;" in status
+    assert "&& (use == other.use)" in status
+    assert "IsProxyCheck(fact.status.attempt.use)" in reduce_body
     assert "return current;" in reduce_body.split(
-        "fact.status.attempt.probe", 1)[1].split("}", 1)[0]
+        "IsProxyCheck(fact.status.attempt.use)", 1)[1].split("}", 1)[0]
     finished = fact_body.split(
         "case ProxyDiagnosticsPhase::ProxyCheckFinished:", 1)[1].split(
         "case ProxyDiagnosticsPhase::AdmissionQueued:", 1)[0]
@@ -218,7 +217,7 @@ def test_proxy_check_success_is_probe_telemetry_not_canonical_health():
     assert "report.use == EndpointUse::ProxyCheck" in report_success
     assert "LogProbeAttemptSuccess(_runtime, report" in report_success
     assert report_success.index("report.use == EndpointUse::ProxyCheck") < (
-        report_success.index("ApplyProxyGeneration(state, report.proxyGeneration)"))
+        report_success.index("ApplyProxyGeneration("))
 
 
 def test_connection_box_uses_probe_status_instead_of_spinner_only():

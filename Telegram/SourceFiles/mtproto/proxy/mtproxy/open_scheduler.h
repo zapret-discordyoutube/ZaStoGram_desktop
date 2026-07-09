@@ -24,6 +24,7 @@ public:
 
 private:
 	RuntimeAsyncGateway _async;
+	std::shared_ptr<ProxyEndpointContext> _context;
 
 };
 
@@ -39,7 +40,11 @@ private:
 // successes shrink it back to zero. A proxy that throttles bursts of
 // new connections gets approached gently instead of hammered by every
 // reconnecting session at once.
-void NoteConnectTimeout(const EndpointId &endpoint);
-void NoteConnectSuccess(const EndpointId &endpoint);
+void NoteConnectTimeout(
+	not_null<RuntimeEnvironment*> runtime,
+	const EndpointId &endpoint);
+void NoteConnectSuccess(
+	not_null<RuntimeEnvironment*> runtime,
+	const EndpointId &endpoint);
 
 } // namespace MTP::details::MtProxy

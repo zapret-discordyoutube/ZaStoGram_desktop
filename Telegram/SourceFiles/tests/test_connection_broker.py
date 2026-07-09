@@ -78,7 +78,9 @@ def test_session_pending_broker_tickets_keep_connecting_without_timeout_loop():
     header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
     connect_body = function_body(source, "void SessionTransport::connectToServer(")
-    destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
+    destroy_body = function_body(
+        source,
+        "void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin)")
 
     assert "void removeConnectionBrokerTicket(SessionProxyTicketId id);" in header
     assert "void armWaitForConnectedTimer();" in header
@@ -93,7 +95,9 @@ def test_session_queued_broker_tickets_have_hard_deadline():
     header = SESSION_TRANSPORT_H.read_text(encoding="utf-8")
     source = read_session_private_sources()
     connect_body = function_body(source, "void SessionTransport::connectToServer(")
-    destroy_body = function_body(source, "void SessionTransport::destroyAllConnections()")
+    destroy_body = function_body(
+        source,
+        "void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin)")
     remove_body = function_body(
         source,
         "void SessionTransport::removeConnectionBrokerTicket(")

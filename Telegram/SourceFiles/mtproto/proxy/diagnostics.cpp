@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/diagnostics.h"
 
 #include "base/unixtime.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QCryptographicHash>
@@ -97,6 +99,10 @@ namespace {
 		return u"mtp_key_destroyed"_q;
 	case ProxyDiagnosticsPhase::MtpRestart:
 		return u"mtp_restart"_q;
+	case ProxyDiagnosticsPhase::AttemptSummary:
+		return u"attempt_summary"_q;
+	case ProxyDiagnosticsPhase::Liveness:
+		return u"liveness"_q;
 	}
 	return u"event"_q;
 }
@@ -157,11 +163,62 @@ namespace {
 	if (host.isEmpty() || !proxy.port) {
 		return QString();
 	}
-	return ProxyDiagnosticsKeyHash(
-		QString::number(int(proxy.type))
+	if (proxy.type == ProxyData::Type::Mtproto) {
+		return ProxyDiagnosticsKeyHash(details::MtProxy::EndpointKey(
+			details::MtProxy::EndpointIdFromProxy(
+				proxy,
+				ProxyStealthOptions()).canonical));
+	}
+	return ProxyDiagnosticsKeyHash(QString::number(int(proxy.type))
 		+ ':' + host
 		+ u":%1:"_q.arg(proxy.port)
 		+ proxy.password);
+}
+
+[[nodiscard]] QString CloseOriginText(ProxyCloseOrigin origin) {
+	switch (origin) {
+	case ProxyCloseOrigin::None: return QString();
+	case ProxyCloseOrigin::PeerClosed: return u"peer_closed"_q;
+	case ProxyCloseOrigin::LocalTimeout: return u"local_timeout"_q;
+	case ProxyCloseOrigin::RouteRaceLost: return u"route_race_lost"_q;
+	case ProxyCloseOrigin::BrokerCancelled: return u"broker_cancelled"_q;
+	case ProxyCloseOrigin::ProxySwitch: return u"proxy_switch"_q;
+	case ProxyCloseOrigin::OwnerDestroyed: return u"owner_destroyed"_q;
+	case ProxyCloseOrigin::NetworkError: return u"network_error"_q;
+	case ProxyCloseOrigin::ProtocolRejected: return u"protocol_rejected"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString ConnectionUseText(ProxyConnectionUse use) {
+	switch (use) {
+	case ProxyConnectionUse::Main: return u"main"_q;
+	case ProxyConnectionUse::Media: return u"media"_q;
+	case ProxyConnectionUse::Upload: return u"upload"_q;
+	case ProxyConnectionUse::ProxyCheck: return u"proxy_check"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] bool IsCancellationOrigin(
+		std::optional<ProxyCloseOrigin> origin) {
+	if (!origin) {
+		return false;
+	}
+	switch (*origin) {
+	case ProxyCloseOrigin::RouteRaceLost:
+	case ProxyCloseOrigin::BrokerCancelled:
+	case ProxyCloseOrigin::ProxySwitch:
+	case ProxyCloseOrigin::OwnerDestroyed:
+		return true;
+	case ProxyCloseOrigin::None:
+	case ProxyCloseOrigin::PeerClosed:
+	case ProxyCloseOrigin::LocalTimeout:
+	case ProxyCloseOrigin::NetworkError:
+	case ProxyCloseOrigin::ProtocolRejected:
+		return false;
+	}
+	return false;
 }
 
 [[nodiscard]] ProxyData RedactProxyData(ProxyData proxy) {
@@ -178,7 +235,7 @@ namespace {
 [[nodiscard]] ProxyDiagnosticsEvent RedactEvent(
 		ProxyDiagnosticsEvent event) {
 	if (event.proxyKeyHash.isEmpty()) {
-		event.proxyKeyHash = ProxyKeyHash(event.proxy);
+		event.proxyKeyHash = ProxyDiagnosticsProxyKeyHash(event.proxy);
 	}
 	event.proxy = RedactProxyData(std::move(event.proxy));
 	event.message = RedactMessage(std::move(event.message));
@@ -269,6 +326,8 @@ namespace {
 	case ProxyDiagnosticsPhase::StealthRecipeApplied:
 	case ProxyDiagnosticsPhase::TransportFallbackApplied:
 	case ProxyDiagnosticsPhase::RotationSwitched:
+	case ProxyDiagnosticsPhase::AttemptSummary:
+	case ProxyDiagnosticsPhase::Liveness:
 		return false;
 	}
 	return false;
@@ -296,6 +355,10 @@ QString ProxyDiagnosticsKeyHash(const QString &key) {
 		key.toUtf8(),
 		QCryptographicHash::Sha256);
 	return QString::fromLatin1(hash.toHex().left(16));
+}
+
+QString ProxyDiagnosticsProxyKeyHash(const ProxyData &proxy) {
+	return ProxyKeyHash(proxy);
 }
 
 QString ProxyDiagnosticsEndpointText(const QString &host, int port) {
@@ -356,6 +419,14 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	parts.push_back(SourceText(safe.source));
 	parts.push_back(SeverityText(safe.severity));
 	parts.push_back(PhaseText(safe.phase));
+	if (safe.phase == ProxyDiagnosticsPhase::AttemptSummary) {
+		parts.push_back(IsCancellationOrigin(safe.closeOrigin)
+			? u"outcome=cancelled"_q
+			: (safe.error != ProxyConnectionError::None
+				|| safe.mtproxyReason != ProxyMtproxyTerminalReason::None)
+			? u"outcome=failure"_q
+			: u"outcome=success"_q);
+	}
 	const auto endpoint = ProxyEndpointText(safe.proxy);
 	if (!endpoint.isEmpty()) {
 		parts.push_back(u"proxy=%1"_q.arg(endpoint));
@@ -375,19 +446,22 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (!safe.proxyKeyHash.isEmpty()) {
 		parts.push_back(u"proxy_key_hash=%1"_q.arg(safe.proxyKeyHash));
 	}
-	const auto transport = safe.transport.isEmpty()
-		? ProxyDiagnosticsTransportName(
+	const auto transport = (!safe.transport.isEmpty() || safe.traceSchema)
+		? safe.transport
+		: ProxyDiagnosticsTransportName(
 			safe.proxy.type,
-			ProxyTransport::Tcp)
-		: safe.transport;
+			ProxyTransport::Tcp);
 	if (!transport.isEmpty()) {
 		parts.push_back(u"transport=%1"_q.arg(transport));
 	}
 	if (!safe.dc.isEmpty()) {
 		parts.push_back(u"dc=%1"_q.arg(safe.dc));
 	}
-	if (!safe.connectionId.isEmpty()) {
-		parts.push_back(u"connection=%1"_q.arg(safe.connectionId));
+	const auto connectionId = safe.connectionId.isEmpty()
+		? safe.attempt.connectionId
+		: safe.connectionId;
+	if (!connectionId.isEmpty()) {
+		parts.push_back(u"connection=%1"_q.arg(connectionId));
 	}
 	if (!safe.socketId.isEmpty()) {
 		parts.push_back(u"socket=%1"_q.arg(safe.socketId));
@@ -401,23 +475,86 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 		parts.push_back(u"mtproxy_reason=%1"_q.arg(mtproxyReason));
 	}
 	if (!safe.profile.isEmpty()) {
-		parts.push_back(u"profile=%1"_q.arg(safe.profile));
+		parts.push_back(u"sent_profile=%1"_q.arg(safe.profile));
 	}
-	if (safe.source != ProxyDiagnosticsSource::MTP) {
-		parts.push_back(u"recipe_level=%1"_q.arg(safe.recipeLevel));
+	if (!safe.configuredProfile.isEmpty()) {
+		parts.push_back(u"configured_profile=%1"_q.arg(
+			safe.configuredProfile));
+	}
+	if (!safe.effectiveProfile.isEmpty()) {
+		parts.push_back(u"effective_profile=%1"_q.arg(
+			safe.effectiveProfile));
+	}
+	if (safe.recipeLevel) {
+		parts.push_back(u"recipe_level=%1"_q.arg(*safe.recipeLevel));
+	}
+	if (safe.pskOffered) {
 		parts.push_back(u"psk_offered=%1"_q.arg(
-			(safe.pskOfferedKnown && safe.pskOffered)
-				? u"true"_q
-				: u"false"_q));
+			*safe.pskOffered ? u"true"_q : u"false"_q));
+	}
+	if (safe.fragmentedClientHello) {
 		parts.push_back(u"fragmented_ch=%1"_q.arg(
-			(safe.fragmentedClientHelloKnown && safe.fragmentedClientHello)
-				? u"true"_q
-				: u"false"_q));
+			*safe.fragmentedClientHello ? u"true"_q : u"false"_q));
+	}
+	if (!safe.phaseAtFailure.isEmpty()) {
 		parts.push_back(u"phase_at_failure=%1"_q.arg(
-			safe.phaseAtFailure.isEmpty()
-				? u"none"_q
-				: safe.phaseAtFailure));
-		parts.push_back(u"queue_ms=%1"_q.arg(safe.queueMs));
+			safe.phaseAtFailure));
+	}
+	if (safe.queueMs) {
+		parts.push_back(u"queue_ms=%1"_q.arg(*safe.queueMs));
+	}
+	if (safe.clientHelloBytes) {
+		parts.push_back(u"ch_bytes=%1"_q.arg(*safe.clientHelloBytes));
+	}
+	if (safe.clientHelloWrites) {
+		parts.push_back(u"ch_writes=%1"_q.arg(*safe.clientHelloWrites));
+	}
+	if (safe.clientHelloAcceptedBytes) {
+		parts.push_back(u"ch_accepted=%1"_q.arg(
+			*safe.clientHelloAcceptedBytes));
+	}
+	if (safe.clientHelloFragmentSplit) {
+		parts.push_back(u"ch_fragment_split=%1"_q.arg(
+			*safe.clientHelloFragmentSplit));
+	}
+	if (safe.clientHelloFragmentDelayMs) {
+		parts.push_back(u"ch_fragment_delay_ms=%1"_q.arg(
+			*safe.clientHelloFragmentDelayMs));
+	}
+	if (safe.rxAfterClientHello) {
+		parts.push_back(u"rx_after_ch=%1"_q.arg(*safe.rxAfterClientHello));
+	}
+	if (!safe.rxClass.isEmpty()) {
+		parts.push_back(u"rx_class=%1"_q.arg(safe.rxClass));
+	}
+	if (!safe.tlsRecordType.isEmpty()) {
+		parts.push_back(u"tls_record=%1"_q.arg(safe.tlsRecordType));
+	}
+	if (!safe.tlsRecordVersion.isEmpty()) {
+		parts.push_back(u"tls_version=%1"_q.arg(safe.tlsRecordVersion));
+	}
+	if (safe.tlsRecordLength) {
+		parts.push_back(u"tls_record_length=%1"_q.arg(
+			*safe.tlsRecordLength));
+	}
+	if (!safe.responsePrefixHash.isEmpty()) {
+		parts.push_back(u"rx_prefix_hash=%1"_q.arg(
+			safe.responsePrefixHash));
+	}
+	if (safe.sniLength) {
+		parts.push_back(u"sni_length=%1"_q.arg(*safe.sniLength));
+	}
+	if (!safe.sniHash.isEmpty()) {
+		parts.push_back(u"sni_hash=%1"_q.arg(safe.sniHash));
+	}
+	if (!safe.parserStage.isEmpty()) {
+		parts.push_back(u"parser_stage=%1"_q.arg(safe.parserStage));
+	}
+	if (safe.closeOrigin) {
+		const auto origin = CloseOriginText(*safe.closeOrigin);
+		if (!origin.isEmpty()) {
+			parts.push_back(u"close_origin=%1"_q.arg(origin));
+		}
 	}
 	const auto cooldownMs = safe.terminalUntil - crl::now();
 	if (cooldownMs > 0) {
@@ -427,10 +564,47 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 		parts.push_back(u"generation=%1"_q.arg(
 			safe.attempt.proxyGeneration));
 	}
+	if (safe.attempt.runtimeId) {
+		parts.push_back(u"runtime=%1"_q.arg(safe.attempt.runtimeId));
+	}
+	if (safe.attempt.traceId) {
+		parts.push_back(u"trace=%1"_q.arg(safe.attempt.traceId));
+		parts.push_back(u"use=%1"_q.arg(
+			ConnectionUseText(safe.attempt.use)));
+	}
+	if (safe.attempt.ticketId) {
+		parts.push_back(u"ticket=%1"_q.arg(safe.attempt.ticketId));
+	}
+	if (safe.attempt.routeAttemptId) {
+		parts.push_back(u"route_attempt=%1"_q.arg(
+			safe.attempt.routeAttemptId));
+	}
+	if (safe.attempt.proxyEpoch) {
+		parts.push_back(u"proxy_epoch=%1"_q.arg(
+			safe.attempt.proxyEpoch));
+	}
+	if (safe.attempt.successEpoch) {
+		parts.push_back(u"success_epoch=%1"_q.arg(
+			safe.attempt.successEpoch));
+	}
 	if (safe.attempt.attemptId) {
-		parts.push_back(u"attempt=%1/%2"_q.arg(
-			safe.attempt.proxyEpoch
-		).arg(safe.attempt.attemptId));
+		parts.push_back(u"endpoint_attempt=%1"_q.arg(
+			safe.attempt.attemptId));
+	}
+	const auto appendTiming = [&](const QString &name, auto value) {
+		if (value) {
+			parts.push_back(name + u"=%1"_q.arg(*value));
+		}
+	};
+	appendTiming(u"dns_ms"_q, safe.dnsMs);
+	appendTiming(u"tcp_ms"_q, safe.tcpMs);
+	appendTiming(u"first_rx_ms"_q, safe.firstRxMs);
+	appendTiming(u"server_hello_ms"_q, safe.serverHelloMs);
+	appendTiming(u"appdata_ms"_q, safe.appDataMs);
+	appendTiming(u"mtproto_ms"_q, safe.mtprotoMs);
+	appendTiming(u"total_ms"_q, safe.totalMs);
+	if (safe.traceSchema) {
+		parts.push_back(u"trace_schema=%1"_q.arg(safe.traceSchema));
 	}
 	if (!safe.message.isEmpty()) {
 		parts.push_back(u"message=%1"_q.arg(safe.message));
@@ -452,12 +626,37 @@ void WriteProxyDiagnosticsLine(
 void ReportProxyEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		ProxyEventReport report) {
-	if (report.proxy.type == ProxyData::Type::None) {
+	if (report.proxy.type == ProxyData::Type::None
+		&& report.phase != ProxyDiagnosticsPhase::AttemptSummary
+		&& report.phase != ProxyDiagnosticsPhase::Liveness) {
 		return;
+	}
+	if (report.attempt.traceId && !report.traceSchema) {
+		report.traceSchema = 2;
 	}
 	if (runtime->diagnostics().reportProxyEvent) {
 		runtime->diagnostics().reportProxyEvent(std::move(report));
 	}
+}
+
+bool ReportProxyAttemptSummary(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyEventReport report) {
+	if (!runtime->proxyEndpointContext().finishTrace(report.attempt.traceId)) {
+		return false;
+	}
+	report.phase = ProxyDiagnosticsPhase::AttemptSummary;
+	report.traceSchema = 2;
+	ReportProxyEvent(runtime, std::move(report));
+	return true;
+}
+
+void ReportProxyLiveness(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyEventReport report) {
+	report.phase = ProxyDiagnosticsPhase::Liveness;
+	report.traceSchema = 2;
+	ReportProxyEvent(runtime, std::move(report));
 }
 
 } // namespace MTP

@@ -7,12 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/connection_broker.h"
 
+#include "base/algorithm.h"
+#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
-#include "base/algorithm.h"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,7 @@ constexpr auto kQueuePriorityOrder = std::array{
 
 struct ConnectionBroker::RequestState {
 	ConnectionTicketId id = 0;
+	ProxyTraceId traceId = 0;
 	uint64 proxyGeneration = 0;
 	ConnectionRequest request;
 	std::optional<ProxyAdmissionDecision> admission;
@@ -69,7 +71,6 @@ struct ConnectionBroker::EndpointQueue {
 [[nodiscard]] QString EndpointHash(const MtProxy::EndpointId &endpoint) {
 	return ProxyDiagnosticsKeyHash(MtProxy::EndpointKey(endpoint.canonical));
 }
-
 
 ConnectionTicket::ConnectionTicket(
 	ConnectionBroker *broker,
@@ -121,7 +122,35 @@ ConnectionBroker::ConnectionBroker(not_null<RuntimeEnvironment*> runtime)
 , _runtime(runtime) {
 }
 
-ConnectionBroker::~ConnectionBroker() = default;
+ConnectionBroker::~ConnectionBroker() {
+	cancelByOwnerDestruction();
+}
+
+void ConnectionBroker::cancelByOwnerDestruction() {
+	auto cancelled = std::vector<std::shared_ptr<RequestState>>();
+	{
+		QMutexLocker lock(&_mutex);
+		for (const auto queue : {
+				_mainQueue.get(),
+				_proxyCheckQueue.get(),
+				_mediaQueue.get(),
+				_uploadQueue.get() }) {
+			for (const auto &state : queue->pending) {
+				state->active = false;
+				cancelled.push_back(state);
+			}
+			queue->pending.clear();
+		}
+	}
+	for (const auto &state : cancelled) {
+		reportAdmissionEvent(
+			state,
+			ProxyDiagnosticsPhase::AdmissionCancelled,
+			{},
+			u"mtproxy admission cancelled by owner destruction"_q);
+		releaseAdmission(state);
+	}
+}
 
 ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 	if (!request.context || !request.start) {
@@ -132,6 +161,14 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		QMutexLocker lock(&_mutex);
 		state->id = ++_lastTicketId;
 		state->request = std::move(request);
+		if (!MtProxy::EndpointEmpty(state->request.endpoint)) {
+			state->traceId = _runtime->proxyEndpointContext().nextTraceId({
+				.runtimeId = _runtime->proxyRuntimeId(),
+				.ticketId = state->id,
+				.proxyGeneration = state->request.proxyGeneration,
+				.use = state->request.use,
+			});
+		}
 		state->createdAt = _runtime->async().now();
 		state->proxyGeneration = state->request.proxyGeneration;
 		queueFor(state->request.use).pending.push_back(state);
@@ -272,16 +309,21 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 	auto admission = _runtime->proxyServices().control().admit({
 		.endpoint = state->request.endpoint,
 		.use = state->request.use,
+		.runtimeId = _runtime->proxyRuntimeId(),
 		.stealth = state->request.stealth,
 		.configuredTlsProfile = state->request.configuredTlsProfile,
 		.proxyGeneration = state->proxyGeneration,
 	});
 	if (admission.action == ProxyAdmissionAction::StartNow) {
-		const auto openDelay = MtProxy::ReserveOpenSlot(
-			_runtime,
-			state->request.endpoint,
-			state->request.connectionPattern,
-			state->request.notBefore);
+		const auto openDelay = IsProxyCheck(state->request.use)
+			? std::max(crl::time(0), state->request.notBefore)
+			: MtProxy::ReserveOpenSlot(
+				_runtime,
+				state->request.endpoint,
+				admission.plan.admitted
+					? admission.plan.stealth.connectionPattern
+					: state->request.connectionPattern,
+				state->request.notBefore);
 		auto keepAdmission = false;
 		auto notifyStartAfter = false;
 		{
@@ -425,10 +467,24 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 	start.effectiveTlsProfile = admission
 		? admission->effectiveTlsProfile
 		: request.configuredTlsProfile;
+	start.plan = admission ? admission->plan : MtProxyAttemptPlan();
 	start.attemptId = admission ? admission->attemptId : 0;
 	start.proxyEpoch = admission ? admission->proxyEpoch : 0;
 	start.successEpoch = admission ? admission->successEpoch : 0;
 	start.attemptStartedAt = admission ? admission->attemptStartedAt : 0;
+	start.attempt = {
+		.runtimeId = admission
+			? admission->runtimeId
+			: _runtime->proxyRuntimeId(),
+		.traceId = state->traceId,
+		.ticketId = id,
+		.proxyGeneration = start.proxyGeneration,
+		.proxyEpoch = start.proxyEpoch,
+		.successEpoch = start.successEpoch,
+		.attemptId = start.attemptId,
+		.use = request.use,
+	};
+	_runtime->proxyEndpointContext().updateTraceAttempt(start.attempt);
 	if (admission) {
 		start.lease = std::move(admission->lease);
 	}
@@ -476,13 +532,17 @@ void ConnectionBroker::reportAdmissionEvent(
 	if (!state->request.proxy) {
 		return;
 	}
-	const auto profile = state->admission
-		? state->admission->effectiveTlsProfile
-		: state->request.configuredTlsProfile;
 	ReportProxyEvent(_runtime, {
 		.phase = phase,
 		.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
 			decision.blockedBy),
+		.attempt = {
+			.runtimeId = _runtime->proxyRuntimeId(),
+			.traceId = state->traceId,
+			.ticketId = state->id,
+			.proxyGeneration = state->proxyGeneration,
+			.use = state->request.use,
+		},
 		.terminalUntil = decision.retryAfter > 0
 			? (_runtime->async().now() + decision.retryAfter)
 			: 0,
@@ -497,12 +557,58 @@ void ConnectionBroker::reportAdmissionEvent(
 		.canonical = CanonicalText(state->request.endpoint),
 		.route = RouteText(state->request.endpoint),
 		.proxyKeyHash = EndpointHash(state->request.endpoint),
-		.profile = ProxyDiagnosticsTlsProfileName(profile),
-		.recipeLevel = int(state->request.stealth.level),
+		.configuredProfile = ProxyDiagnosticsTlsProfileName(
+			state->request.configuredTlsProfile),
+		.effectiveProfile = state->admission
+			? ProxyDiagnosticsTlsProfileName(
+				state->admission->plan.effectiveTlsProfile)
+			: QString(),
+		.recipeLevel = state->admission
+			? std::make_optional(state->admission->plan.recipeLevel)
+			: std::nullopt,
 		.queueMs = state->createdAt
-			? (_runtime->async().now() - state->createdAt)
-			: crl::time(0),
+			? std::make_optional(
+				_runtime->async().now() - state->createdAt)
+			: std::nullopt,
 	});
+	if (phase == ProxyDiagnosticsPhase::AdmissionCancelled) {
+		(void)ReportProxyAttemptSummary(_runtime, {
+			.attempt = {
+				.runtimeId = _runtime->proxyRuntimeId(),
+				.traceId = state->traceId,
+				.ticketId = state->id,
+				.proxyGeneration = state->proxyGeneration,
+				.use = state->request.use,
+			},
+			.severity = ProxyDiagnosticsSeverity::Warning,
+			.proxy = state->request.proxy,
+			.transport = ProxyDiagnosticsTransportName(
+				state->request.proxy.type,
+				state->request.stealth.transport),
+			.message = message,
+			.canonical = CanonicalText(state->request.endpoint),
+			.route = RouteText(state->request.endpoint),
+			.proxyKeyHash = EndpointHash(state->request.endpoint),
+			.configuredProfile = ProxyDiagnosticsTlsProfileName(
+				state->request.configuredTlsProfile),
+			.effectiveProfile = state->admission
+				? ProxyDiagnosticsTlsProfileName(
+					state->admission->plan.effectiveTlsProfile)
+				: QString(),
+			.recipeLevel = state->admission
+				? std::make_optional(state->admission->plan.recipeLevel)
+				: std::nullopt,
+			.closeOrigin = message.contains(u"proxy switch"_q)
+				? ProxyCloseOrigin::ProxySwitch
+				: message.contains(u"owner destruction"_q)
+				? ProxyCloseOrigin::OwnerDestroyed
+				: ProxyCloseOrigin::BrokerCancelled,
+			.totalMs = state->createdAt
+				? std::make_optional(
+					_runtime->async().now() - state->createdAt)
+				: std::nullopt,
+		});
+	}
 }
 
 } // namespace MTP::details

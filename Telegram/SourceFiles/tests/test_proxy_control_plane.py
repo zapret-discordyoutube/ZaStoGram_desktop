@@ -100,6 +100,7 @@ def test_windows_ci_runs_proxy_control_plane_source_guards_before_build():
         "test_mtproto_relay_silence.py",
         "test_mtproxy_client_hello_profiles.py",
         "test_mtproxy_endpoint_health.py",
+        "test_mtproxy_endpoint_context.py",
         "test_mtproxy_endpoint_identity.py",
         "test_mtproxy_faketls_hardening.py",
         "test_mtproxy_minimal_hotfix.py",
@@ -281,14 +282,13 @@ def test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct():
     ) in lang
 
 
-def test_serverhello_progress_prevents_no_serverhello_terminal_repaint():
+def test_lower_transport_owns_serverhello_terminal_reason():
     control = read(CONTROL_CPP)
     tls = read(TLS_SOCKET_CPP)
     resolving = read(RESOLVING_CONNECTION_CPP)
     reducer = function_body(
         control,
         "ProxyConnectionStatus ProxyControlPlane::Reduce(")
-    normalize = function_body(control, "void NormalizeMtproxyTerminalReason(")
     tls_failure = function_body(
         tls,
         "MtProxy::FailureReason TlsSocket::failureReason() const")
@@ -296,11 +296,8 @@ def test_serverhello_progress_prevents_no_serverhello_terminal_repaint():
         resolving,
         "MtProxy::FailureReason RouteTimeoutReason(")
 
-    assert "NormalizeMtproxyTerminalReason(current, fact.status);" in reducer
-    assert "ProxyConnectionPhase::CheckingTelegram" in normalize
-    assert "ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello" in (
-        normalize)
-    assert "ProxyMtproxyTerminalReason::ServerHelloOkNoAppData" in normalize
+    assert "NormalizeMtproxyTerminalReason" not in control
+    assert "ClientHelloSentNoServerHello" not in reducer
 
     after_serverhello = tls_failure.split(
         "case HandshakePhase::ServerHelloOk:", 1)[1].split(
@@ -335,8 +332,7 @@ def test_session_receive_timeout_reports_stage_specific_terminal_status():
         report_timeout)
     assert "ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData" in (
         report_timeout)
-    assert "MtProxy::FailureReason::ServerHelloOkNoMtprotoData" in (
-        report_timeout)
+    assert "MtProxy::FromProxyMtprotoTerminalReason(reason)" in report_timeout
     assert "reportRelayStall(attempt);" in report_timeout
     assert "proxyServices().control().noteMtproxyRelayStall(" in relay_stall
     relay_stall_call = relay_stall.split(
@@ -450,7 +446,7 @@ def test_instance_status_sink_does_not_reduce_control_plane_output_again():
         connection_status,
         "void ConnectionStatus::setProxyStatus(")
 
-    assert "ProxyControlPlane::Reduce(current, normalized)" in submit
+    assert "ProxyControlPlane::Reduce(current, fact)" in submit
     assert "ApplySelectedStatusUpdate(" in control
     assert "ApplyProxyConnectionStatusUpdate(" not in status_header
     assert "ApplyProxyConnectionStatusUpdate(" not in status_source
@@ -482,7 +478,6 @@ if __name__ == "__main__":
     test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source()
     test_instance_status_sink_is_private_to_runtime_gateway()
     test_no_serverhello_no_appdata_and_mtproto_stalls_are_distinct()
-    test_serverhello_progress_prevents_no_serverhello_terminal_repaint()
     test_session_receive_timeout_reports_stage_specific_terminal_status()
     test_admission_keeps_scouts_until_relay_proof()
     test_proxy_restart_backoff_is_not_one_ms_herd()

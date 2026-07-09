@@ -18,7 +18,6 @@ PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 SESSION_PRIVATE_BANNED_TOKENS = (
     '#include "mtproto/proxy/connection_broker.h"',
     '#include "mtproto/proxy/control_plane.h"',
-    '#include "mtproto/proxy/diagnostics.h"',
     "ConnectionBroker::Instance()",
     "ProxyControlPlane::",
     "ReportProxyEvent(",
@@ -55,6 +54,7 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportConnectionError(" in port_header
     assert "reportReceiveTimeout(" in port_header
     assert "reportConnectTimeout(" in port_header
+    assert "reportAttemptCancelled(" in port_header
     assert "logEvent(" in port_header
 
     for token in SESSION_PRIVATE_BANNED_TOKENS:

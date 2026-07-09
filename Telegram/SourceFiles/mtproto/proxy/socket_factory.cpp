@@ -22,6 +22,7 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 		const ProxyStealthOptions &stealth,
 		int16 protocolDcId,
 		ProxyConnectionAttempt mtproxyAttempt,
+		MtProxyAttemptPlan mtproxyPlan,
 		crl::time mtproxyAttemptStartedAt) {
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {
@@ -47,6 +48,7 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 			protocolForFiles,
 			stealth,
 			mtproxyAttempt,
+			std::move(mtproxyPlan),
 			mtproxyAttemptStartedAt);
 	}
 	return std::make_unique<TcpSocket>(

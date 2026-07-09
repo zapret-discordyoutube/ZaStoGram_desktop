@@ -160,6 +160,7 @@ jobs:
           python Telegram/SourceFiles/tests/test_mtproto_relay_silence.py
           python Telegram/SourceFiles/tests/test_mtproxy_client_hello_profiles.py
           python Telegram/SourceFiles/tests/test_mtproxy_endpoint_health.py
+          python Telegram/SourceFiles/tests/test_mtproxy_endpoint_context.py
           python Telegram/SourceFiles/tests/test_mtproxy_endpoint_identity.py
           python Telegram/SourceFiles/tests/test_mtproxy_faketls_hardening.py
           python Telegram/SourceFiles/tests/test_mtproxy_minimal_hotfix.py

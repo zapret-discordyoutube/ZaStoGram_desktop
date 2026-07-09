@@ -7,17 +7,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
+#include "base/algorithm.h"
+#include "base/timer.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
+#include "mtproto/proxy/proxy_endpoint_context_p.h"
 #include "mtproto/runtime/runtime_environment.h"
-#include "base/algorithm.h"
-#include "base/timer.h"
 
 #include <crl/crl_on_main.h>
 #include <QtCore/QMutex>
@@ -29,13 +30,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
-struct EndpointHealthStorage {
-	QMutex mutex;
-	std::map<QString, EndpointState> states;
-	std::map<QString, RouteState> routes;
-	rpl::event_stream<EndpointEvent> events;
-};
-
 namespace {
 
 // If every admission request for an endpoint has been denied for this
@@ -46,7 +40,7 @@ constexpr auto kExhaustedStrikesAfterSuccess = 3;
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
 
 void NoteRouteFailure(
-		EndpointHealthStorage &storage,
+		EndpointContextStorage &storage,
 		EndpointState &state,
 		const RouteEndpoint &route,
 		FailureReason reason) {
@@ -65,7 +59,7 @@ void NoteRouteFailure(
 }
 
 void NoteRouteSuccess(
-		EndpointHealthStorage &storage,
+		EndpointContextStorage &storage,
 		EndpointState &state,
 		const RouteEndpoint &route) {
 	const auto routeKey = RouteKey(route);
@@ -81,7 +75,7 @@ void NoteRouteSuccess(
 }
 
 [[nodiscard]] bool HasHealthyRoute(
-		const EndpointHealthStorage &storage,
+		const EndpointContextStorage &storage,
 		const EndpointState &state) {
 	for (const auto &routeKey : state.routeKeys) {
 		const auto i = storage.routes.find(routeKey);
@@ -92,20 +86,20 @@ void NoteRouteSuccess(
 	return false;
 }
 
-
-
 } // namespace
 
 EndpointAttemptLease::EndpointAttemptLease(
-		EndpointHealth *owner,
+		std::shared_ptr<ProxyEndpointContext> context,
 		QString key,
+		ProxyRuntimeId runtimeId,
 		uint64 attemptId,
 		uint64 proxyGeneration,
 		uint64 proxyEpoch,
 		uint64 successEpoch,
 		crl::time startedAt)
-: _owner(owner)
+: _context(std::move(context))
 , _key(std::move(key))
+, _runtimeId(runtimeId)
 , _attemptId(attemptId)
 , _proxyGeneration(proxyGeneration)
 , _proxyEpoch(proxyEpoch)
@@ -116,8 +110,9 @@ EndpointAttemptLease::EndpointAttemptLease(
 
 EndpointAttemptLease::EndpointAttemptLease(
 		EndpointAttemptLease &&other) noexcept
-: _owner(base::take(other._owner))
+: _context(std::move(other._context))
 , _key(std::move(other._key))
+, _runtimeId(base::take(other._runtimeId))
 , _attemptId(base::take(other._attemptId))
 , _proxyGeneration(base::take(other._proxyGeneration))
 , _proxyEpoch(base::take(other._proxyEpoch))
@@ -130,8 +125,9 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		EndpointAttemptLease &&other) noexcept {
 	if (this != &other) {
 		release();
-		_owner = base::take(other._owner);
+		_context = std::move(other._context);
 		_key = std::move(other._key);
+		_runtimeId = base::take(other._runtimeId);
 		_attemptId = base::take(other._attemptId);
 		_proxyGeneration = base::take(other._proxyGeneration);
 		_proxyEpoch = base::take(other._proxyEpoch);
@@ -146,19 +142,22 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
-
 void EndpointAttemptLease::release() {
 	if (!_active) {
 		return;
 	}
 	_active = false;
-	if (_owner) {
-		_owner->releaseAttempt(_key, _attemptId);
+	if (_context) {
+		_context->releaseEndpointAttempt(_key, _attemptId);
 	}
 }
 
 bool EndpointAttemptLease::active() const {
 	return _active;
+}
+
+ProxyRuntimeId EndpointAttemptLease::runtimeId() const {
+	return _runtimeId;
 }
 
 uint64 EndpointAttemptLease::attemptId() const {
@@ -181,33 +180,45 @@ crl::time EndpointAttemptLease::startedAt() const {
 	return _startedAt;
 }
 
-EndpointHealth::EndpointHealth(not_null<RuntimeEnvironment*> runtime)
+EndpointHealth::EndpointHealth(
+	not_null<RuntimeEnvironment*> runtime,
+	std::shared_ptr<ProxyEndpointContext> context)
 : _runtime(runtime)
-, _storage(std::make_unique<EndpointHealthStorage>()) {
+, _context(std::move(context))
+, _runtimeId(runtime->proxyRuntimeId()) {
+	Expects(_context != nullptr);
 }
 
 EndpointHealth::~EndpointHealth() = default;
 
 Admission EndpointHealth::admit(const AdmissionRequest &request) {
 	const auto key = EndpointKey(request.endpoint);
+	const auto runtimeId = request.runtimeId
+		? request.runtimeId
+		: _runtimeId;
 	const auto now = crl::now();
-	const auto effectiveTlsProfile = ResolveEffectiveTlsProfile(
-		request.configuredTlsProfile,
-		key);
 	auto result = Admission();
 	auto rotationEvent = std::optional<EndpointEvent>();
 	auto starvationDiagnostics = std::optional<ProxyDiagnosticsEvent>();
 	{
-		QMutexLocker lock(&_storage->mutex);
-		auto &state = _storage->states[key];
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		auto &state = storage.states[key];
 		state.endpoint = request.endpoint;
-		ApplyProxyGeneration(state, request.proxyGeneration);
-		PruneExpiredAttempts(state, now);
-		result.stealth = request.stealth;
-		result.effectiveTlsProfile = effectiveTlsProfile;
+		result.plan = BuildAttemptPlan(request, state.recipeLevel);
+		result.stealth = result.plan.stealth;
+		result.effectiveTlsProfile = result.plan.effectiveTlsProfile;
+		result.runtimeId = runtimeId;
 		result.proxyGeneration = request.proxyGeneration;
 		result.proxyEpoch = state.proxyEpoch;
 		result.successEpoch = state.successEpoch;
+		if (IsProxyCheck(request.use)) {
+			result.attemptId = ++state.lastAttemptId;
+			result.attemptStartedAt = now;
+			return result;
+		}
+		ApplyProxyGeneration(state, runtimeId, request.proxyGeneration);
+		PruneExpiredAttempts(state, now);
 		const auto policy = EndpointConcurrencyPolicyFor(
 			state,
 			request.use,
@@ -266,15 +277,20 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 			}
 			const auto attemptStartedAt = now;
 			result.attemptId = ++state.lastAttemptId;
-			state.attemptStarts.emplace(result.attemptId, attemptStartedAt);
+			state.attemptStarts.emplace(result.attemptId, EndpointAttemptState{
+				.runtimeId = runtimeId,
+				.proxyGeneration = request.proxyGeneration,
+				.startedAt = attemptStartedAt,
+			});
 			state.active = int(state.attemptStarts.size());
 			result.proxyGeneration = request.proxyGeneration;
 			result.proxyEpoch = state.proxyEpoch;
 			result.successEpoch = state.successEpoch;
 			result.attemptStartedAt = attemptStartedAt;
 			result.lease = EndpointAttemptLease(
-				this,
+				_context,
 				key,
+				runtimeId,
 				result.attemptId,
 				request.proxyGeneration,
 				state.proxyEpoch,
@@ -293,6 +309,9 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 
 void EndpointHealth::reportFailure(FailureReport report) {
 	if (report.lease) {
+		if (!report.runtimeId) {
+			report.runtimeId = report.lease->runtimeId();
+		}
 		if (!report.proxyGeneration) {
 			report.proxyGeneration = report.lease->proxyGeneration();
 		}
@@ -312,6 +331,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	if (report.lease) {
 		report.lease->release();
 	}
+	if (!report.runtimeId) {
+		report.runtimeId = _runtimeId;
+	}
 	if (report.reason == FailureReason::None) {
 		return;
 	}
@@ -327,16 +349,16 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto noteConnectTimeout = false;
-	auto rotateTlsProfile = false;
-	QMutexLocker lock(&_storage->mutex);
-	auto &state = _storage->states[key];
+	auto &storage = _context->storage();
+	QMutexLocker lock(&storage.mutex);
+	auto &state = storage.states[key];
 	if (FailureFromStaleAttempt(report, state)) {
 		const auto recipeLevel = state.recipeLevel;
 		lock.unlock();
 		LogStaleAttemptFailure(_runtime, report, recipeLevel);
 		return;
 	}
-	ApplyProxyGeneration(state, report.proxyGeneration);
+	ApplyProxyGeneration(state, report.runtimeId, report.proxyGeneration);
 	state.endpoint = report.endpoint;
 	if (report.reason != FailureReason::ServerHelloOkNoAppData
 		&& report.reason != FailureReason::ServerHelloOkNoMtprotoData
@@ -348,8 +370,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			.diagnostic = diagnostic,
 		};
 	}
-	NoteRouteFailure(*_storage, state, report.endpoint.route, report.reason);
-	DowngradeRecipeForRelayStall(state, report.reason);
+	NoteRouteFailure(storage, state, report.endpoint.route, report.reason);
 	if (SoftNoAppDataFailure(state, report.reason, now)) {
 		state.relayProven = false;
 		state.nextHandshakeAt = now + NoAppDataSoftRetry();
@@ -371,7 +392,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 				report.endpoint,
 				capabilityFailure->diagnostic);
 		}
-		NoteConnectTimeout(report.endpoint);
+		NoteConnectTimeout(_runtime, report.endpoint);
 		return;
 	}
 	if (state.terminalUntil > now) {
@@ -407,7 +428,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		}
 	}
 	if (!routeKey.isEmpty()
-		&& HasHealthyRoute(*_storage, state)
+		&& HasHealthyRoute(storage, state)
 		&& !report.routesExhausted) {
 		lock.unlock();
 		if (capabilityFailure) {
@@ -430,12 +451,8 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		state,
 		report.use,
 		now);
-	if (policy.recipeEscalationAllowed && state.recipeLevel < 4) {
+	if (policy.recipeEscalationAllowed && state.recipeLevel < 2) {
 		++state.recipeLevel;
-	}
-	if (report.configuredTlsProfile == ProxyTlsProfile::AutoRotate
-		&& FailureNeedsTlsRotation(report.reason)) {
-		rotateTlsProfile = true;
 	}
 	const auto needsCooldown = FailureNeedsCooldown(report.reason)
 		|| report.routesExhausted;
@@ -493,14 +510,8 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	if (capabilityRelayFailure) {
 		NoteCapabilityMtproxyRelayFailure(_runtime, *capabilityRelayFailure);
 	}
-	if (rotateTlsProfile) {
-		(void)RotateTlsProfileOnFailure(
-			key,
-			diagnostic,
-			report.sentProfile);
-	}
 	if (noteConnectTimeout) {
-		NoteConnectTimeout(report.endpoint);
+		NoteConnectTimeout(_runtime, report.endpoint);
 	}
 	WriteProxyDiagnosticsLine(_runtime, std::move(diagnosticsEvent));
 	fireEndpointEventOnMain(std::move(event));
@@ -508,6 +519,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 
 void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (report.lease) {
+		if (!report.runtimeId) {
+			report.runtimeId = report.lease->runtimeId();
+		}
 		if (!report.proxyGeneration) {
 			report.proxyGeneration = report.lease->proxyGeneration();
 		}
@@ -527,6 +541,9 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (report.lease) {
 		report.lease->release();
 	}
+	if (!report.runtimeId) {
+		report.runtimeId = _runtimeId;
+	}
 	if (report.use == EndpointUse::ProxyCheck) {
 		LogProbeAttemptSuccess(_runtime, report);
 		return;
@@ -536,19 +553,20 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	QMutexLocker lock(&_storage->mutex);
-	auto &state = _storage->states[key];
+	auto &storage = _context->storage();
+	QMutexLocker lock(&storage.mutex);
+	auto &state = storage.states[key];
 	if (SuccessFromStaleAttempt(report, state)) {
 		return;
 	}
-	ApplyProxyGeneration(state, report.proxyGeneration);
+	ApplyProxyGeneration(state, report.runtimeId, report.proxyGeneration);
 	state.endpoint = report.endpoint;
 	const auto successRecipeLevel = state.recipeLevel;
 	const auto wasDegraded = (state.lastFailure != FailureReason::None)
 		|| (state.terminalUntil > 0)
 		|| state.halfOpen;
 	if (!routeKey.isEmpty()) {
-		NoteRouteSuccess(*_storage, state, report.endpoint.route);
+		NoteRouteSuccess(storage, state, report.endpoint.route);
 	}
 	state.recipeLevel = 0;
 	state.lastSuccessAt = now;
@@ -570,23 +588,26 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.relayProven = true,
 		};
 	}
-	const auto relaySilenceFailure
+	const auto appDataMissing
+		= (state.lastFailure == FailureReason::ServerHelloOkNoAppData);
+	const auto mtprotoMissing
 		= (state.lastFailure == FailureReason::ServerHelloOkNoMtprotoData)
 		|| (state.lastFailure == FailureReason::ConnectedNoMtprotoData);
 	if (report.scope == SuccessScope::FakeTlsAppData
-		&& relaySilenceFailure) {
+		&& mtprotoMissing) {
 		lock.unlock();
-		NoteConnectSuccess(report.endpoint);
+		NoteConnectSuccess(_runtime, report.endpoint);
 		return;
 	}
-	if (report.scope == SuccessScope::Handshake && relaySilenceFailure) {
+	if (report.scope == SuccessScope::Handshake
+		&& (appDataMissing || mtprotoMissing)) {
 		// A handshake success cannot clear a relay-silence cooldown: on a
 		// dead relay every reconnect handshakes fine, and treating that
 		// as recovery would repaint the endpoint green each cycle and
 		// keep the sessions hammering it forever. Only an actual MTProto
 		// payload (SuccessScope::Relay) proves the endpoint end-to-end.
 		lock.unlock();
-		NoteConnectSuccess(report.endpoint);
+		NoteConnectSuccess(_runtime, report.endpoint);
 		return;
 	}
 	state.lastFailure = FailureReason::None;
@@ -603,7 +624,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			u"mtproxy canonical endpoint recovered"_q);
 	}
 	lock.unlock();
-	NoteConnectSuccess(report.endpoint);
+	NoteConnectSuccess(_runtime, report.endpoint);
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
 	}
@@ -613,11 +634,15 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 }
 
 void EndpointHealth::noteRelayStall(RelayStallReport report) {
+	if (!report.runtimeId) {
+		report.runtimeId = _runtimeId;
+	}
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto staleRecipeLevel = std::optional<int>();
 	auto staleReport = FailureReport{
 		.endpoint = report.endpoint,
 		.use = report.use,
+		.runtimeId = report.runtimeId,
 		.reason = FailureReason::MtpReceiveTimeoutAfterData,
 		.proxyGeneration = report.proxyGeneration,
 		.attemptId = report.attemptId,
@@ -626,14 +651,18 @@ void EndpointHealth::noteRelayStall(RelayStallReport report) {
 		.attemptStartedAt = report.attemptStartedAt,
 	};
 	{
-		QMutexLocker lock(&_storage->mutex);
-		const auto i = _storage->states.find(EndpointKey(report.endpoint));
-		if (i != end(_storage->states)) {
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		const auto i = storage.states.find(EndpointKey(report.endpoint));
+		if (i != end(storage.states)) {
 			auto &state = i->second;
 			if (FailureFromStaleAttempt(staleReport, state)) {
 				staleRecipeLevel = state.recipeLevel;
 			} else {
-				ApplyProxyGeneration(state, report.proxyGeneration);
+				ApplyProxyGeneration(
+					state,
+					report.runtimeId,
+					report.proxyGeneration);
 				state.relayProven = false;
 			}
 		}
@@ -656,10 +685,11 @@ void EndpointHealth::noteRelayStall(RelayStallReport report) {
 
 Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {
 	const auto key = EndpointKey(endpoint);
-	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->states.find(key);
-	if (i != end(_storage->states)) {
-		return MakeSnapshot(i->second);
+	auto &storage = _context->storage();
+	QMutexLocker lock(&storage.mutex);
+	const auto i = storage.states.find(key);
+	if (i != end(storage.states)) {
+		return MakeSnapshot(i->second, _runtimeId);
 	}
 	auto result = Snapshot();
 	result.endpoint = endpoint;
@@ -668,24 +698,13 @@ Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {
 
 auto EndpointHealth::changes() const
 -> rpl::producer<EndpointEvent> {
-	return _storage->events.events();
-}
-
-void EndpointHealth::releaseAttempt(
-		const QString &key,
-		uint64 attemptId) {
-	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->states.find(key);
-	if (i == end(_storage->states) || !attemptId) {
-		return;
-	}
-	i->second.attemptStarts.erase(attemptId);
-	i->second.active = int(i->second.attemptStarts.size());
+	return _context->storage().events.events();
 }
 
 void EndpointHealth::fireEndpointEventOnMain(EndpointEvent event) {
-	crl::on_main([=, event = std::move(event)]() mutable {
-		_storage->events.fire(std::move(event));
+	const auto context = _context;
+	crl::on_main([context, event = std::move(event)]() mutable {
+		context->storage().events.fire(std::move(event));
 	});
 }
 

@@ -587,16 +587,17 @@ def test_source_seams_match_truth_table_contract():
     tls_records = read(TLS_SOCKET_RECORDS_CPP)
     capabilities = read(CAPABILITIES_CPP)
 
-    assert "ProxyControlPlane::Reduce(current, normalized)" in control
+    assert "ProxyControlPlane::Reduce(current, fact)" in control
+    assert "NormalizeMtproxyTerminalReason" not in control
     assert "ApplySelectedStatusUpdate(" in control
     assert "IsOlderAttempt(current.attempt, update.attempt)" in control
-    assert "fact.status.attempt.probe" in control
+    assert "IsProxyCheck(fact.status.attempt.use)" in control
     assert "ShadowedByFreshRelaySuccess(current, fact)" in control
     assert "FakeTlsAppData," in health_header
     assert ".scope = MtProxy::SuccessScope::FakeTlsAppData" in tls_records
     assert "ReportEpochIsStale(report.proxyEpoch, state)" in policy
     assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in policy
-    assert "ReportGenerationIsStale(report.proxyGeneration, state)" in policy
+    assert "report.runtimeId" in policy
     assert "SuccessFromStaleAttempt(report, state)" in health
     assert "uint64 proxyGeneration = 0;" in health_header
     assert "uint64 successEpoch = 0;" in health_header

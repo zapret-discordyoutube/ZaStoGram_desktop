@@ -40,12 +40,7 @@ struct SessionProxyAdmissionDecision {
 	ProxyConnectionError blockedBy = ProxyConnectionError::None;
 };
 
-enum class SessionProxyEndpointUse {
-	Main,
-	Media,
-	Upload,
-	ProxyCheck,
-};
+using SessionProxyEndpointUse = ProxyConnectionUse;
 
 enum class SessionProxySuccessScope {
 	Handshake,
@@ -100,16 +95,20 @@ struct SessionProxyAttempt {
 	MtProxy::EndpointId endpoint;
 	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
 	ProxyConnectionAttempt attempt;
+	MtProxyAttemptPlan plan;
+	ProxyTransportFailure transport;
 	crl::time attemptStartedAt = 0;
 };
 
 struct SessionProxyStart {
 	SessionProxyTicketId ticketId = 0;
+	ProxyConnectionAttempt attempt;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
+	MtProxyAttemptPlan plan;
 	SessionProxyLease lease;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
@@ -180,6 +179,7 @@ public:
 	virtual void reportConnectionError(
 		const SessionProxyAttempt &attempt,
 		int errorCode,
+		ProxyTransportFailure failure = {},
 		SessionProxyLease *lease = nullptr,
 		bool ignoreHealthyRemoteClosed = false) = 0;
 	virtual void reportReceiveTimeout(
@@ -191,6 +191,9 @@ public:
 		int silentStrikes) = 0;
 	virtual void reportConnectTimeout(
 		const SessionProxyAttempt &attempt) = 0;
+	virtual void reportAttemptCancelled(
+		const SessionProxyAttempt &attempt,
+		ProxyCloseOrigin origin) = 0;
 	virtual void reportRelayStall(
 		const SessionProxyAttempt &attempt) = 0;
 	virtual void logEvent(

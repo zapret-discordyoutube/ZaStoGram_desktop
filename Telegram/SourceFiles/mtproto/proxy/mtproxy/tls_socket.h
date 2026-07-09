@@ -7,13 +7,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/mtproxy/tls_socket_transport.h"
-#include "mtproto/transport/details/mtproto_abstract_socket.h"
-#include "mtproto/proxy/data.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/mtproxy/tls_socket_transport.h"
+#include "mtproto/proxy/data.h"
 #include "mtproto/runtime/runtime_environment.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
 
 #include <memory>
+
+namespace MTP {
+enum class ProxyDiagnosticsPhase;
+enum class ProxyDiagnosticsSeverity;
+} // namespace MTP
 
 namespace MTP::details {
 
@@ -27,12 +32,14 @@ public:
 		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
 		ProxyConnectionAttempt mtproxyAttempt,
+		MtProxyAttemptPlan mtproxyPlan,
 		crl::time mtproxyAttemptStartedAt,
 		std::unique_ptr<TlsSocketTransport> transport = nullptr);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
 	void timedOut() override;
+	void markProxyMtprotoPayloadReceived() override;
 	bool isConnected() override;
 	bool hasBytesAvailable() override;
 	int64 read(bytes::span buffer) override;
@@ -43,6 +50,7 @@ public:
 	HandshakePhase handshakePhase() const override;
 	ProxyMtproxyTerminalReason mtproxyTerminalReason() const override;
 	crl::time mtproxyTerminalUntil() const override;
+	ProxyTransportFailure proxyTransportFailure() const override;
 
 private:
 	enum class State {
@@ -87,23 +95,36 @@ private:
 	[[nodiscard]] ProxyTlsProfile effectiveTlsProfile() const;
 	[[nodiscard]] MtProxy::FailureReason failureReason() const;
 	bool clearSyntheticPskOnFailure(MtProxy::FailureReason reason);
-	void applyAdaptiveRecipe();
 	[[nodiscard]] crl::time recordPacingDelay();
 	void writeClientHello(const QByteArray &data);
+	void writeClientHelloPart(const char *data, int size);
 	void writeClientHelloTail();
 	void sendClientHello();
 	void sendOutgoing();
+	void noteIncoming(const QByteArray &data);
+	void reportTransportEvent(
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsSeverity severity,
+		const QString &message);
+	[[nodiscard]] QString responseClass() const;
+	[[nodiscard]] QString responseRecordType() const;
+	[[nodiscard]] QString responseRecordVersion() const;
+	[[nodiscard]] std::optional<int> responseRecordLength() const;
+	[[nodiscard]] QString responsePrefixHash() const;
 
 	const bytes::vector _secret;
+	const ProxyData _proxy;
 	MtProxy::EndpointId _endpointId;
 	QString _endpointKey;
 	MtProxy::EndpointUse _endpointUse = MtProxy::EndpointUse::Main;
 	ProxyConnectionAttempt _mtproxyAttempt;
+	MtProxyAttemptPlan _mtproxyPlan;
 	crl::time _mtproxyAttemptStartedAt = 0;
 	ProxyStealthOptions _stealth;
 	std::unique_ptr<TlsSocketTransport> _transport;
 	State _state = State::NotConnected;
 	QByteArray _incoming;
+	QByteArray _responsePrefix;
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;
 	int _serverHelloLength = 0;
@@ -116,22 +137,33 @@ private:
 		= ProxyClientHelloFragmentation::Off;
 	ProxyConnectionPattern _connectionPattern = ProxyConnectionPattern::Off;
 	ProxyTlsProfile _tlsProfile = ProxyTlsProfile::Auto;
-	ProxyTlsProfile _preparedTlsProfile = ProxyTlsProfile::Auto;
+	ProxyTlsProfile _configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile _sentTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTiming _timing = ProxyTiming::Off;
 	QByteArray _outgoing;
 	int _outgoingOffset = 0;
 	bool _clientPrefixSent = false;
-	bool _usePreparedTlsProfile = false;
 	bool _syntheticPskOffered = false;
 	bool _clientHelloFragmented = false;
+	int _clientHelloBytes = 0;
+	int _clientHelloWrites = 0;
+	qint64 _clientHelloAcceptedBytes = 0;
+	int _clientHelloFragmentSplit = 0;
+	crl::time _clientHelloFragmentDelayMs = 0;
 	bool _firstAppDataReceived = false;
+	bool _mtprotoPayloadReceived = false;
 	crl::time _firstAppDataAt = 0;
 	QByteArray _clientHelloTail;
 	RuntimeTimer _pacingTimer;
 	RuntimeTimer _clientHelloTimer;
 	RuntimeTimer _clientHelloFragmentTimer;
 	MtProxy::FailureReason _failureReason = MtProxy::FailureReason::None;
+	ProxyConnectionError _connectionError = ProxyConnectionError::None;
+	ProxyCloseOrigin _closeOrigin = ProxyCloseOrigin::None;
+	qint64 _rxAfterClientHello = 0;
+	crl::time _tcpConnectedAt = 0;
+	crl::time _firstRxAt = 0;
+	crl::time _serverHelloAt = 0;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };

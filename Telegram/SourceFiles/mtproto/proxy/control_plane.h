@@ -40,6 +40,7 @@ struct ProxyFact {
 struct ProxyAdmissionRequest {
 	details::MtProxy::EndpointId endpoint;
 	details::MtProxy::EndpointUse use = details::MtProxy::EndpointUse::Main;
+	ProxyRuntimeId runtimeId = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	uint64 proxyGeneration = 0;
@@ -57,7 +58,9 @@ struct ProxyAdmissionDecision {
 		= details::MtProxy::FailureReason::None;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
+	MtProxyAttemptPlan plan;
 	details::MtProxy::EndpointAttemptLease lease;
+	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
 	uint64 attemptId = 0;
 	uint64 proxyEpoch = 0;
@@ -103,6 +106,7 @@ private:
 	const not_null<details::MtProxy::EndpointHealth*> _endpointHealth;
 	ProxyConnectionStatus _selectedStatus;
 	ProxyEndpointSnapshot _endpointSnapshot;
+
 };
 
 } // namespace MTP

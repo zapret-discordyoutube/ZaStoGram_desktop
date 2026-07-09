@@ -7,11 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 
+#include "mtproto/proxy/proxy_endpoint_context.h"
+#include "mtproto/proxy/proxy_endpoint_context_p.h"
+
 #include <QtCore/QMutex>
 
 #include <algorithm>
-#include <deque>
-#include <map>
 
 namespace MTP::details::MtProxy {
 namespace {
@@ -29,29 +30,16 @@ constexpr auto kOpenBurstCount = 3;
 constexpr auto kOpenBurstWindow = crl::time(10 * 1000);
 constexpr auto kOpenBurstSpacing = crl::time(2500);
 
-struct OpenState {
-	crl::time nextOpenAt = 0;
-	crl::time adaptiveSpacing = 0;
-	std::deque<crl::time> recentOpens;
-};
-
-QMutex OpenStatesMutex;
-std::map<QString, OpenState> OpenStates;
-
-[[nodiscard]] OpenScheduler &DefaultOpenScheduler(
-		not_null<RuntimeEnvironment*> runtime) {
-	static auto Result = OpenScheduler(runtime);
-	return Result;
-}
-
 } // namespace
 
 OpenScheduler::OpenScheduler(const RuntimeAsyncGateway &async)
-: _async(async) {
+: _async(async)
+, _context(CreateProxyEndpointContext()) {
 }
 
 OpenScheduler::OpenScheduler(not_null<RuntimeEnvironment*> runtime)
-: OpenScheduler(runtime->async()) {
+: _async(runtime->async())
+, _context(runtime->proxyEndpointContextShared()) {
 }
 
 crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern) {
@@ -77,8 +65,9 @@ crl::time OpenScheduler::ReserveOpenSlot(
 	const auto now = _async.now();
 	const auto earliest = now + std::max(crl::time(0), notBefore);
 	auto result = crl::time(0);
-	QMutexLocker lock(&OpenStatesMutex);
-	auto &state = OpenStates[key];
+	auto &storage = _context->storage();
+	QMutexLocker lock(&storage.mutex);
+	auto &state = storage.openStates[key];
 	while (!state.recentOpens.empty()
 		&& state.recentOpens.front() <= now - kOpenBurstWindow) {
 		state.recentOpens.pop_front();
@@ -111,32 +100,38 @@ crl::time ReserveOpenSlot(
 		const EndpointId &endpoint,
 		ProxyConnectionPattern pattern,
 		crl::time notBefore) {
-	return DefaultOpenScheduler(runtime).ReserveOpenSlot(
+	return OpenScheduler(runtime).ReserveOpenSlot(
 		endpoint,
 		pattern,
 		notBefore);
 }
 
-void NoteConnectTimeout(const EndpointId &endpoint) {
+void NoteConnectTimeout(
+		not_null<RuntimeEnvironment*> runtime,
+		const EndpointId &endpoint) {
 	const auto key = EndpointKey(endpoint);
 	if (key.isEmpty()) {
 		return;
 	}
-	QMutexLocker lock(&OpenStatesMutex);
-	auto &state = OpenStates[key];
+	auto &storage = runtime->proxyEndpointContext().storage();
+	QMutexLocker lock(&storage.mutex);
+	auto &state = storage.openStates[key];
 	state.adaptiveSpacing = std::clamp(
 		state.adaptiveSpacing * 2,
 		kAdaptiveSpacingMin,
 		kAdaptiveSpacingMax);
 }
 
-void NoteConnectSuccess(const EndpointId &endpoint) {
+void NoteConnectSuccess(
+		not_null<RuntimeEnvironment*> runtime,
+		const EndpointId &endpoint) {
 	const auto key = EndpointKey(endpoint);
 	if (key.isEmpty()) {
 		return;
 	}
-	QMutexLocker lock(&OpenStatesMutex);
-	auto &state = OpenStates[key];
+	auto &storage = runtime->proxyEndpointContext().storage();
+	QMutexLocker lock(&storage.mutex);
+	auto &state = storage.openStates[key];
 	state.adaptiveSpacing = (state.adaptiveSpacing >= kAdaptiveSpacingMin * 2)
 		? (state.adaptiveSpacing / 2)
 		: crl::time(0);

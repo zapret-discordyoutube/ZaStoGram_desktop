@@ -143,7 +143,7 @@ def test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success():
 
     assert "ServerHelloHmacMismatch" in status_header
     assert "IsMtproxyTerminalFailure(" in status_header
-    assert "ProxyControlPlane::Reduce(current, normalized)" in control
+    assert "ProxyControlPlane::Reduce(current, fact)" in control
     assert "ApplySelectedStatusUpdate(" in control
     assert "ApplyProxyConnectionStatusUpdate(" not in sink
     assert "ApplyProxyConnectionStatusUpdate(" not in status_header

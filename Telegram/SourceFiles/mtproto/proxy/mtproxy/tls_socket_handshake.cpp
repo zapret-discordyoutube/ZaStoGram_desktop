@@ -7,17 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "base/algorithm.h"
+#include "base/invoke_queued.h"
+#include "base/openssl_help.h"
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/adaptive_policy.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
-#include "base/algorithm.h"
-#include "base/invoke_queued.h"
-#include "base/openssl_help.h"
 
 namespace MTP::details {
 namespace {
@@ -26,103 +25,25 @@ const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
 
-[[nodiscard]] QString HandshakePhaseText(HandshakePhase phase) {
-	switch (phase) {
-	case HandshakePhase::None:
-		return u"tcp_not_connected"_q;
-	case HandshakePhase::TcpConnected:
-		return u"tcp_connected"_q;
-	case HandshakePhase::ClientHelloSent:
-		return u"client_hello_sent_no_server_hello"_q;
-	case HandshakePhase::ServerHelloOk:
-		return u"server_hello_ok_no_appdata"_q;
-	case HandshakePhase::FirstDataReceived:
-		return u"appdata_remote_closed"_q;
-	}
-	return u"unknown"_q;
-}
-
-[[nodiscard]] QString CanonicalText(const MtProxy::EndpointId &endpoint) {
-	return ProxyDiagnosticsEndpointText(
-		endpoint.canonical.originalHost,
-		endpoint.canonical.port);
-}
-
-[[nodiscard]] QString RouteText(const MtProxy::EndpointId &endpoint) {
-	return ProxyDiagnosticsEndpointText(
-		endpoint.route.address,
-		endpoint.route.port);
-}
-
-
 } // namespace
-
-void TlsSocket::applyAdaptiveRecipe() {
-	auto &control = _runtime->proxyServices().control();
-	const auto snapshot = control.mtproxyEndpointSnapshot(_endpointId);
-	if (!snapshot.recipeLevel) {
-		return;
-	}
-	auto input = AdaptiveRecipeInput();
-	input.endpointKey = _endpointKey;
-	input.recipeLevel = snapshot.recipeLevel;
-	input.lastDiagnostic = snapshot.lastDiagnostic;
-	input.configuredTlsProfile = _tlsProfile;
-	input.effectiveTlsProfile = effectiveTlsProfile();
-	input.stealth = _stealth;
-	const auto recipe = ApplyAdaptiveRecipe(input);
-	if (!recipe.changed) {
-		return;
-	}
-	_recordSizing = RecordSizing(int(recipe.stealth.recordSizing));
-	_startupCover = StartupCover(int(recipe.stealth.startupCover));
-	_clientHelloFragmentation = recipe.stealth.clientHelloFragmentation;
-	_connectionPattern = recipe.stealth.connectionPattern;
-	if (recipe.stealth.tlsProfile != input.effectiveTlsProfile) {
-		_preparedTlsProfile = recipe.stealth.tlsProfile;
-		_usePreparedTlsProfile = true;
-	}
-	_timing = recipe.stealth.timing;
-	_stealth = recipe.stealth;
-	WriteProxyDiagnosticsLine(_runtime, {
-		.source = ProxyDiagnosticsSource::MTProxy,
-		.phase = ProxyDiagnosticsPhase::StealthRecipeApplied,
-		.severity = ProxyDiagnosticsSeverity::Info,
-		.transport = ProxyDiagnosticsTransportName(
-			ProxyData::Type::Mtproto,
-			_stealth.transport),
-		.message = u"mtproxy stealth recipe applied"_q,
-		.canonical = CanonicalText(_endpointId),
-		.route = RouteText(_endpointId),
-		.proxyKeyHash = ProxyDiagnosticsKeyHash(
-			MtProxy::EndpointKey(_endpointId.canonical)),
-		.profile = ProxyDiagnosticsTlsProfileName(
-			_usePreparedTlsProfile
-				? _preparedTlsProfile
-				: input.effectiveTlsProfile),
-		.recipeLevel = snapshot.recipeLevel,
-		.pskOffered = _syntheticPskOffered,
-		.pskOfferedKnown = true,
-		.fragmentedClientHello = _clientHelloFragmented,
-		.fragmentedClientHelloKnown = true,
-		.phaseAtFailure = input.lastDiagnostic.isEmpty()
-			? HandshakePhaseText(_phase)
-			: input.lastDiagnostic,
-	});
-}
 
 void TlsSocket::writeClientHello(const QByteArray &data) {
 	_clientHelloFragmentTimer.cancel();
 	_clientHelloTail = QByteArray();
+	_clientHelloBytes = data.size();
+	_clientHelloFragmentSplit = 0;
+	_clientHelloFragmentDelayMs = 0;
 	const auto plan = PrepareClientHelloFragmentation(
 		data,
 		_clientHelloFragmentation);
 	if (!plan) {
-		_transport->write(data.constData(), data.size());
+		writeClientHelloPart(data.constData(), data.size());
 		return;
 	}
 	_clientHelloFragmented = true;
-	_transport->write(data.constData(), plan.firstSize);
+	_clientHelloFragmentSplit = plan.firstSize;
+	_clientHelloFragmentDelayMs = plan.secondDelay;
+	writeClientHelloPart(data.constData(), plan.firstSize);
 	_transport->flush();
 	_clientHelloTail = data.mid(plan.firstSize);
 	if (plan.secondDelay > 0) {
@@ -132,14 +53,29 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 	}
 }
 
+void TlsSocket::writeClientHelloPart(const char *data, int size) {
+	auto offset = 0;
+	while (offset < size) {
+		++_clientHelloWrites;
+		const auto accepted = _transport->write(data + offset, size - offset);
+		if (accepted <= 0) {
+			break;
+		}
+		_clientHelloAcceptedBytes += accepted;
+		offset += int(accepted);
+	}
+}
+
 void TlsSocket::writeClientHelloTail() {
 	const auto tail = base::take(_clientHelloTail);
 	if (tail.isEmpty()) {
 		return;
 	}
-	_transport->write(
-		tail.constData(),
-		tail.size());
+	writeClientHelloPart(tail.constData(), tail.size());
+	reportTransportEvent(
+		ProxyDiagnosticsPhase::ClientHelloSent,
+		ProxyDiagnosticsSeverity::Info,
+		u"mtproxy client hello completed"_q);
 }
 
 void TlsSocket::plainConnected() {
@@ -147,9 +83,13 @@ void TlsSocket::plainConnected() {
 		return;
 	}
 	_phase = HandshakePhase::TcpConnected;
+	_tcpConnectedAt = crl::now();
 	connectionProgress(_phase);
+	reportTransportEvent(
+		ProxyDiagnosticsPhase::TcpConnected,
+		ProxyDiagnosticsSeverity::Info,
+		u"mtproxy tcp connected"_q);
 
-	applyAdaptiveRecipe();
 	const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);
 	if (delay > 0) {
 		_clientHelloTimer.callOnce(delay);
@@ -162,10 +102,7 @@ void TlsSocket::sendClientHello() {
 	if (_state != State::Connecting) {
 		return;
 	}
-	const auto profile = _usePreparedTlsProfile
-		? _preparedTlsProfile
-		: effectiveTlsProfile();
-	_usePreparedTlsProfile = false;
+	const auto profile = effectiveTlsProfile();
 	_sentTlsProfile = profile;
 	const auto rules = PrepareClientHelloRules(profile);
 	auto pskOffer = std::optional<SyntheticPskOffer>();
@@ -189,27 +126,46 @@ void TlsSocket::sendClientHello() {
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
-		writeClientHello(hello.data);
 		_phase = HandshakePhase::ClientHelloSent;
 		connectionProgress(_phase);
+		writeClientHello(hello.data);
+		reportTransportEvent(
+			ProxyDiagnosticsPhase::ClientHelloSent,
+			ProxyDiagnosticsSeverity::Info,
+			u"mtproxy client hello queued locally"_q);
 	}
 }
 
 void TlsSocket::plainDisconnected() {
 	_state = State::NotConnected;
 	_incoming = QByteArray();
+	_responsePrefix = QByteArray();
 	_serverHelloLength = 0;
 	_incomingGoodDataOffset = 0;
 	_incomingGoodDataLimit = 0;
 	_outgoing = QByteArray();
 	_outgoingOffset = 0;
 	_clientPrefixSent = false;
-	_usePreparedTlsProfile = false;
 	_clientHelloTail = QByteArray();
 	_failureReason = MtProxy::FailureReason::None;
+	_connectionError = ProxyConnectionError::None;
 	_syntheticPskOffered = false;
 	_clientHelloFragmented = false;
+	_clientHelloBytes = 0;
+	_clientHelloWrites = 0;
+	_clientHelloAcceptedBytes = 0;
+	_clientHelloFragmentSplit = 0;
+	_clientHelloFragmentDelayMs = 0;
+	_rxAfterClientHello = 0;
+	_tcpConnectedAt = 0;
+	_firstRxAt = 0;
+	_serverHelloAt = 0;
+	_firstAppDataAt = 0;
+	_closeOrigin = ProxyCloseOrigin::None;
 	_firstAppDataReceived = false;
+	_mtprotoPayloadReceived = false;
+	_sentTlsProfile = ProxyTlsProfile::Auto;
+	_phase = HandshakePhase::None;
 	_pacingTimer.cancel();
 	_clientHelloTimer.cancel();
 	_clientHelloFragmentTimer.cancel();
@@ -237,7 +193,9 @@ void TlsSocket::readHello() {
 		if (!_transport->bytesAvailable()) {
 			return;
 		}
-		_incoming.append(_transport->readAll());
+		const auto received = _transport->readAll();
+		noteIncoming(received);
+		_incoming.append(received);
 	}
 	checkHelloParts12(parts1Size);
 }
@@ -332,7 +290,25 @@ void TlsSocket::checkHelloDigest() {
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
 	_state = State::Connected;
 	_phase = HandshakePhase::ServerHelloOk;
+	_serverHelloAt = crl::now();
 	connectionProgress(_phase);
+	reportTransportEvent(
+		ProxyDiagnosticsPhase::ServerHelloOk,
+		ProxyDiagnosticsSeverity::Info,
+		u"mtproxy server hello hmac verified"_q);
+	_runtime->proxyServices().control().reportMtproxySuccess({
+		.endpoint = _endpointId,
+		.use = _endpointUse,
+		.runtimeId = _mtproxyAttempt.runtimeId,
+		.stealth = _stealth,
+		.sentProfile = _sentTlsProfile,
+		.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+		.attemptId = _mtproxyAttempt.attemptId,
+		.proxyEpoch = _mtproxyAttempt.proxyEpoch,
+		.successEpoch = _mtproxyAttempt.successEpoch,
+		.attemptStartedAt = _mtproxyAttemptStartedAt,
+		.scope = MtProxy::SuccessScope::Handshake,
+	});
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();
 		_startupCoverFrames = 0;

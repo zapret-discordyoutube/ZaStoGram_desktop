@@ -7,15 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/runtime/runtime_environment.h"
 
+#include "base/random.h"
+#include "base/timer.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "logs.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
-#include "base/random.h"
-#include "base/timer.h"
 #include "settings.h"
 #include "storage/localstorage.h"
 
@@ -257,8 +258,14 @@ RuntimeEnvironmentDescriptor CreateRuntimeDescriptor() {
 
 } // namespace
 
-RuntimeEnvironment::RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor)
-: _descriptor(std::move(descriptor))
+RuntimeEnvironment::RuntimeEnvironment(
+	RuntimeEnvironmentDescriptor descriptor,
+	std::shared_ptr<ProxyEndpointContext> endpointContext)
+: _proxyEndpointContext(endpointContext
+	? std::move(endpointContext)
+	: CreateProxyEndpointContext())
+, _proxyRuntimeId(_proxyEndpointContext->registerRuntime())
+, _descriptor(std::move(descriptor))
 , _proxyServices(std::make_unique<ProxyServices>(this)) {
 	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
 		const auto runtime = not_null{ this };
@@ -283,15 +290,60 @@ RuntimeEnvironment::RuntimeEnvironment(RuntimeEnvironmentDescriptor descriptor)
 			.route = std::move(report.route),
 			.proxyKeyHash = std::move(report.proxyKeyHash),
 			.profile = std::move(report.profile),
+			.configuredProfile = std::move(report.configuredProfile),
+			.effectiveProfile = std::move(report.effectiveProfile),
 			.recipeLevel = report.recipeLevel,
 			.pskOffered = report.pskOffered,
-			.pskOfferedKnown = report.pskOfferedKnown,
 			.fragmentedClientHello = report.fragmentedClientHello,
-			.fragmentedClientHelloKnown = report.fragmentedClientHelloKnown,
 			.phaseAtFailure = std::move(report.phaseAtFailure),
 			.queueMs = report.queueMs,
+			.clientHelloBytes = report.clientHelloBytes,
+			.clientHelloWrites = report.clientHelloWrites,
+			.clientHelloAcceptedBytes = report.clientHelloAcceptedBytes,
+			.clientHelloFragmentSplit = report.clientHelloFragmentSplit,
+			.clientHelloFragmentDelayMs = report.clientHelloFragmentDelayMs,
+			.rxAfterClientHello = report.rxAfterClientHello,
+			.rxClass = std::move(report.rxClass),
+			.tlsRecordType = std::move(report.tlsRecordType),
+			.tlsRecordVersion = std::move(report.tlsRecordVersion),
+			.tlsRecordLength = report.tlsRecordLength,
+			.responsePrefixHash = std::move(report.responsePrefixHash),
+			.sniLength = report.sniLength,
+			.sniHash = std::move(report.sniHash),
+			.parserStage = std::move(report.parserStage),
+			.closeOrigin = report.closeOrigin,
+			.dnsMs = report.dnsMs,
+			.tcpMs = report.tcpMs,
+			.firstRxMs = report.firstRxMs,
+			.serverHelloMs = report.serverHelloMs,
+			.appDataMs = report.appDataMs,
+			.mtprotoMs = report.mtprotoMs,
+			.totalMs = report.totalMs,
+			.traceSchema = report.traceSchema,
 		});
 	};
+}
+
+RuntimeEnvironment::~RuntimeEnvironment() {
+	_proxyServices->broker().cancelByOwnerDestruction();
+	const auto attempts = _proxyEndpointContext->activeTracesForRuntime(
+		_proxyRuntimeId);
+	if (!attempts.empty()) {
+		const auto proxy = _descriptor.proxy.selected
+			? _descriptor.proxy.selected()
+			: ProxyData();
+		for (const auto &attempt : attempts) {
+			(void)ReportProxyAttemptSummary(not_null{ this }, {
+				.attempt = attempt,
+				.severity = ProxyDiagnosticsSeverity::Warning,
+				.proxy = proxy,
+				.message = u"proxy attempt owner destroyed"_q,
+				.closeOrigin = ProxyCloseOrigin::OwnerDestroyed,
+			});
+		}
+	}
+	_proxyServices.reset();
+	_proxyEndpointContext->unregisterRuntime(_proxyRuntimeId);
 }
 
 void RuntimeEnvironment::bindInstance(RuntimeInstanceServices services) {
@@ -350,8 +402,28 @@ ProxyServices &RuntimeEnvironment::proxyServices() const {
 	return *_proxyServices;
 }
 
+ProxyRuntimeId RuntimeEnvironment::proxyRuntimeId() const {
+	return _proxyRuntimeId;
+}
+
+ProxyEndpointContext &RuntimeEnvironment::proxyEndpointContext() const {
+	return *_proxyEndpointContext;
+}
+
+auto RuntimeEnvironment::proxyEndpointContextShared() const
+-> std::shared_ptr<ProxyEndpointContext> {
+	return _proxyEndpointContext;
+}
+
 std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment() {
-	return std::make_shared<RuntimeEnvironment>(CreateRuntimeDescriptor());
+	return CreateRuntimeEnvironment(CreateProxyEndpointContext());
+}
+
+std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment(
+		std::shared_ptr<ProxyEndpointContext> endpointContext) {
+	return std::make_shared<RuntimeEnvironment>(
+		CreateRuntimeDescriptor(),
+		std::move(endpointContext));
 }
 
 not_null<RuntimeEnvironment*> DefaultRuntimeEnvironment() {
