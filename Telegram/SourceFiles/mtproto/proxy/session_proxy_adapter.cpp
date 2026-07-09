@@ -514,7 +514,7 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 	} else {
 		ReportConnectionFailure(
 			attempt,
-			MtProxy::FromProxyMtprotoTerminalReason(reason));
+			MtProxy::FromProxyMtproxyTerminalReason(reason));
 	}
 }
 

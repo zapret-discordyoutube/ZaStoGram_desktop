@@ -147,7 +147,8 @@ def test_session_reports_silence_and_recovers_temporary_key():
         "void ProductionSessionProxyPort::reportReceiveTimeout(")
     assert ("ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData"
         in report_timeout)
-    assert "MtProxy::FromProxyMtprotoTerminalReason(reason)" in report_timeout
+    assert "MtProxy::FromProxyMtproxyTerminalReason(reason)" in report_timeout
+    assert "FromProxyMtprotoTerminalReason" not in adapter
     assert ("ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData"
         in report_timeout)
     assert "return _owner->destroyTemporaryKey();" in wait_received

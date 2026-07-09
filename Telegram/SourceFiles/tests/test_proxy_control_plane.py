@@ -332,7 +332,8 @@ def test_session_receive_timeout_reports_stage_specific_terminal_status():
         report_timeout)
     assert "ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData" in (
         report_timeout)
-    assert "MtProxy::FromProxyMtprotoTerminalReason(reason)" in report_timeout
+    assert "MtProxy::FromProxyMtproxyTerminalReason(reason)" in report_timeout
+    assert "FromProxyMtprotoTerminalReason" not in adapter
     assert "reportRelayStall(attempt);" in report_timeout
     assert "proxyServices().control().noteMtproxyRelayStall(" in relay_stall
     relay_stall_call = relay_stall.split(

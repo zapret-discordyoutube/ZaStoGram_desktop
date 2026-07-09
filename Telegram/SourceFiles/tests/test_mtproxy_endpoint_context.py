@@ -160,7 +160,8 @@ def test_receive_timeout_preserves_the_lowest_typed_transport_verdict():
     assert "const auto typed = attempt.transport.reason;" in body
     assert "ProxyMtproxyTerminalReason::ConnectedNoMtprotoData" in body
     assert "ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData" in body
-    assert "MtProxy::FromProxyMtprotoTerminalReason(reason)" in body
+    assert "MtProxy::FromProxyMtproxyTerminalReason(reason)" in body
+    assert "FromProxyMtprotoTerminalReason" not in adapter
 
 
 def test_trace_schema_omits_unknowns_and_finalizes_once():
