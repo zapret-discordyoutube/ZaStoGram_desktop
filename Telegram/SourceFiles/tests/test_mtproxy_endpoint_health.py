@@ -188,15 +188,12 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
         TLS_SOCKET_RECORDS_CPP)
     assert "i->mtproxyLease.release();" in remove_body
 
-    # Success must also be reported for non-FakeTLS (plain obfuscated)
-    # mtproxy connections, which have no TlsSocket first-app-data hook.
-    # Otherwise the endpoint stays "unknown" forever: throttled to
-    # activeCap 1 and unable to ignore benign remote_closed.
     usable_body = function_body(
         source,
         "void SessionTransport::reportMtproxyConnectionUsable(")
     assert "_owner->_proxyPort->reportConnected(" in usable_body
     assert "snapshot.healthy && !snapshot.halfOpen" in usable_body
+    assert "SessionProxySuccessScope::Relay" in usable_body
     assert "reportMtproxyConnectionUsable(*i);" in connected_body
     assert "reportMtproxyConnectionUsable(*i);" in confirm_body
 
@@ -309,7 +306,7 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "++state.successEpoch;" in report_success
     assert "state.lastGoodProfile = report.sentProfile;" in report_success
     assert "state.lastGoodRoute = report.endpoint.route;" in report_success
-    assert "report.scope == SuccessScope::Relay" in report_success
+    assert "report.scope != SuccessScope::Relay" in report_success
 
     assert "stale_attempt_failed" in stale_log
     assert "ProxyDiagnosticsSeverity::Info" in stale_log
@@ -368,15 +365,17 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
         "bool ReportSuccessEpochIsStale(")
     assert "successEpoch&&successEpoch<state.successEpoch" in (
         "".join(report_success_epoch_stale.split()))
-    relay_success_block = report_success.split(
-        "if (report.scope == SuccessScope::Relay) {", 1)[1].split(
-            "capabilitySuccess = CapabilitySuccess{", 1)[0]
-    assert "++state.proxyEpoch;" in relay_success_block
-    faketls_block = report_success.split(
-        "if (report.scope == SuccessScope::FakeTlsAppData", 1)[1].split(
-            "return;", 1)[0]
-    assert "++state.proxyEpoch;" not in faketls_block
-    assert "state.relayProven = true;" not in faketls_block
+    relay_guard = report_success.index(
+        "if (report.scope != SuccessScope::Relay) {")
+    preliminary_success = report_success[:relay_guard]
+    assert "state.lastSuccessAt = now;" in preliminary_success
+    assert "++state.proxyEpoch;" not in preliminary_success
+    assert "state.relayProven = true;" not in preliminary_success
+    assert relay_guard < report_success.index("state.recipeLevel = 0;")
+    assert relay_guard < report_success.index("++state.proxyEpoch;")
+    assert relay_guard < report_success.index("state.relayProven = true;")
+    assert relay_guard < report_success.index(
+        "NoteConnectSuccess(_runtime, report.endpoint);")
 
     failure_stale_check = report_failure.index(
         "if (FailureFromStaleAttempt(report, state)) {")

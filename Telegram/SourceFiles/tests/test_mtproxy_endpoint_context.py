@@ -70,18 +70,21 @@ def test_admission_freezes_bounded_safe_faketls_plan():
     assert "mtproxyEndpointSnapshot(" not in handshake
 
 
-def test_serverhello_resets_recipe_without_masking_missing_appdata():
+def test_partial_success_preserves_recipe_until_relay_proof():
     health = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "endpoint_health.cpp")
     success = health.split("void EndpointHealth::reportSuccess(", 1)[1].split(
         "void EndpointHealth::noteRelayStall(", 1)[0]
 
-    assert success.index("state.recipeLevel = 0;") < success.index(
-        "const auto appDataMissing")
-    assert "SuccessScope::Handshake" in success
-    assert "appDataMissing || mtprotoMissing" in success
-    assert "SuccessScope::FakeTlsAppData" in success
-    assert "&& mtprotoMissing" in success
+    relay_guard = success.index(
+        "if (report.scope != SuccessScope::Relay) {")
+    assert relay_guard < success.index("state.recipeLevel = 0;")
+    assert relay_guard < success.index("NoteRouteSuccess(")
+    assert relay_guard < success.index("state.lastFailure = FailureReason::None;")
+    assert relay_guard < success.index(
+        "NoteConnectSuccess(_runtime, report.endpoint);")
+    assert success.count("state.recipeLevel = 0;") == 1
+    assert success.count("NoteConnectSuccess(_runtime, report.endpoint);") == 1
 
 
 def test_probe_use_and_transport_failure_are_propagated_without_reclassification():

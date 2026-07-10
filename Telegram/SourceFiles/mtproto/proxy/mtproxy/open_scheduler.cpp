@@ -28,7 +28,6 @@ constexpr auto kAdaptiveSpacingMax = crl::time(6000);
 // that makes a proxy throttle new connections.
 constexpr auto kOpenBurstCount = 3;
 constexpr auto kOpenBurstWindow = crl::time(10 * 1000);
-constexpr auto kOpenBurstSpacing = crl::time(2500);
 
 } // namespace
 
@@ -64,35 +63,39 @@ crl::time OpenScheduler::ReserveOpenSlot(
 	const auto patternSpacing = OpenConnectionSpacing(pattern);
 	const auto now = _async.now();
 	const auto earliest = now + std::max(crl::time(0), notBefore);
-	auto result = crl::time(0);
 	auto &storage = _context->storage();
 	QMutexLocker lock(&storage.mutex);
 	auto &state = storage.openStates[key];
+	auto openAt = std::max(earliest, state.nextOpenAt);
 	while (!state.recentOpens.empty()
-		&& state.recentOpens.front() <= now - kOpenBurstWindow) {
+		&& state.recentOpens.front() <= openAt - kOpenBurstWindow) {
 		state.recentOpens.pop_front();
 	}
-	// Only rate-limit bursts once this endpoint has actually timed out
-	// recently (adaptiveSpacing > 0). A healthy proxy gets Android-like
-	// immediate concurrency - the client's own parallel media/download
-	// connections are legitimate, not a scan to be throttled.
-	const auto burstSpacing = (state.adaptiveSpacing > 0
-		&& int(state.recentOpens.size()) >= kOpenBurstCount)
-		? kOpenBurstSpacing
-		: crl::time(0);
-	const auto spacing = std::max({
+	if (int(state.recentOpens.size()) >= kOpenBurstCount) {
+		const auto jitter = crl::time(
+			_async.randomIndex(int(kOpenSpacingJitter) + 1));
+		openAt = std::max(
+			openAt,
+			state.recentOpens[
+				state.recentOpens.size() - kOpenBurstCount]
+				+ kOpenBurstWindow
+				+ jitter);
+		while (!state.recentOpens.empty()
+			&& state.recentOpens.front() <= openAt - kOpenBurstWindow) {
+			state.recentOpens.pop_front();
+		}
+	}
+	const auto spacing = std::max(
 		patternSpacing,
-		state.adaptiveSpacing,
-		burstSpacing });
-	const auto openAt = std::max(earliest, state.nextOpenAt);
+		state.adaptiveSpacing);
+	state.nextOpenAt = openAt;
 	if (spacing > 0) {
 		const auto jitter = crl::time(
 			_async.randomIndex(int(kOpenSpacingJitter) + 1));
 		state.nextOpenAt = openAt + spacing + jitter;
 	}
 	state.recentOpens.push_back(openAt);
-	result = std::max(crl::time(0), openAt - now);
-	return result;
+	return std::max(crl::time(0), openAt - now);
 }
 
 crl::time ReserveOpenSlot(

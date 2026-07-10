@@ -162,7 +162,7 @@ def test_mtproxy_success_and_failure_update_capability_routes():
     assert "CapabilityProxyKey(report.endpoint.canonical)" in success
     assert "RouteKey(report.endpoint.route)" in success
     assert "RouteText(report.endpoint)" in success
-    assert "report.scope == SuccessScope::Relay" in success
+    assert "report.scope != SuccessScope::Relay" in success
     assert "successRecipeLevel" in success
     assert ".stealth = _stealth" in packet_body
     assert ".sentProfile = _sentTlsProfile" in packet_body

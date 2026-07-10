@@ -114,14 +114,13 @@ def test_handshake_success_does_not_clear_relay_silence_cooldown():
     assert "enum class SuccessScope {" in header
     assert "SuccessScope scope = SuccessScope::Handshake;" in header
 
-    # On a dead relay every reconnect handshakes fine; only an actually
-    # received MTProto payload may repaint the endpoint green.
-    assert "SuccessScope::Handshake" in success
-    assert "FailureReason::ConnectedNoMtprotoData" in success
-    skip = success.index("state.lastFailure == FailureReason::ConnectedNoMtprotoData")
+    skip = success.index("if (report.scope != SuccessScope::Relay) {")
     assert skip < success.index("state.lastFailure = FailureReason::None;")
     assert skip < success.index("state.terminalUntil = 0;")
     assert skip < success.index("state.consecutiveFailures = 0;")
+    assert skip < success.index("state.recipeLevel = 0;")
+    assert skip < success.index(
+        "NoteConnectSuccess(_runtime, report.endpoint);")
 
 
 def test_session_reports_silence_and_recovers_temporary_key():

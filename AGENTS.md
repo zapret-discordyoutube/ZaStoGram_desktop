@@ -43,6 +43,10 @@ Dependencies are located relative to the repository: `../Libraries`, `../win64/L
 
 Do not run a compile/build step unless the user's latest request explicitly asks for compilation or a build. This applies even when an earlier plan or generic test checklist mentions building. For ordinary implementation work, prefer targeted fast checks such as focused scripts, static guards, `git diff --check`, line-ending checks, and source inspection. If build verification is useful but was not explicitly requested, report what was checked and note that compilation was skipped by repository instruction.
 
+### Test Account Policy
+
+A prepared Telegram test account is optional and its absence must never block implementation work. In particular, do not require `out/Debug/test_TelegramForcePortable` or another authenticated portable-data directory before editing code. When no test account is available, skip in-app account testing, run the strongest applicable static and scenario checks instead, and report the remaining runtime-verification limitation. Do not create, copy, or authenticate a test account unless the user explicitly asks for that.
+
 ### Build Commands
 
 **From repository root, run:**
@@ -141,6 +145,10 @@ Retrying builds wastes time and context. The ONLY fix is for the user to close t
 - Add a short plain-language body only when the subject can't carry it (what was done, not the technical how) — a line or two at most.
 - Never add a `Co-Authored-By:` line or any tool/assistant attribution trailer.
 - Never add `Autotask:`/attempt or other workflow markers — commits read like normal history.
+
+## Delivery
+
+After completing requested code changes and the strongest available checks, commit and push the intended changes immediately unless the user asks not to. Push the current working branch and do not create a pull request unless the user explicitly requests one.
 
 ## Local Storage Serialization
 

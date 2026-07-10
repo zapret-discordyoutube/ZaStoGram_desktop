@@ -212,6 +212,11 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.recipeLevel = 0;" in success
     assert "state.healthy = true;" in success
+    relay_guard = success.index(
+        "if (report.scope != SuccessScope::Relay) {")
+    assert relay_guard < success.index("NoteRouteSuccess(")
+    assert relay_guard < success.index("state.recipeLevel = 0;")
+    assert relay_guard < success.index("state.healthy = true;")
 
 
 def test_safe_attempt_plan_escalates_before_any_wss_fallback():
@@ -355,6 +360,9 @@ def test_proxied_connects_get_their_full_time_budget():
     # Health reports feed the adaptive open pacing.
     assert "NoteConnectTimeout(_runtime, report.endpoint);" in failure
     assert "NoteConnectSuccess(_runtime, report.endpoint);" in success
+    assert success.index(
+        "if (report.scope != SuccessScope::Relay) {") < success.index(
+            "NoteConnectSuccess(_runtime, report.endpoint);")
 
 
 def test_stealth_option_changes_restart_proxy_connections():

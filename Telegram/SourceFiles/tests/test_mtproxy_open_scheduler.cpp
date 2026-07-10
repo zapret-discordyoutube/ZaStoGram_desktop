@@ -96,5 +96,25 @@ int main(int, char *[]) {
 	if (second != crl::time(1107)) {
 		return Fail("second open should use fake time and fake jitter");
 	}
+
+	auto coldScheduler = MTP::details::MtProxy::OpenScheduler(fake.gateway());
+	const auto coldFirst = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	const auto coldSecond = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	const auto coldThird = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	const auto coldFourth = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (coldFirst != 0 || coldSecond != 0 || coldThird != 0) {
+		return Fail("cold endpoint should keep only the bounded open budget");
+	}
+	if (coldFourth != crl::time(10007)) {
+		return Fail("cold endpoint should wait for the rolling open window");
+	}
 	return 0;
 }

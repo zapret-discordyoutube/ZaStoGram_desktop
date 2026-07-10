@@ -125,13 +125,13 @@ struct FailureReport {
 
 // Success evidence comes from two different layers with different meaning.
 // Handshake: the proxy accepted our TCP/TLS handshake. FakeTlsAppData: the
-// server sent the first FakeTLS app-data frame. Both prove the fingerprint
-// and route, so they may reset recipe escalation - but they say nothing
-// about whether Telegram data actually flows through the relay.
-// Relay: an MTProto payload was actually received through the proxy. Only
-// this proves the endpoint end-to-end and may clear a relay-silence cooldown;
-// otherwise every reconnect of a dead relay would repaint the endpoint green
-// and the sessions would hammer it forever.
+// server sent the first FakeTLS app-data frame. Both are partial evidence:
+// neither may reset recipe escalation, relay health, or its cooldown because
+// they say nothing about whether Telegram data flows through the relay.
+// Relay: a valid Telegram response crossed the proxy, either the transport
+// resPQ probe or a session payload. Only this proves the endpoint end-to-end
+// and may clear a relay-silence cooldown; otherwise a dead relay would be
+// repainted green after every successful FakeTLS handshake.
 enum class SuccessScope {
 	Handshake,
 	FakeTlsAppData,

@@ -561,6 +561,10 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 	ApplyProxyGeneration(state, report.runtimeId, report.proxyGeneration);
 	state.endpoint = report.endpoint;
+	state.lastSuccessAt = now;
+	if (report.scope != SuccessScope::Relay) {
+		return;
+	}
 	const auto successRecipeLevel = state.recipeLevel;
 	const auto wasDegraded = (state.lastFailure != FailureReason::None)
 		|| (state.terminalUntil > 0)
@@ -569,47 +573,22 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		NoteRouteSuccess(storage, state, report.endpoint.route);
 	}
 	state.recipeLevel = 0;
-	state.lastSuccessAt = now;
 	state.exhaustedSinceSuccess = 0;
-	if (report.scope == SuccessScope::Relay) {
-		state.relayProven = true;
-		state.lastRelaySuccessAt = now;
-		++state.successEpoch;
-		++state.proxyEpoch;
-		state.lastGoodProfile = report.sentProfile;
-		state.lastGoodRoute = report.endpoint.route;
-		capabilitySuccess = CapabilitySuccess{
-			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
-			.routeKey = RouteKey(report.endpoint.route),
-			.route = RouteText(report.endpoint),
-			.sentProfile = report.sentProfile,
-			.stealth = report.stealth,
-			.recipeLevel = successRecipeLevel,
-			.relayProven = true,
-		};
-	}
-	const auto appDataMissing
-		= (state.lastFailure == FailureReason::ServerHelloOkNoAppData);
-	const auto mtprotoMissing
-		= (state.lastFailure == FailureReason::ServerHelloOkNoMtprotoData)
-		|| (state.lastFailure == FailureReason::ConnectedNoMtprotoData);
-	if (report.scope == SuccessScope::FakeTlsAppData
-		&& mtprotoMissing) {
-		lock.unlock();
-		NoteConnectSuccess(_runtime, report.endpoint);
-		return;
-	}
-	if (report.scope == SuccessScope::Handshake
-		&& (appDataMissing || mtprotoMissing)) {
-		// A handshake success cannot clear a relay-silence cooldown: on a
-		// dead relay every reconnect handshakes fine, and treating that
-		// as recovery would repaint the endpoint green each cycle and
-		// keep the sessions hammering it forever. Only an actual MTProto
-		// payload (SuccessScope::Relay) proves the endpoint end-to-end.
-		lock.unlock();
-		NoteConnectSuccess(_runtime, report.endpoint);
-		return;
-	}
+	state.relayProven = true;
+	state.lastRelaySuccessAt = now;
+	++state.successEpoch;
+	++state.proxyEpoch;
+	state.lastGoodProfile = report.sentProfile;
+	state.lastGoodRoute = report.endpoint.route;
+	capabilitySuccess = CapabilitySuccess{
+		.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+		.routeKey = RouteKey(report.endpoint.route),
+		.route = RouteText(report.endpoint),
+		.sentProfile = report.sentProfile,
+		.stealth = report.stealth,
+		.recipeLevel = successRecipeLevel,
+		.relayProven = true,
+	};
 	state.lastFailure = FailureReason::None;
 	state.lastDiagnostic.clear();
 	state.terminalUntil = 0;

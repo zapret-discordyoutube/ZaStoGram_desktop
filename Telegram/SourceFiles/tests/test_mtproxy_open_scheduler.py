@@ -16,6 +16,7 @@ CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cp
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 SCHEDULER_H = MTPROXY_DIR / "open_scheduler.h"
 SCHEDULER_CPP = MTPROXY_DIR / "open_scheduler.cpp"
+SCHEDULER_TEST_CPP = SOURCE_DIR / "tests" / "test_mtproxy_open_scheduler.cpp"
 
 
 def test_mtproxy_open_scheduler_module_is_registered():
@@ -156,20 +157,21 @@ def test_scheduler_paces_adaptively_on_connect_timeouts():
 
 def test_scheduler_limits_open_bursts_per_endpoint():
     source = SCHEDULER_CPP.read_text(encoding="utf-8")
+    scenario = SCHEDULER_TEST_CPP.read_text(encoding="utf-8")
 
-    # A cold start with several accounts/sessions may fire a rapid run
-    # of fresh handshakes at one endpoint - the scan-like pattern that
-    # makes proxies throttle. Beyond a small burst, opens are spaced.
     assert "constexpr auto kOpenBurstCount = 3;" in source
     assert "constexpr auto kOpenBurstWindow = crl::time(10 * 1000);" in source
-    assert "constexpr auto kOpenBurstSpacing = crl::time(2500);" in source
     context = (SOURCE_DIR / "mtproto" / "proxy" /
         "proxy_endpoint_context_p.h").read_text(encoding="utf-8")
     assert "std::deque<crl::time> recentOpens;" in context
     assert "state.recentOpens.pop_front();" in source
-    assert "burstSpacing" in source
-    # Burst pacing only engages after a real timeout, not preemptively.
-    assert "state.adaptiveSpacing > 0" in source
+    assert "state.recentOpens.size() - kOpenBurstCount" in source
+    assert "+ kOpenBurstWindow" in source
+    assert "state.nextOpenAt = openAt;" in source
+    assert "state.adaptiveSpacing > 0" not in source
+    assert "ProxyConnectionPattern::Off" in scenario
+    assert "const auto coldFourth" in scenario
+    assert "coldFourth != crl::time(10007)" in scenario
 
 
 if __name__ == "__main__":

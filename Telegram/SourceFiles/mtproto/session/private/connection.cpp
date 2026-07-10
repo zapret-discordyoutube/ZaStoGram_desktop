@@ -229,13 +229,6 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 
 void SessionTransport::reportMtproxyConnectionUsable(
 		const TestConnection &connection) {
-	// EndpointHealth only learns an endpoint is healthy from TlsSocket's
-	// first-app-data on the FakeTLS path; plain-obfuscated (dd-secret)
-	// mtproxy sockets have no such hook, so without this they stay forever
-	// "unknown" - throttled to activeCap 1 and never able to ignore a
-	// benign remote_closed. Report success here for every transport once a
-	// connection is actually usable. Skip if already healthy to avoid
-	// redundant capability-cache writes on the FakeTLS path.
 	if (EmptySessionProxyEndpoint(connection.mtproxyEndpoint)) {
 		return;
 	}
@@ -248,7 +241,7 @@ void SessionTransport::reportMtproxyConnectionUsable(
 	_owner->_proxyPort->reportConnected(
 		proxyAttempt(connection),
 		nullptr,
-		SessionProxySuccessScope::Handshake);
+		SessionProxySuccessScope::Relay);
 }
 
 void SessionTransport::removeConnectionBrokerTicket(SessionProxyTicketId id) {
