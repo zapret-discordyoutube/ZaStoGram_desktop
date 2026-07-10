@@ -540,7 +540,7 @@ void PaintRow(
 			? QString()
 			: Lang::GetNonDefaultValue(kPsaBadgePrefix + type.toUtf8());
 		const auto text = type.isEmpty()
-			? tr::lng_proxy_sponsor(tr::now)
+			? u"ZaStoGram"_q // ZaStoGram: own promoted channel badge.
 			: custom.isEmpty()
 			? tr::lng_badge_psa_default(tr::now)
 			: custom;

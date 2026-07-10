@@ -28,6 +28,10 @@ using UserIds = std::vector<UserId>;
 constexpr auto kTopPromotionInterval = TimeId(60 * 60);
 constexpr auto kTopPromotionMinDelay = TimeId(10);
 
+// ZaStoGram: this channel is always promoted on top of the chat list
+// instead of the server-provided proxy sponsor.
+const auto kCustomChannelUsername = u"zastogram"_q;
+
 [[nodiscard]] CustomSuggestion CustomFromTL(
 		not_null<Main::Session*> session,
 		const MTPPendingSuggestion &r) {
@@ -57,7 +61,39 @@ PromoSuggestions::PromoSuggestions(
 
 PromoSuggestions::~PromoSuggestions() = default;
 
+void PromoSuggestions::promoteCustomChannel() {
+	if (_customChannel) {
+		setTopPromoted(_customChannel, QString(), QString());
+		return;
+	} else if (_customChannelRequestId) {
+		return;
+	}
+	_customChannelRequestId = _session->api().request(
+		MTPcontacts_ResolveUsername(
+			MTP_flags(0),
+			MTP_string(kCustomChannelUsername),
+			MTP_string())
+	).done([=](const MTPcontacts_ResolvedPeer &result) {
+		_customChannelRequestId = 0;
+		const auto &data = result.data();
+		_session->data().processUsers(data.vusers());
+		_session->data().processChats(data.vchats());
+		const auto peerId = peerFromMTP(data.vpeer());
+		const auto peer = peerId
+			? _session->data().peerLoaded(peerId)
+			: nullptr;
+		if (peer) {
+			_customChannel = _session->data().history(peer->id).get();
+			setTopPromoted(_customChannel, QString(), QString());
+		}
+	}).fail([=] {
+		_customChannelRequestId = 0;
+	}).send();
+}
+
 void PromoSuggestions::refreshTopPromotion() {
+	promoteCustomChannel();
+
 	if (_contactBirthdaysLastDayRequest != -1
 		&& _contactBirthdaysLastDayRequest != QDate::currentDate().day()) {
 		_refreshed.fire({});
@@ -97,8 +133,8 @@ void PromoSuggestions::refreshTopPromotion() {
 			base::unixtime::now(),
 			_topPromotionNextRequestTime);
 
-		result.match([&](const MTPDhelp_promoDataEmpty &data) {
-			setTopPromoted(nullptr, QString(), QString());
+		result.match([&](const MTPDhelp_promoDataEmpty &) {
+			// ZaStoGram: keep our own channel promoted.
 		}, [&](const MTPDhelp_promoData &data) {
 			_session->data().processChats(data.vchats());
 			_session->data().processUsers(data.vusers());
@@ -130,16 +166,8 @@ void PromoSuggestions::refreshTopPromotion() {
 					|= _dismissedSuggestions.emplace(qs(suggestion)).second;
 			}
 
-			if (const auto peer = data.vpeer()) {
-				const auto peerId = peerFromMTP(*peer);
-				const auto history = _session->data().history(peerId);
-				setTopPromoted(
-					history,
-					data.vpsa_type().value_or_empty(),
-					data.vpsa_message().value_or_empty());
-			} else {
-				setTopPromoted(nullptr, QString(), QString());
-			}
+			// ZaStoGram: ignore the server-provided proxy sponsor peer,
+			// our own channel stays promoted instead.
 
 			auto changedCustom = false;
 			auto custom = data.vcustom_pending_suggestion()

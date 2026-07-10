@@ -4257,6 +4257,10 @@ void HistoryWidget::showAboutTopPromotion() {
 	}
 	_history->markTopPromotionAboutShown();
 	const auto type = _history->topPromotionType();
+	if (type.isEmpty()) {
+		// ZaStoGram: own promoted channel, no proxy-sponsor tooltip.
+		return;
+	}
 	const auto custom = type.isEmpty()
 		? QString()
 		: Lang::GetNonDefaultValue(kPsaAboutPrefix + type.toUtf8());

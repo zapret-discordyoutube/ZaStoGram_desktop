@@ -75,3 +75,4 @@ settings.local.json
 cmake
 /docs
 Telegram/SourceFiles/mtproto.zip
+*.pyc

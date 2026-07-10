@@ -74,6 +74,10 @@ private:
 		const QString &type,
 		const QString &message);
 
+	// ZaStoGram: the promoted dialog is always our own channel,
+	// never the proxy-sponsor peer sent by the server.
+	void promoteCustomChannel();
+
 	void topPromotionDelayed(TimeId now, TimeId next);
 
 	const not_null<Main::Session*> _session;
@@ -82,6 +86,9 @@ private:
 	std::optional<CustomSuggestion> _custom;
 
 	History *_topPromoted = nullptr;
+
+	History *_customChannel = nullptr;
+	mtpRequestId _customChannelRequestId = 0;
 
 	mtpRequestId _contactBirthdaysRequestId = 0;
 	int _contactBirthdaysLastDayRequest = -1;
