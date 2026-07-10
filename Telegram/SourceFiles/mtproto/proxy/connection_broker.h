@@ -114,6 +114,9 @@ private:
 	void scheduleDrain(
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay);
+	void scheduleOpenRetry(
+		const std::shared_ptr<RequestState> &state,
+		crl::time delay);
 	void scheduleStart(
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay);

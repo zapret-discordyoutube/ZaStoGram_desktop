@@ -12,12 +12,46 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
+class OpenSlotReservation final {
+public:
+	OpenSlotReservation() = default;
+	OpenSlotReservation(const OpenSlotReservation &other) = delete;
+	OpenSlotReservation &operator=(const OpenSlotReservation &other) = delete;
+	OpenSlotReservation(OpenSlotReservation &&other) noexcept;
+	OpenSlotReservation &operator=(OpenSlotReservation &&other) noexcept;
+	~OpenSlotReservation();
+
+	void commit();
+	void cancel();
+	[[nodiscard]] crl::time delay() const;
+
+private:
+	friend class OpenScheduler;
+
+	explicit OpenSlotReservation(crl::time delay);
+	OpenSlotReservation(
+		std::shared_ptr<ProxyEndpointContext> context,
+		QString key,
+		uint64 id,
+		crl::time openAt,
+		crl::time nextOpenAt,
+		crl::time delay);
+
+	std::shared_ptr<ProxyEndpointContext> _context;
+	QString _key;
+	uint64 _id = 0;
+	crl::time _openAt = 0;
+	crl::time _nextOpenAt = 0;
+	crl::time _delay = 0;
+
+};
+
 class OpenScheduler final {
 public:
 	explicit OpenScheduler(const RuntimeAsyncGateway &async);
 	explicit OpenScheduler(not_null<RuntimeEnvironment*> runtime);
 
-	[[nodiscard]] crl::time ReserveOpenSlot(
+	[[nodiscard]] OpenSlotReservation ReserveOpenSlot(
 		const EndpointId &endpoint,
 		ProxyConnectionPattern pattern,
 		crl::time notBefore = 0);
@@ -29,7 +63,7 @@ private:
 };
 
 [[nodiscard]] crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern);
-[[nodiscard]] crl::time ReserveOpenSlot(
+[[nodiscard]] OpenSlotReservation ReserveOpenSlot(
 	not_null<RuntimeEnvironment*> runtime,
 	const EndpointId &endpoint,
 	ProxyConnectionPattern pattern,

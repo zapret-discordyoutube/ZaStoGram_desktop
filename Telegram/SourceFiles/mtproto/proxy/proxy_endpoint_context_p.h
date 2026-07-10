@@ -18,10 +18,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
-struct OpenState {
+struct OpenRecord {
+	crl::time openAt = 0;
 	crl::time nextOpenAt = 0;
+};
+
+struct PendingOpenRecord {
+	uint64 id = 0;
+	crl::time openAt = 0;
+	crl::time nextOpenAt = 0;
+};
+
+struct OpenState {
 	crl::time adaptiveSpacing = 0;
-	std::deque<crl::time> recentOpens;
+	uint64 lastReservationId = 0;
+	std::deque<OpenRecord> recentOpens;
+	std::deque<PendingOpenRecord> pendingOpens;
 };
 
 struct EndpointContextStorage {

@@ -40,11 +40,14 @@ struct ConnectionBroker::RequestState {
 	uint64 proxyGeneration = 0;
 	ConnectionRequest request;
 	std::optional<ProxyAdmissionDecision> admission;
+	MtProxy::OpenSlotReservation openSlot;
 	crl::time createdAt = 0;
+	crl::time openRetryAt = 0;
 	bool active = true;
 	bool queuedNotified = false;
 	bool startAfterNotified = false;
 	bool admissionInProgress = false;
+	bool openRetryScheduled = false;
 	bool startScheduled = false;
 };
 
@@ -270,6 +273,7 @@ void ConnectionBroker::drain() {
 
 void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 	auto state = std::shared_ptr<RequestState>();
+	auto openRetryAfter = crl::time(0);
 	{
 		QMutexLocker lock(&_mutex);
 		auto &queue = queueFor(use);
@@ -288,7 +292,22 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 			|| state->startScheduled) {
 			return;
 		}
-		state->admissionInProgress = true;
+		const auto now = _runtime->async().now();
+		if (state->openRetryAt > now) {
+			if (state->openRetryScheduled) {
+				return;
+			}
+			openRetryAfter = state->openRetryAt - now;
+			state->openRetryScheduled = true;
+		} else {
+			state->openRetryAt = 0;
+			state->openRetryScheduled = false;
+			state->admissionInProgress = true;
+		}
+	}
+	if (openRetryAfter > 0) {
+		scheduleOpenRetry(state, openRetryAfter);
+		return;
 	}
 
 	if (MtProxy::EndpointEmpty(state->request.endpoint)) {
@@ -315,8 +334,8 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 		.proxyGeneration = state->proxyGeneration,
 	});
 	if (admission.action == ProxyAdmissionAction::StartNow) {
-		const auto openDelay = IsProxyCheck(state->request.use)
-			? std::max(crl::time(0), state->request.notBefore)
+		auto openSlot = IsProxyCheck(state->request.use)
+			? MtProxy::OpenSlotReservation()
 			: MtProxy::ReserveOpenSlot(
 				_runtime,
 				state->request.endpoint,
@@ -324,6 +343,46 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 					? admission.plan.stealth.connectionPattern
 					: state->request.connectionPattern,
 				state->request.notBefore);
+		const auto openDelay = IsProxyCheck(state->request.use)
+			? std::max(crl::time(0), state->request.notBefore)
+			: openSlot.delay();
+		if (!IsProxyCheck(state->request.use) && openDelay > 0) {
+			auto keepQueued = false;
+			auto notifyStartAfter = false;
+			{
+				QMutexLocker lock(&_mutex);
+				const auto &queue = queueFor(use);
+				keepQueued = !queue.pending.empty()
+					&& queue.pending.front() == state
+					&& state->active
+					&& state->request.context;
+				state->admissionInProgress = false;
+				if (keepQueued) {
+					state->request.notBefore = 0;
+					state->openRetryAt = _runtime->async().now()
+						+ openDelay;
+					state->openRetryScheduled = true;
+					state->admission = std::move(admission);
+					state->openSlot = std::move(openSlot);
+					notifyStartAfter = !state->startAfterNotified;
+					if (notifyStartAfter) {
+						state->startAfterNotified = true;
+					}
+				}
+			}
+			if (!keepQueued) {
+				return;
+			}
+			if (notifyStartAfter) {
+				notify(state, {
+					.action = ConnectionBrokerAction::StartAfter,
+					.retryAfter = openDelay,
+				});
+			}
+			releaseAdmission(state);
+			scheduleOpenRetry(state, openDelay);
+			return;
+		}
 		auto keepAdmission = false;
 		auto notifyStartAfter = false;
 		{
@@ -335,6 +394,7 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 				&& state->request.context;
 			if (keepAdmission) {
 				state->admission = std::move(admission);
+				state->openSlot = std::move(openSlot);
 				state->admissionInProgress = false;
 				state->startScheduled = true;
 				notifyStartAfter = (openDelay > 0)
@@ -408,6 +468,21 @@ void ConnectionBroker::scheduleDrain(
 	});
 }
 
+void ConnectionBroker::scheduleOpenRetry(
+		const std::shared_ptr<RequestState> &state,
+		crl::time delay) {
+	if (!state->request.context) {
+		cancel(state->id);
+		return;
+	}
+	_runtime->async().singleShot(delay, state->request.context, [=] {
+		state->openRetryScheduled = false;
+		if (state->active) {
+			drain();
+		}
+	});
+}
+
 void ConnectionBroker::scheduleStart(
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay) {
@@ -448,6 +523,7 @@ void ConnectionBroker::start(ConnectionTicketId id) {
 		}
 		state->active = false;
 	}
+	state->openSlot.commit();
 
 	reportAdmissionEvent(
 		state,
@@ -504,6 +580,7 @@ void ConnectionBroker::releaseAdmission(
 		state->admission->lease.release();
 		state->admission.reset();
 	}
+	state->openSlot.cancel();
 }
 
 void ConnectionBroker::notify(

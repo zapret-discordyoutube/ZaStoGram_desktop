@@ -11,8 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace {
+
+using OpenSlotReservation = MTP::details::MtProxy::OpenSlotReservation;
 
 [[nodiscard]] int Fail(const char *message) {
 	std::fprintf(stderr, "%s\n", message);
@@ -24,14 +27,12 @@ struct FakeAsync {
 	int jitter = 7;
 
 	[[nodiscard]] MTP::RuntimeAsyncGateway gateway() {
-		const auto fixedTime = time;
-		const auto fixedJitter = jitter;
 		return {
-			.now = [fixedTime] {
-				return fixedTime;
+			.now = [this] {
+				return time;
 			},
-			.randomIndex = [fixedJitter](int limit) {
-				return std::clamp(fixedJitter, 0, limit - 1);
+			.randomIndex = [this](int limit) {
+				return std::clamp(jitter, 0, limit - 1);
 			},
 			.singleShot = [](
 					crl::time,
@@ -82,39 +83,106 @@ int main(int, char *[]) {
 	auto fake = FakeAsync();
 	auto scheduler = MTP::details::MtProxy::OpenScheduler(fake.gateway());
 	const auto endpoint = Endpoint();
+	const auto emptyEndpoint = MTP::details::MtProxy::EndpointId();
+	const auto emptyDelay = scheduler.ReserveOpenSlot(
+		emptyEndpoint,
+		MTP::ProxyConnectionPattern::Off,
+		crl::time(250));
+	if (emptyDelay.delay() != crl::time(250)) {
+		return Fail("empty endpoint should preserve the requested delay");
+	}
 
-	const auto first = scheduler.ReserveOpenSlot(
+	auto first = scheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Soft);
-	if (first != 0) {
+	if (first.delay() != 0) {
 		return Fail("first open should start immediately");
 	}
+	first.commit();
 
-	const auto second = scheduler.ReserveOpenSlot(
+	auto second = scheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Soft);
-	if (second != crl::time(1107)) {
+	if (second.delay() != crl::time(1107)) {
 		return Fail("second open should use fake time and fake jitter");
 	}
+	second.commit();
 
 	auto coldScheduler = MTP::details::MtProxy::OpenScheduler(fake.gateway());
-	const auto coldFirst = coldScheduler.ReserveOpenSlot(
+	auto coldFirst = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
-	const auto coldSecond = coldScheduler.ReserveOpenSlot(
+	auto coldSecond = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
-	const auto coldThird = coldScheduler.ReserveOpenSlot(
+	auto coldThird = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
-	const auto coldFourth = coldScheduler.ReserveOpenSlot(
-		endpoint,
-		MTP::ProxyConnectionPattern::Off);
-	if (coldFirst != 0 || coldSecond != 0 || coldThird != 0) {
+	if (coldFirst.delay() != 0
+		|| coldSecond.delay() != 0
+		|| coldThird.delay() != 0) {
 		return Fail("cold endpoint should keep only the bounded open budget");
 	}
-	if (coldFourth != crl::time(10007)) {
+	coldFirst.commit();
+	coldSecond.commit();
+	coldThird.commit();
+	auto coldFourth = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (coldFourth.delay() != crl::time(10007)) {
 		return Fail("cold endpoint should wait for the rolling open window");
+	}
+	coldFourth.cancel();
+	auto coldReplacement = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (coldReplacement.delay() != crl::time(10007)) {
+		return Fail("cancelling a pending slot should preserve real opens");
+	}
+	coldReplacement.cancel();
+	fake.time = crl::time(11008);
+	auto afterWindow = coldScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (afterWindow.delay() != 0) {
+		return Fail("expired real opens should leave the rolling window");
+	}
+	afterWindow.cancel();
+
+	auto cancelledScheduler = MTP::details::MtProxy::OpenScheduler(
+		fake.gateway());
+	auto cancelled = std::vector<OpenSlotReservation>();
+	for (auto i = 0; i != 7; ++i) {
+		cancelled.push_back(cancelledScheduler.ReserveOpenSlot(
+			endpoint,
+			MTP::ProxyConnectionPattern::Off));
+	}
+	for (auto &reservation : cancelled) {
+		reservation.cancel();
+	}
+	auto retry = cancelledScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (retry.delay() != 0) {
+		return Fail("cancelled future slots should not delay a retry");
+	}
+	retry.cancel();
+
+	auto abandonedScheduler = MTP::details::MtProxy::OpenScheduler(
+		fake.gateway());
+	{
+		auto abandoned = std::vector<OpenSlotReservation>();
+		for (auto i = 0; i != 7; ++i) {
+			abandoned.push_back(abandonedScheduler.ReserveOpenSlot(
+				endpoint,
+				MTP::ProxyConnectionPattern::Off));
+		}
+	}
+	auto afterAbandon = abandonedScheduler.ReserveOpenSlot(
+		endpoint,
+		MTP::ProxyConnectionPattern::Off);
+	if (afterAbandon.delay() != 0) {
+		return Fail("destroyed reservations should release future slots");
 	}
 	return 0;
 }

@@ -50,7 +50,7 @@ def test_scheduler_defines_safe_open_gap_and_off_bypass():
     source = SCHEDULER_CPP.read_text(encoding="utf-8")
 
     assert "[[nodiscard]] crl::time OpenConnectionSpacing(" in header
-    assert "[[nodiscard]] crl::time ReserveOpenSlot(" in header
+    assert "[[nodiscard]] OpenSlotReservation ReserveOpenSlot(" in header
     assert "crl::time notBefore = 0" in header
     assert "constexpr auto kOpenSpacingJitter = crl::time(125)" in source
     assert "case ProxyConnectionPattern::Soft: return crl::time(1100);" in source
@@ -60,7 +60,7 @@ def test_scheduler_defines_safe_open_gap_and_off_bypass():
     assert "case ProxyConnectionPattern::Off: break;" in source
     assert "return crl::time(0);" in source
     assert "EndpointKey(endpoint)" in source
-    assert "nextOpenAt" in source
+    assert "PendingOpenRecord" in source
 
 
 def test_adaptive_recipe_uses_ladder_for_spacing():
@@ -83,8 +83,13 @@ def test_connection_broker_reserves_global_open_slot_before_start():
     assert "state->request.connectionPattern" in drain_body
     assert "state->request.notBefore" in drain_body
     assert "ConnectionBrokerAction::StartAfter" in drain_body
+    assert "state->request.notBefore = 0;" in drain_body
+    assert "state->openRetryAt = _runtime->async().now()" in drain_body
+    assert "scheduleOpenRetry(state, openRetryAfter);" in drain_body
+    assert "releaseAdmission(state);" in drain_body
+    assert "scheduleOpenRetry(state, openDelay);" in drain_body
     assert drain_body.index("MtProxy::ReserveOpenSlot(") < drain_body.index(
-        "scheduleStart(state, openDelay)")
+        "scheduleOpenRetry(state, openDelay)")
 
 
 def test_connection_broker_cancels_by_runtime_environment():
@@ -163,15 +168,36 @@ def test_scheduler_limits_open_bursts_per_endpoint():
     assert "constexpr auto kOpenBurstWindow = crl::time(10 * 1000);" in source
     context = (SOURCE_DIR / "mtproto" / "proxy" /
         "proxy_endpoint_context_p.h").read_text(encoding="utf-8")
-    assert "std::deque<crl::time> recentOpens;" in context
-    assert "state.recentOpens.pop_front();" in source
-    assert "state.recentOpens.size() - kOpenBurstCount" in source
+    assert "std::deque<OpenRecord> recentOpens;" in context
+    assert "std::deque<PendingOpenRecord> pendingOpens;" in context
+    assert "state.recentOpens.erase(expired" in source
+    assert "end(scheduled) - kOpenBurstCount" in source
     assert "+ kOpenBurstWindow" in source
-    assert "state.nextOpenAt = openAt;" in source
+    assert "state.pendingOpens.push_back({" in source
     assert "state.adaptiveSpacing > 0" not in source
     assert "ProxyConnectionPattern::Off" in scenario
-    assert "const auto coldFourth" in scenario
-    assert "coldFourth != crl::time(10007)" in scenario
+    assert "auto coldFourth" in scenario
+    assert "coldFourth.delay() != crl::time(10007)" in scenario
+    assert "cancelled future slots should not delay a retry" in scenario
+    assert "empty endpoint should preserve the requested delay" in scenario
+    assert "expired real opens should leave the rolling window" in scenario
+    assert "destroyed reservations should release future slots" in scenario
+
+
+def test_scheduler_releases_cancelled_broker_reservations():
+    header = SCHEDULER_H.read_text(encoding="utf-8")
+    source = SCHEDULER_CPP.read_text(encoding="utf-8")
+    broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
+
+    assert "class OpenSlotReservation final" in header
+    assert "~OpenSlotReservation();" in header
+    assert "void commit();" in header
+    assert "void cancel();" in header
+    assert "state.pendingOpens.erase(i);" in source
+    assert "MtProxy::OpenSlotReservation openSlot;" in broker
+    assert "state->openSlot = std::move(openSlot);" in broker
+    assert "state->openSlot.commit();" in broker
+    assert "state->openSlot.cancel();" in broker
 
 
 if __name__ == "__main__":
@@ -185,3 +211,4 @@ if __name__ == "__main__":
     test_proxy_check_uses_same_connection_broker_before_syn()
     test_scheduler_paces_adaptively_on_connect_timeouts()
     test_scheduler_limits_open_bursts_per_endpoint()
+    test_scheduler_releases_cancelled_broker_reservations()

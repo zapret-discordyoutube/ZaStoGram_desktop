@@ -165,8 +165,48 @@ def test_broker_cancel_releases_admitted_lease_immediately():
     assert "void ConnectionBroker::releaseAdmission(" in source
     assert "state->admission->lease.release();" in source
     assert "state->admission.reset();" in source
+    assert "state->openSlot.cancel();" in source
+    assert "state->openSlot.commit();" in source
     assert "releaseAdmission(cancelled);" in cancel_body
     assert "releaseAdmission(state);" in generation_cancel_body
+
+
+def test_broker_rechecks_scheduler_after_delayed_open_slot():
+    source = BROKER_CPP.read_text(encoding="utf-8")
+    drain_body = function_body(source, "void ConnectionBroker::drainQueue(")
+    request_state = source.split(
+        "struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
+
+    assert "crl::time openRetryAt = 0;" in request_state
+    assert "bool openRetryScheduled = false;" in request_state
+    assert "if (state->openRetryAt > now)" in drain_body
+    assert "if (state->openRetryScheduled)" in drain_body
+    assert "openRetryAfter = state->openRetryAt - now;" in drain_body
+    assert "scheduleOpenRetry(state, openRetryAfter);" in drain_body
+    assert "if (!IsProxyCheck(state->request.use) && openDelay > 0)" in drain_body
+    assert "state->request.notBefore = 0;" in drain_body
+    assert "state->openRetryAt = _runtime->async().now()" in drain_body
+    assert "state->openRetryScheduled = true;" in drain_body
+    assert "state->admission = std::move(admission);" in drain_body
+    assert "state->openSlot = std::move(openSlot);" in drain_body
+    assert "releaseAdmission(state);" in drain_body
+    assert "scheduleOpenRetry(state, openDelay);" in drain_body
+    assert "scheduleStart(state, openDelay);" in drain_body
+    assert drain_body.index("scheduleOpenRetry(state, openDelay);") < (
+        drain_body.index("scheduleStart(state, openDelay);"))
+    delayed = drain_body.split(
+        "if (!IsProxyCheck(state->request.use) && openDelay > 0)", 1
+    )[1].split("auto keepAdmission = false;", 1)[0]
+    assert "state->startScheduled = true;" not in delayed
+    assert "scheduleStart(" not in delayed
+    assert delayed.index("releaseAdmission(state);") < delayed.index(
+        "scheduleOpenRetry(state, openDelay);")
+
+    retry_body = function_body(
+        source, "void ConnectionBroker::scheduleOpenRetry(")
+    assert "state->openRetryScheduled = false;" in retry_body
+    assert "if (state->active)" in retry_body
+    assert "drain();" in retry_body
 
 
 def test_proxy_check_uses_connection_broker_proxy_check_queue():
