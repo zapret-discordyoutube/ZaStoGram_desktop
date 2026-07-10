@@ -69,7 +69,7 @@ jobs:
       # once for changes that are NOT auto-detected — the disk-trim filter or the
       # cache path lists below, and as a safety net for a toolset bump.
       CACHE_VERSION: "v1"
-      TELEGRAM_BUILD_CACHE_VERSION: "v2"
+      TELEGRAM_BUILD_CACHE_VERSION: "v3"
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SCCACHE_IDLE_TIMEOUT: "600"
@@ -617,6 +617,16 @@ jobs:
         run: |
           cd "${TBUILD//\\//}/${REPO_NAME}"
           mkdir -p out
+          # A stopped build leaves .obj files that still match the RESTORED
+          # cache's head for every source it never got to recompile. Advancing
+          # head= past them would make the next run's mtime normalization mark
+          # those stale objects as up to date forever (unresolved externals at
+          # link time), so on failure keep the restored metadata as is.
+          if [ "${{ steps.build-telegram.outcome }}" != "success" ] \
+              && [ -f out/.telegram_build_cache_metadata ]; then
+            echo "Build failed, keeping restored cache metadata."
+            exit 0
+          fi
           {
             printf 'head=%s\n' "$(git rev-parse HEAD)"
             printf 'submodules\n'
