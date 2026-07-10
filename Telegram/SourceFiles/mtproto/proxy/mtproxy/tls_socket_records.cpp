@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "base/invoke_queued.h"
