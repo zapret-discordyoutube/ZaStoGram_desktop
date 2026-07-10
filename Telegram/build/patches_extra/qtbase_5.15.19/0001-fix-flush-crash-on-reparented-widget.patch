@@ -1,0 +1,51 @@
+diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
+index d661114..fdbec07 100644
+--- a/src/widgets/kernel/qwidget.cpp
++++ b/src/widgets/kernel/qwidget.cpp
+@@ -4063,9 +4063,10 @@ QPoint QWidget::mapTo(const QWidget * parent, const QPoint & pos) const
+     QPoint p = pos;
+     if (parent) {
+         const QWidget * w = this;
+-        while (w != parent) {
+-            Q_ASSERT_X(w, "QWidget::mapTo(const QWidget *parent, const QPoint &pos)",
+-                       "parent must be in parent hierarchy");
++        // Guard against walking off the top of the hierarchy when the
++        // widget was reparented into another window while stale pointers
++        // to it are still tracked elsewhere (e.g. repaint manager lists).
++        while (w && w != parent) {
+             p = w->mapToParent(p);
+             w = w->parentWidget();
+         }
+@@ -4087,10 +4088,7 @@ QPoint QWidget::mapFrom(const QWidget * parent, const QPoint & pos) const
+     QPoint p(pos);
+     if (parent) {
+         const QWidget * w = this;
+-        while (w != parent) {
+-            Q_ASSERT_X(w, "QWidget::mapFrom(const QWidget *parent, const QPoint &pos)",
+-                       "parent must be in parent hierarchy");
+-
++        while (w && w != parent) {
+             p = w->mapFromParent(p);
+             w = w->parentWidget();
+         }
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+index 6e72aae..786cdcc 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -1159,8 +1159,15 @@ void QWidgetRepaintManager::flush(QWidget *widget, const QRegion &region, QPlatf
+     }
+ 
+     QPoint offset;
+-    if (widget != tlw)
++    if (widget != tlw) {
++        // The widget may have been reparented into another top level window
++        // after it was marked as needing a flush here. Flushing it against
++        // our backing store would use bogus offsets, skip it instead - the
++        // repaint manager of the new window repaints it anyway.
++        if (Q_UNLIKELY(widget->window() != tlw))
++            return;
+         offset += widget->mapTo(tlw, QPoint());
++    }
+ 
+     QRegion effectiveRegion = region;
+ #ifndef QT_NO_OPENGL

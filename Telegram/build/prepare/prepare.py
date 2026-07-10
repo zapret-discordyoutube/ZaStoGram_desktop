@@ -56,6 +56,8 @@ rootDir = os.getcwd()
 libsDir = os.path.realpath(os.path.join(rootDir, libsLoc))
 thirdPartyDir = os.path.realpath(os.path.join(rootDir, 'ThirdParty'))
 usedPrefix = os.path.realpath(os.path.join(libsDir, 'local'))
+repoDir = os.path.realpath(os.path.join(scriptPath, '..', '..', '..'))
+buildDir = os.path.realpath(os.path.join(scriptPath, '..'))
 
 optionsList = [
     'qt6',
@@ -151,6 +153,11 @@ if win and 'NoDefaultCurrentDirectoryInExePath' in modifiedEnv:
 
 modifiedEnv['PATH'] = environment['PATH_PREFIX'] + modifiedEnv['PATH']
 
+# Absolute path to this repository, for referencing repo-local files (like
+# extra patches) from stage scripts. Intentionally not in `environment`, so
+# it does not participate in cache keys (it differs between machines).
+modifiedEnv['REPO_DIR'] = repoDir
+
 def computeFileHash(path):
     sha1 = hashlib.sha1()
     with open(path, 'rb') as f:
@@ -178,6 +185,8 @@ def computeCacheKey(stage):
         items = [pattern]
         if len(pathlist) == 0:
             pathlist = glob.glob(os.path.join(thirdPartyDir, pattern))
+        if len(pathlist) == 0:
+            pathlist = glob.glob(os.path.join(buildDir, pattern))
         if len(pathlist) == 0:
             error('Nothing found: ' + pattern)
         for path in pathlist:
@@ -1551,6 +1560,7 @@ release:
     cd qt_$QT
     git submodule update --init --recursive --progress qtbase qtimageformats qtsvg
 depends:patches/qtbase_""" + qt + """/*.patch
+depends:patches_extra/qtbase_""" + qt + """/*.patch
 win:
     cd qtbase
     setlocal enabledelayedexpansion
@@ -1558,6 +1568,13 @@ win:
         git apply %%i -v
         if errorlevel 1 (
             echo ERROR: Applying patch %%~nxi failed!
+            exit /b 1
+        )
+    )
+    for %%i in ("%REPO_DIR%\\Telegram\\build\\patches_extra\\qtbase_%QT%\\*.patch") do (
+        git apply "%%~fi" -v
+        if errorlevel 1 (
+            echo ERROR: Applying extra patch %%~nxi failed!
             exit /b 1
         )
     )
