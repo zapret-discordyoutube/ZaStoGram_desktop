@@ -11,7 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 
 #include <QtCore/QLatin1String>
-#include <QtCore/QByteArrayView>
+#include <QtCore/QByteArray>
 #include <QtCore/QtEndian>
 
 namespace MTP::details {
@@ -37,7 +37,7 @@ namespace MTP::details {
 }
 
 [[nodiscard]] inline QString FakeTlsResponseClass(
-		QByteArrayView prefix,
+		const QByteArray &prefix,
 		qint64 totalBytes) {
 	if (!totalBytes) {
 		return u"zero"_q;
