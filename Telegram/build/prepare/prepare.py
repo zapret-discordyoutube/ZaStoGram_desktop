@@ -1640,11 +1640,15 @@ else: # qt > '6'
     cd qt_$QT
     git submodule update --init --recursive --progress qtbase qtimageformats qtshadertools qtsvg
 depends:patches/qtbase_""" + qt + """/*.patch
+depends:patches_extra/qtbase_""" + qt + """/*.patch
 mac:
     if [ -d "../patches/qt6_highsierra" ]; then
         find "$PWD/../patches/qt6_highsierra" -maxdepth 1 -name "*.patch" -print0 | sort -z | xargs -0 git -C qtbase apply -v
     fi
     find $PWD/../patches/qtbase_$QT -type f -print0 | sort -z | xargs -0 git -C qtbase apply -v
+    if [ -d "$REPO_DIR/Telegram/build/patches_extra/qtbase_$QT" ]; then
+        find "$REPO_DIR/Telegram/build/patches_extra/qtbase_$QT" -maxdepth 1 -name "*.patch" -print0 | sort -z | xargs -0 git -C qtbase apply -v
+    fi
     sed -i.bak 's/tqtc-//' {qtimageformats,qtsvg}/dependencies.yaml
 
     CONFIGURATIONS=-debug
@@ -1681,6 +1685,13 @@ win:
         git apply %%i -v
         if errorlevel 1 (
             echo ERROR: Applying patch %%~nxi failed!
+            exit /b 1
+        )
+    )
+    for %%i in ("%REPO_DIR%\\Telegram\\build\\patches_extra\\qtbase_%QT%\\*.patch") do (
+        git apply "%%~fi" -v
+        if errorlevel 1 (
+            echo ERROR: Applying extra patch %%~nxi failed!
             exit /b 1
         )
     )

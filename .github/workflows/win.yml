@@ -56,9 +56,15 @@ jobs:
 
     strategy:
       matrix:
-        arch: [x64_x86, x64]
-        qt: [""]
-        generator: [""]
+        # x64 builds with Qt 6 to get the QRhi (D3D11) GPU rendering path;
+        # the 32-bit build stays on Qt 5 for older Windows versions.
+        include:
+          - arch: x64_x86
+            qt: ""
+            generator: ""
+          - arch: x64
+            qt: "qt6"
+            generator: ""
 
     env:
       UPLOAD_ARTIFACT: "true"

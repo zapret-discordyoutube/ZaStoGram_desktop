@@ -76,3 +76,4 @@ cmake
 /docs
 Telegram/SourceFiles/mtproto.zip
 *.pyc
+*.patch
