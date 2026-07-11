@@ -379,6 +379,21 @@ def test_proxied_connects_get_their_full_time_budget():
     # nothing to race it against, so let TCP retransmit SYN.
     assert "kOnlyRouteAttemptTimeout" in refresh
     assert "_nextRoutePosition >= int(_routeOrder.size())" in refresh
+    # But once the ClientHello is on the wire we wait only for ServerHello,
+    # which a working proxy answers in milliseconds - fail fast (adaptive by
+    # whether the endpoint has recently proven it relays) instead of holding
+    # the single admission slot for the full SYN-retransmit budget.
+    assert "HandshakePhase::ClientHelloSent" in refresh
+    assert "serverHelloWaitBudget()" in refresh
+    budget = function_body(
+        resolving,
+        "crl::time ResolvingConnection::serverHelloWaitBudget(")
+    assert "snapshot.relayProven" in budget
+    assert "kServerHelloWaitProven" in budget
+    assert "kServerHelloWaitUnproven" in budget
+    assert "kServerHelloWaitProven = crl::time(2500)" in resolving
+    # The relay wait (proxy -> DC) still keeps the patient budget.
+    assert "HandshakePhase::ServerHelloOk" in refresh
     # Health reports feed the adaptive open pacing.
     assert "NoteConnectTimeout(_runtime, report.endpoint);" in failure
     assert "NoteConnectSuccess(_runtime, report.endpoint);" in success

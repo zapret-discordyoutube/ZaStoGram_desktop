@@ -29,8 +29,22 @@ constexpr auto kMaxParallelRouteAttempts = 2;
 // When the running attempt is the last route available there is nothing
 // to race it against - killing it at the short timeout only burns a
 // handshake and reconnects. Give TCP time to retransmit SYN instead: a
-// proxy that throttles new connects often accepts on a later try.
+// proxy that throttles new connects often accepts on a later try. This
+// also covers the post-handshake wait for the proxy to relay telegram
+// data (its own dial to the DC), which racing cannot speed up.
 constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
+
+// Once the ClientHello is on the wire we are waiting only for the proxy's
+// ServerHello - a working FakeTLS front answers in milliseconds, so a long
+// wait here just means a DPI box is silently dropping the ClientHello while
+// we hold the endpoint's single admission slot. Abandon fast so the next
+// attempt/route/proxy is tried sooner. A proxy that has recently proven it
+// relays telegram data is expected to answer quickly, so it gets the tight
+// budget; a never-proven proxy gets a fairer window before we condemn it
+// (and misclassify a slow-but-honest relay as DPI-blocked).
+constexpr auto kServerHelloWaitProven = crl::time(2500);
+constexpr auto kServerHelloWaitUnproven = crl::time(5000);
+constexpr auto kProvenFastWindow = crl::time(5 * 60 * 1000);
 
 // The route attempt timer knows nothing about handshakes by itself, so
 // when it fires the failure must be attributed from the phase the child
@@ -425,6 +439,18 @@ void ResolvingConnection::scheduleRouteRace() {
 	_routeRaceTimer.callOnce(kRouteRaceDelay);
 }
 
+crl::time ResolvingConnection::serverHelloWaitBudget() const {
+	if (_proxy.type != ProxyData::Type::Mtproto) {
+		return kOnlyRouteAttemptTimeout;
+	}
+	const auto snapshot = _runtime->proxyServices().control()
+		.mtproxyEndpointSnapshot(MtproxyEndpointIdForProxy(_proxy));
+	const auto provenFast = snapshot.relayProven
+		&& snapshot.lastRelaySuccessAt
+		&& (crl::now() - snapshot.lastRelaySuccessAt < kProvenFastWindow);
+	return provenFast ? kServerHelloWaitProven : kServerHelloWaitUnproven;
+}
+
 void ResolvingConnection::refreshAttemptTimeout() {
 	if (_connected || _routeAttempts.empty()) {
 		_timeoutTimer.cancel();
@@ -432,24 +458,36 @@ void ResolvingConnection::refreshAttemptTimeout() {
 	}
 	const auto lastRoute = (_routeAttempts.size() == 1)
 		&& (_nextRoutePosition >= int(_routeOrder.size()));
-	// An attempt that passed the TLS handshake is waiting for the proxy
-	// to relay telegram data - that includes the proxy's own connect to
-	// the DC, which racing another route cannot speed up. Do not kill a
-	// route that already proved itself at the short racing timeout just
-	// because a sibling attempt exists; the timer is also restarted on
-	// every handshakeProgress() so each phase gets a fresh budget
-	// instead of whatever was left over from TCP connect.
-	const auto handshakeDone = std::any_of(
-		begin(_routeAttempts),
-		end(_routeAttempts),
-		[](const RouteAttempt &attempt) {
-			const auto phase = ChildHandshakePhase(attempt.child.get());
-			return (phase == HandshakePhase::ServerHelloOk)
-				|| (phase == HandshakePhase::FirstDataReceived);
-		});
-	_timeoutTimer.callOnce((lastRoute || handshakeDone)
-		? kOnlyRouteAttemptTimeout
-		: kRouteAttemptTimeout);
+	// The timer is restarted on every handshakeProgress(), so each phase
+	// gets a fresh budget sized to what it is actually waiting for, rather
+	// than whatever was left over from TCP connect. Drive the budget off
+	// the furthest-progressed attempt (the one worth keeping alive).
+	auto maxPhaseValue = int(HandshakePhase::None);
+	for (const auto &attempt : _routeAttempts) {
+		maxPhaseValue = std::max(
+			maxPhaseValue,
+			int(ChildHandshakePhase(attempt.child.get())));
+	}
+	const auto maxPhase = HandshakePhase(maxPhaseValue);
+	const auto budget = [&] {
+		if (maxPhase == HandshakePhase::ServerHelloOk
+			|| maxPhase == HandshakePhase::FirstDataReceived) {
+			// Handshake passed: waiting for the proxy to relay telegram
+			// data (its own dial to the DC). Racing cannot speed that up,
+			// so give the full single-route budget even with a sibling.
+			return kOnlyRouteAttemptTimeout;
+		} else if (maxPhase == HandshakePhase::ClientHelloSent) {
+			// Waiting only for ServerHello - fail fast (see the constant).
+			const auto serverHello = serverHelloWaitBudget();
+			return lastRoute
+				? serverHello
+				: std::min(kRouteAttemptTimeout, serverHello);
+		}
+		// Still establishing TCP / writing the ClientHello: keep the SYN
+		// retransmit budget on the last route, race otherwise.
+		return lastRoute ? kOnlyRouteAttemptTimeout : kRouteAttemptTimeout;
+	}();
+	_timeoutTimer.callOnce(budget);
 }
 
 void ResolvingConnection::handleRouteAttemptTimeout() {

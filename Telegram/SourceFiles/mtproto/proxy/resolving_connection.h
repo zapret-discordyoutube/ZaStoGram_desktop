@@ -60,6 +60,7 @@ private:
 	void startNextRouteAttempt();
 	void scheduleRouteRace();
 	void refreshAttemptTimeout();
+	[[nodiscard]] crl::time serverHelloWaitBudget() const;
 	void handleRouteAttemptTimeout();
 	[[nodiscard]] int activeRouteAttempts() const;
 	[[nodiscard]] std::vector<int> routeOrder() const;
