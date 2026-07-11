@@ -204,27 +204,35 @@ def test_broker_rechecks_scheduler_after_delayed_open_slot():
     assert "state->request.notBefore = 0;" in commit_admitted
     assert "state->openRetryAt = _runtime->async().now()" in commit_admitted
     assert "state->openRetryScheduled = true;" in commit_admitted
+    # The immediate-start branch stores the admission/slot into the state;
+    # the delayed branch must NOT (a queued front's state->admission is
+    # read under _mutex by claimFront/wakeEndpoint, so it is kept in the
+    # local `verdict` and released after the unlock instead).
     assert "state->admission = std::move(*verdict.admission);" in (
         commit_admitted)
     assert "state->openSlot = std::move(verdict.openSlot);" in commit_admitted
-    assert "releaseAdmission(state);" in commit_admitted
+    assert "verdict.admission->lease.release();" in commit_admitted
+    assert "verdict.openSlot.cancel();" in commit_admitted
     assert "scheduleOpenRetry(state, openDelay);" in commit_admitted
     assert "scheduleStart(state, openDelay);" in commit_admitted
-    # A delayed open keeps the request queued: the admission is released
-    # and the retry armed instead of scheduling the start.
+    # The locked delayed branch keeps the request queued without storing the
+    # admission into the state or scheduling a start.
     delayed_locked = commit_admitted.split(
         "if (delayedOpen) {", 1)[1].split("} else {", 1)[0]
+    assert "state->admission = std::move(" not in delayed_locked
     assert "state->startScheduled = true;" not in delayed_locked
     assert "scheduleStart(" not in delayed_locked
     dispatch = commit_admitted.split("if (delayedOpen) {", 2)[2]
-    assert dispatch.index("releaseAdmission(state);") < dispatch.index(
-        "scheduleOpenRetry(state, openDelay);")
+    assert dispatch.index("verdict.admission->lease.release();") < (
+        dispatch.index("scheduleOpenRetry(state, openDelay);"))
     assert dispatch.index("scheduleOpenRetry(state, openDelay);") < (
         dispatch.index("scheduleStart(state, openDelay);"))
 
     retry_body = function_body(
         source, "void ConnectionBroker::scheduleOpenRetry(")
     assert "state->openRetryScheduled = false;" in retry_body
+    # Cleared under _mutex (wakeEndpoint reads it under the lock).
+    assert "QMutexLocker lock(&_mutex);" in retry_body
     assert "if (state->active)" in retry_body
     assert "drain();" in retry_body
 
@@ -348,6 +356,7 @@ if __name__ == "__main__":
     test_broker_drains_every_queue_independently()
     test_broker_claims_front_request_before_admission()
     test_broker_cancel_releases_admitted_lease_immediately()
+    test_broker_rechecks_scheduler_after_delayed_open_slot()
     test_broker_wakes_queue_on_admission_slot_release()
     test_proxy_check_uses_connection_broker_proxy_check_queue()
     test_proxy_check_connection_request_designators_match_struct_order()

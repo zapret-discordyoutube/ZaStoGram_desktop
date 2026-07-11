@@ -92,7 +92,7 @@ def test_connection_broker_reserves_global_open_slot_before_start():
     assert "state->request.notBefore = 0;" in commit_admitted
     assert "state->openRetryAt = _runtime->async().now()" in commit_admitted
     assert "scheduleOpenRetry(state, claim.openRetryAfter);" in drain_body
-    assert "releaseAdmission(state);" in commit_admitted
+    assert "verdict.admission->lease.release();" in commit_admitted
     assert "scheduleOpenRetry(state, openDelay);" in commit_admitted
     # The slot is reserved during the admission pass, before the retry
     # for a delayed open is armed.

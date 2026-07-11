@@ -519,17 +519,23 @@ void ConnectionBroker::commitAdmitted(
 		keepAdmission = stillFrontLocked(use, state);
 		state->admissionInProgress = false;
 		if (keepAdmission) {
-			state->admission = std::move(*verdict.admission);
-			state->openSlot = std::move(verdict.openSlot);
 			if (delayedOpen) {
-				// The open slot is reserved for a future moment: keep
-				// the request queued and retry exactly when it opens.
+				// The open slot is reserved for a future moment: keep the
+				// request queued and retry exactly when it opens. The
+				// lease/reservation are dropped now and re-acquired on
+				// retry, so they stay in the local `verdict` (released
+				// below, after the unlock) and are never written into the
+				// still-enqueued state - a concurrent claimFront/
+				// wakeEndpoint reads state->admission under _mutex, so
+				// mutating it unlocked would be a torn read.
 				state->request.notBefore = 0;
 				state->openRetryAt = _runtime->async().now()
 					+ openDelay;
 				state->openRetryScheduled = true;
 				notifyStartAfter = !state->startAfterNotified;
 			} else {
+				state->admission = std::move(*verdict.admission);
+				state->openSlot = std::move(verdict.openSlot);
 				state->startScheduled = true;
 				notifyStartAfter = (openDelay > 0)
 					&& !state->startAfterNotified;
@@ -539,6 +545,8 @@ void ConnectionBroker::commitAdmitted(
 			}
 		}
 	}
+	// If keepAdmission is false, `verdict` still owns the lease/slot and
+	// releases them when it destructs at return - outside the lock.
 	if (!keepAdmission) {
 		return;
 	}
@@ -549,7 +557,10 @@ void ConnectionBroker::commitAdmitted(
 		});
 	}
 	if (delayedOpen) {
-		releaseAdmission(state);
+		if (verdict.admission) {
+			verdict.admission->lease.release();
+		}
+		verdict.openSlot.cancel();
 		scheduleOpenRetry(state, openDelay);
 	} else {
 		scheduleStart(state, openDelay);
@@ -608,7 +619,12 @@ void ConnectionBroker::scheduleOpenRetry(
 		return;
 	}
 	_runtime->async().singleShot(delay, state->request.context, [=] {
-		state->openRetryScheduled = false;
+		{
+			// Cleared under _mutex: wakeEndpoint reads openRetryScheduled
+			// under the lock from foreign (lease-releasing) threads.
+			QMutexLocker lock(&_mutex);
+			state->openRetryScheduled = false;
+		}
 		if (state->active) {
 			drain();
 		}
