@@ -25,7 +25,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/check.h"
+#include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "qr/qr_generate.h"
 #include "settings/settings_common.h"
 #include "settings.h"
@@ -169,6 +171,36 @@ using ProxyData = MTP::ProxyData;
 		return st::proxyRowStatusFg;
 	}
 	return st::proxyRowStatusFg;
+}
+
+[[nodiscard]] QString ProxyHealthReasonText(
+		MTP::details::MtProxy::FailureReason reason) {
+	using Reason = MTP::details::MtProxy::FailureReason;
+	switch (reason) {
+	case Reason::ClientHelloSentNoServerHello:
+	case Reason::TlsAlertAfterClientHello:
+	case Reason::ServerHelloHmacMismatch:
+		return tr::lng_proxy_health_reason_dpi(tr::now);
+	case Reason::ServerHelloOkNoAppData:
+	case Reason::ServerHelloOkNoMtprotoData:
+	case Reason::ConnectedNoMtprotoData:
+	case Reason::MtpReceiveTimeoutAfterData:
+		return tr::lng_proxy_health_reason_no_relay(tr::now);
+	case Reason::TcpConnectTimeout:
+	case Reason::TcpConnectedNoClientHelloWrite:
+		return tr::lng_proxy_health_reason_timeout(tr::now);
+	case Reason::DnsFailed:
+		return tr::lng_proxy_health_reason_dns(tr::now);
+	default:
+		return tr::lng_proxy_health_reason_error(tr::now);
+	}
+}
+
+[[nodiscard]] QString ProxyHealthShortDuration(crl::time ms) {
+	const auto seconds = int((ms + 999) / 1000);
+	return (seconds < 60)
+		? u"%1s"_q.arg(seconds)
+		: u"%1m %2s"_q.arg(seconds / 60).arg(seconds % 60);
 }
 
 [[nodiscard]] QString ProxyDataToQueryPath(const ProxyData &proxy) {
@@ -980,7 +1012,29 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 	_title.drawLeftElided(p, left, top, availableWidth, width());
 	top += st::semiboldFont->height + st::proxyRowSkip;
 
+	// Live relay health beats the generic placeholder texts: while a proxy
+	// is connecting (or was never checked) the interesting fact is WHY it is
+	// not up yet ("retry in 12s - handshake blocked"). It must not override
+	// an in-progress check or the online state, which are more current.
+	using Health = ProxiesBoxController::ItemHealth;
+	const auto useHealth = !_view.healthText.isEmpty()
+		&& (_view.state != State::Checking)
+		&& (_view.state != State::Online)
+		&& ((_view.health == Health::Cooldown)
+			|| (_view.health == Health::Recovering)
+			|| (_view.state == State::Unknown)
+			|| (_view.state == State::Connecting));
 	const auto statusFg = [&] {
+		if (useHealth) {
+			switch (_view.health) {
+			case Health::Working:
+				return st::proxyRowStatusFgAvailable;
+			case Health::Cooldown:
+				return st::proxyRowStatusFgOffline;
+			default:
+				return st::proxyRowStatusFg;
+			}
+		}
 		switch (_view.state) {
 		case State::Online:
 			return st::proxyRowStatusFgOnline;
@@ -995,6 +1049,9 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 		}
 	}();
 	const auto status = [&] {
+		if (useHealth) {
+			return _view.healthText;
+		}
 		switch (_view.state) {
 		case State::Unknown:
 			return tr::lng_proxy_box_check_status(tr::now);
@@ -2187,7 +2244,8 @@ using Checker = MTP::ProxyCheckConnection;
 ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 : _account(account)
 , _settings(Core::App().settings().proxy())
-, _saveTimer([] { Local::writeSettings(); }) {
+, _saveTimer([] { Local::writeSettings(); })
+, _healthTimer([=] { refreshHealthViews(); }) {
 	_list = ranges::views::all(
 		_settings.list()
 	) | ranges::views::transform([&](const ProxyData &proxy) {
@@ -2213,6 +2271,15 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 
 	_account->mtp().ping();
 
+	// Relay health lives in EndpointHealth and changes as real sessions
+	// succeed or fail; there is no recovery event to subscribe to and the
+	// cooldown countdown must tick, so poll while the box is open (the
+	// controller dies with it). refreshHealth() only fires a view update
+	// when the composed status actually changed.
+	for (auto &item : _list) {
+		refreshHealth(item);
+	}
+	_healthTimer.callEach(crl::time(1000));
 }
 
 void ProxiesBoxController::ShowApplyConfirmation(
@@ -2595,6 +2662,60 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 			!= MTP::ProxyCheckStatus::ConnectedByActiveSession) {
 		item.state = ItemState::Unavailable;
 		updateView(item);
+	}
+}
+
+bool ProxiesBoxController::refreshHealth(Item &item) {
+	auto health = ItemHealth::Unknown;
+	auto text = QString();
+	if (item.data.type == Type::Mtproto) {
+		const auto endpoint = MTP::details::MtProxy::EndpointIdFromProxy(
+			item.data,
+			Core::App().settings().proxyStealthOptions());
+		const auto snapshot = _account->mtp().runtimeEnvironment()
+			.proxyServices().control().mtproxyEndpointSnapshot(endpoint);
+		using Reason = MTP::details::MtProxy::FailureReason;
+		const auto now = crl::now();
+		const auto cooldownLeft = snapshot.terminalUntil - now;
+		if (cooldownLeft > 0) {
+			health = ItemHealth::Cooldown;
+			text = tr::lng_proxy_health_cooldown(
+				tr::now,
+				lt_duration,
+				ProxyHealthShortDuration(cooldownLeft),
+				lt_reason,
+				ProxyHealthReasonText(snapshot.lastFailure));
+		} else if (snapshot.lastFailure != Reason::None || snapshot.halfOpen) {
+			health = ItemHealth::Recovering;
+			text = tr::lng_proxy_health_recovering(
+				tr::now,
+				lt_reason,
+				(snapshot.lastFailure != Reason::None)
+					? ProxyHealthReasonText(snapshot.lastFailure)
+					: tr::lng_proxy_health_reason_error(tr::now));
+		} else if (snapshot.relayProven) {
+			health = ItemHealth::Working;
+			text = tr::lng_proxy_health_relay_active(tr::now);
+		} else if (snapshot.healthy && snapshot.successEpoch > 0) {
+			// Relayed fine earlier this run; no live connection to prove it
+			// right now (proofs retire with their sessions).
+			health = ItemHealth::Working;
+			text = tr::lng_proxy_health_relay_ok(tr::now);
+		}
+	}
+	if (item.health == health && item.healthText == text) {
+		return false;
+	}
+	item.health = health;
+	item.healthText = text;
+	return true;
+}
+
+void ProxiesBoxController::refreshHealthViews() {
+	for (auto &item : _list) {
+		if (!item.deleted && refreshHealth(item)) {
+			updateView(item);
+		}
 	}
 }
 
@@ -2994,6 +3115,8 @@ void ProxiesBoxController::updateView(const Item &item) {
 		supportsCalls,
 		state,
 		item.progressStatus,
+		item.health,
+		item.healthText,
 	});
 }
 

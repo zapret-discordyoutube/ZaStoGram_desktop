@@ -342,6 +342,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_box_secret" = "Secret";
 "lng_proxy_box_status" = "Status";
 "lng_proxy_box_check_status" = "Check Status";
+"lng_proxy_health_relay_active" = "tunnel active";
+"lng_proxy_health_relay_ok" = "tunnel was OK";
+"lng_proxy_health_cooldown" = "retry in {duration} — {reason}";
+"lng_proxy_health_recovering" = "recovering — {reason}";
+"lng_proxy_health_reason_dpi" = "handshake blocked (DPI?)";
+"lng_proxy_health_reason_no_relay" = "connects but does not relay";
+"lng_proxy_health_reason_timeout" = "no response";
+"lng_proxy_health_reason_dns" = "DNS failed";
+"lng_proxy_health_reason_error" = "connection error";
 "lng_proxy_box_username" = "Username";
 "lng_proxy_box_password" = "Password";
 "lng_proxy_invalid" = "The proxy link is invalid.";

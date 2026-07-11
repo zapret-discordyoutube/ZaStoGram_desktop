@@ -63,6 +63,15 @@ public:
 		Available,
 		Unavailable
 	};
+	// Live main-use relay health of an MTProto endpoint (from
+	// EndpointHealth), independent of the manual check machinery: a check
+	// probes on demand, health reflects what real sessions experienced.
+	enum class ItemHealth {
+		Unknown,
+		Working,
+		Recovering,
+		Cooldown,
+	};
 	struct ItemView {
 		int id = 0;
 		QString type;
@@ -75,6 +84,8 @@ public:
 		bool supportsCalls = false;
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
+		ItemHealth health = ItemHealth::Unknown;
+		QString healthText;
 
 	};
 
@@ -116,6 +127,8 @@ private:
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 		int ping = 0;
+		ItemHealth health = ItemHealth::Unknown;
+		QString healthText;
 
 	};
 
@@ -126,6 +139,8 @@ private:
 	void share(const ProxyData &proxy, bool qr = false);
 	void saveDelayed(bool notifyRotation = true);
 	void refreshChecker(Item &item);
+	bool refreshHealth(Item &item);
+	void refreshHealthViews();
 
 	void replaceItemWith(
 		std::vector<Item>::iterator which,
@@ -140,6 +155,7 @@ private:
 	std::vector<Item> _list;
 	rpl::event_stream<ItemView> _views;
 	base::Timer _saveTimer;
+	base::Timer _healthTimer;
 	rpl::event_stream<ProxyData::Settings> _proxySettingsChanges;
 	std::shared_ptr<Ui::Show> _show;
 
