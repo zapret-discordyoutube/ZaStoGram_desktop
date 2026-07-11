@@ -12,6 +12,8 @@ PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
 RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
+ENDPOINT_HEALTH_LIFECYCLE_CPP = (
+    PROXY_DIR / "mtproxy" / "endpoint_health_lifecycle.cpp")
 ENDPOINT_HEALTH_CAPABILITIES_CPP = (
     PROXY_DIR / "mtproxy" / "endpoint_health_capabilities.cpp")
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
@@ -21,6 +23,13 @@ TLS_SOCKET_RECORDS_CPP = PROXY_DIR / "mtproxy" / "tls_socket_records.cpp"
 def read(path):
     assert path.exists(), f"missing expected source file: {path}"
     return path.read_text(encoding="utf-8")
+
+
+def read_endpoint_health_sources():
+    return "\n".join(read(path) for path in (
+        ENDPOINT_HEALTH_CPP,
+        ENDPOINT_HEALTH_LIFECYCLE_CPP,
+    ))
 
 
 def function_body(source, signature):
@@ -169,15 +178,17 @@ def test_mtproxy_success_and_failure_update_capability_routes():
 
 
 def test_endpoint_health_updates_capabilities_after_state_lock_release():
-    health = read(ENDPOINT_HEALTH_CPP)
+    health = read_endpoint_health_sources()
     capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     stall = function_body(health, "void EndpointHealth::noteRelayStall(")
+    neutral = function_body(health, "void EndpointHealth::retireRelayProof(")
 
     assert "proxyServices().capabilities()" not in failure
     assert "proxyServices().capabilities()" not in success
     assert "proxyServices().capabilities()" not in stall
+    assert "proxyServices().capabilities()" not in neutral
     assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities_bridge)
     assert "NoteCapabilityMtproxyFailure(" in failure
@@ -186,9 +197,29 @@ def test_endpoint_health_updates_capabilities_after_state_lock_release():
         "NoteCapabilityMtproxyFailure(")
     assert failure.index("lock.unlock();") < failure.index(
         "NoteCapabilityMtproxyRelayFailure(")
-    assert success.index("lock.unlock();") < success.index(
-        "NoteCapabilityMtproxySuccess(")
-    assert "lock.unlock();" not in stall
+    success_unlock = success.index("\n\t}\n\tNoteConnectSuccess(")
+    assert success_unlock < success.index("NoteCapabilityMtproxySuccess(")
+    stall_unlock = stall.index(
+        "\n\t}\n\tif (retirement == RelayProofRetirement::StaleGeneration")
+    assert stall_unlock < stall.index("NoteCapabilityMtproxyRelayFailure(")
+    assert "NoteCapability" not in neutral
+
+    retirement = failure.index("RetireRelayProof(state, identity)")
+    survivors = failure.index("if (state.relayProven) {")
+    generic_invalidation = failure.index(
+        "capabilityFailure = CapabilityFailure{")
+    relay_invalidation = failure.index(
+        "capabilityRelayFailure = CapabilityFailure{")
+    assert retirement < survivors < generic_invalidation < relay_invalidation
+    survivor_branch = failure[survivors:generic_invalidation]
+    assert "return;" in survivor_branch
+    assert "NoteCapability" not in survivor_branch
+
+    stall_survivors = stall.index(
+        "retirement == RelayProofRetirement::RetiredWithSurvivors")
+    stall_invalidation = stall.index("NoteCapabilityMtproxyRelayFailure(")
+    assert stall_survivors < stall_invalidation
+    assert "return;" in stall[stall_survivors:stall_invalidation]
 
 
 def test_mtproxy_relay_success_persists_boring_last_good_path():
@@ -265,13 +296,14 @@ def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
 def test_relay_data_degradation_invalidates_persisted_relay_proof():
     header = read(CAPABILITIES_H)
     source = read(CAPABILITIES_CPP)
-    health = read(ENDPOINT_HEALTH_CPP)
+    health = read_endpoint_health_sources()
     capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     relay_failure = function_body(
         source,
         "void ProxyCapabilityCache::noteMtproxyRelayFailure(")
     report_failure = function_body(health, "void EndpointHealth::reportFailure(")
     relay_stall = function_body(health, "void EndpointHealth::noteRelayStall(")
+    neutral = function_body(health, "void EndpointHealth::retireRelayProof(")
 
     assert "void noteMtproxyRelayFailure(" in header
     assert "card.relayProven = false;" in relay_failure
@@ -283,6 +315,14 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
     assert "runtime->proxyServices().capabilities().noteMtproxyRelayFailure(" in (
         capabilities_bridge)
     assert "relay_stall" in relay_stall
+    assert "RetireRelayProof(state, identity)" in report_failure
+    assert report_failure.index("if (state.relayProven) {") < (
+        report_failure.index("RelayFailureInvalidatesCapability(report.reason)"))
+    assert "RelayProofRetirement::RetiredWithSurvivors" in relay_stall
+    assert relay_stall.index(
+        "RelayProofRetirement::RetiredWithSurvivors") < relay_stall.index(
+            "NoteCapabilityMtproxyRelayFailure(")
+    assert "NoteCapabilityMtproxyRelayFailure(" not in neutral
 
     no_appdata_warning = report_failure.split(
         "if (SoftNoAppDataFailure(state, report.reason, now)) {", 1)[1].split(

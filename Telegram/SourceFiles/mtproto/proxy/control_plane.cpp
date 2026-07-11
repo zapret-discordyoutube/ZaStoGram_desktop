@@ -278,8 +278,18 @@ void ProxyControlPlane::reportMtproxySuccess(
 }
 
 void ProxyControlPlane::noteMtproxyRelayStall(
-		MtProxy::RelayStallReport report) {
+		MtProxy::RelayProofReport report) {
 	_endpointHealth->noteRelayStall(std::move(report));
+}
+
+void ProxyControlPlane::retireMtproxyRelayProof(
+		MtProxy::RelayProofReport report) {
+	_endpointHealth->retireRelayProof(std::move(report));
+}
+
+void ProxyControlPlane::applyMtproxyProxyGeneration(
+		uint64 proxyGeneration) {
+	_endpointHealth->applyProxyGeneration(proxyGeneration);
 }
 
 MtProxy::Snapshot ProxyControlPlane::mtproxyEndpointSnapshot(

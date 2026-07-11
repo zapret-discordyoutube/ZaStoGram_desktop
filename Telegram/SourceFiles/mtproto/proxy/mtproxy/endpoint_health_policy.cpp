@@ -23,6 +23,7 @@ constexpr auto kHealthyActiveCap = 1;
 constexpr auto kHealthyHandshakeSpacing = crl::time(500);
 constexpr auto kQueuedRetry = crl::time(1000);
 constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
+constexpr auto kRelayProofHardTtl = crl::time(10 * 60 * 1000);
 constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
 constexpr auto kThrottledRetryCooldown = crl::time(3000);
 constexpr auto kNoAppDataSoftRetry = crl::time(1000);
@@ -288,16 +289,6 @@ crl::time ThrottledRetryCooldown() {
 	return state.successEpoch && successEpoch < state.successEpoch;
 }
 
-[[nodiscard]] bool ReportGenerationIsStale(
-		uint64 proxyGeneration,
-		ProxyRuntimeId runtimeId,
-		const EndpointState &state) {
-	const auto i = state.generations.find(runtimeId);
-	return proxyGeneration
-		&& i != end(state.generations)
-		&& proxyGeneration < i->second;
-}
-
 void ApplyProxyGeneration(
 		EndpointState &state,
 		ProxyRuntimeId runtimeId,
@@ -308,14 +299,18 @@ void ApplyProxyGeneration(
 [[nodiscard]] bool FailureFromStaleAttempt(
 		const FailureReport &report,
 		const EndpointState &state) {
-	if (ReportGenerationIsStale(
-			report.proxyGeneration,
+	if (RuntimeProxyGenerationIsStale(
+			state,
 			report.runtimeId,
-			state)) {
+			report.proxyGeneration)) {
 		return true;
 	}
-	if (report.attemptId
-		&& report.attemptId == state.lastRelayAttemptId) {
+	const auto identity = RelayProofIdentity{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+		.attemptId = report.attemptId,
+	};
+	if (HasRelayProof(state, identity)) {
 		return false;
 	}
 	if (ReportEpochIsStale(report.proxyEpoch, state)) {
@@ -340,11 +335,20 @@ void ApplyProxyGeneration(
 [[nodiscard]] bool SuccessFromStaleAttempt(
 		const SuccessReport &report,
 		const EndpointState &state) {
-	if (ReportGenerationIsStale(
-			report.proxyGeneration,
+	if (RuntimeProxyGenerationIsStale(
+			state,
 			report.runtimeId,
-			state)) {
+			report.proxyGeneration)) {
 		return true;
+	}
+	const auto identity = RelayProofIdentity{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+		.attemptId = report.attemptId,
+	};
+	if (HasEndpointAttempt(state, identity)
+		|| HasRelayProof(state, identity)) {
+		return false;
 	}
 	if (ReportEpochIsStale(report.proxyEpoch, state)) {
 		return true;
@@ -359,7 +363,11 @@ void ApplyProxyGeneration(
 	return startedAt && (startedAt < state.lastRelaySuccessAt);
 }
 
-void PruneExpiredAttempts(EndpointState &state, crl::time now) {
+crl::time RelayProofExpiresAt(crl::time now) {
+	return now + kRelayProofHardTtl;
+}
+
+void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (now - i->second.startedAt > kAttemptHardTtl) {
 			i = state.attemptStarts.erase(i);
@@ -368,6 +376,7 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 		}
 	}
 	state.active = int(state.attemptStarts.size());
+	PruneExpiredRelayProofs(state, now);
 }
 
 [[nodiscard]] crl::time CooldownFor(

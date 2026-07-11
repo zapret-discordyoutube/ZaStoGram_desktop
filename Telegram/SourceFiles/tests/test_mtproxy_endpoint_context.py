@@ -9,6 +9,14 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def read_endpoint_health_sources() -> str:
+    directory = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
+    return "\n".join(read(directory / name) for name in (
+        "endpoint_health.cpp",
+        "endpoint_health_lifecycle.cpp",
+    ))
+
+
 def test_domain_injects_one_shared_endpoint_context_into_all_account_runtimes():
     domain_h = read(SOURCE_DIR / "main" / "main_domain.h")
     domain_cpp = read(SOURCE_DIR / "main" / "main_domain.cpp")
@@ -41,6 +49,73 @@ def test_shared_state_namespaces_generations_and_uses_lifetime_safe_leases():
     assert "EndpointHealth *_owner" not in health_h
 
 
+def test_relay_registry_contract_matches_the_executable_lifecycle_model():
+    state = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health_state.h")
+    storage = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context_p.h")
+    truth = read(SOURCE_DIR / "tests" / "proxy_control_plane_truth.py")
+    identity = state.split("struct RelayProofIdentity {", 1)[1].split(
+        "};", 1)[0]
+
+    assert "ProxyRuntimeId runtimeId = 0;" in identity
+    assert "uint64 proxyGeneration = 0;" in identity
+    assert "uint64 attemptId = 0;" in identity
+    assert "EndpointId" not in identity
+    assert "QString" not in identity
+    assert "std::map<QString, EndpointState> states;" in storage
+    assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in state
+    assert "enum class RelayProofPromotionResult" in state
+    assert "Inserted," in state
+    assert "AlreadyProven," in state
+    assert "MissingAdmission," in state
+    for helper in (
+            "RuntimeProxyGenerationIsStale",
+            "HasEndpointAttempt",
+            "HasRelayProof",
+            "PromoteRelayProof",
+            "RetireRelayProof",
+            "PruneExpiredRelayProofs",
+            "RemoveRelayProofsForRuntime",
+            "SynchronizeRelayProofAggregate"):
+        assert helper in state
+    assert 'INSERTED = "Inserted"' in truth
+    assert 'ALREADY_PROVEN = "AlreadyProven"' in truth
+    assert 'MISSING_ADMISSION = "MissingAdmission"' in truth
+    assert "class CanonicalEndpointStore:" in truth
+    assert "def test_canonical_endpoint_abc_lifecycle():" in truth
+    assert "test_canonical_endpoint_abc_lifecycle()" in truth.split(
+        "def run_all_truth_tables():", 1)[1]
+
+
+def test_promotion_precedes_admission_release_and_unregister_owns_cleanup():
+    state = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health_state.h")
+    health = read_endpoint_health_sources()
+    context = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.cpp")
+    promotion = state.split(
+        "RelayProofPromotionResult PromoteRelayProof(", 1)[1].split(
+            "[[nodiscard]] inline bool RetireRelayProof", 1)[0]
+    success = health.split("void EndpointHealth::reportSuccess(", 1)[1].split(
+        "void EndpointHealth::noteRelayStall(", 1)[0]
+    unregister = context.split(
+        "void ProxyEndpointContext::unregisterRuntime(", 1)[1].split(
+            "ProxyTraceId ProxyEndpointContext::nextTraceId", 1)[0]
+
+    assert promotion.index("state.relayProofs.emplace(identity, proof);") < (
+        promotion.index("state.attemptStarts.erase(identity.attemptId);"))
+    release_guard = success.index("const auto releaseLease = gsl::finally")
+    lock_scope = success.index("auto &storage = _context->storage();")
+    promote = success.index("const auto promotion = PromoteRelayProof(")
+    lock_end = success.index("\n\t}\n\tNoteConnectSuccess(")
+    assert release_guard < lock_scope < promote < lock_end
+    assert "report.lease->release();" in success[release_guard:lock_scope]
+    assert "state.generations.erase(runtimeId);" in unregister
+    assert "i->second.runtimeId == runtimeId" in unregister
+    assert "RemoveRelayProofsForRuntime(state, runtimeId);" in unregister
+
+
 def test_open_scheduler_state_is_owned_by_shared_context():
     scheduler = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "open_scheduler.cpp")
@@ -71,8 +146,7 @@ def test_admission_freezes_bounded_safe_faketls_plan():
 
 
 def test_partial_success_preserves_recipe_until_relay_proof():
-    health = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
-        "endpoint_health.cpp")
+    health = read_endpoint_health_sources()
     success = health.split("void EndpointHealth::reportSuccess(", 1)[1].split(
         "void EndpointHealth::noteRelayStall(", 1)[0]
 
@@ -133,7 +207,7 @@ def test_proxy_check_does_not_mutate_working_health_or_pacing():
 
     probe = admit.index("if (IsProxyCheck(request.use))")
     assert probe < admit.index("ApplyProxyGeneration(")
-    assert probe < admit.index("PruneExpiredAttempts(")
+    assert probe < admit.index("PruneExpiredEndpointState(")
     assert probe < admit.index("EndpointConcurrencyPolicyFor(")
     assert "IsProxyCheck(state->request.use)" in broker
     assert broker.index("IsProxyCheck(state->request.use)") < broker.index(
@@ -229,6 +303,17 @@ def test_host_coordinator_test_is_registered_without_requiring_build_here():
     assert "add_executable(test_mtproxy_endpoint_context" in cmake
     assert "tests/test_mtproxy_endpoint_context.cpp" in cmake
     assert cmake.count("mtproto/proxy/proxy_endpoint_context.cpp") >= 3
+    assert "ScenarioRelayProofLifecycle" in test
+    assert "ScenarioCanonicalEndpointIsolation" in test
+    assert "ScenarioGenerationRejectionBeforeMembership" in test
+    assert "ScenarioPerRuntimeGenerationPruning" in test
+    assert "ScenarioRuntimeUnregisterPruning" in test
+    assert "ScenarioRelayProofExpiryAndBoundedness" in test
+    assert "A/B/C relay proof promotion failed" in test
+    assert "exact A retirement did not preserve B/C aggregate" in test
+    assert "canonical outer key isolation failed" in test
+    assert "stale generation overrode proof membership rejection" in test
+    assert "repeated unique expired records did not return to empty" in test
     assert "runtime generation isolation failed" in test
     assert "trace finalization is not exactly once" in test
     assert "runtime traces survived unregister" in test
@@ -245,3 +330,21 @@ def test_tls_host_test_covers_partial_write_and_response_classes():
     assert "partial_tls_record" in utils
     assert "tls_alert" in utils
     assert "http_like" in utils
+
+
+if __name__ == "__main__":
+    test_domain_injects_one_shared_endpoint_context_into_all_account_runtimes()
+    test_shared_state_namespaces_generations_and_uses_lifetime_safe_leases()
+    test_relay_registry_contract_matches_the_executable_lifecycle_model()
+    test_promotion_precedes_admission_release_and_unregister_owns_cleanup()
+    test_open_scheduler_state_is_owned_by_shared_context()
+    test_admission_freezes_bounded_safe_faketls_plan()
+    test_partial_success_preserves_recipe_until_relay_proof()
+    test_probe_use_and_transport_failure_are_propagated_without_reclassification()
+    test_proxy_check_does_not_mutate_working_health_or_pacing()
+    test_connection_use_is_not_inferred_from_file_buffer_policy()
+    test_receive_timeout_preserves_the_lowest_typed_transport_verdict()
+    test_trace_schema_omits_unknowns_and_finalizes_once()
+    test_owner_destruction_finalizes_pending_and_started_traces()
+    test_host_coordinator_test_is_registered_without_requiring_build_here()
+    test_tls_host_test_covers_partial_write_and_response_classes()

@@ -14,6 +14,7 @@ RUNTIME_PROXY_ENDPOINT_H = (
 DATA_CPP = SOURCE_DIR / "mtproto" / "proxy" / "data.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_LIFECYCLE_CPP = MTPROXY_DIR / "endpoint_health_lifecycle.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 ENDPOINT_HEALTH_DIAGNOSTICS_CPP = MTPROXY_DIR / "endpoint_health_diagnostics.cpp"
@@ -44,6 +45,13 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
+def read_endpoint_health_sources():
+    return "\n".join(read(path) for path in (
+        ENDPOINT_HEALTH_CPP,
+        ENDPOINT_HEALTH_LIFECYCLE_CPP,
+    ))
+
+
 def test_endpoint_health_module_is_registered_and_owns_state():
     header = read(ENDPOINT_HEALTH_H)
     identity_header = read(ENDPOINT_IDENTITY_H)
@@ -54,6 +62,7 @@ def test_endpoint_health_module_is_registered_and_owns_state():
 
     assert "mtproto/proxy/mtproxy/endpoint_health.cpp" in cmake
     assert "mtproto/proxy/mtproxy/endpoint_health.h" in cmake
+    assert "mtproto/proxy/mtproxy/endpoint_health_lifecycle.cpp" in cmake
     assert "mtproto/proxy/mtproxy/endpoint_identity.cpp" in cmake
     assert "mtproto/proxy/mtproxy/endpoint_identity.h" in cmake
     assert "namespace MTP::details::MtProxy" in header
@@ -224,6 +233,18 @@ def test_relay_success_shadows_older_attempt_failures():
     report_success = function_body(source, "void EndpointHealth::reportSuccess(")
     stale_reasons = function_body(policy, "bool FailureCanBeStale(")
     stale_helper = function_body(policy, "bool FailureFromStaleAttempt(")
+    stale_success_helper = function_body(
+        policy,
+        "bool SuccessFromStaleAttempt(")
+    promotion_helper = function_body(
+        state_source,
+        "RelayProofPromotionResult PromoteRelayProof(")
+    retirement_helper = function_body(
+        state_source,
+        "bool RetireRelayProof(")
+    synchronize_helper = function_body(
+        state_source,
+        "void SynchronizeRelayProofAggregate(")
     stale_log = function_body(diagnostics, "void LogStaleAttemptFailure(")
     admit_body = function_body(source, "Admission EndpointHealth::admit(")
     tcp_connect = function_body(tcp, "void TcpConnection::connectToServer(")
@@ -239,8 +260,22 @@ def test_relay_success_shadows_older_attempt_failures():
         session,
         "bool SessionTransport::appendTestConnection(")
 
+    assert "struct RelayProofIdentity" in state_source
+    relay_identity = state_source.split(
+        "struct RelayProofIdentity {", 1)[1].split("};", 1)[0]
+    assert "ProxyRuntimeId runtimeId = 0;" in relay_identity
+    assert "uint64 proxyGeneration = 0;" in relay_identity
+    assert "uint64 attemptId = 0;" in relay_identity
+    assert "struct RelayProofState" in state_source
+    assert "crl::time provenAt = 0;" in state_source
+    assert "crl::time expiresAt = 0;" in state_source
+    assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in (
+        state_source)
+    removed_scalar = "lastRelay" + "AttemptId"
+    assert removed_scalar not in state_source
+    assert removed_scalar not in header
+    assert removed_scalar not in source
     assert "uint64 successEpoch = 0;" in state_source
-    assert "uint64 lastRelayAttemptId = 0;" in state_source
     assert "crl::time lastRelaySuccessAt = 0;" in state_source
     assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in state_source
     assert "RouteEndpoint lastGoodRoute;" in state_source
@@ -256,6 +291,10 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "uint64 proxyGeneration() const" in header
     assert "uint64 successEpoch() const" in header
     assert "crl::time startedAt() const" in header
+    assert "const QString &endpointKey() const" in header
+    assert "return _key;" in function_body(
+        source,
+        "const QString &EndpointAttemptLease::endpointKey() const")
 
     assert "const auto attemptStartedAt = now;" in admit_body
     assert "result.proxyGeneration = request.proxyGeneration;" in admit_body
@@ -309,8 +348,12 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;" in (
         session_connected)
 
-    assert "state.lastRelaySuccessAt = now;" in report_success
-    assert "state.lastRelayAttemptId = report.attemptId;" in report_success
+    assert "const auto promotion = PromoteRelayProof(" in report_success
+    assert ".runtimeId = report.runtimeId" in report_success
+    assert ".proxyGeneration = report.proxyGeneration" in report_success
+    assert ".attemptId = report.attemptId" in report_success
+    assert ".provenAt = now" in report_success
+    assert ".expiresAt = RelayProofExpiresAt(now)" in report_success
     assert "++state.successEpoch;" in report_success
     assert "state.lastGoodProfile = report.sentProfile;" in report_success
     assert "state.lastGoodRoute = report.endpoint.route;" in report_success
@@ -322,11 +365,71 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "FailureReason::ServerHelloOkNoAppData" in stale_reasons
     assert "FailureReason::TcpConnectTimeout" in stale_reasons
     assert "state.lastRelaySuccessAt" in stale_helper
-    assert "report.attemptId == state.lastRelayAttemptId" in stale_helper
+    assert "HasRelayProof(state, identity)" in stale_helper
     assert "AttemptStartedAt(report, state)" in stale_helper
+    assert stale_helper.index("RuntimeProxyGenerationIsStale(") < (
+        stale_helper.index("HasRelayProof(state, identity)"))
+    assert stale_success_helper.index("RuntimeProxyGenerationIsStale(") < (
+        stale_success_helper.index("HasEndpointAttempt(state, identity)"))
+    assert stale_success_helper.index("HasEndpointAttempt(state, identity)") < (
+        stale_success_helper.index("ReportEpochIsStale("))
 
+    assert promotion_helper.index("HasRelayProof(state, identity)") < (
+        promotion_helper.index("HasEndpointAttempt(state, identity)"))
+    assert promotion_helper.index(
+        "RelayProofPromotionResult::AlreadyProven") < (
+            promotion_helper.index("state.relayProofs.emplace(identity, proof);"))
+    assert promotion_helper.index(
+        "RelayProofPromotionResult::MissingAdmission") < (
+            promotion_helper.index("state.relayProofs.emplace(identity, proof);"))
+    assert promotion_helper.index("state.relayProofs.emplace(identity, proof);") < (
+        promotion_helper.index("state.attemptStarts.erase(identity.attemptId);"))
+    assert "state.relayProofs.erase(identity)" in retirement_helper
+    assert "SynchronizeRelayProofAggregate(state);" in retirement_helper
+    assert "state.relayProven = !state.relayProofs.empty();" in (
+        synchronize_helper)
+    assert "entry.second.provenAt > state.lastRelaySuccessAt" in (
+        synchronize_helper)
+
+    for body in (report_failure, report_success):
+        assert "ResolveLeaseIdentity(report);" in body
+        assert body.count("report.lease->release();") == 1
+        assert body.index("const auto releaseLease = gsl::finally(") < (
+            body.index("QMutexLocker lock(&storage.mutex);"))
+        key_check = body.index(
+            "if (report.lease && report.lease->endpointKey() != key) {")
+        assert body.index("const auto key = EndpointKey(report.endpoint);") < (
+            key_check)
+        assert key_check < body.index("QMutexLocker lock(&storage.mutex);")
+
+    generation_check = report_failure.index(
+        "if (RuntimeProxyGenerationIsStale(")
     stale_check = report_failure.index(
         "if (FailureFromStaleAttempt(report, state)) {")
+    retirement = report_failure.index(
+        "static_cast<void>(RetireRelayProof(state, identity));")
+    sibling_guard = report_failure.index("if (state.relayProven) {")
+    canonical_write = report_failure.index("state.endpoint = report.endpoint;")
+    route_failure = report_failure.index("NoteRouteFailure(")
+    assert generation_check < stale_check < retirement < sibling_guard
+    assert sibling_guard < canonical_write < route_failure
+    sibling_branch = report_failure.split(
+        "if (state.relayProven) {", 1)[1].split("}", 1)[0]
+    assert "return;" in sibling_branch
+
+    promotion = report_success.index("const auto promotion = PromoteRelayProof(")
+    duplicate = report_success.index(
+        "case RelayProofPromotionResult::AlreadyProven:")
+    missing = report_success.index(
+        "case RelayProofPromotionResult::MissingAdmission:")
+    first_success_write = report_success.index("state.endpoint = report.endpoint;")
+    assert promotion < duplicate <= missing < first_success_write
+    rejected_promotions = report_success[duplicate:first_success_write]
+    assert "return;" in rejected_promotions
+    assert "state.lastSuccessAt" not in rejected_promotions
+    assert "++state.successEpoch" not in rejected_promotions
+    assert "NoteRouteSuccess" not in rejected_promotions
+
     canonical_degrade = report_failure.index(
         "ProxyDiagnosticsPhase::CanonicalDegraded")
     last_failure = report_failure.index("state.lastFailure = report.reason;")
@@ -352,6 +455,9 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     report_epoch_stale = function_body(policy, "bool ReportEpochIsStale(")
     stale_failure = function_body(policy, "bool FailureFromStaleAttempt(")
     stale_success = function_body(policy, "bool SuccessFromStaleAttempt(")
+    synchronize = function_body(
+        state_source,
+        "void SynchronizeRelayProofAggregate(")
 
     assert "uint64 proxyEpoch = 0;" in header
     assert "uint64 successEpoch = 0;" in header
@@ -367,6 +473,11 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
         stale_failure)
     assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in (
         stale_success)
+    assert stale_failure.index("RuntimeProxyGenerationIsStale(") < (
+        stale_failure.index("HasRelayProof(state, identity)"))
+    assert stale_success.index("RuntimeProxyGenerationIsStale(") < (
+        stale_success.index("HasEndpointAttempt(state, identity)"))
+    assert "HasRelayProof(state, identity)" in stale_success
     assert "proxyEpoch&&proxyEpoch<state.proxyEpoch" in (
         "".join(report_epoch_stale.split()))
     report_success_epoch_stale = function_body(
@@ -380,23 +491,30 @@ def test_relay_success_advances_attempt_epoch_and_shadows_old_reports():
     assert "state.lastSuccessAt = now;" in preliminary_success
     assert "++state.proxyEpoch;" not in preliminary_success
     assert "state.relayProven = true;" not in preliminary_success
+    assert "const auto promotion = PromoteRelayProof(" in preliminary_success
     assert relay_guard < report_success.index("state.recipeLevel = 0;")
     assert relay_guard < report_success.index("++state.proxyEpoch;")
-    assert relay_guard < report_success.index("state.relayProven = true;")
     assert relay_guard < report_success.index(
         "NoteConnectSuccess(_runtime, report.endpoint);")
+    assert "state.relayProven = !state.relayProofs.empty();" in synchronize
+    assert "state.healthy = true;" in synchronize
 
     failure_stale_check = report_failure.index(
         "if (FailureFromStaleAttempt(report, state)) {")
     failure_state_write = report_failure.index("state.endpoint = report.endpoint;")
     assert failure_stale_check < failure_state_write
 
+    success_generation_check = report_success.index(
+        "if (RuntimeProxyGenerationIsStale(")
     success_stale_check = report_success.index(
         "if (SuccessFromStaleAttempt(report, state)) {")
+    success_promotion = report_success.index(
+        "const auto promotion = PromoteRelayProof(")
     success_state_write = report_success.index("state.endpoint = report.endpoint;")
     success_scheduler = report_success.index(
         "NoteConnectSuccess(_runtime, report.endpoint);")
-    assert success_stale_check < success_state_write
+    assert success_generation_check < success_stale_check < success_promotion
+    assert success_promotion < success_state_write
     assert success_stale_check < success_scheduler
 
 
@@ -446,7 +564,8 @@ def test_serverhello_ok_no_appdata_is_warning_not_fatal():
     soft_branch = report_failure.split(
         "if (SoftNoAppDataFailure(state, report.reason, now)) {", 1
     )[1].split("\n\t}", 1)[0]
-    assert "state.relayProven = false;" in soft_branch
+    assert "state.relayProven = false;" not in soft_branch
+    assert "state.relayProofs.clear();" not in soft_branch
     assert "state.nextHandshakeAt = now + NoAppDataSoftRetry();" in soft_branch
     assert "mtproxy no appdata warning after recent relay success" in (
         soft_branch)
@@ -649,6 +768,43 @@ def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
     assert "std::map<QString, DnsResolverEntry> entries;" in source
 
 
+def test_relay_proofs_are_pruned_on_every_non_probe_state_path():
+    source = read_endpoint_health_sources()
+    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    admit = function_body(source, "Admission EndpointHealth::admit(")
+    failure = function_body(source, "void EndpointHealth::reportFailure(")
+    success = function_body(source, "void EndpointHealth::reportSuccess(")
+    retirement = function_body(
+        source,
+        "RelayProofRetirement RetireRelayProofLocked(")
+    stall = function_body(source, "void EndpointHealth::noteRelayStall(")
+    neutral = function_body(source, "void EndpointHealth::retireRelayProof(")
+    generation = function_body(
+        source,
+        "void EndpointHealth::applyProxyGeneration(")
+    snapshot = function_body(source, "Snapshot EndpointHealth::snapshot(")
+    prune = function_body(policy, "void PruneExpiredEndpointState(")
+
+    assert "constexpr auto kRelayProofHardTtl" in policy
+    assert "PruneExpiredRelayProofs(state, now);" in prune
+    for body in (admit, failure, success, retirement, generation, snapshot):
+        assert "PruneExpiredEndpointState(" in body
+    assert "RetireRelayProofLocked(state, report, now)" in stall
+    assert "RetireRelayProofLocked(i->second, report, now)" in neutral
+    assert admit.index("IsProxyCheck(request.use)") < admit.index(
+        "PruneExpiredEndpointState(state, now);")
+    assert failure.index("report.use == EndpointUse::ProxyCheck") < (
+        failure.index("PruneExpiredEndpointState(state, now);"))
+    assert success.index("report.use == EndpointUse::ProxyCheck") < (
+        success.index("PruneExpiredEndpointState(state, now);"))
+    assert stall.index("IsProxyCheck(report.use)") < stall.index(
+        "RetireRelayProofLocked(state, report, now)")
+    assert neutral.index("IsProxyCheck(report.use)") < neutral.index(
+        "RetireRelayProofLocked(i->second, report, now)")
+    assert snapshot.index("PruneExpiredEndpointState(i->second, now);") < (
+        snapshot.index("MakeSnapshot(i->second, _runtimeId)"))
+
+
 def test_active_slots_expire_and_sustained_denial_requests_rotation():
     source = read(ENDPOINT_HEALTH_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
@@ -661,7 +817,7 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
     # A leaked lease must not pin the endpoint at its active cap forever:
     # attempts have a hard TTL, pruned on every admit.
     assert "kAttemptHardTtl = crl::time(120 * 1000)" in policy
-    assert "PruneExpiredAttempts(state, now);" in admit_body
+    assert "PruneExpiredEndpointState(state, now);" in admit_body
     assert "state.attemptStarts.emplace(result.attemptId, EndpointAttemptState{" in (
         admit_body)
     assert "attemptStarts.erase(attemptId);" in release_body
@@ -746,6 +902,7 @@ if __name__ == "__main__":
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()
     test_half_open_media_can_probe_after_cooldown()
     test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances()
+    test_relay_proofs_are_pruned_on_every_non_probe_state_path()
     test_active_slots_expire_and_sustained_denial_requests_rotation()
     test_endpoint_health_events_are_published_on_main_thread()
     test_rotation_manager_is_endpoint_health_aware()

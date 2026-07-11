@@ -19,6 +19,12 @@ STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
+PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
+ENDPOINT_HEALTH_LIFECYCLE_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+    "endpoint_health_lifecycle.cpp")
+ENDPOINT_HEALTH_STATE_H = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_state.h")
 
 
 def read(path):
@@ -45,6 +51,10 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     account = read(MAIN_ACCOUNT_CPP)
     instance_h = read(INSTANCE_H)
     instance = read(INSTANCE_CPP)
+    control = read(CONTROL_CPP)
+    adapter = read(PROXY_ADAPTER_CPP)
+    health_lifecycle = read(ENDPOINT_HEALTH_LIFECYCLE_CPP)
+    health_state = read(ENDPOINT_HEALTH_STATE_H)
     session_h = read(SESSION_H)
     session = read(SESSION_CPP)
 
@@ -64,6 +74,34 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     assert "session->migrateProxy(" in migrate
     assert "session.get() == _mainSession" in migrate
     assert "session->restart();" not in migrate
+    generation_cleanup = migrate.index(
+        "_runtime->proxyServices().control().applyMtproxyProxyGeneration(")
+    generation_increment = migrate.index("++_proxyGeneration;")
+    status_publication = migrate.index("_connectionStatus->setProxyStatus({")
+    broker_cancellation = migrate.index(
+        "_runtime->proxyServices().broker().cancelByProxyGeneration(")
+    session_migration = migrate.index("session->migrateProxy(")
+    assert generation_increment < generation_cleanup < status_publication
+    assert generation_cleanup < broker_cancellation < session_migration
+    assert migrate.count("applyMtproxyProxyGeneration(") == 1
+    assert "applyMtproxyProxyGeneration(" not in adapter
+
+    apply_generation = function_body(
+        health_lifecycle,
+        "void EndpointHealth::applyProxyGeneration(")
+    runtime_generation = function_body(
+        health_state,
+        "void ApplyRuntimeProxyGeneration(")
+    control_forwarder = function_body(
+        control,
+        "void ProxyControlPlane::applyMtproxyProxyGeneration(")
+    assert "ApplyProxyGeneration(state, _runtimeId, proxyGeneration);" in (
+        apply_generation)
+    assert "_endpointHealth->applyProxyGeneration(proxyGeneration);" in (
+        control_forwarder)
+    assert "i->first.runtimeId == runtimeId" in runtime_generation
+    assert "i->first.proxyGeneration < proxyGeneration" in runtime_generation
+    assert "SynchronizeRelayProofAggregate(state);" in runtime_generation
     succeeded = function_body(
         instance,
         "void Instance::Private::proxyMigrationSucceeded(")

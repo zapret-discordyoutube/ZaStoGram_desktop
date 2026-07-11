@@ -86,6 +86,30 @@ void NoteRouteSuccess(
 	return false;
 }
 
+void ResolveLeaseIdentity(FailureReport &report) {
+	if (!report.lease) {
+		return;
+	}
+	report.runtimeId = report.lease->runtimeId();
+	report.proxyGeneration = report.lease->proxyGeneration();
+	report.attemptId = report.lease->attemptId();
+	report.proxyEpoch = report.lease->proxyEpoch();
+	report.successEpoch = report.lease->successEpoch();
+	report.attemptStartedAt = report.lease->startedAt();
+}
+
+void ResolveLeaseIdentity(SuccessReport &report) {
+	if (!report.lease) {
+		return;
+	}
+	report.runtimeId = report.lease->runtimeId();
+	report.proxyGeneration = report.lease->proxyGeneration();
+	report.attemptId = report.lease->attemptId();
+	report.proxyEpoch = report.lease->proxyEpoch();
+	report.successEpoch = report.lease->successEpoch();
+	report.attemptStartedAt = report.lease->startedAt();
+}
+
 } // namespace
 
 EndpointAttemptLease::EndpointAttemptLease(
@@ -180,6 +204,10 @@ crl::time EndpointAttemptLease::startedAt() const {
 	return _startedAt;
 }
 
+const QString &EndpointAttemptLease::endpointKey() const {
+	return _key;
+}
+
 EndpointHealth::EndpointHealth(
 	not_null<RuntimeEnvironment*> runtime,
 	std::shared_ptr<ProxyEndpointContext> context)
@@ -218,7 +246,7 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 			return result;
 		}
 		ApplyProxyGeneration(state, runtimeId, request.proxyGeneration);
-		PruneExpiredAttempts(state, now);
+		PruneExpiredEndpointState(state, now);
 		const auto policy = EndpointConcurrencyPolicyFor(
 			state,
 			request.use,
@@ -308,31 +336,18 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 }
 
 void EndpointHealth::reportFailure(FailureReport report) {
-	if (report.lease) {
-		if (!report.runtimeId) {
-			report.runtimeId = report.lease->runtimeId();
+	ResolveLeaseIdentity(report);
+	const auto releaseLease = gsl::finally([&] {
+		if (report.lease) {
+			report.lease->release();
 		}
-		if (!report.proxyGeneration) {
-			report.proxyGeneration = report.lease->proxyGeneration();
-		}
-		if (!report.attemptId) {
-			report.attemptId = report.lease->attemptId();
-		}
-		if (!report.proxyEpoch) {
-			report.proxyEpoch = report.lease->proxyEpoch();
-		}
-		if (!report.successEpoch) {
-			report.successEpoch = report.lease->successEpoch();
-		}
-		if (!report.attemptStartedAt) {
-			report.attemptStartedAt = report.lease->startedAt();
-		}
-	}
-	if (report.lease) {
-		report.lease->release();
-	}
+	});
 	if (!report.runtimeId) {
 		report.runtimeId = _runtimeId;
+	}
+	const auto key = EndpointKey(report.endpoint);
+	if (report.lease && report.lease->endpointKey() != key) {
+		return;
 	}
 	if (report.reason == FailureReason::None) {
 		return;
@@ -341,7 +356,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		LogProbeAttemptFailure(_runtime, report);
 		return;
 	}
-	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
@@ -352,13 +366,32 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto &storage = _context->storage();
 	QMutexLocker lock(&storage.mutex);
 	auto &state = storage.states[key];
-	if (FailureFromStaleAttempt(report, state)) {
+	PruneExpiredEndpointState(state, now);
+	if (RuntimeProxyGenerationIsStale(
+			state,
+			report.runtimeId,
+			report.proxyGeneration)) {
 		const auto recipeLevel = state.recipeLevel;
 		lock.unlock();
 		LogStaleAttemptFailure(_runtime, report, recipeLevel);
 		return;
 	}
 	ApplyProxyGeneration(state, report.runtimeId, report.proxyGeneration);
+	if (FailureFromStaleAttempt(report, state)) {
+		const auto recipeLevel = state.recipeLevel;
+		lock.unlock();
+		LogStaleAttemptFailure(_runtime, report, recipeLevel);
+		return;
+	}
+	const auto identity = RelayProofIdentity{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+		.attemptId = report.attemptId,
+	};
+	static_cast<void>(RetireRelayProof(state, identity));
+	if (state.relayProven) {
+		return;
+	}
 	state.endpoint = report.endpoint;
 	if (report.reason != FailureReason::ServerHelloOkNoAppData
 		&& report.reason != FailureReason::ServerHelloOkNoMtprotoData
@@ -372,8 +405,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	NoteRouteFailure(storage, state, report.endpoint.route, report.reason);
 	if (SoftNoAppDataFailure(state, report.reason, now)) {
-		state.relayProven = false;
-		state.lastRelayAttemptId = 0;
 		state.nextHandshakeAt = now + NoAppDataSoftRetry();
 		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 			ProxyDiagnosticsPhase::RouteFailed,
@@ -442,13 +473,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	state.lastFailure = report.reason;
 	state.lastDiagnostic = diagnostic;
-	if (report.reason == FailureReason::ServerHelloOkNoAppData
-		|| report.reason == FailureReason::ServerHelloOkNoMtprotoData
-		|| report.reason == FailureReason::MtpReceiveTimeoutAfterData
-		|| report.reason == FailureReason::ConnectedNoMtprotoData) {
-		state.relayProven = false;
-		state.lastRelayAttemptId = 0;
-	}
 	const auto policy = EndpointConcurrencyPolicyFor(
 		state,
 		report.use,
@@ -520,92 +544,107 @@ void EndpointHealth::reportFailure(FailureReport report) {
 }
 
 void EndpointHealth::reportSuccess(SuccessReport report) {
-	if (report.lease) {
-		if (!report.runtimeId) {
-			report.runtimeId = report.lease->runtimeId();
+	ResolveLeaseIdentity(report);
+	const auto releaseLease = gsl::finally([&] {
+		if (report.lease) {
+			report.lease->release();
 		}
-		if (!report.proxyGeneration) {
-			report.proxyGeneration = report.lease->proxyGeneration();
-		}
-		if (!report.attemptId) {
-			report.attemptId = report.lease->attemptId();
-		}
-		if (!report.proxyEpoch) {
-			report.proxyEpoch = report.lease->proxyEpoch();
-		}
-		if (!report.successEpoch) {
-			report.successEpoch = report.lease->successEpoch();
-		}
-		if (!report.attemptStartedAt) {
-			report.attemptStartedAt = report.lease->startedAt();
-		}
-	}
-	if (report.lease) {
-		report.lease->release();
-	}
+	});
 	if (!report.runtimeId) {
 		report.runtimeId = _runtimeId;
+	}
+	const auto key = EndpointKey(report.endpoint);
+	if (report.lease && report.lease->endpointKey() != key) {
+		return;
 	}
 	if (report.use == EndpointUse::ProxyCheck) {
 		LogProbeAttemptSuccess(_runtime, report);
 		return;
 	}
 	const auto now = crl::now();
-	const auto key = EndpointKey(report.endpoint);
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	auto &state = storage.states[key];
-	if (SuccessFromStaleAttempt(report, state)) {
-		return;
-	}
-	ApplyProxyGeneration(state, report.runtimeId, report.proxyGeneration);
-	state.endpoint = report.endpoint;
-	state.lastSuccessAt = now;
-	if (report.scope != SuccessScope::Relay) {
-		return;
-	}
-	const auto successRecipeLevel = state.recipeLevel;
-	const auto wasDegraded = (state.lastFailure != FailureReason::None)
-		|| (state.terminalUntil > 0)
-		|| state.halfOpen;
-	if (!routeKey.isEmpty()) {
-		NoteRouteSuccess(storage, state, report.endpoint.route);
-	}
-	state.recipeLevel = 0;
-	state.exhaustedSinceSuccess = 0;
-	state.relayProven = true;
-	state.lastRelayAttemptId = report.attemptId;
-	state.lastRelaySuccessAt = now;
-	++state.successEpoch;
-	++state.proxyEpoch;
-	state.lastGoodProfile = report.sentProfile;
-	state.lastGoodRoute = report.endpoint.route;
-	capabilitySuccess = CapabilitySuccess{
-		.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
-		.routeKey = RouteKey(report.endpoint.route),
-		.route = RouteText(report.endpoint),
-		.sentProfile = report.sentProfile,
-		.stealth = report.stealth,
-		.recipeLevel = successRecipeLevel,
-		.relayProven = true,
-	};
-	state.lastFailure = FailureReason::None;
-	state.lastDiagnostic.clear();
-	state.terminalUntil = 0;
-	state.consecutiveFailures = 0;
-	state.healthy = true;
-	state.halfOpen = false;
-	if (wasDegraded) {
-		diagnosticsEvent = CanonicalDiagnosticsEvent(
-			ProxyDiagnosticsPhase::CanonicalRecovered,
+	{
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		auto &state = storage.states[key];
+		PruneExpiredEndpointState(state, now);
+		if (RuntimeProxyGenerationIsStale(
+				state,
+				report.runtimeId,
+				report.proxyGeneration)) {
+			return;
+		}
+		ApplyProxyGeneration(
 			state,
-			FailureReason::None,
-			u"mtproxy canonical endpoint recovered"_q);
+			report.runtimeId,
+			report.proxyGeneration);
+		if (SuccessFromStaleAttempt(report, state)) {
+			return;
+		}
+		if (report.scope == SuccessScope::Relay) {
+			const auto identity = RelayProofIdentity{
+				.runtimeId = report.runtimeId,
+				.proxyGeneration = report.proxyGeneration,
+				.attemptId = report.attemptId,
+			};
+			const auto promotion = PromoteRelayProof(
+				state,
+				identity,
+				RelayProofState{
+					.provenAt = now,
+					.expiresAt = RelayProofExpiresAt(now),
+				});
+			switch (promotion) {
+			case RelayProofPromotionResult::Inserted:
+				break;
+			case RelayProofPromotionResult::AlreadyProven:
+			case RelayProofPromotionResult::MissingAdmission:
+				return;
+			}
+		}
+		state.endpoint = report.endpoint;
+		state.lastSuccessAt = now;
+		if (report.scope != SuccessScope::Relay) {
+			return;
+		}
+		const auto successRecipeLevel = state.recipeLevel;
+		const auto wasDegraded = (state.lastFailure != FailureReason::None)
+			|| (state.terminalUntil > 0)
+			|| state.halfOpen;
+		if (!routeKey.isEmpty()) {
+			NoteRouteSuccess(storage, state, report.endpoint.route);
+		}
+		state.recipeLevel = 0;
+		state.exhaustedSinceSuccess = 0;
+		++state.successEpoch;
+		++state.proxyEpoch;
+		state.lastGoodProfile = report.sentProfile;
+		state.lastGoodRoute = report.endpoint.route;
+		capabilitySuccess = CapabilitySuccess{
+			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+			.routeKey = RouteKey(report.endpoint.route),
+			.route = RouteText(report.endpoint),
+			.sentProfile = report.sentProfile,
+			.stealth = report.stealth,
+			.recipeLevel = successRecipeLevel,
+			.relayProven = true,
+		};
+		state.lastFailure = FailureReason::None;
+		state.lastDiagnostic.clear();
+		state.terminalUntil = 0;
+		state.consecutiveFailures = 0;
+		state.healthy = true;
+		state.halfOpen = false;
+		if (wasDegraded) {
+			diagnosticsEvent = CanonicalDiagnosticsEvent(
+				ProxyDiagnosticsPhase::CanonicalRecovered,
+				state,
+				FailureReason::None,
+				u"mtproxy canonical endpoint recovered"_q);
+		}
 	}
-	lock.unlock();
 	NoteConnectSuccess(_runtime, report.endpoint);
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
@@ -613,70 +652,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
 	}
-}
-
-void EndpointHealth::noteRelayStall(RelayStallReport report) {
-	if (!report.runtimeId) {
-		report.runtimeId = _runtimeId;
-	}
-	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
-	auto staleRecipeLevel = std::optional<int>();
-	auto staleReport = FailureReport{
-		.endpoint = report.endpoint,
-		.use = report.use,
-		.runtimeId = report.runtimeId,
-		.reason = FailureReason::MtpReceiveTimeoutAfterData,
-		.proxyGeneration = report.proxyGeneration,
-		.attemptId = report.attemptId,
-		.proxyEpoch = report.proxyEpoch,
-		.successEpoch = report.successEpoch,
-		.attemptStartedAt = report.attemptStartedAt,
-	};
-	{
-		auto &storage = _context->storage();
-		QMutexLocker lock(&storage.mutex);
-		const auto i = storage.states.find(EndpointKey(report.endpoint));
-		if (i != end(storage.states)) {
-			auto &state = i->second;
-			if (FailureFromStaleAttempt(staleReport, state)) {
-				staleRecipeLevel = state.recipeLevel;
-			} else {
-				ApplyProxyGeneration(
-					state,
-					report.runtimeId,
-					report.proxyGeneration);
-				state.relayProven = false;
-				state.lastRelayAttemptId = 0;
-			}
-		}
-		if (!staleRecipeLevel) {
-			capabilityRelayFailure = CapabilityFailure{
-				.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
-				.routeKey = RouteKey(report.endpoint.route),
-				.diagnostic = u"relay_stall"_q,
-			};
-		}
-	}
-	if (staleRecipeLevel) {
-		LogStaleAttemptFailure(_runtime, staleReport, *staleRecipeLevel);
-		return;
-	}
-	if (capabilityRelayFailure) {
-		NoteCapabilityMtproxyRelayFailure(_runtime, *capabilityRelayFailure);
-	}
-}
-
-Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {
-	const auto key = EndpointKey(endpoint);
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	const auto i = storage.states.find(key);
-	if (i != end(storage.states)) {
-		return MakeSnapshot(i->second, _runtimeId);
-	}
-	auto result = Snapshot();
-	result.endpoint = endpoint;
-	return result;
 }
 
 auto EndpointHealth::changes() const

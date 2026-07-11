@@ -1564,6 +1564,7 @@ PRIVATE
     mtproto/proxy/mtproxy/endpoint_health.h
     mtproto/proxy/mtproxy/endpoint_health_diagnostics.cpp
     mtproto/proxy/mtproxy/endpoint_health_diagnostics.h
+    mtproto/proxy/mtproxy/endpoint_health_lifecycle.cpp
     mtproto/proxy/mtproxy/endpoint_health_policy.cpp
     mtproto/proxy/mtproxy/endpoint_health_policy.h
     mtproto/proxy/mtproxy/endpoint_health_state.h

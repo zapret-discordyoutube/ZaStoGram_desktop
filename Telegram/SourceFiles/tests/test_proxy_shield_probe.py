@@ -12,6 +12,13 @@ CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
 ENDPOINT_HEALTH_POLICY_CPP = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp")
+ENDPOINT_HEALTH_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
+ENDPOINT_HEALTH_LIFECYCLE_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+    "endpoint_health_lifecycle.cpp")
+ENDPOINT_HEALTH_STATE_H = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_state.h")
 
 
 def read(path):
@@ -87,12 +94,36 @@ def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
     source = read(CHECK_CPP)
     health_header = read(
         SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h")
-    health_source = read(ENDPOINT_HEALTH_POLICY_CPP)
+    health_source = read(ENDPOINT_HEALTH_LIFECYCLE_CPP)
+    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
     active = function_body(source, "bool ActiveSessionProvesProxy(")
-    snapshot = function_body(health_source, "Snapshot MakeSnapshot(")
+    snapshot = function_body(policy_source, "Snapshot MakeSnapshot(")
+    snapshot_entry = function_body(
+        health_source,
+        "Snapshot EndpointHealth::snapshot(")
+    prune = function_body(
+        policy_source,
+        "void PruneExpiredEndpointState(")
+    proof_prune = function_body(
+        state_source,
+        "void PruneExpiredRelayProofs(")
+    synchronize = function_body(
+        state_source,
+        "void SynchronizeRelayProofAggregate(")
 
     assert "bool relayProven = false;" in health_header
     assert ".relayProven = state.relayProven," in snapshot
+    assert ".lastRelaySuccessAt = state.lastRelaySuccessAt," in snapshot
+    assert snapshot_entry.index(
+        "PruneExpiredEndpointState(i->second, now);") < snapshot_entry.index(
+            "MakeSnapshot(i->second, _runtimeId)")
+    assert "PruneExpiredRelayProofs(state, now);" in prune
+    assert "i->second.expiresAt <= now" in proof_prune
+    assert "SynchronizeRelayProofAggregate(state);" in proof_prune
+    assert "state.relayProven = !state.relayProofs.empty();" in synchronize
+    assert "state.lastRelaySuccessAt = 0;" in synchronize
+    assert "entry.second.provenAt > state.lastRelaySuccessAt" in synchronize
     assert "snapshot.relayProven" in active
     assert active.index("snapshot.relayProven") < active.index(
         "snapshot.lastRelaySuccessAt")

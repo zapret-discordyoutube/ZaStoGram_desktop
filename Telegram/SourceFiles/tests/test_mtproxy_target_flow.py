@@ -13,6 +13,7 @@ TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
 ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
@@ -167,8 +168,15 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     health = read(ENDPOINT_HEALTH_CPP)
     capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
+    promotion = function_body(
+        state_source,
+        "RelayProofPromotionResult PromoteRelayProof(")
+    aggregate = function_body(
+        state_source,
+        "void SynchronizeRelayProofAggregate(")
 
     assert (
         "NoteRouteFailure(storage, state, report.endpoint.route, report.reason);"
@@ -194,7 +202,15 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "state.lastSuccessAt" in failure
     assert "const auto now = crl::now();" in success
     assert "state.lastSuccessAt = now;" in success
-    assert "state.lastRelaySuccessAt = now;" in success
+    assert "const auto promotion = PromoteRelayProof(" in success
+    assert ".runtimeId = report.runtimeId" in success
+    assert ".proxyGeneration = report.proxyGeneration" in success
+    assert ".attemptId = report.attemptId" in success
+    assert "RelayProofPromotionResult::Inserted" in success
+    assert "RelayProofPromotionResult::MissingAdmission" in success
+    assert "SynchronizeRelayProofAggregate(state);" in promotion
+    assert "state.relayProven = !state.relayProofs.empty();" in aggregate
+    assert "entry.second.provenAt > state.lastRelaySuccessAt" in aggregate
     assert "state.exhaustedSinceSuccess = 0;" in success
     # A recently-working endpoint whose handshake gets killed probes
     # again quickly with the escalated recipe instead of sitting out
@@ -214,6 +230,8 @@ def test_route_failure_stays_route_level_and_success_recovers_canonical():
     assert "state.healthy = true;" in success
     relay_guard = success.index(
         "if (report.scope != SuccessScope::Relay) {")
+    proof_promotion = success.index("const auto promotion = PromoteRelayProof(")
+    assert proof_promotion < relay_guard
     assert relay_guard < success.index("NoteRouteSuccess(")
     assert relay_guard < success.index("state.recipeLevel = 0;")
     assert relay_guard < success.index("state.healthy = true;")

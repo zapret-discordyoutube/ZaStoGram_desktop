@@ -95,7 +95,10 @@ public:
 	void reportMtproxySuccess(
 		details::MtProxy::SuccessReport report);
 	void noteMtproxyRelayStall(
-		details::MtProxy::RelayStallReport report);
+		details::MtProxy::RelayProofReport report);
+	void retireMtproxyRelayProof(
+		details::MtProxy::RelayProofReport report);
+	void applyMtproxyProxyGeneration(uint64 proxyGeneration);
 	[[nodiscard]] details::MtProxy::Snapshot mtproxyEndpointSnapshot(
 		const details::MtProxy::EndpointId &endpoint) const;
 	[[nodiscard]] auto mtproxyEndpointChanges()

@@ -50,6 +50,7 @@ public:
 	[[nodiscard]] uint64 proxyEpoch() const;
 	[[nodiscard]] uint64 successEpoch() const;
 	[[nodiscard]] crl::time startedAt() const;
+	[[nodiscard]] const QString &endpointKey() const;
 
 private:
 	friend class EndpointHealth;
@@ -153,7 +154,7 @@ struct SuccessReport {
 	SuccessScope scope = SuccessScope::Handshake;
 };
 
-struct RelayStallReport {
+struct RelayProofReport {
 	EndpointId endpoint;
 	EndpointUse use = EndpointUse::Main;
 	ProxyRuntimeId runtimeId = 0;
@@ -203,7 +204,9 @@ public:
 	[[nodiscard]] Admission admit(const AdmissionRequest &request);
 	void reportFailure(FailureReport report);
 	void reportSuccess(SuccessReport report);
-	void noteRelayStall(RelayStallReport report);
+	void noteRelayStall(RelayProofReport report);
+	void retireRelayProof(RelayProofReport report);
+	void applyProxyGeneration(uint64 proxyGeneration);
 	[[nodiscard]] Snapshot snapshot(const EndpointId &endpoint) const;
 	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;
 

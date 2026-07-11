@@ -642,6 +642,8 @@ void Instance::Private::migrateProxy() {
 		return restart();
 	}
 	++_proxyGeneration;
+	_runtime->proxyServices().control().applyMtproxyProxyGeneration(
+		_proxyGeneration);
 	_proxyMigrationActive = true;
 	_connectionStatus->setProxyStatus({
 		.attempt = { .proxyGeneration = _proxyGeneration },

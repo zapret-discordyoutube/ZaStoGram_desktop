@@ -75,13 +75,25 @@ def test_cold_endpoint_admits_only_main_scout_until_relay_proof():
 
 def test_relay_proof_keeps_handshakes_serialized():
     source = read(ENDPOINT_HEALTH_CPP)
+    state_source = read(ENDPOINT_HEALTH_STATE_H)
     policy = body_after(
         read(ENDPOINT_HEALTH_POLICY_CPP),
         "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
     success = body_after(source, "void EndpointHealth::reportSuccess(")
+    promotion = body_after(
+        state_source,
+        "RelayProofPromotionResult PromoteRelayProof(")
+    aggregate = body_after(
+        state_source,
+        "void SynchronizeRelayProofAggregate(")
 
-    assert "state.relayProven = true;" in success
-    assert "state.lastRelaySuccessAt = now;" in success
+    assert "const auto promotion = PromoteRelayProof(" in success
+    assert "RelayProofPromotionResult::Inserted" in success
+    assert "RelayProofPromotionResult::AlreadyProven" in success
+    assert "RelayProofPromotionResult::MissingAdmission" in success
+    assert "SynchronizeRelayProofAggregate(state);" in promotion
+    assert "state.relayProven = !state.relayProofs.empty();" in aggregate
+    assert "entry.second.provenAt > state.lastRelaySuccessAt" in aggregate
     assert "policy.activeCap = kHealthyActiveCap;" in policy
     assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "kFreshRelayActiveCap" not in policy

@@ -50,6 +50,7 @@ void ProxyEndpointContext::unregisterRuntime(ProxyRuntimeId runtimeId) {
 			}
 		}
 		state.active = int(state.attemptStarts.size());
+		details::MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);
 	}
 }
 

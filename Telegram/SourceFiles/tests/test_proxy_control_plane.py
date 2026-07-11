@@ -348,6 +348,9 @@ def test_session_receive_timeout_reports_stage_specific_terminal_status():
     relay_stall = function_body(
         adapter,
         "void ProductionSessionProxyPort::reportRelayStall(")
+    relay_report = function_body(
+        adapter,
+        "MtProxy::RelayProofReport RelayProofReport(")
 
     assert "ProxyDiagnosticsPhase::MtpReceiveTimeout" in wait_received
     assert "_owner->_proxyPort->reportReceiveTimeout(" in wait_received
@@ -361,17 +364,17 @@ def test_session_receive_timeout_reports_stage_specific_terminal_status():
     assert "FromProxyMtprotoTerminalReason" not in adapter
     assert "reportRelayStall(attempt);" in report_timeout
     assert "proxyServices().control().noteMtproxyRelayStall(" in relay_stall
-    relay_stall_call = relay_stall.split(
-        "proxyServices().control().noteMtproxyRelayStall(", 1
-        )[1].split("});", 1)[0]
-    assert ".proxyGeneration = attempt.attempt.proxyGeneration" in (
-        relay_stall_call)
-    assert ".attemptId = attempt.attempt.attemptId" in (
-        relay_stall_call)
-    assert ".proxyEpoch = attempt.attempt.proxyEpoch" in (
-        relay_stall_call)
-    assert ".attemptStartedAt = attempt.attemptStartedAt" in (
-        relay_stall_call)
+    assert "RelayProofReport(attempt)" in relay_stall
+    for field in (
+            ".endpoint = attempt.endpoint",
+            ".use = attempt.use",
+            ".runtimeId = attempt.attempt.runtimeId",
+            ".proxyGeneration = attempt.attempt.proxyGeneration",
+            ".attemptId = attempt.attempt.attemptId",
+            ".proxyEpoch = attempt.attempt.proxyEpoch",
+            ".successEpoch = attempt.attempt.successEpoch",
+            ".attemptStartedAt = attempt.attemptStartedAt"):
+        assert field in relay_report
 
 
 def test_admission_keeps_scouts_until_relay_proof():
@@ -423,11 +426,36 @@ def test_mtproxy_health_policy_is_control_plane_owned():
         "reportMtproxyFailure(",
         "reportMtproxySuccess(",
         "noteMtproxyRelayStall(",
+        "retireMtproxyRelayProof(",
+        "applyMtproxyProxyGeneration(",
         "mtproxyEndpointSnapshot(",
         "mtproxyEndpointChanges(",
     ):
         assert name in header
         assert f"ProxyControlPlane::{name}" in control
+
+    stall_forwarder = function_body(
+        control,
+        "void ProxyControlPlane::noteMtproxyRelayStall(")
+    retirement_forwarder = function_body(
+        control,
+        "void ProxyControlPlane::retireMtproxyRelayProof(")
+    generation_forwarder = function_body(
+        control,
+        "void ProxyControlPlane::applyMtproxyProxyGeneration(")
+    assert "MtProxy::RelayProofReport report" in control.split(
+        "void ProxyControlPlane::noteMtproxyRelayStall(", 1)[1].split(
+            ") {", 1)[0]
+    assert "_endpointHealth->noteRelayStall(std::move(report));" in (
+        stall_forwarder)
+    assert "_endpointHealth->retireRelayProof(std::move(report));" in (
+        retirement_forwarder)
+    assert "_endpointHealth->applyProxyGeneration(proxyGeneration);" in (
+        generation_forwarder)
+    generation_signature = header.split(
+        "void applyMtproxyProxyGeneration(", 1)[1].split(");", 1)[0]
+    assert "uint64 proxyGeneration" in generation_signature
+    assert "runtimeId" not in generation_signature
 
     assert (
         "details::MtProxy::Snapshot mtproxyEndpointSnapshot(\n"

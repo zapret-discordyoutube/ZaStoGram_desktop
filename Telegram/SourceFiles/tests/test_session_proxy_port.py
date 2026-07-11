@@ -30,6 +30,20 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
+def function_body(source, signature):
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:index + 1]
+    raise AssertionError(f"function body not found: {signature}")
+
+
 def test_session_proxy_port_files_are_registered():
     cmake = read(CMAKE)
 
@@ -58,28 +72,74 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportConnectTimeout(" in port_header
     assert "reportAttemptCancelled(" in port_header
     assert "logEvent(" in port_header
+    assert "retireMtproxyRelayProof" not in port_header
+    assert "RelayProofReport" not in port_header
+    assert "applyMtproxyProxyGeneration" not in port_header
 
     for token in SESSION_PRIVATE_BANNED_TOKENS:
         assert token not in session_sources
 
     assert "SessionProxyPort" in session_sources
     assert "_proxyPort->" in session_sources
+    assert "retireMtproxyRelayProof" not in session_sources
+    assert "applyMtproxyProxyGeneration" not in session_sources
 
 
 def test_proxy_adapter_is_the_only_session_proxy_global_caller():
-	adapter_h = read(PROXY_ADAPTER_H)
-	adapter_cpp = read(PROXY_ADAPTER_CPP)
+    adapter_h = read(PROXY_ADAPTER_H)
+    adapter_cpp = read(PROXY_ADAPTER_CPP)
+    relay_report = function_body(
+        adapter_cpp,
+        "MtProxy::RelayProofReport RelayProofReport(")
+    cancelled = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::reportAttemptCancelled(")
+    stalled = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::reportRelayStall(")
+    generation_cancel = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::cancelByProxyGeneration(")
 
-	assert '#include "mtproto/session/private/proxy_port.h"' not in adapter_h
-	assert "public SessionProxyPort" not in adapter_h
-	assert '#include "mtproto/session/private/proxy_port.h"' in adapter_cpp
-	assert "class ProductionSessionProxyPort final" in adapter_cpp
-	assert "DefaultSessionProxyPort()" in adapter_cpp
-	assert "proxyServices().broker().request(" in adapter_cpp
-	assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
-	assert "proxyServices().control().reportMtproxySuccess(" in adapter_cpp
-	assert "proxyServices().control().reportMtproxyFailure(" in adapter_cpp
-	assert "proxyServices().control().noteMtproxyRelayStall(" in adapter_cpp
-	assert ").mtproxyEndpointSnapshot(endpoint)" in adapter_cpp
-	assert "ReportProxyEvent(" in adapter_cpp
-	assert "WriteProxyDiagnosticsLine(" in adapter_cpp
+    assert '#include "mtproto/session/private/proxy_port.h"' not in adapter_h
+    assert "public SessionProxyPort" not in adapter_h
+    assert '#include "mtproto/session/private/proxy_port.h"' in adapter_cpp
+    assert "class ProductionSessionProxyPort final" in adapter_cpp
+    assert "DefaultSessionProxyPort()" in adapter_cpp
+    assert "proxyServices().broker().request(" in adapter_cpp
+    assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
+    assert "proxyServices().control().reportMtproxySuccess(" in adapter_cpp
+    assert "proxyServices().control().reportMtproxyFailure(" in adapter_cpp
+    assert "proxyServices().control().noteMtproxyRelayStall(" in adapter_cpp
+    assert "proxyServices().control().retireMtproxyRelayProof(" in adapter_cpp
+    assert ").mtproxyEndpointSnapshot(endpoint)" in adapter_cpp
+    assert "ReportProxyEvent(" in adapter_cpp
+    assert "WriteProxyDiagnosticsLine(" in adapter_cpp
+
+    for field in (
+            ".endpoint = attempt.endpoint",
+            ".use = attempt.use",
+            ".runtimeId = attempt.attempt.runtimeId",
+            ".proxyGeneration = attempt.attempt.proxyGeneration",
+            ".attemptId = attempt.attempt.attemptId",
+            ".proxyEpoch = attempt.attempt.proxyEpoch",
+            ".successEpoch = attempt.attempt.successEpoch",
+            ".attemptStartedAt = attempt.attemptStartedAt"):
+        assert field in relay_report
+    assert "RelayProofReport(attempt)" in cancelled
+    assert "RelayProofReport(attempt)" in stalled
+    assert adapter_cpp.count("RelayProofReport(attempt)") == 2
+    assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(
+        "ReportProxyAttemptSummary(")
+    assert "noteMtproxyRelayStall(" in stalled
+
+    assert "proxyServices().broker().cancelByProxyGeneration(" in (
+        generation_cancel)
+    assert "proxyServices().control()" not in generation_cancel
+    assert "applyMtproxyProxyGeneration" not in generation_cancel
+
+
+if __name__ == "__main__":
+    test_session_proxy_port_files_are_registered()
+    test_session_private_uses_only_proxy_port_for_proxy_globals()
+    test_proxy_adapter_is_the_only_session_proxy_global_caller()

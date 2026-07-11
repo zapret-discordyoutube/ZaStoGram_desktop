@@ -208,6 +208,20 @@ private:
 	};
 }
 
+[[nodiscard]] MtProxy::RelayProofReport RelayProofReport(
+		const SessionProxyAttempt &attempt) {
+	return {
+		.endpoint = attempt.endpoint,
+		.use = attempt.use,
+		.runtimeId = attempt.attempt.runtimeId,
+		.proxyGeneration = attempt.attempt.proxyGeneration,
+		.attemptId = attempt.attempt.attemptId,
+		.proxyEpoch = attempt.attempt.proxyEpoch,
+		.successEpoch = attempt.attempt.successEpoch,
+		.attemptStartedAt = attempt.attemptStartedAt,
+	};
+}
+
 [[nodiscard]] ProxyEventReport AttemptReport(
 		const SessionProxyAttempt &attempt,
 		ProxyConnectionError error,
@@ -551,6 +565,9 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 	if (EmptySessionProxyAttempt(attempt) || !attempt.runtime) {
 		return;
 	}
+	const auto runtime = not_null{ attempt.runtime };
+	runtime->proxyServices().control().retireMtproxyRelayProof(
+		RelayProofReport(attempt));
 	const auto message = (origin == ProxyCloseOrigin::ProxySwitch)
 		? u"proxy_attempt_cancelled_by_proxy_switch"_q
 		: (origin == ProxyCloseOrigin::OwnerDestroyed)
@@ -565,7 +582,7 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 		attempt.transport);
 	report.closeOrigin = origin;
 	(void)ReportProxyAttemptSummary(
-		not_null{ attempt.runtime },
+		runtime,
 		std::move(report));
 }
 
@@ -577,15 +594,9 @@ void ProductionSessionProxyPort::reportRelayStall(
 	if (!attempt.runtime) {
 		return;
 	}
-	not_null{ attempt.runtime }->proxyServices().control().noteMtproxyRelayStall({
-		.endpoint = attempt.endpoint,
-		.use = attempt.use,
-		.proxyGeneration = attempt.attempt.proxyGeneration,
-		.attemptId = attempt.attempt.attemptId,
-		.proxyEpoch = attempt.attempt.proxyEpoch,
-		.successEpoch = attempt.attempt.successEpoch,
-		.attemptStartedAt = attempt.attemptStartedAt,
-	});
+	const auto runtime = not_null{ attempt.runtime };
+	runtime->proxyServices().control().noteMtproxyRelayStall(
+		RelayProofReport(attempt));
 }
 
 void ProductionSessionProxyPort::logEvent(

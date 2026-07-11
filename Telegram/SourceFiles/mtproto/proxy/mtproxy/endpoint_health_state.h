@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
+#include <compare>
 #include <map>
 #include <set>
 
@@ -18,6 +19,27 @@ struct EndpointAttemptState {
 	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
 	crl::time startedAt = 0;
+};
+
+struct RelayProofIdentity {
+	ProxyRuntimeId runtimeId = 0;
+	uint64 proxyGeneration = 0;
+	uint64 attemptId = 0;
+
+	friend inline auto operator<=>(
+		RelayProofIdentity,
+		RelayProofIdentity) = default;
+};
+
+struct RelayProofState {
+	crl::time provenAt = 0;
+	crl::time expiresAt = 0;
+};
+
+enum class RelayProofPromotionResult {
+	Inserted,
+	AlreadyProven,
+	MissingAdmission,
 };
 
 struct EndpointState {
@@ -42,24 +64,128 @@ struct EndpointState {
 	int exhaustedSinceSuccess = 0;
 	bool relayProven = false;
 	uint64 successEpoch = 0;
-	uint64 lastRelayAttemptId = 0;
+	std::map<RelayProofIdentity, RelayProofState> relayProofs;
 	crl::time lastRelaySuccessAt = 0;
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
 	RouteEndpoint lastGoodRoute;
 };
 
+[[nodiscard]] inline bool RuntimeProxyGenerationIsStale(
+		const EndpointState &state,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration) {
+	const auto i = state.generations.find(runtimeId);
+	return i != end(state.generations)
+		&& proxyGeneration < i->second;
+}
+
+[[nodiscard]] inline bool HasEndpointAttempt(
+		const EndpointState &state,
+		const RelayProofIdentity &identity) {
+	const auto i = state.attemptStarts.find(identity.attemptId);
+	return i != end(state.attemptStarts)
+		&& i->second.runtimeId == identity.runtimeId
+		&& i->second.proxyGeneration == identity.proxyGeneration;
+}
+
+[[nodiscard]] inline bool HasRelayProof(
+		const EndpointState &state,
+		const RelayProofIdentity &identity) {
+	return state.relayProofs.contains(identity);
+}
+
+inline void SynchronizeRelayProofAggregate(EndpointState &state) {
+	for (auto i = begin(state.relayProofs);
+			i != end(state.relayProofs);) {
+		const auto generation = state.generations.find(i->first.runtimeId);
+		if (generation != end(state.generations)
+			&& i->first.proxyGeneration < generation->second) {
+			i = state.relayProofs.erase(i);
+		} else {
+			++i;
+		}
+	}
+	state.relayProven = !state.relayProofs.empty();
+	state.lastRelaySuccessAt = 0;
+	for (const auto &entry : state.relayProofs) {
+		if (entry.second.provenAt > state.lastRelaySuccessAt) {
+			state.lastRelaySuccessAt = entry.second.provenAt;
+		}
+	}
+	if (state.relayProven) {
+		state.healthy = true;
+	}
+}
+
+[[nodiscard]] inline RelayProofPromotionResult PromoteRelayProof(
+		EndpointState &state,
+		const RelayProofIdentity &identity,
+		RelayProofState proof) {
+	if (HasRelayProof(state, identity)) {
+		return RelayProofPromotionResult::AlreadyProven;
+	}
+	if (!HasEndpointAttempt(state, identity)) {
+		return RelayProofPromotionResult::MissingAdmission;
+	}
+	state.relayProofs.emplace(identity, proof);
+	state.attemptStarts.erase(identity.attemptId);
+	state.active = int(state.attemptStarts.size());
+	SynchronizeRelayProofAggregate(state);
+	return RelayProofPromotionResult::Inserted;
+}
+
+[[nodiscard]] inline bool RetireRelayProof(
+		EndpointState &state,
+		const RelayProofIdentity &identity) {
+	if (!state.relayProofs.erase(identity)) {
+		return false;
+	}
+	SynchronizeRelayProofAggregate(state);
+	return true;
+}
+
+inline void PruneExpiredRelayProofs(
+		EndpointState &state,
+		crl::time now) {
+	for (auto i = begin(state.relayProofs);
+			i != end(state.relayProofs);) {
+		if (i->second.expiresAt <= now) {
+			i = state.relayProofs.erase(i);
+		} else {
+			++i;
+		}
+	}
+	SynchronizeRelayProofAggregate(state);
+}
+
+inline void RemoveRelayProofsForRuntime(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId) {
+	for (auto i = begin(state.relayProofs);
+			i != end(state.relayProofs);) {
+		if (i->first.runtimeId == runtimeId) {
+			i = state.relayProofs.erase(i);
+		} else {
+			++i;
+		}
+	}
+	SynchronizeRelayProofAggregate(state);
+}
+
 inline void ApplyRuntimeProxyGeneration(
 		EndpointState &state,
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration) {
-	if (!runtimeId || !proxyGeneration) {
+	if (!runtimeId) {
 		return;
 	}
-	auto &generation = state.generations[runtimeId];
-	if (proxyGeneration <= generation) {
+	const auto current = state.generations.find(runtimeId);
+	if ((current != end(state.generations)
+			&& proxyGeneration <= current->second)
+		|| (current == end(state.generations) && !proxyGeneration)) {
 		return;
 	}
-	generation = proxyGeneration;
+	state.generations[runtimeId] = proxyGeneration;
 	for (auto i = begin(state.attemptStarts);
 			i != end(state.attemptStarts);) {
 		if (i->second.runtimeId == runtimeId
@@ -70,6 +196,16 @@ inline void ApplyRuntimeProxyGeneration(
 		}
 	}
 	state.active = int(state.attemptStarts.size());
+	for (auto i = begin(state.relayProofs);
+			i != end(state.relayProofs);) {
+		if (i->first.runtimeId == runtimeId
+			&& i->first.proxyGeneration < proxyGeneration) {
+			i = state.relayProofs.erase(i);
+		} else {
+			++i;
+		}
+	}
+	SynchronizeRelayProofAggregate(state);
 }
 
 struct RouteState {
