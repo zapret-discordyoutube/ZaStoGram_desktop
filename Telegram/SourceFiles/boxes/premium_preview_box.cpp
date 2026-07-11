@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "chat_helpers/stickers_lottie.h"
 #include "chat_helpers/stickers_emoji_pack.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "data/data_file_origin.h"
 #include "data/data_document.h"
 #include "data/data_session.h"
@@ -718,6 +720,7 @@ struct VideoPreviewDocument {
 			options.waitForMarkAsShown = true;
 			options.mode = ::Media::Streaming::Mode::Video;
 			options.loop = true;
+			options.hwAllowed = Core::App().settings().hardwareAcceleratedVideo();
 			state->instance.play(options);
 		}
 	};

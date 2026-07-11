@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/event_filter.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "info/profile/info_profile_text.h"
 #include "info/profile/info_profile_values.h"
 #include "lang/lang_keys.h"
@@ -541,6 +542,7 @@ void PeerShortInfoCover::checkStreamedIsStarted() {
 	options.position = _videoStartPosition;
 	options.mode = Media::Streaming::Mode::Video;
 	options.loop = true;
+	options.hwAllowed = Core::App().settings().hardwareAcceleratedVideo();
 	_videoInstance->play(options);
 }
 

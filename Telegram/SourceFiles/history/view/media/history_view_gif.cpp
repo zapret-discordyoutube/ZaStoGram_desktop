@@ -2289,6 +2289,7 @@ void Gif::startStreamedPlayer() const {
 	auto options = ::Media::Streaming::PlaybackOptions();
 	options.audioId = AudioMsgId(_data, _realParent->fullId());
 	options.waitForMarkAsShown = true;
+	options.hwAllowed = Core::App().settings().hardwareAcceleratedVideo();
 	//if (!_streamed->withSound) {
 	options.mode = ::Media::Streaming::Mode::Video;
 	options.loop = true;
