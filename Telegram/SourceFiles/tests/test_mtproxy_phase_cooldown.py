@@ -92,14 +92,16 @@ def test_tls_socket_reports_timeout_by_handshake_phase():
     assert "TcpNotConnected" not in failure_body
 
 
+def trait_row(traits_body, reason):
+    segment = traits_body.split(f"case FailureReason::{reason}:", 1)[1]
+    return segment.split("case FailureReason::", 1)[0]
+
+
 def test_phase_cooldown_and_recipe_policy_is_reason_based():
     source = read(ENDPOINT_HEALTH_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     adaptive = read(ADAPTIVE_POLICY_CPP)
-    cooldown_body = function_body(policy, "bool FailureNeedsCooldown(")
-    recipe_body = function_body(policy, "bool FailureNeedsRecipeEscalation(")
-    rotation_body = function_body(policy, "bool FailureNeedsTlsRotation(")
-    route_only_body = function_body(policy, "bool FailureIsRouteOnly(")
+    traits = function_body(policy, "FailureTraits TraitsFor(")
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(adaptive, "bool FailureNeedsTlsProfileRotation(")
@@ -111,26 +113,56 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     assert "FailureNeedsRecipe(diagnostic)" not in source
     assert "FailureNeedsTlsProfileRotation(diagnostic)" not in source
 
-    assert "case FailureReason::DnsFailed:" in cooldown_body
-    assert "case FailureReason::TcpConnectTimeout:" in cooldown_body
-    assert "case FailureReason::TcpConnectedNoClientHelloWrite:" in cooldown_body
-    assert "case FailureReason::ClientHelloSentNoServerHello:" in cooldown_body
-    assert "case FailureReason::ServerHelloOkNoAppData:" in cooldown_body
-    assert "case FailureReason::AppDataRemoteClosed:" in cooldown_body
+    # The helpers must stay thin readers over the traits table.
+    assert "return TraitsFor(reason).needsCooldown;" in function_body(
+        policy, "bool FailureNeedsCooldown(")
+    assert "return TraitsFor(reason).escalatesRecipe;" in function_body(
+        policy, "bool FailureNeedsRecipeEscalation(")
+    assert "return TraitsFor(reason).rotatesTls;" in function_body(
+        policy, "bool FailureNeedsTlsRotation(")
+    assert "return TraitsFor(reason).routeOnly;" in function_body(
+        policy, "bool FailureIsRouteOnly(")
 
-    assert "case FailureReason::DnsFailed:" in recipe_body
-    assert "case FailureReason::TcpConnectTimeout:" in recipe_body
-    assert "case FailureReason::ClientHelloSentNoServerHello:" in recipe_body
-    assert "case FailureReason::ServerHelloOkNoAppData:" in recipe_body
-    assert "return false;" in recipe_body.split("case FailureReason::TcpConnectTimeout:")[1]
-    assert "return true;" in recipe_body.split("case FailureReason::ClientHelloSentNoServerHello:")[1]
+    # Every reason has an explicit row in the table.
+    for reason in (
+        "None",
+        "DnsFailed",
+        "TcpConnectTimeout",
+        "TcpConnectedNoClientHelloWrite",
+        "ClientHelloSentNoServerHello",
+        "TlsAlertAfterClientHello",
+        "ServerHelloHmacMismatch",
+        "ServerHelloOkNoAppData",
+        "ServerHelloOkNoMtprotoData",
+        "AppDataRemoteClosed",
+        "ConnectedNoMtprotoData",
+        "MtpReceiveTimeoutAfterData",
+        "Network",
+        "ProxyProtocolBadResponse",
+    ):
+        assert f"case FailureReason::{reason}:" in traits
 
-    assert "case FailureReason::ClientHelloSentNoServerHello:" in rotation_body
-    assert "case FailureReason::ServerHelloOkNoAppData:" in rotation_body
-    assert "return false;" in rotation_body.split("case FailureReason::ServerHelloOkNoAppData:")[1]
-    assert "case FailureReason::TcpConnectTimeout:" in route_only_body
-    assert "case FailureReason::TcpConnectedNoClientHelloWrite:" in route_only_body
-    assert "return true;" in route_only_body.split("case FailureReason::TcpConnectTimeout:")[1]
+    assert ".needsCooldown = true" in trait_row(traits, "DnsFailed")
+    assert ".needsCooldown = true" not in trait_row(traits, "TcpConnectTimeout")
+    assert ".needsCooldown = true" not in trait_row(
+        traits, "TcpConnectedNoClientHelloWrite")
+    assert ".needsCooldown = true" in trait_row(
+        traits, "ClientHelloSentNoServerHello")
+    assert ".needsCooldown = true" in trait_row(traits, "ServerHelloOkNoAppData")
+    assert ".needsCooldown = true" not in trait_row(traits, "AppDataRemoteClosed")
+
+    assert ".escalatesRecipe = true" not in trait_row(traits, "DnsFailed")
+    assert ".escalatesRecipe = true" not in trait_row(traits, "TcpConnectTimeout")
+    assert ".escalatesRecipe = true" in trait_row(
+        traits, "ClientHelloSentNoServerHello")
+    assert ".escalatesRecipe = true" not in trait_row(
+        traits, "ServerHelloOkNoAppData")
+
+    assert ".rotatesTls = true" in trait_row(traits, "ClientHelloSentNoServerHello")
+    assert ".rotatesTls = true" not in trait_row(traits, "ServerHelloOkNoAppData")
+    assert ".routeOnly = true" in trait_row(traits, "TcpConnectTimeout")
+    assert ".routeOnly = true" in trait_row(
+        traits, "TcpConnectedNoClientHelloWrite")
     assert "FailureIsRouteOnly(report.reason)" in report_failure
     assert report_failure.index("NoteRouteFailure(") < report_failure.index(
         "FailureIsRouteOnly(report.reason)")
@@ -151,8 +183,7 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     policy = function_body(
         policy_source,
         "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
-    recipe_body = function_body(policy_source, "bool FailureNeedsRecipeEscalation(")
-    rotation_body = function_body(policy_source, "bool FailureNeedsTlsRotation(")
+    traits = function_body(policy_source, "FailureTraits TraitsFor(")
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(
         adaptive,
@@ -175,13 +206,9 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
         assert forbidden not in adaptive_recipe
         assert forbidden not in adaptive_rotation
 
-    no_appdata_recipe_case = recipe_body.split(
-        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
-    assert "return false;" in no_appdata_recipe_case.split("}", 1)[0]
-
-    no_appdata_rotation_case = rotation_body.split(
-        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
-    assert "return false;" in no_appdata_rotation_case.split("}", 1)[0]
+    no_appdata_row = trait_row(traits, "ServerHelloOkNoAppData")
+    assert ".escalatesRecipe = true" not in no_appdata_row
+    assert ".rotatesTls = true" not in no_appdata_row
 
     assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities)

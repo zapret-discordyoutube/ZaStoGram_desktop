@@ -132,20 +132,16 @@ def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
 
 def test_pre_clienthello_timeouts_do_not_rotate_or_escalate_recipes():
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
-    cooldown = function_body(policy, "bool FailureNeedsCooldown(")
-    recipe = function_body(policy, "bool FailureNeedsRecipeEscalation(")
-    rotation = function_body(policy, "bool FailureNeedsTlsRotation(")
-    route_only = function_body(policy, "bool FailureIsRouteOnly(")
+    traits = function_body(policy, "FailureTraits TraitsFor(")
 
     for reason in ("TcpConnectTimeout", "TcpConnectedNoClientHelloWrite"):
-        assert f"case FailureReason::{reason}:" in recipe
-        assert "return false;" in recipe.split(f"case FailureReason::{reason}:")[1]
-        assert f"case FailureReason::{reason}:" in rotation
-        assert "return false;" in rotation.split(f"case FailureReason::{reason}:")[1]
-        assert f"case FailureReason::{reason}:" in cooldown
-        assert "return false;" in cooldown.split(f"case FailureReason::{reason}:")[1]
-        assert f"case FailureReason::{reason}:" in route_only
-        assert "return true;" in route_only.split(f"case FailureReason::{reason}:")[1]
+        row = traits.split(
+            f"case FailureReason::{reason}:", 1,
+        )[1].split("case FailureReason::", 1)[0]
+        assert ".escalatesRecipe = true" not in row
+        assert ".rotatesTls = true" not in row
+        assert ".needsCooldown = true" not in row
+        assert ".routeOnly = true" in row
 
 
 if __name__ == "__main__":

@@ -11,6 +11,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
+// One row per FailureReason: every reaction the health machinery may have
+// to a failure, in one place. The FailureNeeds*/FailureIs* helpers below
+// are thin readers over this table.
+struct FailureTraits {
+	bool needsCooldown = false;
+	bool escalatesRecipe = false;
+	bool rotatesTls = false;
+	bool routeOnly = false;
+	bool invalidatesRelayCapability = false;
+	bool canBeStale = false;
+};
+
+[[nodiscard]] FailureTraits TraitsFor(FailureReason reason);
+
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason);
 [[nodiscard]] MtProxyAttemptPlan BuildAttemptPlan(
 	const AdmissionRequest &request,

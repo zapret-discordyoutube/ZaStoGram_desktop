@@ -231,7 +231,7 @@ def test_relay_success_shadows_older_attempt_failures():
 
     report_failure = function_body(source, "void EndpointHealth::reportFailure(")
     report_success = function_body(source, "void EndpointHealth::reportSuccess(")
-    stale_reasons = function_body(policy, "bool FailureCanBeStale(")
+    stale_reasons = function_body(policy, "FailureTraits TraitsFor(")
     stale_helper = function_body(policy, "bool FailureFromStaleAttempt(")
     stale_success_helper = function_body(
         policy,
@@ -367,9 +367,15 @@ def test_relay_success_shadows_older_attempt_failures():
 
     assert "stale_attempt_failed" in stale_log
     assert "ProxyDiagnosticsSeverity::Info" in stale_log
-    assert "FailureReason::ClientHelloSentNoServerHello" in stale_reasons
-    assert "FailureReason::ServerHelloOkNoAppData" in stale_reasons
-    assert "FailureReason::TcpConnectTimeout" in stale_reasons
+    for stale_reason in (
+        "ClientHelloSentNoServerHello",
+        "ServerHelloOkNoAppData",
+        "TcpConnectTimeout",
+    ):
+        stale_row = stale_reasons.split(
+            f"case FailureReason::{stale_reason}:", 1,
+        )[1].split("case FailureReason::", 1)[0]
+        assert ".canBeStale = true" in stale_row
     assert "state.lastRelaySuccessAt" in stale_helper
     assert "HasRelayProof(state, identity)" in stale_helper
     assert "AttemptStartedAt(report, state)" in stale_helper
@@ -715,7 +721,7 @@ def test_appdata_remote_closed_is_mtproxy_terminal_reason():
     diagnostics = read(SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp")
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     identity_source = read(MTPROXY_DIR / "endpoint_identity.cpp")
-    cooldown_body = function_body(policy, "bool FailureNeedsCooldown(")
+    traits_body = function_body(policy, "FailureTraits TraitsFor(")
     terminal_body = function_body(
         identity_source,
         "ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(")
@@ -723,9 +729,10 @@ def test_appdata_remote_closed_is_mtproxy_terminal_reason():
     assert "AppDataRemoteClosed," in status_header
     assert "ProxyMtproxyTerminalReason::AppDataRemoteClosed" in status_source
     assert 'u"appdata_remote_closed"_q' in diagnostics
-    assert "case FailureReason::AppDataRemoteClosed:" in cooldown_body
-    assert cooldown_body.index("case FailureReason::AppDataRemoteClosed:") < (
-        cooldown_body.index("return false;"))
+    remote_closed_row = traits_body.split(
+        "case FailureReason::AppDataRemoteClosed:", 1,
+    )[1].split("case FailureReason::", 1)[0]
+    assert ".needsCooldown = true" not in remote_closed_row
     assert "return ProxyMtproxyTerminalReason::AppDataRemoteClosed;" in terminal_body
 
 

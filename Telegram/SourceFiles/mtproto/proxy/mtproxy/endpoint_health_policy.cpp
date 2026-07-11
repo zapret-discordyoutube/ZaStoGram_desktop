@@ -58,146 +58,117 @@ MtProxyAttemptPlan BuildAttemptPlan(
 	return plan;
 }
 
-[[nodiscard]] bool FailureNeedsCooldown(FailureReason reason) {
+FailureTraits TraitsFor(FailureReason reason) {
 	switch (reason) {
-	case FailureReason::DnsFailed:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ProxyProtocolBadResponse:
-	case FailureReason::ConnectedNoMtprotoData:
-		return true;
 	case FailureReason::None:
+		return {};
+	case FailureReason::DnsFailed:
+		return {
+			.needsCooldown = true,
+		};
 	case FailureReason::TcpConnectTimeout:
+		// The route never answered: blame the route, not the canonical
+		// endpoint - other routes may still work.
+		return {
+			.routeOnly = true,
+			.canBeStale = true,
+		};
 	case FailureReason::TcpConnectedNoClientHelloWrite:
+		return {
+			.routeOnly = true,
+			.canBeStale = true,
+		};
+	case FailureReason::ClientHelloSentNoServerHello:
+		// The server (or a DPI box in front of it) refused our handshake
+		// fingerprint: cool down, mutate the recipe, rotate TLS profile.
+		return {
+			.needsCooldown = true,
+			.escalatesRecipe = true,
+			.rotatesTls = true,
+			.canBeStale = true,
+		};
+	case FailureReason::TlsAlertAfterClientHello:
+		return {
+			.needsCooldown = true,
+			.escalatesRecipe = true,
+			.rotatesTls = true,
+			.canBeStale = true,
+		};
+	case FailureReason::ServerHelloHmacMismatch:
+		return {
+			.needsCooldown = true,
+			.escalatesRecipe = true,
+			.rotatesTls = true,
+			.canBeStale = true,
+		};
+	case FailureReason::ServerHelloOkNoAppData:
+		// The server accepted our ClientHello (HMAC verified) and the
+		// stall is downstream - the proxy's own link to the DC. Mutating
+		// the ClientHello cannot fix that; escalated recipes
+		// (fragmentation, pacing, spacing) only add latency and can
+		// break a FakeTLS front that was answering fine, turning a slow
+		// relay into client_hello_sent_no_server_hello. Escalate only on
+		// failures that actually implicate the handshake fingerprint.
+		return {
+			.needsCooldown = true,
+			.invalidatesRelayCapability = true,
+			.canBeStale = true,
+		};
+	case FailureReason::ServerHelloOkNoMtprotoData:
+		return {
+			.needsCooldown = true,
+			.invalidatesRelayCapability = true,
+			.canBeStale = true,
+		};
 	case FailureReason::AppDataRemoteClosed:
+		return {};
+	case FailureReason::ConnectedNoMtprotoData:
+		// Even further downstream than ServerHelloOkNoAppData: the
+		// handshake and even the plaintext transport check passed, so
+		// the fingerprint is definitely not the problem - cool down and
+		// distrust the relay, never touch the recipe.
+		return {
+			.needsCooldown = true,
+			.invalidatesRelayCapability = true,
+			.canBeStale = true,
+		};
 	case FailureReason::MtpReceiveTimeoutAfterData:
+		return {
+			.invalidatesRelayCapability = true,
+			.canBeStale = true,
+		};
 	case FailureReason::Network:
-		return false;
+		return {};
+	case FailureReason::ProxyProtocolBadResponse:
+		return {
+			.needsCooldown = true,
+		};
 	}
-	return false;
+	return {};
+}
+
+[[nodiscard]] bool FailureNeedsCooldown(FailureReason reason) {
+	return TraitsFor(reason).needsCooldown;
 }
 
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-		return true;
-	// ServerHelloOkNoAppData means the server accepted our ClientHello
-	// (HMAC verified) and the stall is downstream - the proxy's own link
-	// to the DC. Mutating the ClientHello cannot fix that; escalated
-	// recipes (fragmentation, pacing, spacing) only add latency and can
-	// break a FakeTLS front that was answering fine, turning a slow
-	// relay into client_hello_sent_no_server_hello. Escalate only on
-	// failures that actually implicate the handshake fingerprint.
-	// ConnectedNoMtprotoData is even further downstream: the handshake
-	// and even the plaintext transport check passed, so the fingerprint
-	// is definitely not the problem.
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
+	return TraitsFor(reason).escalatesRecipe;
 }
 
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
+	return TraitsFor(reason).rotatesTls;
 }
 
 [[nodiscard]] bool FailureIsRouteOnly(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
+	return TraitsFor(reason).routeOnly;
 }
 
 [[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
+	return TraitsFor(reason).invalidatesRelayCapability;
 }
 
 [[nodiscard]] bool FailureCanBeStale(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-		return true;
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
+	return TraitsFor(reason).canBeStale;
 }
 
 [[nodiscard]] bool RecentRelaySuccess(
@@ -419,42 +390,29 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 		crl::time now) {
 	auto policy = EndpointConcurrencyPolicy();
 	if (FailureNeedsRecipeEscalation(state.lastFailure)) {
+		// DPI-implicating failure: strict single probe with escalation
+		// allowed, and keep non-main uses off an unproven endpoint.
 		policy.activeCap = kDpiFailureActiveCap;
 		policy.retryAfter = kQueuedRetry;
 		policy.recipeEscalationAllowed = true;
 		if (!state.relayProven && use != EndpointUse::Main) {
 			policy.useAllowed = false;
 		}
-		return policy;
-	}
-	switch (state.lastFailure) {
-	case FailureReason::None:
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-	case FailureReason::ProxyProtocolBadResponse:
-		break;
-	}
-	if (!state.relayProven || !state.lastRelaySuccessAt) {
+	} else if (!state.relayProven || !state.lastRelaySuccessAt) {
+		// Never relayed Telegram data: one careful probe at a time, and
+		// only the main session may spend it.
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
 		if (use != EndpointUse::Main) {
 			policy.useAllowed = false;
 		}
 	} else if (state.healthy) {
+		// Proven and currently healthy: pipeline handshakes with spacing.
 		policy.activeCap = kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
 		policy.retryAfter = kHealthyHandshakeSpacing;
 	} else {
+		// Proven but recovering from a failure: back to careful probing.
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
 	}

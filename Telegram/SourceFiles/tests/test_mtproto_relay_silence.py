@@ -80,24 +80,19 @@ def test_relay_silence_reason_is_wired_through_all_mappings():
 
 def test_relay_silence_cools_down_without_recipe_or_tls_churn():
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
-    cooldown_body = function_body(policy, "bool FailureNeedsCooldown(")
-    recipe_body = function_body(policy, "bool FailureNeedsRecipeEscalation(")
-    rotation_body = function_body(policy, "bool FailureNeedsTlsRotation(")
-    route_only_body = function_body(policy, "bool FailureIsRouteOnly(")
+    traits = function_body(policy, "FailureTraits TraitsFor(")
     ladder = function_body(policy, "crl::time CooldownFor(")
 
     # No MTProto payload after a successful handshake means the handshake
     # fingerprint is fine - mutating it or rotating TLS profiles cannot
     # help, only a growing cooldown (and rotation to another proxy) can.
-    after_case = cooldown_body.split(
-        "case FailureReason::ConnectedNoMtprotoData:")[1]
-    assert after_case.split("return")[1].strip().startswith("true;")
-    assert "return false;" in recipe_body.split(
-        "case FailureReason::ConnectedNoMtprotoData:")[1]
-    assert "return false;" in rotation_body.split(
-        "case FailureReason::ConnectedNoMtprotoData:")[1]
-    assert "return false;" in route_only_body.split(
-        "case FailureReason::ConnectedNoMtprotoData:")[1]
+    row = traits.split(
+        "case FailureReason::ConnectedNoMtprotoData:", 1,
+    )[1].split("case FailureReason::", 1)[0]
+    assert ".needsCooldown = true" in row
+    assert ".escalatesRecipe = true" not in row
+    assert ".rotatesTls = true" not in row
+    assert ".routeOnly = true" not in row
     assert "FailureReason::ConnectedNoMtprotoData" in ladder
     assert "kSecondCooldown" in ladder.split(
         "FailureReason::ConnectedNoMtprotoData")[1].split("}")[0]

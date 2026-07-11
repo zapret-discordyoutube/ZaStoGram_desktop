@@ -116,17 +116,21 @@ def test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail():
 def test_dpi_like_failures_keep_strict_cap_and_recipe_escalation():
     source = read(ENDPOINT_HEALTH_POLICY_CPP)
     policy = body_after(source, "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
-    escalation = body_after(source, "bool FailureNeedsRecipeEscalation(")
+    traits = body_after(source, "FailureTraits TraitsFor(")
 
     for reason in (
         "ClientHelloSentNoServerHello",
         "TlsAlertAfterClientHello",
         "ServerHelloHmacMismatch",
     ):
-        assert f"FailureReason::{reason}" in escalation
-    no_appdata_case = escalation.split(
-        "case FailureReason::ServerHelloOkNoAppData:", 1)[1]
-    assert "return false;" in no_appdata_case.split("}", 1)[0]
+        row = traits.split(
+            f"case FailureReason::{reason}:", 1,
+        )[1].split("case FailureReason::", 1)[0]
+        assert ".escalatesRecipe = true" in row
+    no_appdata_row = traits.split(
+        "case FailureReason::ServerHelloOkNoAppData:", 1,
+    )[1].split("case FailureReason::", 1)[0]
+    assert ".escalatesRecipe = true" not in no_appdata_row
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
     assert "kDpiFailureActiveCap" in policy
     assert "policy.recipeEscalationAllowed = true;" in policy
@@ -135,11 +139,14 @@ def test_dpi_like_failures_keep_strict_cap_and_recipe_escalation():
 def test_tcp_route_failures_rotate_routes_without_canonical_cooldown():
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     source = read(ENDPOINT_HEALTH_CPP)
-    route_only = body_after(policy, "bool FailureIsRouteOnly(")
+    traits = body_after(policy, "FailureTraits TraitsFor(")
     failure = body_after(source, "void EndpointHealth::reportFailure(")
 
-    assert "FailureReason::TcpConnectTimeout" in route_only
-    assert "FailureReason::TcpConnectedNoClientHelloWrite" in route_only
+    for route_reason in ("TcpConnectTimeout", "TcpConnectedNoClientHelloWrite"):
+        route_row = traits.split(
+            f"case FailureReason::{route_reason}:", 1,
+        )[1].split("case FailureReason::", 1)[0]
+        assert ".routeOnly = true" in route_row
     assert (
         "NoteRouteFailure(storage, state, report.endpoint.route, report.reason);"
     ) in failure
