@@ -59,6 +59,33 @@ struct ConnectionBroker::EndpointQueue {
 	std::deque<std::shared_ptr<RequestState>> pending;
 };
 
+// The front request of a queue, claimed for one admission pass. Either
+// state is null (nothing to do right now), or openRetryAfter is positive
+// (an open slot was already reserved, retry exactly when it opens), or
+// the state has admissionInProgress set and must reach one of the
+// commit*() functions.
+struct ConnectionBroker::ClaimResult {
+	std::shared_ptr<RequestState> state;
+	crl::time openRetryAfter = 0;
+};
+
+// The outcome of one admission pass over a claimed request, computed
+// without holding the broker mutex.
+struct ConnectionBroker::DrainVerdict {
+	enum class Kind {
+		EmptyEndpoint, // No proxy endpoint: start after notBefore.
+		Admitted, // Slot granted: start after openDelay.
+		Denied, // Queued by admission: retry after retryAfter.
+	};
+
+	Kind kind = Kind::EmptyEndpoint;
+	std::optional<ProxyAdmissionDecision> admission;
+	MtProxy::OpenSlotReservation openSlot;
+	crl::time openDelay = 0;
+	crl::time retryAfter = 0;
+	MtProxy::FailureReason blockedBy = MtProxy::FailureReason::None;
+};
+
 [[nodiscard]] QString CanonicalText(const MtProxy::EndpointId &endpoint) {
 	return ProxyDiagnosticsEndpointText(
 		endpoint.canonical.originalHost,
@@ -272,59 +299,74 @@ void ConnectionBroker::drain() {
 }
 
 void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
-	auto state = std::shared_ptr<RequestState>();
-	auto openRetryAfter = crl::time(0);
-	{
-		QMutexLocker lock(&_mutex);
-		auto &queue = queueFor(use);
-		while (!queue.pending.empty()) {
-			const auto &front = queue.pending.front();
-			if (front->active && front->request.context) {
-				state = front;
-				break;
-			}
-			front->active = false;
-			queue.pending.pop_front();
-		}
-		if (!state
-			|| state->admission
-			|| state->admissionInProgress
-			|| state->startScheduled) {
-			return;
-		}
-		const auto now = _runtime->async().now();
-		if (state->openRetryAt > now) {
-			if (state->openRetryScheduled) {
-				return;
-			}
-			openRetryAfter = state->openRetryAt - now;
-			state->openRetryScheduled = true;
-		} else {
-			state->openRetryAt = 0;
-			state->openRetryScheduled = false;
-			state->admissionInProgress = true;
-		}
-	}
-	if (openRetryAfter > 0) {
-		scheduleOpenRetry(state, openRetryAfter);
+	auto claim = claimFront(use);
+	const auto &state = claim.state;
+	if (!state) {
+		return;
+	} else if (claim.openRetryAfter > 0) {
+		scheduleOpenRetry(state, claim.openRetryAfter);
 		return;
 	}
+	auto verdict = computeVerdict(state);
+	switch (verdict.kind) {
+	case DrainVerdict::Kind::EmptyEndpoint:
+		commitEmptyEndpoint(state);
+		return;
+	case DrainVerdict::Kind::Admitted:
+		commitAdmitted(use, state, std::move(verdict));
+		return;
+	case DrainVerdict::Kind::Denied:
+		commitDenied(use, state, verdict);
+		return;
+	}
+	Unexpected("DrainVerdict kind in ConnectionBroker::drainQueue.");
+}
 
+ConnectionBroker::ClaimResult ConnectionBroker::claimFront(
+		MtProxy::EndpointUse use) {
+	auto result = ClaimResult();
+	auto &state = result.state;
+	QMutexLocker lock(&_mutex);
+	auto &queue = queueFor(use);
+	while (!queue.pending.empty()) {
+		const auto &front = queue.pending.front();
+		if (front->active && front->request.context) {
+			state = front;
+			break;
+		}
+		front->active = false;
+		queue.pending.pop_front();
+	}
+	if (!state
+		|| state->admission
+		|| state->admissionInProgress
+		|| state->startScheduled) {
+		state = nullptr;
+		return result;
+	}
+	const auto now = _runtime->async().now();
+	if (state->openRetryAt > now) {
+		if (state->openRetryScheduled) {
+			state = nullptr;
+			return result;
+		}
+		result.openRetryAfter = state->openRetryAt - now;
+		state->openRetryScheduled = true;
+	} else {
+		state->openRetryAt = 0;
+		state->openRetryScheduled = false;
+		state->admissionInProgress = true;
+	}
+	return result;
+}
+
+ConnectionBroker::DrainVerdict ConnectionBroker::computeVerdict(
+		const std::shared_ptr<RequestState> &state) {
+	auto verdict = DrainVerdict();
 	if (MtProxy::EndpointEmpty(state->request.endpoint)) {
-		{
-			QMutexLocker lock(&_mutex);
-			state->admissionInProgress = false;
-			if (!state->active
-				|| !state->request.context
-				|| state->startScheduled) {
-				return;
-			}
-			state->startScheduled = true;
-		}
-		scheduleStart(state, state->request.notBefore);
-		return;
+		verdict.kind = DrainVerdict::Kind::EmptyEndpoint;
+		return verdict;
 	}
-
 	auto admission = _runtime->proxyServices().control().admit({
 		.endpoint = state->request.endpoint,
 		.use = state->request.use,
@@ -333,112 +375,124 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 		.configuredTlsProfile = state->request.configuredTlsProfile,
 		.proxyGeneration = state->proxyGeneration,
 	});
-	if (admission.action == ProxyAdmissionAction::StartNow) {
-		auto openSlot = IsProxyCheck(state->request.use)
-			? MtProxy::OpenSlotReservation()
-			: MtProxy::ReserveOpenSlot(
-				_runtime,
-				state->request.endpoint,
-				admission.plan.admitted
-					? admission.plan.stealth.connectionPattern
-					: state->request.connectionPattern,
-				state->request.notBefore);
-		const auto openDelay = IsProxyCheck(state->request.use)
-			? std::max(crl::time(0), state->request.notBefore)
-			: openSlot.delay();
-		if (!IsProxyCheck(state->request.use) && openDelay > 0) {
-			auto keepQueued = false;
-			auto notifyStartAfter = false;
-			{
-				QMutexLocker lock(&_mutex);
-				const auto &queue = queueFor(use);
-				keepQueued = !queue.pending.empty()
-					&& queue.pending.front() == state
-					&& state->active
-					&& state->request.context;
-				state->admissionInProgress = false;
-				if (keepQueued) {
-					state->request.notBefore = 0;
-					state->openRetryAt = _runtime->async().now()
-						+ openDelay;
-					state->openRetryScheduled = true;
-					state->admission = std::move(admission);
-					state->openSlot = std::move(openSlot);
-					notifyStartAfter = !state->startAfterNotified;
-					if (notifyStartAfter) {
-						state->startAfterNotified = true;
-					}
-				}
-			}
-			if (!keepQueued) {
-				return;
-			}
-			if (notifyStartAfter) {
-				notify(state, {
-					.action = ConnectionBrokerAction::StartAfter,
-					.retryAfter = openDelay,
-				});
-			}
-			releaseAdmission(state);
-			scheduleOpenRetry(state, openDelay);
+	if (admission.action != ProxyAdmissionAction::StartNow) {
+		verdict.kind = DrainVerdict::Kind::Denied;
+		verdict.retryAfter = (admission.retryAfter > 0)
+			? admission.retryAfter
+			: kFallbackQueuedRetry;
+		verdict.blockedBy = admission.blockedBy;
+		return verdict;
+	}
+	verdict.kind = DrainVerdict::Kind::Admitted;
+	if (!IsProxyCheck(state->request.use)) {
+		verdict.openSlot = MtProxy::ReserveOpenSlot(
+			_runtime,
+			state->request.endpoint,
+			admission.plan.admitted
+				? admission.plan.stealth.connectionPattern
+				: state->request.connectionPattern,
+			state->request.notBefore);
+		verdict.openDelay = verdict.openSlot.delay();
+	} else {
+		verdict.openDelay = std::max(
+			crl::time(0),
+			state->request.notBefore);
+	}
+	verdict.admission = std::move(admission);
+	return verdict;
+}
+
+bool ConnectionBroker::stillFrontLocked(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state) {
+	const auto &queue = queueFor(use);
+	return !queue.pending.empty()
+		&& queue.pending.front() == state
+		&& state->active
+		&& state->request.context;
+}
+
+void ConnectionBroker::commitEmptyEndpoint(
+		const std::shared_ptr<RequestState> &state) {
+	{
+		QMutexLocker lock(&_mutex);
+		state->admissionInProgress = false;
+		if (!state->active
+			|| !state->request.context
+			|| state->startScheduled) {
 			return;
 		}
-		auto keepAdmission = false;
-		auto notifyStartAfter = false;
-		{
-			QMutexLocker lock(&_mutex);
-			const auto &queue = queueFor(use);
-			keepAdmission = !queue.pending.empty()
-				&& queue.pending.front() == state
-				&& state->active
-				&& state->request.context;
-			if (keepAdmission) {
-				state->admission = std::move(admission);
-				state->openSlot = std::move(openSlot);
-				state->admissionInProgress = false;
+		state->startScheduled = true;
+	}
+	scheduleStart(state, state->request.notBefore);
+}
+
+void ConnectionBroker::commitAdmitted(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state,
+		DrainVerdict &&verdict) {
+	const auto openDelay = verdict.openDelay;
+	const auto delayedOpen = !IsProxyCheck(state->request.use)
+		&& (openDelay > 0);
+	auto keepAdmission = false;
+	auto notifyStartAfter = false;
+	{
+		QMutexLocker lock(&_mutex);
+		keepAdmission = stillFrontLocked(use, state);
+		state->admissionInProgress = false;
+		if (keepAdmission) {
+			state->admission = std::move(*verdict.admission);
+			state->openSlot = std::move(verdict.openSlot);
+			if (delayedOpen) {
+				// The open slot is reserved for a future moment: keep
+				// the request queued and retry exactly when it opens.
+				state->request.notBefore = 0;
+				state->openRetryAt = _runtime->async().now()
+					+ openDelay;
+				state->openRetryScheduled = true;
+				notifyStartAfter = !state->startAfterNotified;
+			} else {
 				state->startScheduled = true;
 				notifyStartAfter = (openDelay > 0)
 					&& !state->startAfterNotified;
-				if (notifyStartAfter) {
-					state->startAfterNotified = true;
-				}
-			} else {
-				state->admissionInProgress = false;
+			}
+			if (notifyStartAfter) {
+				state->startAfterNotified = true;
 			}
 		}
-		if (!keepAdmission) {
-			return;
-		}
-		if (notifyStartAfter) {
-			notify(state, {
-				.action = ConnectionBrokerAction::StartAfter,
-				.retryAfter = openDelay,
-			});
-		}
-		scheduleStart(state, openDelay);
+	}
+	if (!keepAdmission) {
 		return;
 	}
+	if (notifyStartAfter) {
+		notify(state, {
+			.action = ConnectionBrokerAction::StartAfter,
+			.retryAfter = openDelay,
+		});
+	}
+	if (delayedOpen) {
+		releaseAdmission(state);
+		scheduleOpenRetry(state, openDelay);
+	} else {
+		scheduleStart(state, openDelay);
+	}
+}
 
-	const auto delay = admission.retryAfter > 0
-		? admission.retryAfter
-		: kFallbackQueuedRetry;
+void ConnectionBroker::commitDenied(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state,
+		const DrainVerdict &verdict) {
 	auto keepQueued = false;
 	auto notifyQueued = false;
 	{
 		QMutexLocker lock(&_mutex);
-		const auto &queue = queueFor(use);
-		keepQueued = !queue.pending.empty()
-			&& queue.pending.front() == state
-			&& state->active
-			&& state->request.context;
+		keepQueued = stillFrontLocked(use, state);
+		state->admissionInProgress = false;
 		if (keepQueued) {
-			state->admissionInProgress = false;
 			notifyQueued = !state->queuedNotified;
 			if (notifyQueued) {
 				state->queuedNotified = true;
 			}
-		} else {
-			state->admissionInProgress = false;
 		}
 	}
 	if (!keepQueued) {
@@ -447,11 +501,11 @@ void ConnectionBroker::drainQueue(MtProxy::EndpointUse use) {
 	if (notifyQueued) {
 		notify(state, {
 			.action = ConnectionBrokerAction::Queued,
-			.retryAfter = delay,
-			.blockedBy = admission.blockedBy,
+			.retryAfter = verdict.retryAfter,
+			.blockedBy = verdict.blockedBy,
 		});
 	}
-	scheduleDrain(state, delay);
+	scheduleDrain(state, verdict.retryAfter);
 }
 
 void ConnectionBroker::scheduleDrain(

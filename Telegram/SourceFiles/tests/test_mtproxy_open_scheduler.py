@@ -76,20 +76,27 @@ def test_adaptive_recipe_uses_ladder_for_spacing():
 def test_connection_broker_reserves_global_open_slot_before_start():
     broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
     drain_body = body_after(broker, "void ConnectionBroker::drainQueue(")
+    verdict_body = body_after(
+        broker,
+        "ConnectionBroker::DrainVerdict ConnectionBroker::computeVerdict(")
+    commit_admitted = body_after(
+        broker, "void ConnectionBroker::commitAdmitted(")
 
     assert '#include "mtproto/proxy/mtproxy/open_scheduler.h"' in broker
     assert '#include "mtproto/proxy/control_plane.h"' in broker
-    assert "_runtime->proxyServices().control().admit({" in drain_body
-    assert "MtProxy::ReserveOpenSlot(" in drain_body
-    assert "state->request.connectionPattern" in drain_body
-    assert "state->request.notBefore" in drain_body
-    assert "ConnectionBrokerAction::StartAfter" in drain_body
-    assert "state->request.notBefore = 0;" in drain_body
-    assert "state->openRetryAt = _runtime->async().now()" in drain_body
-    assert "scheduleOpenRetry(state, openRetryAfter);" in drain_body
-    assert "releaseAdmission(state);" in drain_body
-    assert "scheduleOpenRetry(state, openDelay);" in drain_body
-    assert drain_body.index("MtProxy::ReserveOpenSlot(") < drain_body.index(
+    assert "_runtime->proxyServices().control().admit({" in verdict_body
+    assert "MtProxy::ReserveOpenSlot(" in verdict_body
+    assert "state->request.connectionPattern" in verdict_body
+    assert "state->request.notBefore" in verdict_body
+    assert "ConnectionBrokerAction::StartAfter" in commit_admitted
+    assert "state->request.notBefore = 0;" in commit_admitted
+    assert "state->openRetryAt = _runtime->async().now()" in commit_admitted
+    assert "scheduleOpenRetry(state, claim.openRetryAfter);" in drain_body
+    assert "releaseAdmission(state);" in commit_admitted
+    assert "scheduleOpenRetry(state, openDelay);" in commit_admitted
+    # The slot is reserved during the admission pass, before the retry
+    # for a delayed open is armed.
+    assert broker.index("MtProxy::ReserveOpenSlot(") < broker.index(
         "scheduleOpenRetry(state, openDelay)")
 
 
@@ -199,7 +206,7 @@ def test_scheduler_releases_cancelled_broker_reservations():
     assert "void cancel();" in header
     assert "state.pendingOpens.erase(i);" in source
     assert "MtProxy::OpenSlotReservation openSlot;" in broker
-    assert "state->openSlot = std::move(openSlot);" in broker
+    assert "state->openSlot = std::move(verdict.openSlot);" in broker
     assert "state->openSlot.commit();" in broker
     assert "state->openSlot.cancel();" in broker
 

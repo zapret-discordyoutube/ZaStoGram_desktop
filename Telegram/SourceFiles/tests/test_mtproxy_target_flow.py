@@ -145,8 +145,12 @@ def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
     # cooldown must not starve Media/Upload queues (head-of-line blocking).
     assert "for (const auto use : kQueuePriorityOrder)" in drain
     assert "drainQueue(use);" in drain
-    assert "_runtime->proxyServices().control().admit({" in drain_queue
-    assert "MtProxy::ReserveOpenSlot(" in drain_queue
+    verdict_body = function_body(
+        broker,
+        "ConnectionBroker::DrainVerdict ConnectionBroker::computeVerdict(")
+    assert "computeVerdict(state)" in drain_queue
+    assert "_runtime->proxyServices().control().admit({" in verdict_body
+    assert "MtProxy::ReserveOpenSlot(" in verdict_body
     assert "ConnectionBrokerAction::Queued" in notify
     assert "ConnectionBrokerAction::StartAfter" in notify
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in notify

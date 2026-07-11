@@ -107,10 +107,27 @@ public:
 private:
 	struct RequestState;
 	struct EndpointQueue;
+	struct ClaimResult;
+	struct DrainVerdict;
 
 	[[nodiscard]] EndpointQueue &queueFor(MtProxy::EndpointUse use);
 	void drain();
 	void drainQueue(MtProxy::EndpointUse use);
+	[[nodiscard]] ClaimResult claimFront(MtProxy::EndpointUse use);
+	[[nodiscard]] DrainVerdict computeVerdict(
+		const std::shared_ptr<RequestState> &state);
+	[[nodiscard]] bool stillFrontLocked(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state);
+	void commitEmptyEndpoint(const std::shared_ptr<RequestState> &state);
+	void commitAdmitted(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state,
+		DrainVerdict &&verdict);
+	void commitDenied(
+		MtProxy::EndpointUse use,
+		const std::shared_ptr<RequestState> &state,
+		const DrainVerdict &verdict);
 	void scheduleDrain(
 		const std::shared_ptr<RequestState> &state,
 		crl::time delay);

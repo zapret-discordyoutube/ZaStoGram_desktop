@@ -139,19 +139,30 @@ def test_broker_claims_front_request_before_admission():
     request_state = source.split(
         "struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
     drain_body = function_body(source, "void ConnectionBroker::drainQueue(")
+    claim_body = function_body(
+        source, "ConnectionBroker::ClaimResult ConnectionBroker::claimFront(")
+    verdict_body = function_body(
+        source,
+        "ConnectionBroker::DrainVerdict ConnectionBroker::computeVerdict(")
+    commit_admitted = function_body(
+        source, "void ConnectionBroker::commitAdmitted(")
+    commit_denied = function_body(
+        source, "void ConnectionBroker::commitDenied(")
     schedule_body = function_body(source, "void ConnectionBroker::scheduleStart(")
 
     assert "uint64 proxyGeneration = 0;" in control_header
     assert "uint64 proxyGeneration = 0;" in health_header
     assert "bool admissionInProgress = false;" in request_state
-    assert "state->admissionInProgress" in drain_body
-    assert drain_body.index("state->admissionInProgress = true;") < (
-        drain_body.index("_runtime->proxyServices().control().admit({"))
-    after_admit = drain_body.split(
-        "_runtime->proxyServices().control().admit({", 1)[1]
-    assert ".proxyGeneration = state->proxyGeneration" in after_admit
-    assert "state->admissionInProgress = false;" in after_admit
-    assert "state->startScheduled = true;" in drain_body
+    # The front request is claimed (admissionInProgress) before the
+    # unlocked admission pass, and released in every commit path.
+    assert "state->admissionInProgress = true;" in claim_body
+    assert drain_body.index("claimFront(use)") < (
+        drain_body.index("computeVerdict(state)"))
+    assert "_runtime->proxyServices().control().admit({" in verdict_body
+    assert ".proxyGeneration = state->proxyGeneration" in verdict_body
+    assert "state->admissionInProgress = false;" in commit_admitted
+    assert "state->admissionInProgress = false;" in commit_denied
+    assert "state->startScheduled = true;" in commit_admitted
     assert "state->startScheduled = true;" not in schedule_body
 
 
@@ -174,33 +185,42 @@ def test_broker_cancel_releases_admitted_lease_immediately():
 def test_broker_rechecks_scheduler_after_delayed_open_slot():
     source = BROKER_CPP.read_text(encoding="utf-8")
     drain_body = function_body(source, "void ConnectionBroker::drainQueue(")
+    claim_body = function_body(
+        source, "ConnectionBroker::ClaimResult ConnectionBroker::claimFront(")
+    commit_admitted = function_body(
+        source, "void ConnectionBroker::commitAdmitted(")
     request_state = source.split(
         "struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
 
     assert "crl::time openRetryAt = 0;" in request_state
     assert "bool openRetryScheduled = false;" in request_state
-    assert "if (state->openRetryAt > now)" in drain_body
-    assert "if (state->openRetryScheduled)" in drain_body
-    assert "openRetryAfter = state->openRetryAt - now;" in drain_body
-    assert "scheduleOpenRetry(state, openRetryAfter);" in drain_body
-    assert "if (!IsProxyCheck(state->request.use) && openDelay > 0)" in drain_body
-    assert "state->request.notBefore = 0;" in drain_body
-    assert "state->openRetryAt = _runtime->async().now()" in drain_body
-    assert "state->openRetryScheduled = true;" in drain_body
-    assert "state->admission = std::move(admission);" in drain_body
-    assert "state->openSlot = std::move(openSlot);" in drain_body
-    assert "releaseAdmission(state);" in drain_body
-    assert "scheduleOpenRetry(state, openDelay);" in drain_body
-    assert "scheduleStart(state, openDelay);" in drain_body
-    assert drain_body.index("scheduleOpenRetry(state, openDelay);") < (
-        drain_body.index("scheduleStart(state, openDelay);"))
-    delayed = drain_body.split(
-        "if (!IsProxyCheck(state->request.use) && openDelay > 0)", 1
-    )[1].split("auto keepAdmission = false;", 1)[0]
-    assert "state->startScheduled = true;" not in delayed
-    assert "scheduleStart(" not in delayed
-    assert delayed.index("releaseAdmission(state);") < delayed.index(
+    assert "if (state->openRetryAt > now)" in claim_body
+    assert "if (state->openRetryScheduled)" in claim_body
+    assert "result.openRetryAfter = state->openRetryAt - now;" in claim_body
+    assert "scheduleOpenRetry(state, claim.openRetryAfter);" in drain_body
+    assert "const auto delayedOpen = !IsProxyCheck(state->request.use)" in (
+        commit_admitted)
+    assert "(openDelay > 0);" in commit_admitted
+    assert "state->request.notBefore = 0;" in commit_admitted
+    assert "state->openRetryAt = _runtime->async().now()" in commit_admitted
+    assert "state->openRetryScheduled = true;" in commit_admitted
+    assert "state->admission = std::move(*verdict.admission);" in (
+        commit_admitted)
+    assert "state->openSlot = std::move(verdict.openSlot);" in commit_admitted
+    assert "releaseAdmission(state);" in commit_admitted
+    assert "scheduleOpenRetry(state, openDelay);" in commit_admitted
+    assert "scheduleStart(state, openDelay);" in commit_admitted
+    # A delayed open keeps the request queued: the admission is released
+    # and the retry armed instead of scheduling the start.
+    delayed_locked = commit_admitted.split(
+        "if (delayedOpen) {", 1)[1].split("} else {", 1)[0]
+    assert "state->startScheduled = true;" not in delayed_locked
+    assert "scheduleStart(" not in delayed_locked
+    dispatch = commit_admitted.split("if (delayedOpen) {", 2)[2]
+    assert dispatch.index("releaseAdmission(state);") < dispatch.index(
         "scheduleOpenRetry(state, openDelay);")
+    assert dispatch.index("scheduleOpenRetry(state, openDelay);") < (
+        dispatch.index("scheduleStart(state, openDelay);"))
 
     retry_body = function_body(
         source, "void ConnectionBroker::scheduleOpenRetry(")
