@@ -110,6 +110,15 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     assert "policy.recipeEscalationAllowed" in report_failure
     assert "FailureNeedsTlsRotation(report.reason)" not in source
     assert "state.recipeLevel < 2" in report_failure
+    # Recipe escalation is gated: a fingerprint accepted seconds ago cannot
+    # be the cause, so escalate only after a repeat failure with no recent
+    # success (the server is rate/IP-throttling, not signature-filtering).
+    assert "!recentSuccess" in report_failure
+    assert "state.consecutiveFailures >= 1" in report_failure
+    escalation_block = report_failure.split(
+        "policy.recipeEscalationAllowed", 1)[1].split("}", 1)[0]
+    assert "!recentSuccess" in escalation_block
+    assert "state.consecutiveFailures >= 1" in escalation_block
     assert "FailureNeedsRecipe(diagnostic)" not in source
     assert "FailureNeedsTlsProfileRotation(diagnostic)" not in source
 

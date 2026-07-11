@@ -499,7 +499,20 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		report.use,
 		now,
 		fastWarmup);
-	if (policy.recipeEscalationAllowed && state.recipeLevel < 2) {
+	const auto recentSuccess = state.lastSuccessAt
+		&& (now - state.lastSuccessAt < kRecentSuccessWindow);
+	// Escalate the stealth recipe only when the handshake keeps failing
+	// with no recent success. A fingerprint the server accepted seconds
+	// ago cannot be why it drops the ClientHello now (it is throttling by
+	// rate or IP, not by signature), so mutating it just churns and keeps
+	// the endpoint pinned in the strict single-probe DPI branch. At this
+	// point state.consecutiveFailures still counts only the PRIOR strikes
+	// (it is incremented below), so >=1 means this is at least the second
+	// consecutive failure.
+	if (policy.recipeEscalationAllowed
+		&& state.recipeLevel < 2
+		&& !recentSuccess
+		&& state.consecutiveFailures >= 1) {
 		++state.recipeLevel;
 	}
 	const auto needsCooldown = FailureNeedsCooldown(report.reason)
@@ -515,8 +528,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		auto cooldown = CooldownFor(
 			report.reason,
 			state.consecutiveFailures);
-		const auto recentSuccess = state.lastSuccessAt
-			&& (now - state.lastSuccessAt < kRecentSuccessWindow);
 		if (recentSuccess && FailureNeedsRecipeEscalation(report.reason)) {
 			cooldown = std::min(cooldown, ThrottledRetryCooldown());
 			noteConnectTimeout = true;
