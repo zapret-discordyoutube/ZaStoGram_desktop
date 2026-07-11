@@ -245,7 +245,45 @@ def test_status_reducer_shadows_old_proxy_generation_facts():
     assert "generation=%1" in diagnostics
 
 
+def test_manual_selection_clears_endpoint_penalty_before_scout():
+    instance = read(INSTANCE_CPP)
+    lifecycle = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health_lifecycle.cpp")
+    migrate = function_body(instance, "void Instance::Private::migrateProxy()")
+
+    # A manual (re-)selection gives the endpoint a fresh chance: the
+    # cooldown/denial bookkeeping resets before the scout connects, and
+    # before stale requests are cancelled.
+    assert "noteMtproxyEndpointSelected(" in migrate
+    assert "selected.type == ProxyData::Type::Mtproto" in migrate
+    assert migrate.index("applyMtproxyProxyGeneration(") < migrate.index(
+        "noteMtproxyEndpointSelected(")
+    assert migrate.index("noteMtproxyEndpointSelected(") < migrate.index(
+        "cancelByProxyGeneration(")
+
+    cleared = function_body(
+        lifecycle, "void EndpointHealth::noteEndpointSelected(")
+    for reset in (
+        "state.terminalUntil = 0;",
+        "state.halfOpen = false;",
+        "state.nextHandshakeAt = 0;",
+        "state.deniedSince = 0;",
+        "state.lastDenialRotationSignal = 0;",
+        "state.consecutiveFailures = 0;",
+        "state.exhaustedSinceSuccess = 0;",
+    ):
+        assert reset in cleared
+    # The DPI adaptation and relay history survive the reset.
+    for kept in (
+        "state.recipeLevel = 0;",
+        "state.lastFailure = FailureReason::None;",
+        "state.relayProven",
+    ):
+        assert kept not in cleared
+
+
 if __name__ == "__main__":
+    test_manual_selection_clears_endpoint_penalty_before_scout()
     test_proxy_switch_uses_atomic_migration_not_global_restart()
     test_reapplying_selected_proxy_keeps_live_connections()
     test_session_proxy_switch_suspends_old_generation_silently()

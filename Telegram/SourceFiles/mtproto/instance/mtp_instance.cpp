@@ -644,13 +644,22 @@ void Instance::Private::migrateProxy() {
 	++_proxyGeneration;
 	_runtime->proxyServices().control().applyMtproxyProxyGeneration(
 		_proxyGeneration);
+	const auto selected = (_runtime->proxy().enabled
+		&& _runtime->proxy().enabled()
+		&& _runtime->proxy().selected)
+		? _runtime->proxy().selected()
+		: ProxyData();
+	if (selected && selected.type == ProxyData::Type::Mtproto) {
+		// Switching to (or re-picking) a proxy is explicit user evidence
+		// that it is worth trying now: clear its cooldown penalty so the
+		// scout probes immediately instead of sitting out the ladder.
+		_runtime->proxyServices().control().noteMtproxyEndpointSelected(
+			details::MtProxy::EndpointIdFromProxy(selected, {}));
+	}
 	_proxyMigrationActive = true;
 	_connectionStatus->setProxyStatus({
 		.attempt = { .proxyGeneration = _proxyGeneration },
-		.proxy = (_runtime->proxy().enabled && _runtime->proxy().enabled())
-			&& _runtime->proxy().selected
-			? _runtime->proxy().selected()
-			: ProxyData(),
+		.proxy = selected,
 	});
 	_runtime->proxyServices().broker().cancelByProxyGeneration(
 		_proxyGeneration);

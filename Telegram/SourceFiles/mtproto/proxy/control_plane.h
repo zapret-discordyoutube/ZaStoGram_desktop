@@ -98,6 +98,8 @@ public:
 		details::MtProxy::RelayProofReport report);
 	void retireMtproxyRelayProof(
 		details::MtProxy::RelayProofReport report);
+	void noteMtproxyEndpointSelected(
+		const details::MtProxy::EndpointId &endpoint);
 	void applyMtproxyProxyGeneration(uint64 proxyGeneration);
 	[[nodiscard]] details::MtProxy::Snapshot mtproxyEndpointSnapshot(
 		const details::MtProxy::EndpointId &endpoint) const;

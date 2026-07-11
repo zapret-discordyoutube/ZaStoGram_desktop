@@ -287,6 +287,11 @@ void ProxyControlPlane::retireMtproxyRelayProof(
 	_endpointHealth->retireRelayProof(std::move(report));
 }
 
+void ProxyControlPlane::noteMtproxyEndpointSelected(
+		const MtProxy::EndpointId &endpoint) {
+	_endpointHealth->noteEndpointSelected(endpoint);
+}
+
 void ProxyControlPlane::applyMtproxyProxyGeneration(
 		uint64 proxyGeneration) {
 	_endpointHealth->applyProxyGeneration(proxyGeneration);

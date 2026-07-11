@@ -207,6 +207,7 @@ public:
 	void reportSuccess(SuccessReport report);
 	void noteRelayStall(RelayProofReport report);
 	void retireRelayProof(RelayProofReport report);
+	void noteEndpointSelected(const EndpointId &endpoint);
 	void applyProxyGeneration(uint64 proxyGeneration);
 	[[nodiscard]] Snapshot snapshot(const EndpointId &endpoint) const;
 	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;

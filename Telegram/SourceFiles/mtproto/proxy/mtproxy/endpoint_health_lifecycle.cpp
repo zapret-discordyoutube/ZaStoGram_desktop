@@ -13,10 +13,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
 #include <QtCore/QMutex>
+
+#include <optional>
 
 namespace MTP::details::MtProxy {
 
@@ -125,6 +128,50 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 	const auto i = storage.states.find(EndpointKey(report.endpoint));
 	if (i != end(storage.states)) {
 		static_cast<void>(RetireRelayProofLocked(i->second, report, now));
+	}
+}
+
+void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
+	// A manual (re-)selection is explicit user evidence that the proxy is
+	// worth trying right now: drop the cooldown ladder and denial
+	// bookkeeping so the scout probes immediately, and restart the ladder
+	// at the first rung if it fails again. Keep what was learned at cost:
+	// recipeLevel (the DPI adaptation - resetting it would burn the fresh
+	// probe on the exact fingerprint that just got blocked), lastFailure,
+	// relay proofs and the last good profile/route.
+	const auto key = EndpointKey(endpoint);
+	if (key.isEmpty()) {
+		return;
+	}
+	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	{
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		const auto i = storage.states.find(key);
+		if (i == end(storage.states)) {
+			return;
+		}
+		auto &state = i->second;
+		const auto hadPenalty = (state.terminalUntil > 0)
+			|| state.halfOpen
+			|| (state.consecutiveFailures > 0);
+		state.terminalUntil = 0;
+		state.halfOpen = false;
+		state.nextHandshakeAt = 0;
+		state.deniedSince = 0;
+		state.lastDenialRotationSignal = 0;
+		state.consecutiveFailures = 0;
+		state.exhaustedSinceSuccess = 0;
+		if (hadPenalty) {
+			diagnosticsEvent = CanonicalDiagnosticsEvent(
+				ProxyDiagnosticsPhase::CanonicalRecovered,
+				state,
+				FailureReason::None,
+				u"mtproxy penalty cleared by manual selection"_q);
+		}
+	}
+	if (diagnosticsEvent) {
+		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
 	}
 }
 
