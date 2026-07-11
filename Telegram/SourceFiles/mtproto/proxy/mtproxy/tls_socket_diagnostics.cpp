@@ -113,7 +113,7 @@ QString TlsSocket::blockToken() const {
 	// separates an on-path reset from our own local timeout on silence.
 	const auto peerClosed = (_closeOrigin == ProxyCloseOrigin::PeerClosed)
 		|| (_closeOrigin == ProxyCloseOrigin::NetworkError);
-	return MtProxy::HandshakeBlockToken(MtProxy::AnalyzeHandshakeBlock({
+	const auto evidence = MtProxy::HandshakeBlockEvidence{
 		.isNoServerHelloStall = (_phase == HandshakePhase::ClientHelloSent)
 			&& (failureReason()
 				== MtProxy::FailureReason::ClientHelloSentNoServerHello),
@@ -122,7 +122,10 @@ QString TlsSocket::blockToken() const {
 		.rxAfterClientHello = _rxAfterClientHello,
 		.responsePrefix = _responsePrefix,
 		.peerClosed = peerClosed,
-	}));
+	};
+	return MtProxy::HandshakeBlockToken(
+		MtProxy::AnalyzeHandshakeBlock(evidence),
+		evidence);
 }
 
 QString TlsSocket::responseRecordType() const {

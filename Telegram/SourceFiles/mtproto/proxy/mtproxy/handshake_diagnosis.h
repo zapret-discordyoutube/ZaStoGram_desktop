@@ -110,14 +110,36 @@ struct HandshakeBlockReport {
 	return { u"unexpected_reply"_q, BlockAttribution::Network };
 }
 
-// One compact log token, greppable by verdict and by attribution:
-//   block=server_tls_alert:client
+// One compact, self-justifying log token: the verdict carries the exact
+// evidence that produced it, so an investigator reads a single field
+// instead of cross-referencing ten raw columns (which stay as backup).
+// No spaces, so whitespace tokenizers keep seeing one field; greppable by
+// verdict (block=server_tls_alert) and by attribution (:client):
+//   block=silent_no_reply:unclear;ch=517/517;rx=0;end=timeout
+//   block=server_tls_alert:client;ch=517/517;rx=7;rec=tls_alert;end=peer
 [[nodiscard]] inline QString HandshakeBlockToken(
-		const HandshakeBlockReport &report) {
+		const HandshakeBlockReport &report,
+		const HandshakeBlockEvidence &e) {
 	if (report.empty()) {
 		return QString();
 	}
-	return report.verdict + ':' + BlockAttributionSlug(report.attribution);
+	auto token = report.verdict + ':' + BlockAttributionSlug(report.attribution);
+	// ch=<accepted>/<intended>: unequal means we never flushed it locally.
+	if (e.clientHelloBytes > 0) {
+		token += u";ch=%1/%2"_q
+			.arg(e.clientHelloAcceptedBytes)
+			.arg(e.clientHelloBytes);
+	}
+	token += u";rx=%1"_q.arg(e.rxAfterClientHello);
+	// What the peer actually answered (only meaningful when bytes came back).
+	if (e.rxAfterClientHello > 0) {
+		token += u";rec=%1"_q.arg(
+			FakeTlsResponseClass(e.responsePrefix, e.rxAfterClientHello));
+	}
+	// How the attempt ended: an active peer close/reset vs our own timeout
+	// on silence - the line between an on-path reset and a dropped packet.
+	token += e.peerClosed ? u";end=peer"_q : u";end=timeout"_q;
+	return token;
 }
 
 } // namespace MTP::details::MtProxy
