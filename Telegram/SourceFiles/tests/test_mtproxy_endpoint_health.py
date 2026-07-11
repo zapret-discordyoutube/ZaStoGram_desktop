@@ -191,9 +191,9 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     assert "_state.mtproxyUse = i->mtproxyUse;" in confirm_body
     assert "_state.mtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
     assert "if (!canProveMtproxyRelay()) {" in connected_body
-    assert "i->mtproxyLease.release();" in connected_body
+    assert "i->mtproxyLease.releaseAdmissionForRelayCandidate();" in connected_body
     assert "if (!canProveMtproxyRelay()) {" in confirm_body
-    assert "i->mtproxyLease.release();" in confirm_body
+    assert "i->mtproxyLease.releaseAdmissionForRelayCandidate();" in confirm_body
     assert "_state.mtproxyLease = std::move(i->mtproxyLease);" in connected_body
     assert "_state.mtproxyLease = std::move(i->mtproxyLease);" in confirm_body
     assert "&_state.mtproxyLease" in error_body
@@ -268,7 +268,12 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "uint64 attemptId = 0;" in relay_identity
     assert "struct RelayProofState" in state_source
     assert "crl::time provenAt = 0;" in state_source
-    assert "crl::time expiresAt = 0;" in state_source
+    removed_expiry_field = "expires" + "At"
+    assert removed_expiry_field not in state_source
+    assert "bool admissionActive = true;" in state_source
+    assert "ActiveEndpointAdmissionCount" in state_source
+    assert "SynchronizeEndpointAdmissionAggregate" in state_source
+    assert "ReleaseAdmissionForRelayCandidate" in state_source
     assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in (
         state_source)
     removed_scalar = "lastRelay" + "AttemptId"
@@ -353,7 +358,8 @@ def test_relay_success_shadows_older_attempt_failures():
     assert ".proxyGeneration = report.proxyGeneration" in report_success
     assert ".attemptId = report.attemptId" in report_success
     assert ".provenAt = now" in report_success
-    assert ".expiresAt = RelayProofExpiresAt(now)" in report_success
+    removed_expiry_factory = "RelayProof" + "ExpiresAt"
+    assert removed_expiry_factory not in report_success
     assert "++state.successEpoch;" in report_success
     assert "state.lastGoodProfile = report.sentProfile;" in report_success
     assert "state.lastGoodRoute = report.endpoint.route;" in report_success
@@ -585,18 +591,27 @@ def test_serverhello_ok_no_appdata_is_warning_not_fatal():
 
 def test_session_does_not_punish_remote_closed_after_usable_success():
     source = read_session_private_sources()
+    adapter = read(PROXY_ADAPTER_CPP)
     error_body = function_body(source, "void SessionTransport::onError(")
     active_body = error_body.split("_state.connection.get() == connection.get()")[1]
+    adapter_error = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportConnectionError(")
 
     assert "const auto snapshot =" not in active_body
     assert "_owner->_proxyPort->endpointSnapshot(" not in active_body
     assert "_state.mtproxyEndpoint" in active_body
     assert "_owner->_proxyPort->reportConnectionError(" in active_body
     assert "true);" in active_body
-    assert "MtProxy::FailureReason::AppDataRemoteClosed" in read(
-        PROXY_ADAPTER_CPP)
-    assert "snapshot.healthy" in read(PROXY_ADAPTER_CPP)
-    assert "!snapshot.halfOpen" in read(PROXY_ADAPTER_CPP)
+    assert "MtProxy::FailureReason::AppDataRemoteClosed" in adapter_error
+    assert "snapshot.healthy" in adapter_error
+    assert "!snapshot.halfOpen" in adapter_error
+    healthy = adapter_error.index(
+        "if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {")
+    retirement = adapter_error.index("retireMtproxyRelayProof(")
+    liveness = adapter_error.index("ReportProxyLiveness(")
+    assert healthy < retirement < liveness
+    assert "RelayProofReport(attempt)" in adapter_error
 
 
 def test_tls_socket_reports_typed_terminal_reasons():
@@ -768,7 +783,7 @@ def test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances():
     assert "std::map<QString, DnsResolverEntry> entries;" in source
 
 
-def test_relay_proofs_are_pruned_on_every_non_probe_state_path():
+def test_unproven_lineage_is_pruned_without_expiring_live_proofs():
     source = read_endpoint_health_sources()
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     admit = function_body(source, "Admission EndpointHealth::admit(")
@@ -785,8 +800,13 @@ def test_relay_proofs_are_pruned_on_every_non_probe_state_path():
     snapshot = function_body(source, "Snapshot EndpointHealth::snapshot(")
     prune = function_body(policy, "void PruneExpiredEndpointState(")
 
-    assert "constexpr auto kRelayProofHardTtl" in policy
-    assert "PruneExpiredRelayProofs(state, now);" in prune
+    assert "kAttemptHardTtl = crl::time(120 * 1000)" in policy
+    removed_proof_ttl = "kRelayProof" + "HardTtl"
+    removed_expiry_factory = "RelayProof" + "ExpiresAt"
+    assert removed_proof_ttl not in policy
+    assert removed_expiry_factory not in policy
+    assert "relayProofs" not in prune
+    assert "SynchronizeEndpointAdmissionAggregate(state);" in prune
     for body in (admit, failure, success, retirement, generation, snapshot):
         assert "PruneExpiredEndpointState(" in body
     assert "RetireRelayProofLocked(state, report, now)" in stall
@@ -813,6 +833,9 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
     release_body = function_body(
         context,
         "void ProxyEndpointContext::releaseEndpointAttempt(")
+    candidate_release = function_body(
+        context,
+        "void ProxyEndpointContext::releaseAdmissionForRelayCandidate(")
 
     # A leaked lease must not pin the endpoint at its active cap forever:
     # attempts have a hard TTL, pruned on every admit.
@@ -821,6 +844,10 @@ def test_active_slots_expire_and_sustained_denial_requests_rotation():
     assert "state.attemptStarts.emplace(result.attemptId, EndpointAttemptState{" in (
         admit_body)
     assert "attemptStarts.erase(attemptId);" in release_body
+    assert "ReleaseAdmissionForRelayCandidate(" in candidate_release
+    assert ".runtimeId = runtimeId" in candidate_release
+    assert ".proxyGeneration = proxyGeneration" in candidate_release
+    assert ".attemptId = attemptId" in candidate_release
 
     # Sustained denial (no grant for kDeniedRotationAfter) fires a
     # rotation-allowed event so ProxyRotationManager can switch proxies
@@ -902,7 +929,7 @@ if __name__ == "__main__":
     test_dns_negative_result_is_ttl_cached_and_reported_to_health()
     test_half_open_media_can_probe_after_cooldown()
     test_dns_cache_restarts_lost_inflight_and_forgets_dead_instances()
-    test_relay_proofs_are_pruned_on_every_non_probe_state_path()
+    test_unproven_lineage_is_pruned_without_expiring_live_proofs()
     test_active_slots_expire_and_sustained_denial_requests_rotation()
     test_endpoint_health_events_are_published_on_main_thread()
     test_rotation_manager_is_endpoint_health_aware()

@@ -19,6 +19,7 @@ struct EndpointAttemptState {
 	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
 	crl::time startedAt = 0;
+	bool admissionActive = true;
 };
 
 struct RelayProofIdentity {
@@ -33,7 +34,6 @@ struct RelayProofIdentity {
 
 struct RelayProofState {
 	crl::time provenAt = 0;
-	crl::time expiresAt = 0;
 };
 
 enum class RelayProofPromotionResult {
@@ -94,6 +94,36 @@ struct EndpointState {
 	return state.relayProofs.contains(identity);
 }
 
+[[nodiscard]] inline int ActiveEndpointAdmissionCount(
+		const EndpointState &state) {
+	auto result = 0;
+	for (const auto &entry : state.attemptStarts) {
+		if (entry.second.admissionActive) {
+			++result;
+		}
+	}
+	return result;
+}
+
+inline void SynchronizeEndpointAdmissionAggregate(EndpointState &state) {
+	state.active = ActiveEndpointAdmissionCount(state);
+}
+
+[[nodiscard]] inline bool ReleaseAdmissionForRelayCandidate(
+		EndpointState &state,
+		const RelayProofIdentity &identity) {
+	const auto i = state.attemptStarts.find(identity.attemptId);
+	if (i == end(state.attemptStarts)
+		|| i->second.runtimeId != identity.runtimeId
+		|| i->second.proxyGeneration != identity.proxyGeneration
+		|| !i->second.admissionActive) {
+		return false;
+	}
+	i->second.admissionActive = false;
+	SynchronizeEndpointAdmissionAggregate(state);
+	return true;
+}
+
 inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	for (auto i = begin(state.relayProofs);
 			i != end(state.relayProofs);) {
@@ -129,7 +159,7 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	}
 	state.relayProofs.emplace(identity, proof);
 	state.attemptStarts.erase(identity.attemptId);
-	state.active = int(state.attemptStarts.size());
+	SynchronizeEndpointAdmissionAggregate(state);
 	SynchronizeRelayProofAggregate(state);
 	return RelayProofPromotionResult::Inserted;
 }
@@ -142,20 +172,6 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	}
 	SynchronizeRelayProofAggregate(state);
 	return true;
-}
-
-inline void PruneExpiredRelayProofs(
-		EndpointState &state,
-		crl::time now) {
-	for (auto i = begin(state.relayProofs);
-			i != end(state.relayProofs);) {
-		if (i->second.expiresAt <= now) {
-			i = state.relayProofs.erase(i);
-		} else {
-			++i;
-		}
-	}
-	SynchronizeRelayProofAggregate(state);
 }
 
 inline void RemoveRelayProofsForRuntime(
@@ -195,7 +211,7 @@ inline void ApplyRuntimeProxyGeneration(
 			++i;
 		}
 	}
-	state.active = int(state.attemptStarts.size());
+	SynchronizeEndpointAdmissionAggregate(state);
 	for (auto i = begin(state.relayProofs);
 			i != end(state.relayProofs);) {
 		if (i->first.runtimeId == runtimeId

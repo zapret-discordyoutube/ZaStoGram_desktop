@@ -43,6 +43,7 @@ public:
 	~EndpointAttemptLease();
 
 	void release();
+	void releaseAdmissionForRelayCandidate();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;

@@ -1033,13 +1033,35 @@ void Viewport::borrowedPaintOffscreen(
 	}
 }
 
-void Viewport::borrowedPaintOnscreen(
+QRhiResourceUpdateBatch *Viewport::borrowedPrepareOnscreen(
 		QRhi *rhi,
 		QRhiRenderTarget *rt,
 		QRhiCommandBuffer *cb) {
-	if (const auto r = ensureBorrowedRhi(rhi, rt, cb)) {
-		r->renderOnscreen(rhi, rt, cb);
+	if (ensureBorrowedRhi(rhi, rt, cb)) {
+		if (const auto r = dynamic_cast<RendererRhi*>(
+				_borrowedRenderer.get())) {
+			return r->prepareBorrowedOnscreen(rhi, rt, cb);
+		}
 	}
+	return nullptr;
+}
+
+auto Viewport::borrowedTakeOnscreenDraws() -> std::vector<BorrowedRhiDraw> {
+	const auto r = dynamic_cast<RendererRhi*>(_borrowedRenderer.get());
+	if (!r) {
+		return {};
+	}
+	auto result = std::vector<BorrowedRhiDraw>();
+	const auto buffer = r->borrowedVertexBuffer();
+	for (const auto &draw : r->takeBorrowedDraws()) {
+		result.push_back({
+			.pipeline = draw.pipeline,
+			.srb = draw.srb,
+			.vertexBuffer = buffer,
+			.vertexOffset = draw.vertexOffset,
+		});
+	}
+	return result;
 }
 #endif
 

@@ -147,6 +147,10 @@ def test_session_reports_silence_and_recovers_temporary_key():
         session, "void SessionTransport::destroyAllConnections(")
     can_prove_relay = function_body(
         session, "bool SessionTransport::canProveMtproxyRelay() const")
+    connected = function_body(session, "void SessionTransport::onConnected(")
+    confirm = function_body(
+        session,
+        "void SessionTransport::confirmBestConnection()")
 
     assert "bool mtprotoDataReceived = false;" in header
     assert "int mtprotoSilentTimeouts = 0;" in header
@@ -154,6 +158,10 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "_owner->_sessionState.keyId" in can_prove_relay
     assert "_owner->_authState.keyCreator" in can_prove_relay
     assert "getTemporaryKey(" in can_prove_relay
+    assert "if (!canProveMtproxyRelay()) {" in connected
+    assert "mtproxyLease.releaseAdmissionForRelayCandidate();" in connected
+    assert "if (!canProveMtproxyRelay()) {" in confirm
+    assert "mtproxyLease.releaseAdmissionForRelayCandidate();" in confirm
 
     # A connection that connects (even passing the plaintext fake-pq
     # check) but never delivers an MTProto payload reports relay silence,
@@ -283,6 +291,9 @@ def test_established_idle_close_is_not_a_health_failure():
     cancelled = function_body(
         adapter,
         "void ProductionSessionProxyPort::reportAttemptCancelled(")
+    connection_error = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportConnectionError(")
 
     # Proxies close idle established connections routinely; only a close
     # shortly after the handshake may count against endpoint health.
@@ -298,6 +309,12 @@ def test_established_idle_close_is_not_a_health_failure():
     assert "RelayProofReport(attempt)" in cancelled
     assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(
         "ReportProxyAttemptSummary(")
+    healthy = connection_error.index(
+        "if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {")
+    retirement = connection_error.index("retireMtproxyRelayProof(")
+    liveness = connection_error.index("ReportProxyLiveness(")
+    assert healthy < retirement < liveness
+    assert "RelayProofReport(attempt)" in connection_error
 
 
 if __name__ == "__main__":

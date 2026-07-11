@@ -562,6 +562,34 @@ void Viewport::RendererRhi::render(
 	cb->endPass();
 }
 
+QRhiResourceUpdateBatch *Viewport::RendererRhi::prepareBorrowedOnscreen(
+		QRhi *rhi,
+		QRhiRenderTarget *rt,
+		QRhiCommandBuffer *cb) {
+	_nextOnscreenSlot = 0;
+	_onscreenDraws.clear();
+	auto *screenRub = rhi->nextResourceUpdateBatch();
+	if (_rub) {
+		screenRub->merge(_rub);
+		_rub->release();
+	}
+	_rub = screenRub;
+	renderOnscreen(rhi, rt, cb);
+	auto *result = _rub;
+	_rub = nullptr;
+	return result;
+}
+
+auto Viewport::RendererRhi::takeBorrowedDraws() -> std::vector<OnscreenDraw> {
+	auto result = std::move(_onscreenDraws);
+	_onscreenDraws.clear();
+	return result;
+}
+
+QRhiBuffer *Viewport::RendererRhi::borrowedVertexBuffer() const {
+	return _onscreenVertexBuffer;
+}
+
 void Viewport::RendererRhi::renderOffscreen(
 		QRhi *rhi,
 		QRhiRenderTarget *rt,

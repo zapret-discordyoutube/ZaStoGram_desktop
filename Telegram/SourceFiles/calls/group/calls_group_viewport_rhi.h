@@ -62,6 +62,23 @@ public:
 
 	std::optional<QColor> clearColor() override;
 
+	struct OnscreenDraw {
+		QRhiGraphicsPipeline *pipeline = nullptr;
+		QRhiShaderResourceBindings *srb = nullptr;
+		int vertexOffset = 0;
+	};
+	// Borrowed rendering into an external render pass: records onscreen
+	// draws and returns the accumulated resource update batch that must
+	// be merged into the external pass'es batch before its beginPass.
+	// The recorded draws are then fetched with takeBorrowedDraws() and
+	// replayed by the external pass.
+	[[nodiscard]] QRhiResourceUpdateBatch *prepareBorrowedOnscreen(
+		QRhi *rhi,
+		QRhiRenderTarget *rt,
+		QRhiCommandBuffer *cb);
+	[[nodiscard]] std::vector<OnscreenDraw> takeBorrowedDraws();
+	[[nodiscard]] QRhiBuffer *borrowedVertexBuffer() const;
+
 private:
 	struct TileData {
 		quintptr id = 0;
@@ -190,11 +207,6 @@ private:
 	static constexpr int kOnscreenVertexSlot = 128;
 	static constexpr int kUniformSlot = 256;
 
-	struct OnscreenDraw {
-		QRhiGraphicsPipeline *pipeline = nullptr;
-		QRhiShaderResourceBindings *srb = nullptr;
-		int vertexOffset = 0;
-	};
 	std::vector<OnscreenDraw> _onscreenDraws;
 	int _nextOnscreenSlot = 0;
 

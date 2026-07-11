@@ -144,7 +144,11 @@ private:
 	float _factor = 1.;
 	int _ifactor = 1;
 
-	static constexpr int kMaxDraws = 32;
+	// A busy stories frame (background, two siblings with userpics and
+	// names, video, radial, caption, header, controls, rounded corners)
+	// can exceed 32 recorded quads; overflowing quads are silently
+	// dropped, so keep a comfortable margin.
+	static constexpr int kMaxDraws = 64;
 	static constexpr int kVertexSize = 4 * 4 * sizeof(float);
 
 	QRhiBuffer *_vertexBuffer = nullptr;
@@ -169,8 +173,13 @@ private:
 		QRhiShaderResourceBindings *srb = nullptr;
 		int vertexIndex = 0;
 		bool fillVertex = false;
+		// Borrowed draws (video stream) come with their own vertex
+		// buffer and a ready byte offset instead of a slot index.
+		QRhiBuffer *externalVertexBuffer = nullptr;
+		int externalVertexOffset = 0;
 	};
 	std::vector<DrawCommand> _drawCommands;
+	int _videoStreamCommandIndex = -1;
 	std::vector<QRhiShaderResourceBindings*> _perDrawSrbs;
 	int _nextVertexSlot = 0;
 
@@ -186,7 +195,8 @@ private:
 	QSize _chromaSize;
 	bool _chromaNV12 = false;
 	bool _usingExternalVideoTextures = false;
-	int _trackFrameIndex = 0;
+	// -1 so that the very first frame (index 0) always uploads.
+	int _trackFrameIndex = -1;
 	int _streamedIndex = 0;
 
 	struct PoolTexture {

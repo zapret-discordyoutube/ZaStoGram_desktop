@@ -60,6 +60,7 @@ public:
 		virtual ~Impl();
 
 		virtual void release() = 0;
+		virtual void releaseAdmissionForRelayCandidate() = 0;
 		[[nodiscard]] virtual bool active() const = 0;
 		[[nodiscard]] virtual uint64 attemptId() const = 0;
 		[[nodiscard]] virtual uint64 proxyGeneration() const = 0;
@@ -78,6 +79,7 @@ public:
 	~SessionProxyLease();
 
 	void release();
+	void releaseAdmissionForRelayCandidate();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;

@@ -38,6 +38,12 @@ void SessionProxyLease::release() {
 	}
 }
 
+void SessionProxyLease::releaseAdmissionForRelayCandidate() {
+	if (_impl) {
+		_impl->releaseAdmissionForRelayCandidate();
+	}
+}
+
 bool SessionProxyLease::active() const {
 	return _impl ? _impl->active() : false;
 }

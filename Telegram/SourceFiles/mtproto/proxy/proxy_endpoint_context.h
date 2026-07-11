@@ -36,6 +36,11 @@ public:
 		-> std::vector<ProxyConnectionAttempt>;
 	[[nodiscard]] bool finishTrace(ProxyTraceId traceId);
 	void releaseEndpointAttempt(const QString &key, uint64 attemptId);
+	void releaseAdmissionForRelayCandidate(
+		const QString &key,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration,
+		uint64 attemptId);
 
 	[[nodiscard]] auto storage()
 		-> details::MtProxy::EndpointContextStorage &;

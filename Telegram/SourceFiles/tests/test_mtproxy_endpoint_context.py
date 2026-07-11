@@ -46,6 +46,8 @@ def test_shared_state_namespaces_generations_and_uses_lifetime_safe_leases():
     assert "ApplyRuntimeProxyGeneration(state, runtimeId, proxyGeneration)" in policy
     assert "std::shared_ptr<ProxyEndpointContext> _context;" in health_h
     assert "_context->releaseEndpointAttempt(_key, _attemptId)" in health
+    assert "_context->releaseAdmissionForRelayCandidate(" in health
+    assert "void releaseAdmissionForRelayCandidate();" in health_h
     assert "EndpointHealth *_owner" not in health_h
 
 
@@ -65,6 +67,7 @@ def test_relay_registry_contract_matches_the_executable_lifecycle_model():
     assert "QString" not in identity
     assert "std::map<QString, EndpointState> states;" in storage
     assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in state
+    assert "bool admissionActive = true;" in state
     assert "enum class RelayProofPromotionResult" in state
     assert "Inserted," in state
     assert "AlreadyProven," in state
@@ -73,17 +76,25 @@ def test_relay_registry_contract_matches_the_executable_lifecycle_model():
             "RuntimeProxyGenerationIsStale",
             "HasEndpointAttempt",
             "HasRelayProof",
+            "ActiveEndpointAdmissionCount",
+            "SynchronizeEndpointAdmissionAggregate",
+            "ReleaseAdmissionForRelayCandidate",
             "PromoteRelayProof",
             "RetireRelayProof",
-            "PruneExpiredRelayProofs",
             "RemoveRelayProofsForRuntime",
             "SynchronizeRelayProofAggregate"):
         assert helper in state
+    removed_expiry_field = "expires" + "At"
+    removed_proof_prune = "PruneExpired" + "RelayProofs"
+    assert removed_expiry_field not in state
+    assert removed_proof_prune not in state
     assert 'INSERTED = "Inserted"' in truth
     assert 'ALREADY_PROVEN = "AlreadyProven"' in truth
     assert 'MISSING_ADMISSION = "MissingAdmission"' in truth
     assert "class CanonicalEndpointStore:" in truth
     assert "def test_canonical_endpoint_abc_lifecycle():" in truth
+    assert "def test_keyless_release_preserves_exact_promotion_lineage():" in (
+        truth)
     assert "test_canonical_endpoint_abc_lifecycle()" in truth.split(
         "def run_all_truth_tables():", 1)[1]
 
@@ -114,6 +125,29 @@ def test_promotion_precedes_admission_release_and_unregister_owns_cleanup():
     assert "state.generations.erase(runtimeId);" in unregister
     assert "i->second.runtimeId == runtimeId" in unregister
     assert "RemoveRelayProofsForRuntime(state, runtimeId);" in unregister
+
+
+def test_keyless_release_frees_only_the_active_slot_and_keeps_lineage():
+    state = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health_state.h")
+    connection = read(SOURCE_DIR / "mtproto" / "session" / "private" /
+        "connection.cpp")
+    context = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.cpp")
+    release = state.split(
+        "bool ReleaseAdmissionForRelayCandidate(", 1)[1].split(
+            "void SynchronizeRelayProofAggregate", 1)[0]
+    promotion = state.split(
+        "RelayProofPromotionResult PromoteRelayProof(", 1)[1].split(
+            "[[nodiscard]] inline bool RetireRelayProof", 1)[0]
+
+    assert "i->second.admissionActive = false;" in release
+    assert "state.attemptStarts.erase" not in release
+    assert "SynchronizeEndpointAdmissionAggregate(state);" in release
+    assert "HasEndpointAttempt(state, identity)" in promotion
+    assert connection.count(
+        "i->mtproxyLease.releaseAdmissionForRelayCandidate();") == 2
+    assert "details::MtProxy::ReleaseAdmissionForRelayCandidate(" in context
 
 
 def test_open_scheduler_state_is_owned_by_shared_context():
@@ -304,16 +338,19 @@ def test_host_coordinator_test_is_registered_without_requiring_build_here():
     assert "tests/test_mtproxy_endpoint_context.cpp" in cmake
     assert cmake.count("mtproto/proxy/proxy_endpoint_context.cpp") >= 3
     assert "ScenarioRelayProofLifecycle" in test
+    assert "ScenarioInactiveAdmissionPromotion" in test
     assert "ScenarioCanonicalEndpointIsolation" in test
     assert "ScenarioGenerationRejectionBeforeMembership" in test
     assert "ScenarioPerRuntimeGenerationPruning" in test
     assert "ScenarioRuntimeUnregisterPruning" in test
-    assert "ScenarioRelayProofExpiryAndBoundedness" in test
+    assert "ScenarioRelayProofLifetimeAndBoundedness" in test
     assert "A/B/C relay proof promotion failed" in test
     assert "exact A retirement did not preserve B/C aggregate" in test
     assert "canonical outer key isolation failed" in test
     assert "stale generation overrode proof membership rejection" in test
-    assert "repeated unique expired records did not return to empty" in test
+    assert "inactive admission did not preserve exact promotion lineage" in test
+    assert "live relay proof did not survive state touches" in test
+    assert "repeated success and terminal cycle leaked state" in test
     assert "runtime generation isolation failed" in test
     assert "trace finalization is not exactly once" in test
     assert "runtime traces survived unregister" in test
@@ -337,6 +374,7 @@ if __name__ == "__main__":
     test_shared_state_namespaces_generations_and_uses_lifetime_safe_leases()
     test_relay_registry_contract_matches_the_executable_lifecycle_model()
     test_promotion_precedes_admission_release_and_unregister_owns_cleanup()
+    test_keyless_release_frees_only_the_active_slot_and_keeps_lineage()
     test_open_scheduler_state_is_owned_by_shared_context()
     test_admission_freezes_bounded_safe_faketls_plan()
     test_partial_success_preserves_recipe_until_relay_proof()

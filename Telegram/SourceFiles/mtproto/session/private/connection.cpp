@@ -755,7 +755,7 @@ void SessionTransport::onConnected(
 	const auto mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
 	reportMtproxyConnectionUsable(*i);
 	if (!canProveMtproxyRelay()) {
-		i->mtproxyLease.release();
+		i->mtproxyLease.releaseAdmissionForRelayCandidate();
 	}
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
@@ -824,7 +824,7 @@ void SessionTransport::confirmBestConnection() {
 
 	reportMtproxyConnectionUsable(*i);
 	if (!canProveMtproxyRelay()) {
-		i->mtproxyLease.release();
+		i->mtproxyLease.releaseAdmissionForRelayCandidate();
 	}
 	_state.mtproxyAttempt = i->mtproxyAttempt;
 	_state.mtproxyPlan = i->mtproxyPlan;

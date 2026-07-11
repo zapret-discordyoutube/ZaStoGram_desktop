@@ -105,9 +105,6 @@ def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
     prune = function_body(
         policy_source,
         "void PruneExpiredEndpointState(")
-    proof_prune = function_body(
-        state_source,
-        "void PruneExpiredRelayProofs(")
     synchronize = function_body(
         state_source,
         "void SynchronizeRelayProofAggregate(")
@@ -118,9 +115,12 @@ def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
     assert snapshot_entry.index(
         "PruneExpiredEndpointState(i->second, now);") < snapshot_entry.index(
             "MakeSnapshot(i->second, _runtimeId)")
-    assert "PruneExpiredRelayProofs(state, now);" in prune
-    assert "i->second.expiresAt <= now" in proof_prune
-    assert "SynchronizeRelayProofAggregate(state);" in proof_prune
+    assert "SynchronizeEndpointAdmissionAggregate(state);" in prune
+    assert "relayProofs" not in prune
+    removed_proof_prune = "PruneExpired" + "RelayProofs"
+    removed_expiry_field = "expires" + "At"
+    assert removed_proof_prune not in state_source
+    assert removed_expiry_field not in state_source
     assert "state.relayProven = !state.relayProofs.empty();" in synchronize
     assert "state.lastRelaySuccessAt = 0;" in synchronize
     assert "entry.second.provenAt > state.lastRelaySuccessAt" in synchronize

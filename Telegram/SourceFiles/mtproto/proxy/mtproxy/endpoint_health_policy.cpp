@@ -23,7 +23,6 @@ constexpr auto kHealthyActiveCap = 1;
 constexpr auto kHealthyHandshakeSpacing = crl::time(500);
 constexpr auto kQueuedRetry = crl::time(1000);
 constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
-constexpr auto kRelayProofHardTtl = crl::time(10 * 60 * 1000);
 constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
 constexpr auto kThrottledRetryCooldown = crl::time(3000);
 constexpr auto kNoAppDataSoftRetry = crl::time(1000);
@@ -363,10 +362,6 @@ void ApplyProxyGeneration(
 	return startedAt && (startedAt < state.lastRelaySuccessAt);
 }
 
-crl::time RelayProofExpiresAt(crl::time now) {
-	return now + kRelayProofHardTtl;
-}
-
 void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (now - i->second.startedAt > kAttemptHardTtl) {
@@ -375,8 +370,7 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 			++i;
 		}
 	}
-	state.active = int(state.attemptStarts.size());
-	PruneExpiredRelayProofs(state, now);
+	SynchronizeEndpointAdmissionAggregate(state);
 }
 
 [[nodiscard]] crl::time CooldownFor(

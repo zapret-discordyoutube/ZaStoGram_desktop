@@ -72,6 +72,8 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportConnectTimeout(" in port_header
     assert "reportAttemptCancelled(" in port_header
     assert "logEvent(" in port_header
+    assert "virtual void releaseAdmissionForRelayCandidate() = 0;" in port_header
+    assert "void releaseAdmissionForRelayCandidate();" in port_header
     assert "retireMtproxyRelayProof" not in port_header
     assert "RelayProofReport" not in port_header
     assert "applyMtproxyProxyGeneration" not in port_header
@@ -97,6 +99,9 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     stalled = function_body(
         adapter_cpp,
         "void ProductionSessionProxyPort::reportRelayStall(")
+    connection_error = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::reportConnectionError(")
     generation_cancel = function_body(
         adapter_cpp,
         "void ProductionSessionProxyPort::cancelByProxyGeneration(")
@@ -105,6 +110,8 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     assert "public SessionProxyPort" not in adapter_h
     assert '#include "mtproto/session/private/proxy_port.h"' in adapter_cpp
     assert "class ProductionSessionProxyPort final" in adapter_cpp
+    assert "void releaseAdmissionForRelayCandidate() override" in adapter_cpp
+    assert "_lease.releaseAdmissionForRelayCandidate();" in adapter_cpp
     assert "DefaultSessionProxyPort()" in adapter_cpp
     assert "proxyServices().broker().request(" in adapter_cpp
     assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
@@ -128,10 +135,16 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
         assert field in relay_report
     assert "RelayProofReport(attempt)" in cancelled
     assert "RelayProofReport(attempt)" in stalled
-    assert adapter_cpp.count("RelayProofReport(attempt)") == 2
+    assert "RelayProofReport(attempt)" in connection_error
+    assert adapter_cpp.count("RelayProofReport(attempt)") == 3
     assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(
         "ReportProxyAttemptSummary(")
     assert "noteMtproxyRelayStall(" in stalled
+    healthy = connection_error.index(
+        "if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {")
+    retirement = connection_error.index("retireMtproxyRelayProof(")
+    liveness = connection_error.index("ReportProxyLiveness(")
+    assert healthy < retirement < liveness
 
     assert "proxyServices().broker().cancelByProxyGeneration(" in (
         generation_cancel)

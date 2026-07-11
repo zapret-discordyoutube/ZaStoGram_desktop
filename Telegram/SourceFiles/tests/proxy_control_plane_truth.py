@@ -19,6 +19,9 @@ ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp
 ENDPOINT_HEALTH_STATE_H = PROXY_DIR / "mtproxy" / "endpoint_health_state.h"
 PROXY_ENDPOINT_CONTEXT_CPP = PROXY_DIR / "proxy_endpoint_context.cpp"
 SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
+SESSION_PROXY_PORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "proxy_port.h"
+SESSION_CONNECTION_CPP = (
+    SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp")
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 TLS_SOCKET_CPP = PROXY_DIR / "mtproxy" / "tls_socket.cpp"
 TLS_SOCKET_RECORDS_CPP = PROXY_DIR / "mtproxy" / "tls_socket_records.cpp"
@@ -46,7 +49,6 @@ RETIRED_FINAL = "RetiredFinal"
 PUNISHED_MISSING = "PunishedMissing"
 HEALTHY_ACTIVE_CAP = 1
 ATTEMPT_HARD_TTL = 120000
-RELAY_PROOF_HARD_TTL = 600000
 ABC_ENDPOINT = "151.247.209.166.sslip.io:45632"
 
 
@@ -87,12 +89,12 @@ class EndpointAttemptState:
     runtime_id: int = 0
     proxy_generation: int = 0
     started_at: int = 0
+    admission_active: bool = True
 
 
 @dataclass(frozen=True)
 class RelayProofState:
     proven_at: int = 0
-    expires_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -323,6 +325,32 @@ def has_relay_proof(state, identity):
     return identity in state.relay_proofs
 
 
+def active_endpoint_admission_count(state):
+    return sum(
+        admission.admission_active
+        for admission in state.attempt_starts.values())
+
+
+def synchronize_endpoint_admission_aggregate(state):
+    state.active = active_endpoint_admission_count(state)
+
+
+def release_admission_for_relay_candidate(state, identity):
+    admission = state.attempt_starts.get(identity.attempt_id)
+    if (
+        admission is None
+        or admission.runtime_id != identity.runtime_id
+        or admission.proxy_generation != identity.proxy_generation
+        or not admission.admission_active
+    ):
+        return False
+    state.attempt_starts[identity.attempt_id] = replace(
+        admission,
+        admission_active=False)
+    synchronize_endpoint_admission_aggregate(state)
+    return True
+
+
 def synchronize_relay_proof_aggregate(state):
     state.relay_proofs = {
         identity: proof
@@ -359,7 +387,7 @@ def apply_runtime_proxy_generation(state, runtime_id, proxy_generation):
             and admission.proxy_generation < proxy_generation
         )
     }
-    state.active = len(state.attempt_starts)
+    synchronize_endpoint_admission_aggregate(state)
     state.relay_proofs = {
         identity: proof
         for identity, proof in state.relay_proofs.items()
@@ -377,13 +405,7 @@ def prune_expired_endpoint_state(state, now):
         for attempt_id, admission in state.attempt_starts.items()
         if now - admission.started_at <= ATTEMPT_HARD_TTL
     }
-    state.active = len(state.attempt_starts)
-    state.relay_proofs = {
-        identity: proof
-        for identity, proof in state.relay_proofs.items()
-        if proof.expires_at > now
-    }
-    synchronize_relay_proof_aggregate(state)
+    synchronize_endpoint_admission_aggregate(state)
 
 
 def seed_admission(store, report):
@@ -396,7 +418,7 @@ def seed_admission(store, report):
         runtime_id=report.runtime_id,
         proxy_generation=report.proxy_generation,
         started_at=report.started_at)
-    state.active = len(state.attempt_starts)
+    synchronize_endpoint_admission_aggregate(state)
 
 
 def public_admit(store, report, now):
@@ -424,7 +446,7 @@ def promote_relay_proof(state, identity, proof):
         return MISSING_ADMISSION
     state.relay_proofs[identity] = proof
     del state.attempt_starts[identity.attempt_id]
-    state.active = len(state.attempt_starts)
+    synchronize_endpoint_admission_aggregate(state)
     synchronize_relay_proof_aggregate(state)
     return INSERTED
 
@@ -491,9 +513,7 @@ def report_relay_success(store, report, now):
     promotion = promote_relay_proof(
         state,
         relay_proof_identity(report),
-        RelayProofState(
-            proven_at=now,
-            expires_at=now + RELAY_PROOF_HARD_TTL))
+        RelayProofState(proven_at=now))
     if promotion != INSERTED:
         return promotion
     state.last_success_at = now
@@ -622,6 +642,25 @@ def neutral_retire(store, report, now, origin=NONE):
     return retire_relay_proof(store, report, now)
 
 
+def healthy_remote_close(store, report, now):
+    state = store.states.get(report.endpoint)
+    if state is None or not state.healthy:
+        return MISSING_OR_DUPLICATE
+    return neutral_retire(
+        store,
+        report,
+        now,
+        origin="normal_close")
+
+
+def snapshot_endpoint_state(store, endpoint, now):
+    state = store.states.get(endpoint)
+    if state is None:
+        return None
+    prune_expired_endpoint_state(state, now)
+    return deepcopy(state)
+
+
 def apply_proxy_generation(store, runtime_id, proxy_generation, now):
     for state in store.states.values():
         prune_expired_endpoint_state(state, now)
@@ -639,7 +678,7 @@ def unregister_runtime(store, runtime_id):
             for attempt_id, admission in state.attempt_starts.items()
             if admission.runtime_id != runtime_id
         }
-        state.active = len(state.attempt_starts)
+        synchronize_endpoint_admission_aggregate(state)
         state.relay_proofs = {
             identity: proof
             for identity, proof in state.relay_proofs.items()
@@ -836,6 +875,28 @@ def make_relay_report(
         started_at=started_at)
 
 
+def test_keyless_release_preserves_exact_promotion_lineage():
+    report = make_relay_report()
+    unrelated = replace(report, attempt_id=169)
+    store = CanonicalEndpointStore()
+    assert public_admit(store, report, now=100)
+    state = store.state(report.endpoint)
+    identity = relay_proof_identity(report)
+
+    assert state.active == HEALTHY_ACTIVE_CAP
+    assert release_admission_for_relay_candidate(state, identity)
+    assert state.active == 0
+    assert set(state.attempt_starts) == {report.attempt_id}
+    assert has_endpoint_attempt(state, identity)
+    assert not release_admission_for_relay_candidate(
+        state,
+        relay_proof_identity(unrelated))
+    assert report_relay_success(store, unrelated, now=150) == MISSING_ADMISSION
+    assert report_relay_success(store, report, now=200) == INSERTED
+    assert not state.attempt_starts
+    assert set(state.relay_proofs) == {identity}
+
+
 def test_canonical_endpoint_abc_lifecycle():
     a = make_relay_report(runtime_id=2, attempt_id=168, started_at=100)
     b = make_relay_report(runtime_id=5, attempt_id=169, started_at=110)
@@ -931,8 +992,7 @@ def test_duplicate_success_has_no_growth_or_refresh():
     assert state == before
     assert len(state.relay_proofs) == 1
     assert state.relay_proofs[relay_proof_identity(report)] == RelayProofState(
-        proven_at=1000,
-        expires_at=1000 + RELAY_PROOF_HARD_TTL)
+        proven_at=1000)
 
 
 def test_sibling_preserving_ordinary_failure():
@@ -953,6 +1013,34 @@ def test_sibling_preserving_ordinary_failure():
     assert state.healthy
     assert state.last_relay_success_at == 1100
     assert punishment_signature(state) == protected
+
+
+def test_healthy_remote_close_retires_exact_proof_once():
+    a = make_relay_report(runtime_id=2, attempt_id=168, started_at=100)
+    b = make_relay_report(runtime_id=5, attempt_id=169, started_at=110)
+    store = CanonicalEndpointStore()
+    for report in (a, b):
+        seed_admission(store, report)
+    assert report_relay_success(store, a, now=1000) == INSERTED
+    assert report_relay_success(store, b, now=1100) == INSERTED
+    state = store.state(ABC_ENDPOINT)
+    protected = punishment_signature(state)
+
+    assert healthy_remote_close(store, a, now=1200) == (
+        RETIRED_WITH_SURVIVORS)
+    assert set(state.relay_proofs) == {relay_proof_identity(b)}
+    assert state.relay_proven
+    assert state.healthy
+    assert state.last_relay_success_at == 1100
+    assert punishment_signature(state) == protected
+
+    after_close = deepcopy(state)
+    assert neutral_retire(
+        store,
+        a,
+        now=1300,
+        origin="cancel") == MISSING_OR_DUPLICATE
+    assert state == after_close
 
 
 def test_final_proof_real_failure_keeps_existing_punishment():
@@ -1096,28 +1184,66 @@ def test_runtime_unregister_cleanup_is_runtime_scoped():
     assert state.last_relay_success_at == 1100
 
 
-def test_relay_proof_expiry_before_and_at_boundary():
-    report = make_relay_report()
+def test_inactive_candidates_are_removed_by_generation_and_runtime_cleanup():
+    a = make_relay_report(runtime_id=2, attempt_id=172, started_at=100)
+    b = make_relay_report(runtime_id=5, attempt_id=173, started_at=110)
+    expired = make_relay_report(runtime_id=7, attempt_id=174, started_at=0)
     store = CanonicalEndpointStore()
-    seed_admission(store, report)
-    proven_at = 1000
-    expires_at = proven_at + RELAY_PROOF_HARD_TTL
-    assert report_relay_success(store, report, now=proven_at) == INSERTED
-    state = store.state(report.endpoint)
-    protected = punishment_signature(state)
+    for report in (a, b, expired):
+        seed_admission(store, report)
+        assert release_admission_for_relay_candidate(
+            store.state(report.endpoint),
+            relay_proof_identity(report))
+    state = store.state(ABC_ENDPOINT)
+    assert state.active == 0
+    assert set(state.attempt_starts) == {
+        a.attempt_id,
+        b.attempt_id,
+        expired.attempt_id,
+    }
 
-    prune_expired_endpoint_state(state, expires_at - 1)
-    assert set(state.relay_proofs) == {relay_proof_identity(report)}
-    assert state.last_relay_success_at == proven_at
-    prune_expired_endpoint_state(state, expires_at)
+    apply_proxy_generation(store, runtime_id=2, proxy_generation=37, now=200)
+    assert set(state.attempt_starts) == {b.attempt_id, expired.attempt_id}
+    assert state.active == 0
+    unregister_runtime(store, runtime_id=5)
+    assert set(state.attempt_starts) == {expired.attempt_id}
+    prune_expired_endpoint_state(state, ATTEMPT_HARD_TTL + 1)
+    assert not state.attempt_starts
+    assert state.active == 0
+
+
+def test_live_proof_survives_ten_minutes_and_state_touches():
+    a = make_relay_report(runtime_id=2, attempt_id=168, started_at=100)
+    b = make_relay_report(runtime_id=5, attempt_id=169, started_at=110)
+    touch = make_relay_report(
+        runtime_id=7,
+        attempt_id=170,
+        started_at=601200)
+    store = CanonicalEndpointStore()
+    for report in (a, b):
+        seed_admission(store, report)
+    assert report_relay_success(store, a, now=1000) == INSERTED
+    assert report_relay_success(store, b, now=1100) == INSERTED
+    state = store.state(ABC_ENDPOINT)
+    identities = {relay_proof_identity(a), relay_proof_identity(b)}
+    late = 601200
+
+    snapshot = snapshot_endpoint_state(store, ABC_ENDPOINT, late)
+    assert set(snapshot.relay_proofs) == identities
+    assert public_admit(store, touch, now=late)
+    prune_expired_endpoint_state(state, late + 1)
+    assert set(state.relay_proofs) == identities
+    assert state.last_relay_success_at == 1100
+    assert report_failure(store, a, HMAC_MISMATCH, now=late + 2) == (
+        RETIRED_WITH_SURVIVORS)
+    assert set(state.relay_proofs) == {relay_proof_identity(b)}
+    assert report_relay_stall(store, b, now=late + 3) == RETIRED_FINAL
     assert not state.relay_proofs
     assert not state.relay_proven
-    assert not state.last_relay_success_at
     assert state.healthy
-    assert punishment_signature(state) == protected
 
 
-def test_many_unique_expired_identities_return_to_empty():
+def test_repeated_success_and_terminal_cycles_return_to_empty():
     store = CanonicalEndpointStore()
     count = 128
     for index in range(count):
@@ -1127,17 +1253,25 @@ def test_many_unique_expired_identities_return_to_empty():
             started_at=100 + index)
         seed_admission(store, report)
         assert report_relay_success(store, report, now=1000 + index) == INSERTED
-    state = store.state(ABC_ENDPOINT)
-    assert len(state.relay_proofs) == count
-    assert not state.attempt_starts
-
-    prune_expired_endpoint_state(
-        state,
-        1000 + count - 1 + RELAY_PROOF_HARD_TTL)
-    assert not state.relay_proofs
-    assert not state.relay_proven
-    assert not state.last_relay_success_at
-    assert state.active == 0
+        assert report_relay_success(
+            store,
+            report,
+            now=2000 + index) == ALREADY_PROVEN
+        assert neutral_retire(
+            store,
+            report,
+            now=3000 + index,
+            origin="normal_close") == RETIRED_FINAL
+        assert neutral_retire(
+            store,
+            report,
+            now=4000 + index,
+            origin="cancel") == MISSING_OR_DUPLICATE
+        state = store.state(ABC_ENDPOINT)
+        assert not state.attempt_starts
+        assert not state.relay_proofs
+        assert state.active == 0
+        assert not state.relay_proven
 
 
 def test_retained_old_generation_membership_cannot_override_rejection():
@@ -1150,14 +1284,11 @@ def test_retained_old_generation_membership_cannot_override_rejection():
     assert relay_proof_identity(report) in state.relay_proofs
     assert failure_from_stale_attempt(report, state)
     assert success_from_stale_attempt(report, state)
-    protected = punishment_signature(state)
+    before = deepcopy(state)
 
     assert report_failure(store, report, HMAC_MISMATCH, now=1200) == (
         STALE_GENERATION)
-    assert relay_proof_identity(report) not in state.relay_proofs
-    assert not state.relay_proven
-    assert state.healthy
-    assert punishment_signature(state) == protected
+    assert state == before
 
 
 def test_generation_zero_is_stale_after_generation_36():
@@ -1277,6 +1408,8 @@ def test_source_seams_match_truth_table_contract():
     health_state = read(ENDPOINT_HEALTH_STATE_H)
     endpoint_context = read(PROXY_ENDPOINT_CONTEXT_CPP)
     session_adapter = read(SESSION_PROXY_ADAPTER_CPP)
+    session_port = read(SESSION_PROXY_PORT_H)
+    session_connection = read(SESSION_CONNECTION_CPP)
     instance = read(INSTANCE_CPP)
     capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     tls_records = read(TLS_SOCKET_RECORDS_CPP)
@@ -1305,17 +1438,30 @@ def test_source_seams_match_truth_table_contract():
     assert "RuntimeProxyGenerationIsStale" in health_state
     assert "HasEndpointAttempt" in health_state
     assert "HasRelayProof" in health_state
+    assert "bool admissionActive = true;" in health_state
+    assert "ActiveEndpointAdmissionCount" in health_state
+    assert "SynchronizeEndpointAdmissionAggregate" in health_state
+    assert "ReleaseAdmissionForRelayCandidate" in health_state
     assert "PromoteRelayProof" in health_state
     assert "RetireRelayProof" in health_state
-    assert "PruneExpiredRelayProofs" in health_state
     assert "RemoveRelayProofsForRuntime" in health_state
     assert "SynchronizeRelayProofAggregate" in health_state
-    assert "i->second.expiresAt <= now" in health_state
+    removed_proof_prune = "PruneExpired" + "RelayProofs"
+    removed_expiry_field = "expires" + "At"
+    removed_proof_ttl = "kRelayProof" + "HardTtl"
+    removed_expiry_factory = "RelayProof" + "ExpiresAt"
+    assert removed_proof_prune not in health_state
+    assert removed_expiry_field not in health_state
     assert "state.relayProven = !state.relayProofs.empty();" in health_state
     assert "entry.second.provenAt > state.lastRelaySuccessAt" in health_state
     assert "state.healthy = true;" in health_state
     assert "constexpr auto kHealthyActiveCap = 1;" in policy
-    assert "constexpr auto kRelayProofHardTtl" in policy
+    assert removed_proof_ttl not in policy
+    assert removed_expiry_factory not in policy
+    assert removed_expiry_factory not in health
+    removed_size_count = "state.attemptStarts." + "size()"
+    assert removed_size_count not in health_state
+    assert removed_size_count not in policy
     assert "uint64 successEpoch() const" in health_header
     assert "++state.proxyEpoch;" in health
     assert "++state.successEpoch;" in health
@@ -1337,8 +1483,22 @@ def test_source_seams_match_truth_table_contract():
     assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
     assert "noteMtproxyRelayFailure(" in capabilities_bridge
     assert "RemoveRelayProofsForRuntime(state, runtimeId);" in endpoint_context
+    assert "releaseAdmissionForRelayCandidate(" in endpoint_context
+    assert "virtual void releaseAdmissionForRelayCandidate() = 0;" in (
+        session_port)
+    assert session_connection.count(
+        "mtproxyLease.releaseAdmissionForRelayCandidate();") == 2
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "RelayProofReport(attempt)" in session_adapter
+
+    remote_close = session_adapter.split(
+        "void ProductionSessionProxyPort::reportConnectionError(", 1)[1].split(
+            "void ProductionSessionProxyPort::reportReceiveTimeout(", 1)[0]
+    healthy_close = remote_close.index(
+        "if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {")
+    healthy_retirement = remote_close.index("retireMtproxyRelayProof(")
+    healthy_liveness = remote_close.index("ReportProxyLiveness(")
+    assert healthy_close < healthy_retirement < healthy_liveness
 
     retirement = health.split(
         "RelayProofRetirement RetireRelayProofLocked(", 1)[1].split(
@@ -1382,7 +1542,7 @@ def test_source_seams_match_truth_table_contract():
 
     stale_success = policy.split(
         "bool SuccessFromStaleAttempt(", 1)[1].split(
-            "crl::time RelayProofExpiresAt", 1)[0]
+            "void PruneExpiredEndpointState", 1)[0]
     assert stale_success.index("RuntimeProxyGenerationIsStale(") < (
         stale_success.index("HasEndpointAttempt(state, identity)"))
     assert stale_success.index("HasEndpointAttempt(state, identity)") < (
@@ -1408,19 +1568,22 @@ def run_all_truth_tables():
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()
     test_selected_status_success_epoch_shadows_late_failures()
+    test_keyless_release_preserves_exact_promotion_lineage()
     test_canonical_endpoint_abc_lifecycle()
     test_unowned_current_epoch_success_is_rejected()
     test_same_tuple_is_namespaced_by_canonical_endpoint()
     test_duplicate_success_has_no_growth_or_refresh()
     test_sibling_preserving_ordinary_failure()
+    test_healthy_remote_close_retires_exact_proof_once()
     test_final_proof_real_failure_keeps_existing_punishment()
     test_final_stall_only_invalidates_relay_capability()
     test_normal_close_cancel_and_owner_destruction_are_neutral()
     test_cancellation_after_handled_failure_is_noop()
     test_proxy_switch_generation_cleanup_is_runtime_scoped()
     test_runtime_unregister_cleanup_is_runtime_scoped()
-    test_relay_proof_expiry_before_and_at_boundary()
-    test_many_unique_expired_identities_return_to_empty()
+    test_inactive_candidates_are_removed_by_generation_and_runtime_cleanup()
+    test_live_proof_survives_ten_minutes_and_state_touches()
+    test_repeated_success_and_terminal_cycles_return_to_empty()
     test_retained_old_generation_membership_cannot_override_rejection()
     test_generation_zero_is_stale_after_generation_36()
     test_faketls_appdata_does_not_prove_relay_or_bump_epoch()

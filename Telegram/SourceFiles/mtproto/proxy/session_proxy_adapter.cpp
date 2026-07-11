@@ -43,6 +43,10 @@ public:
 		_lease.release();
 	}
 
+	void releaseAdmissionForRelayCandidate() override {
+		_lease.releaseAdmissionForRelayCandidate();
+	}
+
 	bool active() const override {
 		return _lease.active();
 	}
@@ -446,6 +450,8 @@ void ProductionSessionProxyPort::reportConnectionError(
 			&& !runtime->proxyEndpointContext().traceActive(
 				attempt.attempt.traceId);
 		if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {
+			runtime->proxyServices().control().retireMtproxyRelayProof(
+				RelayProofReport(attempt));
 			ReportProxyLiveness(
 				runtime,
 				AttemptReport(

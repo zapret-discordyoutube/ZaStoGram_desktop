@@ -49,7 +49,7 @@ void ProxyEndpointContext::unregisterRuntime(ProxyRuntimeId runtimeId) {
 				++i;
 			}
 		}
-		state.active = int(state.attemptStarts.size());
+		details::MtProxy::SynchronizeEndpointAdmissionAggregate(state);
 		details::MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);
 	}
 }
@@ -117,7 +117,30 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 		return;
 	}
 	i->second.attemptStarts.erase(attemptId);
-	i->second.active = int(i->second.attemptStarts.size());
+	details::MtProxy::SynchronizeEndpointAdmissionAggregate(i->second);
+}
+
+void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
+		const QString &key,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration,
+		uint64 attemptId) {
+	if (key.isEmpty() || !runtimeId || !attemptId) {
+		return;
+	}
+	QMutexLocker lock(&_storage->mutex);
+	const auto i = _storage->states.find(key);
+	if (i == end(_storage->states)) {
+		return;
+	}
+	const auto identity = details::MtProxy::RelayProofIdentity{
+		.runtimeId = runtimeId,
+		.proxyGeneration = proxyGeneration,
+		.attemptId = attemptId,
+	};
+	static_cast<void>(details::MtProxy::ReleaseAdmissionForRelayCandidate(
+		i->second,
+		identity));
 }
 
 auto ProxyEndpointContext::storage()

@@ -39,8 +39,9 @@ void SeedAdmission(
 			.runtimeId = identity.runtimeId,
 			.proxyGeneration = identity.proxyGeneration,
 			.startedAt = startedAt,
+			.admissionActive = true,
 		});
-	state.active = int(state.attemptStarts.size());
+	MtProxy::SynchronizeEndpointAdmissionAggregate(state);
 }
 
 [[nodiscard]] bool GenerationValidatedRelayProofMembership(
@@ -91,6 +92,42 @@ void SeedAdmission(
 	return 0;
 }
 
+[[nodiscard]] int ScenarioInactiveAdmissionPromotion() {
+	auto state = MtProxy::EndpointState();
+	const auto identity = MtProxy::RelayProofIdentity{
+		.runtimeId = kRuntimeA,
+		.proxyGeneration = kGeneration,
+		.attemptId = 168,
+	};
+	const auto unrelated = MtProxy::RelayProofIdentity{
+		.runtimeId = kRuntimeB,
+		.proxyGeneration = kGeneration,
+		.attemptId = 168,
+	};
+	SeedAdmission(state, identity, 100);
+	if (state.active != 1
+		|| MtProxy::ReleaseAdmissionForRelayCandidate(state, unrelated)
+		|| !MtProxy::ReleaseAdmissionForRelayCandidate(state, identity)
+		|| state.active != 0
+		|| !MtProxy::HasEndpointAttempt(state, identity)
+		|| MtProxy::PromoteRelayProof(
+			state,
+			unrelated,
+			MtProxy::RelayProofState{ .provenAt = 1000 })
+			!= MtProxy::RelayProofPromotionResult::MissingAdmission
+		|| MtProxy::PromoteRelayProof(
+			state,
+			identity,
+			MtProxy::RelayProofState{ .provenAt = 1000 })
+			!= MtProxy::RelayProofPromotionResult::Inserted
+		|| !state.attemptStarts.empty()
+		|| !MtProxy::RetireRelayProof(state, identity)
+		|| !state.relayProofs.empty()) {
+		return Fail("inactive admission did not preserve exact promotion lineage");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioRelayProofLifecycle() {
 	auto state = MtProxy::EndpointState();
 	const auto a = MtProxy::RelayProofIdentity{
@@ -116,21 +153,18 @@ void SeedAdmission(
 		a,
 		MtProxy::RelayProofState{
 			.provenAt = 1000,
-			.expiresAt = 10'000,
 		});
 	const auto bPromotion = MtProxy::PromoteRelayProof(
 		state,
 		b,
 		MtProxy::RelayProofState{
 			.provenAt = 1100,
-			.expiresAt = 10'100,
 		});
 	const auto cPromotion = MtProxy::PromoteRelayProof(
 		state,
 		c,
 		MtProxy::RelayProofState{
 			.provenAt = 1200,
-			.expiresAt = 10'200,
 		});
 	if (aPromotion != MtProxy::RelayProofPromotionResult::Inserted
 		|| bPromotion != MtProxy::RelayProofPromotionResult::Inserted
@@ -148,12 +182,10 @@ void SeedAdmission(
 		a,
 		MtProxy::RelayProofState{
 			.provenAt = 1300,
-			.expiresAt = 10'300,
 		});
 	if (duplicate != MtProxy::RelayProofPromotionResult::AlreadyProven
 		|| state.relayProofs.size() != 3
 		|| state.relayProofs.at(a).provenAt != originalA.provenAt
-		|| state.relayProofs.at(a).expiresAt != originalA.expiresAt
 		|| state.lastRelaySuccessAt != 1200) {
 		return Fail("duplicate relay proof promotion was not idempotent");
 	}
@@ -167,7 +199,6 @@ void SeedAdmission(
 			unowned,
 			MtProxy::RelayProofState{
 				.provenAt = 1400,
-				.expiresAt = 10'400,
 			}) != MtProxy::RelayProofPromotionResult::MissingAdmission
 		|| state.relayProofs.size() != 3) {
 		return Fail("unowned relay proof promotion was accepted");
@@ -209,14 +240,12 @@ void SeedAdmission(
 		equalTuple,
 		MtProxy::RelayProofState{
 			.provenAt = 1000,
-			.expiresAt = 10'000,
 		});
 	const auto otherPromotion = MtProxy::PromoteRelayProof(
 		otherCanonicalEndpoint,
 		equalTuple,
 		MtProxy::RelayProofState{
 			.provenAt = 1400,
-			.expiresAt = 10'400,
 		});
 	if (firstPromotion != MtProxy::RelayProofPromotionResult::Inserted
 		|| otherPromotion != MtProxy::RelayProofPromotionResult::Inserted
@@ -252,15 +281,12 @@ void SeedAdmission(
 	};
 	state.relayProofs.emplace(oldGeneration, MtProxy::RelayProofState{
 		.provenAt = 1000,
-		.expiresAt = 10'000,
 	});
 	state.relayProofs.emplace(zeroGeneration, MtProxy::RelayProofState{
 		.provenAt = 1100,
-		.expiresAt = 10'100,
 	});
 	state.relayProofs.emplace(currentGeneration, MtProxy::RelayProofState{
 		.provenAt = 1200,
-		.expiresAt = 10'200,
 	});
 	if (!state.relayProofs.contains(oldGeneration)
 		|| !state.relayProofs.contains(zeroGeneration)
@@ -303,19 +329,22 @@ void SeedAdmission(
 			a,
 			MtProxy::RelayProofState{
 				.provenAt = 1000,
-				.expiresAt = 10'000,
 			}) != MtProxy::RelayProofPromotionResult::Inserted
 		|| MtProxy::PromoteRelayProof(
 			state,
 			b,
 			MtProxy::RelayProofState{
 				.provenAt = 1100,
-				.expiresAt = 10'100,
 			}) != MtProxy::RelayProofPromotionResult::Inserted) {
 		return Fail("generation pruning setup failed");
 	}
 	SeedAdmission(state, pendingA, 120);
 	SeedAdmission(state, pendingB, 130);
+	if (!MtProxy::ReleaseAdmissionForRelayCandidate(state, pendingA)
+		|| !MtProxy::ReleaseAdmissionForRelayCandidate(state, pendingB)
+		|| state.active != 0) {
+		return Fail("generation inactive lineage setup failed");
+	}
 	MtProxy::ApplyRuntimeProxyGeneration(state, kRuntimeA, 37);
 	if (state.generations[kRuntimeA] != 37
 		|| state.generations[kRuntimeB] != kGeneration
@@ -323,7 +352,7 @@ void SeedAdmission(
 		|| !MtProxy::HasRelayProof(state, b)
 		|| state.attemptStarts.contains(pendingA.attemptId)
 		|| !state.attemptStarts.contains(pendingB.attemptId)
-		|| state.active != 1
+		|| state.active != 0
 		|| !state.relayProven
 		|| !state.healthy
 		|| state.lastRelaySuccessAt != 1100) {
@@ -365,19 +394,22 @@ void SeedAdmission(
 			first,
 			MtProxy::RelayProofState{
 				.provenAt = 1000,
-				.expiresAt = 10'000,
 			}) != MtProxy::RelayProofPromotionResult::Inserted
 		|| MtProxy::PromoteRelayProof(
 			state,
 			second,
 			MtProxy::RelayProofState{
 				.provenAt = 1100,
-				.expiresAt = 10'100,
 			}) != MtProxy::RelayProofPromotionResult::Inserted) {
 		return Fail("runtime unregister setup failed");
 	}
 	SeedAdmission(state, pendingFirst, 120);
 	SeedAdmission(state, pendingSecond, 130);
+	if (!MtProxy::ReleaseAdmissionForRelayCandidate(state, pendingFirst)
+		|| !MtProxy::ReleaseAdmissionForRelayCandidate(state, pendingSecond)
+		|| state.active != 0) {
+		return Fail("runtime inactive lineage setup failed");
+	}
 	context->unregisterRuntime(firstRuntime);
 	if (state.generations.contains(firstRuntime)
 		|| state.generations[secondRuntime] != kGeneration
@@ -385,7 +417,7 @@ void SeedAdmission(
 		|| !MtProxy::HasRelayProof(state, second)
 		|| state.attemptStarts.contains(pendingFirst.attemptId)
 		|| !state.attemptStarts.contains(pendingSecond.attemptId)
-		|| state.active != 1
+		|| state.active != 0
 		|| !state.relayProven
 		|| !state.healthy
 		|| state.lastRelaySuccessAt != 1100) {
@@ -399,34 +431,32 @@ void SeedAdmission(
 	return 0;
 }
 
-[[nodiscard]] int ScenarioRelayProofExpiryAndBoundedness() {
-	auto boundary = MtProxy::EndpointState();
+[[nodiscard]] int ScenarioRelayProofLifetimeAndBoundedness() {
+	auto longLived = MtProxy::EndpointState();
 	const auto identity = MtProxy::RelayProofIdentity{
 		.runtimeId = kRuntimeA,
 		.proxyGeneration = kGeneration,
 		.attemptId = 168,
 	};
-	SeedAdmission(boundary, identity, 100);
+	SeedAdmission(longLived, identity, 100);
 	if (MtProxy::PromoteRelayProof(
-			boundary,
+			longLived,
 			identity,
 			MtProxy::RelayProofState{
 				.provenAt = 1000,
-				.expiresAt = 2000,
 			}) != MtProxy::RelayProofPromotionResult::Inserted) {
-		return Fail("relay proof expiry setup failed");
+		return Fail("long-lived relay proof setup failed");
 	}
-	MtProxy::PruneExpiredRelayProofs(boundary, 1999);
-	if (!MtProxy::HasRelayProof(boundary, identity)
-		|| boundary.lastRelaySuccessAt != 1000) {
-		return Fail("relay proof expired before boundary");
-	}
-	MtProxy::PruneExpiredRelayProofs(boundary, 2000);
-	if (!boundary.relayProofs.empty()
-		|| boundary.relayProven
-		|| boundary.lastRelaySuccessAt != 0
-		|| !boundary.healthy) {
-		return Fail("relay proof survived inclusive expiry boundary");
+	constexpr auto afterTenMinutes = crl::time(1000 + 10 * 60 * 1000 + 1);
+	MtProxy::SynchronizeRelayProofAggregate(longLived);
+	MtProxy::ApplyRuntimeProxyGeneration(
+		longLived,
+		kRuntimeA,
+		kGeneration);
+	if (afterTenMinutes <= longLived.relayProofs.at(identity).provenAt
+		|| !MtProxy::HasRelayProof(longLived, identity)
+		|| longLived.lastRelaySuccessAt != 1000) {
+		return Fail("live relay proof did not survive state touches");
 	}
 
 	auto repeated = MtProxy::EndpointState();
@@ -438,26 +468,33 @@ void SeedAdmission(
 			.attemptId = 1000 + index,
 		};
 		SeedAdmission(repeated, current, 100 + crl::time(index));
-		if (MtProxy::PromoteRelayProof(
+		if (!MtProxy::ReleaseAdmissionForRelayCandidate(repeated, current)
+			|| repeated.active != 0
+			|| MtProxy::PromoteRelayProof(
 				repeated,
 				current,
 				MtProxy::RelayProofState{
 					.provenAt = 3000 + crl::time(index),
-					.expiresAt = 4000 + crl::time(index),
-				}) != MtProxy::RelayProofPromotionResult::Inserted) {
-			return Fail("unique relay proof promotion failed");
+				}) != MtProxy::RelayProofPromotionResult::Inserted
+			|| MtProxy::PromoteRelayProof(
+				repeated,
+				current,
+				MtProxy::RelayProofState{
+					.provenAt = 4000 + crl::time(index),
+				}) != MtProxy::RelayProofPromotionResult::AlreadyProven
+			|| !MtProxy::RetireRelayProof(repeated, current)
+			|| MtProxy::RetireRelayProof(repeated, current)
+			|| !repeated.attemptStarts.empty()
+			|| !repeated.relayProofs.empty()
+			|| repeated.active != 0) {
+			return Fail("repeated success and terminal cycle leaked state");
 		}
 	}
-	if (repeated.relayProofs.size() != count
-		|| repeated.active != 0) {
-		return Fail("unique relay proof registry size is inconsistent");
-	}
-	MtProxy::PruneExpiredRelayProofs(repeated, 4000 + crl::time(count - 1));
-	if (!repeated.relayProofs.empty()
-		|| repeated.relayProven
-		|| repeated.lastRelaySuccessAt != 0
-		|| repeated.active != 0) {
-		return Fail("repeated unique expired records did not return to empty");
+	if (!MtProxy::RetireRelayProof(longLived, identity)
+		|| !longLived.relayProofs.empty()
+		|| !repeated.relayProofs.empty()
+		|| !repeated.attemptStarts.empty()) {
+		return Fail("terminal retirement did not bound live proof state");
 	}
 	return 0;
 }
@@ -466,6 +503,9 @@ void SeedAdmission(
 
 int main(int, char *[]) {
 	if (ScenarioTraceLifecycle()) {
+		return 1;
+	}
+	if (ScenarioInactiveAdmissionPromotion()) {
 		return 1;
 	}
 	if (ScenarioRelayProofLifecycle()) {
@@ -483,7 +523,7 @@ int main(int, char *[]) {
 	if (ScenarioRuntimeUnregisterPruning()) {
 		return 1;
 	}
-	if (ScenarioRelayProofExpiryAndBoundedness()) {
+	if (ScenarioRelayProofLifetimeAndBoundedness()) {
 		return 1;
 	}
 	return 0;

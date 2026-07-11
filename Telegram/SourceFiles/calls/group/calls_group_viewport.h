@@ -15,6 +15,10 @@ class QOpenGLFunctions;
 class QRhi;
 class QRhiRenderTarget;
 class QRhiCommandBuffer;
+class QRhiResourceUpdateBatch;
+class QRhiGraphicsPipeline;
+class QRhiShaderResourceBindings;
+class QRhiBuffer;
 
 namespace Ui {
 class AbstractButton;
@@ -116,8 +120,19 @@ public:
 	void borrowedPaint(Painter &p, const QRegion &clip);
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+	// Borrowed rendering happens inside an external (media viewer) render
+	// pass, so it is split in phases: offscreen passes and resource
+	// updates must be finished BEFORE the external beginPass, while the
+	// recorded draws are replayed by the external pass itself.
+	struct BorrowedRhiDraw {
+		QRhiGraphicsPipeline *pipeline = nullptr;
+		QRhiShaderResourceBindings *srb = nullptr;
+		QRhiBuffer *vertexBuffer = nullptr;
+		int vertexOffset = 0;
+	};
 	void borrowedPaintOffscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
-	void borrowedPaintOnscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
+	[[nodiscard]] QRhiResourceUpdateBatch *borrowedPrepareOnscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
+	[[nodiscard]] std::vector<BorrowedRhiDraw> borrowedTakeOnscreenDraws();
 private:
 	[[nodiscard]] Ui::Rhi::Renderer *ensureBorrowedRhi(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
 public:

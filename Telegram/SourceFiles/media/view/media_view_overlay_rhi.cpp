@@ -188,12 +188,15 @@ void OverlayWidget::RendererRhi::createPipelines() {
 	const auto controlsFrag = LoadShader(u"controls.frag"_q);
 
 	auto *sampleSrb = _rhi->newShaderResourceBindings();
+	// Must be layout-compatible with the per-draw srbs, which bind the
+	// uniform buffer at a static offset (not with a dynamic offset).
 	sampleSrb->setBindings({
-		QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(
+		QRhiShaderResourceBinding::uniformBuffer(
 			0,
 			QRhiShaderResourceBinding::VertexStage
 				| QRhiShaderResourceBinding::FragmentStage,
 			_uniformBuffer,
+			0,
 			sizeof(ImageUniforms)),
 		QRhiShaderResourceBinding::sampledTexture(
 			1,
@@ -465,6 +468,10 @@ void OverlayWidget::RendererRhi::render(
 		QRhiRenderTarget *rt,
 		QRhiCommandBuffer *cb) {
 	if (_owner->_hideWorkaround) {
+		// Still clear the backing texture: leaving it untouched would
+		// composite stale or uninitialized GPU memory into the window.
+		cb->beginPass(rt, QColor(0, 0, 0, 0), { 1.0f, 0 });
+		cb->endPass();
 		return;
 	}
 	_rhi = rhi;
@@ -494,11 +501,38 @@ void OverlayWidget::RendererRhi::render(
 
 	_rub = rhi->nextResourceUpdateBatch();
 	_pendingVideoStream = nullptr;
+	_videoStreamCommandIndex = -1;
 
 	_owner->paint(this);
 
 	if (_pendingVideoStream) {
+		// The stream's offscreen passes and resource updates must all
+		// happen before our beginPass; the recorded onscreen draws are
+		// inserted at the z-order position saved in paintVideoStream().
 		_pendingVideoStream->borrowedPaintOffscreen(_rhi, _rt, _cb);
+		if (auto *rub = _pendingVideoStream->borrowedPrepareOnscreen(
+				_rhi, _rt, _cb)) {
+			_rub->merge(rub);
+			rub->release();
+		}
+		const auto borrowed = _pendingVideoStream->borrowedTakeOnscreenDraws();
+		if (!borrowed.empty() && _videoStreamCommandIndex >= 0) {
+			auto commands = std::vector<DrawCommand>();
+			commands.reserve(borrowed.size());
+			for (const auto &draw : borrowed) {
+				commands.push_back({
+					.pipeline = draw.pipeline,
+					.srb = draw.srb,
+					.externalVertexBuffer = draw.vertexBuffer,
+					.externalVertexOffset = draw.vertexOffset,
+				});
+			}
+			_drawCommands.insert(
+				_drawCommands.begin() + _videoStreamCommandIndex,
+				commands.begin(),
+				commands.end());
+		}
+		_pendingVideoStream = nullptr;
 	}
 
 	if (const auto notch = _owner->topNotchSkip()) {
@@ -521,7 +555,19 @@ void OverlayWidget::RendererRhi::render(
 		drawTexturedQuad(_imagePipeline, blackTex, notchCoords);
 	}
 
-	cb->beginPass(rt, QColor(0, 0, 0, 0), { 1.0f, 0 }, _rub);
+	// The window is translucent, so the pass must clear with the actual
+	// (premultiplied) background color: clearing with transparent black
+	// leaves the window see-through wherever no quad covers a pixel.
+	const auto clear = rhiClearColor();
+	cb->beginPass(
+		rt,
+		QColor::fromRgbF(
+			clear.redF() * clear.alphaF(),
+			clear.greenF() * clear.alphaF(),
+			clear.blueF() * clear.alphaF(),
+			clear.alphaF()),
+		{ 1.0f, 0 },
+		_rub);
 	_rub = nullptr;
 
 	for (const auto &cmd : _drawCommands) {
@@ -531,7 +577,12 @@ void OverlayWidget::RendererRhi::render(
 			0, 0,
 			float(rt->pixelSize().width()),
 			float(rt->pixelSize().height()) });
-		if (cmd.fillVertex) {
+		if (cmd.externalVertexBuffer) {
+			const QRhiCommandBuffer::VertexInput vbufBinding(
+				cmd.externalVertexBuffer,
+				cmd.externalVertexOffset);
+			cb->setVertexInput(0, 1, &vbufBinding);
+		} else if (cmd.fillVertex) {
 			const QRhiCommandBuffer::VertexInput vbufBinding(
 				_fillVertexBuffer,
 				cmd.vertexIndex * 4 * 2 * sizeof(float));
@@ -544,11 +595,6 @@ void OverlayWidget::RendererRhi::render(
 		cb->draw(4);
 	}
 	_drawCommands.clear();
-
-	if (_pendingVideoStream) {
-		_pendingVideoStream->borrowedPaintOnscreen(_rhi, _rt, _cb);
-		_pendingVideoStream = nullptr;
-	}
 
 	cb->endPass();
 }
@@ -740,7 +786,7 @@ void OverlayWidget::RendererRhi::paintUsingRaster(
 	}
 	const auto size = rect.size() * _ifactor;
 	auto raster = QImage(size, QImage::Format_ARGB32_Premultiplied);
-	raster.setDevicePixelRatio(_factor);
+	raster.setDevicePixelRatio(_ifactor);
 	raster.fill(Qt::transparent);
 	{
 		auto painter = Painter(&raster);
@@ -1006,6 +1052,9 @@ void OverlayWidget::RendererRhi::paintBackground() {
 }
 
 void OverlayWidget::RendererRhi::paintVideoStream() {
+	// Remember the z-order position: the stream's borrowed draws are
+	// recorded later (after all paint* calls) and inserted here.
+	_videoStreamCommandIndex = int(_drawCommands.size());
 	_pendingVideoStream = _owner->_videoStream.get();
 }
 
@@ -1318,7 +1367,7 @@ void OverlayWidget::RendererRhi::paintRecognitionOverlay(
 	auto overlay = QImage(
 		overlaySize,
 		QImage::Format_ARGB32_Premultiplied);
-	overlay.setDevicePixelRatio(_factor);
+	overlay.setDevicePixelRatio(_ifactor);
 	overlay.fill(QColor(0, 0, 0, int(77 * opacity)));
 
 	const auto scale = rect.width() / float(image.width());

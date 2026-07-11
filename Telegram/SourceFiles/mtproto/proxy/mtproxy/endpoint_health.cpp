@@ -176,6 +176,16 @@ void EndpointAttemptLease::release() {
 	}
 }
 
+void EndpointAttemptLease::releaseAdmissionForRelayCandidate() {
+	if (_active && _context) {
+		_context->releaseAdmissionForRelayCandidate(
+			_key,
+			_runtimeId,
+			_proxyGeneration,
+			_attemptId);
+	}
+}
+
 bool EndpointAttemptLease::active() const {
 	return _active;
 }
@@ -309,8 +319,9 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 				.runtimeId = runtimeId,
 				.proxyGeneration = request.proxyGeneration,
 				.startedAt = attemptStartedAt,
+				.admissionActive = true,
 			});
-			state.active = int(state.attemptStarts.size());
+			SynchronizeEndpointAdmissionAggregate(state);
 			result.proxyGeneration = request.proxyGeneration;
 			result.proxyEpoch = state.proxyEpoch;
 			result.successEpoch = state.successEpoch;
@@ -594,7 +605,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				identity,
 				RelayProofState{
 					.provenAt = now,
-					.expiresAt = RelayProofExpiresAt(now),
 				});
 			switch (promotion) {
 			case RelayProofPromotionResult::Inserted:
