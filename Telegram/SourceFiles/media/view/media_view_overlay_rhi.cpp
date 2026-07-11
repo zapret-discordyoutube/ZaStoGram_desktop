@@ -688,7 +688,7 @@ void OverlayWidget::RendererRhi::releaseResources() {
 	_chromaSize = QSize();
 	_chromaNV12 = false;
 	_usingExternalVideoTextures = false;
-	_trackFrameIndex = 0;
+	_trackFrameIndex = -1;
 	_streamedIndex = 0;
 #ifdef Q_OS_MAC
 	_metalTextureCache.flush();
