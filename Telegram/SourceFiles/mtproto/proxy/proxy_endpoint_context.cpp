@@ -206,6 +206,20 @@ void ProxyEndpointContext::removeAdmissionReleaseListener(
 	_storage->admissionReleaseListeners.erase(id);
 }
 
+void ProxyEndpointContext::notifyEndpointAdmissible(const QString &key) {
+	if (key.isEmpty()) {
+		return;
+	}
+	auto listeners = std::vector<AdmissionReleaseListener>();
+	{
+		QMutexLocker lock(&_storage->mutex);
+		listeners = CollectAdmissionReleaseListeners(*_storage);
+	}
+	for (const auto &listener : listeners) {
+		(*listener)(key);
+	}
+}
+
 auto ProxyEndpointContext::storage()
 -> details::MtProxy::EndpointContextStorage & {
 	return *_storage;

@@ -183,6 +183,43 @@ def test_admission_release_listeners_fire_after_storage_unlock():
     assert "i->second.active < wasActive" in release
 
 
+def test_endpoint_admissible_wake_on_recovery_and_selection():
+    context = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.cpp")
+    header = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.h")
+    health = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health.cpp")
+    lifecycle = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+        "endpoint_health_lifecycle.cpp")
+
+    # A relay success or manual selection that clears the cooldown/penalty
+    # early must wake the broker so requests queued behind the (now stale)
+    # cooldown drain at once, not one per ~1s poll. Same listener channel,
+    # same fire-after-unlock discipline.
+    assert "void notifyEndpointAdmissible(const QString &key);" in header
+    notify = context.split(
+        "void ProxyEndpointContext::notifyEndpointAdmissible(", 1)[1].split(
+            "\n}\n", 1)[0]
+    assert "CollectAdmissionReleaseListeners(*_storage);" in notify
+    after_lock = notify.split(
+        "QMutexLocker lock(&_storage->mutex);", 1)[1].split("\n\t}\n", 1)[1]
+    assert "(*listener)(key);" in after_lock
+
+    success = health.split(
+        "void EndpointHealth::reportSuccess(", 1)[1].split(
+            "void EndpointHealth::noteRelayStall(", 1)[0]
+    assert "becameAdmissible = wasDegraded;" in success
+    assert "_context->notifyEndpointAdmissible(key);" in success
+    assert success.index("state.terminalUntil = 0;") < success.index(
+        "_context->notifyEndpointAdmissible(key);")
+
+    selected = lifecycle.split(
+        "void EndpointHealth::noteEndpointSelected(", 1)[1].split(
+            "void EndpointHealth::applyProxyGeneration(", 1)[0]
+    assert "_context->notifyEndpointAdmissible(key);" in selected
+
+
 def test_open_scheduler_state_is_owned_by_shared_context():
     scheduler = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "open_scheduler.cpp")
@@ -409,6 +446,7 @@ if __name__ == "__main__":
     test_promotion_precedes_admission_release_and_unregister_owns_cleanup()
     test_keyless_release_frees_only_the_active_slot_and_keeps_lineage()
     test_admission_release_listeners_fire_after_storage_unlock()
+    test_endpoint_admissible_wake_on_recovery_and_selection()
     test_open_scheduler_state_is_owned_by_shared_context()
     test_admission_freezes_bounded_safe_faketls_plan()
     test_partial_success_preserves_recipe_until_relay_proof()

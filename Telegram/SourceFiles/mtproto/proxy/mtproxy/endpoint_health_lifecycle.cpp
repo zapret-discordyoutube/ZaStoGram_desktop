@@ -172,6 +172,10 @@ void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
+		// The penalty was cleared early by the manual selection - wake the
+		// broker so the scout's queued request drains immediately instead
+		// of waiting out its stale cooldown timer.
+		_context->notifyEndpointAdmissible(key);
 	}
 }
 

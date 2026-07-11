@@ -45,11 +45,15 @@ public:
 		uint64 proxyGeneration,
 		uint64 attemptId);
 
-	// Invoked (strictly after the storage mutex unlocks, on the releasing
-	// thread) whenever an admission slot for an endpoint actually frees.
+	// Invoked (strictly after the storage mutex unlocks, on the caller's
+	// thread) whenever an endpoint may newly admit a queued request - either
+	// a slot freed (releaseEndpointAttempt / releaseAdmissionForRelayCandidate)
+	// or its penalty was cleared early by a relay success / manual selection
+	// (notifyEndpointAdmissible). The listener just re-drains that endpoint.
 	[[nodiscard]] AdmissionReleaseListenerId addAdmissionReleaseListener(
 		Fn<void(const QString &endpointKey)> callback);
 	void removeAdmissionReleaseListener(AdmissionReleaseListenerId id);
+	void notifyEndpointAdmissible(const QString &key);
 
 	[[nodiscard]] auto storage()
 		-> details::MtProxy::EndpointContextStorage &;

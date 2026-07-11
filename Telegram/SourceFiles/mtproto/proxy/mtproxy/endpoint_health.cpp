@@ -598,6 +598,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	auto becameAdmissible = false;
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -669,6 +670,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		state.consecutiveFailures = 0;
 		state.healthy = true;
 		state.halfOpen = false;
+		becameAdmissible = wasDegraded;
 		if (wasDegraded) {
 			diagnosticsEvent = CanonicalDiagnosticsEvent(
 				ProxyDiagnosticsPhase::CanonicalRecovered,
@@ -683,6 +685,12 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
+	}
+	if (becameAdmissible) {
+		// The success just cleared this endpoint's cooldown/penalty. Wake
+		// the broker so every request queued behind the (now stale) cooldown
+		// drains at once, instead of trickling in one per ~1s denial poll.
+		_context->notifyEndpointAdmissible(key);
 	}
 }
 
