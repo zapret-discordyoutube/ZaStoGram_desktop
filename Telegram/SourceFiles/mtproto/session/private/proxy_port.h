@@ -175,7 +175,8 @@ public:
 		SessionProxyLease *lease,
 		SessionProxySuccessScope scope) = 0;
 	virtual void reportFirstMtprotoPayload(
-		const SessionProxyAttempt &attempt) = 0;
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) = 0;
 	virtual void reportConnectionError(
 		const SessionProxyAttempt &attempt,
 		int errorCode,

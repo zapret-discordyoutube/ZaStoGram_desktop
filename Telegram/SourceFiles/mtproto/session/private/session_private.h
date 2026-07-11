@@ -39,6 +39,9 @@ public:
 		not_null<QThread*> thread,
 		std::shared_ptr<SessionData> data,
 		ShiftedDcId shiftedDcId,
+		uint64 proxyGeneration = 0,
+		bool proxyMigrationScout = false,
+		bool proxyMigrationSuspended = false,
 		not_null<SessionProxyPort*> proxyPort = &DefaultSessionProxyPort(),
 		not_null<SessionConnectionFactory*> connectionFactory
 			= &DefaultSessionConnectionFactory(),

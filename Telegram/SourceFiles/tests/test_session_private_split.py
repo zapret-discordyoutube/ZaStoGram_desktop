@@ -114,7 +114,7 @@ def test_session_private_owns_transport_and_message_handler_components():
     assert "SessionTransport _transport;" in header
     assert "SessionMessageHandler _messageHandler;" in header
     assert "const not_null<SessionProxyPort*> _proxyPort;" in header
-    assert ", _transport(this, _runtime, thread)" in source
+    assert ", _transport(\n\tthis,\n\t_runtime,\n\tthread," in source
     assert ", _messageHandler(this)" in source
 
 
@@ -123,7 +123,7 @@ def test_session_transport_timers_are_bound_to_session_thread():
     transport = read(SESSION_TRANSPORT)
     transport_h = read(SESSION_TRANSPORT_H)
 
-    assert ", _transport(this, _runtime, thread)" in source
+    assert ", _transport(\n\tthis,\n\t_runtime,\n\tthread," in source
     assert "not_null<QThread*> thread" in transport_h
     assert "not_null<QThread*> thread" in transport
     assert "RuntimeTimer retryTimer;" in transport_h

@@ -85,10 +85,8 @@ def test_endpoint_health_module_is_registered_and_owns_state():
     assert "kMaxCooldown = crl::time(120 * 1000)" in policy
     assert "kDnsNegativeTtl = crl::time(30 * 1000)" in policy
     assert "kColdActiveCap = 1" in policy
-    assert "kFreshRelayActiveCap = 2" in policy
-    assert "kWarmRelayActiveCap = 4" in policy
-    assert "kStableRelayActiveCap = 8" in policy
-    assert "kHealthyHandshakeSpacing = crl::time(50)" in policy
+    assert "kHealthyActiveCap = 1" in policy
+    assert "kHealthyHandshakeSpacing = crl::time(500)" in policy
     assert "EndpointConcurrencyPolicyFor(" in policy
 
 
@@ -100,7 +98,7 @@ def test_session_private_admission_gates_before_socket_creation():
         "bool SessionTransport::appendTestConnection(")
 
     assert '#include "mtproto/proxy/connection_broker.h"' not in source
-    assert "SessionProxyLease mtproxyLease;" in header
+    assert header.count("SessionProxyLease mtproxyLease;") == 2
     assert "std::vector<SessionProxyTicket> brokerTickets;" in header
     assert "base::flat_map<QString, crl::time> _endpointCooldownUntil" not in header
     assert "noteTestConnectionFailure(" not in header
@@ -183,7 +181,14 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
     assert "_state.mtproxyEndpoint = i->mtproxyEndpoint;" in confirm_body
     assert "_state.mtproxyUse = i->mtproxyUse;" in confirm_body
     assert "_state.mtproxyEndpoint = MtProxy::EndpointId();" in destroy_body
+    assert "if (!canProveMtproxyRelay()) {" in connected_body
     assert "i->mtproxyLease.release();" in connected_body
+    assert "if (!canProveMtproxyRelay()) {" in confirm_body
+    assert "i->mtproxyLease.release();" in confirm_body
+    assert "_state.mtproxyLease = std::move(i->mtproxyLease);" in connected_body
+    assert "_state.mtproxyLease = std::move(i->mtproxyLease);" in confirm_body
+    assert "&_state.mtproxyLease" in error_body
+    assert "_state.mtproxyLease = SessionProxyLease();" in destroy_body
     assert "reportMtproxySuccess(" in read(
         TLS_SOCKET_RECORDS_CPP)
     assert "i->mtproxyLease.release();" in remove_body
@@ -193,7 +198,7 @@ def test_session_private_reports_success_and_failure_to_endpoint_health():
         "void SessionTransport::reportMtproxyConnectionUsable(")
     assert "_owner->_proxyPort->reportConnected(" in usable_body
     assert "snapshot.healthy && !snapshot.halfOpen" in usable_body
-    assert "SessionProxySuccessScope::Relay" in usable_body
+    assert "SessionProxySuccessScope::Handshake" in usable_body
     assert "reportMtproxyConnectionUsable(*i);" in connected_body
     assert "reportMtproxyConnectionUsable(*i);" in confirm_body
 
@@ -235,6 +240,7 @@ def test_relay_success_shadows_older_attempt_failures():
         "bool SessionTransport::appendTestConnection(")
 
     assert "uint64 successEpoch = 0;" in state_source
+    assert "uint64 lastRelayAttemptId = 0;" in state_source
     assert "crl::time lastRelaySuccessAt = 0;" in state_source
     assert "ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;" in state_source
     assert "RouteEndpoint lastGoodRoute;" in state_source
@@ -299,10 +305,12 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "_owner->_transport.noteMtprotoPayloadReceived();" in handle_received
     assert "_owner->_proxyPort->reportFirstMtprotoPayload(" in note_payload
     assert "currentProxyAttempt()" in note_payload
+    assert "&_state.mtproxyLease" in note_payload
     assert "_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;" in (
         session_connected)
 
     assert "state.lastRelaySuccessAt = now;" in report_success
+    assert "state.lastRelayAttemptId = report.attemptId;" in report_success
     assert "++state.successEpoch;" in report_success
     assert "state.lastGoodProfile = report.sentProfile;" in report_success
     assert "state.lastGoodRoute = report.endpoint.route;" in report_success
@@ -314,6 +322,7 @@ def test_relay_success_shadows_older_attempt_failures():
     assert "FailureReason::ServerHelloOkNoAppData" in stale_reasons
     assert "FailureReason::TcpConnectTimeout" in stale_reasons
     assert "state.lastRelaySuccessAt" in stale_helper
+    assert "report.attemptId == state.lastRelayAttemptId" in stale_helper
     assert "AttemptStartedAt(report, state)" in stale_helper
 
     stale_check = report_failure.index(

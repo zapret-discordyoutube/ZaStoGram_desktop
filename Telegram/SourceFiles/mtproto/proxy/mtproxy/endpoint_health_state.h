@@ -42,6 +42,7 @@ struct EndpointState {
 	int exhaustedSinceSuccess = 0;
 	bool relayProven = false;
 	uint64 successEpoch = 0;
+	uint64 lastRelayAttemptId = 0;
 	crl::time lastRelaySuccessAt = 0;
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
 	RouteEndpoint lastGoodRoute;

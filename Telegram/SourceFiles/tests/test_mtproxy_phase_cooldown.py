@@ -195,12 +195,8 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
 
     assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
-    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
-    assert policy.index("relayAge < kFreshRelayWindow") < policy.index(
-        "kFreshRelayActiveCap")
-    assert policy.index("relayAge < kWarmRelayWindow") < policy.index(
-        "kWarmRelayActiveCap")
-    assert "kStableRelayActiveCap" in policy
+    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "policy.activeCap = kUnknownActiveCap;" in policy
     assert "policy.retryAfter = kQueuedRetry;" in policy
 

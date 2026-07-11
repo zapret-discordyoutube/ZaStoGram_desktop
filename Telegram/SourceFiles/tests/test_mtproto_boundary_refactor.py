@@ -265,7 +265,9 @@ def test_session_callbacks_are_hidden_behind_delegate():
     assert "not_null<SessionDelegate*> delegate" in session_h
     assert "const not_null<SessionDelegate*> _delegate;" in session_h
     assert "const not_null<SessionDelegate*> _delegate;" in session_private_h
-    assert "std::make_unique<Session>(_instance, this" in instance
+    assert (
+        "std::make_unique<Session>(\n\t\t\t_instance,\n\t\t\tthis,"
+        in instance)
     assert "new SessionPrivate(\n\t\t_instance,\n\t\t_delegate," in session
 
     for hidden in (

@@ -841,7 +841,9 @@ void Application::setCurrentProxy(
 	my.setSettings(settings);
 	const auto now = current();
 	refreshGlobalProxy();
-	_proxyChanges.fire({ was, now });
+	if (was != now) {
+		_proxyChanges.fire({ was, now });
+	}
 	my.connectionTypeChangesNotify();
 	proxyRotationSettingsChanged();
 }

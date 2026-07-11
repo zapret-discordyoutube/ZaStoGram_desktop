@@ -313,7 +313,8 @@ public:
 		SessionProxyLease *lease,
 		SessionProxySuccessScope scope) override;
 	void reportFirstMtprotoPayload(
-		const SessionProxyAttempt &attempt) override;
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) override;
 	void reportConnectionError(
 		const SessionProxyAttempt &attempt,
 		int errorCode,
@@ -394,8 +395,9 @@ void ProductionSessionProxyPort::reportConnected(
 }
 
 void ProductionSessionProxyPort::reportFirstMtprotoPayload(
-		const SessionProxyAttempt &attempt) {
-	reportConnected(attempt, nullptr, SessionProxySuccessScope::Relay);
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) {
+	reportConnected(attempt, lease, SessionProxySuccessScope::Relay);
 	if (attempt.runtime) {
 		(void)ReportProxyAttemptSummary(
 			not_null{ attempt.runtime },

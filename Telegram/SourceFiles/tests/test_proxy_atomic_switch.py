@@ -3,12 +3,14 @@ from session_private_sources import read_session_private_sources
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
+APPLICATION_CPP = SOURCE_DIR / "core" / "application.cpp"
 MAIN_ACCOUNT_CPP = SOURCE_DIR / "main" / "main_account.cpp"
 INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "session.h"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
 SESSION_TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
+SESSION_TRANSPORT_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.cpp"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
@@ -62,6 +64,24 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     assert "session->migrateProxy(" in migrate
     assert "session.get() == _mainSession" in migrate
     assert "session->restart();" not in migrate
+    succeeded = function_body(
+        instance,
+        "void Instance::Private::proxyMigrationSucceeded(")
+    assert "session->releaseProxyMigration(generation);" in succeeded
+    assert "session.get() != _mainSession" not in succeeded
+
+
+def test_reapplying_selected_proxy_keeps_live_connections():
+    application = read(APPLICATION_CPP)
+    apply_proxy = function_body(application, "void Application::setCurrentProxy(")
+    explicit_restart = function_body(
+        application,
+        "void Application::restartProxyConnections(")
+
+    assert "if (was != now) {" in apply_proxy
+    assert apply_proxy.index("if (was != now) {") < apply_proxy.index(
+        "_proxyChanges.fire({ was, now });")
+    assert "_proxyChanges.fire({ current, current });" in explicit_restart
 
 
 def test_session_proxy_switch_suspends_old_generation_silently():
@@ -111,6 +131,44 @@ def test_session_proxy_switch_suspends_old_generation_silently():
         error_body.index("handleError(errorCode);"))
 
 
+def test_new_sessions_inherit_current_proxy_generation():
+    instance = read(INSTANCE_CPP)
+    session_header = read(SESSION_H)
+    session = read(SESSION_CPP)
+    transport_header = read(SESSION_TRANSPORT_H)
+    transport = read(SESSION_TRANSPORT_CPP)
+    private = read(SESSION_PRIVATE_CPP)
+    start_session = function_body(
+        instance,
+        "not_null<Session*> Instance::Private::startSession(")
+    start = function_body(session, "void Session::start()")
+    transport_constructor = function_body(
+        transport,
+        "SessionTransport::SessionTransport(")
+
+    assert "uint64 proxyGeneration" in session_header
+    assert "bool proxyMigrationScout" in session_header
+    assert "bool proxyMigrationSuspended" in session_header
+    assert "_proxyGeneration," in start
+    assert "_proxyMigrationScout," in start
+    assert "_proxyMigrationSuspended" in start
+    assert "proxyGeneration" in private
+    assert "proxyMigrationScout" in private
+    assert "proxyMigrationSuspended" in private
+    assert "uint64 proxyGeneration" in transport_header
+    assert "_state.proxyGeneration = proxyGeneration;" in transport_constructor
+    assert "_state.proxyMigrationScout = proxyMigrationScout;" in (
+        transport_constructor)
+    assert "_state.proxyMigrationSuspended = proxyMigrationSuspended;" in (
+        transport_constructor)
+    assert "_proxyGeneration," in start_session
+    assert "proxyMigrationScout," in start_session
+    assert "proxyMigrationSuspended" in start_session
+    assert "&& !_mainSession" not in start_session
+    assert "shiftedDcId == mainDcId()" in start_session
+    assert "result->migrateProxy(" not in start_session
+
+
 def test_broker_cancels_old_proxy_generation_tickets():
     header = read(BROKER_H)
     source = read(BROKER_CPP)
@@ -151,6 +209,8 @@ def test_status_reducer_shadows_old_proxy_generation_facts():
 
 if __name__ == "__main__":
     test_proxy_switch_uses_atomic_migration_not_global_restart()
+    test_reapplying_selected_proxy_keeps_live_connections()
     test_session_proxy_switch_suspends_old_generation_silently()
+    test_new_sessions_inherit_current_proxy_generation()
     test_broker_cancels_old_proxy_generation_tickets()
     test_status_reducer_shadows_old_proxy_generation_facts()

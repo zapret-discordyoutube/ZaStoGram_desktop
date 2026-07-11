@@ -42,13 +42,9 @@ def test_endpoint_health_has_named_concurrency_policy():
     assert "struct EndpointConcurrencyPolicy" in state
     assert "kColdActiveCap = 1" in policy
     assert "kUnknownActiveCap = kColdActiveCap" in policy
-    assert "kFreshRelayActiveCap = 2" in policy
-    assert "kWarmRelayActiveCap = 4" in policy
     assert "kDpiFailureActiveCap = 1" in policy
-    assert "kStableRelayActiveCap = 8" in policy
-    assert "kFreshRelayWindow = crl::time(10 * 1000)" in policy
-    assert "kWarmRelayWindow = crl::time(20 * 1000)" in policy
-    assert "kHealthyHandshakeSpacing = crl::time(50)" in policy
+    assert "kHealthyActiveCap = 1" in policy
+    assert "kHealthyHandshakeSpacing = crl::time(500)" in policy
     assert "bool useAllowed = true;" in state
     assert "nextHandshakeAt" in state
     assert "EndpointConcurrencyPolicyFor(" in policy
@@ -77,7 +73,7 @@ def test_cold_endpoint_admits_only_main_scout_until_relay_proof():
     assert "policy.activeCap = kDpiFailureActiveCap;" in policy
 
 
-def test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst():
+def test_relay_proof_keeps_handshakes_serialized():
     source = read(ENDPOINT_HEALTH_CPP)
     policy = body_after(
         read(ENDPOINT_HEALTH_POLICY_CPP),
@@ -86,12 +82,10 @@ def test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst():
 
     assert "state.relayProven = true;" in success
     assert "state.lastRelaySuccessAt = now;" in success
-    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
-    assert "relayAge < kFreshRelayWindow" in policy
-    assert "policy.activeCap = kFreshRelayActiveCap;" in policy
-    assert "relayAge < kWarmRelayWindow" in policy
-    assert "policy.activeCap = kWarmRelayActiveCap;" in policy
-    assert "policy.activeCap = kStableRelayActiveCap;" in policy
+    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
+    assert "kFreshRelayActiveCap" not in policy
+    assert "kStableRelayActiveCap" not in policy
 
 
 def test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail():
@@ -178,7 +172,7 @@ def test_connection_broker_drains_by_priority_not_request_queue_only():
 if __name__ == "__main__":
     test_endpoint_health_has_named_concurrency_policy()
     test_cold_endpoint_admits_only_main_scout_until_relay_proof()
-    test_relay_proof_ramps_endpoint_concurrency_instead_of_full_burst()
+    test_relay_proof_keeps_handshakes_serialized()
     test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail()
     test_dpi_like_failures_keep_strict_cap_and_recipe_escalation()
     test_tcp_route_failures_rotate_routes_without_canonical_cooldown()

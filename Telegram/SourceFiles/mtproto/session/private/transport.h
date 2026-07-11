@@ -21,7 +21,10 @@ public:
 	SessionTransport(
 		not_null<SessionPrivate*> owner,
 		not_null<RuntimeEnvironment*> runtime,
-		not_null<QThread*> thread);
+		not_null<QThread*> thread,
+		uint64 proxyGeneration,
+		bool proxyMigrationScout,
+		bool proxyMigrationSuspended);
 
 	void start();
 	void connectToServer(bool afterConfig = false);
@@ -93,6 +96,7 @@ private:
 		ConnectionPointer connection;
 		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
@@ -142,6 +146,7 @@ private:
 	void onConnected(not_null<AbstractConnection*> connection);
 	void onDisconnected(not_null<AbstractConnection*> connection);
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
+	[[nodiscard]] bool canProveMtproxyRelay() const;
 	void removeConnectionBrokerTicket(SessionProxyTicketId id);
 	void armWaitForConnectedTimer();
 	[[nodiscard]] SessionProxyAttempt proxyAttempt(

@@ -40,6 +40,7 @@ namespace {
 
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
+constexpr auto kMtproxyMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
 constexpr auto kProxyReconnectMaxTimeout = 8000;
@@ -225,6 +226,7 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_state.mtproxyAttemptStartedAt = 0;
 	_state.mtprotoDataReceived = false;
 	_state.connection = nullptr;
+	_state.mtproxyLease = SessionProxyLease();
 }
 
 void SessionTransport::reportMtproxyConnectionUsable(
@@ -241,7 +243,17 @@ void SessionTransport::reportMtproxyConnectionUsable(
 	_owner->_proxyPort->reportConnected(
 		proxyAttempt(connection),
 		nullptr,
-		SessionProxySuccessScope::Relay);
+		SessionProxySuccessScope::Handshake);
+}
+
+bool SessionTransport::canProveMtproxyRelay() const {
+	if (_owner->_sessionState.keyId || _owner->_authState.keyCreator) {
+		return true;
+	}
+	return _owner->_delegate->isKeysDestroyer()
+		? bool(_owner->_sessionState.data->getPersistentKey())
+		: bool(_owner->_sessionState.data->getTemporaryKey(
+			TemporaryKeyTypeByDcType(_owner->_currentDcType)));
 }
 
 void SessionTransport::removeConnectionBrokerTicket(SessionProxyTicketId id) {
@@ -518,6 +530,12 @@ void SessionTransport::restart() {
 void SessionTransport::onSentSome(uint64 size) {
 	if (!_timing.waitForReceivedTimer.isActive()) {
 		auto remain = static_cast<uint64>(_timing.waitForReceived);
+		if (_state.connection
+			&& !EmptySessionProxyEndpoint(_state.mtproxyEndpoint)) {
+			accumulate_max(
+				remain,
+				static_cast<uint64>(kMtproxyMinReceiveTimeout));
+		}
 		if (!_timing.oldConnection) {
 			Assert(remain <= kMaxReceiveTimeout);
 
@@ -735,8 +753,10 @@ void SessionTransport::onConnected(
 	mtproxyAttempt.successEpoch = i->mtproxyLease.successEpoch();
 	mtproxyAttempt.attemptId = i->mtproxyLease.attemptId();
 	const auto mtproxyAttemptStartedAt = i->mtproxyLease.startedAt();
-	i->mtproxyLease.release();
 	reportMtproxyConnectionUsable(*i);
+	if (!canProveMtproxyRelay()) {
+		i->mtproxyLease.release();
+	}
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_state.testConnections,
@@ -755,6 +775,7 @@ void SessionTransport::onConnected(
 		_state.mtproxyPlan = i->mtproxyPlan;
 		_state.mtproxyAttemptStartedAt = mtproxyAttemptStartedAt;
 		_state.connection = std::move(i->data);
+		_state.mtproxyLease = std::move(i->mtproxyLease);
 		_state.brokerTickets.clear();
 		_state.testConnections.clear();
 		_owner->checkAuthKey();
@@ -802,6 +823,9 @@ void SessionTransport::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	reportMtproxyConnectionUsable(*i);
+	if (!canProveMtproxyRelay()) {
+		i->mtproxyLease.release();
+	}
 	_state.mtproxyAttempt = i->mtproxyAttempt;
 	_state.mtproxyPlan = i->mtproxyPlan;
 	_state.mtproxyAttempt.proxyEpoch = i->mtproxyLease.proxyEpoch();
@@ -811,6 +835,7 @@ void SessionTransport::confirmBestConnection() {
 	_state.mtproxyEndpoint = i->mtproxyEndpoint;
 	_state.mtproxyUse = i->mtproxyUse;
 	_state.connection = std::move(i->data);
+	_state.mtproxyLease = std::move(i->mtproxyLease);
 	_state.brokerTickets.clear();
 	_state.testConnections.clear();
 
@@ -862,7 +887,7 @@ void SessionTransport::onError(
 			currentProxyAttempt(),
 			errorCode,
 			connection->proxyTransportFailure(),
-			nullptr,
+			&_state.mtproxyLease,
 			true);
 	}
 	removeTestConnection(connection);

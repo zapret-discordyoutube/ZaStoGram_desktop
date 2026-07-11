@@ -41,14 +41,17 @@ SessionPrivate::SessionState::SessionState(
 }
 
 SessionPrivate::SessionPrivate(
-	not_null<Instance*> instance,
-	not_null<SessionDelegate*> delegate,
-	not_null<QThread*> thread,
-	std::shared_ptr<SessionData> data,
-	ShiftedDcId shiftedDcId,
-	not_null<SessionProxyPort*> proxyPort,
-	not_null<SessionConnectionFactory*> connectionFactory,
-	not_null<SessionAuthKeyFactory*> authKeyFactory)
+		not_null<Instance*> instance,
+		not_null<SessionDelegate*> delegate,
+		not_null<QThread*> thread,
+		std::shared_ptr<SessionData> data,
+		ShiftedDcId shiftedDcId,
+		uint64 proxyGeneration,
+		bool proxyMigrationScout,
+		bool proxyMigrationSuspended,
+		not_null<SessionProxyPort*> proxyPort,
+		not_null<SessionConnectionFactory*> connectionFactory,
+		not_null<SessionAuthKeyFactory*> authKeyFactory)
 : QObject(nullptr)
 , _instance(instance)
 , _delegate(delegate)
@@ -60,7 +63,13 @@ SessionPrivate::SessionPrivate(
 , _realDcType(_delegate->dcOptions().dcType(_shiftedDcId))
 , _currentDcType(_realDcType)
 , _state(DisconnectedState)
-, _transport(this, _runtime, thread)
+, _transport(
+	this,
+	_runtime,
+	thread,
+	proxyGeneration,
+	proxyMigrationScout,
+	proxyMigrationSuspended)
 , _messageHandler(this)
 , _sessionState(std::move(data)) {
 	Expects(_shiftedDcId != 0);

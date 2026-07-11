@@ -249,17 +249,23 @@ void SessionData::detach() {
 }
 
 Session::Session(
-	not_null<Instance*> instance,
-	not_null<SessionDelegate*> delegate,
-	not_null<QThread*> thread,
-	ShiftedDcId shiftedDcId,
-	not_null<Dcenter*> dc)
+		not_null<Instance*> instance,
+		not_null<SessionDelegate*> delegate,
+		not_null<QThread*> thread,
+		ShiftedDcId shiftedDcId,
+		not_null<Dcenter*> dc,
+		uint64 proxyGeneration,
+		bool proxyMigrationScout,
+		bool proxyMigrationSuspended)
 : _instance(instance)
 , _delegate(delegate)
 , _shiftedDcId(shiftedDcId)
 , _dc(dc)
 , _data(std::make_shared<SessionData>(this))
 , _thread(thread)
+, _proxyGeneration(proxyGeneration)
+, _proxyMigrationScout(proxyMigrationScout)
+, _proxyMigrationSuspended(proxyMigrationSuspended)
 , _sender([=] { needToResumeAndSend(); }) {
 	refreshOptions();
 	watchDcKeyChanges();
@@ -320,7 +326,10 @@ void Session::start() {
 		_delegate,
 		_thread.get(),
 		_data,
-		_shiftedDcId);
+		_shiftedDcId,
+		_proxyGeneration,
+		_proxyMigrationScout,
+		_proxyMigrationSuspended);
 }
 
 void Session::restart() {
@@ -345,6 +354,9 @@ void Session::migrateProxy(uint64 generation, bool scout) {
 	if (scout) {
 		setConnectionNotInited();
 	}
+	_proxyGeneration = generation;
+	_proxyMigrationScout = scout;
+	_proxyMigrationSuspended = !scout;
 	if (const auto captured = _private) {
 		InvokeQueued(captured, [=] {
 			captured->migrateProxy(generation, scout);
@@ -355,6 +367,10 @@ void Session::migrateProxy(uint64 generation, bool scout) {
 void Session::releaseProxyMigration(uint64 generation) {
 	if (_killed) {
 		return;
+	}
+	if (_proxyGeneration == generation) {
+		_proxyMigrationScout = false;
+		_proxyMigrationSuspended = false;
 	}
 	if (const auto captured = _private) {
 		InvokeQueued(captured, [=] {

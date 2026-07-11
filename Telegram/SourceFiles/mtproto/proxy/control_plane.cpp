@@ -159,6 +159,7 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 		const ProxyFact &fact) {
 	return RelaySuccessIsFresh(current)
 		&& IsTerminalFailure(fact.status)
+		&& !(fact.status.attempt == current.attempt)
 		&& !IsNewerProxyEpoch(current.attempt, fact.status.attempt);
 }
 
@@ -201,6 +202,7 @@ void LogShadowedFact(
 	}
 	if (RelaySuccessIsFresh(current)
 		&& IsTerminalFailure(update)
+		&& !(update.attempt == current.attempt)
 		&& !IsNewerProxyEpoch(current.attempt, update.attempt)) {
 		return current;
 	}
@@ -328,7 +330,7 @@ ProxyFact ProxyControlPlane::FactFromReport(
 		fact.status.phase = ProxyConnectionPhase::CheckingTelegram;
 		return fact;
 	case ProxyDiagnosticsPhase::Connected:
-		fact.status.phase = ProxyConnectionPhase::Connected;
+		fact.status.phase = ProxyConnectionPhase::CheckingTelegram;
 		fact.successScope = ProxyControlPlaneSuccessScope::Handshake;
 		return fact;
 	case ProxyDiagnosticsPhase::MtpFirstDataReceived:

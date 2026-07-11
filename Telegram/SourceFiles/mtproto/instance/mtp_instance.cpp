@@ -665,9 +665,7 @@ void Instance::Private::proxyMigrationSucceeded(uint64 generation) {
 	}
 	_proxyMigrationActive = false;
 	for (const auto &[shiftedDcId, session] : _sessions) {
-		if (session.get() != _mainSession) {
-			session->releaseProxyMigration(generation);
-		}
+		session->releaseProxyMigration(generation);
 	}
 }
 
@@ -1553,13 +1551,22 @@ not_null<Session*> Instance::Private::startSession(ShiftedDcId shiftedDcId) {
 
 	const auto dc = getDcById(shiftedDcId);
 	const auto thread = getThreadForDc(shiftedDcId);
+	const auto proxyMigrationScout = _proxyMigrationActive
+		&& (shiftedDcId == mainDcId());
+	const auto proxyMigrationSuspended = _proxyMigrationActive
+		&& !proxyMigrationScout;
 	const auto result = _sessions.emplace(
 		shiftedDcId,
-		std::make_unique<Session>(_instance, this, thread, shiftedDcId, dc)
+		std::make_unique<Session>(
+			_instance,
+			this,
+			thread,
+			shiftedDcId,
+			dc,
+			_proxyGeneration,
+			proxyMigrationScout,
+			proxyMigrationSuspended)
 	).first->second.get();
-	if (_proxyMigrationActive && result != _mainSession) {
-		result->migrateProxy(_proxyGeneration, false);
-	}
 	if (isKeysDestroyer()) {
 		scheduleKeyDestroy(shiftedDcId);
 	}

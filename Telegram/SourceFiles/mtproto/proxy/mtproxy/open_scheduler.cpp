@@ -14,22 +14,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMutex>
 
 #include <algorithm>
-#include <vector>
 
 namespace MTP::details::MtProxy {
 namespace {
 
 constexpr auto kOpenSpacingJitter = crl::time(125);
+constexpr auto kMinimumOpenSpacing = crl::time(500);
 constexpr auto kAdaptiveSpacingMin = crl::time(500);
 constexpr auto kAdaptiveSpacingMax = crl::time(6000);
-
-// Burst budget: a few opens may go out back-to-back (startup connects a
-// handful of sessions), everything beyond that inside the window gets
-// spaced out. A cold start with many accounts otherwise fires a rapid
-// run of fresh handshakes at one endpoint - the classic scan pattern
-// that makes a proxy throttle new connections.
-constexpr auto kOpenBurstCount = 3;
-constexpr auto kOpenBurstWindow = crl::time(10 * 1000);
 
 } // namespace
 
@@ -176,40 +168,18 @@ OpenSlotReservation OpenScheduler::ReserveOpenSlot(
 		begin(state.recentOpens),
 		end(state.recentOpens),
 		[=](const OpenRecord &entry) {
-			return entry.openAt <= now - kOpenBurstWindow
-				&& entry.nextOpenAt <= now;
+			return entry.nextOpenAt <= now;
 		});
 	state.recentOpens.erase(expired, end(state.recentOpens));
-	auto scheduled = std::vector<crl::time>();
-	scheduled.reserve(
-		state.recentOpens.size() + state.pendingOpens.size());
 	auto openAt = earliest;
 	for (const auto &entry : state.recentOpens) {
-		scheduled.push_back(entry.openAt);
 		accumulate_max(openAt, entry.nextOpenAt);
 	}
 	for (const auto &entry : state.pendingOpens) {
-		scheduled.push_back(entry.openAt);
 		accumulate_max(openAt, entry.nextOpenAt);
 	}
-	std::sort(begin(scheduled), end(scheduled));
-	while (true) {
-		const auto first = std::upper_bound(
-			begin(scheduled),
-			end(scheduled),
-			openAt - kOpenBurstWindow);
-		if (end(scheduled) - first < kOpenBurstCount) {
-			break;
-		}
-		const auto jitter = crl::time(
-			_async.randomIndex(int(kOpenSpacingJitter) + 1));
-		openAt = *(end(scheduled) - kOpenBurstCount)
-			+ kOpenBurstWindow
-			+ jitter;
-	}
 	const auto spacing = std::max(
-		patternSpacing,
-		state.adaptiveSpacing);
+		{ kMinimumOpenSpacing, patternSpacing, state.adaptiveSpacing });
 	auto nextOpenAt = openAt;
 	if (spacing > 0) {
 		const auto jitter = crl::time(

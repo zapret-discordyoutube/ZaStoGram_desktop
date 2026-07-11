@@ -119,9 +119,9 @@ int main(int, char *[]) {
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
 	if (coldFirst.delay() != 0
-		|| coldSecond.delay() != 0
-		|| coldThird.delay() != 0) {
-		return Fail("cold endpoint should keep only the bounded open budget");
+		|| coldSecond.delay() != crl::time(507)
+		|| coldThird.delay() != crl::time(1014)) {
+		return Fail("cold endpoint opens should use steady spacing");
 	}
 	coldFirst.commit();
 	coldSecond.commit();
@@ -129,23 +129,23 @@ int main(int, char *[]) {
 	auto coldFourth = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
-	if (coldFourth.delay() != crl::time(10007)) {
-		return Fail("cold endpoint should wait for the rolling open window");
+	if (coldFourth.delay() != crl::time(1521)) {
+		return Fail("cold endpoint should keep steady spacing after commits");
 	}
 	coldFourth.cancel();
 	auto coldReplacement = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
-	if (coldReplacement.delay() != crl::time(10007)) {
+	if (coldReplacement.delay() != crl::time(1521)) {
 		return Fail("cancelling a pending slot should preserve real opens");
 	}
 	coldReplacement.cancel();
-	fake.time = crl::time(11008);
+	fake.time = crl::time(2522);
 	auto afterWindow = coldScheduler.ReserveOpenSlot(
 		endpoint,
 		MTP::ProxyConnectionPattern::Off);
 	if (afterWindow.delay() != 0) {
-		return Fail("expired real opens should leave the rolling window");
+		return Fail("expired real opens should release steady spacing");
 	}
 	afterWindow.cancel();
 

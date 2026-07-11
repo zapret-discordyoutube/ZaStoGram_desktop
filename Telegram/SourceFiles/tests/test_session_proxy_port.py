@@ -51,6 +51,8 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "requestConnection(" in port_header
     assert "reportConnected(" in port_header
     assert "reportFirstMtprotoPayload(" in port_header
+    first_payload = port_header.split("reportFirstMtprotoPayload(", 1)[1]
+    assert "SessionProxyLease *lease" in first_payload.split(") = 0;", 1)[0]
     assert "reportConnectionError(" in port_header
     assert "reportReceiveTimeout(" in port_header
     assert "reportConnectTimeout(" in port_header

@@ -373,6 +373,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	NoteRouteFailure(storage, state, report.endpoint.route, report.reason);
 	if (SoftNoAppDataFailure(state, report.reason, now)) {
 		state.relayProven = false;
+		state.lastRelayAttemptId = 0;
 		state.nextHandshakeAt = now + NoAppDataSoftRetry();
 		auto diagnosticsEvent = CanonicalDiagnosticsEvent(
 			ProxyDiagnosticsPhase::RouteFailed,
@@ -446,6 +447,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		|| report.reason == FailureReason::MtpReceiveTimeoutAfterData
 		|| report.reason == FailureReason::ConnectedNoMtprotoData) {
 		state.relayProven = false;
+		state.lastRelayAttemptId = 0;
 	}
 	const auto policy = EndpointConcurrencyPolicyFor(
 		state,
@@ -575,6 +577,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	state.recipeLevel = 0;
 	state.exhaustedSinceSuccess = 0;
 	state.relayProven = true;
+	state.lastRelayAttemptId = report.attemptId;
 	state.lastRelaySuccessAt = now;
 	++state.successEpoch;
 	++state.proxyEpoch;
@@ -643,6 +646,7 @@ void EndpointHealth::noteRelayStall(RelayStallReport report) {
 					report.runtimeId,
 					report.proxyGeneration);
 				state.relayProven = false;
+				state.lastRelayAttemptId = 0;
 			}
 		}
 		if (!staleRecipeLevel) {

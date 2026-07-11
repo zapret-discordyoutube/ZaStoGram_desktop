@@ -45,7 +45,7 @@ def test_connection_spread_defaults_to_browser_and_manual_toggle_is_soft():
     ) in box
 
 
-def test_scheduler_defines_safe_open_gap_and_off_bypass():
+def test_scheduler_defines_safe_open_gap_and_pattern_spacing():
     header = SCHEDULER_H.read_text(encoding="utf-8")
     source = SCHEDULER_CPP.read_text(encoding="utf-8")
 
@@ -53,6 +53,7 @@ def test_scheduler_defines_safe_open_gap_and_off_bypass():
     assert "[[nodiscard]] OpenSlotReservation ReserveOpenSlot(" in header
     assert "crl::time notBefore = 0" in header
     assert "constexpr auto kOpenSpacingJitter = crl::time(125)" in source
+    assert "constexpr auto kMinimumOpenSpacing = crl::time(500)" in source
     assert "case ProxyConnectionPattern::Soft: return crl::time(1100);" in source
     assert "case ProxyConnectionPattern::Quiet: return crl::time(1200);" in source
     assert "case ProxyConnectionPattern::Strict: return crl::time(1400);" in source
@@ -160,27 +161,30 @@ def test_scheduler_paces_adaptively_on_connect_timeouts():
     assert "state.adaptiveSpacing / 2" in source
 
 
-def test_scheduler_limits_open_bursts_per_endpoint():
+def test_scheduler_evenly_spaces_opens_per_endpoint():
     source = SCHEDULER_CPP.read_text(encoding="utf-8")
     scenario = SCHEDULER_TEST_CPP.read_text(encoding="utf-8")
 
-    assert "constexpr auto kOpenBurstCount = 3;" in source
-    assert "constexpr auto kOpenBurstWindow = crl::time(10 * 1000);" in source
+    assert "constexpr auto kMinimumOpenSpacing = crl::time(500);" in source
     context = (SOURCE_DIR / "mtproto" / "proxy" /
         "proxy_endpoint_context_p.h").read_text(encoding="utf-8")
     assert "std::deque<OpenRecord> recentOpens;" in context
     assert "std::deque<PendingOpenRecord> pendingOpens;" in context
     assert "state.recentOpens.erase(expired" in source
-    assert "end(scheduled) - kOpenBurstCount" in source
-    assert "+ kOpenBurstWindow" in source
+    assert "entry.nextOpenAt <= now" in source
+    assert (
+        "{ kMinimumOpenSpacing, patternSpacing, state.adaptiveSpacing }"
+        in source)
     assert "state.pendingOpens.push_back({" in source
     assert "state.adaptiveSpacing > 0" not in source
     assert "ProxyConnectionPattern::Off" in scenario
-    assert "auto coldFourth" in scenario
-    assert "coldFourth.delay() != crl::time(10007)" in scenario
+    assert "cold endpoint opens should use steady spacing" in scenario
+    assert "coldSecond.delay() != crl::time(507)" in scenario
+    assert "coldThird.delay() != crl::time(1014)" in scenario
+    assert "coldFourth.delay() != crl::time(1521)" in scenario
     assert "cancelled future slots should not delay a retry" in scenario
     assert "empty endpoint should preserve the requested delay" in scenario
-    assert "expired real opens should leave the rolling window" in scenario
+    assert "expired real opens should release steady spacing" in scenario
     assert "destroyed reservations should release future slots" in scenario
 
 
@@ -203,12 +207,12 @@ def test_scheduler_releases_cancelled_broker_reservations():
 if __name__ == "__main__":
     test_mtproxy_open_scheduler_module_is_registered()
     test_connection_spread_defaults_to_browser_and_manual_toggle_is_soft()
-    test_scheduler_defines_safe_open_gap_and_off_bypass()
+    test_scheduler_defines_safe_open_gap_and_pattern_spacing()
     test_adaptive_recipe_uses_ladder_for_spacing()
     test_connection_broker_reserves_global_open_slot_before_start()
     test_connection_broker_cancels_by_runtime_environment()
     test_live_mtproxy_connects_through_connection_broker_before_syn()
     test_proxy_check_uses_same_connection_broker_before_syn()
     test_scheduler_paces_adaptively_on_connect_timeouts()
-    test_scheduler_limits_open_bursts_per_endpoint()
+    test_scheduler_evenly_spaces_opens_per_endpoint()
     test_scheduler_releases_cancelled_broker_reservations()

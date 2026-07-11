@@ -166,7 +166,10 @@ public:
 		not_null<SessionDelegate*> delegate,
 		not_null<QThread*> thread,
 		ShiftedDcId shiftedDcId,
-		not_null<Dcenter*> dc);
+		not_null<Dcenter*> dc,
+		uint64 proxyGeneration,
+		bool proxyMigrationScout,
+		bool proxyMigrationSuspended);
 	~Session();
 
 	void start();
@@ -230,9 +233,12 @@ private:
 	const not_null<Dcenter*> _dc;
 	const std::shared_ptr<SessionData> _data;
 	const not_null<QThread*> _thread;
+	uint64 _proxyGeneration = 0;
 
 	SessionPrivate *_private = nullptr;
 
+	bool _proxyMigrationScout = false;
+	bool _proxyMigrationSuspended = false;
 	bool _killed = false;
 	bool _needToReceive = false;
 

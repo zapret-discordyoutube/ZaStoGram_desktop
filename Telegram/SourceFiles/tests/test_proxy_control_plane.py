@@ -133,12 +133,22 @@ def test_mtp_first_data_is_relay_success_fact():
     fact_body = function_body(
         source,
         "ProxyFact ProxyControlPlane::FactFromReport(")
+    transport_connected = fact_body.split(
+        "case ProxyDiagnosticsPhase::Connected:", 1)[1].split(
+            "case ProxyDiagnosticsPhase::MtpFirstDataReceived:", 1)[0]
+    relay_connected = fact_body.split(
+        "case ProxyDiagnosticsPhase::MtpFirstDataReceived:", 1)[1].split(
+            "case ProxyDiagnosticsPhase::Failed:", 1)[0]
 
     assert "ProxyControlPlaneSuccessScope::Relay" in source
     assert "ProxyDiagnosticsPhase::MtpFirstDataReceived" in fact_body
+    assert "ProxyConnectionPhase::CheckingTelegram" in transport_connected
+    assert "ProxyControlPlaneSuccessScope::Handshake" in transport_connected
+    assert "ProxyConnectionPhase::Connected" not in transport_connected
     assert "fact.successScope = ProxyControlPlaneSuccessScope::Relay;" in (
-        fact_body)
-    assert "fact.status.phase = ProxyConnectionPhase::Connected;" in fact_body
+        relay_connected)
+    assert "fact.status.phase = ProxyConnectionPhase::Connected;" in (
+        relay_connected)
     assert "kFreshRelaySuccessWindow" in source
     assert "successUntil" in read(STATUS_TYPES_H)
 
@@ -154,6 +164,7 @@ def test_fresh_relay_success_shadows_late_sibling_failures():
     assert "ShadowedByFreshRelaySuccess(current, fact)" in reducer
     assert "RelaySuccessIsFresh(current)" in shadow_helper
     assert "IsTerminalFailure(fact.status)" in shadow_helper
+    assert "!(fact.status.attempt == current.attempt)" in shadow_helper
     assert "IsNewerProxyEpoch(current.attempt, fact.status.attempt)" in (
         shadow_helper)
     assert "return current;" in reducer.split(
@@ -161,6 +172,20 @@ def test_fresh_relay_success_shadows_late_sibling_failures():
     assert "RelaySuccessIsFresh" in source
     assert "shadowed_by_fresh_success" in source
     assert "successUntil" in status_header
+
+
+def test_same_attempt_liveness_failure_replaces_fresh_success():
+    source = read(CONTROL_CPP)
+    reducer = function_body(
+        source,
+        "ProxyConnectionStatus ProxyControlPlane::Reduce(")
+    apply = function_body(
+        source,
+        "ProxyConnectionStatus ApplySelectedStatusUpdate(")
+
+    assert "!(fact.status.attempt == current.attempt)" in source
+    assert "!(update.attempt == current.attempt)" in apply
+    assert "IsRelayDataStall(fact.status)" in reducer
 
 
 def test_reducer_rejects_older_progress_attempts():
@@ -475,6 +500,7 @@ if __name__ == "__main__":
     test_windows_ci_runs_proxy_control_plane_source_guards_before_build()
     test_mtp_first_data_is_relay_success_fact()
     test_fresh_relay_success_shadows_late_sibling_failures()
+    test_same_attempt_liveness_failure_replaces_fresh_success()
     test_reducer_rejects_older_progress_attempts()
     test_no_appdata_is_relay_stall_not_no_serverhello_or_recipe_source()
     test_instance_status_sink_is_private_to_runtime_gateway()

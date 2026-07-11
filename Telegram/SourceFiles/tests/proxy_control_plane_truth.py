@@ -60,6 +60,7 @@ class EndpointState:
     proxy_generation: int = 0
     proxy_epoch: int = 1
     success_epoch: int = 0
+    last_relay_attempt_id: int = 0
     last_relay_success_at: int = 0
     relay_proven: bool = False
 
@@ -167,6 +168,7 @@ def apply_selected_status_update(current, update, now):
     if (
         relay_success_is_fresh(current, now)
         and is_terminal_failure(update)
+        and update.attempt != current.attempt
         and not is_newer_proxy_epoch(current.attempt, update.attempt)
     ):
         return current
@@ -198,6 +200,7 @@ def reduce_status(current, fact, now=1000, fresh_window=15000):
     if (
         relay_success_is_fresh(current, now)
         and is_terminal_failure(status)
+        and status.attempt != current.attempt
         and not is_newer_proxy_epoch(current.attempt, status.attempt)
     ):
         return current
@@ -225,10 +228,13 @@ def failure_from_stale_attempt(
         report_epoch,
         report_success_epoch,
         started_at,
-        state):
+        state,
+        report_attempt_id=0):
+    if report_generation_is_stale(report_generation, state):
+        return True
+    if report_attempt_id and report_attempt_id == state.last_relay_attempt_id:
+        return False
     return (
-        report_generation_is_stale(report_generation, state)
-        or
         report_epoch_is_stale(report_epoch, state)
         or
         report_success_epoch_is_stale(report_success_epoch, state)
@@ -258,7 +264,8 @@ def relay_success(
         report_epoch,
         report_success_epoch,
         started_at,
-        now):
+        now,
+        attempt_id=0):
     if success_from_stale_attempt(
             report_generation,
             report_epoch,
@@ -268,6 +275,7 @@ def relay_success(
         return False
     state.proxy_generation = max(state.proxy_generation, report_generation)
     state.relay_proven = True
+    state.last_relay_attempt_id = attempt_id
     state.last_relay_success_at = now
     state.success_epoch += 1
     state.proxy_epoch += 1
@@ -366,6 +374,16 @@ def test_reducer_no_appdata_relay_success_sibling_failure():
         error=True,
         attempt=attempt1))
     assert reduce_status(current, sibling_failure) == connected
+
+    same_attempt_stall = Fact(Status(
+        phase=FAILED,
+        reason=MTP_TIMEOUT_AFTER_DATA,
+        error=True,
+        attempt=attempt2))
+    stalled = reduce_status(current, same_attempt_stall)
+    assert stalled != connected
+    assert stalled.reason == MTP_TIMEOUT_AFTER_DATA
+    assert not stalled.error
 
 
 def test_old_generation_and_probe_facts_are_shadowed():
@@ -487,6 +505,32 @@ def test_endpoint_success_epoch_shadows_old_reports():
         state=state)
 
 
+def test_last_relay_attempt_stall_is_not_stale():
+    state = EndpointState(proxy_generation=3)
+    assert relay_success(
+        state,
+        report_generation=3,
+        report_epoch=1,
+        report_success_epoch=0,
+        started_at=100,
+        now=200,
+        attempt_id=7)
+    assert not failure_from_stale_attempt(
+        report_generation=3,
+        report_epoch=1,
+        report_success_epoch=0,
+        started_at=100,
+        state=state,
+        report_attempt_id=7)
+    assert failure_from_stale_attempt(
+        report_generation=3,
+        report_epoch=1,
+        report_success_epoch=0,
+        started_at=100,
+        state=state,
+        report_attempt_id=6)
+
+
 def test_faketls_appdata_does_not_prove_relay_or_bump_epoch():
     state = EndpointState()
     assert faketls_appdata_success(
@@ -601,6 +645,8 @@ def test_source_seams_match_truth_table_contract():
     assert "SuccessFromStaleAttempt(report, state)" in health
     assert "uint64 proxyGeneration = 0;" in health_header
     assert "uint64 successEpoch = 0;" in health_header
+    assert "uint64 lastRelayAttemptId = 0;" in read(
+        PROXY_DIR / "mtproxy" / "endpoint_health_state.h")
     assert "uint64 successEpoch() const" in health_header
     assert "++state.proxyEpoch;" in health
     assert "++state.successEpoch;" in health
@@ -628,6 +674,7 @@ def run_all_truth_tables():
     test_older_progress_fact_cannot_repaint_connected_status()
     test_selected_status_success_epoch_shadows_late_failures()
     test_endpoint_success_epoch_shadows_old_reports()
+    test_last_relay_attempt_stall_is_not_stale()
     test_faketls_appdata_does_not_prove_relay_or_bump_epoch()
     test_probe_waiting_slot_and_relay_proven_gate()
     test_broker_claim_prevents_double_admit()

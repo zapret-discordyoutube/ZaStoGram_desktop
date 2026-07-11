@@ -19,12 +19,8 @@ constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
 constexpr auto kColdActiveCap = 1;
 constexpr auto kUnknownActiveCap = kColdActiveCap;
 constexpr auto kDpiFailureActiveCap = 1;
-constexpr auto kFreshRelayActiveCap = 2;
-constexpr auto kWarmRelayActiveCap = 4;
-constexpr auto kStableRelayActiveCap = 8;
-constexpr auto kFreshRelayWindow = crl::time(10 * 1000);
-constexpr auto kWarmRelayWindow = crl::time(20 * 1000);
-constexpr auto kHealthyHandshakeSpacing = crl::time(50);
+constexpr auto kHealthyActiveCap = 1;
+constexpr auto kHealthyHandshakeSpacing = crl::time(500);
 constexpr auto kQueuedRetry = crl::time(1000);
 constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
 constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
@@ -318,6 +314,10 @@ void ApplyProxyGeneration(
 			state)) {
 		return true;
 	}
+	if (report.attemptId
+		&& report.attemptId == state.lastRelayAttemptId) {
+		return false;
+	}
 	if (ReportEpochIsStale(report.proxyEpoch, state)) {
 		return true;
 	}
@@ -448,14 +448,7 @@ void PruneExpiredAttempts(EndpointState &state, crl::time now) {
 			policy.useAllowed = false;
 		}
 	} else if (state.healthy) {
-		const auto relayAge = now - state.lastRelaySuccessAt;
-		if (relayAge < kFreshRelayWindow) {
-			policy.activeCap = kFreshRelayActiveCap;
-		} else if (relayAge < kWarmRelayWindow) {
-			policy.activeCap = kWarmRelayActiveCap;
-		} else {
-			policy.activeCap = kStableRelayActiveCap;
-		}
+		policy.activeCap = kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
 		policy.retryAfter = kHealthyHandshakeSpacing;
 	} else {

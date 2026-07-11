@@ -130,10 +130,15 @@ def test_session_reports_silence_and_recovers_temporary_key():
         session, "void SessionTransport::waitReceivedFailed(")
     destroy_all = function_body(
         session, "void SessionTransport::destroyAllConnections(")
+    can_prove_relay = function_body(
+        session, "bool SessionTransport::canProveMtproxyRelay() const")
 
     assert "bool mtprotoDataReceived = false;" in header
     assert "int mtprotoSilentTimeouts = 0;" in header
     assert "_state.mtprotoDataReceived = false;" in destroy_all
+    assert "_owner->_sessionState.keyId" in can_prove_relay
+    assert "_owner->_authState.keyCreator" in can_prove_relay
+    assert "getTemporaryKey(" in can_prove_relay
 
     # A connection that connects (even passing the plaintext fake-pq
     # check) but never delivers an MTProto payload reports relay silence,
@@ -160,6 +165,11 @@ def test_session_reports_silence_and_recovers_temporary_key():
         adapter,
         "void ProductionSessionProxyPort::reportFirstMtprotoPayload(")
     assert "SuccessScope::Relay" in first_payload
+    assert "reportConnected(attempt, lease," in first_payload
+    note_payload = function_body(
+        transport,
+        "void SessionTransport::noteMtprotoPayloadReceived()")
+    assert "&_state.mtproxyLease" in note_payload
     assert transport.index("_timing.retryTimeout = 1;") < transport.index(
         "reportFirstMtprotoPayload(")
 
@@ -176,28 +186,32 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     stall = function_body(health, "void EndpointHealth::noteRelayStall(")
     wait_received = function_body(
         session, "void SessionTransport::waitReceivedFailed(")
+    on_sent = function_body(session, "void SessionTransport::onSentSome(")
 
     assert "state.relayProven" in policy
     assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
     assert "use != EndpointUse::Main" in policy
     assert "policy.useAllowed = false;" in policy
-    assert "const auto relayAge = now - state.lastRelaySuccessAt;" in policy
-    assert "kFreshRelayActiveCap" in policy
-    assert "kWarmRelayActiveCap" in policy
-    assert "kStableRelayActiveCap" in policy
+    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "state.relayProven = true;" in success
     assert success.index("SuccessScope::Relay") < success.index(
         "state.relayProven = true;")
     assert "state.relayProven = false;" in failure
+    assert "state.lastRelayAttemptId = 0;" in failure
 
     # A mid-session silence of an established connection clears the proof
     # without any cooldown - reconnects stay allowed, just as scouts.
     assert "struct RelayStallReport" in header
     assert "void noteRelayStall(RelayStallReport report)" in header
     assert "relayProven = false;" in stall
+    assert "lastRelayAttemptId = 0;" in stall
     assert "FailureFromStaleAttempt(staleReport, state)" in stall
     assert "terminalUntil" not in stall
     assert "_owner->_proxyPort->reportReceiveTimeout(" in wait_received
+    assert "kMtproxyMinReceiveTimeout = crl::time(8000)" in session
+    assert "!EmptySessionProxyEndpoint(_state.mtproxyEndpoint)" in on_sent
+    assert "static_cast<uint64>(kMtproxyMinReceiveTimeout)" in on_sent
     adapter = read(PROXY_ADAPTER_CPP)
     relay_stall = function_body(
         adapter,

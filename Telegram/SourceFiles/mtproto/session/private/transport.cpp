@@ -49,11 +49,18 @@ SessionTransport::TimingState::TimingState(
 }
 
 SessionTransport::SessionTransport(
-	not_null<SessionPrivate*> owner,
-	not_null<RuntimeEnvironment*> runtime,
-	not_null<QThread*> thread)
+		not_null<SessionPrivate*> owner,
+		not_null<RuntimeEnvironment*> runtime,
+		not_null<QThread*> thread,
+		uint64 proxyGeneration,
+		bool proxyMigrationScout,
+		bool proxyMigrationSuspended)
 : _owner(owner)
 , _timing(runtime, this, thread) {
+	_state.proxyGeneration = proxyGeneration;
+	_state.proxyMigrationScout = proxyMigrationScout;
+	_state.proxyMigrationSuspended = proxyMigrationSuspended;
+	_state.mtproxyAttempt = { .proxyGeneration = proxyGeneration };
 }
 
 void SessionTransport::start() {
@@ -202,7 +209,9 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 		if (_state.connection) {
 			_state.connection->markProxyMtprotoPayloadReceived();
 		}
-		_owner->_proxyPort->reportFirstMtprotoPayload(currentProxyAttempt());
+		_owner->_proxyPort->reportFirstMtprotoPayload(
+			currentProxyAttempt(),
+			&_state.mtproxyLease);
 	}
 	_state.startedConnectingAt = crl::time(0);
 }
