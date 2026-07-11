@@ -143,6 +143,7 @@ void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
 	if (key.isEmpty()) {
 		return;
 	}
+	const auto now = crl::now();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
 	{
 		auto &storage = _context->storage();
@@ -152,8 +153,11 @@ void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
 			return;
 		}
 		auto &state = i->second;
+		// nextHandshakeAt gates admission too (spacing / soft-retry), so a
+		// selection that clears only it must still wake the queued scout.
 		const auto hadPenalty = (state.terminalUntil > 0)
 			|| state.halfOpen
+			|| (state.nextHandshakeAt > now)
 			|| (state.consecutiveFailures > 0);
 		state.terminalUntil = 0;
 		state.halfOpen = false;

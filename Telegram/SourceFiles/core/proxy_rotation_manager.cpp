@@ -503,15 +503,28 @@ bool ProxyRotationManager::proxyRelayHealthy(
 	if (proxy.type != MTP::ProxyData::Type::Mtproto) {
 		return true;
 	}
+	// accountForChecks() asserts a production account exists; checkDone can
+	// reach here from an in-flight check after the last account went away,
+	// so mirror its precondition and treat "no account to consult" as
+	// healthy (don't block) rather than aborting.
+	const auto activeUsable = App().someSessionExists()
+		&& App().activeAccount().sessionExists()
+		&& !App().activeAccount().mtp().isTestMode();
+	if (!activeUsable && productionAccounts().empty()) {
+		return true;
+	}
 	const auto endpoint = MTP::details::MtProxy::EndpointIdFromProxy(
 		proxy,
 		App().settings().proxyStealthOptions());
 	const auto snapshot = accountForChecks()->mtp().runtimeEnvironment()
 		.proxyServices().control().mtproxyEndpointSnapshot(endpoint);
-	// Block only an ACTIVELY degraded endpoint (in cooldown or half-open
-	// after a failure). A never-used proxy has an empty snapshot and is
-	// treated as healthy so a fresh candidate is still selectable.
-	return !snapshot.halfOpen && (snapshot.terminalUntil <= crl::now());
+	// Block only an endpoint that is ACTIVELY in cooldown right now. This is
+	// self-healing: once the cooldown expires the proxy is eligible again,
+	// so a genuinely recovered proxy is not deprioritized forever (halfOpen
+	// persists until a fresh main-use success, so it is deliberately not
+	// used here). A never-used proxy has terminalUntil==0 and stays
+	// selectable.
+	return snapshot.terminalUntil <= crl::now();
 }
 
 bool ProxyRotationManager::shouldSwitchToAvailable() const {

@@ -109,8 +109,12 @@ def test_health_request_stays_conservative_without_verified_candidate():
     health = function_body(
         source, "bool ProxyRotationManager::proxyRelayHealthy(")
     assert "mtproxyEndpointSnapshot(endpoint)" in health
-    assert "snapshot.halfOpen" in health
+    # Self-healing: block only an endpoint actively in cooldown (halfOpen
+    # persists until a fresh success, so it must NOT gate here).
     assert "snapshot.terminalUntil <= crl::now()" in health
+    assert "snapshot.halfOpen" not in health
+    # Must not abort when no account exists to consult (checkDone path).
+    assert "productionAccounts().empty()" in health
 
     # And the switch remains gated on rotation actually being sensible
     # (observing enabled, accounts present, disconnected or starving).
