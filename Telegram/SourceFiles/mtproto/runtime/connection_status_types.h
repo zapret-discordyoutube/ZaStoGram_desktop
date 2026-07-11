@@ -90,6 +90,7 @@ struct ProxyTransportFailure {
 	QString parserStage;
 	std::optional<qint64> rxAfterClientHello;
 	QString rxClass;
+	QString block; // no-ServerHello verdict, "slug:attribution" (see below)
 	QString tlsRecordType;
 	QString tlsRecordVersion;
 	std::optional<int> tlsRecordLength;

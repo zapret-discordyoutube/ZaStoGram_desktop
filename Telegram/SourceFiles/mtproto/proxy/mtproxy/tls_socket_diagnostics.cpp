@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "mtproto/proxy/mtproxy/handshake_diagnosis.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
@@ -47,6 +48,7 @@ ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
 			? std::make_optional(_rxAfterClientHello)
 			: std::nullopt,
 		.rxClass = clientHelloKnown ? responseClass() : QString(),
+		.block = blockToken(),
 		.tlsRecordType = responseRecordType(),
 		.tlsRecordVersion = responseRecordVersion(),
 		.tlsRecordLength = responseRecordLength(),
@@ -102,6 +104,25 @@ ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
 
 QString TlsSocket::responseClass() const {
 	return FakeTlsResponseClass(_responsePrefix, _rxAfterClientHello);
+}
+
+QString TlsSocket::blockToken() const {
+	// Only meaningful for the ambiguous "ClientHello sent, no ServerHello"
+	// stall - other phases have unambiguous reasons of their own. The peer
+	// actively ending the connection (FIN or a network-level reset) is what
+	// separates an on-path reset from our own local timeout on silence.
+	const auto peerClosed = (_closeOrigin == ProxyCloseOrigin::PeerClosed)
+		|| (_closeOrigin == ProxyCloseOrigin::NetworkError);
+	return MtProxy::HandshakeBlockToken(MtProxy::AnalyzeHandshakeBlock({
+		.isNoServerHelloStall = (_phase == HandshakePhase::ClientHelloSent)
+			&& (failureReason()
+				== MtProxy::FailureReason::ClientHelloSentNoServerHello),
+		.clientHelloBytes = _clientHelloBytes,
+		.clientHelloAcceptedBytes = _clientHelloAcceptedBytes,
+		.rxAfterClientHello = _rxAfterClientHello,
+		.responsePrefix = _responsePrefix,
+		.peerClosed = peerClosed,
+	}));
 }
 
 QString TlsSocket::responseRecordType() const {
@@ -236,6 +257,9 @@ void TlsSocket::reportTransportEvent(
 			? std::make_optional(_rxAfterClientHello)
 			: std::nullopt,
 		.rxClass = clientHelloKnown ? responseClass() : QString(),
+		.block = (severity == ProxyDiagnosticsSeverity::Error)
+			? blockToken()
+			: QString(),
 		.tlsRecordType = _rxAfterClientHello
 			? responseRecordType()
 			: QString(),

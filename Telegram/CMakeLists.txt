@@ -1570,6 +1570,7 @@ PRIVATE
     mtproto/proxy/mtproxy/endpoint_health_state.h
     mtproto/proxy/mtproxy/endpoint_identity.cpp
     mtproto/proxy/mtproxy/endpoint_identity.h
+    mtproto/proxy/mtproxy/handshake_diagnosis.h
     mtproto/proxy/mtproxy/open_scheduler.cpp
     mtproto/proxy/mtproxy/open_scheduler.h
     mtproto/proxy/mtproxy/tls_socket.cpp

@@ -107,6 +107,7 @@ private:
 		ProxyDiagnosticsSeverity severity,
 		const QString &message);
 	[[nodiscard]] QString responseClass() const;
+	[[nodiscard]] QString blockToken() const;
 	[[nodiscard]] QString responseRecordType() const;
 	[[nodiscard]] QString responseRecordVersion() const;
 	[[nodiscard]] std::optional<int> responseRecordLength() const;

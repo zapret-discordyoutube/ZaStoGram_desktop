@@ -527,6 +527,9 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (!safe.rxClass.isEmpty()) {
 		parts.push_back(u"rx_class=%1"_q.arg(safe.rxClass));
 	}
+	if (!safe.block.isEmpty()) {
+		parts.push_back(u"block=%1"_q.arg(safe.block));
+	}
 	if (!safe.tlsRecordType.isEmpty()) {
 		parts.push_back(u"tls_record=%1"_q.arg(safe.tlsRecordType));
 	}

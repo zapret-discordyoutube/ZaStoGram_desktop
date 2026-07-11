@@ -101,6 +101,7 @@ struct ProxyDiagnosticsEvent {
 	std::optional<crl::time> clientHelloFragmentDelayMs;
 	std::optional<qint64> rxAfterClientHello;
 	QString rxClass;
+	QString block;
 	QString tlsRecordType;
 	QString tlsRecordVersion;
 	std::optional<int> tlsRecordLength;
@@ -151,6 +152,7 @@ struct ProxyEventReport {
 	std::optional<crl::time> clientHelloFragmentDelayMs;
 	std::optional<qint64> rxAfterClientHello;
 	QString rxClass;
+	QString block;
 	QString tlsRecordType;
 	QString tlsRecordVersion;
 	std::optional<int> tlsRecordLength;
