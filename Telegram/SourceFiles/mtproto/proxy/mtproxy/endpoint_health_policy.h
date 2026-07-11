@@ -59,7 +59,8 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now);
 [[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
 	const EndpointState &state,
 	EndpointUse use,
-	crl::time now);
+	crl::time now,
+	bool fastWarmup);
 [[nodiscard]] Snapshot MakeSnapshot(
 	const EndpointState &state,
 	ProxyRuntimeId runtimeId);

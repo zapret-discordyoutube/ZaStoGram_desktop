@@ -220,7 +220,9 @@ def test_full_concurrency_needs_relay_proof_not_just_handshakes():
     assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
     assert "use != EndpointUse::Main" in policy
     assert "policy.useAllowed = false;" in policy
-    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.activeCap = fastWarmup" in policy
+    assert "? kFastHealthyActiveCap" in policy
+    assert ": kHealthyActiveCap;" in policy
     assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "const auto promotion = PromoteRelayProof(" in success
     assert success.index("SuccessScope::Relay") < success.index(

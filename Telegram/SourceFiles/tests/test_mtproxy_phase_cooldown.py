@@ -222,7 +222,9 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
 
     assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
-    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.activeCap = fastWarmup" in policy
+    assert "? kFastHealthyActiveCap" in policy
+    assert ": kHealthyActiveCap;" in policy
     assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "policy.activeCap = kUnknownActiveCap;" in policy
     assert "policy.retryAfter = kQueuedRetry;" in policy

@@ -1266,6 +1266,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_connection_proxy" = "{transport} with proxy";
 "lng_connection_proxy_ping" = "{transport} with proxy, ping: {ping} ms";
 "lng_connection_try_ipv6" = "Try connecting through IPv6";
+"lng_connection_fast_warmup" = "Fast connection ramp-up";
 "lng_connection_host_ph" = "Hostname";
 "lng_connection_port_ph" = "Port";
 "lng_connection_user_ph" = "Username";

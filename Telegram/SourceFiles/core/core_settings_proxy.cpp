@@ -152,7 +152,7 @@ QByteArray SettingsProxy::serialize() const {
 			0,
 			ranges::plus(),
 			&Serialize::bytearraySize)
-		+ (5 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
+		+ (6 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
 	auto stream = Serialize::ByteArrayWriter(size);
 	stream
 		<< qint32(_tryIPv6 ? 1 : 0)
@@ -172,6 +172,7 @@ QByteArray SettingsProxy::serialize() const {
 		stream << qint32(index);
 	}
 	stream << qint32(_defaultProxyAdded ? 1 : 0);
+	stream << qint32(_fastWarmup ? 1 : 0);
 	return std::move(stream).result();
 }
 
@@ -243,6 +244,11 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 		stream >> defaultProxyAdded;
 	}
 
+	auto fastWarmup = qint32(_fastWarmup ? 1 : 0);
+	if (!stream.atEnd()) {
+		stream >> fastWarmup;
+	}
+
 	if (!stream.ok()) {
 		LOG(("App Error: "
 			"Bad data for Core::SettingsProxy::setFromSerialized()"));
@@ -259,6 +265,7 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_list = std::move(list);
 	setProxyRotationPreferredIndices(std::move(preferredIndices));
 	_defaultProxyAdded = (defaultProxyAdded == 1);
+	_fastWarmup = (fastWarmup == 1);
 
 	ensureDefaultProxy();
 
@@ -317,6 +324,14 @@ bool SettingsProxy::tryIPv6() const {
 
 void SettingsProxy::setTryIPv6(bool value) {
 	_tryIPv6 = value;
+}
+
+bool SettingsProxy::fastWarmup() const {
+	return _fastWarmup;
+}
+
+void SettingsProxy::setFastWarmup(bool value) {
+	_fastWarmup = value;
 }
 
 bool SettingsProxy::useProxyForCalls() const {

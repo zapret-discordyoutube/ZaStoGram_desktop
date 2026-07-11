@@ -20,6 +20,7 @@ constexpr auto kColdActiveCap = 1;
 constexpr auto kUnknownActiveCap = kColdActiveCap;
 constexpr auto kDpiFailureActiveCap = 1;
 constexpr auto kHealthyActiveCap = 1;
+constexpr auto kFastHealthyActiveCap = 2;
 constexpr auto kHealthyHandshakeSpacing = crl::time(500);
 constexpr auto kQueuedRetry = crl::time(1000);
 constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
@@ -387,7 +388,8 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 [[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
 		const EndpointState &state,
 		EndpointUse use,
-		crl::time now) {
+		crl::time now,
+		bool fastWarmup) {
 	auto policy = EndpointConcurrencyPolicy();
 	if (FailureNeedsRecipeEscalation(state.lastFailure)) {
 		// DPI-implicating failure: strict single probe with escalation
@@ -408,7 +410,12 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 		}
 	} else if (state.healthy) {
 		// Proven and currently healthy: pipeline handshakes with spacing.
-		policy.activeCap = kHealthyActiveCap;
+		// Fast warm-up allows a second concurrent handshake (a browser
+		// routinely opens two TLS connections to one host); the careful
+		// single-probe rows above are unaffected.
+		policy.activeCap = fastWarmup
+			? kFastHealthyActiveCap
+			: kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
 		policy.retryAfter = kHealthyHandshakeSpacing;
 	} else {

@@ -32,6 +32,7 @@ struct RuntimeProxySettings final {
 	Fn<ProxyData()> selected;
 	Fn<ProxyData::Settings()> settings;
 	Fn<bool()> tryIPv6;
+	Fn<bool()> fastProxyWarmup;
 	Fn<ProxyStealthOptions()> stealthOptions;
 	Fn<void(Fn<void()>, rpl::lifetime&)> watchConnectionTypeChanges;
 	Fn<bool(const QString&, const QStringList&, crl::time)> applyDomainIps;

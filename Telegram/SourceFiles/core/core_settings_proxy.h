@@ -37,6 +37,9 @@ public:
 	[[nodiscard]] bool tryIPv6() const;
 	void setTryIPv6(bool value);
 
+	[[nodiscard]] bool fastWarmup() const;
+	void setFastWarmup(bool value);
+
 	[[nodiscard]] bool useProxyForCalls() const;
 	void setUseProxyForCalls(bool value);
 
@@ -79,6 +82,7 @@ private:
 
 	bool _tryIPv6 = false;
 	bool _useProxyForCalls = false;
+	bool _fastWarmup = true;
 	bool _proxyRotationEnabled = false;
 	bool _checkIpWarningShown = false;
 	bool _defaultProxyAdded = false;

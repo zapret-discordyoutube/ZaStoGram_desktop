@@ -40,6 +40,9 @@ RuntimeProxySettings CreateProxySettings() {
 		.tryIPv6 = [] {
 			return Core::App().settings().proxy().tryIPv6();
 		},
+		.fastProxyWarmup = [] {
+			return Core::App().settings().proxy().fastWarmup();
+		},
 		.stealthOptions = [] {
 			return Core::App().settings().proxyStealthOptions();
 		},

@@ -762,6 +762,7 @@ private:
 	not_null<ProxiesBoxController*> _controller;
 	Core::SettingsProxy &_settings;
 	QPointer<Ui::Checkbox> _tryIPv6;
+	QPointer<Ui::Checkbox> _fastWarmup;
 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
@@ -1274,6 +1275,13 @@ void ProxiesBox::setupContent() {
 			_settings.tryIPv6()),
 		st::proxySettingsRightCheckPadding);
 	_tryIPv6->setAllowTextLines(2);
+	_fastWarmup = right->add(
+		object_ptr<Ui::Checkbox>(
+			right,
+			tr::lng_connection_fast_warmup(tr::now),
+			_settings.fastWarmup()),
+		st::proxySettingsRightCheckPadding);
+	_fastWarmup->setAllowTextLines(2);
 	_proxySettings
 		= std::make_shared<Ui::RadioenumGroup<ProxyData::Settings>>(
 			_settings.settings());
@@ -1632,6 +1640,10 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](bool checked) {
 		_controller->setTryIPv6(checked);
 	}, _tryIPv6->lifetime());
+	_fastWarmup->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		_controller->setFastWarmup(checked);
+	}, _fastWarmup->lifetime());
 
 	_controller->proxySettingsValue(
 	) | rpl::on_next([=](ProxyData::Settings value) {
@@ -2912,6 +2924,15 @@ void ProxiesBoxController::setTryIPv6(bool enabled) {
 	// Restart every account's connections, not only the active one.
 	Core::App().restartProxyConnections();
 	_settings.connectionTypeChangesNotify();
+	saveDelayed();
+}
+
+void ProxiesBoxController::setFastWarmup(bool enabled) {
+	if (Core::App().settings().proxy().fastWarmup() == enabled) {
+		return;
+	}
+	// The flag is read on each admission, no restart is needed.
+	Core::App().settings().proxy().setFastWarmup(enabled);
 	saveDelayed();
 }
 

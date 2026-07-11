@@ -93,6 +93,7 @@ public:
 	void setProxyRotationEnabled(bool enabled);
 	void setProxyRotationTimeout(int value);
 	void setTryIPv6(bool enabled);
+	void setFastWarmup(bool enabled);
 	rpl::producer<ProxyData::Settings> proxySettingsValue() const;
 
 	[[nodiscard]] bool contains(const ProxyData &proxy) const;

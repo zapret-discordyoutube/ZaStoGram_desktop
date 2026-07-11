@@ -98,6 +98,13 @@ void ResolveLeaseIdentity(FailureReport &report) {
 	report.attemptStartedAt = report.lease->startedAt();
 }
 
+[[nodiscard]] bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime) {
+	// Evaluated before taking the storage mutex: the getter reaches into
+	// application settings.
+	const auto &settings = runtime->proxy();
+	return settings.fastProxyWarmup ? settings.fastProxyWarmup() : true;
+}
+
 void ResolveLeaseIdentity(SuccessReport &report) {
 	if (!report.lease) {
 		return;
@@ -235,6 +242,7 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		? request.runtimeId
 		: _runtimeId;
 	const auto now = crl::now();
+	const auto fastWarmup = FastWarmupEnabled(_runtime);
 	auto result = Admission();
 	auto rotationEvent = std::optional<EndpointEvent>();
 	auto starvationDiagnostics = std::optional<ProxyDiagnosticsEvent>();
@@ -260,7 +268,8 @@ Admission EndpointHealth::admit(const AdmissionRequest &request) {
 		const auto policy = EndpointConcurrencyPolicyFor(
 			state,
 			request.use,
-			now);
+			now,
+			fastWarmup);
 		auto denialAllowsRotation = true;
 		const auto denied = [&] {
 			if (state.terminalUntil > now) {
@@ -370,6 +379,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
+	const auto fastWarmup = FastWarmupEnabled(_runtime);
 	auto event = EndpointEvent();
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
@@ -487,7 +497,8 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto policy = EndpointConcurrencyPolicyFor(
 		state,
 		report.use,
-		now);
+		now,
+		fastWarmup);
 	if (policy.recipeEscalationAllowed && state.recipeLevel < 2) {
 		++state.recipeLevel;
 	}

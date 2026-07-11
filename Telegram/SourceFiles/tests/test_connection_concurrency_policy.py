@@ -44,6 +44,7 @@ def test_endpoint_health_has_named_concurrency_policy():
     assert "kUnknownActiveCap = kColdActiveCap" in policy
     assert "kDpiFailureActiveCap = 1" in policy
     assert "kHealthyActiveCap = 1" in policy
+    assert "kFastHealthyActiveCap = 2" in policy
     assert "kHealthyHandshakeSpacing = crl::time(500)" in policy
     assert "bool useAllowed = true;" in state
     assert "nextHandshakeAt" in state
@@ -94,7 +95,9 @@ def test_relay_proof_keeps_handshakes_serialized():
     assert "SynchronizeRelayProofAggregate(state);" in promotion
     assert "state.relayProven = !state.relayProofs.empty();" in aggregate
     assert "entry.second.provenAt > state.lastRelaySuccessAt" in aggregate
-    assert "policy.activeCap = kHealthyActiveCap;" in policy
+    assert "policy.activeCap = fastWarmup" in policy
+    assert "? kFastHealthyActiveCap" in policy
+    assert ": kHealthyActiveCap;" in policy
     assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
     assert "kFreshRelayActiveCap" not in policy
     assert "kStableRelayActiveCap" not in policy
@@ -159,6 +162,26 @@ def test_tcp_route_failures_rotate_routes_without_canonical_cooldown():
         "state.lastFailure = report.reason;")
 
 
+def test_fast_warmup_read_before_lock_and_only_for_healthy_row():
+    source = read(ENDPOINT_HEALTH_CPP)
+    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
+    admit = body_after(source, "Admission EndpointHealth::admit(")
+    failure = body_after(source, "void EndpointHealth::reportFailure(")
+    policy = body_after(
+        policy_source,
+        "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+
+    # The getter reaches into application settings, so it must run before
+    # the storage mutex is taken.
+    for body in (admit, failure):
+        assert body.index("FastWarmupEnabled(_runtime)") < body.index(
+            "QMutexLocker lock(&storage.mutex);")
+    # Only the proven-and-healthy row may run two concurrent handshakes;
+    # cold, unproven and DPI-degraded rows keep the single careful probe.
+    assert policy.count("kFastHealthyActiveCap") == 1
+    assert "policy.activeCap = fastWarmup" in policy
+
+
 def test_connection_broker_has_four_priority_queues():
     header = read(CONNECTION_BROKER_H)
     source = read(CONNECTION_BROKER_CPP)
@@ -195,5 +218,6 @@ if __name__ == "__main__":
     test_unknown_and_dpi_endpoints_queue_instead_of_skip_or_fail()
     test_dpi_like_failures_keep_strict_cap_and_recipe_escalation()
     test_tcp_route_failures_rotate_routes_without_canonical_cooldown()
+    test_fast_warmup_read_before_lock_and_only_for_healthy_row()
     test_connection_broker_has_four_priority_queues()
     test_connection_broker_drains_by_priority_not_request_queue_only()
