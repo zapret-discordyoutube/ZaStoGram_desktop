@@ -100,7 +100,17 @@ def test_health_request_stays_conservative_without_verified_candidate():
     # checking session, so stale availability can't trigger a switch.
     switch = function_body(
         source, "bool ProxyRotationManager::switchToAvailable(")
-    assert "entry->availableAt < _switchStartedAt" in switch
+    assert "entry->availableAt >= _switchStartedAt" in switch
+    # It prefers a candidate main-use health has not marked relay-blocked
+    # (a ProxyCheck pass alone does not prove the relay), but falls back to
+    # any available one so rotation never gets stuck on a total outage.
+    assert "proxyRelayHealthy(settings.list()[index])" in switch
+    assert "chosen = fallback;" in switch
+    health = function_body(
+        source, "bool ProxyRotationManager::proxyRelayHealthy(")
+    assert "mtproxyEndpointSnapshot(endpoint)" in health
+    assert "snapshot.halfOpen" in health
+    assert "snapshot.terminalUntil <= crl::now()" in health
 
     # And the switch remains gated on rotation actually being sensible
     # (observing enabled, accounts present, disconnected or starving).

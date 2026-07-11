@@ -77,6 +77,7 @@ private:
 		not_null<MTP::details::AbstractConnection*> raw);
 	[[nodiscard]] bool switchToAvailable();
 	[[nodiscard]] bool shouldSwitchToAvailable() const;
+	[[nodiscard]] bool proxyRelayHealthy(const MTP::ProxyData &proxy) const;
 
 	base::Timer _checkTimer;
 	base::Timer _switchTimer;

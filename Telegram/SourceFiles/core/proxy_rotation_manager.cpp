@@ -396,8 +396,16 @@ void ProxyRotationManager::checkDone(
 	entry->startedAt = 0;
 	entry->availableAt = crl::now();
 	const auto proxySettings = &App().settings().proxy();
+	// A bare ProxyCheck probe bypasses the cooldown ladder and proves only
+	// the FakeTLS handshake, so a relay-blocked proxy (the log's
+	// server_hello_ok_no_appdata / client_hello_sent_no_server_hello
+	// flappers) can still pass its check. Do not let such a proxy jump to
+	// the front of the probe order and become the first pick - that is the
+	// "check passes -> switch to it -> main-use dies -> switch again"
+	// ping-pong. It stays available as a last resort, just not preferred.
 	if (const auto index = proxySettings->indexInList(proxy); index >= 0) {
-		if (proxySettings->promoteProxyRotationPreferredIndex(index)) {
+		if (proxyRelayHealthy(proxy)
+			&& proxySettings->promoteProxyRotationPreferredIndex(index)) {
 			App().saveSettingsDelayed();
 		}
 	}
@@ -434,39 +442,76 @@ bool ProxyRotationManager::switchToAvailable() {
 	}
 	const auto &settings = App().settings().proxy();
 	const auto was = settings.selected();
-	for (const auto index : _probeOrder) {
+	const auto eligible = [&](int index) {
 		if (index < 0 || index >= int(settings.list().size())) {
+			return false;
+		}
+		const auto entry = find(settings.list()[index]);
+		return entry
+			&& !entry->checking
+			&& entry->availableAt
+			&& (entry->availableAt >= _switchStartedAt);
+	};
+	// Prefer a candidate that main-use health has not marked relay-blocked
+	// (a ProxyCheck pass alone does not prove the relay). Fall back to any
+	// available candidate so rotation never gets stuck when every proxy is
+	// degraded - staying on a dead proxy is strictly worse than a probe.
+	auto chosen = -1;
+	auto fallback = -1;
+	for (const auto index : _probeOrder) {
+		if (!eligible(index)) {
 			continue;
 		}
-		const auto &proxy = settings.list()[index];
-		const auto entry = find(proxy);
-		if (!entry || entry->checking || !entry->availableAt) {
-			continue;
+		if (fallback < 0) {
+			fallback = index;
 		}
-		if (entry->availableAt < _switchStartedAt) {
-			continue;
+		if (proxyRelayHealthy(settings.list()[index])) {
+			chosen = index;
+			break;
 		}
-		_waitingToSwitch = false;
-		_lastSwitchAt = crl::now();
-		_switchStartedAt = _lastSwitchAt;
-		_healthRotationRequestedUntil = 0;
-		auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
-		MTP::WriteProxyDiagnosticsLine(not_null{ &runtime }, {
-			.source = MTP::ProxyDiagnosticsSource::MTProxy,
-			.phase = MTP::ProxyDiagnosticsPhase::RotationSwitched,
-			.severity = MTP::ProxyDiagnosticsSeverity::Warning,
-			.proxy = proxy,
-			.message = u"proxy rotation switched from %1"_q.arg(
-				MTP::ProxyDiagnosticsEndpointText(was.host, was.port)),
-		});
-		App().setCurrentProxy(
-			proxy,
-			MTP::ProxyData::Settings::Enabled,
-			/*manual=*/false);
-		App().saveSettingsDelayed();
+	}
+	if (chosen < 0) {
+		chosen = fallback;
+	}
+	if (chosen < 0) {
+		return false;
+	}
+	const auto &proxy = settings.list()[chosen];
+	_waitingToSwitch = false;
+	_lastSwitchAt = crl::now();
+	_switchStartedAt = _lastSwitchAt;
+	_healthRotationRequestedUntil = 0;
+	auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
+	MTP::WriteProxyDiagnosticsLine(not_null{ &runtime }, {
+		.source = MTP::ProxyDiagnosticsSource::MTProxy,
+		.phase = MTP::ProxyDiagnosticsPhase::RotationSwitched,
+		.severity = MTP::ProxyDiagnosticsSeverity::Warning,
+		.proxy = proxy,
+		.message = u"proxy rotation switched from %1"_q.arg(
+			MTP::ProxyDiagnosticsEndpointText(was.host, was.port)),
+	});
+	App().setCurrentProxy(
+		proxy,
+		MTP::ProxyData::Settings::Enabled,
+		/*manual=*/false);
+	App().saveSettingsDelayed();
+	return true;
+}
+
+bool ProxyRotationManager::proxyRelayHealthy(
+		const MTP::ProxyData &proxy) const {
+	if (proxy.type != MTP::ProxyData::Type::Mtproto) {
 		return true;
 	}
-	return false;
+	const auto endpoint = MTP::details::MtProxy::EndpointIdFromProxy(
+		proxy,
+		App().settings().proxyStealthOptions());
+	const auto snapshot = accountForChecks()->mtp().runtimeEnvironment()
+		.proxyServices().control().mtproxyEndpointSnapshot(endpoint);
+	// Block only an ACTIVELY degraded endpoint (in cooldown or half-open
+	// after a failure). A never-used proxy has an empty snapshot and is
+	// treated as healthy so a fresh candidate is still selectable.
+	return !snapshot.halfOpen && (snapshot.terminalUntil <= crl::now());
 }
 
 bool ProxyRotationManager::shouldSwitchToAvailable() const {
