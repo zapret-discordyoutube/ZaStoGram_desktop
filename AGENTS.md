@@ -6,6 +6,8 @@ This guide defines repository-wide instructions for coding agents working with t
 
 Focus exclusively on the application source code. Do not write tests, do not add debug logging/tracing, temporary scripts, scaffolding, or other auxiliary artifacts unless the user explicitly asks for them. Deliverables are changes to the real product sources only.
 
+Work is primarily focused on `Telegram/SourceFiles/mtproto/` (MTProto protocol layer: auth, sessions, transport, DC config, serialization). Expect most tasks to live there; changes elsewhere in the codebase are secondary and usually only support the mtproto work.
+
 ## Working from Codex on Windows + WSL
 
 This checkout may be opened in Codex Desktop through the Windows UNC path `\\wsl.localhost\{distro}\home\{user}\Telegram\tdesktop`, while the real Linux path is `/home/{user}/Telegram/tdesktop`. Treat it as a WSL/Linux checkout first, not as a native Windows checkout.
