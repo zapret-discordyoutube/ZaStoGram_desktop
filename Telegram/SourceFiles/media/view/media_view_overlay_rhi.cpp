@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_values.h"
 #include "media/streaming/media_streaming_common.h"
 #include "media/view/media_view_video_stream.h"
+#include "calls/group/calls_group_viewport.h"
 #include "platform/platform_overlay_widget.h"
 #include "base/debug_log.h"
 #include "styles/style_media_view.h"

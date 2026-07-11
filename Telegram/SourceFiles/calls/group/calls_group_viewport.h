@@ -52,6 +52,15 @@ class MembersRow;
 enum class PanelMode;
 enum class VideoQuality;
 
+// A draw recorded by the borrowed RHI renderer for replaying inside an
+// external (media viewer) render pass.
+struct BorrowedRhiDraw {
+	QRhiGraphicsPipeline *pipeline = nullptr;
+	QRhiShaderResourceBindings *srb = nullptr;
+	QRhiBuffer *vertexBuffer = nullptr;
+	int vertexOffset = 0;
+};
+
 struct VideoTileTrack {
 	Webrtc::VideoTrack *track = nullptr;
 	MembersRow *row = nullptr;
@@ -124,12 +133,6 @@ public:
 	// pass, so it is split in phases: offscreen passes and resource
 	// updates must be finished BEFORE the external beginPass, while the
 	// recorded draws are replayed by the external pass itself.
-	struct BorrowedRhiDraw {
-		QRhiGraphicsPipeline *pipeline = nullptr;
-		QRhiShaderResourceBindings *srb = nullptr;
-		QRhiBuffer *vertexBuffer = nullptr;
-		int vertexOffset = 0;
-	};
 	void borrowedPaintOffscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
 	[[nodiscard]] QRhiResourceUpdateBatch *borrowedPrepareOnscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
 	[[nodiscard]] std::vector<BorrowedRhiDraw> borrowedTakeOnscreenDraws();

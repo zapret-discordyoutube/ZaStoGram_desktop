@@ -292,11 +292,16 @@ void VideoStream::borrowedPaintOffscreen(
 	_viewport->borrowedPaintOffscreen(rhi, rt, cb);
 }
 
-void VideoStream::borrowedPaintOnscreen(
+QRhiResourceUpdateBatch *VideoStream::borrowedPrepareOnscreen(
 		QRhi *rhi,
 		QRhiRenderTarget *rt,
 		QRhiCommandBuffer *cb) {
-	_viewport->borrowedPaintOnscreen(rhi, rt, cb);
+	return _viewport->borrowedPrepareOnscreen(rhi, rt, cb);
+}
+
+auto VideoStream::borrowedTakeOnscreenDraws()
+-> std::vector<Calls::Group::BorrowedRhiDraw> {
+	return _viewport->borrowedTakeOnscreenDraws();
 }
 #endif
 

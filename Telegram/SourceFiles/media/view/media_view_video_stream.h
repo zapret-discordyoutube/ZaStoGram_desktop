@@ -12,6 +12,7 @@ class QOpenGLFunctions;
 class QRhi;
 class QRhiRenderTarget;
 class QRhiCommandBuffer;
+class QRhiResourceUpdateBatch;
 
 namespace Calls {
 class GroupCall;
@@ -21,6 +22,7 @@ namespace Calls::Group {
 class Members;
 class Viewport;
 class MessagesUi;
+struct BorrowedRhiDraw;
 } // namespace Calls::Group
 
 namespace ChatHelpers {
@@ -73,7 +75,8 @@ public:
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	void borrowedPaintOffscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
-	void borrowedPaintOnscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
+	[[nodiscard]] QRhiResourceUpdateBatch *borrowedPrepareOnscreen(QRhi *rhi, QRhiRenderTarget *rt, QRhiCommandBuffer *cb);
+	[[nodiscard]] std::vector<Calls::Group::BorrowedRhiDraw> borrowedTakeOnscreenDraws();
 #endif
 
 	[[nodiscard]] rpl::lifetime &lifetime();
