@@ -39,6 +39,7 @@ struct ConnectionBroker::RequestState {
 	ProxyTraceId traceId = 0;
 	uint64 proxyGeneration = 0;
 	ConnectionRequest request;
+	QString endpointKey;
 	std::optional<ProxyAdmissionDecision> admission;
 	MtProxy::OpenSlotReservation openSlot;
 	crl::time createdAt = 0;
@@ -49,6 +50,7 @@ struct ConnectionBroker::RequestState {
 	bool admissionInProgress = false;
 	bool openRetryScheduled = false;
 	bool startScheduled = false;
+	bool wakeScheduled = false;
 };
 
 struct ConnectionBroker::EndpointQueue {
@@ -149,11 +151,70 @@ ConnectionBroker::ConnectionBroker(not_null<RuntimeEnvironment*> runtime)
 , _uploadQueue(std::make_unique<EndpointQueue>(MtProxy::EndpointUse::Upload))
 , _proxyCheckQueue(
 	std::make_unique<EndpointQueue>(MtProxy::EndpointUse::ProxyCheck))
-, _runtime(runtime) {
+, _runtime(runtime)
+, _endpointContext(runtime->proxyEndpointContextShared())
+, _wakeGuard(std::make_shared<WakeGuard>()) {
+	_wakeGuard->broker = this;
+	_releaseListenerId = _endpointContext->addAdmissionReleaseListener(
+		[weak = std::weak_ptr<WakeGuard>(_wakeGuard)](const QString &key) {
+			if (const auto guard = weak.lock()) {
+				QMutexLocker lock(&guard->mutex);
+				if (const auto broker = guard->broker) {
+					broker->wakeEndpoint(key);
+				}
+			}
+		});
 }
 
 ConnectionBroker::~ConnectionBroker() {
+	{
+		QMutexLocker lock(&_wakeGuard->mutex);
+		_wakeGuard->broker = nullptr;
+	}
+	_endpointContext->removeAdmissionReleaseListener(
+		base::take(_releaseListenerId));
 	cancelByOwnerDestruction();
+}
+
+void ConnectionBroker::wakeEndpoint(const QString &endpointKey) {
+	// A slot for this endpoint just freed: retry the queue fronts waiting
+	// on it right away instead of waiting out their denied-retry polls.
+	// The drain is never run synchronously - depth stays bounded on
+	// release->wake->drain->admit->release chains and wake storms from
+	// mass cancellations collapse into the wakeScheduled dedupe.
+	auto toWake = std::vector<std::shared_ptr<RequestState>>();
+	{
+		QMutexLocker lock(&_mutex);
+		for (const auto queue : {
+				_mainQueue.get(),
+				_proxyCheckQueue.get(),
+				_mediaQueue.get(),
+				_uploadQueue.get() }) {
+			for (const auto &state : queue->pending) {
+				if (!state->active || !state->request.context) {
+					continue;
+				}
+				if (state->endpointKey == endpointKey
+					&& !state->admission
+					&& !state->admissionInProgress
+					&& !state->startScheduled
+					&& !state->openRetryScheduled
+					&& !state->wakeScheduled) {
+					state->wakeScheduled = true;
+					toWake.push_back(state);
+				}
+				break;
+			}
+		}
+	}
+	for (const auto &state : toWake) {
+		_runtime->async().singleShot(0, state->request.context, [=] {
+			state->wakeScheduled = false;
+			if (state->active) {
+				drain();
+			}
+		});
+	}
 }
 
 void ConnectionBroker::cancelByOwnerDestruction() {
@@ -191,6 +252,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		QMutexLocker lock(&_mutex);
 		state->id = ++_lastTicketId;
 		state->request = std::move(request);
+		state->endpointKey = MtProxy::EndpointKey(state->request.endpoint);
 		if (!MtProxy::EndpointEmpty(state->request.endpoint)) {
 			state->traceId = _runtime->proxyEndpointContext().nextTraceId({
 				.runtimeId = _runtime->proxyRuntimeId(),

@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 
 #include <QtCore/QMutex>
 #include <QtCore/QPointer>
@@ -110,7 +111,16 @@ private:
 	struct ClaimResult;
 	struct DrainVerdict;
 
+	// Keeps a released-slot callback from touching a destroyed broker:
+	// the callback locks the guard and checks the pointer, the destructor
+	// nulls it under the same lock before removing the listener.
+	struct WakeGuard {
+		QMutex mutex;
+		ConnectionBroker *broker = nullptr;
+	};
+
 	[[nodiscard]] EndpointQueue &queueFor(MtProxy::EndpointUse use);
+	void wakeEndpoint(const QString &endpointKey);
 	void drain();
 	void drainQueue(MtProxy::EndpointUse use);
 	[[nodiscard]] ClaimResult claimFront(MtProxy::EndpointUse use);
@@ -155,6 +165,9 @@ private:
 	ConnectionTicketId _lastTicketId = 0;
 	QMutex _mutex;
 	const not_null<RuntimeEnvironment*> _runtime;
+	const std::shared_ptr<ProxyEndpointContext> _endpointContext;
+	const std::shared_ptr<WakeGuard> _wakeGuard;
+	AdmissionReleaseListenerId _releaseListenerId = 0;
 
 };
 

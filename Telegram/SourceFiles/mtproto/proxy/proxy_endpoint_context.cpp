@@ -9,7 +9,29 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
+#include <vector>
+
 namespace MTP {
+namespace {
+
+using AdmissionReleaseListener = std::shared_ptr<const Fn<void(const QString&)>>;
+
+// Copied out under the storage mutex so the callbacks can be invoked
+// after it unlocks: a listener may re-enter admission paths that take
+// the broker and storage mutexes (calling under the lock would invert
+// the broker's request() lock order and deadlock).
+[[nodiscard]] auto CollectAdmissionReleaseListeners(
+	const details::MtProxy::EndpointContextStorage &storage)
+-> std::vector<AdmissionReleaseListener> {
+	auto result = std::vector<AdmissionReleaseListener>();
+	result.reserve(storage.admissionReleaseListeners.size());
+	for (const auto &[id, listener] : storage.admissionReleaseListeners) {
+		result.push_back(listener);
+	}
+	return result;
+}
+
+} // namespace
 
 ProxyEndpointContext::ProxyEndpointContext()
 : _storage(std::make_unique<details::MtProxy::EndpointContextStorage>()) {
@@ -111,13 +133,23 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 	if (key.isEmpty() || !attemptId) {
 		return;
 	}
-	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->states.find(key);
-	if (i == end(_storage->states)) {
-		return;
+	auto listeners = std::vector<AdmissionReleaseListener>();
+	{
+		QMutexLocker lock(&_storage->mutex);
+		const auto i = _storage->states.find(key);
+		if (i == end(_storage->states)) {
+			return;
+		}
+		const auto wasActive = i->second.active;
+		i->second.attemptStarts.erase(attemptId);
+		details::MtProxy::SynchronizeEndpointAdmissionAggregate(i->second);
+		if (i->second.active < wasActive) {
+			listeners = CollectAdmissionReleaseListeners(*_storage);
+		}
 	}
-	i->second.attemptStarts.erase(attemptId);
-	details::MtProxy::SynchronizeEndpointAdmissionAggregate(i->second);
+	for (const auto &listener : listeners) {
+		(*listener)(key);
+	}
 }
 
 void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
@@ -128,19 +160,50 @@ void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
 	if (key.isEmpty() || !runtimeId || !attemptId) {
 		return;
 	}
+	auto listeners = std::vector<AdmissionReleaseListener>();
+	{
+		QMutexLocker lock(&_storage->mutex);
+		const auto i = _storage->states.find(key);
+		if (i == end(_storage->states)) {
+			return;
+		}
+		const auto identity = details::MtProxy::RelayProofIdentity{
+			.runtimeId = runtimeId,
+			.proxyGeneration = proxyGeneration,
+			.attemptId = attemptId,
+		};
+		if (details::MtProxy::ReleaseAdmissionForRelayCandidate(
+				i->second,
+				identity)) {
+			listeners = CollectAdmissionReleaseListeners(*_storage);
+		}
+	}
+	for (const auto &listener : listeners) {
+		(*listener)(key);
+	}
+}
+
+AdmissionReleaseListenerId ProxyEndpointContext::addAdmissionReleaseListener(
+		Fn<void(const QString &endpointKey)> callback) {
+	if (!callback) {
+		return 0;
+	}
 	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->states.find(key);
-	if (i == end(_storage->states)) {
+	const auto id = ++_storage->lastAdmissionReleaseListenerId;
+	_storage->admissionReleaseListeners.emplace(
+		id,
+		std::make_shared<const Fn<void(const QString&)>>(
+			std::move(callback)));
+	return id;
+}
+
+void ProxyEndpointContext::removeAdmissionReleaseListener(
+		AdmissionReleaseListenerId id) {
+	if (!id) {
 		return;
 	}
-	const auto identity = details::MtProxy::RelayProofIdentity{
-		.runtimeId = runtimeId,
-		.proxyGeneration = proxyGeneration,
-		.attemptId = attemptId,
-	};
-	static_cast<void>(details::MtProxy::ReleaseAdmissionForRelayCandidate(
-		i->second,
-		identity));
+	QMutexLocker lock(&_storage->mutex);
+	_storage->admissionReleaseListeners.erase(id);
 }
 
 auto ProxyEndpointContext::storage()

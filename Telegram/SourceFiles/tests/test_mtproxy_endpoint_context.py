@@ -150,6 +150,39 @@ def test_keyless_release_frees_only_the_active_slot_and_keeps_lineage():
     assert "details::MtProxy::ReleaseAdmissionForRelayCandidate(" in context
 
 
+def test_admission_release_listeners_fire_after_storage_unlock():
+    context = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.cpp")
+    header = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context.h")
+    storage = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "proxy_endpoint_context_p.h")
+
+    assert "addAdmissionReleaseListener(" in header
+    assert "removeAdmissionReleaseListener(" in header
+    assert "admissionReleaseListeners;" in storage
+
+    # Listeners are snapshotted under the storage mutex and invoked only
+    # after it unlocks: calling under the lock would invert the broker's
+    # request() lock order (broker mutex -> storage mutex) and deadlock.
+    for signature in (
+        "void ProxyEndpointContext::releaseEndpointAttempt(",
+        "void ProxyEndpointContext::releaseAdmissionForRelayCandidate(",
+    ):
+        body = context.split(signature, 1)[1].split("\n}\n", 1)[0]
+        assert "CollectAdmissionReleaseListeners(*_storage);" in body
+        locked = body.split("QMutexLocker lock(&_storage->mutex);", 1)[1]
+        locked_scope = locked.split("\n\t}\n", 1)[0]
+        assert "(*listener)(key);" not in locked_scope
+        after_lock = locked.split("\n\t}\n", 1)[1]
+        assert "(*listener)(key);" in after_lock
+
+    # Only an actual slot release fires the listeners.
+    release = context.split(
+        "void ProxyEndpointContext::releaseEndpointAttempt(", 1)[1]
+    assert "i->second.active < wasActive" in release
+
+
 def test_open_scheduler_state_is_owned_by_shared_context():
     scheduler = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "open_scheduler.cpp")
@@ -375,6 +408,7 @@ if __name__ == "__main__":
     test_relay_registry_contract_matches_the_executable_lifecycle_model()
     test_promotion_precedes_admission_release_and_unregister_owns_cleanup()
     test_keyless_release_frees_only_the_active_slot_and_keeps_lineage()
+    test_admission_release_listeners_fire_after_storage_unlock()
     test_open_scheduler_state_is_owned_by_shared_context()
     test_admission_freezes_bounded_safe_faketls_plan()
     test_partial_success_preserves_recipe_until_relay_proof()

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/basic_types.h"
 #include "mtproto/runtime/connection_status_types.h"
 
 #include <memory>
@@ -17,6 +18,8 @@ namespace MTP {
 namespace details::MtProxy {
 struct EndpointContextStorage;
 } // namespace details::MtProxy
+
+using AdmissionReleaseListenerId = uint64;
 
 class ProxyEndpointContext final {
 public:
@@ -41,6 +44,12 @@ public:
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration,
 		uint64 attemptId);
+
+	// Invoked (strictly after the storage mutex unlocks, on the releasing
+	// thread) whenever an admission slot for an endpoint actually frees.
+	[[nodiscard]] AdmissionReleaseListenerId addAdmissionReleaseListener(
+		Fn<void(const QString &endpointKey)> callback);
+	void removeAdmissionReleaseListener(AdmissionReleaseListenerId id);
 
 	[[nodiscard]] auto storage()
 		-> details::MtProxy::EndpointContextStorage &;

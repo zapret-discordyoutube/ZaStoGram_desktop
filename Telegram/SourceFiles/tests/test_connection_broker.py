@@ -229,6 +229,43 @@ def test_broker_rechecks_scheduler_after_delayed_open_slot():
     assert "drain();" in retry_body
 
 
+def test_broker_wakes_queue_on_admission_slot_release():
+    source = BROKER_CPP.read_text(encoding="utf-8")
+    header = BROKER_H.read_text(encoding="utf-8")
+    constructor = function_body(
+        source, "ConnectionBroker::ConnectionBroker(")
+    destructor = function_body(source, "ConnectionBroker::~ConnectionBroker(")
+    wake_body = function_body(
+        source, "void ConnectionBroker::wakeEndpoint(")
+    request_state = source.split(
+        "struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
+
+    # The broker subscribes to freed admission slots and unsubscribes
+    # (after neutering the guard) before cancelling its own requests.
+    assert "struct WakeGuard {" in header
+    assert "addAdmissionReleaseListener(" in constructor
+    assert "std::weak_ptr<WakeGuard>" in constructor
+    assert "broker->wakeEndpoint(key);" in constructor
+    assert "_wakeGuard->broker = nullptr;" in destructor
+    assert "removeAdmissionReleaseListener(" in destructor
+    assert destructor.index("_wakeGuard->broker = nullptr;") < (
+        destructor.index("removeAdmissionReleaseListener("))
+    assert destructor.index("removeAdmissionReleaseListener(") < (
+        destructor.index("cancelByOwnerDestruction();"))
+
+    # The wake never drains synchronously: it only schedules onto the
+    # request context, deduped by wakeScheduled.
+    assert "QString endpointKey;" in request_state
+    assert "bool wakeScheduled = false;" in request_state
+    assert "state->endpointKey == endpointKey" in wake_body
+    assert "state->wakeScheduled = true;" in wake_body
+    assert "_runtime->async().singleShot(0, state->request.context" in (
+        wake_body)
+    assert "drainQueue(" not in wake_body
+    assert wake_body.index("QMutexLocker lock(&_mutex);") < wake_body.index(
+        "_runtime->async().singleShot(")
+
+
 def test_proxy_check_uses_connection_broker_proxy_check_queue():
     header = PROXY_CHECK_H.read_text(encoding="utf-8")
     source = PROXY_CHECK_CPP.read_text(encoding="utf-8")
@@ -311,5 +348,6 @@ if __name__ == "__main__":
     test_broker_drains_every_queue_independently()
     test_broker_claims_front_request_before_admission()
     test_broker_cancel_releases_admitted_lease_immediately()
+    test_broker_wakes_queue_on_admission_slot_release()
     test_proxy_check_uses_connection_broker_proxy_check_queue()
     test_proxy_check_connection_request_designators_match_struct_order()
