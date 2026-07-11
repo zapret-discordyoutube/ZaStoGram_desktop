@@ -831,7 +831,8 @@ void Application::constructFallbackProductionConfig(
 
 void Application::setCurrentProxy(
 		const MTP::ProxyData &proxy,
-		MTP::ProxyData::Settings settings) {
+		MTP::ProxyData::Settings settings,
+		bool manual) {
 	auto &my = _private->settings.proxy();
 	const auto current = [&] {
 		return my.isEnabled() ? my.selected() : MTP::ProxyData();
@@ -842,7 +843,7 @@ void Application::setCurrentProxy(
 	const auto now = current();
 	refreshGlobalProxy();
 	if (was != now) {
-		_proxyChanges.fire({ was, now });
+		_proxyChanges.fire({ was, now, manual });
 	}
 	my.connectionTypeChangesNotify();
 	proxyRotationSettingsChanged();
@@ -869,7 +870,7 @@ void Application::restartProxyConnections() {
 	const auto current = my.isEnabled()
 		? my.selected()
 		: MTP::ProxyData();
-	_proxyChanges.fire({ current, current });
+	_proxyChanges.fire({ current, current, false });
 }
 
 void Application::proxyRotationSettingsChanged() {

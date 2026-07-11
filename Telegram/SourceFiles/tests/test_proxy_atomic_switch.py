@@ -59,13 +59,13 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     session = read(SESSION_CPP)
 
     watcher = function_body(account, "void Account::watchProxyChanges()")
-    assert "void migrateProxy();" in instance_h
-    assert "void Instance::Private::migrateProxy()" in instance
-    assert "void Instance::migrateProxy()" in instance
+    assert "void migrateProxy(bool manual = true);" in instance_h
+    assert "void Instance::Private::migrateProxy(bool manual)" in instance
+    assert "void Instance::migrateProxy(bool manual)" in instance
     assert "void migrateProxy(uint64 generation, bool scout);" in session_h
     assert "void Session::migrateProxy(" in session
-    migrate = function_body(instance, "void Instance::Private::migrateProxy()")
-    assert "_mtp->migrateProxy();" in watcher
+    migrate = function_body(instance, "void Instance::Private::migrateProxy(bool manual)")
+    assert "_mtp->migrateProxy(change.manual);" in watcher
     assert "_mtp->restart();" not in watcher
     assert "_mtp->reInitConnection(_mtp->mainDcId());" not in watcher
     assert "++_proxyGeneration;" in migrate
@@ -118,8 +118,11 @@ def test_reapplying_selected_proxy_keeps_live_connections():
 
     assert "if (was != now) {" in apply_proxy
     assert apply_proxy.index("if (was != now) {") < apply_proxy.index(
-        "_proxyChanges.fire({ was, now });")
-    assert "_proxyChanges.fire({ current, current });" in explicit_restart
+        "_proxyChanges.fire({ was, now, manual });")
+    # A blanket restart is not a user selection, so it must not carry the
+    # manual flag that resets a proxy's cooldown penalty.
+    assert "_proxyChanges.fire({ current, current, false });" in (
+        explicit_restart)
 
 
 def test_session_proxy_switch_suspends_old_generation_silently():
@@ -249,13 +252,17 @@ def test_manual_selection_clears_endpoint_penalty_before_scout():
     instance = read(INSTANCE_CPP)
     lifecycle = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "endpoint_health_lifecycle.cpp")
-    migrate = function_body(instance, "void Instance::Private::migrateProxy()")
+    migrate = function_body(instance, "void Instance::Private::migrateProxy(bool manual)")
 
     # A manual (re-)selection gives the endpoint a fresh chance: the
     # cooldown/denial bookkeeping resets before the scout connects, and
     # before stale requests are cancelled.
     assert "noteMtproxyEndpointSelected(" in migrate
     assert "selected.type == ProxyData::Type::Mtproto" in migrate
+    # Only a genuine user selection resets the penalty; automatic rotation
+    # and blanket restarts pass manual=false and must not.
+    assert "void migrateProxy(bool manual)" in instance
+    assert "manual && selected" in migrate
     assert migrate.index("applyMtproxyProxyGeneration(") < migrate.index(
         "noteMtproxyEndpointSelected(")
     assert migrate.index("noteMtproxyEndpointSelected(") < migrate.index(

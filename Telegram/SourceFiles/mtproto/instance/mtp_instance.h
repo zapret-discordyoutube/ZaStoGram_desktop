@@ -91,7 +91,7 @@ public:
 	// Main thread.
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
-	void migrateProxy();
+	void migrateProxy(bool manual = true);
 	int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	QString dctransport(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] ConnectionStatus &connectionStatus() const;

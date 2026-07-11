@@ -1556,7 +1556,7 @@ def test_source_seams_match_truth_table_contract():
     assert stale_failure.index("HasRelayProof(state, identity)") < (
         stale_failure.index("ReportEpochIsStale(report.proxyEpoch, state)"))
 
-    migration = instance.split("void Instance::Private::migrateProxy()", 1)[1]
+    migration = instance.split("void Instance::Private::migrateProxy(bool manual)", 1)[1]
     assert migration.index("++_proxyGeneration;") < (
         migration.index("applyMtproxyProxyGeneration("))
     assert migration.index("applyMtproxyProxyGeneration(") < (

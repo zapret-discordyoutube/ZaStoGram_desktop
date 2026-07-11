@@ -459,7 +459,10 @@ bool ProxyRotationManager::switchToAvailable() {
 			.message = u"proxy rotation switched from %1"_q.arg(
 				MTP::ProxyDiagnosticsEndpointText(was.host, was.port)),
 		});
-		App().setCurrentProxy(proxy, MTP::ProxyData::Settings::Enabled);
+		App().setCurrentProxy(
+			proxy,
+			MTP::ProxyData::Settings::Enabled,
+			/*manual=*/false);
 		App().saveSettingsDelayed();
 		return true;
 	}

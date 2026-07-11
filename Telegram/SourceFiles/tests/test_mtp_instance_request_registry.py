@@ -123,7 +123,7 @@ def test_public_instance_and_session_delegate_surfaces_stay_stable():
     for method in (
             "void restart();",
             "void restart(ShiftedDcId shiftedDcId);",
-            "void migrateProxy();",
+            "void migrateProxy(bool manual = true);",
             "int32 dcstate(ShiftedDcId shiftedDcId = 0);",
             "QString dctransport(ShiftedDcId shiftedDcId = 0);",
             "ConnectionStatus &connectionStatus() const;",

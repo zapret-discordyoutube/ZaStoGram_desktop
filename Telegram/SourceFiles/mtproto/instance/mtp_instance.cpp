@@ -111,7 +111,7 @@ public:
 
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
-	void migrateProxy();
+	void migrateProxy(bool manual);
 	void proxyMigrationSucceeded(uint64 generation);
 	[[nodiscard]] int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] QString dctransport(ShiftedDcId shiftedDcId = 0);
@@ -637,7 +637,7 @@ void Instance::Private::restart() {
 	}
 }
 
-void Instance::Private::migrateProxy() {
+void Instance::Private::migrateProxy(bool manual) {
 	if (isKeysDestroyer()) {
 		return restart();
 	}
@@ -649,10 +649,12 @@ void Instance::Private::migrateProxy() {
 		&& _runtime->proxy().selected)
 		? _runtime->proxy().selected()
 		: ProxyData();
-	if (selected && selected.type == ProxyData::Type::Mtproto) {
-		// Switching to (or re-picking) a proxy is explicit user evidence
-		// that it is worth trying now: clear its cooldown penalty so the
-		// scout probes immediately instead of sitting out the ladder.
+	if (manual && selected && selected.type == ProxyData::Type::Mtproto) {
+		// A user picking this proxy is explicit evidence it is worth trying
+		// now: clear its cooldown penalty so the scout probes immediately
+		// instead of sitting out the ladder. Automatic rotation and blanket
+		// connection restarts must NOT reset it, or a dead proxy's backoff
+		// never escalates.
 		_runtime->proxyServices().control().noteMtproxyEndpointSelected(
 			details::MtProxy::EndpointIdFromProxy(selected, {}));
 	}
@@ -1859,8 +1861,8 @@ void Instance::restart(ShiftedDcId shiftedDcId) {
 	_private->restart(shiftedDcId);
 }
 
-void Instance::migrateProxy() {
-	_private->migrateProxy();
+void Instance::migrateProxy(bool manual) {
+	_private->migrateProxy(manual);
 }
 
 int32 Instance::dcstate(ShiftedDcId shiftedDcId) {

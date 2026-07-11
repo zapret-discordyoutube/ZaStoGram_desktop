@@ -209,7 +209,10 @@ void ConnectionBroker::wakeEndpoint(const QString &endpointKey) {
 	}
 	for (const auto &state : toWake) {
 		_runtime->async().singleShot(0, state->request.context, [=] {
-			state->wakeScheduled = false;
+			{
+				QMutexLocker lock(&_mutex);
+				state->wakeScheduled = false;
+			}
 			if (state->active) {
 				drain();
 			}
@@ -302,6 +305,11 @@ void ConnectionBroker::cancel(ConnectionTicketId id) {
 			{},
 			u"mtproxy admission cancelled"_q);
 		releaseAdmission(cancelled);
+		// The cancelled request may have been the front of its queue with
+		// others waiting behind it: re-drain so the next request is not
+		// stranded until the slow poll (a denied front leaves no lease, so
+		// releaseAdmission above fires no wake to cover them).
+		drain();
 	}
 }
 
@@ -388,36 +396,44 @@ ConnectionBroker::ClaimResult ConnectionBroker::claimFront(
 		MtProxy::EndpointUse use) {
 	auto result = ClaimResult();
 	auto &state = result.state;
-	QMutexLocker lock(&_mutex);
-	auto &queue = queueFor(use);
-	while (!queue.pending.empty()) {
-		const auto &front = queue.pending.front();
-		if (front->active && front->request.context) {
-			state = front;
-			break;
+	// Dead fronts are moved out and destroyed only after _mutex unlocks:
+	// ~RequestState may release an active admission lease, which fires our
+	// own admission-release listener synchronously -> wakeEndpoint, and
+	// that would relock the non-recursive _mutex on this same thread.
+	auto discarded = std::vector<std::shared_ptr<RequestState>>();
+	{
+		QMutexLocker lock(&_mutex);
+		auto &queue = queueFor(use);
+		while (!queue.pending.empty()) {
+			auto &front = queue.pending.front();
+			if (front->active && front->request.context) {
+				state = front;
+				break;
+			}
+			front->active = false;
+			discarded.push_back(std::move(front));
+			queue.pending.pop_front();
 		}
-		front->active = false;
-		queue.pending.pop_front();
-	}
-	if (!state
-		|| state->admission
-		|| state->admissionInProgress
-		|| state->startScheduled) {
-		state = nullptr;
-		return result;
-	}
-	const auto now = _runtime->async().now();
-	if (state->openRetryAt > now) {
-		if (state->openRetryScheduled) {
+		if (!state
+			|| state->admission
+			|| state->admissionInProgress
+			|| state->startScheduled) {
 			state = nullptr;
 			return result;
 		}
-		result.openRetryAfter = state->openRetryAt - now;
-		state->openRetryScheduled = true;
-	} else {
-		state->openRetryAt = 0;
-		state->openRetryScheduled = false;
-		state->admissionInProgress = true;
+		const auto now = _runtime->async().now();
+		if (state->openRetryAt > now) {
+			if (state->openRetryScheduled) {
+				state = nullptr;
+				return result;
+			}
+			result.openRetryAfter = state->openRetryAt - now;
+			state->openRetryScheduled = true;
+		} else {
+			state->openRetryAt = 0;
+			state->openRetryScheduled = false;
+			state->admissionInProgress = true;
+		}
 	}
 	return result;
 }

@@ -133,6 +133,10 @@ public:
 	struct ProxyChange {
 		MTP::ProxyData was;
 		MTP::ProxyData now;
+
+		// True only when the user explicitly (re)selected the proxy, as
+		// opposed to automatic rotation or a blanket connection restart.
+		bool manual = true;
 	};
 
 	Application();
@@ -219,7 +223,8 @@ public:
 	void constructFallbackProductionConfig(const QByteArray &serialized);
 	void setCurrentProxy(
 		const MTP::ProxyData &proxy,
-		MTP::ProxyData::Settings settings);
+		MTP::ProxyData::Settings settings,
+		bool manual = true);
 	void applyProxyStealthOptions(const MTP::ProxyStealthOptions &options);
 	void restartProxyConnections();
 	void proxyRotationSettingsChanged();

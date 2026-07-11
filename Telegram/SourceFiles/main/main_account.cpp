@@ -96,9 +96,9 @@ void Account::watchProxyChanges() {
 	using ProxyChange = Core::Application::ProxyChange;
 
 	Core::App().proxyChanges(
-	) | rpl::on_next([=](const ProxyChange &) {
+	) | rpl::on_next([=](const ProxyChange &change) {
 		if (_mtp) {
-			_mtp->migrateProxy();
+			_mtp->migrateProxy(change.manual);
 		}
 		if (_mtpForKeysDestroy) {
 			_mtpForKeysDestroy->restart();
