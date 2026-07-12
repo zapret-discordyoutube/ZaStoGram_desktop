@@ -46,6 +46,11 @@ namespace Data {
 namespace {
 
 constexpr auto kMaxPerRequest = 100;
+
+// A panel of uncached animated emoji could otherwise start dozens of
+// async rasterization chains at once, saturating the thread pool and
+// flooding the main thread with frame-ready callbacks.
+constexpr auto kMaxConcurrentRenderers = 8;
 #if 0 // inject-to-on_main
 constexpr auto kUnsubscribeUpdatesDelay = 3 * crl::time(1000);
 #endif
@@ -120,6 +125,32 @@ private:
 	return u"collectible:"_q;
 }
 
+// Releases one concurrent-renderer slot exactly once: explicitly when
+// the renderer finishes writing its cache ('put' runs on the main thread)
+// or implicitly when the last owning callback is destroyed together with
+// the renderer (unload during rendering / instance destruction).
+class RendererSlotReleaser final {
+public:
+	explicit RendererSlotReleaser(Fn<void()> release)
+	: _release(std::move(release)) {
+	}
+	RendererSlotReleaser(const RendererSlotReleaser &) = delete;
+	RendererSlotReleaser &operator=(const RendererSlotReleaser &) = delete;
+	~RendererSlotReleaser() {
+		fire();
+	}
+
+	void fire() {
+		if (const auto onstack = base::take(_release)) {
+			onstack();
+		}
+	}
+
+private:
+	Fn<void()> _release;
+
+};
+
 [[nodiscard]] QString InternalPadding(QMargins value) {
 	return value.isNull() ? QString() : QString(",%1,%2,%3,%4"
 	).arg(value.left()
@@ -153,6 +184,11 @@ public:
 	bool loading() override;
 	void cancel() override;
 	Ui::CustomEmoji::Preview preview() override;
+
+	// Called by CustomEmojiManager when a queued renderer slot frees up.
+	// Clears the queued flag and reports whether the renderer may start.
+	[[nodiscard]] bool rendererStartAllowed();
+	void startRenderer();
 
 private:
 	struct Resolve {
@@ -194,6 +230,7 @@ private:
 	std::variant<Resolve, Lookup, Load> _state;
 	ushort _sizeOverride = 0;
 	SizeTag _tag = SizeTag::Normal;
+	bool _rendererQueued = false;
 
 };
 
@@ -358,8 +395,6 @@ void CustomEmojiLoader::loadNoCache(
 }
 
 void CustomEmojiLoader::check() {
-	using namespace Ui::CustomEmoji;
-
 	const auto load = std::get_if<Load>(&_state);
 	Assert(load != nullptr);
 	Assert(load->process != nullptr);
@@ -373,6 +408,51 @@ void CustomEmojiLoader::check() {
 	}
 	load->process->lifetime.destroy();
 
+	if (_rendererQueued) {
+		// Already waiting in the manager's queue for a renderer slot.
+		return;
+	}
+	const auto manager = &document->owner().customEmojiManager();
+	if (manager->registerRendererStart(this)) {
+		startRenderer();
+	} else {
+		// At the concurrency limit - wait for a free slot, the instance
+		// keeps painting its (static) Loading preview meanwhile.
+		_rendererQueued = true;
+	}
+}
+
+bool CustomEmojiLoader::rendererStartAllowed() {
+	if (!_rendererQueued) {
+		return false;
+	}
+	_rendererQueued = false;
+	const auto load = std::get_if<Load>(&_state);
+	if (!load || !load->process) {
+		// Canceled (unloaded) while waiting in the queue.
+		return false;
+	}
+	const auto media = load->process->media.get();
+
+	// Guard against a cancel-then-reload while queued: the recreated
+	// media view may not have the data yet, check() will run again
+	// (and re-register) when the download finishes.
+	return !media->bytes().isEmpty()
+		|| !load->document->filepath().isEmpty();
+}
+
+void CustomEmojiLoader::startRenderer() {
+	using namespace Ui::CustomEmoji;
+
+	const auto load = std::get_if<Load>(&_state);
+	Assert(load != nullptr);
+	Assert(load->process != nullptr);
+
+	const auto media = load->process->media.get();
+	const auto document = media->owner();
+	const auto data = media->bytes();
+	const auto filepath = document->filepath();
+
 	const auto tag = _tag;
 	const auto sizeOverride = int(_sizeOverride);
 	const auto size = FrameSizeFromTag(_tag, _sizeOverride);
@@ -382,6 +462,13 @@ void CustomEmojiLoader::check() {
 			tag,
 			sizeOverride);
 	};
+	const auto manager = base::make_weak(
+		&document->owner().customEmojiManager());
+	const auto releaser = std::make_shared<RendererSlotReleaser>([=] {
+		if (const auto strong = manager.get()) {
+			strong->rendererFinished();
+		}
+	});
 	auto put = [=, key = cacheKey(document)](QByteArray value) {
 		const auto size = value.size();
 		if (size <= Storage::kMaxFileInMemory) {
@@ -389,6 +476,7 @@ void CustomEmojiLoader::check() {
 		} else {
 			LOG(("Data Error: Cached emoji size too big: %1.").arg(size));
 		}
+		releaser->fire();
 	};
 	const auto type = document->sticker()->type;
 	auto generator = [=, bytes = Lottie::ReadContent(data, filepath)]()
@@ -409,6 +497,9 @@ void CustomEmojiLoader::check() {
 		.loader = std::move(loader),
 		.size = size,
 	});
+
+	// May destroy 'this': the instance replaces its Loading state
+	// (which owns this loader) with the Caching state.
 	base::take(load->process)->loaded(Caching{
 		std::move(renderer),
 		SerializeCustomEmojiId(document),
@@ -872,6 +963,52 @@ void CustomEmojiManager::requestFinished() {
 	_requestId = 0;
 	if (!_pendingForRequest.empty()) {
 		request();
+	}
+}
+
+bool CustomEmojiManager::registerRendererStart(
+		not_null<CustomEmojiLoader*> loader) {
+	if (_rendererCount < kMaxConcurrentRenderers) {
+		++_rendererCount;
+		return true;
+	}
+	_pendingRendererStarts.push_back(base::make_weak(loader));
+	return false;
+}
+
+void CustomEmojiManager::rendererFinished() {
+	Expects(_rendererCount > 0);
+
+	--_rendererCount;
+	if (_pendingRendererStarts.empty() || _pendingRendererStartScheduled) {
+		return;
+	}
+
+	// Not synchronously: this may run from a renderer destructor (state
+	// switch inside a paint / unload), while starting the next renderer
+	// replaces another instance's state and invokes its callbacks - do
+	// that in a clean main thread context.
+	_pendingRendererStartScheduled = true;
+	crl::on_main(this, [=] {
+		_pendingRendererStartScheduled = false;
+		startPendingRenderers();
+	});
+}
+
+void CustomEmojiManager::startPendingRenderers() {
+	while (_rendererCount < kMaxConcurrentRenderers
+		&& !_pendingRendererStarts.empty()) {
+		const auto weak = _pendingRendererStarts.front();
+		_pendingRendererStarts.erase(begin(_pendingRendererStarts));
+		if (const auto loader = weak.get()) {
+			if (loader->rendererStartAllowed()) {
+				++_rendererCount;
+
+				// May destroy the loader: it hands the renderer off to
+				// the instance, replacing the owning Loading state.
+				loader->startRenderer();
+			}
+		}
 	}
 }
 

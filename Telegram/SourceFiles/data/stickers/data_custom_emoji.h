@@ -91,6 +91,8 @@ public:
 	[[nodiscard]] uint64 coloredSetId() const;
 
 private:
+	friend class CustomEmojiLoader;
+
 	static constexpr auto kSizeCount = int(SizeTag::kCount);
 
 	struct InternalEmojiData {
@@ -129,6 +131,13 @@ private:
 	void processListeners(not_null<DocumentData*> document);
 	void requestSetFor(not_null<DocumentData*> document);
 
+	// Bounded renderer concurrency: returns true if the loader may start
+	// its renderer right now (a slot was taken), otherwise enqueues it.
+	[[nodiscard]] bool registerRendererStart(
+		not_null<CustomEmojiLoader*> loader);
+	void rendererFinished();
+	void startPendingRenderers();
+
 	[[nodiscard]] Ui::CustomEmoji::Preview prepareNonExactPreview(
 		DocumentId documentId,
 		SizeTag tag,
@@ -147,6 +156,12 @@ private:
 	[[nodiscard]] static int SizeIndex(SizeTag tag);
 
 	const not_null<Session*> _owner;
+
+	// Declared before _instances: destroying instances releases renderer
+	// slots, which touches these fields, so they must outlive _instances.
+	int _rendererCount = 0;
+	std::vector<base::weak_ptr<CustomEmojiLoader>> _pendingRendererStarts;
+	bool _pendingRendererStartScheduled = false;
 
 	std::array<
 		std::unordered_map<
