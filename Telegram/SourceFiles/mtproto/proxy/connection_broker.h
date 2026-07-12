@@ -11,15 +11,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 
-#include <QtCore/QMutex>
 #include <QtCore/QPointer>
 
+#include <atomic>
 #include <memory>
 
 namespace MTP {
 
 class RuntimeEnvironment;
-enum class ProxyDiagnosticsPhase;
 
 namespace details {
 
@@ -86,10 +85,12 @@ public:
 private:
 	friend class ConnectionBroker;
 
-	ConnectionTicket(ConnectionBroker *broker, ConnectionTicketId id);
+	ConnectionTicket(
+		std::weak_ptr<ProxyEndpointContext> context,
+		AdmissionTicketKey key);
 
-	ConnectionBroker *_broker = nullptr;
-	ConnectionTicketId _id = 0;
+	std::weak_ptr<ProxyEndpointContext> _context;
+	AdmissionTicketKey _key;
 
 };
 
@@ -106,68 +107,9 @@ public:
 	void cancelByOwnerDestruction();
 
 private:
-	struct RequestState;
-	struct EndpointQueue;
-	struct ClaimResult;
-	struct DrainVerdict;
-
-	// Keeps a released-slot callback from touching a destroyed broker:
-	// the callback locks the guard and checks the pointer, the destructor
-	// nulls it under the same lock before removing the listener.
-	struct WakeGuard {
-		QMutex mutex;
-		ConnectionBroker *broker = nullptr;
-	};
-
-	[[nodiscard]] EndpointQueue &queueFor(MtProxy::EndpointUse use);
-	void wakeEndpoint(const QString &endpointKey);
-	void drain();
-	void drainQueue(MtProxy::EndpointUse use);
-	[[nodiscard]] ClaimResult claimFront(MtProxy::EndpointUse use);
-	[[nodiscard]] DrainVerdict computeVerdict(
-		const std::shared_ptr<RequestState> &state);
-	[[nodiscard]] bool stillFrontLocked(
-		MtProxy::EndpointUse use,
-		const std::shared_ptr<RequestState> &state);
-	void commitEmptyEndpoint(const std::shared_ptr<RequestState> &state);
-	void commitAdmitted(
-		MtProxy::EndpointUse use,
-		const std::shared_ptr<RequestState> &state,
-		DrainVerdict &&verdict);
-	void commitDenied(
-		MtProxy::EndpointUse use,
-		const std::shared_ptr<RequestState> &state,
-		const DrainVerdict &verdict);
-	void scheduleDrain(
-		const std::shared_ptr<RequestState> &state,
-		crl::time delay);
-	void scheduleOpenRetry(
-		const std::shared_ptr<RequestState> &state,
-		crl::time delay);
-	void scheduleStart(
-		const std::shared_ptr<RequestState> &state,
-		crl::time delay);
-	void start(ConnectionTicketId id);
-	void releaseAdmission(const std::shared_ptr<RequestState> &state);
-	void notify(
-		const std::shared_ptr<RequestState> &state,
-		ConnectionBrokerDecision decision);
-	void reportAdmissionEvent(
-		const std::shared_ptr<RequestState> &state,
-		ProxyDiagnosticsPhase phase,
-		ConnectionBrokerDecision decision,
-		const QString &message);
-
-	std::unique_ptr<EndpointQueue> _mainQueue;
-	std::unique_ptr<EndpointQueue> _mediaQueue;
-	std::unique_ptr<EndpointQueue> _uploadQueue;
-	std::unique_ptr<EndpointQueue> _proxyCheckQueue;
-	ConnectionTicketId _lastTicketId = 0;
-	QMutex _mutex;
+	std::atomic<ConnectionTicketId> _lastTicketId = 0;
 	const not_null<RuntimeEnvironment*> _runtime;
 	const std::shared_ptr<ProxyEndpointContext> _endpointContext;
-	const std::shared_ptr<WakeGuard> _wakeGuard;
-	AdmissionReleaseListenerId _releaseListenerId = 0;
 
 };
 

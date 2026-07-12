@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 #include "logs.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "settings.h"
@@ -270,6 +271,15 @@ RuntimeEnvironment::RuntimeEnvironment(
 , _proxyRuntimeId(_proxyEndpointContext->registerRuntime())
 , _descriptor(std::move(descriptor))
 , _proxyServices(std::make_unique<ProxyServices>(this)) {
+	_proxyEndpointContext->endpointAdmissionArbiter().bindRuntime(
+		_proxyRuntimeId,
+		{
+			.dispatcher = this,
+			.now = _descriptor.async.now,
+			.randomIndex = _descriptor.async.randomIndex,
+			.singleShot = _descriptor.async.singleShot,
+			.fastProxyWarmup = _descriptor.proxy.fastProxyWarmup,
+		});
 	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
 		const auto runtime = not_null{ this };
 		proxyServices().control().submitFact(report);

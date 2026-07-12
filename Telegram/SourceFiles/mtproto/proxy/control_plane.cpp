@@ -23,19 +23,6 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 	return status.phase == ProxyConnectionPhase::Connected;
 }
 
-[[nodiscard]] ProxyAdmissionAction AdmissionActionFromMtproxy(
-		MtProxy::AdmissionAction action) {
-	switch (action) {
-	case MtProxy::AdmissionAction::StartNow:
-	case MtProxy::AdmissionAction::SkipCooldown:
-		return ProxyAdmissionAction::StartNow;
-	case MtProxy::AdmissionAction::StartAfter:
-	case MtProxy::AdmissionAction::Queued:
-		return ProxyAdmissionAction::Queued;
-	}
-	return ProxyAdmissionAction::Rejected;
-}
-
 [[nodiscard]] bool IsTerminalFailure(
 		const ProxyConnectionStatus &status) {
 	return (status.error != ProxyConnectionError::None)
@@ -227,44 +214,6 @@ ProxyControlPlane::ProxyControlPlane(
 	not_null<MtProxy::EndpointHealth*> endpointHealth)
 : _runtime(runtime)
 , _endpointHealth(endpointHealth) {
-}
-
-ProxyAdmissionDecision ProxyControlPlane::admit(
-		ProxyAdmissionRequest request) {
-	if (!MtProxy::EndpointEmpty(request.endpoint)) {
-		auto admission = _endpointHealth->admit({
-			.endpoint = request.endpoint,
-			.use = request.use,
-			.runtimeId = request.runtimeId,
-			.stealth = request.stealth,
-			.configuredTlsProfile = request.configuredTlsProfile,
-			.proxyGeneration = request.proxyGeneration,
-		});
-		return {
-			.action = AdmissionActionFromMtproxy(admission.action),
-			.retryAfter = admission.retryAfter,
-			.blockedBy = admission.blockedBy,
-			.stealth = admission.stealth,
-			.effectiveTlsProfile = admission.effectiveTlsProfile,
-			.plan = admission.plan,
-			.lease = std::move(admission.lease),
-			.runtimeId = admission.runtimeId,
-			.proxyGeneration = admission.proxyGeneration,
-			.attemptId = admission.attemptId,
-			.proxyEpoch = admission.proxyEpoch,
-			.successEpoch = admission.successEpoch,
-			.attemptStartedAt = admission.attemptStartedAt,
-		};
-	}
-	if (request.relayProofRequired
-		&& !request.relayProven
-		&& request.active >= request.scoutCap) {
-		return {
-			.action = ProxyAdmissionAction::Queued,
-			.retryAfter = request.retryAfter,
-		};
-	}
-	return {};
 }
 
 void ProxyControlPlane::reportMtproxyFailure(

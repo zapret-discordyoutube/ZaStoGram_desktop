@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/runtime/proxy_data.h"
 
+#include <compare>
 #include <optional>
 
 namespace MTP {
@@ -16,11 +17,47 @@ namespace MTP {
 using ProxyRuntimeId = uint64;
 using ProxyTraceId = uint64;
 
+struct AdmissionTicketKey {
+	ProxyRuntimeId runtimeId = 0;
+	uint64 ticketId = 0;
+
+	friend inline auto operator<=>(
+		AdmissionTicketKey,
+		AdmissionTicketKey) = default;
+};
+
+struct RuntimeGenerationKey {
+	ProxyRuntimeId runtimeId = 0;
+	uint64 proxyGeneration = 0;
+
+	friend inline auto operator<=>(
+		RuntimeGenerationKey,
+		RuntimeGenerationKey) = default;
+};
+
 enum class ProxyConnectionUse {
 	Main,
 	Media,
 	Upload,
 	ProxyCheck,
+};
+
+enum class ProxySchedulerLifecycle {
+	None,
+	Queued,
+	Scheduled,
+	Granted,
+	HandedOff,
+	Cancelled,
+};
+
+enum class ProxyAdmissionPhase {
+	Idle,
+	Queued,
+	Scheduled,
+	Resolving,
+	Tcp,
+	FakeTls,
 };
 
 [[nodiscard]] inline bool IsProxyCheck(ProxyConnectionUse use) {
@@ -83,6 +120,15 @@ enum class ProxyCloseOrigin {
 	ProtocolRejected,
 };
 
+enum class ProxyFailureAttribution {
+	None,
+	Unclear,
+	Local,
+	Client,
+	Peer,
+	Network,
+};
+
 struct ProxyTransportFailure {
 	ProxyMtproxyTerminalReason reason = ProxyMtproxyTerminalReason::None;
 	ProxyConnectionError error = ProxyConnectionError::None;
@@ -111,6 +157,7 @@ struct ProxyTransportFailure {
 	std::optional<crl::time> serverHelloMs;
 	std::optional<crl::time> appDataMs;
 	bool livenessReported = false;
+	ProxyFailureAttribution attribution = ProxyFailureAttribution::None;
 };
 
 struct MtProxyAttemptPlan {
@@ -119,6 +166,7 @@ struct MtProxyAttemptPlan {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
 	ProxyStealthOptions stealth;
+	crl::time serverHelloTimeout = 0;
 };
 
 struct ProxyConnectionAttempt {
@@ -132,6 +180,7 @@ struct ProxyConnectionAttempt {
 	uint64 attemptId = 0;
 	QString connectionId;
 	ProxyConnectionUse use = ProxyConnectionUse::Main;
+	AdmissionTicketKey ticketKey;
 
 	bool operator==(const ProxyConnectionAttempt &other) const {
 		return (runtimeId == other.runtimeId)
@@ -143,7 +192,8 @@ struct ProxyConnectionAttempt {
 			&& (successEpoch == other.successEpoch)
 			&& (attemptId == other.attemptId)
 			&& (connectionId == other.connectionId)
-			&& (use == other.use);
+			&& (use == other.use)
+			&& (ticketKey == other.ticketKey);
 	}
 
 };

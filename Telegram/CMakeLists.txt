@@ -1505,6 +1505,8 @@ PRIVATE
     mtproto/proxy/connection_broker.h
     mtproto/proxy/control_plane.cpp
     mtproto/proxy/control_plane.h
+    mtproto/proxy/endpoint_admission_arbiter.cpp
+    mtproto/proxy/endpoint_admission_arbiter.h
     mtproto/proxy/proxy_services.cpp
     mtproto/proxy/proxy_services.h
     mtproto/proxy/proxy_endpoint_context.cpp

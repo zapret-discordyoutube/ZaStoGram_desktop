@@ -25,47 +25,10 @@ enum class ProxyControlPlaneSuccessScope {
 	Relay,
 };
 
-enum class ProxyAdmissionAction {
-	StartNow,
-	Queued,
-	Rejected,
-};
-
 struct ProxyFact {
 	ProxyConnectionStatus status;
 	ProxyControlPlaneSuccessScope successScope
 		= ProxyControlPlaneSuccessScope::None;
-};
-
-struct ProxyAdmissionRequest {
-	details::MtProxy::EndpointId endpoint;
-	details::MtProxy::EndpointUse use = details::MtProxy::EndpointUse::Main;
-	ProxyRuntimeId runtimeId = 0;
-	ProxyStealthOptions stealth;
-	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
-	uint64 proxyGeneration = 0;
-	bool relayProofRequired = false;
-	bool relayProven = false;
-	int active = 0;
-	int scoutCap = 2;
-	crl::time retryAfter = 1000;
-};
-
-struct ProxyAdmissionDecision {
-	ProxyAdmissionAction action = ProxyAdmissionAction::StartNow;
-	crl::time retryAfter = 0;
-	details::MtProxy::FailureReason blockedBy
-		= details::MtProxy::FailureReason::None;
-	ProxyStealthOptions stealth;
-	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
-	MtProxyAttemptPlan plan;
-	details::MtProxy::EndpointAttemptLease lease;
-	ProxyRuntimeId runtimeId = 0;
-	uint64 proxyGeneration = 0;
-	uint64 attemptId = 0;
-	uint64 proxyEpoch = 0;
-	uint64 successEpoch = 0;
-	crl::time attemptStartedAt = 0;
 };
 
 struct ProxyEndpointSnapshot {
@@ -81,7 +44,6 @@ public:
 		not_null<details::MtProxy::EndpointHealth*> endpointHealth);
 
 	void submitFact(const ProxyEventReport &report);
-	[[nodiscard]] ProxyAdmissionDecision admit(ProxyAdmissionRequest request);
 	[[nodiscard]] ProxyConnectionStatus selectedStatus() const;
 	[[nodiscard]] ProxyEndpointSnapshot endpointSnapshot() const;
 

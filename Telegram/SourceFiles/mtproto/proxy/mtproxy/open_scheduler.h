@@ -8,66 +8,47 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
-#include "mtproto/runtime/runtime_environment.h"
+
+#include <vector>
 
 namespace MTP::details::MtProxy {
 
-class OpenSlotReservation final {
-public:
-	OpenSlotReservation() = default;
-	OpenSlotReservation(const OpenSlotReservation &other) = delete;
-	OpenSlotReservation &operator=(const OpenSlotReservation &other) = delete;
-	OpenSlotReservation(OpenSlotReservation &&other) noexcept;
-	OpenSlotReservation &operator=(OpenSlotReservation &&other) noexcept;
-	~OpenSlotReservation();
+struct OpenState;
 
-	void commit();
-	void cancel();
-	[[nodiscard]] crl::time delay() const;
-
-private:
-	friend class OpenScheduler;
-
-	explicit OpenSlotReservation(crl::time delay);
-	OpenSlotReservation(
-		std::shared_ptr<ProxyEndpointContext> context,
-		QString key,
-		uint64 id,
-		crl::time openAt,
-		crl::time nextOpenAt,
-		crl::time delay);
-
-	std::shared_ptr<ProxyEndpointContext> _context;
-	QString _key;
-	uint64 _id = 0;
-	crl::time _openAt = 0;
-	crl::time _nextOpenAt = 0;
-	crl::time _delay = 0;
-
+struct OpenSlotRequest {
+	crl::time now = 0;
+	crl::time earliestOpenAt = 0;
+	crl::time spacing = 0;
+	crl::time jitter = 0;
 };
 
-class OpenScheduler final {
-public:
-	explicit OpenScheduler(const RuntimeAsyncGateway &async);
-	explicit OpenScheduler(not_null<RuntimeEnvironment*> runtime);
+struct OpenSlotAssignment {
+	uint64 id = 0;
+	crl::time openAt = 0;
+	crl::time nextOpenAt = 0;
+	crl::time delay = 0;
 
-	[[nodiscard]] OpenSlotReservation ReserveOpenSlot(
-		const EndpointId &endpoint,
-		ProxyConnectionPattern pattern,
-		crl::time notBefore = 0);
-
-private:
-	RuntimeAsyncGateway _async;
-	std::shared_ptr<ProxyEndpointContext> _context;
-
+	bool operator==(const OpenSlotAssignment &other) const = default;
 };
+
+struct OpenSlotReflowRequest {
+	uint64 id = 0;
+	crl::time earliestOpenAt = 0;
+	crl::time spacing = 0;
+	crl::time jitter = 0;
+};
+
+[[nodiscard]] OpenSlotAssignment ReserveOpenSlotLocked(
+	OpenState &state,
+	const OpenSlotRequest &request);
+[[nodiscard]] bool CancelOpenSlotLocked(OpenState &state, uint64 id);
+[[nodiscard]] bool CommitOpenSlotLocked(OpenState &state, uint64 id);
+[[nodiscard]] std::vector<OpenSlotAssignment> ReflowOpenSlotsLocked(
+	OpenState &state,
+	const std::vector<OpenSlotReflowRequest> &ordered,
+	crl::time now);
 
 [[nodiscard]] crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern);
-[[nodiscard]] OpenSlotReservation ReserveOpenSlot(
-	not_null<RuntimeEnvironment*> runtime,
-	const EndpointId &endpoint,
-	ProxyConnectionPattern pattern,
-	crl::time notBefore = 0);
 
 // Failure-driven pacing feedback, independent of the stealth pattern:
 // connect timeouts grow a per-endpoint spacing floor for new opens,

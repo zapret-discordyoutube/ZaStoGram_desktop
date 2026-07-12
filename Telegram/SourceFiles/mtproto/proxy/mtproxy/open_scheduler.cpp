@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QMutex>
 
@@ -18,125 +19,140 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details::MtProxy {
 namespace {
 
-constexpr auto kOpenSpacingJitter = crl::time(125);
-constexpr auto kMinimumOpenSpacing = crl::time(500);
 constexpr auto kAdaptiveSpacingMin = crl::time(500);
 constexpr auto kAdaptiveSpacingMax = crl::time(6000);
 
+void PruneRecentOpens(OpenState &state, crl::time now) {
+	const auto expired = std::remove_if(
+		begin(state.recentOpens),
+		end(state.recentOpens),
+		[=](const OpenRecord &entry) {
+			return entry.nextOpenAt <= now;
+		});
+	state.recentOpens.erase(expired, end(state.recentOpens));
+}
+
+[[nodiscard]] crl::time RecentOpenBoundary(const OpenState &state) {
+	auto result = crl::time();
+	for (const auto &entry : state.recentOpens) {
+		accumulate_max(result, entry.nextOpenAt);
+	}
+	return result;
+}
+
 } // namespace
 
-OpenSlotReservation::OpenSlotReservation(crl::time delay)
-: _delay(delay) {
-}
-
-OpenSlotReservation::OpenSlotReservation(
-		std::shared_ptr<ProxyEndpointContext> context,
-		QString key,
-		uint64 id,
-		crl::time openAt,
-		crl::time nextOpenAt,
-		crl::time delay)
-: _context(std::move(context))
-, _key(std::move(key))
-, _id(id)
-, _openAt(openAt)
-, _nextOpenAt(nextOpenAt)
-, _delay(delay) {
-}
-
-OpenSlotReservation::OpenSlotReservation(
-		OpenSlotReservation &&other) noexcept
-: _context(std::move(other._context))
-, _key(std::move(other._key))
-, _id(base::take(other._id))
-, _openAt(base::take(other._openAt))
-, _nextOpenAt(base::take(other._nextOpenAt))
-, _delay(base::take(other._delay)) {
-}
-
-OpenSlotReservation &OpenSlotReservation::operator=(
-		OpenSlotReservation &&other) noexcept {
-	if (this != &other) {
-		cancel();
-		_context = std::move(other._context);
-		_key = std::move(other._key);
-		_id = base::take(other._id);
-		_openAt = base::take(other._openAt);
-		_nextOpenAt = base::take(other._nextOpenAt);
-		_delay = base::take(other._delay);
+OpenSlotAssignment ReserveOpenSlotLocked(
+		OpenState &state,
+		const OpenSlotRequest &request) {
+	PruneRecentOpens(state, request.now);
+	auto openAt = std::max(request.now, request.earliestOpenAt);
+	accumulate_max(openAt, RecentOpenBoundary(state));
+	for (const auto &entry : state.pendingOpens) {
+		accumulate_max(openAt, entry.nextOpenAt);
 	}
-	return *this;
+	const auto spacing = std::max(crl::time(), request.spacing);
+	const auto jitter = std::max(crl::time(), request.jitter);
+	const auto nextOpenAt = openAt + spacing + jitter;
+	const auto id = ++state.lastReservationId;
+	state.pendingOpens.push_back({
+		.id = id,
+		.openAt = openAt,
+		.nextOpenAt = nextOpenAt,
+	});
+	return {
+		.id = id,
+		.openAt = openAt,
+		.nextOpenAt = nextOpenAt,
+		.delay = std::max(crl::time(), openAt - request.now),
+	};
 }
 
-OpenSlotReservation::~OpenSlotReservation() {
-	cancel();
-}
-
-void OpenSlotReservation::commit() {
-	if (!_context || !_id) {
-		return;
+bool CancelOpenSlotLocked(OpenState &state, uint64 id) {
+	const auto i = std::find_if(
+		begin(state.pendingOpens),
+		end(state.pendingOpens),
+		[=](const PendingOpenRecord &entry) {
+			return entry.id == id;
+		});
+	if (i == end(state.pendingOpens)) {
+		return false;
 	}
-	{
-		auto &storage = _context->storage();
-		QMutexLocker lock(&storage.mutex);
-		auto &state = storage.openStates[_key];
-		const auto i = std::find_if(
+	state.pendingOpens.erase(i);
+	return true;
+}
+
+bool CommitOpenSlotLocked(OpenState &state, uint64 id) {
+	const auto i = std::find_if(
+		begin(state.pendingOpens),
+		end(state.pendingOpens),
+		[=](const PendingOpenRecord &entry) {
+			return entry.id == id;
+		});
+	if (i == end(state.pendingOpens)) {
+		return false;
+	}
+	const auto committed = *i;
+	state.pendingOpens.erase(i);
+	state.recentOpens.push_back({
+		.openAt = committed.openAt,
+		.nextOpenAt = committed.nextOpenAt,
+	});
+	return true;
+}
+
+std::vector<OpenSlotAssignment> ReflowOpenSlotsLocked(
+		OpenState &state,
+		const std::vector<OpenSlotReflowRequest> &ordered,
+		crl::time now) {
+	PruneRecentOpens(state, now);
+	if (ordered.size() != state.pendingOpens.size()) {
+		return {};
+	}
+	auto reflowed = std::deque<PendingOpenRecord>();
+	auto result = std::vector<OpenSlotAssignment>();
+	result.reserve(ordered.size());
+	auto boundary = RecentOpenBoundary(state);
+	for (const auto &request : ordered) {
+		if (!request.id) {
+			return {};
+		}
+		const auto existing = std::find_if(
 			begin(state.pendingOpens),
 			end(state.pendingOpens),
-			[=](const PendingOpenRecord &entry) {
-				return entry.id == _id;
+			[&](const PendingOpenRecord &entry) {
+				return entry.id == request.id;
 			});
-		if (i != end(state.pendingOpens)) {
-			state.pendingOpens.erase(i);
+		const auto duplicate = std::find_if(
+			begin(reflowed),
+			end(reflowed),
+			[&](const PendingOpenRecord &entry) {
+				return entry.id == request.id;
+			});
+		if (existing == end(state.pendingOpens)
+			|| duplicate != end(reflowed)) {
+			return {};
 		}
-		state.recentOpens.push_back({
-			.openAt = _openAt,
-			.nextOpenAt = _nextOpenAt,
+		auto openAt = std::max(now, request.earliestOpenAt);
+		accumulate_max(openAt, boundary);
+		const auto spacing = std::max(crl::time(), request.spacing);
+		const auto jitter = std::max(crl::time(), request.jitter);
+		const auto nextOpenAt = openAt + spacing + jitter;
+		reflowed.push_back({
+			.id = request.id,
+			.openAt = openAt,
+			.nextOpenAt = nextOpenAt,
 		});
+		result.push_back({
+			.id = request.id,
+			.openAt = openAt,
+			.nextOpenAt = nextOpenAt,
+			.delay = std::max(crl::time(), openAt - now),
+		});
+		boundary = nextOpenAt;
 	}
-	_context.reset();
-	_key.clear();
-	_id = 0;
-}
-
-void OpenSlotReservation::cancel() {
-	if (!_context || !_id) {
-		return;
-	}
-	{
-		auto &storage = _context->storage();
-		QMutexLocker lock(&storage.mutex);
-		const auto state = storage.openStates.find(_key);
-		if (state != end(storage.openStates)) {
-			auto &pending = state->second.pendingOpens;
-			const auto i = std::find_if(
-				begin(pending),
-				end(pending),
-				[=](const PendingOpenRecord &entry) {
-					return entry.id == _id;
-				});
-			if (i != end(pending)) {
-				pending.erase(i);
-			}
-		}
-	}
-	_context.reset();
-	_key.clear();
-	_id = 0;
-}
-
-crl::time OpenSlotReservation::delay() const {
-	return _delay;
-}
-
-OpenScheduler::OpenScheduler(const RuntimeAsyncGateway &async)
-: _async(async)
-, _context(CreateProxyEndpointContext()) {
-}
-
-OpenScheduler::OpenScheduler(not_null<RuntimeEnvironment*> runtime)
-: _async(runtime->async())
-, _context(runtime->proxyEndpointContextShared()) {
+	state.pendingOpens = std::move(reflowed);
+	return result;
 }
 
 crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern) {
@@ -148,68 +164,6 @@ crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern) {
 	case ProxyConnectionPattern::Off: break;
 	}
 	return crl::time(0);
-}
-
-OpenSlotReservation OpenScheduler::ReserveOpenSlot(
-		const EndpointId &endpoint,
-		ProxyConnectionPattern pattern,
-		crl::time notBefore) {
-	const auto key = EndpointKey(endpoint);
-	if (key.isEmpty()) {
-		return OpenSlotReservation(std::max(crl::time(0), notBefore));
-	}
-	const auto patternSpacing = OpenConnectionSpacing(pattern);
-	const auto now = _async.now();
-	const auto earliest = now + std::max(crl::time(0), notBefore);
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	auto &state = storage.openStates[key];
-	const auto expired = std::remove_if(
-		begin(state.recentOpens),
-		end(state.recentOpens),
-		[=](const OpenRecord &entry) {
-			return entry.nextOpenAt <= now;
-		});
-	state.recentOpens.erase(expired, end(state.recentOpens));
-	auto openAt = earliest;
-	for (const auto &entry : state.recentOpens) {
-		accumulate_max(openAt, entry.nextOpenAt);
-	}
-	for (const auto &entry : state.pendingOpens) {
-		accumulate_max(openAt, entry.nextOpenAt);
-	}
-	const auto spacing = std::max(
-		{ kMinimumOpenSpacing, patternSpacing, state.adaptiveSpacing });
-	auto nextOpenAt = openAt;
-	if (spacing > 0) {
-		const auto jitter = crl::time(
-			_async.randomIndex(int(kOpenSpacingJitter) + 1));
-		nextOpenAt = openAt + spacing + jitter;
-	}
-	const auto id = ++state.lastReservationId;
-	state.pendingOpens.push_back({
-		.id = id,
-		.openAt = openAt,
-		.nextOpenAt = nextOpenAt,
-	});
-	return OpenSlotReservation(
-		_context,
-		key,
-		id,
-		openAt,
-		nextOpenAt,
-		std::max(crl::time(0), openAt - now));
-}
-
-OpenSlotReservation ReserveOpenSlot(
-		not_null<RuntimeEnvironment*> runtime,
-		const EndpointId &endpoint,
-		ProxyConnectionPattern pattern,
-		crl::time notBefore) {
-	return OpenScheduler(runtime).ReserveOpenSlot(
-		endpoint,
-		pattern,
-		notBefore);
 }
 
 void NoteConnectTimeout(

@@ -13,13 +13,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <memory>
 #include <vector>
 
-namespace MTP {
-
-namespace details::MtProxy {
+namespace MTP::details::MtProxy {
 struct EndpointContextStorage;
-} // namespace details::MtProxy
+} // namespace MTP::details::MtProxy
 
-using AdmissionReleaseListenerId = uint64;
+namespace MTP::details {
+class EndpointAdmissionArbiter;
+} // namespace MTP::details
+
+namespace MTP {
 
 class ProxyEndpointContext final {
 public:
@@ -45,15 +47,8 @@ public:
 		uint64 proxyGeneration,
 		uint64 attemptId);
 
-	// Invoked (strictly after the storage mutex unlocks, on the caller's
-	// thread) whenever an endpoint may newly admit a queued request - either
-	// a slot freed (releaseEndpointAttempt / releaseAdmissionForRelayCandidate)
-	// or its penalty was cleared early by a relay success / manual selection
-	// (notifyEndpointAdmissible). The listener just re-drains that endpoint.
-	[[nodiscard]] AdmissionReleaseListenerId addAdmissionReleaseListener(
-		Fn<void(const QString &endpointKey)> callback);
-	void removeAdmissionReleaseListener(AdmissionReleaseListenerId id);
 	void notifyEndpointAdmissible(const QString &key);
+	[[nodiscard]] details::EndpointAdmissionArbiter &endpointAdmissionArbiter();
 
 	[[nodiscard]] auto storage()
 		-> details::MtProxy::EndpointContextStorage &;
@@ -62,6 +57,7 @@ public:
 
 private:
 	const std::unique_ptr<details::MtProxy::EndpointContextStorage> _storage;
+	const std::unique_ptr<details::EndpointAdmissionArbiter> _arbiter;
 
 };
 

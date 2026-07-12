@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
@@ -32,32 +33,69 @@ enum class RelayProofRetirement {
 	RetiredFinal,
 };
 
-[[nodiscard]] RelayProofRetirement RetireRelayProofLocked(
+struct RelayProofRetirementResult {
+	RelayProofRetirement outcome = RelayProofRetirement::MissingOrDuplicate;
+	ProxyConnectionAttempt attempt;
+	bool mainProofSurvives = false;
+	bool endpointProofSurvives = false;
+};
+
+[[nodiscard]] RelayProofRetirementResult RetireRelayProofLocked(
 		EndpointState &state,
 		const RelayProofReport &report,
 		crl::time now) {
 	PruneExpiredEndpointState(state, now);
-	if (RuntimeProxyGenerationIsStale(
-			state,
-			report.runtimeId,
-			report.proxyGeneration)) {
-		return RelayProofRetirement::StaleGeneration;
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+	};
+	if (!RuntimeGenerationIsCurrent(state, runtimeGeneration)) {
+		return {
+			.outcome = RelayProofRetirement::StaleGeneration,
+		};
 	}
-	ApplyProxyGeneration(
-		state,
-		report.runtimeId,
-		report.proxyGeneration);
 	const auto identity = RelayProofIdentity{
 		.runtimeId = report.runtimeId,
 		.proxyGeneration = report.proxyGeneration,
 		.attemptId = report.attemptId,
 	};
-	if (!RetireRelayProof(state, identity)) {
-		return RelayProofRetirement::MissingOrDuplicate;
+	const auto i = state.relayProofs.find(identity);
+	if (i == end(state.relayProofs)
+		|| i->second.use != report.use
+		|| ((report.ticketKey.runtimeId || report.ticketKey.ticketId)
+			&& report.ticketKey != i->second.ticketKey)
+		|| report.proxyEpoch != i->second.proxyEpoch
+		|| report.successEpoch != i->second.successEpoch
+		|| (report.attemptStartedAt
+			&& report.attemptStartedAt != i->second.attemptStartedAt)
+		|| (report.lastPayloadAt
+			&& report.lastPayloadAt < i->second.lastPayloadAt)) {
+		return {};
 	}
-	return state.relayProven
-		? RelayProofRetirement::RetiredWithSurvivors
-		: RelayProofRetirement::RetiredFinal;
+	const auto proof = i->second;
+	if (!RetireRelayProof(state, identity)) {
+		return {};
+	}
+	return {
+		.outcome = state.relayProven
+			? RelayProofRetirement::RetiredWithSurvivors
+			: RelayProofRetirement::RetiredFinal,
+		.attempt = {
+			.runtimeId = report.runtimeId,
+			.traceId = proof.traceId,
+			.ticketId = proof.ticketKey.ticketId,
+			.proxyGeneration = report.proxyGeneration,
+			.proxyEpoch = proof.proxyEpoch,
+			.successEpoch = proof.successEpoch,
+			.attemptId = report.attemptId,
+			.use = proof.use,
+			.ticketKey = proof.ticketKey,
+		},
+		.mainProofSurvives = HasCurrentMainRelayProof(
+			state,
+			runtimeGeneration),
+		.endpointProofSurvives = state.relayProven,
+	};
 }
 
 [[nodiscard]] FailureReport RelayStallFailureReport(
@@ -72,6 +110,7 @@ enum class RelayProofRetirement {
 		.proxyEpoch = report.proxyEpoch,
 		.successEpoch = report.successEpoch,
 		.attemptStartedAt = report.attemptStartedAt,
+		.ticketKey = report.ticketKey,
 	};
 }
 
@@ -86,33 +125,96 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 	}
 	const auto now = crl::now();
 	const auto staleReport = RelayStallFailureReport(report);
-	auto retirement = RelayProofRetirement::MissingOrDuplicate;
+	auto retirement = RelayProofRetirementResult();
 	auto recipeLevel = 0;
+	auto event = std::optional<EndpointEvent>();
+	auto capabilityFailure = false;
+	const auto key = EndpointKey(report.endpoint);
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
-		const auto i = storage.states.find(EndpointKey(report.endpoint));
-		if (i != end(storage.states)) {
+		const auto i = storage.states.find(key);
+		if (storage.runtimes.contains(report.runtimeId)
+			&& i != end(storage.states)) {
 			auto &state = i->second;
 			recipeLevel = state.recipeLevel;
 			retirement = RetireRelayProofLocked(state, report, now);
+			const auto runtimeGeneration = RuntimeGenerationKey{
+				.runtimeId = report.runtimeId,
+				.proxyGeneration = report.proxyGeneration,
+			};
+			if ((retirement.outcome
+					== RelayProofRetirement::RetiredWithSurvivors
+					|| retirement.outcome
+						== RelayProofRetirement::RetiredFinal)
+				&& retirement.attempt.use == EndpointUse::Main
+				&& !retirement.mainProofSurvives) {
+				const auto terminalAt = now;
+				auto verdict = EndpointVerdict{
+					.sourceAttempt = retirement.attempt,
+					.runtimeGeneration = runtimeGeneration,
+					.scope = EndpointVerdictScope::Attempt,
+					.cause = EndpointVerdictCause::RelayLiveness,
+					.reason = FailureReason::MtpReceiveTimeoutAfterData,
+					.observedAt = terminalAt,
+					.terminalAt = terminalAt,
+				};
+				if (RecordCurrentTerminalEvidence(
+						state,
+						EndpointTerminalEvidence{
+							.verdict = verdict,
+							.runtimeGeneration = runtimeGeneration,
+							.ticketKey = retirement.attempt.ticketKey,
+							.use = retirement.attempt.use,
+							.attemptId = retirement.attempt.attemptId,
+							.terminalAt = terminalAt,
+						},
+						now)) {
+					verdict.scope = EndpointVerdictScope::Endpoint;
+					if (SetCurrentCanonicalVerdict(
+							state,
+							runtimeGeneration,
+							std::move(verdict))) {
+						state.endpoint = report.endpoint;
+						if (!retirement.endpointProofSurvives) {
+							state.lastFailure
+								= FailureReason::MtpReceiveTimeoutAfterData;
+							state.lastDiagnostic = ToLegacyDiagnostic(
+								FailureReason::MtpReceiveTimeoutAfterData);
+							state.healthy = false;
+						}
+						event = EndpointEvent{
+							.endpoint = state.endpoint,
+							.reason = FailureReason::MtpReceiveTimeoutAfterData,
+							.terminalUntil = state.terminalUntil,
+						};
+					}
+				}
+			}
+			capabilityFailure = (retirement.outcome
+					== RelayProofRetirement::RetiredFinal)
+				&& !retirement.endpointProofSurvives;
 		}
 	}
-	if (retirement == RelayProofRetirement::StaleGeneration
-		|| retirement == RelayProofRetirement::MissingOrDuplicate) {
+	if (retirement.outcome == RelayProofRetirement::StaleGeneration
+		|| retirement.outcome
+			== RelayProofRetirement::MissingOrDuplicate) {
 		LogStaleAttemptFailure(_runtime, staleReport, recipeLevel);
 		return;
 	}
-	if (retirement == RelayProofRetirement::RetiredWithSurvivors) {
-		return;
+	if (capabilityFailure) {
+		NoteCapabilityMtproxyRelayFailure(
+			_runtime,
+			CapabilityFailure{
+				.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
+				.routeKey = RouteKey(report.endpoint.route),
+				.diagnostic = u"relay_stall"_q,
+			});
 	}
-	NoteCapabilityMtproxyRelayFailure(
-		_runtime,
-		CapabilityFailure{
-			.proxyKey = CapabilityProxyKey(report.endpoint.canonical),
-			.routeKey = RouteKey(report.endpoint.route),
-			.diagnostic = u"relay_stall"_q,
-		});
+	if (event) {
+		fireEndpointEventOnMain(std::move(*event));
+	}
+	_context->notifyEndpointAdmissible(key);
 }
 
 void EndpointHealth::retireRelayProof(RelayProofReport report) {
@@ -123,11 +225,25 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 		return;
 	}
 	const auto now = crl::now();
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	const auto i = storage.states.find(EndpointKey(report.endpoint));
-	if (i != end(storage.states)) {
-		static_cast<void>(RetireRelayProofLocked(i->second, report, now));
+	const auto key = EndpointKey(report.endpoint);
+	auto retired = false;
+	{
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		const auto i = storage.states.find(key);
+		if (storage.runtimes.contains(report.runtimeId)
+			&& i != end(storage.states)) {
+			const auto result = RetireRelayProofLocked(
+				i->second,
+				report,
+				now);
+			retired = (result.outcome
+					== RelayProofRetirement::RetiredWithSurvivors)
+				|| (result.outcome == RelayProofRetirement::RetiredFinal);
+		}
+	}
+	if (retired) {
+		_context->notifyEndpointAdmissible(key);
 	}
 }
 
@@ -184,14 +300,9 @@ void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
 }
 
 void EndpointHealth::applyProxyGeneration(uint64 proxyGeneration) {
-	const auto now = crl::now();
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	for (auto &entry : storage.states) {
-		auto &state = entry.second;
-		PruneExpiredEndpointState(state, now);
-		ApplyProxyGeneration(state, _runtimeId, proxyGeneration);
-	}
+	_context->endpointAdmissionArbiter().cancelBeforeGeneration(
+		_runtimeId,
+		proxyGeneration);
 }
 
 Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {

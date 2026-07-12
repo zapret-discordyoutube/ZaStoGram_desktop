@@ -9,17 +9,36 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
+#include <algorithm>
 #include <compare>
+#include <cstddef>
+#include <deque>
 #include <map>
 #include <set>
+#include <utility>
 
 namespace MTP::details::MtProxy {
 
 struct EndpointAttemptState {
 	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
+	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
 	crl::time startedAt = 0;
 	bool admissionActive = true;
+	EndpointUse use = EndpointUse::Main;
+	ProxySchedulerLifecycle schedulerLifecycle
+		= ProxySchedulerLifecycle::None;
+	ProxyAdmissionPhase admissionPhase = ProxyAdmissionPhase::Idle;
+	ProxyConnectionPhase networkPhase = ProxyConnectionPhase::None;
+	AdmissionTicketKey ticketKey;
+	ProxyTraceId traceId = 0;
+	crl::time enqueuedAt = 0;
+	crl::time scheduledOpenAt = 0;
+	crl::time attemptStartedAt = 0;
+	crl::time phaseStartedAt = 0;
+	crl::time terminalAt = 0;
+	std::optional<EndpointVerdict> terminalVerdict;
 };
 
 struct RelayProofIdentity {
@@ -34,6 +53,25 @@ struct RelayProofIdentity {
 
 struct RelayProofState {
 	crl::time provenAt = 0;
+	crl::time lastPayloadAt = 0;
+	AdmissionTicketKey ticketKey;
+	EndpointUse use = EndpointUse::Main;
+	ProxyTraceId traceId = 0;
+	uint64 proxyEpoch = 0;
+	uint64 successEpoch = 0;
+	crl::time attemptStartedAt = 0;
+	uint8 payloadCount = 0;
+};
+
+inline constexpr auto kRelayProofPayloadCountLimit = uint8(2);
+
+struct EndpointTerminalEvidence {
+	EndpointVerdict verdict;
+	RuntimeGenerationKey runtimeGeneration;
+	AdmissionTicketKey ticketKey;
+	EndpointUse use = EndpointUse::Main;
+	uint64 attemptId = 0;
+	crl::time terminalAt = 0;
 };
 
 enum class RelayProofPromotionResult {
@@ -68,7 +106,163 @@ struct EndpointState {
 	crl::time lastRelaySuccessAt = 0;
 	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
 	RouteEndpoint lastGoodRoute;
+	std::deque<EndpointTerminalEvidence> terminalEvidence;
+	std::map<RuntimeGenerationKey, EndpointVerdict> canonicalVerdicts;
 };
+
+inline constexpr auto kEndpointTerminalEvidenceLimit = std::size_t(32);
+inline constexpr auto kEndpointTerminalEvidenceWindow
+	= crl::time(60 * 1000);
+
+[[nodiscard]] inline bool RuntimeGenerationIsCurrent(
+		const EndpointState &state,
+		const RuntimeGenerationKey &key) {
+	const auto i = state.generations.find(key.runtimeId);
+	return key.runtimeId
+		&& i != end(state.generations)
+		&& i->second == key.proxyGeneration;
+}
+
+inline void PruneExpiredEndpointOutcomes(
+		EndpointState &state,
+		crl::time now) {
+	const auto expired = std::remove_if(
+		begin(state.terminalEvidence),
+		end(state.terminalEvidence),
+		[=](const EndpointTerminalEvidence &entry) {
+			const auto observedAt = entry.terminalAt
+				? entry.terminalAt
+				: entry.verdict.observedAt;
+			return !observedAt
+				|| (now - observedAt >= kEndpointTerminalEvidenceWindow);
+		});
+	state.terminalEvidence.erase(expired, end(state.terminalEvidence));
+	for (auto i = begin(state.canonicalVerdicts);
+			i != end(state.canonicalVerdicts);) {
+		const auto evidenceUntil = i->second.observedAt
+			? (i->second.observedAt + kEndpointTerminalEvidenceWindow)
+			: crl::time();
+		const auto relevantUntil = std::max(
+			evidenceUntil,
+			i->second.retryUntil);
+		if (relevantUntil <= now) {
+			i = state.canonicalVerdicts.erase(i);
+		} else {
+			++i;
+		}
+	}
+}
+
+inline void PruneEndpointOutcomesAfterSuccess(
+		EndpointState &state,
+		const RuntimeGenerationKey &key,
+		crl::time succeededAt) {
+	if (!succeededAt) {
+		return;
+	}
+	const auto stale = std::remove_if(
+		begin(state.terminalEvidence),
+		end(state.terminalEvidence),
+		[&](const EndpointTerminalEvidence &entry) {
+			const auto observedAt = entry.terminalAt
+				? entry.terminalAt
+				: entry.verdict.observedAt;
+			return entry.runtimeGeneration == key
+				&& observedAt <= succeededAt;
+		});
+	state.terminalEvidence.erase(stale, end(state.terminalEvidence));
+	const auto canonical = state.canonicalVerdicts.find(key);
+	if (canonical != end(state.canonicalVerdicts)
+		&& canonical->second.observedAt <= succeededAt) {
+		state.canonicalVerdicts.erase(canonical);
+	}
+}
+
+inline void PruneEndpointOutcomesForGeneration(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration) {
+	const auto stale = std::remove_if(
+		begin(state.terminalEvidence),
+		end(state.terminalEvidence),
+		[=](const EndpointTerminalEvidence &entry) {
+			return entry.runtimeGeneration.runtimeId == runtimeId
+				&& entry.runtimeGeneration.proxyGeneration
+					!= proxyGeneration;
+		});
+	state.terminalEvidence.erase(stale, end(state.terminalEvidence));
+	for (auto i = begin(state.canonicalVerdicts);
+			i != end(state.canonicalVerdicts);) {
+		if (i->first.runtimeId == runtimeId
+			&& i->first.proxyGeneration != proxyGeneration) {
+			i = state.canonicalVerdicts.erase(i);
+		} else {
+			++i;
+		}
+	}
+}
+
+inline void RemoveEndpointOutcomesForRuntime(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId) {
+	const auto removed = std::remove_if(
+		begin(state.terminalEvidence),
+		end(state.terminalEvidence),
+		[=](const EndpointTerminalEvidence &entry) {
+			return entry.runtimeGeneration.runtimeId == runtimeId;
+		});
+	state.terminalEvidence.erase(removed, end(state.terminalEvidence));
+	for (auto i = begin(state.canonicalVerdicts);
+			i != end(state.canonicalVerdicts);) {
+		if (i->first.runtimeId == runtimeId) {
+			i = state.canonicalVerdicts.erase(i);
+		} else {
+			++i;
+		}
+	}
+}
+
+[[nodiscard]] inline bool RecordCurrentTerminalEvidence(
+		EndpointState &state,
+		EndpointTerminalEvidence evidence,
+		crl::time now) {
+	PruneExpiredEndpointOutcomes(state, now);
+	if (!RuntimeGenerationIsCurrent(state, evidence.runtimeGeneration)) {
+		return false;
+	}
+	evidence.verdict.runtimeGeneration = evidence.runtimeGeneration;
+	evidence.verdict.scope = EndpointVerdictScope::Attempt;
+	if (!evidence.verdict.observedAt) {
+		evidence.verdict.observedAt = now;
+	}
+	if (!evidence.terminalAt) {
+		evidence.terminalAt = evidence.verdict.terminalAt
+			? evidence.verdict.terminalAt
+			: evidence.verdict.observedAt;
+	}
+	if (!evidence.verdict.terminalAt) {
+		evidence.verdict.terminalAt = evidence.terminalAt;
+	}
+	state.terminalEvidence.push_back(std::move(evidence));
+	while (state.terminalEvidence.size()
+			> kEndpointTerminalEvidenceLimit) {
+		state.terminalEvidence.pop_front();
+	}
+	return true;
+}
+
+[[nodiscard]] inline bool SetCurrentCanonicalVerdict(
+		EndpointState &state,
+		const RuntimeGenerationKey &key,
+		EndpointVerdict verdict) {
+	if (!RuntimeGenerationIsCurrent(state, key)) {
+		return false;
+	}
+	verdict.runtimeGeneration = key;
+	verdict.scope = EndpointVerdictScope::Endpoint;
+	state.canonicalVerdicts.insert_or_assign(key, std::move(verdict));
+	return true;
+}
 
 [[nodiscard]] inline bool RuntimeProxyGenerationIsStale(
 		const EndpointState &state,
@@ -92,6 +286,42 @@ struct EndpointState {
 		const EndpointState &state,
 		const RelayProofIdentity &identity) {
 	return state.relayProofs.contains(identity);
+}
+
+[[nodiscard]] inline MainRelayProofView CurrentMainRelayProof(
+		const EndpointState &state,
+		const RuntimeGenerationKey &key) {
+	auto result = MainRelayProofView();
+	if (!RuntimeGenerationIsCurrent(state, key)) {
+		return result;
+	}
+	for (const auto &[identity, proof] : state.relayProofs) {
+		if (identity.runtimeId != key.runtimeId
+			|| identity.proxyGeneration != key.proxyGeneration
+			|| proof.use != EndpointUse::Main) {
+			continue;
+		}
+		result.provenAt = std::max(result.provenAt, proof.provenAt);
+		result.lastPayloadAt = std::max(
+			result.lastPayloadAt,
+			proof.lastPayloadAt);
+		result.payloadCount = std::min(
+			int(kRelayProofPayloadCountLimit),
+			result.payloadCount + std::max(1, int(proof.payloadCount)));
+	}
+	result.strength = (result.payloadCount >= 2)
+		? MainRelayProofStrength::RepeatedPayload
+		: (result.payloadCount == 1)
+		? MainRelayProofStrength::SinglePayload
+		: MainRelayProofStrength::None;
+	return result;
+}
+
+[[nodiscard]] inline bool HasCurrentMainRelayProof(
+		const EndpointState &state,
+		const RuntimeGenerationKey &key) {
+	return CurrentMainRelayProof(state, key).strength
+		!= MainRelayProofStrength::None;
 }
 
 [[nodiscard]] inline int ActiveEndpointAdmissionCount(
@@ -138,9 +368,11 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	state.relayProven = !state.relayProofs.empty();
 	state.lastRelaySuccessAt = 0;
 	for (const auto &entry : state.relayProofs) {
-		if (entry.second.provenAt > state.lastRelaySuccessAt) {
-			state.lastRelaySuccessAt = entry.second.provenAt;
-		}
+		state.lastRelaySuccessAt = std::max(
+			state.lastRelaySuccessAt,
+			std::max(
+				entry.second.provenAt,
+				entry.second.lastPayloadAt));
 	}
 	if (state.relayProven) {
 		state.healthy = true;
@@ -154,14 +386,51 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	if (HasRelayProof(state, identity)) {
 		return RelayProofPromotionResult::AlreadyProven;
 	}
-	if (!HasEndpointAttempt(state, identity)) {
+	const auto attempt = state.attemptStarts.find(identity.attemptId);
+	if (attempt == end(state.attemptStarts)
+		|| attempt->second.runtimeId != identity.runtimeId
+		|| attempt->second.proxyGeneration != identity.proxyGeneration
+		|| attempt->second.terminalVerdict.has_value()) {
 		return RelayProofPromotionResult::MissingAdmission;
 	}
+	proof.ticketKey = attempt->second.ticketKey;
+	proof.use = attempt->second.use;
+	proof.traceId = attempt->second.traceId;
+	proof.proxyEpoch = attempt->second.proxyEpoch;
+	proof.successEpoch = attempt->second.successEpoch;
+	proof.attemptStartedAt = attempt->second.attemptStartedAt;
+	if (!proof.lastPayloadAt) {
+		proof.lastPayloadAt = proof.provenAt;
+	}
+	proof.payloadCount = std::clamp(
+		proof.payloadCount,
+		uint8(1),
+		kRelayProofPayloadCountLimit);
 	state.relayProofs.emplace(identity, proof);
 	state.attemptStarts.erase(identity.attemptId);
 	SynchronizeEndpointAdmissionAggregate(state);
 	SynchronizeRelayProofAggregate(state);
 	return RelayProofPromotionResult::Inserted;
+}
+
+[[nodiscard]] inline bool RefreshRelayProofPayload(
+		EndpointState &state,
+		const RelayProofIdentity &identity,
+		crl::time payloadAt) {
+	const auto i = state.relayProofs.find(identity);
+	if (i == end(state.relayProofs)) {
+		return false;
+	}
+	if (payloadAt) {
+		i->second.lastPayloadAt = std::max(
+			i->second.lastPayloadAt,
+			payloadAt);
+	}
+	if (i->second.payloadCount < kRelayProofPayloadCountLimit) {
+		++i->second.payloadCount;
+	}
+	SynchronizeRelayProofAggregate(state);
+	return true;
 }
 
 [[nodiscard]] inline bool RetireRelayProof(
@@ -186,6 +455,7 @@ inline void RemoveRelayProofsForRuntime(
 		}
 	}
 	SynchronizeRelayProofAggregate(state);
+	RemoveEndpointOutcomesForRuntime(state, runtimeId);
 }
 
 inline void ApplyRuntimeProxyGeneration(
@@ -196,12 +466,15 @@ inline void ApplyRuntimeProxyGeneration(
 		return;
 	}
 	const auto current = state.generations.find(runtimeId);
-	if ((current != end(state.generations)
-			&& proxyGeneration <= current->second)
-		|| (current == end(state.generations) && !proxyGeneration)) {
+	if (current != end(state.generations)
+		&& proxyGeneration <= current->second) {
 		return;
 	}
 	state.generations[runtimeId] = proxyGeneration;
+	PruneEndpointOutcomesForGeneration(
+		state,
+		runtimeId,
+		proxyGeneration);
 	for (auto i = begin(state.attemptStarts);
 			i != end(state.attemptStarts);) {
 		if (i->second.runtimeId == runtimeId
@@ -231,12 +504,39 @@ struct RouteState {
 	int relaySuspect = 0;
 };
 
+struct EndpointUseCounts {
+	int main = 0;
+	int media = 0;
+	int upload = 0;
+	int proxyCheck = 0;
+
+	bool operator==(const EndpointUseCounts &other) const = default;
+};
+
+struct EndpointAdmissionPolicyInput {
+	EndpointUseCounts active;
+	EndpointUseCounts scheduled;
+	EndpointUse use = EndpointUse::Main;
+	MainRelayProofStrength mainProof = MainRelayProofStrength::None;
+	FailureReason lastFailure = FailureReason::None;
+	int urgentMainDemand = 0;
+	crl::time retryUntil = 0;
+	crl::time nextHandshakeAt = 0;
+	crl::time lastRelaySuccessAt = 0;
+	crl::time now = 0;
+	bool endpointRelayProven = false;
+	bool healthy = false;
+	bool fastWarmup = false;
+};
+
 struct EndpointConcurrencyPolicy {
 	int activeCap = 0;
 	crl::time handshakeSpacing = 0;
 	crl::time retryAfter = 0;
 	bool recipeEscalationAllowed = false;
 	bool useAllowed = true;
+	bool admissionAllowed = true;
+	bool mainLaneReserved = false;
 };
 
 struct CapabilitySuccess {

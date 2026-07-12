@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <rpl/producer.h>
 
 #include <memory>
+#include <optional>
 
 namespace MTP {
 class ProxyEndpointContext;
@@ -22,7 +23,74 @@ class RuntimeEnvironment;
 
 namespace MTP::details::MtProxy {
 
+struct EndpointContextStorage;
+
 using EndpointUse = ProxyConnectionUse;
+
+enum class MainRelayProofStrength {
+	None,
+	SinglePayload,
+	RepeatedPayload,
+};
+
+enum class EndpointVerdictScope {
+	None,
+	Attempt,
+	Endpoint,
+};
+
+enum class EndpointVerdictCause {
+	None,
+	Transport,
+	RelayLiveness,
+	Admission,
+	Recovery,
+};
+
+struct EndpointVerdict {
+	ProxyConnectionAttempt sourceAttempt;
+	RuntimeGenerationKey runtimeGeneration;
+	EndpointVerdictScope scope = EndpointVerdictScope::None;
+	EndpointVerdictCause cause = EndpointVerdictCause::None;
+	FailureReason reason = FailureReason::None;
+	ProxyFailureAttribution attribution = ProxyFailureAttribution::None;
+	int confidence = 0;
+	crl::time observedAt = 0;
+	crl::time terminalAt = 0;
+	crl::time retryUntil = 0;
+
+	bool operator==(const EndpointVerdict &other) const = default;
+};
+
+struct MainRelayProofView {
+	MainRelayProofStrength strength = MainRelayProofStrength::None;
+	crl::time provenAt = 0;
+	crl::time lastPayloadAt = 0;
+	int payloadCount = 0;
+
+	bool operator==(const MainRelayProofView &other) const = default;
+};
+
+struct ProxyEndpointView {
+	EndpointId endpoint;
+	ProxyConnectionAttempt mainAttempt;
+	std::optional<EndpointVerdict> canonicalVerdict;
+	RuntimeGenerationKey runtimeGeneration;
+	AdmissionTicketKey ticketKey;
+	MainRelayProofView mainProof;
+	ProxySchedulerLifecycle schedulerLifecycle
+		= ProxySchedulerLifecycle::None;
+	ProxyAdmissionPhase admissionPhase = ProxyAdmissionPhase::Idle;
+	ProxyConnectionPhase networkPhase = ProxyConnectionPhase::None;
+	crl::time enqueuedAt = 0;
+	crl::time scheduledOpenAt = 0;
+	crl::time attemptStartedAt = 0;
+	crl::time phaseStartedAt = 0;
+	crl::time terminalAt = 0;
+	crl::time retryUntil = 0;
+
+	bool operator==(const ProxyEndpointView &other) const = default;
+};
 
 enum class AdmissionAction {
 	StartNow,
@@ -123,6 +191,9 @@ struct FailureReport {
 	// no routes left the canonical must degrade or a fully blackholed
 	// proxy never gets a cooldown and never triggers rotation.
 	bool routesExhausted = false;
+	AdmissionTicketKey ticketKey;
+	ProxyFailureAttribution attribution = ProxyFailureAttribution::None;
+	crl::time terminalAt = 0;
 };
 
 // Success evidence comes from two different layers with different meaning.
@@ -153,6 +224,8 @@ struct SuccessReport {
 	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 	SuccessScope scope = SuccessScope::Handshake;
+	AdmissionTicketKey ticketKey;
+	crl::time payloadAt = 0;
 };
 
 struct RelayProofReport {
@@ -164,6 +237,8 @@ struct RelayProofReport {
 	uint64 proxyEpoch = 0;
 	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
+	AdmissionTicketKey ticketKey;
+	crl::time lastPayloadAt = 0;
 };
 
 struct Snapshot {
@@ -202,7 +277,15 @@ public:
 	EndpointHealth &operator=(const EndpointHealth &other) = delete;
 	~EndpointHealth();
 
-	[[nodiscard]] Admission admit(const AdmissionRequest &request);
+	[[nodiscard]] static std::optional<Admission> BeginScheduledAttemptLocked(
+		EndpointContextStorage &storage,
+		std::shared_ptr<ProxyEndpointContext> context,
+		const AdmissionRequest &request,
+		AdmissionTicketKey ticketKey,
+		ProxyTraceId traceId,
+		crl::time enqueuedAt,
+		crl::time scheduledOpenAt,
+		crl::time attemptStartedAt);
 	void reportFailure(FailureReport report);
 	void reportSuccess(SuccessReport report);
 	void noteRelayStall(RelayProofReport report);

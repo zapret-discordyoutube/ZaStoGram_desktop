@@ -168,10 +168,6 @@ FailureTraits TraitsFor(FailureReason reason) {
 	return TraitsFor(reason).invalidatesRelayCapability;
 }
 
-[[nodiscard]] bool FailureCanBeStale(FailureReason reason) {
-	return TraitsFor(reason).canBeStale;
-}
-
 [[nodiscard]] bool RecentRelaySuccess(
 		const EndpointState &state,
 		crl::time now) {
@@ -202,62 +198,41 @@ crl::time ThrottledRetryCooldown() {
 		&& (consecutiveFailures <= 3);
 }
 
-[[nodiscard]] crl::time AttemptStartedAt(
-		const FailureReport &report,
-		const EndpointState &state) {
-	if (report.attemptStartedAt) {
-		return report.attemptStartedAt;
-	}
-	if (report.lease && report.lease->startedAt()) {
-		return report.lease->startedAt();
-	}
-	const auto attemptId = report.attemptId
-		? report.attemptId
-		: report.lease
-		? report.lease->attemptId()
-		: uint64();
-	if (!attemptId) {
-		return 0;
-	}
-	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts))
-		? i->second.startedAt
-		: crl::time();
+[[nodiscard]] bool ReportTicketMatches(
+		AdmissionTicketKey expected,
+		AdmissionTicketKey reported) {
+	return (!reported.runtimeId && !reported.ticketId)
+		|| reported == expected;
 }
 
-[[nodiscard]] crl::time AttemptStartedAt(
-		const SuccessReport &report,
-		const EndpointState &state) {
-	if (report.attemptStartedAt) {
-		return report.attemptStartedAt;
-	}
-	if (report.lease && report.lease->startedAt()) {
-		return report.lease->startedAt();
-	}
-	const auto attemptId = report.attemptId
-		? report.attemptId
-		: report.lease
-		? report.lease->attemptId()
-		: uint64();
-	if (!attemptId) {
-		return 0;
-	}
-	const auto i = state.attemptStarts.find(attemptId);
-	return (i != end(state.attemptStarts))
-		? i->second.startedAt
-		: crl::time();
-}
-
-[[nodiscard]] bool ReportEpochIsStale(
+[[nodiscard]] bool ReportMatchesAttempt(
+		const EndpointAttemptState &attempt,
+		EndpointUse use,
+		AdmissionTicketKey ticketKey,
 		uint64 proxyEpoch,
-		const EndpointState &state) {
-	return proxyEpoch && proxyEpoch < state.proxyEpoch;
+		uint64 successEpoch,
+		crl::time attemptStartedAt) {
+	return attempt.use == use
+		&& ReportTicketMatches(attempt.ticketKey, ticketKey)
+		&& attempt.proxyEpoch == proxyEpoch
+		&& attempt.successEpoch == successEpoch
+		&& (!attemptStartedAt
+			|| attempt.attemptStartedAt == attemptStartedAt);
 }
 
-[[nodiscard]] bool ReportSuccessEpochIsStale(
+[[nodiscard]] bool ReportMatchesProof(
+		const RelayProofState &proof,
+		EndpointUse use,
+		AdmissionTicketKey ticketKey,
+		uint64 proxyEpoch,
 		uint64 successEpoch,
-		const EndpointState &state) {
-	return state.successEpoch && successEpoch < state.successEpoch;
+		crl::time attemptStartedAt) {
+	return proof.use == use
+		&& ReportTicketMatches(proof.ticketKey, ticketKey)
+		&& proof.proxyEpoch == proxyEpoch
+		&& proof.successEpoch == successEpoch
+		&& (!attemptStartedAt
+			|| proof.attemptStartedAt == attemptStartedAt);
 }
 
 void ApplyProxyGeneration(
@@ -270,10 +245,12 @@ void ApplyProxyGeneration(
 [[nodiscard]] bool FailureFromStaleAttempt(
 		const FailureReport &report,
 		const EndpointState &state) {
-	if (RuntimeProxyGenerationIsStale(
-			state,
-			report.runtimeId,
-			report.proxyGeneration)) {
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+	};
+	if (!report.attemptId
+		|| !RuntimeGenerationIsCurrent(state, runtimeGeneration)) {
 		return true;
 	}
 	const auto identity = RelayProofIdentity{
@@ -281,35 +258,39 @@ void ApplyProxyGeneration(
 		.proxyGeneration = report.proxyGeneration,
 		.attemptId = report.attemptId,
 	};
-	if (HasRelayProof(state, identity)) {
-		return false;
+	const auto proof = state.relayProofs.find(identity);
+	if (proof != end(state.relayProofs)) {
+		return !ReportMatchesProof(
+			proof->second,
+			report.use,
+			report.ticketKey,
+			report.proxyEpoch,
+			report.successEpoch,
+			report.attemptStartedAt);
 	}
-	if (ReportEpochIsStale(report.proxyEpoch, state)) {
-		return true;
-	}
-	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
-		return true;
-	}
-	if (!FailureCanBeStale(report.reason)) {
-		return false;
-	}
-	const auto successAt = FailureNeedsRecipeEscalation(report.reason)
-		? state.lastSuccessAt
-		: state.lastRelaySuccessAt;
-	if (!successAt) {
-		return false;
-	}
-	const auto startedAt = AttemptStartedAt(report, state);
-	return startedAt && (startedAt < successAt);
+	const auto attempt = state.attemptStarts.find(report.attemptId);
+	return attempt == end(state.attemptStarts)
+		|| attempt->second.runtimeId != report.runtimeId
+		|| attempt->second.proxyGeneration != report.proxyGeneration
+		|| attempt->second.terminalVerdict.has_value()
+		|| !ReportMatchesAttempt(
+			attempt->second,
+			report.use,
+			report.ticketKey,
+			report.proxyEpoch,
+			report.successEpoch,
+			report.attemptStartedAt);
 }
 
 [[nodiscard]] bool SuccessFromStaleAttempt(
 		const SuccessReport &report,
 		const EndpointState &state) {
-	if (RuntimeProxyGenerationIsStale(
-			state,
-			report.runtimeId,
-			report.proxyGeneration)) {
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+	};
+	if (!report.attemptId
+		|| !RuntimeGenerationIsCurrent(state, runtimeGeneration)) {
 		return true;
 	}
 	const auto identity = RelayProofIdentity{
@@ -317,21 +298,28 @@ void ApplyProxyGeneration(
 		.proxyGeneration = report.proxyGeneration,
 		.attemptId = report.attemptId,
 	};
-	if (HasEndpointAttempt(state, identity)
-		|| HasRelayProof(state, identity)) {
-		return false;
+	const auto proof = state.relayProofs.find(identity);
+	if (proof != end(state.relayProofs)) {
+		return !ReportMatchesProof(
+			proof->second,
+			report.use,
+			report.ticketKey,
+			report.proxyEpoch,
+			report.successEpoch,
+			report.attemptStartedAt);
 	}
-	if (ReportEpochIsStale(report.proxyEpoch, state)) {
-		return true;
-	}
-	if (ReportSuccessEpochIsStale(report.successEpoch, state)) {
-		return true;
-	}
-	if (!state.lastRelaySuccessAt) {
-		return false;
-	}
-	const auto startedAt = AttemptStartedAt(report, state);
-	return startedAt && (startedAt < state.lastRelaySuccessAt);
+	const auto attempt = state.attemptStarts.find(report.attemptId);
+	return attempt == end(state.attemptStarts)
+		|| attempt->second.runtimeId != report.runtimeId
+		|| attempt->second.proxyGeneration != report.proxyGeneration
+		|| attempt->second.terminalVerdict.has_value()
+		|| !ReportMatchesAttempt(
+			attempt->second,
+			report.use,
+			report.ticketKey,
+			report.proxyEpoch,
+			report.successEpoch,
+			report.attemptStartedAt);
 }
 
 void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
@@ -343,6 +331,7 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 		}
 	}
 	SynchronizeEndpointAdmissionAggregate(state);
+	PruneExpiredEndpointOutcomes(state, now);
 }
 
 [[nodiscard]] crl::time CooldownFor(
@@ -385,45 +374,147 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 	return kMaxCooldown;
 }
 
-[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
-		const EndpointState &state,
-		EndpointUse use,
-		crl::time now,
-		bool fastWarmup) {
+int EndpointUseCount(
+		const EndpointUseCounts &counts,
+		EndpointUse use) {
+	switch (use) {
+	case EndpointUse::Main: return counts.main;
+	case EndpointUse::Media: return counts.media;
+	case EndpointUse::Upload: return counts.upload;
+	case EndpointUse::ProxyCheck: return counts.proxyCheck;
+	}
+	return 0;
+}
+
+int TotalEndpointUseCount(const EndpointUseCounts &counts) {
+	return std::max(0, counts.main)
+		+ std::max(0, counts.media)
+		+ std::max(0, counts.upload)
+		+ std::max(0, counts.proxyCheck);
+}
+
+EndpointUseCounts BeginEndpointAdmission(
+		EndpointUseCounts counts,
+		EndpointUse use) {
+	switch (use) {
+	case EndpointUse::Main:
+		++counts.main;
+		break;
+	case EndpointUse::Media:
+		++counts.media;
+		break;
+	case EndpointUse::Upload:
+		++counts.upload;
+		break;
+	case EndpointUse::ProxyCheck:
+		++counts.proxyCheck;
+		break;
+	}
+	return counts;
+}
+
+EndpointUseCounts ReleaseEndpointAdmission(
+		EndpointUseCounts counts,
+		EndpointUse use) {
+	switch (use) {
+	case EndpointUse::Main:
+		counts.main = std::max(0, counts.main - 1);
+		break;
+	case EndpointUse::Media:
+		counts.media = std::max(0, counts.media - 1);
+		break;
+	case EndpointUse::Upload:
+		counts.upload = std::max(0, counts.upload - 1);
+		break;
+	case EndpointUse::ProxyCheck:
+		counts.proxyCheck = std::max(0, counts.proxyCheck - 1);
+		break;
+	}
+	return counts;
+}
+
+EndpointConcurrencyPolicy EvaluateEndpointAdmission(
+		const EndpointAdmissionPolicyInput &input) {
 	auto policy = EndpointConcurrencyPolicy();
-	if (FailureNeedsRecipeEscalation(state.lastFailure)) {
-		// DPI-implicating failure: strict single probe with escalation
-		// allowed, and keep non-main uses off an unproven endpoint.
+	const auto hasMainProof = input.mainProof
+		!= MainRelayProofStrength::None;
+	const auto repeatedMainProof = input.mainProof
+		== MainRelayProofStrength::RepeatedPayload;
+	const auto background = (input.use == EndpointUse::Media)
+		|| (input.use == EndpointUse::Upload);
+	if (FailureNeedsRecipeEscalation(input.lastFailure)) {
 		policy.activeCap = kDpiFailureActiveCap;
 		policy.retryAfter = kQueuedRetry;
 		policy.recipeEscalationAllowed = true;
-		if (!state.relayProven && use != EndpointUse::Main) {
+		if (!input.endpointRelayProven && background) {
 			policy.useAllowed = false;
 		}
-	} else if (!state.relayProven || !state.lastRelaySuccessAt) {
-		// Never relayed Telegram data: one careful probe at a time, and
-		// only the main session may spend it.
+	} else if (!input.endpointRelayProven
+		|| !input.lastRelaySuccessAt) {
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
-		if (use != EndpointUse::Main) {
+		if (background) {
 			policy.useAllowed = false;
 		}
-	} else if (state.healthy) {
-		// Proven and currently healthy: pipeline handshakes with spacing.
-		// Fast warm-up allows a second concurrent handshake (a browser
-		// routinely opens two TLS connections to one host); the careful
-		// single-probe rows above are unaffected.
-		policy.activeCap = fastWarmup
+	} else if (input.healthy) {
+		policy.activeCap = (input.fastWarmup && repeatedMainProof)
 			? kFastHealthyActiveCap
 			: kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
 		policy.retryAfter = kHealthyHandshakeSpacing;
 	} else {
-		// Proven but recovering from a failure: back to careful probing.
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
 	}
+	const auto urgentMainDemand = std::max(0, input.urgentMainDemand);
+	if (background && (!hasMainProof || urgentMainDemand > 0)) {
+		policy.useAllowed = false;
+	}
+	const auto candidateIsUrgentMain = (input.use == EndpointUse::Main)
+		&& !hasMainProof;
+	policy.mainLaneReserved = (urgentMainDemand > 0)
+		&& !candidateIsUrgentMain;
+	const auto availableCap = std::max(
+		0,
+		policy.activeCap - (policy.mainLaneReserved ? 1 : 0));
+	const auto occupied = TotalEndpointUseCount(input.active)
+		+ TotalEndpointUseCount(input.scheduled);
+	policy.admissionAllowed = policy.useAllowed
+		&& (occupied < availableCap);
+	if (input.retryUntil > input.now) {
+		policy.retryAfter = std::max(
+			policy.retryAfter,
+			input.retryUntil - input.now);
+		policy.admissionAllowed = false;
+	}
+	if (input.nextHandshakeAt > input.now
+		&& (!input.endpointRelayProven
+			|| policy.handshakeSpacing > 0)) {
+		policy.retryAfter = std::max(
+			policy.retryAfter,
+			input.nextHandshakeAt - input.now);
+		policy.admissionAllowed = false;
+	}
 	return policy;
+}
+
+[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
+		const EndpointState &state,
+		EndpointUse use,
+		crl::time now,
+		bool fastWarmup) {
+	return EvaluateEndpointAdmission({
+		.use = use,
+		.mainProof = state.relayProven
+			? MainRelayProofStrength::RepeatedPayload
+			: MainRelayProofStrength::None,
+		.lastFailure = state.lastFailure,
+		.lastRelaySuccessAt = state.lastRelaySuccessAt,
+		.now = now,
+		.endpointRelayProven = state.relayProven,
+		.healthy = state.healthy,
+		.fastWarmup = fastWarmup,
+	});
 }
 
 [[nodiscard]] Snapshot MakeSnapshot(

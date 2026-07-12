@@ -44,13 +44,8 @@ struct EndpointContextStorage {
 	rpl::event_stream<EndpointEvent> events;
 	std::set<ProxyRuntimeId> runtimes;
 	std::map<ProxyTraceId, ProxyConnectionAttempt> activeTraces;
-	std::map<
-		uint64,
-		std::shared_ptr<const Fn<void(const QString&)>>
-	> admissionReleaseListeners;
 	ProxyRuntimeId lastRuntimeId = 0;
 	ProxyTraceId lastTraceId = 0;
-	uint64 lastAdmissionReleaseListenerId = 0;
 };
 
 } // namespace MTP::details::MtProxy
