@@ -574,7 +574,12 @@ void StartProxyCheck(
 		const auto endpoint = (proxy.type == ProxyData::Type::Mtproto)
 			? MtProxy::EndpointIdFromProxy(proxy, checkStealth)
 			: MtProxy::EndpointId();
+		const auto proxyGeneration = MtProxy::EndpointEmpty(endpoint)
+			? uint64()
+			: runtime->proxyServices().control().mtproxyEndpointView(
+				endpoint).runtimeGeneration.proxyGeneration;
 		state->connectionTicket = runtime->proxyServices().broker().request({
+			.proxyGeneration = proxyGeneration,
 			.endpoint = endpoint,
 			.proxy = proxy,
 			.use = MtProxy::EndpointUse::ProxyCheck,
@@ -621,7 +626,14 @@ void StartProxyCheck(
 				if (state->connection.get() != raw || state->finished) {
 					return;
 				}
-				if (decision.action == details::ConnectionBrokerAction::Queued
+				if (decision.action
+						== details::ConnectionBrokerAction::Rejected) {
+					finishWithFail(
+						state,
+						raw,
+						ProxyConnectionError::Unknown);
+				} else if (decision.action
+						== details::ConnectionBrokerAction::Queued
 					|| decision.action
 						== details::ConnectionBrokerAction::StartAfter) {
 					SetProxyCheckProgress(
@@ -630,6 +642,9 @@ void StartProxyCheck(
 				}
 			},
 		});
+		if (!state->connectionTicket) {
+			finishWithFail(state, raw, ProxyConnectionError::Unknown);
+		}
 	};
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto secret = proxy.secretFromMtprotoPassword();

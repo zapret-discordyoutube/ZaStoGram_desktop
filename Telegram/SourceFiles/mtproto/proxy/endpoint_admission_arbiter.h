@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 
+#include <atomic>
 #include <memory>
 
 namespace MTP {
@@ -35,6 +36,7 @@ struct EndpointAdmissionRuntimeDispatch final {
 	Fn<int(int)> randomIndex;
 	Fn<void(crl::time, QObject*, Fn<void()>)> singleShot;
 	Fn<bool()> fastProxyWarmup;
+	std::shared_ptr<std::atomic<bool>> registrationLive;
 };
 
 struct EndpointAdmissionUpdate final {

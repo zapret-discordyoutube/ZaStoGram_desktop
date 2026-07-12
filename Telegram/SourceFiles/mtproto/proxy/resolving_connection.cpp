@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 
 #include <algorithm>
+#include <tuple>
 
 namespace MTP {
 namespace details {
@@ -26,6 +27,8 @@ namespace {
 constexpr auto kRouteAttemptTimeout = crl::time(4000);
 constexpr auto kRouteRaceDelay = crl::time(300);
 constexpr auto kMaxParallelRouteAttempts = 2;
+constexpr auto kColdServerHelloTimeout = crl::time(5000);
+constexpr auto kFullConnectTimeoutSafetyMargin = crl::time(500);
 
 // When the running attempt is the last route available there is nothing
 // to race it against - killing it at the short timeout only burns a
@@ -111,6 +114,118 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 	return (reason == MtProxy::FailureReason::None)
 		? ProxyFailureAttribution::None
 		: ProxyFailureAttribution::Unclear;
+}
+
+[[nodiscard]] int FailureReasonSpecificity(
+		ProxyMtproxyTerminalReason reason) {
+	switch (reason) {
+	case ProxyMtproxyTerminalReason::None:
+		return 0;
+	case ProxyMtproxyTerminalReason::DnsFailed:
+		return 10;
+	case ProxyMtproxyTerminalReason::TcpConnectTimeout:
+		return 20;
+	case ProxyMtproxyTerminalReason::TcpConnectedNoClientHelloWrite:
+		return 30;
+	case ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello:
+		return 40;
+	case ProxyMtproxyTerminalReason::TlsAlertAfterClientHello:
+		return 50;
+	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
+		return 60;
+	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
+		return 65;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
+		return 70;
+	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:
+	case ProxyMtproxyTerminalReason::ConnectedNoMtprotoData:
+		return 80;
+	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
+		return 90;
+	case ProxyMtproxyTerminalReason::MtpReceiveTimeoutAfterData:
+		return 100;
+	}
+	return 0;
+}
+
+[[nodiscard]] int FailureAttributionSpecificity(
+		ProxyFailureAttribution attribution) {
+	switch (attribution) {
+	case ProxyFailureAttribution::None:
+		return 0;
+	case ProxyFailureAttribution::Unclear:
+		return 1;
+	case ProxyFailureAttribution::Local:
+		return 2;
+	case ProxyFailureAttribution::Network:
+		return 3;
+	case ProxyFailureAttribution::Client:
+	case ProxyFailureAttribution::Peer:
+		return 4;
+	}
+	return 0;
+}
+
+[[nodiscard]] int FailureErrorSpecificity(ProxyConnectionError error) {
+	switch (error) {
+	case ProxyConnectionError::None:
+	case ProxyConnectionError::Unknown:
+		return 0;
+	case ProxyConnectionError::Timeout:
+		return 1;
+	case ProxyConnectionError::HostNotFound:
+	case ProxyConnectionError::Network:
+		return 2;
+	case ProxyConnectionError::ConnectionRefused:
+	case ProxyConnectionError::RemoteClosed:
+		return 3;
+	case ProxyConnectionError::Authentication:
+	case ProxyConnectionError::ProxyProtocol:
+	case ProxyConnectionError::BadResponse:
+		return 4;
+	}
+	return 0;
+}
+
+[[nodiscard]] std::tuple<int, int, int> FailureSpecificity(
+		const ProxyTransportFailure &failure) {
+	return {
+		FailureReasonSpecificity(failure.reason),
+		FailureAttributionSpecificity(failure.attribution),
+		FailureErrorSpecificity(failure.error),
+	};
+}
+
+[[nodiscard]] ProxyTransportFailure TypedRouteFailure(
+		AbstractConnection *child,
+		MtProxy::FailureReason fallbackReason,
+		ProxyConnectionError fallbackError,
+		ProxyCloseOrigin fallbackOrigin) {
+	auto result = child
+		? child->proxyTransportFailure()
+		: ProxyTransportFailure();
+	if (result.reason == ProxyMtproxyTerminalReason::None) {
+		result.reason = MtProxy::ToProxyMtproxyTerminalReason(
+			fallbackReason);
+	}
+	if (result.error == ProxyConnectionError::None) {
+		result.error = fallbackError;
+	}
+	if (result.closeOrigin == ProxyCloseOrigin::None) {
+		result.closeOrigin = fallbackOrigin;
+	}
+	if (result.attribution == ProxyFailureAttribution::None) {
+		result.attribution = DefaultFailureAttribution(result);
+	}
+	return result;
+}
+
+void MergeExhaustedFailure(
+		ProxyTransportFailure &result,
+		ProxyTransportFailure failure) {
+	if (FailureSpecificity(failure) > FailureSpecificity(result)) {
+		result = std::move(failure);
+	}
 }
 
 enum class RouteOutcomeKind {
@@ -512,21 +627,17 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 	routeAttempt.routeAttemptId = victim->routeAttemptId;
 	const auto fallbackReason = RouteTimeoutReason(
 		victim->phase);
-	if (const auto child = victim->child.get()) {
+	const auto child = victim->child.get();
+	if (child) {
 		child->timedOut();
-		_lastFailure = child->proxyTransportFailure();
 	}
-	if (_lastFailure.reason == ProxyMtproxyTerminalReason::None) {
-		_lastFailure.reason = MtProxy::ToProxyMtproxyTerminalReason(
-			fallbackReason);
-		_lastFailure.error = ProxyConnectionError::Timeout;
-		_lastFailure.closeOrigin = ProxyCloseOrigin::LocalTimeout;
-	}
-	if (_lastFailure.attribution == ProxyFailureAttribution::None) {
-		_lastFailure.attribution = DefaultFailureAttribution(_lastFailure);
-	}
+	const auto failure = TypedRouteFailure(
+		child,
+		fallbackReason,
+		ProxyConnectionError::Timeout,
+		ProxyCloseOrigin::LocalTimeout);
 	const auto reason = MtProxy::FromProxyMtproxyTerminalReason(
-		_lastFailure.reason);
+		failure.reason);
 	RecordRouteOutcome(
 		_runtime,
 		_proxy,
@@ -542,8 +653,11 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		routeAttempt,
 		reason,
 		std::nullopt,
-		ProxyCloseOrigin::RouteRaceLost,
-		_lastFailure.error);
+		(failure.closeOrigin == ProxyCloseOrigin::None)
+			? std::optional<ProxyCloseOrigin>()
+			: std::make_optional(failure.closeOrigin),
+		failure.error);
+	MergeExhaustedFailure(_lastFailure, failure);
 	_routeAttempts.erase(victim);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
 		emitError(kErrorCodeOther);
@@ -635,19 +749,20 @@ void ResolvingConnection::handleError(
 	} else if (_connected) {
 		return;
 	}
-	const auto reason = ChildFailureReason(child, errorCode);
+	const auto fallbackReason = ChildFailureReason(child, errorCode);
 	if (const auto attempt = findRouteAttempt(child)) {
 		const auto endpointTerminal = (_routeAttempts.size() == 1)
 			&& (_nextRoutePosition >= int(_routeOrder.size()));
-		_lastFailure = child->proxyTransportFailure();
-		if (_lastFailure.reason == ProxyMtproxyTerminalReason::None) {
-			_lastFailure.reason = MtProxy::ToProxyMtproxyTerminalReason(reason);
-			_lastFailure.error = SocketProxyConnectionError(errorCode);
-			_lastFailure.closeOrigin = ProxyCloseOrigin::NetworkError;
-		}
-		if (_lastFailure.attribution == ProxyFailureAttribution::None) {
-			_lastFailure.attribution = DefaultFailureAttribution(_lastFailure);
-		}
+		const auto failure = TypedRouteFailure(
+			child,
+			fallbackReason,
+			SocketProxyConnectionError(errorCode),
+			ProxyCloseOrigin::NetworkError);
+		const auto typedReason = MtProxy::FromProxyMtproxyTerminalReason(
+			failure.reason);
+		const auto reason = (typedReason == MtProxy::FailureReason::None)
+			? fallbackReason
+			: typedReason;
 		RecordRouteOutcome(
 			_runtime,
 			_proxy,
@@ -657,7 +772,6 @@ void ResolvingConnection::handleError(
 			endpointTerminal);
 		auto routeConnectionAttempt = _mtproxyAttempt;
 		routeConnectionAttempt.routeAttemptId = attempt->routeAttemptId;
-		const auto transportFailure = child->proxyTransportFailure();
 		ReportRouteEvent(
 			_runtime,
 			_proxy,
@@ -666,10 +780,11 @@ void ResolvingConnection::handleError(
 			routeConnectionAttempt,
 			reason,
 			std::nullopt,
-			(transportFailure.closeOrigin == ProxyCloseOrigin::None)
+			(failure.closeOrigin == ProxyCloseOrigin::None)
 				? std::optional<ProxyCloseOrigin>()
-				: std::make_optional(transportFailure.closeOrigin),
-			transportFailure.error);
+				: std::make_optional(failure.closeOrigin),
+			failure.error);
+		MergeExhaustedFailure(_lastFailure, failure);
 	}
 	removeRouteAttempt(child);
 	if (_routeAttempts.empty() && _nextRoutePosition >= int(_routeOrder.size())) {
@@ -783,14 +898,19 @@ crl::time ResolvingConnection::pingTime() const {
 }
 
 crl::time ResolvingConnection::fullConnectTimeout() const {
-	// Worst honest cycle: the TLS handshake may use up the short racing
-	// budget, then the wait for the proxy to relay telegram data gets a
-	// fresh single-route budget (see refreshAttemptTimeout()). The
-	// session-level connect timer must not fire before that budget is
-	// spent, or a slow-but-working relay is killed from above.
-	return kRouteAttemptTimeout
-		+ kOnlyRouteAttemptTimeout
+	const auto resolvingRaceTimeout = kRouteAttemptTimeout
 		+ kRouteRaceDelay * kMaxParallelRouteAttempts;
+	if (_proxy.type != ProxyData::Type::Mtproto) {
+		return resolvingRaceTimeout + kOnlyRouteAttemptTimeout;
+	}
+	const auto serverHelloTimeout = (_mtproxyPlan.serverHelloTimeout > 0)
+		? _mtproxyPlan.serverHelloTimeout
+		: kColdServerHelloTimeout;
+	return resolvingRaceTimeout
+		+ kOnlyRouteAttemptTimeout
+		+ serverHelloTimeout
+		+ kOnlyRouteAttemptTimeout
+		+ kFullConnectTimeoutSafetyMargin;
 }
 
 void ResolvingConnection::sendData(

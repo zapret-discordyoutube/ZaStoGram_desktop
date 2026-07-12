@@ -28,9 +28,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP::details::MtProxy {
 
+[[nodiscard]] bool RecentRelaySuccess(
+	const EndpointState &state,
+	crl::time now);
+
 namespace {
 
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
+constexpr auto kRecentRelayServerHelloTimeout = crl::time(2500);
+constexpr auto kColdServerHelloTimeout = crl::time(5000);
+
+[[nodiscard]] crl::time ServerHelloTimeoutFor(
+		const EndpointState &state,
+		crl::time attemptStartedAt) {
+	return RecentRelaySuccess(state, attemptStartedAt)
+		? kRecentRelayServerHelloTimeout
+		: kColdServerHelloTimeout;
+}
 
 void NoteRouteFailure(
 		EndpointContextStorage &storage,
@@ -356,6 +370,9 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 	state.deniedSince = 0;
 	state.lastDenialRotationSignal = 0;
 	auto plan = BuildAttemptPlan(request, state.recipeLevel);
+	plan.serverHelloTimeout = ServerHelloTimeoutFor(
+		state,
+		attemptStartedAt);
 	const auto stealth = plan.stealth;
 	const auto effectiveTlsProfile = plan.effectiveTlsProfile;
 	const auto attemptId = ++state.lastAttemptId;

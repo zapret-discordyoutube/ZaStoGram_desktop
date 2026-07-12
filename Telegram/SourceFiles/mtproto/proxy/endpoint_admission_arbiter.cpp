@@ -128,6 +128,13 @@ struct Actions {
 	void run();
 };
 
+void InvalidateRuntimeDispatch(
+		const std::shared_ptr<const EndpointAdmissionRuntimeDispatch> &dispatch) {
+	if (dispatch && dispatch->registrationLive) {
+		dispatch->registrationLive->store(false, std::memory_order_release);
+	}
+}
+
 crl::time DrainInputs::takeJitter(ProxyRuntimeId runtimeId) {
 	const auto i = runtimes.find(runtimeId);
 	if (i == end(runtimes)
@@ -146,16 +153,39 @@ void PostAction::run() {
 	if (!dispatch
 		|| !dispatch->dispatcher
 		|| !dispatch->singleShot
+		|| !dispatch->registrationLive
+		|| !dispatch->registrationLive->load(std::memory_order_acquire)
 		|| !target) {
 		if (missing) {
 			missing();
 		}
 		return;
 	}
+	const auto registrationLive = dispatch->registrationLive;
+	const auto dispatcher = dispatch->dispatcher;
+	const auto guardedTarget = target;
+	auto guardedCallback = std::move(callback);
+	auto guardedMissing = std::move(missing);
 	dispatch->singleShot(
 		std::max(crl::time(), delay),
-		target,
-		std::move(callback));
+		guardedTarget,
+		[
+			registrationLive,
+			dispatcher,
+			guardedTarget,
+			callback = std::move(guardedCallback),
+			missing = std::move(guardedMissing)
+		]() mutable {
+			if (!registrationLive->load(std::memory_order_acquire)
+				|| !dispatcher
+				|| !guardedTarget) {
+				if (missing) {
+					missing();
+				}
+				return;
+			}
+			callback();
+		});
 }
 
 void GrantAction::run() {
@@ -313,6 +343,9 @@ private:
 		int urgentWaiters,
 		crl::time now) const;
 	void postStatusLocked(Ticket &ticket, Actions &actions);
+	void postGenerationCancelledStatusLocked(
+		const Ticket &ticket,
+		Actions &actions);
 	void postGrantLocked(Ticket &ticket, Actions &actions);
 	void invalidateTicketLocked(Ticket &ticket, Actions &actions);
 	void cancelTicketLocked(
@@ -392,6 +425,7 @@ EndpointAdmissionArbiter::Private::~Private() {
 		_endpoints.clear();
 		for (auto &entry : _runtimes) {
 			auto &dispatch = entry.second;
+			InvalidateRuntimeDispatch(dispatch);
 			actions.retired.push_back(std::move(dispatch));
 		}
 		_runtimes.clear();
@@ -809,6 +843,38 @@ void EndpointAdmissionArbiter::Private::postStatusLocked(
 	});
 }
 
+void EndpointAdmissionArbiter::Private::postGenerationCancelledStatusLocked(
+		const Ticket &ticket,
+		Actions &actions) {
+	if (!ticket.callbacks || !ticket.callbacks->status) {
+		return;
+	}
+	const auto runtime = _runtimes.find(ticket.key.runtimeId);
+	if (runtime == end(_runtimes)) {
+		return;
+	}
+	const auto callbacks = ticket.callbacks;
+	const auto update = EndpointAdmissionUpdate{
+		.key = ticket.key,
+		.revision = ticket.revision,
+		.lifecycle = ProxySchedulerLifecycle::Cancelled,
+		.use = ticket.use,
+		.enqueuedAt = ticket.enqueuedAt,
+		.scheduledOpenAt = ticket.scheduledOpenAt,
+		.retryAfter = ticket.retryAfter,
+		.blockedBy = ticket.blockedBy,
+	};
+	actions.posts.push_back({
+		.dispatch = runtime->second,
+		.target = ticket.owner,
+		.callback = [callbacks, update]() mutable {
+			if (callbacks->status) {
+				callbacks->status(std::move(update));
+			}
+		},
+	});
+}
+
 void EndpointAdmissionArbiter::Private::postGrantLocked(
 		Ticket &ticket,
 		Actions &actions) {
@@ -1029,11 +1095,11 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 			crl::time(),
 			assignments[i].openAt - inputs.now);
 		if (changed) {
-			invalidateTicketLocked(ticket, actions);
-			if (ticket.lifecycle == ProxySchedulerLifecycle::Scheduled) {
-				++ticket.transition;
-				postStatusLocked(ticket, actions);
+			if (ticket.lifecycle == ProxySchedulerLifecycle::Granted) {
+				ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
 			}
+			++ticket.transition;
+			postStatusLocked(ticket, actions);
 		}
 	}
 }
@@ -1323,6 +1389,7 @@ void EndpointAdmissionArbiter::Private::bindRuntime(
 	if (!runtimeId) {
 		return;
 	}
+	dispatch.registrationLive = std::make_shared<std::atomic<bool>>(true);
 	const auto bound = std::make_shared<
 		const EndpointAdmissionRuntimeDispatch>(std::move(dispatch));
 	auto retired = std::shared_ptr<const EndpointAdmissionRuntimeDispatch>();
@@ -1335,6 +1402,7 @@ void EndpointAdmissionArbiter::Private::bindRuntime(
 		if (i == end(_runtimes)) {
 			_runtimes.emplace(runtimeId, bound);
 		} else {
+			InvalidateRuntimeDispatch(i->second);
 			retired = std::move(i->second);
 			i->second = bound;
 		}
@@ -1383,6 +1451,7 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 		_storage.runtimes.erase(runtimeId);
 		const auto dispatch = _runtimes.find(runtimeId);
 		if (dispatch != end(_runtimes)) {
+			InvalidateRuntimeDispatch(dispatch->second);
 			actions.retired.push_back(std::move(dispatch->second));
 			_runtimes.erase(dispatch);
 		}
@@ -1595,6 +1664,18 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 			}
 		}
 		for (const auto &key : cancelled) {
+			const auto ticket = _tickets.find(key);
+			if (ticket != end(_tickets)
+				&& (ticket->second->lifecycle
+						== ProxySchedulerLifecycle::Queued
+					|| ticket->second->lifecycle
+						== ProxySchedulerLifecycle::Scheduled
+					|| ticket->second->lifecycle
+						== ProxySchedulerLifecycle::Granted)) {
+				postGenerationCancelledStatusLocked(
+					*ticket->second,
+					actions);
+			}
 			cancelTicketLocked(key, 0, actions);
 		}
 	}
@@ -1722,9 +1803,14 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 			|| !ticket.owner
 			|| !runtimeLiveLocked(key.runtimeId)
 			|| !traceCurrent
-			|| !current
-			|| ticket.scheduledOpenAt > inputs.now) {
+			|| !current) {
 			cancelTicketLocked(key, revision, actions);
+			drainEndpointLocked(endpointKey, inputs, actions);
+			updateWakeLocked(inputs, actions);
+		} else if (ticket.scheduledOpenAt > inputs.now) {
+			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
+			++ticket.transition;
+			postStatusLocked(ticket, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
 		} else {
