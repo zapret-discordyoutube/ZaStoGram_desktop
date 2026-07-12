@@ -136,7 +136,8 @@ def test_capability_writers_and_readers_use_the_matching_keys():
     assert "NoteCapabilityMtproxyFailure(" in failure
     assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities_bridge)
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in failure
+    assert "CapabilityProxyKey(" in failure
+    assert "report.endpoint.canonical" in failure
     assert "NoteCapabilityMtproxySuccess(" in success
     assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
         capabilities_bridge)

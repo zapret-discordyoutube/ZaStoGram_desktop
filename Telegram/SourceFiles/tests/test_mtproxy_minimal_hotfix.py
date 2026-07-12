@@ -89,12 +89,14 @@ def test_admission_delay_is_queued_not_failed_or_backoff():
     session = read_session_private_sources()
     broker = read(CONNECTION_BROKER_CPP)
     append = function_body(session, "bool SessionTransport::appendTestConnection(")
-    notify = function_body(broker, "void ConnectionBroker::notify(")
+    decision = function_body(
+        broker,
+        "ConnectionBrokerDecision DecisionFromUpdate(")
 
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
-    assert "ConnectionBrokerAction::Queued" in notify
-    assert "ConnectionBrokerAction::StartAfter" in notify
-    assert "ProxyDiagnosticsPhase::Failed" not in notify
+    assert "ConnectionBrokerAction::Queued" in decision
+    assert "ConnectionBrokerAction::StartAfter" in decision
+    assert "ProxyDiagnosticsPhase::Failed" not in broker
     assert "setState(-int(admission.retryAfter));" not in append
     assert "mtproxy admission delayed" not in append
 

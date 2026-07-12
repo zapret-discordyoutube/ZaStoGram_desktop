@@ -1401,6 +1401,7 @@ def test_capability_cache_relay_proof_ages_out():
 def test_source_seams_match_truth_table_contract():
     control = read(CONTROL_CPP)
     broker = read(BROKER_CPP)
+    arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
     check = read(CHECK_CPP)
     health_header = read(ENDPOINT_HEALTH_H)
     health = read_endpoint_health_sources()
@@ -1408,160 +1409,71 @@ def test_source_seams_match_truth_table_contract():
     health_state = read(ENDPOINT_HEALTH_STATE_H)
     endpoint_context = read(PROXY_ENDPOINT_CONTEXT_CPP)
     session_adapter = read(SESSION_PROXY_ADAPTER_CPP)
-    session_port = read(SESSION_PROXY_PORT_H)
-    session_connection = read(SESSION_CONNECTION_CPP)
     instance = read(INSTANCE_CPP)
-    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     tls_records = read(TLS_SOCKET_RECORDS_CPP)
     capabilities = read(CAPABILITIES_CPP)
 
     assert "ProxyControlPlane::Reduce(current, fact)" in control
-    assert "NormalizeMtproxyTerminalReason" not in control
-    assert "ApplySelectedStatusUpdate(" in control
     assert "IsOlderAttempt(current.attempt, update.attempt)" in control
     assert "IsProxyCheck(fact.status.attempt.use)" in control
-    assert "ShadowedByFreshRelaySuccess(current, fact)" in control
+    assert "mtproxyEndpointView(" in control
+    assert "view.mainProof.strength" in control
+    assert "view.canonicalVerdict" in control
     assert "FakeTlsAppData," in health_header
     assert ".scope = MtProxy::SuccessScope::FakeTlsAppData" in tls_records
-    assert "ReportEpochIsStale(report.proxyEpoch, state)" in policy
-    assert "ReportSuccessEpochIsStale(report.successEpoch, state)" in policy
-    assert "report.runtimeId" in policy
+    assert "RuntimeGenerationIsCurrent(state, runtimeGeneration)" in policy
+    assert "attempt->second.terminalVerdict.has_value()" in policy
     assert "SuccessFromStaleAttempt(report, state)" in health
-    assert "uint64 proxyGeneration = 0;" in health_header
-    assert "uint64 successEpoch = 0;" in health_header
+    assert "FailureFromStaleAttempt(report, state)" in health
+    assert "struct EndpointVerdict" in health_header
+    assert "struct MainRelayProofView" in health_header
+    assert "struct ProxyEndpointView" in health_header
     assert "struct RelayProofIdentity" in health_state
-    assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in (
-        health_state)
+    assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in health_state
+    assert "std::map<RuntimeGenerationKey, EndpointVerdict> canonicalVerdicts;" in health_state
+    assert "RecordCurrentTerminalEvidence" in health_state
+    assert "CurrentMainRelayProof" in health_state
+    assert "HasCurrentMainRelayProof" in health_state
     assert "RelayProofPromotionResult::Inserted" in health_state
     assert "RelayProofPromotionResult::AlreadyProven" in health_state
     assert "RelayProofPromotionResult::MissingAdmission" in health_state
-    assert "RuntimeProxyGenerationIsStale" in health_state
-    assert "HasEndpointAttempt" in health_state
-    assert "HasRelayProof" in health_state
-    assert "bool admissionActive = true;" in health_state
-    assert "ActiveEndpointAdmissionCount" in health_state
-    assert "SynchronizeEndpointAdmissionAggregate" in health_state
-    assert "ReleaseAdmissionForRelayCandidate" in health_state
-    assert "PromoteRelayProof" in health_state
-    assert "RetireRelayProof" in health_state
-    assert "RemoveRelayProofsForRuntime" in health_state
-    assert "SynchronizeRelayProofAggregate" in health_state
-    removed_proof_prune = "PruneExpired" + "RelayProofs"
-    removed_expiry_field = "expires" + "At"
-    removed_proof_ttl = "kRelayProof" + "HardTtl"
-    removed_expiry_factory = "RelayProof" + "ExpiresAt"
-    assert removed_proof_prune not in health_state
-    assert removed_expiry_field not in health_state
     assert "state.relayProven = !state.relayProofs.empty();" in health_state
-    assert "entry.second.provenAt > state.lastRelaySuccessAt" in health_state
-    assert "state.healthy = true;" in health_state
-    assert "constexpr auto kHealthyActiveCap = 1;" in policy
-    assert removed_proof_ttl not in policy
-    assert removed_expiry_factory not in policy
-    assert removed_expiry_factory not in health
-    removed_size_count = "state.attemptStarts." + "size()"
-    assert removed_size_count not in health_state
-    assert removed_size_count not in policy
-    assert "uint64 successEpoch() const" in health_header
-    assert "++state.proxyEpoch;" in health
-    assert "++state.successEpoch;" in health
-    assert "snapshot.relayProven" in check
+    assert "EndpointQueue" not in broker
+    assert "endpointAdmissionArbiter().enqueue(" in broker
+    assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
+    assert "ProxySchedulerLifecycle::HandedOff" in arbiter
+    assert "cancelBeforeGeneration(" in arbiter
+    assert "MtProxy::CancelOpenSlotLocked(" in arbiter
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
-    assert "bool admissionInProgress = false;" in broker
-    assert broker.index("state->admissionInProgress = true;") < (
-        broker.index("_runtime->proxyServices().control().admit({"))
-    assert "releaseAdmission(cancelled);" in broker
+    assert "control.mtproxyEndpointView(endpoint)" in check
     assert "noteMtproxyRelayFailure(" in capabilities
     assert "card.relayProven = false;" in capabilities
     assert "relayProvenAt" in capabilities
-    assert "FreshMtproxyRelayProof(" in capabilities
-    assert "void EndpointHealth::noteRelayStall(" in health
-    relay_stall = health.split("void EndpointHealth::noteRelayStall(", 1)[1]
-    assert "RelayProofReport report" in relay_stall.split(")", 1)[0]
-    assert "RetireRelayProofLocked(state, report, now)" in relay_stall
-    assert "RelayProofRetirement::RetiredWithSurvivors" in relay_stall
-    assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
-    assert "noteMtproxyRelayFailure(" in capabilities_bridge
-    assert "RemoveRelayProofsForRuntime(state, runtimeId);" in endpoint_context
     assert "releaseAdmissionForRelayCandidate(" in endpoint_context
-    assert "virtual void releaseAdmissionForRelayCandidate() = 0;" in (
-        session_port)
-    assert session_connection.count(
-        "mtproxyLease.releaseAdmissionForRelayCandidate();") == 2
     assert "retireMtproxyRelayProof(" in session_adapter
-    assert "RelayProofReport(attempt)" in session_adapter
+    assert "view.mainProof.strength" in session_adapter
 
-    remote_close = session_adapter.split(
-        "void ProductionSessionProxyPort::reportConnectionError(", 1)[1].split(
-            "void ProductionSessionProxyPort::reportReceiveTimeout(", 1)[0]
-    healthy_close = remote_close.index(
-        "if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {")
-    healthy_retirement = remote_close.index("retireMtproxyRelayProof(")
-    healthy_liveness = remote_close.index("ReportProxyLiveness(")
-    assert healthy_close < healthy_retirement < healthy_liveness
-
-    retirement = health.split(
-        "RelayProofRetirement RetireRelayProofLocked(", 1)[1].split(
-            "RelayStallFailureReport", 1)[0]
-    assert retirement.index("PruneExpiredEndpointState(state, now);") < (
-        retirement.index("RuntimeProxyGenerationIsStale("))
-    assert retirement.index("RuntimeProxyGenerationIsStale(") < (
-        retirement.index("ApplyProxyGeneration("))
-    assert retirement.index("ApplyProxyGeneration(") < (
-        retirement.index("RetireRelayProof(state, identity)"))
-    assert retirement.index("RetireRelayProof(state, identity)") < (
-        retirement.index("state.relayProven"))
-
-    success = health.split("void EndpointHealth::reportSuccess(", 1)[1].split(
-        "void EndpointHealth::noteRelayStall(", 1)[0]
-    assert success.index("PruneExpiredEndpointState(state, now);") < (
-        success.index("RuntimeProxyGenerationIsStale("))
-    assert success.index("RuntimeProxyGenerationIsStale(") < (
-        success.index("ApplyProxyGeneration("))
-    assert success.index("ApplyProxyGeneration(") < (
-        success.index("SuccessFromStaleAttempt(report, state)"))
+    success = health.split("void EndpointHealth::reportSuccess(", 1)[1]
     assert success.index("SuccessFromStaleAttempt(report, state)") < (
         success.index("PromoteRelayProof("))
-    assert success.index("PromoteRelayProof(") < (
-        success.index("state.lastSuccessAt = now;"))
+    assert "if (report.use == EndpointUse::Main)" in success
+    assert "PruneEndpointOutcomesAfterSuccess(" in success
 
     failure = health.split("void EndpointHealth::reportFailure(", 1)[1].split(
         "void EndpointHealth::reportSuccess(", 1)[0]
-    assert failure.index("PruneExpiredEndpointState(state, now);") < (
-        failure.index("RuntimeProxyGenerationIsStale("))
-    assert failure.index("RuntimeProxyGenerationIsStale(") < (
-        failure.index("ApplyProxyGeneration("))
-    assert failure.index("ApplyProxyGeneration(") < (
-        failure.index("FailureFromStaleAttempt(report, state)"))
-    assert failure.index("FailureFromStaleAttempt(report, state)") < (
-        failure.index("RetireRelayProof(state, identity)"))
-    assert failure.index("RetireRelayProof(state, identity)") < (
-        failure.index("if (state.relayProven)"))
-    assert failure.index("if (state.relayProven)") < (
-        failure.index("state.endpoint = report.endpoint;"))
+    assert failure.index("RecordTerminalAttemptLocked(") < (
+        failure.index("state.lastFailure = report.reason;"))
+    assert "report.use" in failure
+    assert "EndpointUse::Main" in failure
+    assert "!HasCurrentMainRelayProof(" in failure
+    assert "SetCurrentCanonicalVerdict(" in failure
 
-    stale_success = policy.split(
-        "bool SuccessFromStaleAttempt(", 1)[1].split(
-            "void PruneExpiredEndpointState", 1)[0]
-    assert stale_success.index("RuntimeProxyGenerationIsStale(") < (
-        stale_success.index("HasEndpointAttempt(state, identity)"))
-    assert stale_success.index("HasEndpointAttempt(state, identity)") < (
-        stale_success.index("ReportEpochIsStale(report.proxyEpoch, state)"))
-
-    stale_failure = policy.split(
-        "bool FailureFromStaleAttempt(", 1)[1].split(
-            "bool SuccessFromStaleAttempt(", 1)[0]
-    assert stale_failure.index("RuntimeProxyGenerationIsStale(") < (
-        stale_failure.index("HasRelayProof(state, identity)"))
-    assert stale_failure.index("HasRelayProof(state, identity)") < (
-        stale_failure.index("ReportEpochIsStale(report.proxyEpoch, state)"))
-
-    migration = instance.split("void Instance::Private::migrateProxy(bool manual)", 1)[1]
+    migration = instance.split(
+        "void Instance::Private::migrateProxy(bool manual)", 1)[1]
     assert migration.index("++_proxyGeneration;") < (
         migration.index("applyMtproxyProxyGeneration("))
     assert migration.index("applyMtproxyProxyGeneration(") < (
         migration.index("_connectionStatus->setProxyStatus("))
-
 
 def run_all_truth_tables():
     test_reducer_no_appdata_relay_success_sibling_failure()

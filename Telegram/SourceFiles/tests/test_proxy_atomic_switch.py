@@ -14,6 +14,7 @@ SESSION_TRANSPORT_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "transp
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
+ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
@@ -95,8 +96,9 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     control_forwarder = function_body(
         control,
         "void ProxyControlPlane::applyMtproxyProxyGeneration(")
-    assert "ApplyProxyGeneration(state, _runtimeId, proxyGeneration);" in (
+    assert "endpointAdmissionArbiter().cancelBeforeGeneration(" in (
         apply_generation)
+    assert "_runtimeId" in apply_generation
     assert "_endpointHealth->applyProxyGeneration(proxyGeneration);" in (
         control_forwarder)
     assert "i->first.runtimeId == runtimeId" in runtime_generation
@@ -213,21 +215,21 @@ def test_new_sessions_inherit_current_proxy_generation():
 def test_broker_cancels_old_proxy_generation_tickets():
     header = read(BROKER_H)
     source = read(BROKER_CPP)
-    request_state = source.split("struct ConnectionBroker::RequestState {", 1)[1].split("};", 1)[0]
+    arbiter = read(ARBITER_CPP)
     cancel_body = function_body(source, "void ConnectionBroker::cancelByProxyGeneration(")
-    start_body = function_body(source, "void ConnectionBroker::start(")
+    generation_cancel = function_body(
+        arbiter,
+        "void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(")
 
     assert "uint64 proxyGeneration = 0;" in header
     assert "void cancelByProxyGeneration(" in header
-    assert "uint64 proxyGeneration = 0;" in request_state
-    assert "state->proxyGeneration = state->request.proxyGeneration;" in source
-    assert "state->request.runtime" not in cancel_body
-    assert "state->proxyGeneration < generation" in cancel_body
-    assert "state->active = false;" in cancel_body
-    assert "AdmissionCancelled" in cancel_body
-    assert "start.proxyGeneration = admission" in start_body
-    assert "? admission->proxyGeneration" in start_body
-    assert ": state->proxyGeneration;" in start_body
+    assert "cancelBeforeGeneration(" in cancel_body
+    assert "_runtime->proxyRuntimeId()" in cancel_body
+    assert "ticket->proxyGeneration < proxyGeneration" in generation_cancel
+    assert "postGenerationCancelledStatusLocked(" in generation_cancel
+    assert "cancelTicketLocked(key, 0, actions);" in generation_cancel
+    assert "ProxySchedulerLifecycle::Cancelled" in arbiter
+    assert ".proxyGeneration = grant.proxyGeneration" in source
 
 
 def test_status_reducer_shadows_old_proxy_generation_facts():

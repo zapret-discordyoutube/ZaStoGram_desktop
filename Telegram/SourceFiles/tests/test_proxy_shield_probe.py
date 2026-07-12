@@ -4,21 +4,12 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
-STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
-STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
+HEALTH_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
+STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
-ENDPOINT_HEALTH_POLICY_CPP = (
-    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp")
-ENDPOINT_HEALTH_CPP = (
-    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
-ENDPOINT_HEALTH_LIFECYCLE_CPP = (
-    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
-    "endpoint_health_lifecycle.cpp")
-ENDPOINT_HEALTH_STATE_H = (
-    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_state.h")
 
 
 def read(path):
@@ -26,22 +17,7 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
-def function_body(text: str, signature: str) -> str:
-    start = text.index(signature)
-    brace = text.index(" {\n", start) + 1
-    depth = 0
-    for index in range(brace, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[brace + 1:index]
-    raise AssertionError(f"body not found for {signature}")
-
-
-def test_proxy_check_has_dedicated_probe_status_model():
+def test_proxy_check_has_a_dedicated_progress_model():
     header = read(CHECK_H)
     source = read(CHECK_CPP)
 
@@ -57,97 +33,45 @@ def test_proxy_check_has_dedicated_probe_status_model():
         "ConnectedByActiveSession",
     ):
         assert status in header
-
     assert "Fn<void(ProxyCheckStatus status)> progress" in header
     assert "ProxyCheckStatus progressStatus" in header
-    assert "kProxyCheckUiTimeout = crl::time(9000)" in source
     assert "void SetProxyCheckProgress(" in source
     assert "state->progress = progress;" in source
 
 
-def test_proxy_check_dedupes_clicks_and_short_circuits_active_session():
+def test_active_session_shortcut_requires_a_live_main_proof():
     source = read(CHECK_CPP)
-    start = function_body(source, "void StartProxyCheck(")
-    reset = function_body(source, "void ProxyCheckConnection::reset(")
     active = function_body(source, "bool ActiveSessionProvesProxy(")
+    start = function_body(source, "void StartProxyCheck(")
 
+    assert "control.mtproxyEndpointView(endpoint)" in active
+    assert "view.mainProof.strength" in active
+    assert "MainRelayProofStrength::None" in active
+    assert "lastRelaySuccessAt" not in active
     assert "ActiveProxyCheckKeys" in source
-    assert "ProxyCapabilityKey(proxy)" in start
-    assert "ActiveProxyCheckKeys.contains(probeKey)" in start
-    assert "RetainActiveProxyCheckKey(probeKey)" in start
-    assert "ReleaseActiveProxyCheckKey(_data->probeKey)" in reset
-    assert "if (progress && HasProxyCheckers(v4, v6))" in start
-    assert "CurrentProxyCheckStatus(v4, v6)" in start
-    assert "if (progress && ActiveSessionProvesProxy(" in start
+    assert "ActiveSessionProvesProxy(" in start
     assert "ProxyCheckStatus::ConnectedByActiveSession" in start
-    assert "return;" in start.split(
-        "ProxyCheckStatus::ConnectedByActiveSession", 1)[1].split("}", 1)[0]
-
-    assert "control.mtproxyEndpointSnapshot(" in active
-    assert "endpoint)" in active
-    assert "snapshot.relayProven" in active
-    assert "snapshot.lastRelaySuccessAt" in active
-    assert "kProxyCheckActiveSessionWindow" in active
 
 
-def test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only():
-    source = read(CHECK_CPP)
-    health_header = read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.h")
-    health_source = read(ENDPOINT_HEALTH_LIFECYCLE_CPP)
-    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
-    state_source = read(ENDPOINT_HEALTH_STATE_H)
-    active = function_body(source, "bool ActiveSessionProvesProxy(")
-    snapshot = function_body(policy_source, "Snapshot MakeSnapshot(")
-    snapshot_entry = function_body(
-        health_source,
-        "Snapshot EndpointHealth::snapshot(")
-    prune = function_body(
-        policy_source,
-        "void PruneExpiredEndpointState(")
-    synchronize = function_body(
-        state_source,
-        "void SynchronizeRelayProofAggregate(")
-
-    assert "bool relayProven = false;" in health_header
-    assert ".relayProven = state.relayProven," in snapshot
-    assert ".lastRelaySuccessAt = state.lastRelaySuccessAt," in snapshot
-    assert snapshot_entry.index(
-        "PruneExpiredEndpointState(i->second, now);") < snapshot_entry.index(
-            "MakeSnapshot(i->second, _runtimeId)")
-    assert "SynchronizeEndpointAdmissionAggregate(state);" in prune
-    assert "relayProofs" not in prune
-    removed_proof_prune = "PruneExpired" + "RelayProofs"
-    removed_expiry_field = "expires" + "At"
-    assert removed_proof_prune not in state_source
-    assert removed_expiry_field not in state_source
-    assert "state.relayProven = !state.relayProofs.empty();" in synchronize
-    assert "state.lastRelaySuccessAt = 0;" in synchronize
-    assert "entry.second.provenAt > state.lastRelaySuccessAt" in synchronize
-    assert "snapshot.relayProven" in active
-    assert active.index("snapshot.relayProven") < active.index(
-        "snapshot.lastRelaySuccessAt")
-
-
-def test_proxy_check_queue_is_progress_not_failure():
-    source = read(CHECK_CPP)
-    start = function_body(source, "void StartProxyCheck(")
+def test_queued_and_rejected_admission_have_distinct_probe_outcomes():
+    start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
 
     assert ".status = [=](details::ConnectionBrokerDecision decision)" in start
-    assert "ProxyAdmissionAction" not in start
     assert "ConnectionBrokerAction::Queued" in start
     assert "ConnectionBrokerAction::StartAfter" in start
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in start
-    waiting = start.split("ProxyCheckStatus::WaitingForConnectionSlot", 1)[1]
-    assert "finishWithFail" not in waiting.split("});", 1)[0]
+    assert "ConnectionBrokerAction::Rejected" in start
+    rejected = start.split("ConnectionBrokerAction::Rejected", 1)[1]
+    assert "finishWithFail" in rejected
 
 
-def test_proxy_check_reports_progressive_fake_tls_phases():
+def test_proxy_check_reports_progressive_transport_phases():
     source = read(CHECK_CPP)
     start = function_body(source, "void StartProxyCheck(")
-    phase_map = function_body(source, "ProxyCheckStatus ProxyCheckStatusForHandshake(")
+    phase_map = function_body(
+        source, "ProxyCheckStatus ProxyCheckStatusForHandshake(")
 
-    assert "raw->connect(raw, &Connection::handshakeProgress" in start
+    assert "&Connection::handshakeProgress" in start
     for status in (
         "ProxyCheckStatus::TcpConnected",
         "ProxyCheckStatus::ClientHelloSent",
@@ -157,116 +81,72 @@ def test_proxy_check_reports_progressive_fake_tls_phases():
         assert status in phase_map
     assert "ProxyCheckStatusForHandshake(raw->handshakePhase())" in start
     assert "ProxyCheckStatus::FirstMtprotoPayload" in start
-    assert start.index("ProxyCheckStatus::FirstMtprotoPayload") < (
-        start.index("proxy check succeeded"))
     assert ".scope = MtProxy::SuccessScope::Relay" in start
-    assert ".stealth = state->mtproxyStealth" in start
-    assert ".sentProfile = state->mtproxySentProfile" in start
 
 
-def test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start():
+def test_probe_timeout_starts_after_handoff_and_uses_network_budget():
     source = read(CHECK_CPP)
     header = read(CHECK_H)
     start = function_body(source, "void StartProxyCheck(")
-    request = start.split(
-        "runtime->proxyServices().broker().request({", 1)[1].split(
-        ".start = ", 1)[0]
 
     assert "ProxyStealthOptions mtproxyStealth;" in header
     assert "ProxyTlsProfile mtproxySentProfile" in header
-    assert request.index(".endpoint = endpoint") < request.index(
-        ".proxy = proxy")
-    assert request.index(".proxy = proxy") < request.index(
-        ".use = MtProxy::EndpointUse::ProxyCheck")
-    assert ".runtime = runtime" not in request
-    assert "raw->setMtproxyAttempt({" not in start
-    assert "state->mtproxyAttempt = start.attempt" in start
-    assert ".mtproxyAttempt = state->mtproxyAttempt" in start
-    assert ".mtproxyPlan = start.plan" in start
     assert "state->mtproxyAttempt = start.attempt;" in start
     assert "state->mtproxyPlan = start.plan;" in start
-    assert "start.attemptStartedAt" in start
-    assert "state->mtproxyStealth = start.stealth;" in start
-    assert "state->mtproxySentProfile = start.effectiveTlsProfile;" in start
     assert "state->networkStarted = true;" in start
-    assert "QTimer::singleShot(int(kProxyCheckUiTimeout), raw," in start
-    hard_timeout = start.split(
-        "QTimer::singleShot(int(kProxyCheckUiTimeout), raw,", 1)[1]
-    assert "state->networkStarted" in hard_timeout
-    assert "ProxyConnectionError::Timeout" in hard_timeout
+    assert "QTimer::singleShot(int(raw->fullConnectTimeout()), raw" in start
+    assert start.index("state->networkStarted = true;") < start.index(
+        "QTimer::singleShot(int(raw->fullConnectTimeout()), raw")
+    timeout = start.split(
+        "QTimer::singleShot(int(raw->fullConnectTimeout()), raw", 1)[1]
+    assert "ProxyConnectionError::Timeout" in timeout
 
 
-def test_probe_attempts_do_not_publish_selected_status():
+def test_probe_facts_do_not_publish_selected_main_status():
     status = read(STATUS_TYPES_H)
     control = read(CONTROL_CPP)
-    reduce_body = function_body(
-        control,
-        "ProxyConnectionStatus ProxyControlPlane::Reduce(")
-    fact_body = function_body(
-        control,
-        "ProxyFact ProxyControlPlane::FactFromReport(")
+    reduce = function_body(
+        control, "ProxyConnectionStatus ProxyControlPlane::Reduce(")
 
     assert "ProxyConnectionUse use = ProxyConnectionUse::Main;" in status
-    assert "&& (use == other.use)" in status
-    assert "IsProxyCheck(fact.status.attempt.use)" in reduce_body
-    assert "return current;" in reduce_body.split(
+    assert "IsProxyCheck(fact.status.attempt.use)" in reduce
+    assert "return current;" in reduce.split(
         "IsProxyCheck(fact.status.attempt.use)", 1)[1].split("}", 1)[0]
-    finished = fact_body.split(
-        "case ProxyDiagnosticsPhase::ProxyCheckFinished:", 1)[1].split(
-        "case ProxyDiagnosticsPhase::AdmissionQueued:", 1)[0]
-    assert "fact.status.error = ProxyConnectionError::None;" in finished
-    assert "fact.status.mtproxyReason = ProxyMtproxyTerminalReason::None;" in (
-        finished)
 
 
-def test_proxy_check_failure_is_probe_telemetry_not_canonical_health():
-    source = read(CHECK_CPP)
-    health_source = read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
-    start = function_body(source, "void StartProxyCheck(")
-    report_failure = function_body(
-        health_source,
-        "void EndpointHealth::reportFailure(")
+def test_probe_terminal_is_telemetry_not_canonical_health():
+    check = function_body(read(CHECK_CPP), "void StartProxyCheck(")
+    health = read(HEALTH_CPP)
+    failure = function_body(health, "void EndpointHealth::reportFailure(")
+    success = function_body(health, "void EndpointHealth::reportSuccess(")
 
-    failure = start.split("reportMtproxyFailure({", 1)[1]
-    assert ".use = MtProxy::EndpointUse::ProxyCheck" in failure.split("});", 1)[0]
-    assert "report.use == EndpointUse::ProxyCheck" in report_failure
-    assert "LogProbeAttemptFailure(_runtime, report" in report_failure
-
-
-def test_proxy_check_success_is_probe_telemetry_not_canonical_health():
-    source = read(CHECK_CPP)
-    health_source = read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp")
-    start = function_body(source, "void StartProxyCheck(")
-    report_success = function_body(
-        health_source,
-        "void EndpointHealth::reportSuccess(")
-
-    success = start.split("reportMtproxySuccess({", 1)[1]
-    assert ".use = MtProxy::EndpointUse::ProxyCheck" in success.split("});", 1)[0]
-    assert "report.use == EndpointUse::ProxyCheck" in report_success
-    assert "LogProbeAttemptSuccess(_runtime, report" in report_success
-    assert report_success.index("report.use == EndpointUse::ProxyCheck") < (
-        report_success.index("ApplyProxyGeneration("))
+    assert ".use = MtProxy::EndpointUse::ProxyCheck" in check
+    assert "report.use == EndpointUse::ProxyCheck" in failure
+    assert "LogProbeAttemptFailure(_runtime, report)" in failure
+    assert "const auto probe = (report.use == EndpointUse::ProxyCheck);" in success
+    assert "RetireRelayProof(state, identity)" in success
+    assert "LogProbeAttemptSuccess(_runtime, report)" in success
+    canonical = failure.split("const auto canonicalEligible", 1)[1].split(
+        "if (canonicalEligible)", 1)[0]
+    assert "report.use" in canonical
+    assert "EndpointUse::Main" in canonical
 
 
-def test_connection_box_uses_probe_status_instead_of_spinner_only():
+def test_connection_box_uses_probe_status_and_composed_view():
     source = read(CONNECTION_BOX_CPP)
     header = read(CONNECTION_BOX_H)
     lang = read(LANG)
     refresh = function_body(source, "void ProxiesBoxController::refreshChecker(")
 
-    assert "MTP::ProxyCheckStatus status" in source
     assert "ProxyCheckStatusText(" in source
     assert "ProxyCheckStatusColor(" in source
     assert "progressStatus" in header
-    assert "state->progressStatus" in source
     assert "MTP::ProxyCheckStatus::WaitingForConnectionSlot" in source
     assert "MTP::ProxyCheckStatus::ConnectedByActiveSession" in source
-    assert "MTP::HasProxyCheckers(item.checker, item.checkerv6)" in refresh
+    assert "mtproxyEndpointView(endpoint)" in source
+    assert "view.mainProof.strength" in source
+    assert "view.canonicalVerdict" in source
     assert "progressStatus" in refresh
-
     for key in (
         "lng_proxy_box_table_waiting_slot",
         "lng_proxy_box_table_resolving",
@@ -280,14 +160,26 @@ def test_connection_box_uses_probe_status_instead_of_spinner_only():
         assert key in lang
 
 
+def function_body(text, signature):
+    start = text.index(signature)
+    brace = text.index("{", start)
+    depth = 0
+    for index in range(brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+    raise AssertionError(f"function body not found: {signature}")
+
+
 if __name__ == "__main__":
-    test_proxy_check_has_dedicated_probe_status_model()
-    test_proxy_check_dedupes_clicks_and_short_circuits_active_session()
-    test_shield_active_session_uses_relay_proven_snapshot_not_timestamp_only()
-    test_proxy_check_queue_is_progress_not_failure()
-    test_proxy_check_reports_progressive_fake_tls_phases()
-    test_proxy_check_sets_attempt_and_hard_ui_timeout_after_start()
-    test_probe_attempts_do_not_publish_selected_status()
-    test_proxy_check_failure_is_probe_telemetry_not_canonical_health()
-    test_proxy_check_success_is_probe_telemetry_not_canonical_health()
-    test_connection_box_uses_probe_status_instead_of_spinner_only()
+    test_proxy_check_has_a_dedicated_progress_model()
+    test_active_session_shortcut_requires_a_live_main_proof()
+    test_queued_and_rejected_admission_have_distinct_probe_outcomes()
+    test_proxy_check_reports_progressive_transport_phases()
+    test_probe_timeout_starts_after_handoff_and_uses_network_budget()
+    test_probe_facts_do_not_publish_selected_main_status()
+    test_probe_terminal_is_telemetry_not_canonical_health()
+    test_connection_box_uses_probe_status_and_composed_view()

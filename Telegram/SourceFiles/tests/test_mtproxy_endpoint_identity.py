@@ -128,7 +128,7 @@ def test_consumers_treat_endpoint_empty_as_canonical_empty():
     session = read_session_private_sources()
     tls = read(TLS_SOCKET_CPP)
 
-    assert "MtProxy::EndpointEmpty(state->request.endpoint)" in broker
+    assert "MtProxy::EndpointEmpty(request.endpoint)" in broker
     assert "MtProxy::EndpointEmpty(state->mtproxyEndpoint)" in check
     assert "EmptySessionProxyEndpoint(connection.mtproxyEndpoint)" in session
     assert "EmptySessionProxyEndpoint(found->mtproxyEndpoint)" in session

@@ -106,7 +106,7 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(adaptive, "bool FailureNeedsTlsProfileRotation(")
 
-    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
+    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in policy
     assert "policy.recipeEscalationAllowed" in report_failure
     assert "FailureNeedsTlsRotation(report.reason)" not in source
     assert "state.recipeLevel < 2" in report_failure
@@ -191,7 +191,7 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     report_failure = function_body(health, "void EndpointHealth::reportFailure(")
     policy = function_body(
         policy_source,
-        "EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(")
+        "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
     traits = function_body(policy_source, "FailureTraits TraitsFor(")
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(
@@ -221,17 +221,20 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
 
     assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
         capabilities)
-    assert "report.reason != FailureReason::ServerHelloOkNoAppData" in report_failure
+    assert "report.reason" in report_failure
+    assert "FailureReason::ServerHelloOkNoAppData" in report_failure
+    assert "FailureReason::ServerHelloOkNoMtprotoData" in report_failure
+    assert "FailureReason::ConnectedNoMtprotoData" in report_failure
 
     assert "FailureNeedsTlsRotation(report.reason)" not in report_failure
     assert "DowngradeRecipeForRelayStall" not in policy_source
     assert "--state.recipeLevel;" not in policy_source
     assert "DowngradeRecipeForRelayStall" not in report_failure
     assert "++state.recipeLevel;" in report_failure
-    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in policy
+    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in policy
 
-    assert "!state.relayProven || !state.lastRelaySuccessAt" in policy
-    assert "policy.activeCap = fastWarmup" in policy
+    assert "!input.endpointRelayProven" in policy
+    assert "input.fastWarmup && repeatedMainProof" in policy
     assert "? kFastHealthyActiveCap" in policy
     assert ": kHealthyActiveCap;" in policy
     assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy

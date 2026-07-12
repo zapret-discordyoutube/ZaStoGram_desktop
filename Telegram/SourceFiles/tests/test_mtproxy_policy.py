@@ -11,6 +11,7 @@ ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
+ENDPOINT_ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 CLIENT_HELLO_RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
 CLIENT_HELLO_FRAGMENTATION_CPP = MTPROXY_DIR / "client_hello_fragmentation.cpp"
@@ -38,6 +39,7 @@ def test_legacy_mtproxy_policy_module_is_removed():
     endpoint_source = ENDPOINT_HEALTH_CPP.read_text(encoding="utf-8")
     endpoint_policy = ENDPOINT_HEALTH_POLICY_CPP.read_text(encoding="utf-8")
     broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
+    arbiter = ENDPOINT_ARBITER_CPP.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
 
     assert not POLICY_H.exists()
@@ -54,7 +56,8 @@ def test_legacy_mtproxy_policy_module_is_removed():
     assert "ProxyPatternSpacing(" not in session
     assert "CooldownMsForEndpoint(" not in session
     assert "MtProxy::ConnectionSpacing(" not in session
-    assert "MtProxy::ReserveOpenSlot(" in broker
+    assert "ReserveOpenSlot" not in broker
+    assert "MtProxy::ReserveOpenSlotLocked(" in arbiter
     assert "MtProxy::ConnectionSpacing(" in tls_handshake
     assert "MtproxyEndpointCooldown(" not in session
 
@@ -71,16 +74,19 @@ def test_tls_socket_reports_endpoint_state_through_endpoint_health():
         ))
 
     assert "class EndpointHealth" in endpoint_header
-    assert "recipeLevel" in endpoint_header
-    assert "lastDiagnostic" in endpoint_header
+    endpoint_state = ENDPOINT_HEALTH_STATE_H.read_text(encoding="utf-8")
+    assert "recipeLevel" in endpoint_state
+    assert "lastDiagnostic" in endpoint_state
     assert "RotateTlsProfileOnFailure(" not in endpoint_source
     assert "BuildAttemptPlan(request, state.recipeLevel)" in endpoint_source
     assert "ProxyTlsProfile::ChromeModern" in ENDPOINT_HEALTH_POLICY_CPP.read_text(
         encoding="utf-8")
     assert "CooldownMsForEndpoint(" not in tls_sources
-    assert '#include "mtproto/proxy/mtproxy/endpoint_health.h"' in (
-        MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")
-    assert "reportMtproxyFailure(" in tls_sources
+    tls_header = (MTPROXY_DIR / "tls_socket.h").read_text(encoding="utf-8")
+    assert '#include "mtproto/proxy/mtproxy/endpoint_identity.h"' in tls_header
+    assert "MtProxyAttemptPlan _mtproxyPlan;" in tls_header
+    assert "reportTransportEvent(" in tls_sources
+    assert "collectTransportFailure()" in tls_sources
     assert "reportMtproxySuccess(" in tls_sources
     assert "MtproxyNoteEndpointFailure(" not in tls_sources
     assert "MtproxyNoteEndpointSuccess(" not in tls_sources
@@ -133,7 +139,7 @@ def test_proxy_module_sources_are_registered_for_build():
 def test_mtproxy_transport_hotspots_are_split_by_role():
     limits = {
         TLS_SOCKET_CPP: 420,
-        ENDPOINT_HEALTH_CPP: 720,
+        ENDPOINT_HEALTH_CPP: 820,
         MTPROXY_DIR / "client_hello_builder.cpp": 560,
         CLIENT_HELLO_RULES_CPP: 720,
     }

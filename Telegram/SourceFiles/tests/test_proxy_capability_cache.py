@@ -193,30 +193,26 @@ def test_endpoint_health_updates_capabilities_after_state_lock_release():
         capabilities_bridge)
     assert "NoteCapabilityMtproxyFailure(" in failure
     assert "NoteCapabilityMtproxyRelayFailure(" in failure
-    assert failure.index("lock.unlock();") < failure.index(
-        "NoteCapabilityMtproxyFailure(")
-    assert failure.index("lock.unlock();") < failure.index(
-        "NoteCapabilityMtproxyRelayFailure(")
+    failure_unlock = failure.index("\n\t}\n\tif (staleRecipeLevel)")
+    assert failure_unlock < failure.index("NoteCapabilityMtproxyFailure(")
+    assert failure_unlock < failure.index("NoteCapabilityMtproxyRelayFailure(")
     success_unlock = success.index("\n\t}\n\tNoteConnectSuccess(")
     assert success_unlock < success.index("NoteCapabilityMtproxySuccess(")
     stall_unlock = stall.index(
-        "\n\t}\n\tif (retirement == RelayProofRetirement::StaleGeneration")
+        "\n\t}\n\tif (retirement.outcome == RelayProofRetirement::StaleGeneration")
     assert stall_unlock < stall.index("NoteCapabilityMtproxyRelayFailure(")
     assert "NoteCapability" not in neutral
 
-    retirement = failure.index("RetireRelayProof(state, identity)")
-    survivors = failure.index("if (state.relayProven) {")
     generic_invalidation = failure.index(
         "capabilityFailure = CapabilityFailure{")
     relay_invalidation = failure.index(
         "capabilityRelayFailure = CapabilityFailure{")
-    assert retirement < survivors < generic_invalidation < relay_invalidation
-    survivor_branch = failure[survivors:generic_invalidation]
-    assert "return;" in survivor_branch
-    assert "NoteCapability" not in survivor_branch
+    assert generic_invalidation < relay_invalidation < failure_unlock
+    assert "HasCurrentMainRelayProof(" in failure
+    assert failure.index("HasCurrentMainRelayProof(") < relay_invalidation
 
     stall_survivors = stall.index(
-        "retirement == RelayProofRetirement::RetiredWithSurvivors")
+        "retirement.outcome\n\t\t\t\t\t== RelayProofRetirement::RetiredWithSurvivors")
     stall_invalidation = stall.index("NoteCapabilityMtproxyRelayFailure(")
     assert stall_survivors < stall_invalidation
     assert "return;" in stall[stall_survivors:stall_invalidation]
@@ -302,6 +298,7 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
         source,
         "void ProxyCapabilityCache::noteMtproxyRelayFailure(")
     report_failure = function_body(health, "void EndpointHealth::reportFailure(")
+    terminal = function_body(health, "RecordTerminalAttemptLocked(")
     relay_stall = function_body(health, "void EndpointHealth::noteRelayStall(")
     neutral = function_body(health, "void EndpointHealth::retireRelayProof(")
 
@@ -315,19 +312,19 @@ def test_relay_data_degradation_invalidates_persisted_relay_proof():
     assert "runtime->proxyServices().capabilities().noteMtproxyRelayFailure(" in (
         capabilities_bridge)
     assert "relay_stall" in relay_stall
-    assert "RetireRelayProof(state, identity)" in report_failure
-    assert report_failure.index("if (state.relayProven) {") < (
-        report_failure.index("RelayFailureInvalidatesCapability(report.reason)"))
+    assert "RetireRelayProof(state, identity)" in terminal
+    assert "!HasCurrentMainRelayProof(" in report_failure
+    assert report_failure.index("!HasCurrentMainRelayProof(") < (
+        report_failure.index("RelayFailureInvalidatesCapability("))
     assert "RelayProofRetirement::RetiredWithSurvivors" in relay_stall
     assert relay_stall.index(
         "RelayProofRetirement::RetiredWithSurvivors") < relay_stall.index(
             "NoteCapabilityMtproxyRelayFailure(")
     assert "NoteCapabilityMtproxyRelayFailure(" not in neutral
 
-    no_appdata_warning = report_failure.split(
-        "if (SoftNoAppDataFailure(state, report.reason, now)) {", 1)[1].split(
-            "if (FailureIsRouteOnly(report.reason)", 1)[0]
-    assert "noteMtproxyRelayFailure" not in no_appdata_warning
+    assert "const auto softNoAppData = SoftNoAppDataFailure(" in report_failure
+    assert "const auto applyGlobalPenalty = !state.relayProven" in report_failure
+    assert "applyGlobalPenalty" in report_failure
 
 
 def test_hard_mtproxy_failures_invalidate_stale_relay_cache():

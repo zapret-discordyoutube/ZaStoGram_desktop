@@ -103,9 +103,9 @@ def test_admission_queue_and_start_are_logged_not_failed():
 
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
     assert "ProxyDiagnosticsPhase::AdmissionStarted" in broker
-    assert "ProxyDiagnosticsPhase::AdmissionCancelled" in broker
+    assert "ProxyDiagnosticsPhase::AdmissionCancelled" not in broker
     assert "queueMs =" in broker
-    assert "_runtime->proxyServices().control().admit(" in broker
+    assert "endpointAdmissionArbiter().enqueue(" in broker
     assert "request.instance" not in broker
 
     append_body = function_body(session, "bool SessionTransport::appendTestConnection(")

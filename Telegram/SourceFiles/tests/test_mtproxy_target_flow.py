@@ -29,6 +29,10 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
+def compact(text):
+    return " ".join(text.split())
+
+
 def function_body(text: str, signature: str) -> str:
     start = text.index(signature)
     brace = text.index("{", start)
@@ -122,124 +126,79 @@ def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
     assert "MtProxy::RouteKey(route)" in route_order
     assert "attempt.child = _child->clone(ToDirectIpProxy(_proxy, ipIndex));" in add_route
     assert add_route.index("ToDirectIpProxy(_proxy, ipIndex)") < (
-        add_route.index("attempt.child->connectToServer("))
+        add_route.index("stored.child->connectToServer("))
     assert "kRouteRaceDelay = crl::time(300)" in resolving
     assert "kMaxParallelRouteAttempts = 2" in resolving
     assert "activeRouteAttempts() >= kMaxParallelRouteAttempts" in resolving
 
 
-def test_broker_queues_by_priority_and_logs_queue_as_non_failure():
+def test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress():
     broker = read(CONNECTION_BROKER_CPP)
-    drain = function_body(broker, "void ConnectionBroker::drain()")
-    drain_queue = function_body(broker, "void ConnectionBroker::drainQueue(")
-    notify = function_body(broker, "void ConnectionBroker::notify(")
-    event = function_body(
-        broker,
-        "void ConnectionBroker::reportAdmissionEvent(")
+    arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
+    decision = function_body(
+        broker, "ConnectionBrokerDecision DecisionFromUpdate(")
+    event = function_body(broker, "void ReportAdmissionEvent(")
 
-    assert "MtProxy::EndpointUse::Main" in broker
-    assert "MtProxy::EndpointUse::ProxyCheck" in broker
-    assert "MtProxy::EndpointUse::Media" in broker
-    assert "MtProxy::EndpointUse::Upload" in broker
-    # Every queue is drained on each pass: a Main request waiting out a
-    # cooldown must not starve Media/Upload queues (head-of-line blocking).
-    assert "for (const auto use : kQueuePriorityOrder)" in drain
-    assert "drainQueue(use);" in drain
-    verdict_body = function_body(
-        broker,
-        "ConnectionBroker::DrainVerdict ConnectionBroker::computeVerdict(")
-    assert "computeVerdict(state)" in drain_queue
-    assert "_runtime->proxyServices().control().admit({" in verdict_body
-    assert "MtProxy::ReserveOpenSlot(" in verdict_body
-    assert "ConnectionBrokerAction::Queued" in notify
-    assert "ConnectionBrokerAction::StartAfter" in notify
-    assert "ProxyDiagnosticsPhase::AdmissionQueued" in notify
-    assert "ProxyDiagnosticsPhase::Failed" not in notify
+    for priority in ("UrgentMain", "OrdinaryMain", "ProxyCheck", "Background"):
+        assert priority in arbiter
+    assert "kAgingStep = crl::time(15 * 1000)" in arbiter
+    assert "runtimes.upper_bound(last)" in arbiter
+    assert "other->sequence < ticket->sequence" in arbiter
+    assert "ConnectionBrokerAction::Queued" in decision
+    assert "ConnectionBrokerAction::StartAfter" in decision
+    assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
+    assert "ProxyDiagnosticsPhase::Failed" not in broker
     for field in (
-        ".canonical = CanonicalText(state->request.endpoint)",
-        ".route = RouteText(state->request.endpoint)",
-        ".proxyKeyHash = EndpointHash(state->request.endpoint)",
+        ".canonical = CanonicalText(diagnostics.endpoint)",
+        ".route = RouteText(diagnostics.endpoint)",
+        ".proxyKeyHash = EndpointHash(diagnostics.endpoint)",
         ".configuredProfile = ProxyDiagnosticsTlsProfileName(",
-        ".effectiveProfile = state->admission",
-        ".recipeLevel = state->admission",
-        ".queueMs = state->createdAt",
+        ".effectiveProfile = (admission && admission->plan.admitted)",
+        ".recipeLevel = (admission && admission->plan.admitted)",
+        ".queueMs = enqueuedAt",
     ):
         assert field in event
     assert ".profile =" not in event
 
-
-def test_route_failure_stays_route_level_and_success_recovers_canonical():
+def test_route_failure_stays_local_until_main_canonical_exhaustion():
     health = read(ENDPOINT_HEALTH_CPP)
-    capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     state_source = read(ENDPOINT_HEALTH_STATE_H)
     failure = function_body(health, "void EndpointHealth::reportFailure(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     promotion = function_body(
-        state_source,
-        "RelayProofPromotionResult PromoteRelayProof(")
-    aggregate = function_body(
-        state_source,
-        "void SynchronizeRelayProofAggregate(")
+        state_source, "RelayProofPromotionResult PromoteRelayProof(")
 
-    assert (
-        "NoteRouteFailure(storage, state, report.endpoint.route, report.reason);"
-        in failure)
-    assert failure.index("NoteRouteFailure(") < (
-        failure.index("FailureIsRouteOnly(report.reason)"))
-    assert ("if (FailureIsRouteOnly(report.reason)"
-        " && !report.routesExhausted)") in failure
+    assert "NoteRouteFailure(" in failure
+    assert "const auto routeOnly = FailureIsRouteOnly(report.reason)" in failure
+    assert "&& !report.routesExhausted" in failure
+    assert "const auto alternateRoute" in failure
     assert "HasHealthyRoute(storage, state)" in failure
-    assert "!report.routesExhausted" in failure
-    assert failure.index("HasHealthyRoute(storage, state)") < (
-        failure.index("state.lastFailure = report.reason;"))
-    # With every route tried and failed the canonical endpoint must
-    # degrade: cooldown applied and rotation allowed.
-    assert "const auto needsCooldown = FailureNeedsCooldown(report.reason)" in failure
-    assert "|| report.routesExhausted;" in failure
-    assert ".rotationAllowed = needsCooldown && !noAppDataWarning," in failure
-    # A proxy that served connections before only degrades after several
-    # exhaustions in a row (per-connect throttling must not lock out a
-    # working proxy); one that never succeeded degrades on the first.
+    assert "const auto canonicalEligible" in failure
+    assert "report.use" in failure
+    assert "EndpointUse::Main" in failure
+    assert "!routeOnly" in failure
+    assert "!alternateRoute" in failure
+    assert "!HasCurrentMainRelayProof(" in failure
+    assert "SetCurrentCanonicalVerdict(" in failure
+    assert "report.routesExhausted" in failure
     assert "++state.exhaustedSinceSuccess;" in failure
-    assert "state.exhaustedSinceSuccess < kExhaustedStrikesAfterSuccess" in failure
-    assert "state.lastSuccessAt" in failure
-    assert "const auto now = crl::now();" in success
-    assert "state.lastSuccessAt = now;" in success
-    assert "const auto promotion = PromoteRelayProof(" in success
-    assert ".runtimeId = report.runtimeId" in success
-    assert ".proxyGeneration = report.proxyGeneration" in success
-    assert ".attemptId = report.attemptId" in success
-    assert "RelayProofPromotionResult::Inserted" in success
-    assert "RelayProofPromotionResult::MissingAdmission" in success
-    assert "SynchronizeRelayProofAggregate(state);" in promotion
-    assert "state.relayProven = !state.relayProofs.empty();" in aggregate
-    assert "entry.second.provenAt > state.lastRelaySuccessAt" in aggregate
-    assert "state.exhaustedSinceSuccess = 0;" in success
-    # A recently-working endpoint whose handshake gets killed probes
-    # again quickly with the escalated recipe instead of sitting out
-    # the full cooldown; pacing growth keeps the probe rate down.
+    assert "const auto needsCooldown = FailureNeedsCooldown(" in failure
+    assert "report.reason) || report.routesExhausted;" in compact(failure)
     assert "kThrottledRetryCooldown" in policy
-    assert ("if (recentSuccess"
-        " && FailureNeedsRecipeEscalation(report.reason)) {") in failure
-    assert "cooldown = std::min(cooldown, ThrottledRetryCooldown());" in failure
-    assert "NoteCapabilityMtproxySuccess(" in success
-    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
-        capabilities)
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
-    assert "RouteKey(report.endpoint.route)" in success
-    assert "NoteRouteSuccess(storage, state, report.endpoint.route);" in success
-    assert "state.lastFailure = FailureReason::None;" in success
-    assert "state.recipeLevel = 0;" in success
-    assert "state.healthy = true;" in success
-    relay_guard = success.index(
-        "if (report.scope != SuccessScope::Relay) {")
-    proof_promotion = success.index("const auto promotion = PromoteRelayProof(")
-    assert proof_promotion < relay_guard
-    assert relay_guard < success.index("NoteRouteSuccess(")
-    assert relay_guard < success.index("state.recipeLevel = 0;")
-    assert relay_guard < success.index("state.healthy = true;")
+    assert "FailureNeedsRecipeEscalation(" in failure
 
+    relay_guard = success.index("if (report.scope != SuccessScope::Relay)")
+    promotion_at = success.index("PromoteRelayProof(")
+    assert relay_guard < promotion_at
+    assert "SuccessFromStaleAttempt(report, state)" in success
+    assert "NoteRouteSuccess(storage, state, report.endpoint.route);" in success
+    assert "state.recipeLevel = 0;" in success
+    assert "state.exhaustedSinceSuccess = 0;" in success
+    assert "state.lastFailure = FailureReason::None;" in success
+    assert "state.healthy = true;" in success
+    assert "NoteCapabilityMtproxySuccess(" in success
+    assert "state.relayProofs.emplace(identity, proof);" in promotion
 
 def test_safe_attempt_plan_escalates_before_any_wss_fallback():
     health = read(ENDPOINT_HEALTH_CPP)
@@ -255,7 +214,7 @@ def test_safe_attempt_plan_escalates_before_any_wss_fallback():
     wss_recommend = function_body(policy, "bool WssNeedsProxyRecommendation(")
 
     assert "state.recipeLevel < 2" in health
-    assert "FailureNeedsRecipeEscalation(state.lastFailure)" in health_policy
+    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in health_policy
     assert "ProxyTlsProfile::ChromeModern" in attempt_plan
     assert "ProxyConnectionPattern::Soft" in attempt_plan
     assert "ProxyClientHelloFragmentation::Soft" in attempt_plan
@@ -296,8 +255,8 @@ if __name__ == "__main__":
     test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan()
     test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
     test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded()
-    test_broker_queues_by_priority_and_logs_queue_as_non_failure()
-    test_route_failure_stays_route_level_and_success_recovers_canonical()
+    test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress()
+    test_route_failure_stays_local_until_main_canonical_exhaustion()
     test_safe_attempt_plan_escalates_before_any_wss_fallback()
     test_logs_and_left_proxy_shield_expose_target_flow_state()
 

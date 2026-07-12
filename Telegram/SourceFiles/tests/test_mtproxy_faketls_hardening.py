@@ -114,14 +114,16 @@ def test_mtproxy_admission_delays_are_logged_as_queued_status():
 
     assert "_owner->_proxyPort->requestConnection({" in append_body
     assert ".status = [=](SessionProxyAdmissionDecision)" in append_body
+    decision = function_body(
+        broker,
+        "ConnectionBrokerDecision DecisionFromUpdate(")
+    report = function_body(broker, "void ReportAdmissionEvent(")
+    assert "ConnectionBrokerAction::Queued" in decision
+    assert "ConnectionBrokerAction::StartAfter" in decision
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
-    assert "ProxyDiagnosticsPhase::Connecting" not in function_body(
-        broker,
-        "void ConnectionBroker::notify(")
+    assert "ProxyDiagnosticsPhase::Connecting" not in broker
     assert "ProxyDiagnosticsSeverity::Warning" in broker
-    assert ".error = " not in function_body(
-        broker,
-        "void ConnectionBroker::reportAdmissionEvent(")
+    assert ".error = " not in report
     assert "mtproxy admission queued" in broker
     assert "setState(-int(admission.retryAfter));" not in append_body
 

@@ -88,7 +88,7 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     plain_connected = function_body(handshake, "void TlsSocket::plainConnected()")
     send_client_hello = function_body(handshake, "void TlsSocket::sendClientHello()")
-    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
+    terminal_body = function_body(socket, "bool TlsSocket::finishTerminal(")
     hello_digest = function_body(handshake, "void TlsSocket::checkHelloDigest()")
 
     assert "struct Ticket" in psk_header()
@@ -111,7 +111,10 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
     assert "domainFromSecret()" in send_client_hello
     assert "profile" in send_client_hello
     assert "std::move(pskOffer)" in send_client_hello
-    assert "_sentTlsProfile" in error_body
+    assert "clearSyntheticPskOnFailure(reason)" in terminal_body
+    assert "_sentTlsProfile" in function_body(
+        socket,
+        "bool TlsSocket::clearSyntheticPskOnFailure(")
 
     assert "NoteSyntheticPskHandshakeSuccess(" not in hello_digest
     assert "noteDataPathSuccess(" not in hello_digest
@@ -131,12 +134,9 @@ def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
 
 def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
     source = TLS_SOCKET_CPP.read_text(encoding="utf-8")
-    error_body = function_body(source, "void TlsSocket::handleError(int errorCode)")
-    timeout_body = function_body(source, "void TlsSocket::timedOut()")
+    terminal_body = function_body(source, "bool TlsSocket::finishTerminal(")
 
-    for body in (error_body, timeout_body):
-        assert "reason = failureReason();" in body
-        assert "clearSyntheticPskOnFailure(reason)" in body
+    assert "clearSyntheticPskOnFailure(reason)" in terminal_body
 
 
 def test_synthetic_psk_offer_failures_clear_remaining_tickets():
@@ -148,14 +148,12 @@ def test_synthetic_psk_offer_failures_clear_remaining_tickets():
     clear_helper = function_body(
         socket,
         "bool TlsSocket::clearSyntheticPskOnFailure(")
-    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
-    timeout_body = function_body(socket, "void TlsSocket::timedOut()")
+    terminal_body = function_body(socket, "bool TlsSocket::finishTerminal(")
 
     assert "bool _syntheticPskOffered = false;" in header
     assert "_syntheticPskOffered = pskOffer.has_value();" in send_client_hello
     assert "_syntheticPskOffered = false;" in disconnected_body
-    assert "clearSyntheticPskOnFailure(reason)" in error_body
-    assert "clearSyntheticPskOnFailure(reason)" in timeout_body
+    assert "clearSyntheticPskOnFailure(reason)" in terminal_body
     assert "if (!_syntheticPskOffered || IsProxyCheck(_endpointUse))" in clear_helper
     for reason in (
         "ClientHelloSentNoServerHello",
@@ -314,7 +312,10 @@ def test_admission_plan_drives_tls_socket_spacing_and_diagnostics():
     source = TLS_SOCKET_HANDSHAKE_CPP.read_text(encoding="utf-8")
     socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     connected_body = function_body(source, "void TlsSocket::plainConnected()")
-    error_body = function_body(socket, "void TlsSocket::handleError(int errorCode)")
+    terminal_body = function_body(socket, "bool TlsSocket::finishTerminal(")
+    clear_body = function_body(
+        socket,
+        "bool TlsSocket::clearSyntheticPskOnFailure(")
     parts12_body = function_body(source, "void TlsSocket::checkHelloParts12(int parts1Size)")
     digest_body = function_body(source, "void TlsSocket::checkHelloDigest()")
 
@@ -324,7 +325,8 @@ def test_admission_plan_drives_tls_socket_spacing_and_diagnostics():
     assert "reportTransportEvent(" in source
     assert "const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);" in connected_body
     assert "_clientHelloTimer.callOnce(delay);" in connected_body
-    assert "_sentTlsProfile" in error_body
+    assert "clearSyntheticPskOnFailure(reason)" in terminal_body
+    assert "_sentTlsProfile" in clear_body
     assert "MtProxy::FailureReason::TlsAlertAfterClientHello" in parts12_body
     assert "MtProxy::FailureReason::ProxyProtocolBadResponse" in parts12_body
     assert "MtProxy::FailureReason::ServerHelloHmacMismatch" in digest_body
