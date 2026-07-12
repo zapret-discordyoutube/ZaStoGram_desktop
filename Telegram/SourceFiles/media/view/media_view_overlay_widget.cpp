@@ -3081,6 +3081,14 @@ void OverlayWidget::handleScreenChanged(not_null<QScreen*> screen) {
 		.arg(screenList.indexOf(screen)));
 
 	moveToScreen();
+	if (!_fullscreen) {
+		// A DPR-only screen change delivers no resize event, leaving the
+		// GL/RHI surface geometry and the window swapchain coverage
+		// stale (transparent band at the window edge). Re-sync manually.
+		_widget->setGeometry({ QPoint(), _body->size() });
+		updateControlsGeometry();
+		_widget->update();
+	}
 }
 
 void OverlayWidget::subscribeToScreenGeometry() {
