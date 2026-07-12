@@ -590,6 +590,7 @@ private:
 	object_ptr<EmojiColorPicker> _picker;
 	base::Timer _showPickerTimer;
 	base::Timer _previewTimer;
+	base::Timer _unloadCustomTimer;
 	bool _previewShown = false;
 
 

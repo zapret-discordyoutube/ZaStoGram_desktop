@@ -477,6 +477,7 @@ private:
 
 	base::Timer _updateItemsTimer;
 	base::Timer _updateSetsTimer;
+	base::Timer _unloadHeavyTimer;
 	base::flat_set<uint64> _repaintSetsIds;
 
 	StickersListFooter *_footer = nullptr;

@@ -69,6 +69,7 @@ constexpr auto kAppearDuration = 0.3;
 constexpr auto kCustomSearchLimit = 256;
 constexpr auto kCloudSearchPageLimit = 50;
 constexpr auto kColorPickerDelay = crl::time(500);
+constexpr auto kUnloadCustomDelay = crl::time(5000);
 constexpr auto kSearchRequestDelay = 400;
 constexpr auto kPreloadSearchPages = 4;
 
@@ -512,7 +513,8 @@ EmojiListWidget::EmojiListWidget(
 , _searchRequestTimer([=] { sendSearchRequest(); })
 , _picker(this, st())
 , _showPickerTimer([=] { showPicker(); })
-, _previewTimer([=] { showPreview(); }) {
+, _previewTimer([=] { showPreview(); })
+, _unloadCustomTimer([=] { unloadAllCustom(); }) {
 	setMouseTracking(true);
 	if (st().bg->c.alpha() > 0) {
 		setAttribute(Qt::WA_OpaquePaintEvent);
@@ -1670,6 +1672,7 @@ object_ptr<TabbedSelector::InnerFooter> EmojiListWidget::createFooter() {
 }
 
 void EmojiListWidget::afterShown() {
+	_unloadCustomTimer.cancel();
 	visibleTopBottomUpdated(getVisibleTop(), getVisibleBottom());
 	const auto steal = (_mode == Mode::EmojiStatus)
 		|| (_mode == Mode::FullReactions)
@@ -1680,7 +1683,7 @@ void EmojiListWidget::afterShown() {
 }
 
 void EmojiListWidget::beforeHiding() {
-	unloadAllCustom();
+	_unloadCustomTimer.callOnce(kUnloadCustomDelay);
 	if (_search) {
 		_search->returnFocus();
 	}
@@ -1688,9 +1691,10 @@ void EmojiListWidget::beforeHiding() {
 
 void EmojiListWidget::animationActiveChanged(bool active) {
 	if (active) {
+		_unloadCustomTimer.cancel();
 		visibleTopBottomUpdated(getVisibleTop(), getVisibleBottom());
 	} else {
-		unloadAllCustom();
+		_unloadCustomTimer.callOnce(kUnloadCustomDelay);
 	}
 }
 
@@ -3430,12 +3434,12 @@ void EmojiListWidget::processHideFinished() {
 		_picker->hideFast();
 		_pickerSelected = v::null;
 	}
-	unloadAllCustom();
+	_unloadCustomTimer.callOnce(kUnloadCustomDelay);
 	clearSelection();
 }
 
 void EmojiListWidget::processPanelHideFinished() {
-	unloadAllCustom();
+	_unloadCustomTimer.callOnce(kUnloadCustomDelay);
 	if (_localSetsManager->clearInstalledLocally()) {
 		refreshCustom();
 	}

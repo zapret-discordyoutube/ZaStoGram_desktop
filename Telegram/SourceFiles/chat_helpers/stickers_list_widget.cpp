@@ -81,6 +81,7 @@ constexpr auto kPreloadOfficialPages = 4;
 constexpr auto kOfficialLoadLimit = 40;
 constexpr auto kMinRepaintDelay = crl::time(33);
 constexpr auto kMinAfterScrollDelay = crl::time(33);
+constexpr auto kUnloadHeavyDelay = crl::time(5000);
 
 using Data::StickersSet;
 using Data::StickersPack;
@@ -224,6 +225,12 @@ StickersListWidget::StickersListWidget(
 	updateItems();
 })
 , _updateSetsTimer([=] { updateSets(); })
+, _unloadHeavyTimer([=] {
+	clearHeavyData();
+	if (_footer) {
+		_footer->clearHeavyData();
+	}
+})
 , _trendingAddBgOver(
 	ImageRoundRadius::Large,
 	st::stickersTrendingAdd.textBgOver)
@@ -3115,20 +3122,14 @@ TabbedSelector::InnerFooter *StickersListWidget::getFooter() const {
 void StickersListWidget::processHideFinished() {
 	_choosingUpdated.fire(TabbedSelector::Action::Cancel);
 	clearSelection();
-	clearHeavyData();
-	if (_footer) {
-		_footer->clearHeavyData();
-	}
+	_unloadHeavyTimer.callOnce(kUnloadHeavyDelay);
 }
 
 void StickersListWidget::processPanelHideFinished() {
 	if (_localSetsManager->clearInstalledLocally()) {
 		refreshStickers();
 	}
-	clearHeavyData();
-	if (_footer) {
-		_footer->clearHeavyData();
-	}
+	_unloadHeavyTimer.callOnce(kUnloadHeavyDelay);
 }
 
 void StickersListWidget::setSection(Section section) {
@@ -3952,6 +3953,7 @@ void StickersListWidget::showMegagroupSet(ChannelData *megagroup) {
 }
 
 void StickersListWidget::afterShown() {
+	_unloadHeavyTimer.cancel();
 	syncVisibleAnimations();
 	if (_search) {
 		_search->stealFocus();
@@ -3967,12 +3969,10 @@ void StickersListWidget::beforeHiding() {
 
 void StickersListWidget::animationActiveChanged(bool active) {
 	if (active) {
+		_unloadHeavyTimer.cancel();
 		syncVisibleAnimations();
 	} else {
-		clearHeavyData();
-		if (_footer) {
-			_footer->clearHeavyData();
-		}
+		_unloadHeavyTimer.callOnce(kUnloadHeavyDelay);
 	}
 }
 
