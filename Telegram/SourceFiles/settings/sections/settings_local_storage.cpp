@@ -1889,6 +1889,7 @@ void LocalStorage::startClearing() {
 	if (_allSelected.current()) {
 		_db->clear();
 		_dbBig->clear();
+		_session->data().cacheEmoji().clear();
 		Ui::Emoji::ClearIrrelevantCache();
 		return;
 	}

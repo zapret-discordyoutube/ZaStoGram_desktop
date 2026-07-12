@@ -1887,6 +1887,21 @@ Cache::Database::Settings Account::cacheBigFileSettings() const {
 	return result;
 }
 
+QString Account::cacheEmojiPath() const {
+	Expects(!_databasePath.isEmpty());
+
+	return _databasePath + "emoji";
+}
+
+Cache::Database::Settings Account::cacheEmojiSettings() const {
+	auto result = Cache::Database::Settings();
+	result.clearOnWrongKey = true;
+	result.totalSizeLimit = 512 * 1024 * 1024;
+	result.totalTimeLimit = 0; // No age limit for cached emoji frames.
+	result.maxDataSize = kMaxFileInMemory;
+	return result;
+}
+
 void Account::writeStickerSet(
 		QDataStream &stream,
 		const Data::StickersSet &set) {

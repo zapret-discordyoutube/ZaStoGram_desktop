@@ -120,6 +120,9 @@ public:
 	[[nodiscard]] QString cacheBigFilePath() const;
 	[[nodiscard]] Cache::Database::Settings cacheBigFileSettings() const;
 
+	[[nodiscard]] QString cacheEmojiPath() const;
+	[[nodiscard]] Cache::Database::Settings cacheEmojiSettings() const;
+
 	void writeInstalledStickers();
 	void writeFeaturedStickers();
 	void writeRecentStickers();

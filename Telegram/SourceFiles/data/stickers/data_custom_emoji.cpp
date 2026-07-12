@@ -319,7 +319,7 @@ void CustomEmojiLoader::startCacheLookup(
 	});
 	const auto size = FrameSizeFromTag(_tag, _sizeOverride);
 	const auto weak = base::make_weak(&lookup->process->guard);
-	document->owner().cacheBigFile().get(key, [=](QByteArray value) {
+	document->owner().cacheEmoji().get(key, [=](QByteArray value) {
 		auto cache = Ui::CustomEmoji::Cache::FromSerialized(value, size);
 		crl::on_main(weak, [=, result = std::move(cache)]() mutable {
 			lookupDone(lookup, std::move(result));
@@ -385,7 +385,7 @@ void CustomEmojiLoader::check() {
 	auto put = [=, key = cacheKey(document)](QByteArray value) {
 		const auto size = value.size();
 		if (size <= Storage::kMaxFileInMemory) {
-			document->owner().cacheBigFile().put(key, std::move(value));
+			document->owner().cacheEmoji().put(key, std::move(value));
 		} else {
 			LOG(("Data Error: Cached emoji size too big: %1.").arg(size));
 		}

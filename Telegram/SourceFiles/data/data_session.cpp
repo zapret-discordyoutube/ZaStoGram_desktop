@@ -232,6 +232,9 @@ Session::Session(not_null<Main::Session*> session)
 , _bigFileCache(Core::App().databases().get(
 	_session->local().cacheBigFilePath(),
 	_session->local().cacheBigFileSettings()))
+, _emojiCache(Core::App().databases().get(
+	_session->local().cacheEmojiPath(),
+	_session->local().cacheEmojiSettings()))
 , _groupFreeTranscribeLevel(session->appConfig().value(
 ) | rpl::map([limits = Data::LevelLimits(session)] {
 	return limits.groupTranscribeLevelMin();
@@ -269,6 +272,7 @@ Session::Session(not_null<Main::Session*> session)
 , _shortcutMessages(std::make_unique<ShortcutMessages>(this)) {
 	_cache->open(_session->local().cacheKey());
 	_bigFileCache->open(_session->local().cacheBigFileKey());
+	_emojiCache->open(_session->local().cacheBigFileKey());
 
 	if constexpr (Platform::IsLinux()) {
 		const auto wasVersion = _session->local().oldMapVersion();
@@ -1592,6 +1596,10 @@ Storage::Cache::Database &Session::cache() {
 
 Storage::Cache::Database &Session::cacheBigFile() {
 	return *_bigFileCache;
+}
+
+Storage::Cache::Database &Session::cacheEmoji() {
+	return *_emojiCache;
 }
 
 void Session::suggestStartExport(TimeId availableAt) {
@@ -5739,6 +5747,8 @@ void Session::clearLocalStorage() {
 	_cache->clear();
 	_bigFileCache->close();
 	_bigFileCache->clear();
+	_emojiCache->close();
+	_emojiCache->clear();
 }
 
 void Session::fillMessagePeer(FullMsgId fullId, PeerId peerId) {
