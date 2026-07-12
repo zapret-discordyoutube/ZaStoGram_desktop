@@ -73,8 +73,5 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now);
 	EndpointUse use,
 	crl::time now,
 	bool fastWarmup);
-[[nodiscard]] Snapshot MakeSnapshot(
-	const EndpointState &state,
-	ProxyRuntimeId runtimeId);
 
 } // namespace MTP::details::MtProxy

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 
 #include <QtCore/QMutex>
 #include <rpl/event_stream.h>
@@ -41,7 +42,7 @@ struct EndpointContextStorage {
 	std::map<QString, EndpointState> states;
 	std::map<QString, RouteState> routes;
 	std::map<QString, OpenState> openStates;
-	rpl::event_stream<EndpointEvent> events;
+	rpl::event_stream<EndpointViewInvalidation> viewInvalidations;
 	std::set<ProxyRuntimeId> runtimes;
 	std::map<ProxyTraceId, ProxyConnectionAttempt> activeTraces;
 	ProxyRuntimeId lastRuntimeId = 0;

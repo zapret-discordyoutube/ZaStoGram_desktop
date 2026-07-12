@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -119,6 +120,10 @@ struct Actions {
 	std::vector<GrantAction> grants;
 	std::vector<PostAction> posts;
 	std::vector<std::shared_ptr<const EndpointAdmissionRuntimeDispatch>> retired;
+	std::weak_ptr<ProxyEndpointContext> context;
+	std::vector<std::pair<
+		MtProxy::EndpointId,
+		RuntimeGenerationKey>> invalidations;
 
 	void run();
 };
@@ -168,6 +173,22 @@ void GrantAction::run() {
 }
 
 void Actions::run() {
+	if (const auto strong = context.lock()) {
+		auto emitted = std::set<std::tuple<QString, uint64, uint64>>();
+		for (const auto &[endpoint, runtimeGeneration] : invalidations) {
+			const auto key = std::tuple(
+				MtProxy::EndpointKey(endpoint),
+				runtimeGeneration.runtimeId,
+				runtimeGeneration.proxyGeneration);
+			if (emitted.emplace(key).second) {
+				strong->notifyEndpointViewChanged(
+					endpoint,
+					runtimeGeneration);
+			}
+		}
+	}
+	invalidations.clear();
+	context.reset();
 	for (const auto &ticket : removed) {
 		QObject::disconnect(ticket->ownerDestroyed);
 	}
@@ -235,6 +256,10 @@ public:
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration);
 	void drainEndpoint(const QString &endpointKey);
+	void composeEndpointViewLocked(
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MtProxy::ProxyEndpointView &view) const;
 	void wake(uint64 token);
 	void deliverStatus(
 		AdmissionTicketKey key,
@@ -289,6 +314,7 @@ private:
 		crl::time now) const;
 	void postStatusLocked(Ticket &ticket, Actions &actions);
 	void postGrantLocked(Ticket &ticket, Actions &actions);
+	void invalidateTicketLocked(Ticket &ticket, Actions &actions);
 	void cancelTicketLocked(
 		AdmissionTicketKey key,
 		uint64 revision,
@@ -440,6 +466,73 @@ bool EndpointAdmissionArbiter::Private::ticketCurrentLocked(
 			state,
 			ticket.key.runtimeId,
 			ticket.proxyGeneration);
+}
+
+void EndpointAdmissionArbiter::Private::composeEndpointViewLocked(
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MtProxy::ProxyEndpointView &view) const {
+	if (view.admissionPhase != ProxyAdmissionPhase::Idle) {
+		return;
+	}
+	const auto endpointKey = MtProxy::EndpointKey(endpoint);
+	const auto schedule = _endpoints.find(endpointKey);
+	if (schedule == end(_endpoints)) {
+		return;
+	}
+	const auto rank = [](ProxySchedulerLifecycle lifecycle) {
+		switch (lifecycle) {
+		case ProxySchedulerLifecycle::Granted:
+			return 0;
+		case ProxySchedulerLifecycle::Scheduled:
+			return 1;
+		case ProxySchedulerLifecycle::Queued:
+			return 2;
+		case ProxySchedulerLifecycle::None:
+		case ProxySchedulerLifecycle::HandedOff:
+		case ProxySchedulerLifecycle::Cancelled:
+			return 3;
+		}
+		return 3;
+	};
+	auto selected = static_cast<const Ticket*>(nullptr);
+	for (const auto &ticketKey : schedule->second.order) {
+		const auto i = _tickets.find(ticketKey);
+		if (i == end(_tickets)) {
+			continue;
+		}
+		const auto &ticket = *i->second;
+		if (ticket.key.runtimeId != runtimeGeneration.runtimeId
+			|| ticket.proxyGeneration != runtimeGeneration.proxyGeneration
+			|| ticket.use != MtProxy::EndpointUse::Main
+			|| rank(ticket.lifecycle) >= 3) {
+			continue;
+		}
+		if (!selected
+			|| rank(ticket.lifecycle) < rank(selected->lifecycle)
+			|| (rank(ticket.lifecycle) == rank(selected->lifecycle)
+				&& ticket.sequence < selected->sequence)) {
+			selected = &ticket;
+		}
+	}
+	if (!selected) {
+		return;
+	}
+	view.mainAttempt = {
+		.runtimeId = selected->key.runtimeId,
+		.ticketId = selected->key.ticketId,
+		.proxyGeneration = selected->proxyGeneration,
+		.use = selected->use,
+		.ticketKey = selected->key,
+	};
+	view.ticketKey = selected->key;
+	view.schedulerLifecycle = selected->lifecycle;
+	view.admissionPhase = (selected->lifecycle
+			== ProxySchedulerLifecycle::Queued)
+		? ProxyAdmissionPhase::Queued
+		: ProxyAdmissionPhase::Scheduled;
+	view.enqueuedAt = selected->enqueuedAt;
+	view.scheduledOpenAt = selected->scheduledOpenAt;
 }
 
 PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
@@ -668,9 +761,22 @@ bool EndpointAdmissionArbiter::Private::baseEligibleLocked(
 		});
 }
 
+void EndpointAdmissionArbiter::Private::invalidateTicketLocked(
+		Ticket &ticket,
+		Actions &actions) {
+	actions.context = _context;
+	actions.invalidations.emplace_back(
+		ticket.endpoint,
+		RuntimeGenerationKey{
+			.runtimeId = ticket.key.runtimeId,
+			.proxyGeneration = ticket.proxyGeneration,
+		});
+}
+
 void EndpointAdmissionArbiter::Private::postStatusLocked(
 		Ticket &ticket,
 		Actions &actions) {
+	invalidateTicketLocked(ticket, actions);
 	if (!ticket.callbacks || !ticket.callbacks->status) {
 		return;
 	}
@@ -778,6 +884,7 @@ void EndpointAdmissionArbiter::Private::cancelTicketLocked(
 	}
 	ticket.lifecycle = ProxySchedulerLifecycle::Cancelled;
 	++ticket.transition;
+	invalidateTicketLocked(ticket, actions);
 	actions.removed.push_back(takeTicketLocked(key));
 }
 
@@ -921,9 +1028,12 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 		ticket.retryAfter = std::max(
 			crl::time(),
 			assignments[i].openAt - inputs.now);
-		if (changed && ticket.lifecycle == ProxySchedulerLifecycle::Scheduled) {
-			++ticket.transition;
-			postStatusLocked(ticket, actions);
+		if (changed) {
+			invalidateTicketLocked(ticket, actions);
+			if (ticket.lifecycle == ProxySchedulerLifecycle::Scheduled) {
+				++ticket.transition;
+				postStatusLocked(ticket, actions);
+			}
 		}
 	}
 }
@@ -1665,6 +1775,7 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 					ticket.reservationId = 0;
 					ticket.lifecycle = ProxySchedulerLifecycle::HandedOff;
 					++ticket.transition;
+					invalidateTicketLocked(ticket, actions);
 					auto grant = EndpointAdmissionGrant{
 						.key = key,
 						.revision = revision,
@@ -1734,6 +1845,16 @@ void EndpointAdmissionArbiter::cancelBeforeGeneration(
 void EndpointAdmissionArbiter::drainEndpoint(
 		const QString &endpointKey) {
 	_private->drainEndpoint(endpointKey);
+}
+
+void EndpointAdmissionArbiter::composeEndpointViewLocked(
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MtProxy::ProxyEndpointView &view) const {
+	_private->composeEndpointViewLocked(
+		endpoint,
+		runtimeGeneration,
+		view);
 }
 
 void EndpointAdmissionArbiter::wake(uint64 token) {

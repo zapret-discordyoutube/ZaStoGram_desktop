@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/session_proxy_adapter.h"
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/proxy/connection_broker.h"
 #include "mtproto/proxy/control_plane.h"
@@ -31,6 +32,28 @@ namespace {
 		return MtProxy::SuccessScope::Handshake;
 	}
 	return MtProxy::SuccessScope::Handshake;
+}
+
+[[nodiscard]] ProxyFailureAttribution FailureAttribution(
+		MtProxy::FailureReason reason,
+		const ProxyTransportFailure &failure) {
+	if (failure.attribution != ProxyFailureAttribution::None) {
+		return failure.attribution;
+	} else if (failure.closeOrigin == ProxyCloseOrigin::PeerClosed) {
+		return ProxyFailureAttribution::Peer;
+	} else if (failure.error == ProxyConnectionError::Network
+		|| failure.error == ProxyConnectionError::ConnectionRefused
+		|| failure.error == ProxyConnectionError::HostNotFound) {
+		return ProxyFailureAttribution::Network;
+	} else if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
+		return ProxyFailureAttribution::Client;
+	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
+		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
+		return ProxyFailureAttribution::Peer;
+	}
+	return (reason == MtProxy::FailureReason::None)
+		? ProxyFailureAttribution::None
+		: ProxyFailureAttribution::Unclear;
 }
 
 class EndpointSessionProxyLease final : public SessionProxyLease::Impl {
@@ -191,24 +214,34 @@ private:
 		.successEpoch = attempt.attempt.successEpoch,
 		.attemptStartedAt = attempt.attemptStartedAt,
 		.scope = ToMtProxySuccessScope(scope),
+		.ticketKey = attempt.attempt.ticketKey,
+		.payloadAt = crl::now(),
 	};
 }
 
 [[nodiscard]] MtProxy::FailureReport FailureReport(
 		const SessionProxyAttempt &attempt,
 		MtProxy::FailureReason reason,
+		const ProxyTransportFailure &failure,
 		SessionProxyLease *lease = nullptr) {
 	return {
 		.endpoint = attempt.endpoint,
 		.use = attempt.use,
 		.runtimeId = attempt.attempt.runtimeId,
 		.reason = reason,
+		.configuredTlsProfile = attempt.plan.configuredTlsProfile,
+		.sentProfile = failure.sentTlsProfile.value_or(
+			attempt.plan.effectiveTlsProfile),
 		.lease = EndpointLease(lease),
 		.proxyGeneration = attempt.attempt.proxyGeneration,
 		.attemptId = attempt.attempt.attemptId,
 		.proxyEpoch = attempt.attempt.proxyEpoch,
 		.successEpoch = attempt.attempt.successEpoch,
 		.attemptStartedAt = attempt.attemptStartedAt,
+		.routesExhausted = MtProxy::FailureIsRouteOnly(reason),
+		.ticketKey = attempt.attempt.ticketKey,
+		.attribution = FailureAttribution(reason, failure),
+		.terminalAt = crl::now(),
 	};
 }
 
@@ -223,7 +256,25 @@ private:
 		.proxyEpoch = attempt.attempt.proxyEpoch,
 		.successEpoch = attempt.attempt.successEpoch,
 		.attemptStartedAt = attempt.attemptStartedAt,
+		.ticketKey = attempt.attempt.ticketKey,
+		.lastPayloadAt = crl::now(),
 	};
+}
+
+[[nodiscard]] bool ClaimAttemptTerminal(
+		const SessionProxyAttempt &attempt) {
+	return attempt.runtime
+		&& attempt.attempt.traceId
+		&& attempt.runtime->proxyEndpointContext().finishTrace(
+			attempt.attempt.traceId);
+}
+
+void ReportClaimedAttemptSummary(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyEventReport report) {
+	report.phase = ProxyDiagnosticsPhase::AttemptSummary;
+	report.traceSchema = 2;
+	ReportProxyEvent(runtime, std::move(report));
 }
 
 [[nodiscard]] ProxyEventReport AttemptReport(
@@ -304,6 +355,7 @@ private:
 void ReportConnectionFailure(
 		const SessionProxyAttempt &attempt,
 		MtProxy::FailureReason reason,
+		const ProxyTransportFailure &failure,
 		SessionProxyLease *lease = nullptr) {
 	if (EmptySessionProxyAttempt(attempt)
 		|| (reason == MtProxy::FailureReason::None)) {
@@ -313,7 +365,7 @@ void ReportConnectionFailure(
 		return;
 	}
 	not_null{ attempt.runtime }->proxyServices().control().reportMtproxyFailure(
-		FailureReport(attempt, reason, lease));
+		FailureReport(attempt, reason, failure, lease));
 }
 
 class ProductionSessionProxyPort final : public SessionProxyPort {
@@ -390,11 +442,13 @@ void ProductionSessionProxyPort::cancelByProxyGeneration(
 SessionProxyEndpointSnapshot ProductionSessionProxyPort::endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const {
-	const auto snapshot = runtime->proxyServices().control(
-	).mtproxyEndpointSnapshot(endpoint);
+	const auto view = runtime->proxyServices().control(
+	).mtproxyEndpointView(endpoint);
+	const auto proven = view.mainProof.strength
+		!= MtProxy::MainRelayProofStrength::None;
 	return {
-		.healthy = snapshot.healthy,
-		.halfOpen = snapshot.halfOpen,
+		.healthy = proven,
+		.halfOpen = !proven,
 	};
 }
 
@@ -415,18 +469,23 @@ void ProductionSessionProxyPort::reportConnected(
 void ProductionSessionProxyPort::reportFirstMtprotoPayload(
 		const SessionProxyAttempt &attempt,
 		SessionProxyLease *lease) {
-	reportConnected(attempt, lease, SessionProxySuccessScope::Relay);
-	if (attempt.runtime) {
-		(void)ReportProxyAttemptSummary(
-			not_null{ attempt.runtime },
-			AttemptReport(
-				attempt,
-				ProxyConnectionError::None,
-				ProxyMtproxyTerminalReason::None,
-				ProxyDiagnosticsSeverity::Info,
-				u"relay_ready_first_mtproto_payload"_q,
-				attempt.transport));
+	if (EmptySessionProxyAttempt(attempt)
+		|| !attempt.runtime
+		|| !ClaimAttemptTerminal(attempt)) {
+		return;
 	}
+	const auto runtime = not_null{ attempt.runtime };
+	runtime->proxyServices().control().reportMtproxySuccess(
+		SuccessReport(attempt, lease, SessionProxySuccessScope::Relay));
+	ReportClaimedAttemptSummary(
+		runtime,
+		AttemptReport(
+			attempt,
+			ProxyConnectionError::None,
+			ProxyMtproxyTerminalReason::None,
+			ProxyDiagnosticsSeverity::Info,
+			u"relay_ready_first_mtproto_payload"_q,
+			attempt.transport));
 }
 
 void ProductionSessionProxyPort::reportConnectionError(
@@ -438,18 +497,16 @@ void ProductionSessionProxyPort::reportConnectionError(
 	const auto reason = (failure.reason != ProxyMtproxyTerminalReason::None)
 		? MtProxy::FromProxyMtproxyTerminalReason(failure.reason)
 		: MtProxy::FailureReasonFromErrorCode(errorCode);
-	if (reason == MtProxy::FailureReason::None) {
+	if (reason == MtProxy::FailureReason::None
+		|| EmptySessionProxyAttempt(attempt)
+		|| !attempt.runtime) {
 		return;
 	}
-	if (ignoreHealthyRemoteClosed
-		&& attempt.runtime
-		&& (reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
-		const auto runtime = not_null{ attempt.runtime };
-		const auto snapshot = endpointSnapshot(runtime, attempt.endpoint);
-		const auto postTerminal = attempt.attempt.traceId
-			&& !runtime->proxyEndpointContext().traceActive(
-				attempt.attempt.traceId);
-		if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {
+	const auto runtime = not_null{ attempt.runtime };
+	if (!ClaimAttemptTerminal(attempt)) {
+		if (ignoreHealthyRemoteClosed
+			&& failure.livenessReported
+			&& (reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
 			runtime->proxyServices().control().retireMtproxyRelayProof(
 				RelayProofReport(attempt));
 			ReportProxyLiveness(
@@ -461,26 +518,19 @@ void ProductionSessionProxyPort::reportConnectionError(
 					ProxyDiagnosticsSeverity::Info,
 					u"post_success_connection_closed"_q,
 					std::move(failure)));
-			return;
 		}
+		return;
 	}
-	ReportConnectionFailure(attempt, reason, lease);
-	if (attempt.runtime) {
-		const auto livenessReported = failure.livenessReported;
-		auto report = AttemptReport(
+	ReportConnectionFailure(attempt, reason, failure, lease);
+	ReportClaimedAttemptSummary(
+		runtime,
+		AttemptReport(
 			attempt,
 			MtProxy::ToProxyConnectionError(reason),
 			MtProxy::ToProxyMtproxyTerminalReason(reason),
 			ProxyDiagnosticsSeverity::Error,
 			u"proxy_attempt_failed"_q,
-			std::move(failure));
-		if (!ReportProxyAttemptSummary(not_null{ attempt.runtime }, report)
-			&& !livenessReported) {
-			ReportProxyLiveness(
-				not_null{ attempt.runtime },
-				std::move(report));
-		}
-	}
+			std::move(failure)));
 }
 
 void ProductionSessionProxyPort::reportReceiveTimeout(
@@ -501,43 +551,57 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 		: attempt.endpoint.canonical.domainFromSecret.isEmpty()
 		? ProxyMtproxyTerminalReason::ConnectedNoMtprotoData
 		: ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData;
-	const auto traceActive = !attempt.attempt.traceId
-		|| runtime->proxyEndpointContext().traceActive(
-			attempt.attempt.traceId);
-	if (traceActive) {
-		ReportProxyEvent(runtime, {
-			.phase = ProxyDiagnosticsPhase::Failed,
-			.error = ProxyConnectionError::Timeout,
-			.mtproxyReason = reason,
-			.attempt = attempt.attempt,
-			.severity = ProxyDiagnosticsSeverity::Warning,
-			.proxy = proxy,
-			.dc = dc,
-			.message = receivedBefore
-				? u"mtp receive timeout after relay data"_q
-				: u"proxy connected, mtproto data stalled"_q,
-		});
+	if (receivedBefore) {
+		if (attempt.attempt.traceId
+			&& runtime->proxyEndpointContext().traceActive(
+				attempt.attempt.traceId)) {
+			return;
+		}
+		auto terminal = AttemptReport(
+			attempt,
+			ProxyConnectionError::Timeout,
+			reason,
+			ProxyDiagnosticsSeverity::Warning,
+			u"post_success_receive_timeout"_q,
+			attempt.transport);
+		terminal.message += u" silent_strikes=%1"_q.arg(silentStrikes);
+		ReportProxyLiveness(runtime, std::move(terminal));
+		reportRelayStall(attempt);
+		return;
 	}
+	if (!ClaimAttemptTerminal(attempt)) {
+		return;
+	}
+	ReportProxyEvent(runtime, {
+		.phase = ProxyDiagnosticsPhase::Failed,
+		.error = ProxyConnectionError::Timeout,
+		.mtproxyReason = reason,
+		.attempt = attempt.attempt,
+		.severity = ProxyDiagnosticsSeverity::Warning,
+		.proxy = proxy,
+		.dc = dc,
+		.message = u"proxy connected, mtproto data stalled"_q,
+	});
+	auto failure = attempt.transport;
+	failure.reason = reason;
+	failure.error = ProxyConnectionError::Timeout;
+	failure.closeOrigin = ProxyCloseOrigin::LocalTimeout;
+	if (failure.attribution == ProxyFailureAttribution::None) {
+		failure.attribution = ProxyFailureAttribution::Unclear;
+	}
+	ReportConnectionFailure(
+		attempt,
+		MtProxy::FromProxyMtproxyTerminalReason(reason),
+		failure);
 	auto terminal = AttemptReport(
 		attempt,
 		ProxyConnectionError::Timeout,
 		reason,
 		ProxyDiagnosticsSeverity::Warning,
-		receivedBefore
-			? u"post_success_receive_timeout"_q
-			: u"connected_without_mtproto_payload"_q,
-		attempt.transport);
+		u"connected_without_mtproto_payload"_q,
+		std::move(failure));
 	terminal.message += u" silent_strikes=%1"_q.arg(silentStrikes);
-	if (!ReportProxyAttemptSummary(runtime, terminal)) {
-		ReportProxyLiveness(runtime, std::move(terminal));
-	}
-	if (receivedBefore) {
-		reportRelayStall(attempt);
-	} else {
-		ReportConnectionFailure(
-			attempt,
-			MtProxy::FromProxyMtproxyTerminalReason(reason));
-	}
+	ReportClaimedAttemptSummary(runtime, std::move(terminal));
 }
 
 void ProductionSessionProxyPort::reportConnectTimeout(
@@ -549,20 +613,26 @@ void ProductionSessionProxyPort::reportConnectTimeout(
 	const auto reason = (typed == ProxyMtproxyTerminalReason::None)
 		? MtProxy::FailureReason::TcpConnectTimeout
 		: MtProxy::FromProxyMtproxyTerminalReason(typed);
-	if (typed == ProxyMtproxyTerminalReason::None) {
-		ReportConnectionFailure(attempt, reason);
+	if (!attempt.runtime || !ClaimAttemptTerminal(attempt)) {
+		return;
 	}
-	if (attempt.runtime) {
-		(void)ReportProxyAttemptSummary(
-			not_null{ attempt.runtime },
-			AttemptReport(
-				attempt,
-				MtProxy::ToProxyConnectionError(reason),
-				MtProxy::ToProxyMtproxyTerminalReason(reason),
-				ProxyDiagnosticsSeverity::Error,
-				u"proxy_connect_timeout"_q,
-				attempt.transport));
+	auto failure = attempt.transport;
+	if (failure.reason == ProxyMtproxyTerminalReason::None) {
+		failure.reason = MtProxy::ToProxyMtproxyTerminalReason(reason);
+		failure.error = ProxyConnectionError::Timeout;
+		failure.closeOrigin = ProxyCloseOrigin::LocalTimeout;
+		failure.attribution = ProxyFailureAttribution::Unclear;
 	}
+	ReportConnectionFailure(attempt, reason, failure);
+	ReportClaimedAttemptSummary(
+		not_null{ attempt.runtime },
+		AttemptReport(
+			attempt,
+			MtProxy::ToProxyConnectionError(reason),
+			MtProxy::ToProxyMtproxyTerminalReason(reason),
+			ProxyDiagnosticsSeverity::Error,
+			u"proxy_connect_timeout"_q,
+			std::move(failure)));
 }
 
 void ProductionSessionProxyPort::reportAttemptCancelled(
@@ -572,8 +642,12 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 		return;
 	}
 	const auto runtime = not_null{ attempt.runtime };
+	const auto claimed = ClaimAttemptTerminal(attempt);
 	runtime->proxyServices().control().retireMtproxyRelayProof(
 		RelayProofReport(attempt));
+	if (!claimed) {
+		return;
+	}
 	const auto message = (origin == ProxyCloseOrigin::ProxySwitch)
 		? u"proxy_attempt_cancelled_by_proxy_switch"_q
 		: (origin == ProxyCloseOrigin::OwnerDestroyed)
@@ -587,9 +661,7 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 		message,
 		attempt.transport);
 	report.closeOrigin = origin;
-	(void)ReportProxyAttemptSummary(
-		runtime,
-		std::move(report));
+	ReportClaimedAttemptSummary(runtime, std::move(report));
 }
 
 void ProductionSessionProxyPort::reportRelayStall(

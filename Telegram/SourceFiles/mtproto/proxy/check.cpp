@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
+#include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/connection_status.h"
@@ -27,9 +29,6 @@ namespace MTP {
 using Connection = details::AbstractConnection;
 namespace MtProxy = details::MtProxy;
 namespace {
-
-constexpr auto kProxyCheckUiTimeout = crl::time(9000);
-constexpr auto kProxyCheckActiveSessionWindow = crl::time(15 * 1000);
 
 QHash<QString, int> ActiveProxyCheckKeys;
 
@@ -101,19 +100,37 @@ void SetProxyCheckProgress(
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto endpoint = MtProxy::EndpointIdFromProxy(proxy, stealth);
 		const auto &control = runtime->proxyServices().control();
-		const auto snapshot = control.mtproxyEndpointSnapshot(endpoint);
-		return snapshot.healthy
-			&& !snapshot.halfOpen
-			&& snapshot.relayProven
-			&& snapshot.lastRelaySuccessAt
-			&& (crl::now() - snapshot.lastRelaySuccessAt
-				< kProxyCheckActiveSessionWindow);
+		const auto view = control.mtproxyEndpointView(endpoint);
+		return view.mainProof.strength
+			!= MtProxy::MainRelayProofStrength::None;
 	}
 	const auto status = runtime->instance().connectionStatus
 		? runtime->instance().connectionStatus->proxyStatus()
 		: ProxyConnectionStatus();
 	return (status.phase == ProxyConnectionPhase::Connected)
 		&& (status.proxy == proxy);
+}
+
+[[nodiscard]] ProxyFailureAttribution ProxyCheckFailureAttribution(
+		MtProxy::FailureReason reason,
+		const ProxyTransportFailure &failure) {
+	if (failure.attribution != ProxyFailureAttribution::None) {
+		return failure.attribution;
+	} else if (failure.closeOrigin == ProxyCloseOrigin::PeerClosed) {
+		return ProxyFailureAttribution::Peer;
+	} else if (failure.error == ProxyConnectionError::Network
+		|| failure.error == ProxyConnectionError::ConnectionRefused
+		|| failure.error == ProxyConnectionError::HostNotFound) {
+		return ProxyFailureAttribution::Network;
+	} else if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
+		return ProxyFailureAttribution::Client;
+	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
+		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
+		return ProxyFailureAttribution::Peer;
+	}
+	return (reason == MtProxy::FailureReason::None)
+		? ProxyFailureAttribution::None
+		: ProxyFailureAttribution::Unclear;
 }
 
 [[nodiscard]] ProxyEventReport ProxyCheckAttemptReport(
@@ -200,6 +217,22 @@ void SetProxyCheckProgress(
 	};
 }
 
+[[nodiscard]] bool ClaimProxyCheckTerminal(
+		not_null<RuntimeEnvironment*> runtime,
+		const std::shared_ptr<ProxyCheckConnection::Data> &state) {
+	return state->mtproxyAttempt.traceId
+		&& runtime->proxyEndpointContext().finishTrace(
+			state->mtproxyAttempt.traceId);
+}
+
+void ReportClaimedProxyCheckSummary(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyEventReport report) {
+	report.phase = ProxyDiagnosticsPhase::AttemptSummary;
+	report.traceSchema = 2;
+	ReportProxyEvent(runtime, std::move(report));
+}
+
 } // namespace
 
 [[nodiscard]] MtProxy::FailureReason ProxyCheckFailureReason(
@@ -266,19 +299,20 @@ void ProxyCheckConnection::reset() {
 	if (_data) {
 		_data->connectionTicket.cancel();
 		if (_data->runtime && _data->mtproxyAttempt.traceId) {
-			auto report = ProxyCheckAttemptReport(
-				_data,
-				_data->proxy,
-				_data->dcId,
-				_data->connection.get(),
-				ProxyConnectionError::None,
-				MtProxy::FailureReason::None,
-				ProxyDiagnosticsSeverity::Warning,
-				u"proxy_check_owner_destroyed"_q);
-			report.closeOrigin = ProxyCloseOrigin::OwnerDestroyed;
-			(void)ReportProxyAttemptSummary(
-				not_null{ _data->runtime },
-				std::move(report));
+			const auto runtime = not_null{ _data->runtime };
+			if (ClaimProxyCheckTerminal(runtime, _data)) {
+				auto report = ProxyCheckAttemptReport(
+					_data,
+					_data->proxy,
+					_data->dcId,
+					_data->connection.get(),
+					ProxyConnectionError::None,
+					MtProxy::FailureReason::None,
+					ProxyDiagnosticsSeverity::Warning,
+					u"proxy_check_owner_destroyed"_q);
+				report.closeOrigin = ProxyCloseOrigin::OwnerDestroyed;
+				ReportClaimedProxyCheckSummary(runtime, std::move(report));
+			}
 		}
 		_data->handshakeGate.release();
 		_data->mtproxyLease.release();
@@ -385,29 +419,41 @@ void StartProxyCheck(
 				? MtProxy::FromProxyMtproxyTerminalReason(
 					transportFailure.reason)
 				: ProxyCheckFailureReason(error);
-			runtime->proxyServices().control().reportMtproxyFailure({
-				.endpoint = state->mtproxyEndpoint,
-				.use = MtProxy::EndpointUse::ProxyCheck,
-				.runtimeId = state->mtproxyAttempt.runtimeId,
-				.reason = reason,
-				.lease = &state->mtproxyLease,
-				.proxyGeneration = state->mtproxyAttempt.proxyGeneration,
-				.attemptId = state->mtproxyAttempt.attemptId,
-				.proxyEpoch = state->mtproxyAttempt.proxyEpoch,
-				.successEpoch = state->mtproxyAttempt.successEpoch,
-				.attemptStartedAt = state->mtproxyAttemptStartedAt,
-			});
-			(void)ReportProxyAttemptSummary(
-				runtime,
-				ProxyCheckAttemptReport(
-					state,
-					proxy,
-					dcId,
-					raw,
-					error,
-					reason,
-					ProxyDiagnosticsSeverity::Error,
-					u"proxy_check_failed"_q));
+			if (ClaimProxyCheckTerminal(runtime, state)) {
+				runtime->proxyServices().control().reportMtproxyFailure({
+					.endpoint = state->mtproxyEndpoint,
+					.use = MtProxy::EndpointUse::ProxyCheck,
+					.runtimeId = state->mtproxyAttempt.runtimeId,
+					.reason = reason,
+					.configuredTlsProfile
+						= state->mtproxyPlan.configuredTlsProfile,
+					.sentProfile = transportFailure.sentTlsProfile.value_or(
+						state->mtproxyPlan.effectiveTlsProfile),
+					.lease = &state->mtproxyLease,
+					.proxyGeneration = state->mtproxyAttempt.proxyGeneration,
+					.attemptId = state->mtproxyAttempt.attemptId,
+					.proxyEpoch = state->mtproxyAttempt.proxyEpoch,
+					.successEpoch = state->mtproxyAttempt.successEpoch,
+					.attemptStartedAt = state->mtproxyAttemptStartedAt,
+					.routesExhausted = MtProxy::FailureIsRouteOnly(reason),
+					.ticketKey = state->mtproxyAttempt.ticketKey,
+					.attribution = ProxyCheckFailureAttribution(
+						reason,
+						transportFailure),
+					.terminalAt = crl::now(),
+				});
+				ReportClaimedProxyCheckSummary(
+					runtime,
+					ProxyCheckAttemptReport(
+						state,
+						proxy,
+						dcId,
+						raw,
+						error,
+						reason,
+						ProxyDiagnosticsSeverity::Error,
+						u"proxy_check_failed"_q));
+			}
 		}
 		ReportProxyEvent(runtime, {
 			.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
@@ -451,6 +497,10 @@ void StartProxyCheck(
 			if (state->connection.get() != raw || state->finished) {
 				return;
 			}
+			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)
+				&& !ClaimProxyCheckTerminal(runtime, state)) {
+				return;
+			}
 			SetProxyCheckProgress(
 				state,
 				ProxyCheckStatus::FirstMtprotoPayload);
@@ -472,8 +522,10 @@ void StartProxyCheck(
 					.successEpoch = state->mtproxyAttempt.successEpoch,
 					.attemptStartedAt = state->mtproxyAttemptStartedAt,
 					.scope = MtProxy::SuccessScope::Relay,
+					.ticketKey = state->mtproxyAttempt.ticketKey,
+					.payloadAt = crl::now(),
 				});
-				(void)ReportProxyAttemptSummary(
+				ReportClaimedProxyCheckSummary(
 					runtime,
 					ProxyCheckAttemptReport(
 						state,
@@ -557,18 +609,6 @@ void StartProxyCheck(
 						.mtproxyPlan = start.plan,
 						.mtproxyAttemptStartedAt = start.attemptStartedAt,
 					});
-				QTimer::singleShot(int(kProxyCheckUiTimeout), raw, [=] {
-					if (state->connection.get() != raw
-						|| state->finished
-						|| !state->networkStarted) {
-						return;
-					}
-					raw->timedOut();
-					finishWithFail(
-						state,
-						raw,
-						ProxyConnectionError::Timeout);
-				});
 				QTimer::singleShot(int(raw->fullConnectTimeout()), raw, [=] {
 					if (state->connection.get() != raw || state->finished) {
 						return;

@@ -7,12 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "base/timer.h"
 #include "base/object_ptr.h"
+#include "base/timer.h"
 #include "core/core_settings_proxy.h"
-#include "mtproto/transport/connection_abstract.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "mtproto/proxy/check.h"
 #include "mtproto/proxy/data.h"
+#include "mtproto/transport/connection_abstract.h"
+
+#include <optional>
 
 namespace Ui {
 class Show;
@@ -63,15 +66,6 @@ public:
 		Available,
 		Unavailable
 	};
-	// Live main-use relay health of an MTProto endpoint (from
-	// EndpointHealth), independent of the manual check machinery: a check
-	// probes on demand, health reflects what real sessions experienced.
-	enum class ItemHealth {
-		Unknown,
-		Working,
-		Recovering,
-		Cooldown,
-	};
 	struct ItemView {
 		int id = 0;
 		QString type;
@@ -84,9 +78,7 @@ public:
 		bool supportsCalls = false;
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
-		ItemHealth health = ItemHealth::Unknown;
-		QString healthText;
-
+		QString statusText;
 	};
 
 	void deleteItem(int id);
@@ -127,9 +119,7 @@ private:
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 		int ping = 0;
-		ItemHealth health = ItemHealth::Unknown;
-		QString healthText;
-
+		std::optional<MTP::details::MtProxy::ProxyEndpointView> endpointView;
 	};
 
 	std::vector<Item>::iterator findById(int id);
@@ -139,8 +129,11 @@ private:
 	void share(const ProxyData &proxy, bool qr = false);
 	void saveDelayed(bool notifyRotation = true);
 	void refreshChecker(Item &item);
-	bool refreshHealth(Item &item);
-	void refreshHealthViews();
+	void refreshSelectedMtproxyView();
+	void applyMtproxyEndpointView(
+		const MTP::details::MtProxy::ProxyEndpointView &view);
+	void refreshRetryCountdown();
+	void refreshRetryTimer();
 
 	void replaceItemWith(
 		std::vector<Item>::iterator which,
@@ -155,7 +148,7 @@ private:
 	std::vector<Item> _list;
 	rpl::event_stream<ItemView> _views;
 	base::Timer _saveTimer;
-	base::Timer _healthTimer;
+	base::Timer _retryTimer;
 	rpl::event_stream<ProxyData::Settings> _proxySettingsChanges;
 	std::shared_ptr<Ui::Show> _show;
 

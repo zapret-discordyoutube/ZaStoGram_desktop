@@ -21,10 +21,14 @@ namespace MTP::details {
 namespace {
 
 constexpr auto kEstablishedIdleCloseAge = crl::time(20 * 1000);
+constexpr auto kDefaultServerHelloTimeout = crl::time(2500);
 
 [[nodiscard]] MtProxyAttemptPlan NormalizeAttemptPlan(
 		MtProxyAttemptPlan plan,
 		const ProxyStealthOptions &fallback) {
+	if (plan.serverHelloTimeout <= 0) {
+		plan.serverHelloTimeout = kDefaultServerHelloTimeout;
+	}
 	if (plan.admitted) {
 		return plan;
 	}
@@ -92,6 +96,9 @@ TlsSocket::TlsSocket(
 	_clientHelloFragmentTimer = runtime->async().makeTimer(
 		thread,
 		[=] { writeClientHelloTail(); });
+	_serverHelloTimer = runtime->async().makeTimer(
+		thread,
+		[=] { handleServerHelloTimeout(); });
 
 	_transport->moveToThread(thread);
 	_transport->setProxy(ToNetworkProxy(proxy));
@@ -116,6 +123,10 @@ TlsSocket::TlsSocket(
 			handleError(e);
 		}),
 	});
+}
+
+TlsSocket::~TlsSocket() {
+	_serverHelloTimer.cancel();
 }
 
 bytes::const_span TlsSocket::domainFromSecret() const {
@@ -197,10 +208,10 @@ bool TlsSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void TlsSocket::timedOut() {
-	_syncTimeRequests.fire({});
-	if (_state == State::Error) {
+	if (_terminal) {
 		return;
 	}
+	_syncTimeRequests.fire({});
 	auto reason = failureReason();
 	if (reason == MtProxy::FailureReason::None
 		&& _phase == HandshakePhase::FirstDataReceived) {
@@ -208,33 +219,38 @@ void TlsSocket::timedOut() {
 			? MtProxy::FailureReason::MtpReceiveTimeoutAfterData
 			: MtProxy::FailureReason::ServerHelloOkNoMtprotoData;
 	}
-	_failureReason = reason;
-	_connectionError = ProxyConnectionError::Timeout;
-	_closeOrigin = ProxyCloseOrigin::LocalTimeout;
-	clearSyntheticPskOnFailure(reason);
-	_runtime->proxyServices().control().reportMtproxyFailure({
-		.endpoint = _endpointId,
-		.use = _endpointUse,
-		.runtimeId = _mtproxyAttempt.runtimeId,
-		.reason = reason,
-		.configuredTlsProfile = _configuredTlsProfile,
-		.sentProfile = _sentTlsProfile,
-		.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-		.attemptId = _mtproxyAttempt.attemptId,
-		.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-		.successEpoch = _mtproxyAttempt.successEpoch,
-		.attemptStartedAt = _mtproxyAttemptStartedAt,
-	});
-	const auto terminalPhase = (_mtproxyAttempt.traceId
-		&& !_runtime->proxyEndpointContext().traceActive(
-			_mtproxyAttempt.traceId))
-		? ProxyDiagnosticsPhase::Liveness
-		: ProxyDiagnosticsPhase::Failed;
-	reportTransportEvent(
-		terminalPhase,
-		ProxyDiagnosticsSeverity::Error,
-		u"mtproxy transport timed out"_q);
-	_state = State::Error;
+	finishTerminal(
+		reason,
+		ProxyConnectionError::Timeout,
+		ProxyCloseOrigin::LocalTimeout,
+		AbstractConnection::kErrorCodeOther,
+		u"mtproxy transport timed out"_q,
+		false);
+}
+
+void TlsSocket::armServerHelloDeadline() {
+	const auto now = crl::now();
+	_serverHelloDeadline = now + _mtproxyPlan.serverHelloTimeout;
+	_serverHelloTimer.callOnce(_mtproxyPlan.serverHelloTimeout);
+}
+
+void TlsSocket::handleServerHelloTimeout() {
+	if (_terminal || _phase != HandshakePhase::ClientHelloSent) {
+		_serverHelloTimer.cancel();
+		return;
+	}
+	const auto now = crl::now();
+	if (now < _serverHelloDeadline) {
+		_serverHelloTimer.callOnce(_serverHelloDeadline - now);
+		return;
+	}
+	finishTerminal(
+		MtProxy::FailureReason::ClientHelloSentNoServerHello,
+		ProxyConnectionError::Timeout,
+		ProxyCloseOrigin::LocalTimeout,
+		AbstractConnection::kErrorCodeOther,
+		u"mtproxy server hello timed out"_q,
+		true);
 }
 
 bool TlsSocket::isConnected() {
@@ -262,44 +278,72 @@ ProxyMtproxyTerminalReason TlsSocket::mtproxyTerminalReason() const {
 }
 
 crl::time TlsSocket::mtproxyTerminalUntil() const {
-	return _runtime->proxyServices().control().mtproxyEndpointSnapshot(
-		_endpointId).terminalUntil;
+	return _runtime->proxyServices().control().mtproxyEndpointRetryUntil(
+		_endpointId,
+		{
+			.runtimeId = _mtproxyAttempt.runtimeId,
+			.proxyGeneration = _mtproxyAttempt.proxyGeneration,
+		});
 }
 
 void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {
-	_failureReason = reason;
-	_closeOrigin = ProxyCloseOrigin::ProtocolRejected;
-	handleError(errorCode);
+	if (_terminal) {
+		return;
+	}
+	const auto connectionError = SocketProxyConnectionError(errorCode);
+	finishTerminal(
+		reason,
+		connectionError,
+		ProxyCloseOrigin::ProtocolRejected,
+		errorCode,
+		u"mtproxy transport failed"_q,
+		true);
 }
 
 void TlsSocket::handleError(int errorCode) {
-	if (_phase == HandshakePhase::None) {
-		_connectionError = SocketProxyConnectionError(errorCode);
+	if (_terminal) {
+		return;
 	}
-	if (_closeOrigin == ProxyCloseOrigin::None) {
-		_closeOrigin = (errorCode == QAbstractSocket::RemoteHostClosedError
+	const auto connectionError = SocketProxyConnectionError(errorCode);
+	const auto origin = (errorCode == QAbstractSocket::RemoteHostClosedError
 			|| errorCode == QAbstractSocket::ProxyConnectionClosedError)
 			? ProxyCloseOrigin::PeerClosed
 			: ProxyCloseOrigin::NetworkError;
-	}
 	auto reason = failureReason();
 	if (reason == MtProxy::FailureReason::None && _firstAppDataReceived) {
 		reason = _mtprotoPayloadReceived
 			? MtProxy::FailureReason::AppDataRemoteClosed
 			: MtProxy::FailureReason::ServerHelloOkNoMtprotoData;
 	}
+	finishTerminal(
+		reason,
+		connectionError,
+		origin,
+		errorCode,
+		u"mtproxy transport failed"_q,
+		true);
+}
+
+bool TlsSocket::finishTerminal(
+		MtProxy::FailureReason reason,
+		ProxyConnectionError error,
+		ProxyCloseOrigin origin,
+		int errorCode,
+		const QString &message,
+		bool emitError) {
+	if (_terminal) {
+		return false;
+	}
+	_serverHelloTimer.cancel();
+	_serverHelloDeadline = 0;
 	_failureReason = reason;
-	// Proxies routinely close idle established connections (observed
-	// about once a minute per idle media session). A remote close of a
-	// connection that lived past the handshake for a while is server-side
-	// housekeeping, not a health signal - reporting each one degraded the
-	// canonical endpoint every minute and marked healthy routes unhealthy
-	// all session long. A close shortly after the handshake is different:
-	// that looks like a relay kill and must still count.
+	_connectionError = error;
+	_closeOrigin = origin;
+	_terminalAt = crl::now();
 	const auto benignIdleClose = (reason
 			== MtProxy::FailureReason::AppDataRemoteClosed)
 		&& _firstAppDataAt
-		&& (crl::now() - _firstAppDataAt >= kEstablishedIdleCloseAge);
+		&& (_terminalAt - _firstAppDataAt >= kEstablishedIdleCloseAge);
 	if (!benignIdleClose) {
 		clearSyntheticPskOnFailure(reason);
 	}
@@ -308,20 +352,9 @@ void TlsSocket::handleError(int errorCode) {
 			|| reason == MtProxy::FailureReason::ServerHelloOkNoAppData
 			|| reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
 		_syncTimeRequests.fire({});
-		_runtime->proxyServices().control().reportMtproxyFailure({
-			.endpoint = _endpointId,
-			.use = _endpointUse,
-			.runtimeId = _mtproxyAttempt.runtimeId,
-			.reason = reason,
-			.configuredTlsProfile = _configuredTlsProfile,
-			.sentProfile = _sentTlsProfile,
-			.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-			.attemptId = _mtproxyAttempt.attemptId,
-			.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-			.successEpoch = _mtproxyAttempt.successEpoch,
-			.attemptStartedAt = _mtproxyAttemptStartedAt,
-		});
 	}
+	_terminalFailure = collectTransportFailure();
+	_terminal = true;
 	if (errorCode != AbstractConnection::kErrorCodeOther) {
 		logError(errorCode, _transport->errorString());
 	}
@@ -333,9 +366,12 @@ void TlsSocket::handleError(int errorCode) {
 	reportTransportEvent(
 		terminalPhase,
 		ProxyDiagnosticsSeverity::Error,
-		u"mtproxy transport failed"_q);
+		message);
 	_state = State::Error;
-	_error.fire_copy(errorCode);
+	if (emitError) {
+		_error.fire_copy(errorCode);
+	}
+	return true;
 }
 
 } // namespace MTP::details

@@ -53,6 +53,9 @@ private:
 		ConnectionPointer child;
 		int ipIndex = -1;
 		uint64 routeAttemptId = 0;
+		HandshakePhase phase{};
+		crl::time phaseEnteredAt = 0;
+		crl::time wrapperDeadline = 0;
 	};
 
 	void startResolving();
@@ -60,7 +63,7 @@ private:
 	void startNextRouteAttempt();
 	void scheduleRouteRace();
 	void refreshAttemptTimeout();
-	[[nodiscard]] crl::time serverHelloWaitBudget() const;
+	[[nodiscard]] crl::time routePhaseBudget(HandshakePhase phase) const;
 	void handleRouteAttemptTimeout();
 	[[nodiscard]] int activeRouteAttempts() const;
 	[[nodiscard]] std::vector<int> routeOrder() const;
@@ -96,9 +99,11 @@ private:
 	uint64 _lastRouteAttemptId = 0;
 	crl::time _mtproxyAttemptStartedAt = 0;
 	crl::time _resolvingStartedAt = 0;
+	crl::time _resolvingDeadline = 0;
 	std::optional<crl::time> _dnsDuration;
 	base::Timer _timeoutTimer;
 	base::Timer _routeRaceTimer;
+	bool _terminal = false;
 
 };
 

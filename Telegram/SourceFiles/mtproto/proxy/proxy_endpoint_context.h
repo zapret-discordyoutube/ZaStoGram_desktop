@@ -8,13 +8,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
-#include "mtproto/runtime/connection_status_types.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include <memory>
 #include <vector>
 
 namespace MTP::details::MtProxy {
 struct EndpointContextStorage;
+
+struct EndpointViewInvalidation final {
+	EndpointId endpoint;
+	RuntimeGenerationKey runtimeGeneration;
+};
 } // namespace MTP::details::MtProxy
 
 namespace MTP::details {
@@ -23,7 +28,8 @@ class EndpointAdmissionArbiter;
 
 namespace MTP {
 
-class ProxyEndpointContext final {
+class ProxyEndpointContext final
+	: public std::enable_shared_from_this<ProxyEndpointContext> {
 public:
 	ProxyEndpointContext();
 	ProxyEndpointContext(const ProxyEndpointContext &other) = delete;
@@ -48,6 +54,23 @@ public:
 		uint64 attemptId);
 
 	void notifyEndpointAdmissible(const QString &key);
+	void notifyEndpointViewChanged(
+		const details::MtProxy::EndpointId &endpoint);
+	void notifyEndpointViewChanged(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration);
+	void notifyEndpointViewsChanged(ProxyRuntimeId runtimeId);
+	[[nodiscard]] details::MtProxy::ProxyEndpointView endpointView(
+		const details::MtProxy::EndpointId &endpoint,
+		ProxyRuntimeId runtimeId) const;
+	[[nodiscard]] details::MtProxy::ProxyEndpointView endpointView(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) const;
+	[[nodiscard]] crl::time endpointRetryUntil(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) const;
+	[[nodiscard]] auto endpointViewChanges() const
+		-> rpl::producer<details::MtProxy::EndpointViewInvalidation>;
 	[[nodiscard]] details::EndpointAdmissionArbiter &endpointAdmissionArbiter();
 
 	[[nodiscard]] auto storage()

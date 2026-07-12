@@ -20,9 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 #include "mtproto/runtime/runtime_environment.h"
 
-#include <crl/crl_on_main.h>
 #include <QtCore/QMutex>
-#include <rpl/event_stream.h>
 
 #include <map>
 #include <optional>
@@ -423,7 +421,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
 	const auto fastWarmup = FastWarmupEnabled(_runtime);
-	auto event = std::optional<EndpointEvent>();
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
@@ -502,8 +499,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					}
 					const auto applyGlobalPenalty = !state.relayProven
 						&& !softNoAppData;
-					auto needsCooldown = false;
-					auto noAppDataWarning = false;
 					if (applyGlobalPenalty) {
 						state.lastFailure = report.reason;
 						state.lastDiagnostic = diagnostic;
@@ -522,13 +517,10 @@ void EndpointHealth::reportFailure(FailureReport report) {
 								&& state.consecutiveFailures >= 1) {
 								++state.recipeLevel;
 							}
-							needsCooldown = FailureNeedsCooldown(
+							const auto needsCooldown = FailureNeedsCooldown(
 								report.reason) || report.routesExhausted;
 							if (needsCooldown) {
 								++state.consecutiveFailures;
-								noAppDataWarning = NoAppDataWarningStrike(
-									report.reason,
-									state.consecutiveFailures);
 								state.healthy = false;
 								state.halfOpen = true;
 								auto cooldown = CooldownFor(
@@ -559,6 +551,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 							: EndpointVerdictCause::Transport,
 						.reason = report.reason,
 						.attribution = report.attribution,
+						.confidence = (report.attribution
+								== ProxyFailureAttribution::Network)
+							? CurrentMainNetworkEvidenceCount(
+								state,
+								runtimeGeneration,
+								now)
+							: 0,
 						.observedAt = report.terminalAt
 							? report.terminalAt
 							: now,
@@ -572,13 +571,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 							runtimeGeneration,
 							std::move(verdict))) {
 						shouldDrain = true;
-						event = EndpointEvent{
-							.endpoint = state.endpoint,
-							.reason = report.reason,
-							.terminalUntil = retryUntil,
-							.rotationAllowed = needsCooldown
-								&& !noAppDataWarning,
-						};
 						diagnosticsEvent = CanonicalDiagnosticsEvent(
 							ProxyDiagnosticsPhase::CanonicalDegraded,
 							state,
@@ -620,9 +612,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
-	}
-	if (event) {
-		fireEndpointEventOnMain(std::move(*event));
 	}
 	if (shouldDrain) {
 		_context->notifyEndpointAdmissible(key);
@@ -772,18 +761,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (shouldDrain) {
 		_context->notifyEndpointAdmissible(key);
 	}
-}
-
-auto EndpointHealth::changes() const
--> rpl::producer<EndpointEvent> {
-	return _context->storage().events.events();
-}
-
-void EndpointHealth::fireEndpointEventOnMain(EndpointEvent event) {
-	const auto context = _context;
-	crl::on_main([context, event = std::move(event)]() mutable {
-		context->storage().events.fire(std::move(event));
-	});
 }
 
 } // namespace MTP::details::MtProxy

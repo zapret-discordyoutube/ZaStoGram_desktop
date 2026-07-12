@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
+#include "mtproto/runtime/connection_status_types.h"
 
 #include <QtCore/QByteArray>
 #include <QtCore/QString>
@@ -26,41 +27,48 @@ namespace MTP::details::MtProxy {
 // is unit-testable without a live socket, and it is the ONLY place this
 // classification lives.
 
-// Where the failure most likely originates. This is the field worth reading
-// first when "works on Android, not here" comes up.
-enum class BlockAttribution {
-	None,    // not the no-ServerHello case; nothing to say
-	Client,  // our side - a different client would likely succeed
-	Network, // something on the path acted; a client change will not help
-	Unclear, // indistinguishable from the client alone (pure silence)
-};
-
 struct HandshakeBlockEvidence {
 	bool isNoServerHelloStall = false; // caller already matched the reason
 	int clientHelloBytes = 0;          // total we intended to send
 	qint64 clientHelloAcceptedBytes = 0; // accepted by the local socket
 	qint64 rxAfterClientHello = 0;     // bytes seen after ClientHello
 	QByteArray responsePrefix;         // first bytes of whatever came back
-	bool peerClosed = false;           // peer sent FIN/RST (not our timeout)
+	ProxyCloseOrigin closeOrigin = ProxyCloseOrigin::None;
+	ProxyConnectionError error = ProxyConnectionError::None;
 };
 
 struct HandshakeBlockReport {
 	QString verdict;                 // machine-readable slug
-	BlockAttribution attribution = BlockAttribution::None;
+	ProxyFailureAttribution attribution = ProxyFailureAttribution::None;
 
 	[[nodiscard]] bool empty() const {
 		return verdict.isEmpty();
 	}
 };
 
-[[nodiscard]] inline QString BlockAttributionSlug(BlockAttribution value) {
+[[nodiscard]] inline QString BlockAttributionSlug(
+		ProxyFailureAttribution value) {
 	switch (value) {
-	case BlockAttribution::Client: return u"client"_q;
-	case BlockAttribution::Network: return u"network"_q;
-	case BlockAttribution::Unclear: return u"unclear"_q;
-	case BlockAttribution::None: break;
+	case ProxyFailureAttribution::Local: return u"local"_q;
+	case ProxyFailureAttribution::Client: return u"client"_q;
+	case ProxyFailureAttribution::Peer: return u"peer"_q;
+	case ProxyFailureAttribution::Network: return u"network"_q;
+	case ProxyFailureAttribution::Unclear: return u"unclear"_q;
+	case ProxyFailureAttribution::None: break;
 	}
 	return QString();
+}
+
+[[nodiscard]] inline QString DiagnosticBlockAttributionSlug(
+		const HandshakeBlockReport &report) {
+	if (report.verdict == u"local_write_incomplete"_q
+		|| report.verdict == u"server_tls_alert"_q) {
+		return u"client"_q;
+	} else if (report.verdict == u"peer_reset_after_hello"_q
+		|| report.verdict == u"unexpected_reply"_q) {
+		return u"network"_q;
+	}
+	return BlockAttributionSlug(report.attribution);
 }
 
 [[nodiscard]] inline HandshakeBlockReport AnalyzeHandshakeBlock(
@@ -73,20 +81,32 @@ struct HandshakeBlockReport {
 		// The local socket never accepted the whole ClientHello, so nothing
 		// downstream could have answered - this is us (or local congestion),
 		// not the network dropping a packet that left the machine.
-		return { u"local_write_incomplete"_q, BlockAttribution::Client };
+		return {
+			u"local_write_incomplete"_q,
+			ProxyFailureAttribution::Local,
+		};
 	}
 	if (!e.rxAfterClientHello) {
-		return e.peerClosed
-			// Zero bytes then a remote close/reset right after our
-			// ClientHello is the classic on-path RST-injection signature.
-			? HandshakeBlockReport{
+		if (e.closeOrigin == ProxyCloseOrigin::PeerClosed) {
+			return {
 				u"peer_reset_after_hello"_q,
-				BlockAttribution::Network }
-			// Pure silence: a dropped packet and an overloaded proxy are
-			// indistinguishable from here. Do NOT call this DPI.
-			: HandshakeBlockReport{
-				u"silent_no_reply"_q,
-				BlockAttribution::Unclear };
+				ProxyFailureAttribution::Peer,
+			};
+		} else if (e.closeOrigin == ProxyCloseOrigin::NetworkError) {
+			const auto network = (e.error == ProxyConnectionError::Network)
+				|| (e.error == ProxyConnectionError::ConnectionRefused)
+				|| (e.error == ProxyConnectionError::HostNotFound);
+			return {
+				u"peer_reset_after_hello"_q,
+				network
+					? ProxyFailureAttribution::Network
+					: ProxyFailureAttribution::Unclear,
+			};
+		}
+		return {
+			u"silent_no_reply"_q,
+			ProxyFailureAttribution::Unclear,
+		};
 	}
 	const auto cls = FakeTlsResponseClass(
 		e.responsePrefix,
@@ -95,19 +115,31 @@ struct HandshakeBlockReport {
 		// The server read our ClientHello and answered with a TLS alert - it
 		// reached a real TLS endpoint that rejected our specific handshake.
 		// The strongest "it is our fingerprint, not DPI" signal there is.
-		return { u"server_tls_alert"_q, BlockAttribution::Client };
+		return {
+			u"server_tls_alert"_q,
+			ProxyFailureAttribution::Client,
+		};
 	}
 	if (cls == u"http_like"_q || cls == u"non_tls"_q) {
 		// Something that is not the FakeTLS proxy answered (captive portal,
 		// injector, wrong host) - not a handshake our client could fix.
-		return { u"unexpected_reply"_q, BlockAttribution::Network };
+		return {
+			u"unexpected_reply"_q,
+			ProxyFailureAttribution::Peer,
+		};
 	}
 	if (cls == u"partial_tls_header"_q || cls == u"partial_tls_record"_q) {
 		// A ServerHello started arriving but never completed in the budget:
 		// a slow/half relay or an over-strict parser on our side.
-		return { u"truncated_server_hello"_q, BlockAttribution::Unclear };
+		return {
+			u"truncated_server_hello"_q,
+			ProxyFailureAttribution::Unclear,
+		};
 	}
-	return { u"unexpected_reply"_q, BlockAttribution::Network };
+	return {
+		u"unexpected_reply"_q,
+		ProxyFailureAttribution::Peer,
+	};
 }
 
 // One compact, self-justifying log token: the verdict carries the exact
@@ -123,7 +155,7 @@ struct HandshakeBlockReport {
 	if (report.empty()) {
 		return QString();
 	}
-	auto token = report.verdict + ':' + BlockAttributionSlug(report.attribution);
+	auto token = report.verdict + ':' + DiagnosticBlockAttributionSlug(report);
 	// ch=<accepted>/<intended>: unequal means we never flushed it locally.
 	if (e.clientHelloBytes > 0) {
 		token += u";ch=%1/%2"_q
@@ -138,7 +170,10 @@ struct HandshakeBlockReport {
 	}
 	// How the attempt ended: an active peer close/reset vs our own timeout
 	// on silence - the line between an on-path reset and a dropped packet.
-	token += e.peerClosed ? u";end=peer"_q : u";end=timeout"_q;
+	token += (e.closeOrigin == ProxyCloseOrigin::PeerClosed
+		|| e.closeOrigin == ProxyCloseOrigin::NetworkError)
+		? u";end=peer"_q
+		: u";end=timeout"_q;
 	return token;
 }
 

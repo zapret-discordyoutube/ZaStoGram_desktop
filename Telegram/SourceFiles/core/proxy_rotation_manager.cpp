@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/session_state.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace Core {
 namespace {
@@ -46,7 +47,8 @@ constexpr auto kAfterSwitchGracePeriod = 15 * crl::time(1000);
 
 ProxyRotationManager::ProxyRotationManager()
 : _checkTimer([=] { runChecks(); })
-, _switchTimer([=] { switchTimerDone(); }) {
+, _switchTimer([=] { switchTimerDone(); })
+, _graceTimer([=] { graceTimerDone(); }) {
 	App().domain().accountsChanges(
 	) | rpl::on_next([=] {
 		stopChecking();
@@ -117,89 +119,284 @@ auto ProxyRotationManager::ensure(
 	return _entries.back();
 }
 
+auto ProxyRotationManager::selectedMtproxyView() const
+-> std::optional<MTP::details::MtProxy::ProxyEndpointView> {
+	const auto &settings = App().settings().proxy();
+	const auto selected = settings.selected();
+	if (selected.type != MTP::ProxyData::Type::Mtproto
+		|| productionAccounts().empty()) {
+		return std::nullopt;
+	}
+	const auto endpoint = MTP::details::MtProxy::EndpointIdFromProxy(
+		selected,
+		App().settings().proxyStealthOptions());
+	if (MTP::details::MtProxy::EndpointEmpty(endpoint)) {
+		return std::nullopt;
+	}
+	return accountForChecks()->mtp().runtimeEnvironment()
+		.proxyServices().control().mtproxyEndpointView(endpoint);
+}
+
+bool ProxyRotationManager::selectedProxyNeedsRecovery() const {
+	const auto accounts = productionAccounts();
+	if (accounts.empty()) {
+		return false;
+	}
+	const auto selected = App().settings().proxy().selected();
+	if (selected.type == MTP::ProxyData::Type::Mtproto) {
+		const auto view = selectedMtproxyView();
+		return view && (recoveryObservedAt(*view) != 0);
+	}
+	return !ranges::contains(
+		accounts,
+		MTP::ConnectedState,
+		[](not_null<Main::Account*> account) {
+			return account->mtp().dcstate();
+		});
+}
+
+bool ProxyRotationManager::canonicalRecoveryEvidence(
+		const MTP::details::MtProxy::ProxyEndpointView &view) const {
+	if (!view.canonicalVerdict
+		|| view.mainProof.strength
+			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
+		return false;
+	}
+	const auto &verdict = *view.canonicalVerdict;
+	const auto &attempt = verdict.sourceAttempt;
+	return verdict.runtimeGeneration == view.runtimeGeneration
+		&& attempt.runtimeId == view.runtimeGeneration.runtimeId
+		&& attempt.proxyGeneration
+			== view.runtimeGeneration.proxyGeneration
+		&& attempt.use == MTP::ProxyConnectionUse::Main;
+}
+
+crl::time ProxyRotationManager::recoveryObservedAt(
+		const MTP::details::MtProxy::ProxyEndpointView &view) const {
+	if (!view.runtimeGeneration.runtimeId
+		|| !view.runtimeGeneration.proxyGeneration
+		|| view.mainProof.strength
+			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
+		return 0;
+	}
+	auto result = crl::time();
+	auto recovery = false;
+	if (canonicalRecoveryEvidence(view)) {
+		const auto &verdict = *view.canonicalVerdict;
+		recovery = true;
+		result = std::max(result, verdict.observedAt);
+	}
+	const auto &attempt = view.mainAttempt;
+	if (view.admissionPhase != MTP::ProxyAdmissionPhase::Idle
+		&& attempt.runtimeId == view.runtimeGeneration.runtimeId
+		&& attempt.proxyGeneration
+			== view.runtimeGeneration.proxyGeneration
+		&& attempt.use == MTP::ProxyConnectionUse::Main) {
+		recovery = true;
+		result = std::max({
+			result,
+			view.enqueuedAt,
+			view.attemptStartedAt,
+			view.phaseStartedAt,
+		});
+	}
+	return recovery ? (result ? result : crl::now()) : 0;
+}
+
+bool ProxyRotationManager::afterSwitchGraceActive() const {
+	return _lastSwitchAt
+		&& (crl::now() - _lastSwitchAt < kAfterSwitchGracePeriod);
+}
+
 void ProxyRotationManager::reevaluate() {
 	if (!shouldObserve()) {
-		clearEndpointHealthSubscription();
+		clearEndpointViewSubscription();
 		stopChecking();
 		return;
 	}
 	const auto accounts = productionAccounts();
 	if (accounts.empty()) {
-		clearEndpointHealthSubscription();
+		clearEndpointViewSubscription();
 		stopChecking();
 		return;
 	}
-	subscribeEndpointHealth();
-	const auto stateProj = [](not_null<Main::Account*> account) {
-		return account->mtp().dcstate();
-	};
+	subscribeEndpointViews();
+	const auto view = selectedMtproxyView();
+	if (_pendingGraceEvaluation
+		&& (!view
+			|| MTP::details::MtProxy::EndpointKey(view->endpoint)
+				!= MTP::details::MtProxy::EndpointKey(
+					_pendingGraceEvaluation->endpoint)
+			|| view->runtimeGeneration
+				!= _pendingGraceEvaluation->runtimeGeneration)) {
+		_pendingGraceEvaluation.reset();
+		_graceTimer.cancel();
+	}
+	if (view) {
+		recordGraceMainSuccess(*view);
+	}
+	if (view && afterSwitchGraceActive()) {
+		if (const auto observedAt = recoveryObservedAt(*view)) {
+			scheduleGraceEvaluation(*view, observedAt);
+		}
+	}
 	if (!hasActiveHealthRotationRequest()
-		&& ranges::contains(accounts, MTP::ConnectedState, stateProj)) {
+		&& !selectedProxyNeedsRecovery()) {
 		stopChecking();
 		return;
 	}
 	startChecking();
 }
 
-void ProxyRotationManager::subscribeEndpointHealth() {
+void ProxyRotationManager::subscribeEndpointViews() {
 	auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
-	if (_endpointHealthRuntime == &runtime) {
+	if (_endpointViewRuntime == &runtime) {
 		return;
 	}
-	_endpointHealthRuntime = &runtime;
-	_endpointHealthLifetime.destroy();
-	accountForChecks()->mtp().runtimeEnvironment().proxyServices().control().mtproxyEndpointChanges(
-	) | rpl::on_next([=](MTP::details::MtProxy::EndpointEvent event) {
-		handleEndpointHealthChanged(std::move(event));
-	}, _endpointHealthLifetime);
+	clearEndpointViewSubscription();
+	_endpointViewRuntime = &runtime;
+	runtime.proxyServices().control().mtproxyEndpointViewChanges(
+	) | rpl::on_next(
+		[=](MTP::details::MtProxy::ProxyEndpointView view) {
+			handleEndpointViewChanged(std::move(view));
+		},
+		_endpointViewLifetime);
+	if (const auto view = selectedMtproxyView()) {
+		if (const auto observedAt = recoveryObservedAt(*view)) {
+			if (afterSwitchGraceActive()) {
+				scheduleGraceEvaluation(*view, observedAt);
+			} else if (canonicalRecoveryEvidence(*view)) {
+				requestSelectedProxyRecovery(*view);
+			}
+		}
+	}
 }
 
-void ProxyRotationManager::clearEndpointHealthSubscription() {
-	_endpointHealthRuntime = nullptr;
-	_endpointHealthLifetime.destroy();
+void ProxyRotationManager::clearEndpointViewSubscription() {
+	_endpointViewRuntime = nullptr;
+	_endpointViewLifetime.destroy();
+	_pendingGraceEvaluation.reset();
+	_graceTimer.cancel();
 }
 
-void ProxyRotationManager::handleEndpointHealthChanged(
-		MTP::details::MtProxy::EndpointEvent event) {
-	if (!event.rotationAllowed || event.terminalUntil <= crl::now()) {
+void ProxyRotationManager::handleEndpointViewChanged(
+		MTP::details::MtProxy::ProxyEndpointView view) {
+	if (!_endpointViewRuntime
+		|| view.runtimeGeneration.runtimeId
+			!= _endpointViewRuntime->proxyRuntimeId()
+		|| !isSelectedProxyEndpoint(view.endpoint)) {
 		return;
 	}
-	if (_lastSwitchAt
-		&& (crl::now() - _lastSwitchAt < kAfterSwitchGracePeriod)) {
-		// Right after a switch every session of every account reconnects
-		// through the new proxy at once; the transient admission pressure
-		// of that warm-up degrades endpoints for a moment and must not
-		// immediately re-open the rotation window for the next hop.
+	recordGraceMainSuccess(view);
+	const auto observedAt = recoveryObservedAt(view);
+	if (observedAt) {
+		if (afterSwitchGraceActive()) {
+			scheduleGraceEvaluation(view, observedAt);
+		} else if (canonicalRecoveryEvidence(view)) {
+			requestSelectedProxyRecovery(view);
+		}
+	}
+	const auto wasChecking = _checking;
+	reevaluate();
+	if (!observedAt
+		|| !canonicalRecoveryEvidence(view)
+		|| afterSwitchGraceActive()
+		|| !wasChecking
+		|| !_checking
+		|| _waitingToSwitch) {
 		return;
 	}
-	// Admission starvation fires for every endpoint going through the
-	// broker, including candidates we are probing ourselves - only the
-	// selected proxy may request rotation, otherwise a starving candidate
-	// would keep extending the health window and pin checking forever.
-	if (!isSelectedProxyEndpoint(event.endpoint)) {
-		return;
+	if (shouldSwitchToAvailable()) {
+		(void)switchToAvailable();
 	}
-	// Hold the observation window open long enough to probe a candidate
-	// and switch, decoupled from the (possibly very short) per-failure
-	// cooldown: a flapping proxy must not reset rotation on every brief
-	// recovery before a stable alternative has been found.
+}
+
+void ProxyRotationManager::requestSelectedProxyRecovery(
+		const MTP::details::MtProxy::ProxyEndpointView &view) {
 	accumulate_max(
 		_healthRotationRequestedUntil,
 		std::max(
-			event.terminalUntil,
+			view.retryUntil,
 			crl::now() + kSelectedDegradedObserveWindow));
-	const auto wasChecking = _checking;
-	reevaluate();
-	if (!wasChecking || !_checking || _waitingToSwitch) {
+}
+
+void ProxyRotationManager::scheduleGraceEvaluation(
+		const MTP::details::MtProxy::ProxyEndpointView &view,
+		crl::time observedAt) {
+	if (!afterSwitchGraceActive() || !observedAt) {
 		return;
 	}
-	// Checks were already running, so startChecking() won't re-arm the
-	// switch timer. The selected proxy has been starving for a while now,
-	// switch right away if some candidate already passed its probe. With
-	// no verified candidate (e.g. a total network outage) this changes
-	// nothing - the switch timer and checkDone() keep their normal flow.
-	if (shouldSwitchToAvailable()) {
-		(void)switchToAvailable();
+	const auto same = _pendingGraceEvaluation
+		&& MTP::details::MtProxy::EndpointKey(
+			_pendingGraceEvaluation->endpoint)
+			== MTP::details::MtProxy::EndpointKey(view.endpoint)
+		&& _pendingGraceEvaluation->runtimeGeneration
+			== view.runtimeGeneration;
+	if (same) {
+		_pendingGraceEvaluation->endpoint = view.endpoint;
+		accumulate_max(
+			_pendingGraceEvaluation->observedAt,
+			observedAt);
+	} else {
+		_pendingGraceEvaluation = PendingGraceEvaluation{
+			.endpoint = view.endpoint,
+			.runtimeGeneration = view.runtimeGeneration,
+			.observedAt = observedAt,
+		};
+	}
+	_graceTimer.cancel();
+	_graceTimer.callOnce(std::max(
+		crl::time(),
+		_lastSwitchAt + kAfterSwitchGracePeriod - crl::now()));
+}
+
+void ProxyRotationManager::recordGraceMainSuccess(
+		const MTP::details::MtProxy::ProxyEndpointView &view) {
+	if (!_pendingGraceEvaluation
+		|| MTP::details::MtProxy::EndpointKey(
+			_pendingGraceEvaluation->endpoint)
+			!= MTP::details::MtProxy::EndpointKey(view.endpoint)
+		|| _pendingGraceEvaluation->runtimeGeneration
+			!= view.runtimeGeneration
+		|| view.mainProof.strength
+			== MTP::details::MtProxy::MainRelayProofStrength::None) {
+		return;
+	}
+	accumulate_max(
+		_pendingGraceEvaluation->mainSuccessAt,
+		std::max({
+			view.mainProof.provenAt,
+			view.mainProof.lastPayloadAt,
+			crl::now(),
+		}));
+}
+
+void ProxyRotationManager::graceTimerDone() {
+	if (afterSwitchGraceActive()) {
+		_graceTimer.callOnce(
+			_lastSwitchAt + kAfterSwitchGracePeriod - crl::now());
+		return;
+	}
+	const auto pending = std::exchange(
+		_pendingGraceEvaluation,
+		std::nullopt);
+	if (pending) {
+		const auto view = selectedMtproxyView();
+		if (!view
+			|| MTP::details::MtProxy::EndpointKey(view->endpoint)
+				!= MTP::details::MtProxy::EndpointKey(pending->endpoint)
+			|| view->runtimeGeneration != pending->runtimeGeneration
+			|| pending->mainSuccessAt > pending->observedAt
+			|| view->mainProof.strength
+				!= MTP::details::MtProxy::MainRelayProofStrength::None) {
+			reevaluate();
+			return;
+		}
+		requestSelectedProxyRecovery(*view);
+	}
+	reevaluate();
+	if (_checking && shouldSwitchToAvailable()) {
+		_waitingToSwitch = !switchToAvailable();
 	}
 }
 
@@ -296,12 +493,7 @@ void ProxyRotationManager::runChecks() {
 	const auto accounts = productionAccounts();
 	if (accounts.empty()
 		|| (!hasActiveHealthRotationRequest()
-			&& ranges::contains(
-			accounts,
-			MTP::ConnectedState,
-			[](not_null<Main::Account*> account) {
-				return account->mtp().dcstate();
-			}))) {
+			&& !selectedProxyNeedsRecovery())) {
 		stopChecking();
 		return;
 	}
@@ -404,7 +596,7 @@ void ProxyRotationManager::checkDone(
 	// "check passes -> switch to it -> main-use dies -> switch again"
 	// ping-pong. It stays available as a last resort, just not preferred.
 	if (const auto index = proxySettings->indexInList(proxy); index >= 0) {
-		if (proxyRelayHealthy(proxy)
+		if (proxyCandidatePreferred(proxy)
 			&& proxySettings->promoteProxyRotationPreferredIndex(index)) {
 			App().saveSettingsDelayed();
 		}
@@ -436,8 +628,17 @@ bool ProxyRotationManager::switchToAvailable() {
 	if (!_checking) {
 		return false;
 	}
-	if (_lastSwitchAt
-		&& (crl::now() - _lastSwitchAt < kAfterSwitchGracePeriod)) {
+	if (afterSwitchGraceActive()) {
+		if (const auto view = selectedMtproxyView()) {
+			if (const auto observedAt = recoveryObservedAt(*view)) {
+				scheduleGraceEvaluation(*view, observedAt);
+			}
+		}
+		if (!_graceTimer.isActive()) {
+			_graceTimer.callOnce(std::max(
+				crl::time(),
+				_lastSwitchAt + kAfterSwitchGracePeriod - crl::now()));
+		}
 		return false;
 	}
 	const auto &settings = App().settings().proxy();
@@ -465,7 +666,7 @@ bool ProxyRotationManager::switchToAvailable() {
 		if (fallback < 0) {
 			fallback = index;
 		}
-		if (proxyRelayHealthy(settings.list()[index])) {
+		if (proxyCandidatePreferred(settings.list()[index])) {
 			chosen = index;
 			break;
 		}
@@ -481,6 +682,8 @@ bool ProxyRotationManager::switchToAvailable() {
 	_lastSwitchAt = crl::now();
 	_switchStartedAt = _lastSwitchAt;
 	_healthRotationRequestedUntil = 0;
+	_pendingGraceEvaluation.reset();
+	_graceTimer.cancel();
 	auto &runtime = accountForChecks()->mtp().runtimeEnvironment();
 	MTP::WriteProxyDiagnosticsLine(not_null{ &runtime }, {
 		.source = MTP::ProxyDiagnosticsSource::MTProxy,
@@ -498,7 +701,7 @@ bool ProxyRotationManager::switchToAvailable() {
 	return true;
 }
 
-bool ProxyRotationManager::proxyRelayHealthy(
+bool ProxyRotationManager::proxyCandidatePreferred(
 		const MTP::ProxyData &proxy) const {
 	if (proxy.type != MTP::ProxyData::Type::Mtproto) {
 		return true;
@@ -516,15 +719,9 @@ bool ProxyRotationManager::proxyRelayHealthy(
 	const auto endpoint = MTP::details::MtProxy::EndpointIdFromProxy(
 		proxy,
 		App().settings().proxyStealthOptions());
-	const auto snapshot = accountForChecks()->mtp().runtimeEnvironment()
-		.proxyServices().control().mtproxyEndpointSnapshot(endpoint);
-	// Block only an endpoint that is ACTIVELY in cooldown right now. This is
-	// self-healing: once the cooldown expires the proxy is eligible again,
-	// so a genuinely recovered proxy is not deprioritized forever (halfOpen
-	// persists until a fresh main-use success, so it is deliberately not
-	// used here). A never-used proxy has terminalUntil==0 and stays
-	// selectable.
-	return snapshot.terminalUntil <= crl::now();
+	const auto view = accountForChecks()->mtp().runtimeEnvironment()
+		.proxyServices().control().mtproxyEndpointView(endpoint);
+	return view.retryUntil <= crl::now();
 }
 
 bool ProxyRotationManager::shouldSwitchToAvailable() const {
@@ -534,12 +731,7 @@ bool ProxyRotationManager::shouldSwitchToAvailable() const {
 	const auto accounts = productionAccounts();
 	return !accounts.empty()
 		&& (hasActiveHealthRotationRequest()
-			|| !ranges::contains(
-			accounts,
-			MTP::ConnectedState,
-			[](not_null<Main::Account*> account) {
-				return account->mtp().dcstate();
-			}));
+			|| selectedProxyNeedsRecovery());
 }
 
 } // namespace Core

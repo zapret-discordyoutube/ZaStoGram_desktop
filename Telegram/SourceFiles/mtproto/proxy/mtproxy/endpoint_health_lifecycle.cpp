@@ -127,7 +127,6 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 	const auto staleReport = RelayStallFailureReport(report);
 	auto retirement = RelayProofRetirementResult();
 	auto recipeLevel = 0;
-	auto event = std::optional<EndpointEvent>();
 	auto capabilityFailure = false;
 	const auto key = EndpointKey(report.endpoint);
 	{
@@ -183,11 +182,6 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 								FailureReason::MtpReceiveTimeoutAfterData);
 							state.healthy = false;
 						}
-						event = EndpointEvent{
-							.endpoint = state.endpoint,
-							.reason = FailureReason::MtpReceiveTimeoutAfterData,
-							.terminalUntil = state.terminalUntil,
-						};
 					}
 				}
 			}
@@ -210,9 +204,6 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 				.routeKey = RouteKey(report.endpoint.route),
 				.diagnostic = u"relay_stall"_q,
 			});
-	}
-	if (event) {
-		fireEndpointEventOnMain(std::move(*event));
 	}
 	_context->notifyEndpointAdmissible(key);
 }
@@ -303,21 +294,6 @@ void EndpointHealth::applyProxyGeneration(uint64 proxyGeneration) {
 	_context->endpointAdmissionArbiter().cancelBeforeGeneration(
 		_runtimeId,
 		proxyGeneration);
-}
-
-Snapshot EndpointHealth::snapshot(const EndpointId &endpoint) const {
-	const auto key = EndpointKey(endpoint);
-	const auto now = crl::now();
-	auto &storage = _context->storage();
-	QMutexLocker lock(&storage.mutex);
-	const auto i = storage.states.find(key);
-	if (i != end(storage.states)) {
-		PruneExpiredEndpointState(i->second, now);
-		return MakeSnapshot(i->second, _runtimeId);
-	}
-	auto result = Snapshot();
-	result.endpoint = endpoint;
-	return result;
 }
 
 } // namespace MTP::details::MtProxy

@@ -21,6 +21,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 
 ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
+	return _terminal ? _terminalFailure : collectTransportFailure();
+}
+
+ProxyTransportFailure TlsSocket::collectTransportFailure() const {
 	const auto clientHelloKnown = _clientHelloBytes > 0;
 	const auto domain = domainFromSecret();
 	const auto domainBytes = QByteArray(
@@ -99,6 +103,7 @@ ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
 		.livenessReported = _mtproxyAttempt.traceId
 			&& !_runtime->proxyEndpointContext().traceActive(
 				_mtproxyAttempt.traceId),
+		.attribution = failureAttribution(),
 	};
 }
 
@@ -111,8 +116,6 @@ QString TlsSocket::blockToken() const {
 	// stall - other phases have unambiguous reasons of their own. The peer
 	// actively ending the connection (FIN or a network-level reset) is what
 	// separates an on-path reset from our own local timeout on silence.
-	const auto peerClosed = (_closeOrigin == ProxyCloseOrigin::PeerClosed)
-		|| (_closeOrigin == ProxyCloseOrigin::NetworkError);
 	const auto evidence = MtProxy::HandshakeBlockEvidence{
 		.isNoServerHelloStall = (_phase == HandshakePhase::ClientHelloSent)
 			&& (failureReason()
@@ -121,11 +124,52 @@ QString TlsSocket::blockToken() const {
 		.clientHelloAcceptedBytes = _clientHelloAcceptedBytes,
 		.rxAfterClientHello = _rxAfterClientHello,
 		.responsePrefix = _responsePrefix,
-		.peerClosed = peerClosed,
+		.closeOrigin = _closeOrigin,
+		.error = _connectionError,
 	};
 	return MtProxy::HandshakeBlockToken(
 		MtProxy::AnalyzeHandshakeBlock(evidence),
 		evidence);
+}
+
+ProxyFailureAttribution TlsSocket::failureAttribution() const {
+	const auto reason = failureReason();
+	if (_clientHelloBytes > 0
+		&& _clientHelloAcceptedBytes < _clientHelloBytes) {
+		return ProxyFailureAttribution::Local;
+	}
+	if (reason == MtProxy::FailureReason::ClientHelloSentNoServerHello) {
+		const auto evidence = MtProxy::HandshakeBlockEvidence{
+			.isNoServerHelloStall = true,
+			.clientHelloBytes = _clientHelloBytes,
+			.clientHelloAcceptedBytes = _clientHelloAcceptedBytes,
+			.rxAfterClientHello = _rxAfterClientHello,
+			.responsePrefix = _responsePrefix,
+			.closeOrigin = _closeOrigin,
+			.error = _connectionError,
+		};
+		return MtProxy::AnalyzeHandshakeBlock(evidence).attribution;
+	}
+	if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
+		return ProxyFailureAttribution::Client;
+	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
+		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
+		return ProxyFailureAttribution::Peer;
+	} else if (_closeOrigin == ProxyCloseOrigin::PeerClosed) {
+		return ProxyFailureAttribution::Peer;
+	} else if (_closeOrigin == ProxyCloseOrigin::NetworkError
+		&& (_connectionError == ProxyConnectionError::Network
+			|| _connectionError == ProxyConnectionError::ConnectionRefused
+			|| _connectionError == ProxyConnectionError::HostNotFound)) {
+		return ProxyFailureAttribution::Network;
+	} else if (_closeOrigin == ProxyCloseOrigin::LocalTimeout) {
+		return ProxyFailureAttribution::Unclear;
+	} else if (_closeOrigin == ProxyCloseOrigin::ProtocolRejected) {
+		return ProxyFailureAttribution::Client;
+	}
+	return (reason == MtProxy::FailureReason::None)
+		? ProxyFailureAttribution::None
+		: ProxyFailureAttribution::Unclear;
 }
 
 QString TlsSocket::responseRecordType() const {

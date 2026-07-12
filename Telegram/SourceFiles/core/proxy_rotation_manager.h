@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/control_plane.h"
 
 #include <rpl/lifetime.h>
+#include <optional>
 #include <vector>
 
 namespace Main {
@@ -44,17 +45,40 @@ private:
 		crl::time availableAt = 0;
 	};
 
+	struct PendingGraceEvaluation {
+		MTP::details::MtProxy::EndpointId endpoint;
+		MTP::RuntimeGenerationKey runtimeGeneration;
+		crl::time observedAt = 0;
+		crl::time mainSuccessAt = 0;
+	};
+
 	[[nodiscard]] bool shouldObserve() const;
 	[[nodiscard]] std::vector<not_null<Main::Account*>> productionAccounts() const;
 	[[nodiscard]] not_null<Main::Account*> accountForChecks() const;
 	[[nodiscard]] Entry *find(const MTP::ProxyData &proxy);
 	[[nodiscard]] Entry &ensure(const MTP::ProxyData &proxy);
+	[[nodiscard]] auto selectedMtproxyView() const
+	-> std::optional<MTP::details::MtProxy::ProxyEndpointView>;
+	[[nodiscard]] bool selectedProxyNeedsRecovery() const;
+	[[nodiscard]] bool canonicalRecoveryEvidence(
+		const MTP::details::MtProxy::ProxyEndpointView &view) const;
+	[[nodiscard]] crl::time recoveryObservedAt(
+		const MTP::details::MtProxy::ProxyEndpointView &view) const;
+	[[nodiscard]] bool afterSwitchGraceActive() const;
 
 	void reevaluate();
-	void subscribeEndpointHealth();
-	void clearEndpointHealthSubscription();
-	void handleEndpointHealthChanged(
-		MTP::details::MtProxy::EndpointEvent event);
+	void subscribeEndpointViews();
+	void clearEndpointViewSubscription();
+	void handleEndpointViewChanged(
+		MTP::details::MtProxy::ProxyEndpointView view);
+	void requestSelectedProxyRecovery(
+		const MTP::details::MtProxy::ProxyEndpointView &view);
+	void scheduleGraceEvaluation(
+		const MTP::details::MtProxy::ProxyEndpointView &view,
+		crl::time observedAt);
+	void recordGraceMainSuccess(
+		const MTP::details::MtProxy::ProxyEndpointView &view);
+	void graceTimerDone();
 	[[nodiscard]] bool isSelectedProxyEndpoint(
 		const MTP::details::MtProxy::EndpointId &endpoint) const;
 	[[nodiscard]] bool hasActiveHealthRotationRequest() const;
@@ -77,10 +101,12 @@ private:
 		not_null<MTP::details::AbstractConnection*> raw);
 	[[nodiscard]] bool switchToAvailable();
 	[[nodiscard]] bool shouldSwitchToAvailable() const;
-	[[nodiscard]] bool proxyRelayHealthy(const MTP::ProxyData &proxy) const;
+	[[nodiscard]] bool proxyCandidatePreferred(
+		const MTP::ProxyData &proxy) const;
 
 	base::Timer _checkTimer;
 	base::Timer _switchTimer;
+	base::Timer _graceTimer;
 	std::vector<Entry> _entries;
 	std::vector<int> _probeOrder;
 	int _nextCheckIndex = 0;
@@ -89,8 +115,9 @@ private:
 	crl::time _healthRotationRequestedUntil = 0;
 	crl::time _switchStartedAt = 0;
 	crl::time _lastSwitchAt = 0;
-	MTP::RuntimeEnvironment *_endpointHealthRuntime = nullptr;
-	rpl::lifetime _endpointHealthLifetime;
+	MTP::RuntimeEnvironment *_endpointViewRuntime = nullptr;
+	std::optional<PendingGraceEvaluation> _pendingGraceEvaluation;
+	rpl::lifetime _endpointViewLifetime;
 	rpl::lifetime _lifetime;
 
 };

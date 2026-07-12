@@ -189,7 +189,8 @@ void SessionTransport::startContainerCleanup() {
 
 void SessionTransport::noteMtprotoPayloadReceived() {
 	_timing.retryTimeout = 1;
-	if (!_state.mtprotoDataReceived) {
+	const auto firstPayload = !_state.mtprotoDataReceived;
+	if (firstPayload) {
 		_state.mtprotoDataReceived = true;
 		_state.mtprotoSilentTimeouts = 0;
 		if (_state.proxyMigrationScout) {
@@ -206,12 +207,19 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 			ProxyDiagnosticsPhase::MtpFirstDataReceived,
 			ProxyDiagnosticsSeverity::Info,
 			u"first mtproto payload received"_q);
-		if (_state.connection) {
-			_state.connection->markProxyMtprotoPayloadReceived();
-		}
+	}
+	if (_state.connection) {
+		_state.connection->markProxyMtprotoPayloadReceived();
+	}
+	if (firstPayload) {
 		_owner->_proxyPort->reportFirstMtprotoPayload(
 			currentProxyAttempt(),
 			&_state.mtproxyLease);
+	} else {
+		_owner->_proxyPort->reportConnected(
+			currentProxyAttempt(),
+			&_state.mtproxyLease,
+			SessionProxySuccessScope::Relay);
 	}
 	_state.startedConnectingAt = crl::time(0);
 }

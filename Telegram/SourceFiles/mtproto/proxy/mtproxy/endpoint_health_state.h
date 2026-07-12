@@ -251,6 +251,28 @@ inline void RemoveEndpointOutcomesForRuntime(
 	return true;
 }
 
+[[nodiscard]] inline int CurrentMainNetworkEvidenceCount(
+		const EndpointState &state,
+		const RuntimeGenerationKey &key,
+		crl::time now) {
+	auto result = 0;
+	for (const auto &entry : state.terminalEvidence) {
+		const auto observedAt = entry.terminalAt
+			? entry.terminalAt
+			: entry.verdict.observedAt;
+		if (entry.runtimeGeneration == key
+			&& entry.use == EndpointUse::Main
+			&& entry.verdict.attribution
+				== ProxyFailureAttribution::Network
+			&& observedAt
+			&& observedAt <= now
+			&& now - observedAt < kEndpointTerminalEvidenceWindow) {
+			++result;
+		}
+	}
+	return result;
+}
+
 [[nodiscard]] inline bool SetCurrentCanonicalVerdict(
 		EndpointState &state,
 		const RuntimeGenerationKey &key,

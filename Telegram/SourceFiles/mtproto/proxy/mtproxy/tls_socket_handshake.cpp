@@ -38,6 +38,7 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 		_clientHelloFragmentation);
 	if (!plan) {
 		writeClientHelloPart(data.constData(), data.size());
+		finishClientHelloWrite();
 		return;
 	}
 	_clientHelloFragmented = true;
@@ -46,6 +47,10 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 	writeClientHelloPart(data.constData(), plan.firstSize);
 	_transport->flush();
 	_clientHelloTail = data.mid(plan.firstSize);
+	if (_clientHelloTail.isEmpty()) {
+		finishClientHelloWrite();
+		return;
+	}
 	if (plan.secondDelay > 0) {
 		_clientHelloFragmentTimer.callOnce(plan.secondDelay);
 	} else {
@@ -72,10 +77,24 @@ void TlsSocket::writeClientHelloTail() {
 		return;
 	}
 	writeClientHelloPart(tail.constData(), tail.size());
+	finishClientHelloWrite();
+}
+
+void TlsSocket::finishClientHelloWrite() {
+	if (_terminal
+		|| _phase != HandshakePhase::TcpConnected
+		|| !_clientHelloTail.isEmpty()
+		|| _clientHelloBytes <= 0
+		|| _clientHelloAcceptedBytes != _clientHelloBytes) {
+		return;
+	}
+	_phase = HandshakePhase::ClientHelloSent;
+	armServerHelloDeadline();
+	connectionProgress(_phase);
 	reportTransportEvent(
 		ProxyDiagnosticsPhase::ClientHelloSent,
 		ProxyDiagnosticsSeverity::Info,
-		u"mtproxy client hello completed"_q);
+		u"mtproxy client hello queued locally"_q);
 }
 
 void TlsSocket::plainConnected() {
@@ -126,13 +145,7 @@ void TlsSocket::sendClientHello() {
 	} else {
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
-		_phase = HandshakePhase::ClientHelloSent;
-		connectionProgress(_phase);
 		writeClientHello(hello.data);
-		reportTransportEvent(
-			ProxyDiagnosticsPhase::ClientHelloSent,
-			ProxyDiagnosticsSeverity::Info,
-			u"mtproxy client hello queued locally"_q);
 	}
 }
 
@@ -169,6 +182,8 @@ void TlsSocket::plainDisconnected() {
 	_pacingTimer.cancel();
 	_clientHelloTimer.cancel();
 	_clientHelloFragmentTimer.cancel();
+	_serverHelloTimer.cancel();
+	_serverHelloDeadline = 0;
 	_disconnected.fire({});
 }
 
@@ -288,6 +303,8 @@ void TlsSocket::checkHelloDigest() {
 		});
 	}
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
+	_serverHelloTimer.cancel();
+	_serverHelloDeadline = 0;
 	_state = State::Connected;
 	_phase = HandshakePhase::ServerHelloOk;
 	_serverHelloAt = crl::now();

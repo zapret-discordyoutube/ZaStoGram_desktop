@@ -7,12 +7,120 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/proxy_endpoint_context.h"
 
+#include "base/timer.h"
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
+#include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace MTP {
+namespace {
+namespace MtProxy = details::MtProxy;
+
+struct MainAttemptSelection {
+	uint64 attemptId = 0;
+	const MtProxy::EndpointAttemptState *attempt = nullptr;
+};
+
+MainAttemptSelection SelectMainAttempt(
+		const MtProxy::EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration) {
+	auto result = MainAttemptSelection();
+	for (const auto &[attemptId, candidate] : state.attemptStarts) {
+		if (candidate.runtimeId != runtimeGeneration.runtimeId
+			|| candidate.proxyGeneration
+				!= runtimeGeneration.proxyGeneration
+			|| candidate.use != MtProxy::EndpointUse::Main) {
+			continue;
+		}
+		if (!result.attempt
+			|| (result.attempt->terminalVerdict.has_value()
+				&& !candidate.terminalVerdict.has_value())
+			|| (result.attempt->terminalVerdict.has_value()
+				== candidate.terminalVerdict.has_value()
+				&& candidate.attemptStartedAt
+					< result.attempt->attemptStartedAt)) {
+			result = {
+				.attemptId = attemptId,
+				.attempt = &candidate,
+			};
+		}
+	}
+	return result;
+}
+
+MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
+		const MtProxy::EndpointContextStorage &storage,
+		const details::EndpointAdmissionArbiter &arbiter,
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) {
+	auto result = MtProxy::ProxyEndpointView{
+		.endpoint = endpoint,
+		.runtimeGeneration = runtimeGeneration,
+	};
+	if (!runtimeGeneration.runtimeId
+		|| !runtimeGeneration.proxyGeneration) {
+		return result;
+	}
+	const auto key = MtProxy::EndpointKey(endpoint);
+	const auto i = storage.states.find(key);
+	if (i != end(storage.states)) {
+		const auto &state = i->second;
+		const auto generation = state.generations.find(
+			runtimeGeneration.runtimeId);
+		if (generation != end(state.generations)
+			&& generation->second != runtimeGeneration.proxyGeneration) {
+			return result;
+		}
+		if (generation != end(state.generations)) {
+			result.mainProof = MtProxy::CurrentMainRelayProof(
+				state,
+				runtimeGeneration);
+			const auto canonical = state.canonicalVerdicts.find(
+				runtimeGeneration);
+			if (canonical != end(state.canonicalVerdicts)) {
+				result.canonicalVerdict = canonical->second;
+				result.terminalAt = canonical->second.terminalAt;
+			}
+			result.retryUntil = std::max(
+				state.terminalUntil,
+				state.nextHandshakeAt);
+			const auto selected = SelectMainAttempt(
+				state,
+				runtimeGeneration);
+			if (selected.attempt) {
+				const auto &attempt = *selected.attempt;
+				result.mainAttempt = {
+					.runtimeId = attempt.runtimeId,
+					.traceId = attempt.traceId,
+					.ticketId = attempt.ticketKey.ticketId,
+					.proxyGeneration = attempt.proxyGeneration,
+					.proxyEpoch = attempt.proxyEpoch,
+					.successEpoch = attempt.successEpoch,
+					.attemptId = selected.attemptId,
+					.use = attempt.use,
+					.ticketKey = attempt.ticketKey,
+				};
+				result.ticketKey = attempt.ticketKey;
+				result.schedulerLifecycle = attempt.schedulerLifecycle;
+				result.admissionPhase = attempt.admissionPhase;
+				result.enqueuedAt = attempt.enqueuedAt;
+				result.scheduledOpenAt = attempt.scheduledOpenAt;
+				result.attemptStartedAt = attempt.attemptStartedAt;
+				result.phaseStartedAt = attempt.phaseStartedAt;
+				result.terminalAt = std::max(
+					result.terminalAt,
+					attempt.terminalAt);
+			}
+		}
+	}
+	arbiter.composeEndpointViewLocked(endpoint, runtimeGeneration, result);
+	return result;
+}
+
+} // namespace
 
 ProxyEndpointContext::ProxyEndpointContext()
 : _storage(std::make_unique<details::MtProxy::EndpointContextStorage>())
@@ -90,11 +198,21 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 		return;
 	}
 	auto released = false;
+	auto endpoint = details::MtProxy::EndpointId();
+	auto runtimeGeneration = RuntimeGenerationKey();
 	{
 		QMutexLocker lock(&_storage->mutex);
 		const auto i = _storage->states.find(key);
 		if (i == end(_storage->states)) {
 			return;
+		}
+		const auto attempt = i->second.attemptStarts.find(attemptId);
+		if (attempt != end(i->second.attemptStarts)) {
+			endpoint = i->second.endpoint;
+			runtimeGeneration = {
+				.runtimeId = attempt->second.runtimeId,
+				.proxyGeneration = attempt->second.proxyGeneration,
+			};
 		}
 		const auto wasActive = i->second.active;
 		i->second.attemptStarts.erase(attemptId);
@@ -102,6 +220,7 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 		released = (i->second.active < wasActive);
 	}
 	if (released) {
+		notifyEndpointViewChanged(endpoint, runtimeGeneration);
 		_arbiter->drainEndpoint(key);
 	}
 }
@@ -115,12 +234,14 @@ void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
 		return;
 	}
 	auto released = false;
+	auto endpoint = details::MtProxy::EndpointId();
 	{
 		QMutexLocker lock(&_storage->mutex);
 		const auto i = _storage->states.find(key);
 		if (i == end(_storage->states)) {
 			return;
 		}
+		endpoint = i->second.endpoint;
 		const auto identity = details::MtProxy::RelayProofIdentity{
 			.runtimeId = runtimeId,
 			.proxyGeneration = proxyGeneration,
@@ -131,6 +252,10 @@ void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
 			identity);
 	}
 	if (released) {
+		notifyEndpointViewChanged(endpoint, {
+			.runtimeId = runtimeId,
+			.proxyGeneration = proxyGeneration,
+		});
 		_arbiter->drainEndpoint(key);
 	}
 }
@@ -140,6 +265,135 @@ void ProxyEndpointContext::notifyEndpointAdmissible(const QString &key) {
 		return;
 	}
 	_arbiter->drainEndpoint(key);
+}
+
+void ProxyEndpointContext::notifyEndpointViewChanged(
+		const details::MtProxy::EndpointId &endpoint) {
+	auto generations = std::vector<RuntimeGenerationKey>();
+	{
+		QMutexLocker lock(&_storage->mutex);
+		const auto i = _storage->states.find(
+			details::MtProxy::EndpointKey(endpoint));
+		if (i != end(_storage->states)) {
+			generations.reserve(i->second.generations.size());
+			for (const auto &[runtimeId, proxyGeneration]
+					: i->second.generations) {
+				generations.push_back({ runtimeId, proxyGeneration });
+			}
+		}
+	}
+	for (const auto runtimeGeneration : generations) {
+		notifyEndpointViewChanged(endpoint, runtimeGeneration);
+	}
+}
+
+void ProxyEndpointContext::notifyEndpointViewChanged(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) {
+	if (details::MtProxy::EndpointEmpty(endpoint)
+		|| !runtimeGeneration.runtimeId
+		|| !runtimeGeneration.proxyGeneration) {
+		return;
+	}
+	const auto weak = weak_from_this();
+	crl::on_main([weak, endpoint, runtimeGeneration] {
+		if (const auto context = weak.lock()) {
+			context->_storage->viewInvalidations.fire_copy({
+				.endpoint = endpoint,
+				.runtimeGeneration = runtimeGeneration,
+			});
+		}
+	});
+}
+
+void ProxyEndpointContext::notifyEndpointViewsChanged(
+		ProxyRuntimeId runtimeId) {
+	auto invalidations = std::vector<
+		details::MtProxy::EndpointViewInvalidation>();
+	{
+		QMutexLocker lock(&_storage->mutex);
+		for (const auto &entry : _storage->states) {
+			const auto &state = entry.second;
+			const auto generation = state.generations.find(runtimeId);
+			if (generation != end(state.generations)) {
+				invalidations.push_back({
+					.endpoint = state.endpoint,
+					.runtimeGeneration = {
+						.runtimeId = runtimeId,
+						.proxyGeneration = generation->second,
+					},
+				});
+			}
+		}
+	}
+	for (const auto &invalidation : invalidations) {
+		notifyEndpointViewChanged(
+			invalidation.endpoint,
+			invalidation.runtimeGeneration);
+	}
+}
+
+auto ProxyEndpointContext::endpointView(
+		const details::MtProxy::EndpointId &endpoint,
+		ProxyRuntimeId runtimeId) const
+-> details::MtProxy::ProxyEndpointView {
+	QMutexLocker lock(&_storage->mutex);
+	auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = runtimeId,
+	};
+	const auto i = _storage->states.find(
+		details::MtProxy::EndpointKey(endpoint));
+	if (i != end(_storage->states)) {
+		const auto generation = i->second.generations.find(runtimeId);
+		if (generation != end(i->second.generations)) {
+			runtimeGeneration.proxyGeneration = generation->second;
+		}
+	}
+	return ComposeEndpointViewLocked(
+		*_storage,
+		*_arbiter,
+		endpoint,
+		runtimeGeneration);
+}
+
+auto ProxyEndpointContext::endpointView(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) const
+-> details::MtProxy::ProxyEndpointView {
+	QMutexLocker lock(&_storage->mutex);
+	return ComposeEndpointViewLocked(
+		*_storage,
+		*_arbiter,
+		endpoint,
+		runtimeGeneration);
+}
+
+crl::time ProxyEndpointContext::endpointRetryUntil(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration) const {
+	if (!runtimeGeneration.runtimeId
+		|| !runtimeGeneration.proxyGeneration) {
+		return 0;
+	}
+	QMutexLocker lock(&_storage->mutex);
+	const auto i = _storage->states.find(
+		details::MtProxy::EndpointKey(endpoint));
+	if (i == end(_storage->states)
+		|| !details::MtProxy::RuntimeGenerationIsCurrent(
+			i->second,
+			runtimeGeneration)) {
+		return 0;
+	}
+	return ComposeEndpointViewLocked(
+		*_storage,
+		*_arbiter,
+		endpoint,
+		runtimeGeneration).retryUntil;
+}
+
+auto ProxyEndpointContext::endpointViewChanges() const
+-> rpl::producer<details::MtProxy::EndpointViewInvalidation> {
+	return _storage->viewInvalidations.events();
 }
 
 auto ProxyEndpointContext::endpointAdmissionArbiter()

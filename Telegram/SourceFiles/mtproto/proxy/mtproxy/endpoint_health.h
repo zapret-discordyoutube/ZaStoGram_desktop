@@ -11,8 +11,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/runtime/connection_status_types.h"
 
-#include <rpl/producer.h>
-
 #include <memory>
 #include <optional>
 
@@ -241,33 +239,6 @@ struct RelayProofReport {
 	crl::time lastPayloadAt = 0;
 };
 
-struct Snapshot {
-	EndpointId endpoint;
-	FailureReason lastFailure = FailureReason::None;
-	QString lastDiagnostic;
-	crl::time terminalUntil = 0;
-	int active = 0;
-	int consecutiveFailures = 0;
-	int recipeLevel = 0;
-	bool healthy = false;
-	bool halfOpen = false;
-	uint64 successEpoch = 0;
-	crl::time lastRelaySuccessAt = 0;
-	ProxyTlsProfile lastGoodProfile = ProxyTlsProfile::Auto;
-	RouteEndpoint lastGoodRoute;
-	bool relayProven = false;
-	uint64 proxyGeneration = 0;
-	uint64 proxyEpoch = 0;
-	uint64 attemptId = 0;
-};
-
-struct EndpointEvent {
-	EndpointId endpoint;
-	FailureReason reason = FailureReason::None;
-	crl::time terminalUntil = 0;
-	bool rotationAllowed = false;
-};
-
 class EndpointHealth final {
 public:
 	EndpointHealth(
@@ -292,12 +263,8 @@ public:
 	void retireRelayProof(RelayProofReport report);
 	void noteEndpointSelected(const EndpointId &endpoint);
 	void applyProxyGeneration(uint64 proxyGeneration);
-	[[nodiscard]] Snapshot snapshot(const EndpointId &endpoint) const;
-	[[nodiscard]] rpl::producer<EndpointEvent> changes() const;
 
 private:
-	void fireEndpointEventOnMain(EndpointEvent event);
-
 	const not_null<RuntimeEnvironment*> _runtime;
 	const std::shared_ptr<ProxyEndpointContext> _context;
 	const ProxyRuntimeId _runtimeId = 0;

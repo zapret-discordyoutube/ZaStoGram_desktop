@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/proxy/mtproxy/tls_socket_transport.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -35,6 +35,7 @@ public:
 		MtProxyAttemptPlan mtproxyPlan,
 		crl::time mtproxyAttemptStartedAt,
 		std::unique_ptr<TlsSocketTransport> transport = nullptr);
+	~TlsSocket() override;
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -81,6 +82,13 @@ private:
 	void handleError(
 		MtProxy::FailureReason reason,
 		int errorCode = AbstractConnection::kErrorCodeOther);
+	bool finishTerminal(
+		MtProxy::FailureReason reason,
+		ProxyConnectionError error,
+		ProxyCloseOrigin origin,
+		int errorCode,
+		const QString &message,
+		bool emitError);
 	[[nodiscard]] bool requiredHelloPartReady() const;
 	void readHello();
 	void checkHelloParts12(int parts1Size);
@@ -99,6 +107,9 @@ private:
 	void writeClientHello(const QByteArray &data);
 	void writeClientHelloPart(const char *data, int size);
 	void writeClientHelloTail();
+	void finishClientHelloWrite();
+	void armServerHelloDeadline();
+	void handleServerHelloTimeout();
 	void sendClientHello();
 	void sendOutgoing();
 	void noteIncoming(const QByteArray &data);
@@ -108,6 +119,8 @@ private:
 		const QString &message);
 	[[nodiscard]] QString responseClass() const;
 	[[nodiscard]] QString blockToken() const;
+	[[nodiscard]] ProxyFailureAttribution failureAttribution() const;
+	[[nodiscard]] ProxyTransportFailure collectTransportFailure() const;
 	[[nodiscard]] QString responseRecordType() const;
 	[[nodiscard]] QString responseRecordVersion() const;
 	[[nodiscard]] std::optional<int> responseRecordLength() const;
@@ -117,7 +130,7 @@ private:
 	const ProxyData _proxy;
 	MtProxy::EndpointId _endpointId;
 	QString _endpointKey;
-	MtProxy::EndpointUse _endpointUse = MtProxy::EndpointUse::Main;
+	ProxyConnectionUse _endpointUse = ProxyConnectionUse::Main;
 	ProxyConnectionAttempt _mtproxyAttempt;
 	MtProxyAttemptPlan _mtproxyPlan;
 	crl::time _mtproxyAttemptStartedAt = 0;
@@ -158,14 +171,19 @@ private:
 	RuntimeTimer _pacingTimer;
 	RuntimeTimer _clientHelloTimer;
 	RuntimeTimer _clientHelloFragmentTimer;
+	RuntimeTimer _serverHelloTimer;
 	MtProxy::FailureReason _failureReason = MtProxy::FailureReason::None;
 	ProxyConnectionError _connectionError = ProxyConnectionError::None;
 	ProxyCloseOrigin _closeOrigin = ProxyCloseOrigin::None;
+	ProxyTransportFailure _terminalFailure;
 	qint64 _rxAfterClientHello = 0;
 	crl::time _tcpConnectedAt = 0;
 	crl::time _firstRxAt = 0;
 	crl::time _serverHelloAt = 0;
+	crl::time _serverHelloDeadline = 0;
+	crl::time _terminalAt = 0;
 	HandshakePhase _phase = HandshakePhase::None;
+	bool _terminal = false;
 
 };
 

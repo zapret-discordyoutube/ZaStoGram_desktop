@@ -517,33 +517,6 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 	});
 }
 
-[[nodiscard]] Snapshot MakeSnapshot(
-		const EndpointState &state,
-		ProxyRuntimeId runtimeId) {
-	const auto generation = state.generations.find(runtimeId);
-	return {
-		.endpoint = state.endpoint,
-		.lastFailure = state.lastFailure,
-		.lastDiagnostic = state.lastDiagnostic,
-		.terminalUntil = state.terminalUntil,
-		.active = state.active,
-		.consecutiveFailures = state.consecutiveFailures,
-		.recipeLevel = state.recipeLevel,
-		.healthy = state.healthy,
-		.halfOpen = state.halfOpen,
-		.successEpoch = state.successEpoch,
-		.lastRelaySuccessAt = state.lastRelaySuccessAt,
-		.lastGoodProfile = state.lastGoodProfile,
-		.lastGoodRoute = state.lastGoodRoute,
-		.relayProven = state.relayProven,
-		.proxyGeneration = (generation != end(state.generations))
-			? generation->second
-			: uint64(),
-		.proxyEpoch = state.proxyEpoch,
-		.attemptId = state.lastAttemptId,
-	};
-}
-
 crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
 	switch (pattern) {
 	case ProxyConnectionPattern::Soft: return crl::time(150);

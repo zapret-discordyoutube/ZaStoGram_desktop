@@ -97,6 +97,10 @@ public:
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration);
 	void drainEndpoint(const QString &endpointKey);
+	void composeEndpointViewLocked(
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MtProxy::ProxyEndpointView &view) const;
 
 private:
 	class Private;
