@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
