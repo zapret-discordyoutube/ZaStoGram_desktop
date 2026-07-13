@@ -298,7 +298,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 	if (!accepted) {
 		QObject::disconnect(ownerDestroyed);
 		if (traceId) {
-			_endpointContext->finishTrace(traceId);
+			(void)_endpointContext->finishTrace(traceId);
 		}
 		return {};
 	}

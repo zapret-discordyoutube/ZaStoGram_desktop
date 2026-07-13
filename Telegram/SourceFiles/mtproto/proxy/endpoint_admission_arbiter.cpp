@@ -198,7 +198,7 @@ void GrantAction::run() {
 		&& ticket->callbacks->grant) {
 		ticket->callbacks->grant(std::move(grant));
 	} else if (const auto strong = context.lock()) {
-		strong->finishTrace(grant.attempt.traceId);
+		(void)strong->finishTrace(grant.attempt.traceId);
 	}
 }
 
