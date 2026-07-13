@@ -73,6 +73,37 @@ struct Ticket {
 	uint64 reservationId = 0;
 };
 
+[[nodiscard]] const MtProxy::EndpointVerdict *TicketVerdict(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) {
+	const auto key = RuntimeGenerationKey{
+		.runtimeId = ticket.key.runtimeId,
+		.proxyGeneration = ticket.proxyGeneration,
+	};
+	const auto i = state.canonicalVerdicts.find(key);
+	return (i != end(state.canonicalVerdicts)) ? &i->second : nullptr;
+}
+
+[[nodiscard]] crl::time TicketRetryUntil(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) {
+	const auto verdict = TicketVerdict(ticket, state);
+	return verdict ? verdict->retryUntil : crl::time();
+}
+
+[[nodiscard]] MtProxy::FailureReason TicketFailureReason(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) {
+	const auto verdict = TicketVerdict(ticket, state);
+	return verdict ? verdict->reason : MtProxy::FailureReason::None;
+}
+
+[[nodiscard]] bool WaitingForHandoff(ProxySchedulerLifecycle lifecycle) {
+	return lifecycle == ProxySchedulerLifecycle::Queued
+		|| lifecycle == ProxySchedulerLifecycle::Scheduled
+		|| lifecycle == ProxySchedulerLifecycle::Granted;
+}
+
 struct FairnessState {
 	std::array<ProxyRuntimeId, int(PriorityClass::Count)> lastRuntime = {};
 	std::map<ProxyRuntimeId, MtProxy::EndpointUse> nextBackground;
@@ -738,7 +769,7 @@ int EndpointAdmissionArbiter::Private::urgentWaitersLocked(
 	for (const auto &key : schedule->second.order) {
 		const auto i = _tickets.find(key);
 		if (i != end(_tickets)
-			&& i->second->lifecycle == ProxySchedulerLifecycle::Queued
+			&& WaitingForHandoff(i->second->lifecycle)
 			&& priorityForLocked(
 				*i->second,
 				state,
@@ -767,7 +798,7 @@ auto EndpointAdmissionArbiter::Private::policyLocked(
 		}).strength,
 		.lastFailure = state.lastFailure,
 		.urgentMainDemand = urgentWaiters,
-		.retryUntil = state.terminalUntil,
+		.retryUntil = TicketRetryUntil(ticket, state),
 		.nextHandshakeAt = state.nextHandshakeAt,
 		.lastRelaySuccessAt = state.lastRelaySuccessAt,
 		.now = inputs.now,
@@ -1109,6 +1140,32 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
 		Actions &actions) {
+	const auto initialSchedule = _endpoints.find(endpointKey);
+	if (initialSchedule == end(_endpoints)) {
+		return;
+	}
+	auto fairness = initialSchedule->second.fairness;
+	auto planned = std::vector<Ticket*>();
+	for (const auto &key : initialSchedule->second.order) {
+		const auto i = _tickets.find(key);
+		if (i != end(_tickets)
+			&& (i->second->lifecycle
+					== ProxySchedulerLifecycle::Scheduled
+				|| i->second->lifecycle
+					== ProxySchedulerLifecycle::Granted)) {
+			planned.push_back(i->second.get());
+		}
+	}
+	std::sort(begin(planned), end(planned), [](Ticket *a, Ticket *b) {
+		return std::tie(a->scheduledOpenAt, a->sequence)
+			< std::tie(b->scheduledOpenAt, b->sequence);
+	});
+	for (const auto ticket : planned) {
+		AdvanceFairness(
+			fairness,
+			*ticket,
+			priorityForLocked(*ticket, state, inputs.now));
+	}
 	while (true) {
 		const auto schedule = _endpoints.find(endpointKey);
 		if (schedule == end(_endpoints)) {
@@ -1131,7 +1188,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		auto eligible = std::set<AdmissionTicketKey>();
 		for (const auto ticket : pool) {
 			const auto boundary = std::max(
-				state.terminalUntil,
+				TicketRetryUntil(*ticket, state),
 				state.nextHandshakeAt);
 			ticket->retryAt = (boundary > inputs.now)
 				? boundary
@@ -1151,7 +1208,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 				&& policy.admissionAllowed) {
 				eligible.emplace(ticket->key);
 			} else {
-				ticket->blockedBy = state.lastFailure;
+				ticket->blockedBy = TicketFailureReason(*ticket, state);
 				ticket->retryAfter = policy.retryAfter;
 				if (ticket->use == MtProxy::EndpointUse::Main) {
 					ticket->reevaluateAt = 0;
@@ -1177,7 +1234,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 			eligible,
 			state,
 			inputs.now,
-			schedule->second.fairness);
+			fairness);
 		if (!selected) {
 			return;
 		}
@@ -1219,7 +1276,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 			selected->scheduledOpenAt - inputs.now);
 		++selected->transition;
 		AdvanceFairness(
-			schedule->second.fairness,
+			fairness,
 			*selected,
 			priorityForLocked(*selected, state, inputs.now));
 		postStatusLocked(*selected, actions);
@@ -1857,6 +1914,19 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 					};
 					if (trace != end(_storage.activeTraces)) {
 						trace->second = attempt;
+					}
+					if (!unscoped) {
+						const auto schedule = _endpoints.find(
+							ticket.endpointKey);
+						if (schedule != end(_endpoints)) {
+							AdvanceFairness(
+								schedule->second.fairness,
+								ticket,
+								priorityForLocked(
+									ticket,
+									state->second,
+									inputs.now));
+						}
 					}
 					ticket.reservationId = 0;
 					ticket.lifecycle = ProxySchedulerLifecycle::HandedOff;

@@ -83,10 +83,8 @@ MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
 			if (canonical != end(state.canonicalVerdicts)) {
 				result.canonicalVerdict = canonical->second;
 				result.terminalAt = canonical->second.terminalAt;
+				result.retryUntil = canonical->second.retryUntil;
 			}
-			result.retryUntil = std::max(
-				state.terminalUntil,
-				state.nextHandshakeAt);
 			const auto selected = SelectMainAttempt(
 				state,
 				runtimeGeneration);

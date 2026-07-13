@@ -30,6 +30,7 @@ constexpr auto kRouteRaceDelay = crl::time(300);
 constexpr auto kMaxParallelRouteAttempts = 2;
 constexpr auto kColdServerHelloTimeout = crl::time(5000);
 constexpr auto kFullConnectTimeoutSafetyMargin = crl::time(500);
+constexpr auto kFullConnectTimeout = crl::time(12600);
 
 // When the running attempt is the last route available there is nothing
 // to race it against - killing it at the short timeout only burns a
@@ -902,16 +903,19 @@ crl::time ResolvingConnection::fullConnectTimeout() const {
 	const auto resolvingRaceTimeout = kRouteAttemptTimeout
 		+ kRouteRaceDelay * kMaxParallelRouteAttempts;
 	if (_proxy.type != ProxyData::Type::Mtproto) {
-		return resolvingRaceTimeout + kOnlyRouteAttemptTimeout;
+		return std::min(
+			kFullConnectTimeout,
+			resolvingRaceTimeout + kOnlyRouteAttemptTimeout);
 	}
 	const auto serverHelloTimeout = (_mtproxyPlan.serverHelloTimeout > 0)
 		? _mtproxyPlan.serverHelloTimeout
 		: kColdServerHelloTimeout;
-	return resolvingRaceTimeout
+	const auto phasedTimeout = resolvingRaceTimeout
 		+ kOnlyRouteAttemptTimeout
 		+ serverHelloTimeout
 		+ kOnlyRouteAttemptTimeout
 		+ kFullConnectTimeoutSafetyMargin;
+	return std::min(kFullConnectTimeout, phasedTimeout);
 }
 
 void ResolvingConnection::sendData(

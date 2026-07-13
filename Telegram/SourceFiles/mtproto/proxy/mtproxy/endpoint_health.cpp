@@ -462,6 +462,8 @@ void EndpointHealth::reportFailure(FailureReport report) {
 				staleRecipeLevel = state.recipeLevel;
 			} else {
 				shouldDrain = terminal->proofRetired;
+				noteConnectTimeout = FailureNeedsRecipeEscalation(
+					report.reason);
 				state.endpoint = report.endpoint;
 				if (report.reason
 						!= FailureReason::ServerHelloOkNoAppData
