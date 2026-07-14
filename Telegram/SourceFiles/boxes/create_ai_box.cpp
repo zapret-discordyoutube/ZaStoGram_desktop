@@ -24,7 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 #include "spellcheck/spellcheck_types.h"
 #include "ui/boxes/about_cocoon_box.h"
 #include "ui/boxes/choose_language_box.h"
