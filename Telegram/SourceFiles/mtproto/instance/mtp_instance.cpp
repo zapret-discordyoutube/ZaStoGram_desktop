@@ -210,7 +210,9 @@ private:
 	void unpaused();
 
 	Session *findSession(ShiftedDcId shiftedDcId);
-	not_null<Session*> startSession(ShiftedDcId shiftedDcId);
+	not_null<Session*> startSession(
+		ShiftedDcId shiftedDcId,
+		SessionRole role);
 	void scheduleSessionDestroy(ShiftedDcId shiftedDcId);
 	[[nodiscard]] not_null<QThread*> getThreadForDc(ShiftedDcId shiftedDcId);
 
@@ -289,7 +291,7 @@ private:
 
 	base::Timer _checkDelayedTimer;
 
-	uint64 _proxyGeneration = 0;
+	uint64 _proxyGeneration = 1;
 	bool _proxyMigrationActive = false;
 
 	rpl::lifetime _lifetime;
@@ -426,12 +428,16 @@ Instance::Private::Private(
 }
 
 void Instance::Private::start() {
+	_runtime->proxyServices().control().applyMtproxyProxyGeneration(
+		_proxyGeneration);
 	if (isKeysDestroyer()) {
 		for (const auto &[shiftedDcId, dc] : _dcenters) {
-			startSession(shiftedDcId);
+			startSession(shiftedDcId, SessionRole::Maintenance);
 		}
 	} else if (hasMainDcId()) {
-		_mainSession = startSession(mainDcId());
+		_mainSession = startSession(
+			mainDcId(),
+			SessionRole::PrimaryMain);
 	}
 
 	_checkDelayedTimer.setCallback([this] { checkDelayedRequests(); });
@@ -494,7 +500,9 @@ void Instance::Private::setMainDcId(DcId mainDcId) {
 	if (oldMainDcId != mainDcId) {
 		scheduleSessionDestroy(oldMainDcId);
 		scheduleSessionDestroy(mainDcId);
-		_mainSession = startSession(mainDcId);
+		_mainSession = startSession(
+			mainDcId,
+			SessionRole::PrimaryMain);
 		_connectionStatus->resetPingTime();
 	}
 	_mainDcId = mainDcId;
@@ -933,7 +941,7 @@ void Instance::Private::addKeysForDestroy(AuthKeysList &&keys) {
 		_keysForWrite[shiftedDcId] = key;
 
 		addDc(shiftedDcId, std::move(key));
-		startSession(shiftedDcId);
+		startSession(shiftedDcId, SessionRole::Maintenance);
 	}
 }
 
@@ -1547,7 +1555,7 @@ not_null<Session*> Instance::Private::getSession(
 	if (const auto session = findSession(shiftedDcId)) {
 		return session;
 	}
-	return startSession(shiftedDcId);
+	return startSession(shiftedDcId, SessionRole::Auxiliary);
 }
 
 rpl::lifetime &Instance::Private::lifetime() {
@@ -1559,7 +1567,9 @@ Session *Instance::Private::findSession(ShiftedDcId shiftedDcId) {
 	return (i != _sessions.end()) ? i->second.get() : nullptr;
 }
 
-not_null<Session*> Instance::Private::startSession(ShiftedDcId shiftedDcId) {
+not_null<Session*> Instance::Private::startSession(
+		ShiftedDcId shiftedDcId,
+		SessionRole role) {
 	Expects(BareDcId(shiftedDcId) != 0);
 
 	const auto dc = getDcById(shiftedDcId);
@@ -1576,6 +1586,7 @@ not_null<Session*> Instance::Private::startSession(ShiftedDcId shiftedDcId) {
 			thread,
 			shiftedDcId,
 			dc,
+			role,
 			_proxyGeneration,
 			proxyMigrationScout,
 			proxyMigrationSuspended)

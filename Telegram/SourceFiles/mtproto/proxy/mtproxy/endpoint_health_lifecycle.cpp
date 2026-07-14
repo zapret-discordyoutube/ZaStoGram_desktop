@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <QtCore/QMutex>
 
@@ -94,7 +95,8 @@ struct RelayProofRetirementResult {
 		.mainProofSurvives = HasCurrentMainRelayProof(
 			state,
 			runtimeGeneration),
-		.endpointProofSurvives = state.relayProven,
+		.endpointProofSurvives = EndpointMainRelayProof(state).strength
+			!= MainRelayProofStrength::None,
 	};
 }
 
@@ -115,6 +117,147 @@ struct RelayProofRetirementResult {
 }
 
 } // namespace
+
+void EndpointHealth::ResolveLeaseIdentity(FailureReport &report) {
+	if (!report.lease) {
+		return;
+	}
+	report.runtimeId = report.lease->runtimeId();
+	report.proxyGeneration = report.lease->proxyGeneration();
+	report.attemptId = report.lease->attemptId();
+	report.proxyEpoch = report.lease->proxyEpoch();
+	report.successEpoch = report.lease->successEpoch();
+	report.attemptStartedAt = report.lease->startedAt();
+}
+
+void EndpointHealth::ResolveLeaseIdentity(SuccessReport &report) {
+	if (!report.lease) {
+		return;
+	}
+	report.runtimeId = report.lease->runtimeId();
+	report.proxyGeneration = report.lease->proxyGeneration();
+	report.attemptId = report.lease->attemptId();
+	report.proxyEpoch = report.lease->proxyEpoch();
+	report.successEpoch = report.lease->successEpoch();
+	report.attemptStartedAt = report.lease->startedAt();
+}
+
+EndpointAttemptLease::EndpointAttemptLease(
+		std::shared_ptr<ProxyEndpointContext> context,
+		QString key,
+		ProxyRuntimeId runtimeId,
+		uint64 attemptId,
+		uint64 proxyGeneration,
+		uint64 proxyEpoch,
+		uint64 successEpoch,
+		crl::time startedAt)
+: _context(std::move(context))
+, _key(std::move(key))
+, _runtimeId(runtimeId)
+, _attemptId(attemptId)
+, _proxyGeneration(proxyGeneration)
+, _proxyEpoch(proxyEpoch)
+, _successEpoch(successEpoch)
+, _startedAt(startedAt)
+, _active(true) {
+}
+
+EndpointAttemptLease::EndpointAttemptLease(
+		EndpointAttemptLease &&other) noexcept
+: _context(std::move(other._context))
+, _key(std::move(other._key))
+, _runtimeId(base::take(other._runtimeId))
+, _attemptId(base::take(other._attemptId))
+, _proxyGeneration(base::take(other._proxyGeneration))
+, _proxyEpoch(base::take(other._proxyEpoch))
+, _successEpoch(base::take(other._successEpoch))
+, _startedAt(base::take(other._startedAt))
+, _active(base::take(other._active)) {
+}
+
+EndpointAttemptLease &EndpointAttemptLease::operator=(
+		EndpointAttemptLease &&other) noexcept {
+	if (this != &other) {
+		release();
+		_context = std::move(other._context);
+		_key = std::move(other._key);
+		_runtimeId = base::take(other._runtimeId);
+		_attemptId = base::take(other._attemptId);
+		_proxyGeneration = base::take(other._proxyGeneration);
+		_proxyEpoch = base::take(other._proxyEpoch);
+		_successEpoch = base::take(other._successEpoch);
+		_startedAt = base::take(other._startedAt);
+		_active = base::take(other._active);
+	}
+	return *this;
+}
+
+EndpointAttemptLease::~EndpointAttemptLease() {
+	release();
+}
+
+void EndpointAttemptLease::release() {
+	if (!_active) {
+		return;
+	}
+	_active = false;
+	if (_context) {
+		_context->releaseEndpointAttempt(_key, _attemptId);
+	}
+}
+
+void EndpointAttemptLease::releaseAdmissionForRelayCandidate() {
+	if (_active && _context) {
+		_context->releaseAdmissionForRelayCandidate(
+			_key,
+			_runtimeId,
+			_proxyGeneration,
+			_attemptId);
+	}
+}
+
+bool EndpointAttemptLease::active() const {
+	return _active;
+}
+
+ProxyRuntimeId EndpointAttemptLease::runtimeId() const {
+	return _runtimeId;
+}
+
+uint64 EndpointAttemptLease::attemptId() const {
+	return _attemptId;
+}
+
+uint64 EndpointAttemptLease::proxyGeneration() const {
+	return _proxyGeneration;
+}
+
+uint64 EndpointAttemptLease::proxyEpoch() const {
+	return _proxyEpoch;
+}
+
+uint64 EndpointAttemptLease::successEpoch() const {
+	return _successEpoch;
+}
+
+crl::time EndpointAttemptLease::startedAt() const {
+	return _startedAt;
+}
+
+const QString &EndpointAttemptLease::endpointKey() const {
+	return _key;
+}
+
+EndpointHealth::EndpointHealth(
+		not_null<RuntimeEnvironment*> runtime,
+		std::shared_ptr<ProxyEndpointContext> context)
+: _runtime(runtime)
+, _context(std::move(context))
+, _runtimeId(runtime->proxyRuntimeId()) {
+	Expects(_context != nullptr);
+}
+
+EndpointHealth::~EndpointHealth() = default;
 
 void EndpointHealth::noteRelayStall(RelayProofReport report) {
 	if (!report.runtimeId) {
@@ -186,7 +329,10 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 				}
 			}
 			capabilityFailure = (retirement.outcome
-					== RelayProofRetirement::RetiredFinal)
+					== RelayProofRetirement::RetiredWithSurvivors
+					|| retirement.outcome
+						== RelayProofRetirement::RetiredFinal)
+				&& retirement.attempt.use == EndpointUse::Main
 				&& !retirement.endpointProofSurvives;
 		}
 	}
@@ -263,10 +409,13 @@ void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
 		// nextHandshakeAt gates admission too (spacing / soft-retry), so a
 		// selection that clears only it must still wake the queued scout.
 		const auto hadPenalty = (state.terminalUntil > 0)
+			|| (state.opening.bootstrap.retryUntil > 0)
+			|| (state.opening.expansion.retryUntil > 0)
 			|| state.halfOpen
 			|| (state.nextHandshakeAt > now)
 			|| (state.consecutiveFailures > 0);
 		state.terminalUntil = 0;
+		state.opening = {};
 		state.halfOpen = false;
 		state.nextHandshakeAt = 0;
 		state.deniedSince = 0;

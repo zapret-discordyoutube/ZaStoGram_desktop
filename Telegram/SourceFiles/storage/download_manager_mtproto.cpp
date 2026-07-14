@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/protocol/mtproto_response.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
@@ -122,6 +123,12 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 : _api(api)
 , _resetGenerationTimer([=] { resetGeneration(); })
 , _killSessionsTimer([=] { killSessions(); }) {
+	const auto &proxy = _api->instance().runtimeEnvironment().proxy();
+	if (proxy.watchConnectionTypeChanges) {
+		proxy.watchConnectionTypeChanges([=] {
+			enforceSessionLimit();
+		}, _lifetime);
+	}
 	_api->instance().restartsByTimeout(
 	) | rpl::filter([](MTP::ShiftedDcId shiftedDcId) {
 		return MTP::isDownloadDcId(shiftedDcId);
@@ -143,14 +150,22 @@ void DownloadManagerMtproto::enqueue(not_null<Task*> task, int priority) {
 	if (!_resetGenerationTimer.isActive()) {
 		_resetGenerationTimer.callOnce(kResetDownloadPrioritiesTimeout);
 	}
-	checkSendNext(dcId, queue);
+	if (api().instance().runtimeEnvironment().usesSerializedFileTransport()) {
+		checkSendNext();
+	} else {
+		checkSendNext(dcId, queue);
+	}
 }
 
 void DownloadManagerMtproto::remove(not_null<Task*> task) {
 	const auto dcId = task->dcId();
 	auto &queue = _queues[dcId];
 	queue.remove(task);
-	checkSendNext(dcId, queue);
+	if (api().instance().runtimeEnvironment().usesSerializedFileTransport()) {
+		checkSendNext();
+	} else {
+		checkSendNext(dcId, queue);
+	}
 }
 
 void DownloadManagerMtproto::resetGeneration() {
@@ -161,6 +176,30 @@ void DownloadManagerMtproto::resetGeneration() {
 }
 
 void DownloadManagerMtproto::checkSendNext() {
+	if (api().instance().runtimeEnvironment().usesSerializedFileTransport()) {
+		if (ranges::any_of(_balanceData, [](const auto &entry) {
+			return entry.second.totalRequested > 0;
+		})) {
+			return;
+		}
+		const auto tryFrom = [&](auto first, auto last) {
+			for (auto i = first; i != last; ++i) {
+				if (!i->second.empty()
+					&& trySendNextPart(i->first, i->second)) {
+					_serializedDcCursor = i->first;
+					while (trySendNextPart(i->first, i->second)) {
+					}
+					return true;
+				}
+			}
+			return false;
+		};
+		const auto afterCursor = _queues.upper_bound(_serializedDcCursor);
+		if (!tryFrom(afterCursor, end(_queues))) {
+			tryFrom(begin(_queues), afterCursor);
+		}
+		return;
+	}
 	for (auto &[dcId, queue] : _queues) {
 		if (queue.empty()) {
 			continue;
@@ -175,7 +214,11 @@ void DownloadManagerMtproto::checkSendNext(MTP::DcId dcId, Queue &queue) {
 }
 
 void DownloadManagerMtproto::checkSendNextAfterSuccess(MTP::DcId dcId) {
-	checkSendNext(dcId, _queues[dcId]);
+	if (api().instance().runtimeEnvironment().usesSerializedFileTransport()) {
+		checkSendNext();
+	} else {
+		checkSendNext(dcId, _queues[dcId]);
+	}
 }
 
 bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
@@ -284,7 +327,7 @@ void DownloadManagerMtproto::requestSucceeded(
 	if (dc.timeouts > 0) {
 		--dc.timeouts;
 		return;
-	} else if (dc.sessions.size() == kMaxSessionsCount) {
+	} else if (dc.sessions.size() >= sessionLimit()) {
 		return;
 	}
 	const auto now = crl::now();
@@ -297,6 +340,30 @@ void DownloadManagerMtproto::requestSucceeded(
 		).arg(dcId
 		).arg(dc.sessions.size() - 1
 		).arg(dc.sessions.size()));
+}
+
+int DownloadManagerMtproto::sessionLimit() const {
+	return api().instance().runtimeEnvironment(
+	).usesSerializedFileTransport()
+		? 1
+		: kMaxSessionsCount;
+}
+
+void DownloadManagerMtproto::enforceSessionLimit() {
+	const auto limit = sessionLimit();
+	auto dcIds = std::vector<MTP::DcId>();
+	dcIds.reserve(_balanceData.size());
+	for (const auto &[dcId, data] : _balanceData) {
+		if (int(data.sessions.size()) > limit) {
+			dcIds.push_back(dcId);
+		}
+	}
+	for (const auto dcId : dcIds) {
+		while (int(_balanceData[dcId].sessions.size()) > limit) {
+			removeSession(dcId);
+		}
+	}
+	checkSendNext();
 }
 
 int DownloadManagerMtproto::chooseSessionIndex(MTP::DcId dcId) const {
@@ -752,6 +819,8 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 		mtpRequestId requestId) {
 	Expects(_cdnHashesRequestId == requestId);
 
+	const auto owner = _owner;
+	const auto dcId = this->dcId();
 	const auto requestData = finishSentRequest(
 		requestId,
 		FinishRequestReason::Redirect);
@@ -796,6 +865,7 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 		return;
 	}
 	requestMoreCdnFileHashes();
+	owner->checkSendNextAfterSuccess(dcId);
 }
 
 void DownloadMtprotoTask::placeSentRequest(

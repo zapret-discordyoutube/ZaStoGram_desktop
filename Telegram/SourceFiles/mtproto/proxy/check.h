@@ -48,6 +48,7 @@ public:
 		ProxyCheckStatus progressStatus = ProxyCheckStatus::Idle;
 		bool finished = false;
 		bool networkStarted = false;
+		bool preempted = false;
 	};
 
 	ProxyCheckConnection();

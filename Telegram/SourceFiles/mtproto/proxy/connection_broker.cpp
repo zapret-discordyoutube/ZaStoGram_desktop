@@ -191,7 +191,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		&QObject::destroyed,
 		[weak, key] {
 			if (const auto context = weak.lock()) {
-				context->endpointAdmissionArbiter().cancel(key);
+				context->endpointAdmissionArbiter().ownerDestroyed(key);
 			}
 		});
 	if (!ownerDestroyed) {
@@ -231,6 +231,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.traceId = traceId,
 			.owner = request.context,
 			.ownerDestroyed = ownerDestroyed,
+			.laneControl = std::move(request.laneControl),
 			.status = [
 				runtime,
 				diagnostics,

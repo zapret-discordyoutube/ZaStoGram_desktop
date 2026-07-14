@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/data.h"
 #include "mtproto/protocol/mtproto_serialized_request.h"
 #include "mtproto/session/session_delegate.h"
+#include "mtproto/session/session_role.h"
 
 #include <QtCore/QTimer>
 
@@ -167,6 +168,7 @@ public:
 		not_null<QThread*> thread,
 		ShiftedDcId shiftedDcId,
 		not_null<Dcenter*> dc,
+		SessionRole role,
 		uint64 proxyGeneration,
 		bool proxyMigrationScout,
 		bool proxyMigrationSuspended);
@@ -230,6 +232,7 @@ private:
 	const not_null<Instance*> _instance;
 	const not_null<SessionDelegate*> _delegate;
 	const ShiftedDcId _shiftedDcId = 0;
+	const SessionRole _role = SessionRole::Auxiliary;
 	const not_null<Dcenter*> _dc;
 	const std::shared_ptr<SessionData> _data;
 	const not_null<QThread*> _thread;

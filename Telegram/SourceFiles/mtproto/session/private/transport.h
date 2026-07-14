@@ -32,6 +32,8 @@ public:
 	void restartNow();
 	void migrateProxy(uint64 generation, bool scout);
 	void releaseProxyMigration(uint64 generation);
+	void applyEndpointLaneCommand(MtProxy::EndpointLaneCommand command);
+	void requestEndpointLane();
 	void restart();
 	void doDisconnect();
 	void destroyAllConnections(
@@ -103,6 +105,9 @@ private:
 		uint64 proxyGeneration = 0;
 		bool proxyMigrationSuspended = false;
 		bool proxyMigrationScout = false;
+		bool endpointLaneSuspended = false;
+		uint64 endpointLaneToken = 0;
+		Fn<void()> endpointLaneDemand;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
 		std::vector<TestConnection> testConnections;
@@ -147,6 +152,7 @@ private:
 	void onDisconnected(not_null<AbstractConnection*> connection);
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
+	[[nodiscard]] bool hasEndpointLaneDemand() const;
 	void removeConnectionBrokerTicket(SessionProxyTicketId id);
 	void armWaitForConnectedTimer();
 	[[nodiscard]] SessionProxyAttempt proxyAttempt(

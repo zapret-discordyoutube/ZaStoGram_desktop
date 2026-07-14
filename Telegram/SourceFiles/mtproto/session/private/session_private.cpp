@@ -46,6 +46,7 @@ SessionPrivate::SessionPrivate(
 		not_null<QThread*> thread,
 		std::shared_ptr<SessionData> data,
 		ShiftedDcId shiftedDcId,
+		SessionRole role,
 		uint64 proxyGeneration,
 		bool proxyMigrationScout,
 		bool proxyMigrationSuspended,
@@ -60,6 +61,7 @@ SessionPrivate::SessionPrivate(
 , _connectionFactory(connectionFactory)
 , _authKeyFactory(authKeyFactory)
 , _shiftedDcId(shiftedDcId)
+, _role(role)
 , _realDcType(_delegate->dcOptions().dcType(_shiftedDcId))
 , _currentDcType(_realDcType)
 , _state(DisconnectedState)

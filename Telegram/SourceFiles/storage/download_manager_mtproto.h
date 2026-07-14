@@ -110,6 +110,8 @@ private:
 	void killSessions(MTP::DcId dcId);
 
 	void resetGeneration();
+	[[nodiscard]] int sessionLimit() const;
+	void enforceSessionLimit();
 	void sessionTimedOut(MTP::DcId dcId, int index);
 	void removeSession(MTP::DcId dcId);
 
@@ -125,6 +127,7 @@ private:
 	base::Timer _killSessionsTimer;
 
 	base::flat_map<MTP::DcId, Queue> _queues;
+	MTP::DcId _serializedDcCursor = 0;
 	rpl::lifetime _lifetime;
 
 };

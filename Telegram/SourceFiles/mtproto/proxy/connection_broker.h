@@ -63,6 +63,7 @@ struct ConnectionRequest {
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	crl::time notBefore = 0;
 	QPointer<QObject> context;
+	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 };

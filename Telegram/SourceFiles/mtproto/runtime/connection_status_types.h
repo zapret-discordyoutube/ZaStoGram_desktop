@@ -37,6 +37,8 @@ struct RuntimeGenerationKey {
 
 enum class ProxyConnectionUse {
 	Main,
+	Maintenance,
+	Auxiliary,
 	Media,
 	Upload,
 	ProxyCheck,

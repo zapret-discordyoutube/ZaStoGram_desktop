@@ -9,6 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
+#include <QtCore/QObject>
+#include <QtCore/QPointer>
+
 #include <algorithm>
 #include <compare>
 #include <cstddef>
@@ -39,6 +42,13 @@ struct EndpointAttemptState {
 	crl::time phaseStartedAt = 0;
 	crl::time terminalAt = 0;
 	std::optional<EndpointVerdict> terminalVerdict;
+	int establishedLanesAtStart = 0;
+	uint64 laneEvidenceEpochAtStart = 0;
+	QPointer<QObject> owner;
+	QMetaObject::Connection ownerDestroyed;
+	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
+	bool preempting = false;
+	crl::time transferServiceUntil = 0;
 };
 
 struct RelayProofIdentity {
@@ -61,6 +71,9 @@ struct RelayProofState {
 	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 	uint8 payloadCount = 0;
+	QPointer<QObject> owner;
+	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
+	bool preempting = false;
 };
 
 inline constexpr auto kRelayProofPayloadCountLimit = uint8(2);
@@ -80,12 +93,47 @@ enum class RelayProofPromotionResult {
 	MissingAdmission,
 };
 
+struct EndpointOpenFailureState {
+	FailureReason reason = FailureReason::None;
+	RuntimeGenerationKey runtimeGeneration;
+	EndpointUse use = EndpointUse::Main;
+	crl::time retryUntil = 0;
+	int consecutiveFailures = 0;
+};
+
+struct EndpointOpeningFlowKey {
+	RuntimeGenerationKey runtimeGeneration;
+	EndpointUse use = EndpointUse::Main;
+
+	friend inline auto operator<=>(
+		EndpointOpeningFlowKey,
+		EndpointOpeningFlowKey) = default;
+};
+
+struct EndpointOpeningState {
+	EndpointOpenFailureState bootstrap;
+	EndpointOpenFailureState expansion;
+	std::map<EndpointOpeningFlowKey, EndpointOpenFailureState> expansionFlows;
+};
+
+struct EndpointLiveBudgetState {
+	int learnedLimit = 0;
+	int provenLowerBound = 0;
+	int pressureOccupancy = 0;
+	int pressureStrikes = 0;
+	crl::time pressureObservedAt = 0;
+	crl::time expansionProbeAfter = 0;
+	uint64 evidenceEpoch = 0;
+};
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
 	FailureReason lastFailure = FailureReason::None;
 	QString lastDiagnostic;
 	crl::time terminalUntil = 0;
+	EndpointOpeningState opening;
+	EndpointLiveBudgetState liveBudget;
 	int active = 0;
 	int consecutiveFailures = 0;
 	int recipeLevel = 0;
@@ -96,6 +144,7 @@ struct EndpointState {
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
 	std::map<uint64, EndpointAttemptState> attemptStarts;
+	std::map<RelayProofIdentity, EndpointAttemptState> liveLanes;
 	crl::time deniedSince = 0;
 	crl::time lastDenialRotationSignal = 0;
 	crl::time lastSuccessAt = 0;
@@ -109,6 +158,89 @@ struct EndpointState {
 	std::deque<EndpointTerminalEvidence> terminalEvidence;
 	std::map<RuntimeGenerationKey, EndpointVerdict> canonicalVerdicts;
 };
+
+[[nodiscard]] inline EndpointOpenFailureState &EndpointOpeningFailure(
+		EndpointState &state,
+		bool bootstrap) {
+	return bootstrap ? state.opening.bootstrap : state.opening.expansion;
+}
+
+[[nodiscard]] inline const EndpointOpenFailureState &EndpointOpeningFailure(
+		const EndpointState &state,
+		bool bootstrap) {
+	return bootstrap ? state.opening.bootstrap : state.opening.expansion;
+}
+
+[[nodiscard]] inline EndpointOpeningFlowKey EndpointOpeningFlow(
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use) {
+	return {
+		.runtimeGeneration = runtimeGeneration,
+		.use = use,
+	};
+}
+
+[[nodiscard]] inline EndpointOpenFailureState *FindEndpointExpansionFailure(
+		EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use) {
+	const auto i = state.opening.expansionFlows.find(
+		EndpointOpeningFlow(runtimeGeneration, use));
+	return (i == end(state.opening.expansionFlows)) ? nullptr : &i->second;
+}
+
+[[nodiscard]] inline const EndpointOpenFailureState *FindEndpointExpansionFailure(
+		const EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use) {
+	const auto i = state.opening.expansionFlows.find(
+		EndpointOpeningFlow(runtimeGeneration, use));
+	return (i == end(state.opening.expansionFlows)) ? nullptr : &i->second;
+}
+
+[[nodiscard]] inline EndpointOpenFailureState &EnsureEndpointExpansionFailure(
+		EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use) {
+	const auto key = EndpointOpeningFlow(runtimeGeneration, use);
+	auto &result = state.opening.expansionFlows[key];
+	result.runtimeGeneration = runtimeGeneration;
+	result.use = use;
+	return result;
+}
+
+inline void RecomputeEndpointExpansionThrottle(EndpointState &state) {
+	state.opening.expansion = {};
+	for (const auto &entry : state.opening.expansionFlows) {
+		const auto &candidate = entry.second;
+		if (candidate.retryUntil > state.opening.expansion.retryUntil) {
+			state.opening.expansion = candidate;
+		}
+	}
+}
+
+inline void RemoveEndpointExpansionFailure(
+		EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use) {
+	state.opening.expansionFlows.erase(
+		EndpointOpeningFlow(runtimeGeneration, use));
+	RecomputeEndpointExpansionThrottle(state);
+}
+
+inline void RemoveEndpointExpansionFailuresForRuntime(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId) {
+	for (auto i = begin(state.opening.expansionFlows);
+			i != end(state.opening.expansionFlows);) {
+		if (i->first.runtimeGeneration.runtimeId == runtimeId) {
+			i = state.opening.expansionFlows.erase(i);
+		} else {
+			++i;
+		}
+	}
+	RecomputeEndpointExpansionThrottle(state);
+}
 
 inline constexpr auto kEndpointTerminalEvidenceLimit = std::size_t(32);
 inline constexpr auto kEndpointTerminalEvidenceWindow
@@ -299,9 +431,10 @@ inline void RemoveEndpointOutcomesForRuntime(
 		const EndpointState &state,
 		const RelayProofIdentity &identity) {
 	const auto i = state.attemptStarts.find(identity.attemptId);
-	return i != end(state.attemptStarts)
+	return (i != end(state.attemptStarts)
 		&& i->second.runtimeId == identity.runtimeId
-		&& i->second.proxyGeneration == identity.proxyGeneration;
+		&& i->second.proxyGeneration == identity.proxyGeneration)
+		|| state.liveLanes.contains(identity);
 }
 
 [[nodiscard]] inline bool HasRelayProof(
@@ -346,6 +479,32 @@ inline void RemoveEndpointOutcomesForRuntime(
 		!= MainRelayProofStrength::None;
 }
 
+[[nodiscard]] inline MainRelayProofView EndpointMainRelayProof(
+		const EndpointState &state) {
+	auto result = MainRelayProofView();
+	for (const auto &[identity, proof] : state.relayProofs) {
+		const auto generation = state.generations.find(identity.runtimeId);
+		if (generation == end(state.generations)
+			|| generation->second != identity.proxyGeneration
+			|| proof.use != EndpointUse::Main) {
+			continue;
+		}
+		result.provenAt = std::max(result.provenAt, proof.provenAt);
+		result.lastPayloadAt = std::max(
+			result.lastPayloadAt,
+			proof.lastPayloadAt);
+		result.payloadCount = std::min(
+			int(kRelayProofPayloadCountLimit),
+			result.payloadCount + std::max(1, int(proof.payloadCount)));
+	}
+	result.strength = (result.payloadCount >= 2)
+		? MainRelayProofStrength::RepeatedPayload
+		: (result.payloadCount == 1)
+		? MainRelayProofStrength::SinglePayload
+		: MainRelayProofStrength::None;
+	return result;
+}
+
 [[nodiscard]] inline int ActiveEndpointAdmissionCount(
 		const EndpointState &state) {
 	auto result = 0;
@@ -355,6 +514,60 @@ inline void RemoveEndpointOutcomesForRuntime(
 		}
 	}
 	return result;
+}
+
+[[nodiscard]] inline int CurrentEndpointRelayLaneCount(
+		const EndpointState &state) {
+	auto result = 0;
+	for (const auto &[identity, proof] : state.relayProofs) {
+		const auto generation = state.generations.find(identity.runtimeId);
+		if (generation != end(state.generations)
+			&& generation->second == identity.proxyGeneration) {
+			++result;
+		}
+	}
+	return result;
+}
+
+[[nodiscard]] inline int EndpointEstablishedLaneCount(
+		const EndpointState &state,
+		uint64 excludedAttemptId = 0) {
+	auto result = 0;
+	for (const auto &entry : state.liveLanes) {
+		if (entry.first.attemptId != excludedAttemptId) {
+			++result;
+		}
+	}
+	for (const auto &[attemptId, attempt] : state.attemptStarts) {
+		if (attemptId == excludedAttemptId || attempt.admissionActive) {
+			continue;
+		}
+		++result;
+	}
+	return result;
+}
+
+[[nodiscard]] inline int EndpointTransferLaneCount(
+		const EndpointState &state) {
+	auto result = 0;
+	for (const auto &entry : state.liveLanes) {
+		if (entry.second.use == EndpointUse::Media
+			|| entry.second.use == EndpointUse::Upload) {
+			++result;
+		}
+	}
+	for (const auto &entry : state.attemptStarts) {
+		if (entry.second.use == EndpointUse::Media
+			|| entry.second.use == EndpointUse::Upload) {
+			++result;
+		}
+	}
+	return result;
+}
+
+[[nodiscard]] inline int CurrentEndpointLiveLaneCount(
+		const EndpointState &state) {
+	return int(state.attemptStarts.size() + state.liveLanes.size());
 }
 
 inline void SynchronizeEndpointAdmissionAggregate(EndpointState &state) {
@@ -421,6 +634,9 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	proof.proxyEpoch = attempt->second.proxyEpoch;
 	proof.successEpoch = attempt->second.successEpoch;
 	proof.attemptStartedAt = attempt->second.attemptStartedAt;
+	proof.owner = attempt->second.owner;
+	proof.laneControl = attempt->second.laneControl;
+	proof.preempting = attempt->second.preempting;
 	if (!proof.lastPayloadAt) {
 		proof.lastPayloadAt = proof.provenAt;
 	}
@@ -428,7 +644,9 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 		proof.payloadCount,
 		uint8(1),
 		kRelayProofPayloadCountLimit);
+	attempt->second.admissionActive = false;
 	state.relayProofs.emplace(identity, proof);
+	state.liveLanes.emplace(identity, attempt->second);
 	state.attemptStarts.erase(identity.attemptId);
 	SynchronizeEndpointAdmissionAggregate(state);
 	SynchronizeRelayProofAggregate(state);
@@ -493,6 +711,16 @@ inline void ApplyRuntimeProxyGeneration(
 		return;
 	}
 	state.generations[runtimeId] = proxyGeneration;
+	for (auto i = begin(state.opening.expansionFlows);
+			i != end(state.opening.expansionFlows);) {
+		if (i->first.runtimeGeneration.runtimeId == runtimeId
+			&& i->first.runtimeGeneration.proxyGeneration < proxyGeneration) {
+			i = state.opening.expansionFlows.erase(i);
+		} else {
+			++i;
+		}
+	}
+	RecomputeEndpointExpansionThrottle(state);
 	PruneEndpointOutcomesForGeneration(
 		state,
 		runtimeId,
@@ -501,7 +729,17 @@ inline void ApplyRuntimeProxyGeneration(
 			i != end(state.attemptStarts);) {
 		if (i->second.runtimeId == runtimeId
 			&& i->second.proxyGeneration < proxyGeneration) {
+			QObject::disconnect(i->second.ownerDestroyed);
 			i = state.attemptStarts.erase(i);
+		} else {
+			++i;
+		}
+	}
+	for (auto i = begin(state.liveLanes); i != end(state.liveLanes);) {
+		if (i->first.runtimeId == runtimeId
+			&& i->first.proxyGeneration < proxyGeneration) {
+			QObject::disconnect(i->second.ownerDestroyed);
+			i = state.liveLanes.erase(i);
 		} else {
 			++i;
 		}
@@ -528,6 +766,8 @@ struct RouteState {
 
 struct EndpointUseCounts {
 	int main = 0;
+	int maintenance = 0;
+	int auxiliary = 0;
 	int media = 0;
 	int upload = 0;
 	int proxyCheck = 0;
@@ -540,6 +780,8 @@ struct EndpointAdmissionPolicyInput {
 	EndpointUseCounts scheduled;
 	EndpointUse use = EndpointUse::Main;
 	MainRelayProofStrength mainProof = MainRelayProofStrength::None;
+	MainRelayProofStrength endpointMainProof
+		= MainRelayProofStrength::None;
 	FailureReason lastFailure = FailureReason::None;
 	int urgentMainDemand = 0;
 	crl::time retryUntil = 0;
@@ -549,6 +791,8 @@ struct EndpointAdmissionPolicyInput {
 	bool endpointRelayProven = false;
 	bool healthy = false;
 	bool fastWarmup = false;
+	bool foregroundTransfer = false;
+	bool bootstrapFailure = false;
 };
 
 struct EndpointConcurrencyPolicy {

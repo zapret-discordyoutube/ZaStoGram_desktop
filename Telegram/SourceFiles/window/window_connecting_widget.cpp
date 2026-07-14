@@ -615,7 +615,10 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 	if (state.useProxy) {
 		const auto status = state.proxyStatus;
 		result.proxySeverity = MTP::ProxyConnectionStatusSeverityFor(status);
-		result.proxyTone = MTP::ProxyConnectionStatusToneFor(status);
+		result.proxyTone = (status.proxy.type == MTP::ProxyData::Type::Mtproto
+			&& status.phase == MTP::ProxyConnectionPhase::Connected)
+			? MTP::ProxyConnectionStatusTone::Progress
+			: MTP::ProxyConnectionStatusToneFor(status);
 	}
 	result.progressShown = (state.type != State::Type::Connected);
 	result.visible = state.exposed
@@ -852,7 +855,13 @@ void ConnectionState::Widget::refreshRetryLink(bool hasRetry) {
 			tr::lng_reconnecting_try_now(tr::now),
 			st::connectingRetryLink);
 		_retry->addClickHandler([=] {
-			_account->mtp().restart();
+			const auto &proxy = Core::App().settings().proxy();
+			if (proxy.isEnabled()
+				&& proxy.selected().type == MTP::ProxyData::Type::Mtproto) {
+				_account->mtp().migrateProxy();
+			} else {
+				_account->mtp().restart();
+			}
 		});
 		updateRetryGeometry();
 	} else if (!hasRetry) {

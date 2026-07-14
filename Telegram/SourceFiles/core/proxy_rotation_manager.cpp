@@ -54,6 +54,11 @@ ProxyRotationManager::ProxyRotationManager()
 		stopChecking();
 		reevaluate();
 	}, _lifetime);
+	App().domain().activeChanges(
+	) | rpl::on_next([=](not_null<Main::Account*>) {
+		stopChecking();
+		reevaluate();
+	}, _lifetime);
 }
 
 void ProxyRotationManager::settingsChanged() {
@@ -159,6 +164,8 @@ bool ProxyRotationManager::canonicalRecoveryEvidence(
 		const MTP::details::MtProxy::ProxyEndpointView &view) const {
 	if (!view.canonicalVerdict
 		|| view.mainProof.strength
+			!= MTP::details::MtProxy::MainRelayProofStrength::None
+		|| view.endpointMainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return false;
 	}
@@ -176,6 +183,8 @@ crl::time ProxyRotationManager::recoveryObservedAt(
 	if (!view.runtimeGeneration.runtimeId
 		|| !view.runtimeGeneration.proxyGeneration
 		|| view.mainProof.strength
+			!= MTP::details::MtProxy::MainRelayProofStrength::None
+		|| view.endpointMainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return 0;
 	}
@@ -352,23 +361,30 @@ void ProxyRotationManager::scheduleGraceEvaluation(
 
 void ProxyRotationManager::recordGraceMainSuccess(
 		const MTP::details::MtProxy::ProxyEndpointView &view) {
+	const auto successAt = std::max({
+		view.mainProof.provenAt,
+		view.mainProof.lastPayloadAt,
+		view.endpointMainProof.provenAt,
+		view.endpointMainProof.lastPayloadAt,
+	});
+	if (!successAt
+		|| (view.mainProof.strength
+			== MTP::details::MtProxy::MainRelayProofStrength::None
+		&& view.endpointMainProof.strength
+			== MTP::details::MtProxy::MainRelayProofStrength::None)) {
+		return;
+	}
+	_healthRotationRequestedUntil = 0;
 	if (!_pendingGraceEvaluation
 		|| MTP::details::MtProxy::EndpointKey(
 			_pendingGraceEvaluation->endpoint)
 			!= MTP::details::MtProxy::EndpointKey(view.endpoint)
 		|| _pendingGraceEvaluation->runtimeGeneration
-			!= view.runtimeGeneration
-		|| view.mainProof.strength
-			== MTP::details::MtProxy::MainRelayProofStrength::None) {
+			!= view.runtimeGeneration) {
 		return;
 	}
-	accumulate_max(
-		_pendingGraceEvaluation->mainSuccessAt,
-		std::max({
-			view.mainProof.provenAt,
-			view.mainProof.lastPayloadAt,
-			crl::now(),
-		}));
+	_pendingGraceEvaluation.reset();
+	_graceTimer.cancel();
 }
 
 void ProxyRotationManager::graceTimerDone() {
@@ -386,8 +402,9 @@ void ProxyRotationManager::graceTimerDone() {
 			|| MTP::details::MtProxy::EndpointKey(view->endpoint)
 				!= MTP::details::MtProxy::EndpointKey(pending->endpoint)
 			|| view->runtimeGeneration != pending->runtimeGeneration
-			|| pending->mainSuccessAt > pending->observedAt
 			|| view->mainProof.strength
+				!= MTP::details::MtProxy::MainRelayProofStrength::None
+			|| view->endpointMainProof.strength
 				!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 			reevaluate();
 			return;

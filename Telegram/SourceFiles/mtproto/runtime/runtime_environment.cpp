@@ -411,6 +411,15 @@ const RuntimeAsyncGateway &RuntimeEnvironment::async() const {
 	return _descriptor.async;
 }
 
+bool RuntimeEnvironment::usesSerializedFileTransport() const {
+	const auto selected = (_descriptor.proxy.enabled
+		&& _descriptor.proxy.enabled()
+		&& _descriptor.proxy.selected)
+		? _descriptor.proxy.selected()
+		: ProxyData();
+	return selected && selected.type == ProxyData::Type::Mtproto;
+}
+
 ProxyServices &RuntimeEnvironment::proxyServices() const {
 	return *_proxyServices;
 }

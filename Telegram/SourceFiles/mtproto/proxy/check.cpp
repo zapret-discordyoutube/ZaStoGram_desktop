@@ -102,6 +102,8 @@ void SetProxyCheckProgress(
 		const auto &control = runtime->proxyServices().control();
 		const auto view = control.mtproxyEndpointView(endpoint);
 		return view.mainProof.strength
+			!= MtProxy::MainRelayProofStrength::None
+			|| view.endpointMainProof.strength
 			!= MtProxy::MainRelayProofStrength::None;
 	}
 	const auto status = runtime->instance().connectionStatus
@@ -322,6 +324,7 @@ void ProxyCheckConnection::reset() {
 		_data->mtproxyAttemptStartedAt = 0;
 		_data->finished = true;
 		_data->networkStarted = false;
+		_data->preempted = false;
 		_data->progressStatus = ProxyCheckStatus::Idle;
 		_data->runtime = nullptr;
 		_data->proxy = ProxyData();
@@ -480,6 +483,7 @@ void StartProxyCheck(
 		RetainActiveProxyCheckKey(probeKey);
 		state->progressStatus = ProxyCheckStatus::Idle;
 		state->networkStarted = false;
+		state->preempted = false;
 		auto handshakeGate = details::ReserveHandshakeGateForProxy(
 			runtime,
 			proxy);
@@ -578,6 +582,7 @@ void StartProxyCheck(
 			? uint64()
 			: runtime->proxyServices().control().mtproxyEndpointView(
 				endpoint).runtimeGeneration.proxyGeneration;
+		const auto weakState = std::weak_ptr<ProxyCheckConnection::Data>(state);
 		state->connectionTicket = runtime->proxyServices().broker().request({
 			.proxyGeneration = proxyGeneration,
 			.endpoint = endpoint,
@@ -588,6 +593,49 @@ void StartProxyCheck(
 			.connectionPattern = checkStealth.connectionPattern,
 			.notBefore = gateDelay,
 			.context = raw,
+			.laneControl = [=](MtProxy::EndpointLaneCommand command) mutable {
+				auto result = MtProxy::EndpointLaneCommandResult::NotApplicable;
+				const auto strong = weakState.lock();
+				if (strong
+					&& command.type == MtProxy::EndpointLaneCommandType::Suspend) {
+					const auto ownsAttempt = strong->connection.get() == raw
+						&& !strong->finished
+						&& strong->networkStarted
+						&& command.attemptId
+						&& strong->mtproxyAttempt.attemptId
+							== command.attemptId;
+					if (ownsAttempt) {
+						const auto accepted = command.authorize
+							&& command.authorize();
+						result = accepted
+							? MtProxy::EndpointLaneCommandResult::Applied
+							: MtProxy::EndpointLaneCommandResult::Retry;
+						if (accepted) {
+							strong->preempted = true;
+							strong->finished = true;
+							strong->networkStarted = false;
+							strong->connectionTicket.cancel();
+							strong->handshakeGate.release();
+							static_cast<void>(ClaimProxyCheckTerminal(
+								runtime,
+								strong));
+							strong->mtproxyLease.release();
+							strong->mtproxyEndpoint = MtProxy::EndpointId();
+							strong->mtproxyAttempt = {};
+							strong->mtproxyPlan = {};
+							strong->mtproxyAttemptStartedAt = 0;
+							raw->disconnectFromServer();
+						}
+					}
+				}
+				if (command.done) {
+					command.done(result);
+				}
+				if (result == MtProxy::EndpointLaneCommandResult::Applied
+					&& fail) {
+					fail(raw);
+				}
+			},
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
 				if (state->connection.get() != raw) {

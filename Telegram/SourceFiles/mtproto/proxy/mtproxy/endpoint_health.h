@@ -76,6 +76,7 @@ struct ProxyEndpointView {
 	RuntimeGenerationKey runtimeGeneration;
 	AdmissionTicketKey ticketKey;
 	MainRelayProofView mainProof;
+	MainRelayProofView endpointMainProof;
 	ProxySchedulerLifecycle schedulerLifecycle
 		= ProxySchedulerLifecycle::None;
 	ProxyAdmissionPhase admissionPhase = ProxyAdmissionPhase::Idle;
@@ -265,6 +266,9 @@ public:
 	void applyProxyGeneration(uint64 proxyGeneration);
 
 private:
+	static void ResolveLeaseIdentity(FailureReport &report);
+	static void ResolveLeaseIdentity(SuccessReport &report);
+
 	const not_null<RuntimeEnvironment*> _runtime;
 	const std::shared_ptr<ProxyEndpointContext> _context;
 	const ProxyRuntimeId _runtimeId = 0;

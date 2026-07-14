@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/private/proxy_port.h"
 #include "mtproto/session/private/transport.h"
 #include "mtproto/session/session_delegate.h"
+#include "mtproto/session/session_role.h"
 #include "mtproto/session/session_state.h"
 
 namespace MTP {
@@ -39,6 +40,7 @@ public:
 		not_null<QThread*> thread,
 		std::shared_ptr<SessionData> data,
 		ShiftedDcId shiftedDcId,
+		SessionRole role,
 		uint64 proxyGeneration = 0,
 		bool proxyMigrationScout = false,
 		bool proxyMigrationSuspended = false,
@@ -178,6 +180,7 @@ private:
 	const not_null<SessionConnectionFactory*> _connectionFactory;
 	const not_null<SessionAuthKeyFactory*> _authKeyFactory;
 	const ShiftedDcId _shiftedDcId = 0;
+	const SessionRole _role = SessionRole::Auxiliary;
 	DcType _realDcType = DcType();
 	DcType _currentDcType = DcType();
 

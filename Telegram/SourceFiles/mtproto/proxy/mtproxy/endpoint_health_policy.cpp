@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 
+#include <QtCore/QObject>
+
 #include <algorithm>
 
 namespace MTP::details::MtProxy {
@@ -154,6 +156,28 @@ FailureTraits TraitsFor(FailureReason reason) {
 
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
 	return TraitsFor(reason).escalatesRecipe;
+}
+
+[[nodiscard]] bool FailureAffectsOpening(FailureReason reason) {
+	switch (reason) {
+	case FailureReason::DnsFailed:
+	case FailureReason::TcpConnectTimeout:
+	case FailureReason::TcpConnectedNoClientHelloWrite:
+	case FailureReason::ClientHelloSentNoServerHello:
+	case FailureReason::TlsAlertAfterClientHello:
+	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::ProxyProtocolBadResponse:
+		return true;
+	case FailureReason::None:
+	case FailureReason::ServerHelloOkNoAppData:
+	case FailureReason::ServerHelloOkNoMtprotoData:
+	case FailureReason::AppDataRemoteClosed:
+	case FailureReason::ConnectedNoMtprotoData:
+	case FailureReason::MtpReceiveTimeoutAfterData:
+	case FailureReason::Network:
+		return false;
+	}
+	return false;
 }
 
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason) {
@@ -324,7 +348,9 @@ void ApplyProxyGeneration(
 
 void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
-		if (now - i->second.startedAt > kAttemptHardTtl) {
+		if (i->second.admissionActive
+			&& now - i->second.startedAt > kAttemptHardTtl) {
+			QObject::disconnect(i->second.ownerDestroyed);
 			i = state.attemptStarts.erase(i);
 		} else {
 			++i;
@@ -379,6 +405,8 @@ int EndpointUseCount(
 		EndpointUse use) {
 	switch (use) {
 	case EndpointUse::Main: return counts.main;
+	case EndpointUse::Maintenance: return counts.maintenance;
+	case EndpointUse::Auxiliary: return counts.auxiliary;
 	case EndpointUse::Media: return counts.media;
 	case EndpointUse::Upload: return counts.upload;
 	case EndpointUse::ProxyCheck: return counts.proxyCheck;
@@ -388,6 +416,8 @@ int EndpointUseCount(
 
 int TotalEndpointUseCount(const EndpointUseCounts &counts) {
 	return std::max(0, counts.main)
+		+ std::max(0, counts.maintenance)
+		+ std::max(0, counts.auxiliary)
 		+ std::max(0, counts.media)
 		+ std::max(0, counts.upload)
 		+ std::max(0, counts.proxyCheck);
@@ -399,6 +429,12 @@ EndpointUseCounts BeginEndpointAdmission(
 	switch (use) {
 	case EndpointUse::Main:
 		++counts.main;
+		break;
+	case EndpointUse::Maintenance:
+		++counts.maintenance;
+		break;
+	case EndpointUse::Auxiliary:
+		++counts.auxiliary;
 		break;
 	case EndpointUse::Media:
 		++counts.media;
@@ -420,6 +456,12 @@ EndpointUseCounts ReleaseEndpointAdmission(
 	case EndpointUse::Main:
 		counts.main = std::max(0, counts.main - 1);
 		break;
+	case EndpointUse::Maintenance:
+		counts.maintenance = std::max(0, counts.maintenance - 1);
+		break;
+	case EndpointUse::Auxiliary:
+		counts.auxiliary = std::max(0, counts.auxiliary - 1);
+		break;
 	case EndpointUse::Media:
 		counts.media = std::max(0, counts.media - 1);
 		break;
@@ -438,18 +480,43 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 	auto policy = EndpointConcurrencyPolicy();
 	const auto hasMainProof = input.mainProof
 		!= MainRelayProofStrength::None;
+	const auto endpointHasMainProof = input.endpointMainProof
+		!= MainRelayProofStrength::None;
 	const auto repeatedMainProof = input.mainProof
+		== MainRelayProofStrength::RepeatedPayload;
+	const auto repeatedEndpointMainProof = input.endpointMainProof
 		== MainRelayProofStrength::RepeatedPayload;
 	const auto background = (input.use == EndpointUse::Media)
 		|| (input.use == EndpointUse::Upload);
+	const auto maintenance = (input.use == EndpointUse::Maintenance);
+	const auto auxiliary = (input.use == EndpointUse::Auxiliary);
+	const auto localFastWarmup = input.fastWarmup && repeatedMainProof;
+	const auto endpointFastWarmup = input.fastWarmup
+		&& repeatedEndpointMainProof;
+	const auto fastWarmup = (background || auxiliary)
+		? localFastWarmup
+		: endpointFastWarmup;
 	if (FailureNeedsRecipeEscalation(input.lastFailure)) {
-		policy.activeCap = kDpiFailureActiveCap;
+		if (input.bootstrapFailure) {
+			policy.activeCap = kDpiFailureActiveCap;
+		} else if (endpointHasMainProof) {
+			policy.activeCap = fastWarmup
+				? kFastHealthyActiveCap
+				: kHealthyActiveCap;
+			policy.handshakeSpacing = kHealthyHandshakeSpacing;
+		} else {
+			policy.activeCap = kUnknownActiveCap;
+		}
 		policy.retryAfter = kQueuedRetry;
-		policy.recipeEscalationAllowed = true;
-		if (!input.endpointRelayProven && background) {
+		if (input.bootstrapFailure) {
+			policy.recipeEscalationAllowed = true;
+		}
+		if ((!input.endpointRelayProven || !endpointHasMainProof)
+			&& background) {
 			policy.useAllowed = false;
 		}
 	} else if (!input.endpointRelayProven
+		|| !endpointHasMainProof
 		|| !input.lastRelaySuccessAt) {
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
@@ -457,7 +524,7 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 			policy.useAllowed = false;
 		}
 	} else if (input.healthy) {
-		policy.activeCap = (input.fastWarmup && repeatedMainProof)
+		policy.activeCap = fastWarmup
 			? kFastHealthyActiveCap
 			: kHealthyActiveCap;
 		policy.handshakeSpacing = kHealthyHandshakeSpacing;
@@ -466,21 +533,35 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 		policy.activeCap = kUnknownActiveCap;
 		policy.retryAfter = kQueuedRetry;
 	}
-	const auto urgentMainDemand = std::max(0, input.urgentMainDemand);
+	const auto urgentMainDemand = (input.foregroundTransfer
+			&& policy.activeCap > 1)
+		? 0
+		: std::max(0, input.urgentMainDemand);
 	if (background && (!hasMainProof || urgentMainDemand > 0)) {
+		policy.useAllowed = false;
+	}
+	if (auxiliary && (!hasMainProof || urgentMainDemand > 0)) {
+		policy.useAllowed = false;
+	}
+	if (maintenance && urgentMainDemand > 0) {
 		policy.useAllowed = false;
 	}
 	const auto candidateIsUrgentMain = (input.use == EndpointUse::Main)
 		&& !hasMainProof;
+	const auto mainOpening = input.active.main + input.scheduled.main;
 	policy.mainLaneReserved = (urgentMainDemand > 0)
-		&& !candidateIsUrgentMain;
+		&& !candidateIsUrgentMain
+		&& (mainOpening == 0);
 	const auto availableCap = std::max(
 		0,
 		policy.activeCap - (policy.mainLaneReserved ? 1 : 0));
 	const auto occupied = TotalEndpointUseCount(input.active)
 		+ TotalEndpointUseCount(input.scheduled);
+	const auto nonMainOccupied = occupied - mainOpening;
+	const auto nonMainCandidate = input.use != EndpointUse::Main;
 	policy.admissionAllowed = policy.useAllowed
-		&& (occupied < availableCap);
+		&& (occupied < availableCap)
+		&& (!nonMainCandidate || nonMainOccupied < 1);
 	if (input.retryUntil > input.now) {
 		policy.retryAfter = std::max(
 			policy.retryAfter,
@@ -488,7 +569,7 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 		policy.admissionAllowed = false;
 	}
 	if (input.nextHandshakeAt > input.now
-		&& (!input.endpointRelayProven
+		&& (!endpointHasMainProof
 			|| policy.handshakeSpacing > 0)) {
 		policy.retryAfter = std::max(
 			policy.retryAfter,
@@ -501,19 +582,36 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 [[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
 		const EndpointState &state,
 		EndpointUse use,
+		RuntimeGenerationKey runtimeGeneration,
 		crl::time now,
 		bool fastWarmup) {
+	const auto mainProof = EndpointMainRelayProof(state);
+	const auto bootstrap = (use == EndpointUse::Main)
+		&& (mainProof.strength == MainRelayProofStrength::None);
+	const auto expansion = FindEndpointExpansionFailure(
+		state,
+		runtimeGeneration,
+		use);
+	const auto &opening = bootstrap
+		? state.opening.bootstrap
+		: expansion
+		? *expansion
+		: state.opening.expansion;
 	return EvaluateEndpointAdmission({
 		.use = use,
-		.mainProof = state.relayProven
-			? MainRelayProofStrength::RepeatedPayload
-			: MainRelayProofStrength::None,
-		.lastFailure = state.lastFailure,
-		.lastRelaySuccessAt = state.lastRelaySuccessAt,
+		.mainProof = mainProof.strength,
+		.endpointMainProof = mainProof.strength,
+		.lastFailure = opening.reason,
+		.retryUntil = opening.retryUntil,
+		.lastRelaySuccessAt = std::max(
+			mainProof.provenAt,
+			mainProof.lastPayloadAt),
 		.now = now,
-		.endpointRelayProven = state.relayProven,
+		.endpointRelayProven = mainProof.strength
+			!= MainRelayProofStrength::None,
 		.healthy = state.healthy,
 		.fastWarmup = fastWarmup,
+		.bootstrapFailure = bootstrap,
 	});
 }
 

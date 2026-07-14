@@ -38,6 +38,7 @@ public:
 
 	[[nodiscard]] ProxyRuntimeId registerRuntime();
 	void unregisterRuntime(ProxyRuntimeId runtimeId);
+	void setForegroundRuntime(ProxyRuntimeId runtimeId);
 	[[nodiscard]] ProxyTraceId nextTraceId(
 		ProxyConnectionAttempt attempt = {});
 	void updateTraceAttempt(const ProxyConnectionAttempt &attempt);

@@ -49,7 +49,6 @@ private:
 		MTP::details::MtProxy::EndpointId endpoint;
 		MTP::RuntimeGenerationKey runtimeGeneration;
 		crl::time observedAt = 0;
-		crl::time mainSuccessAt = 0;
 	};
 
 	[[nodiscard]] bool shouldObserve() const;

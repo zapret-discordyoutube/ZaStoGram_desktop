@@ -193,6 +193,8 @@ namespace {
 [[nodiscard]] QString ConnectionUseText(ProxyConnectionUse use) {
 	switch (use) {
 	case ProxyConnectionUse::Main: return u"main"_q;
+	case ProxyConnectionUse::Maintenance: return u"maintenance"_q;
+	case ProxyConnectionUse::Auxiliary: return u"auxiliary"_q;
 	case ProxyConnectionUse::Media: return u"media"_q;
 	case ProxyConnectionUse::Upload: return u"upload"_q;
 	case ProxyConnectionUse::ProxyCheck: return u"proxy_check"_q;

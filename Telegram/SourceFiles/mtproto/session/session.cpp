@@ -254,12 +254,14 @@ Session::Session(
 		not_null<QThread*> thread,
 		ShiftedDcId shiftedDcId,
 		not_null<Dcenter*> dc,
+		SessionRole role,
 		uint64 proxyGeneration,
 		bool proxyMigrationScout,
 		bool proxyMigrationSuspended)
 : _instance(instance)
 , _delegate(delegate)
 , _shiftedDcId(shiftedDcId)
+, _role(role)
 , _dc(dc)
 , _data(std::make_shared<SessionData>(this))
 , _thread(thread)
@@ -327,6 +329,7 @@ void Session::start() {
 		_thread.get(),
 		_data,
 		_shiftedDcId,
+		_role,
 		_proxyGeneration,
 		_proxyMigrationScout,
 		_proxyMigrationSuspended);

@@ -30,6 +30,7 @@ struct FailureTraits {
 	const AdmissionRequest &request,
 	int recipeLevel);
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason);
+[[nodiscard]] bool FailureAffectsOpening(FailureReason reason);
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason);
 [[nodiscard]] bool FailureIsRouteOnly(FailureReason reason);
 [[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason);
@@ -71,6 +72,7 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now);
 [[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
 	const EndpointState &state,
 	EndpointUse use,
+	RuntimeGenerationKey runtimeGeneration,
 	crl::time now,
 	bool fastWarmup);
 

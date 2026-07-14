@@ -130,6 +130,7 @@ struct SessionProxyRequest {
 	crl::time notBefore = 0;
 	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
+	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
 };

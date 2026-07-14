@@ -439,6 +439,8 @@ void ProxyControlPlane::updateSelectedMtproxyProjection(
 	};
 	const auto hasMainProof = view.mainProof.strength
 		!= MtProxy::MainRelayProofStrength::None;
+	const auto endpointHasMainProof = view.endpointMainProof.strength
+		!= MtProxy::MainRelayProofStrength::None;
 	const auto network = _mainNetworkFacts.find(
 		MtProxy::EndpointKey(view.endpoint));
 	if (hasMainProof) {
@@ -481,12 +483,16 @@ void ProxyControlPlane::updateSelectedMtproxyProjection(
 		}
 	} else if (view.canonicalVerdict) {
 		const auto &verdict = *view.canonicalVerdict;
-		status.phase = ProxyConnectionPhase::Failed;
-		status.error = MtProxy::ToProxyConnectionError(verdict.reason);
-		status.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
-			verdict.reason);
 		status.attempt = verdict.sourceAttempt;
 		status.terminalUntil = view.retryUntil;
+		if (endpointHasMainProof) {
+			status.phase = ProxyConnectionPhase::CheckingTelegram;
+		} else {
+			status.phase = ProxyConnectionPhase::Failed;
+			status.error = MtProxy::ToProxyConnectionError(verdict.reason);
+			status.mtproxyReason = MtProxy::ToProxyMtproxyTerminalReason(
+				verdict.reason);
+		}
 	}
 	_selectedStatus = status;
 	_endpointSnapshot = {

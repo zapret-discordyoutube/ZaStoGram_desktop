@@ -1591,6 +1591,7 @@ PRIVATE
     mtproto/session/session.cpp
     mtproto/session/session_delegate.h
     mtproto/session/session.h
+    mtproto/session/session_role.h
     mtproto/session/session_state.h
     mtproto/session/options.h
     mtproto/session/private/transport.cpp

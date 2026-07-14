@@ -44,7 +44,9 @@ struct EndpointContextStorage {
 	std::map<QString, OpenState> openStates;
 	rpl::event_stream<EndpointViewInvalidation> viewInvalidations;
 	std::set<ProxyRuntimeId> runtimes;
+	std::map<ProxyRuntimeId, uint64> runtimeGenerations;
 	std::map<ProxyTraceId, ProxyConnectionAttempt> activeTraces;
+	ProxyRuntimeId foregroundRuntimeId = 0;
 	ProxyRuntimeId lastRuntimeId = 0;
 	ProxyTraceId lastTraceId = 0;
 };

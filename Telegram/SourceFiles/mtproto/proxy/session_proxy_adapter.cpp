@@ -130,6 +130,7 @@ private:
 		.connectionPattern = request.connectionPattern,
 		.notBefore = request.notBefore,
 		.context = std::move(request.context),
+		.laneControl = std::move(request.laneControl),
 		.start = [start = std::move(request.start)](ConnectionStart value) mutable {
 			if (!start) {
 				return;

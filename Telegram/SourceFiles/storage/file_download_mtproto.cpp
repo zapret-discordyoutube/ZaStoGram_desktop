@@ -199,6 +199,7 @@ void mtpFileLoader::startLoadingWithPartial(const QByteArray &data) {
 
 void mtpFileLoader::cancelHook() {
 	cancelAllRequests();
+	removeFromQueue();
 }
 
 Storage::Cache::Key mtpFileLoader::cacheKey() const {
