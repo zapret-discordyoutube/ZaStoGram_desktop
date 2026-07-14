@@ -149,6 +149,8 @@ private:
 		TileData &tileData,
 		float pw,
 		float ph);
+	void collectOnscreenDraws();
+	void issueOnscreenDraws();
 	void uploadFrame(
 		const Webrtc::FrameWithInfo &data,
 		TileData &tileData);

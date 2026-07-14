@@ -448,7 +448,10 @@ private:
 	void findCurrent();
 
 	void updateCursor();
-	void setZoomLevel(int newZoom, bool force = false);
+	void setZoomLevel(
+		int newZoom,
+		bool force = false,
+		std::optional<QPoint> anchor = std::nullopt);
 
 	void updatePlaybackState();
 	void refreshSystemMediaControls();
@@ -534,10 +537,13 @@ private:
 	void waitingAnimationCallback();
 	bool updateControlsAnimation(crl::time now);
 
-	void zoomIn();
-	void zoomOut();
+	void zoomIn(std::optional<QPoint> anchor = std::nullopt);
+	void zoomOut(std::optional<QPoint> anchor = std::nullopt);
 	void zoomReset();
-	void zoomUpdate(int32 &newZoom);
+	void zoomUpdate(
+		int32 &newZoom,
+		std::optional<QPoint> anchor = std::nullopt);
+	[[nodiscard]] QPoint zoomAnchor(QPointF globalPosition) const;
 
 	void paintRadialLoading(not_null<Renderer*> renderer);
 	void paintRadialLoadingContent(

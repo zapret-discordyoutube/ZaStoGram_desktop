@@ -24,6 +24,7 @@ namespace {
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
+constexpr auto kMaxServerHelloLength = 65536;
 
 } // namespace
 
@@ -226,6 +227,11 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 		+ part2Size
 		+ kServerHelloPart3.size()
 		+ kTlsLengthFieldSize;
+	if (parts123Size > kMaxServerHelloLength) {
+		logError(888, "Bad Server Hello size.");
+		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
+		return;
+	}
 	if (_serverHelloLength == parts1Size) {
 		const auto part1Offset = parts1Size
 			- kTlsLengthFieldSize
@@ -254,6 +260,11 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 		data,
 		parts123Size - kTlsLengthFieldSize);
 	const auto full = parts123Size + part4Size;
+	if (full > kMaxServerHelloLength) {
+		logError(888, "Bad Server Hello size.");
+		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
+		return;
+	}
 	if (_serverHelloLength == parts123Size) {
 		const auto part3Offset = parts123Size
 			- kTlsLengthFieldSize

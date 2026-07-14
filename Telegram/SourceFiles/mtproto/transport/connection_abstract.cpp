@@ -147,7 +147,9 @@ gsl::span<const mtpPrime> AbstractConnection::parseNotSecureResponse(
 		return {};
 	}
 	const auto answerLen = (uint32)answer[4];
-	if (answerLen < 1 || answerLen > (len - 5) * sizeof(mtpPrime)) {
+	if (answerLen < 1
+		|| (answerLen % sizeof(mtpPrime))
+		|| answerLen > (len - 5) * sizeof(mtpPrime)) {
 		LOG(("Not Secure Error: bad request answer 1 <= %1 <= %2"
 			).arg(answerLen
 			).arg((len - 5) * sizeof(mtpPrime)));

@@ -43,12 +43,14 @@ def test_deleted_by_sender_flag_and_marker_exist():
     history_header = HISTORY_ITEM_H.read_text(encoding="utf-8")
     history_source = HISTORY_ITEM_CPP.read_text(encoding="utf-8")
 
-    assert "DeletedBySender      = (1ULL << 63)," in data_types
+    # MessageFlag ran out of bits after upstream 7.0 (Ephemeral took 1<<63),
+    # so the mark lives in a dedicated HistoryItem member instead.
+    assert "DeletedBySender" not in data_types
     assert "bool isDeletedBySender() const" in history_header
+    assert "bool _deletedBySender = false;" in history_header
     assert "void markDeletedBySender();" in history_header
     assert "void HistoryItem::markDeletedBySender()" in history_source
-    assert "_flags & MessageFlag::DeletedBySender" in history_source
-    assert "_flags |= MessageFlag::DeletedBySender;" in history_source
+    assert "_deletedBySender = true;" in history_source
     assert "requestItemRepaint(this);" in history_source
 
 
@@ -90,7 +92,7 @@ def test_kept_deleted_messages_show_bottom_info_marker():
     history_source = HISTORY_ITEM_CPP.read_text(encoding="utf-8")
     lang = LANG.read_text(encoding="utf-8")
 
-    assert "DeletedBySender = 0x1000," in bottom_info_h
+    assert "DeletedBySender = 0x2000," in bottom_info_h
     assert '\"lng_deleted_by_sender\" = \"deleted\";' in lang
     assert "Data::Flag::DeletedBySender" in bottom_info_cpp
     assert "tr::lng_deleted_by_sender(tr::now)" in bottom_info_cpp
