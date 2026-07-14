@@ -55,6 +55,7 @@ public:
 		int amountAtRequestStart,
 		crl::time timeAtRequestStart);
 	void checkSendNextAfterSuccess(MTP::DcId dcId);
+	void checkSendNextAfterCancel();
 	[[nodiscard]] int chooseSessionIndex(MTP::DcId dcId) const;
 
 	void notifyNonPremiumDelay(DocumentId id) {

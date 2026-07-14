@@ -498,8 +498,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					if (softNoAppData) {
 						state.nextHandshakeAt = now + NoAppDataSoftRetry();
 					}
-					const auto applyGlobalPenalty = !endpointHasMainProof
-						&& !softNoAppData;
+					const auto applyGlobalPenalty = !state.relayProven
+						? !softNoAppData
+						: !endpointHasMainProof && !softNoAppData;
 					if (applyGlobalPenalty) {
 						state.lastFailure = report.reason;
 						state.lastDiagnostic = diagnostic;
@@ -647,7 +648,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto noteConnectSuccess = false;
 	auto shouldDrain = false;
 	{
 		auto &storage = _context->storage();
@@ -727,7 +727,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				.recipeLevel = successRecipeLevel,
 				.relayProven = true,
 			};
-			noteConnectSuccess = true;
 			state.recipeLevel = 0;
 			state.exhaustedSinceSuccess = 0;
 			state.liveBudget.pressureOccupancy = 0;
@@ -781,9 +780,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				u"mtproxy canonical endpoint recovered"_q);
 		}
 	}
-	if (noteConnectSuccess) {
-		NoteConnectSuccess(_runtime, report.endpoint);
-	}
+	NoteConnectSuccess(_runtime, report.endpoint);
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
 	}

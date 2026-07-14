@@ -464,7 +464,10 @@ void SessionTransport::releaseProxyMigration(uint64 generation) {
 }
 
 void SessionTransport::connectToServer(bool afterConfig) {
-	if (_state.proxyMigrationSuspended || _state.endpointLaneSuspended) {
+	if (_state.proxyMigrationSuspended) {
+		return;
+	}
+	if (_state.endpointLaneSuspended) {
 		return;
 	}
 	if (afterConfig

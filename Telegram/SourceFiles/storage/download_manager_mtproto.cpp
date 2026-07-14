@@ -221,6 +221,12 @@ void DownloadManagerMtproto::checkSendNextAfterSuccess(MTP::DcId dcId) {
 	}
 }
 
+void DownloadManagerMtproto::checkSendNextAfterCancel() {
+	crl::on_main(this, [=] {
+		checkSendNext();
+	});
+}
+
 bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
 	auto &balanceData = _balanceData[dcId];
 	const auto &sessions = balanceData.sessions;
@@ -824,6 +830,9 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 	const auto requestData = finishSentRequest(
 		requestId,
 		FinishRequestReason::Redirect);
+	const auto checkSendNext = gsl::finally([=] {
+		owner->checkSendNextAfterSuccess(dcId);
+	});
 	addCdnHashes(result.v);
 	auto someMoreChecked = false;
 	for (auto i = _cdnUncheckedParts.begin(); i != _cdnUncheckedParts.cend();) {
@@ -865,7 +874,6 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 		return;
 	}
 	requestMoreCdnFileHashes();
-	owner->checkSendNextAfterSuccess(dcId);
 }
 
 void DownloadMtprotoTask::placeSentRequest(
@@ -977,6 +985,7 @@ void DownloadMtprotoTask::cancelRequest(mtpRequestId requestId) {
 			requestMoreCdnFileHashes();
 		});
 	}
+	_owner->checkSendNextAfterCancel();
 }
 
 void DownloadMtprotoTask::addToQueue(int priority) {

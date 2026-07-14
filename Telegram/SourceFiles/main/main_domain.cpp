@@ -496,6 +496,13 @@ void Domain::activate(not_null<Main::Account*> account) {
 	}
 }
 
+void Domain::accountMtpStarted(not_null<Main::Account*> account) {
+	if (_active.current() == account.get()) {
+		_proxyEndpointContext->setForegroundRuntime(
+			account->mtp().runtimeEnvironment().proxyRuntimeId());
+	}
+}
+
 void Domain::scheduleWriteAccounts() {
 	if (_writeAccountsScheduled) {
 		return;

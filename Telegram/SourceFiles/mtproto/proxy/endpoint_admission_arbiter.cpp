@@ -382,6 +382,22 @@ void Actions::run() {
 		|| priority == PriorityClass::UrgentMain;
 }
 
+[[nodiscard]] bool IsMainDemandPriority(
+		const Ticket &ticket,
+		PriorityClass priority) {
+	return ticket.use == MtProxy::EndpointUse::Main
+		&& (priority == PriorityClass::ForegroundMain
+			|| priority == PriorityClass::UrgentMain
+			|| priority == PriorityClass::OrdinaryMain);
+}
+
+[[nodiscard]] bool IsLanePreemptionPriority(
+		const Ticket &ticket,
+		PriorityClass priority) {
+	return priority == PriorityClass::ForegroundTransfer
+		|| IsMainDemandPriority(ticket, priority);
+}
+
 [[nodiscard]] MtProxy::EndpointUse NextBackgroundUse(
 		const FairnessState &fairness,
 		ProxyRuntimeId runtimeId) {
@@ -893,6 +909,11 @@ bool EndpointAdmissionArbiter::Private::priorityConflictLocked(
 					.runtimeId = runtimeId,
 					.proxyGeneration = proxyGeneration,
 				})))
+		: (priority == PriorityClass::OrdinaryMain
+			&& ticket.use == MtProxy::EndpointUse::Main)
+		? (use != MtProxy::EndpointUse::Main
+			&& (!IsBackground(use)
+				|| transferServiceUntil <= inputs.now))
 		: false;
 }
 
@@ -938,9 +959,7 @@ Ticket *EndpointAdmissionArbiter::Private::selectLocked(
 						now);
 					return ticket->key
 							== *lane->second.handoffBeneficiary
-						&& (priority == PriorityClass::ForegroundMain
-							|| priority == PriorityClass::ForegroundTransfer
-							|| priority == PriorityClass::UrgentMain);
+						&& IsLanePreemptionPriority(*ticket, priority);
 				});
 			if (handoff != end(heads)) {
 				return *handoff;
@@ -1393,9 +1412,7 @@ void EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 		}
 		auto &ticket = *i->second;
 		const auto priority = priorityForLocked(ticket, state, inputs.now);
-		if (priority != PriorityClass::ForegroundMain
-			&& priority != PriorityClass::ForegroundTransfer
-			&& priority != PriorityClass::UrgentMain) {
+		if (!IsLanePreemptionPriority(ticket, priority)) {
 			continue;
 		}
 		pool.push_back(&ticket);
@@ -1429,12 +1446,26 @@ void EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 			eligible.emplace(ticket.key);
 		}
 	}
-	const auto beneficiary = selectLocked(
-		pool,
+	auto mainPool = std::vector<Ticket*>();
+	for (const auto ticket : pool) {
+		if (ticket->use == MtProxy::EndpointUse::Main) {
+			mainPool.push_back(ticket);
+		}
+	}
+	const auto mainBeneficiary = selectLocked(
+		mainPool,
 		eligible,
 		state,
 		inputs.now,
 		schedule->second.fairness);
+	const auto beneficiary = mainBeneficiary
+		? mainBeneficiary
+		: selectLocked(
+			pool,
+			eligible,
+			state,
+			inputs.now,
+			schedule->second.fairness);
 	if (!beneficiary) {
 		return;
 	}
@@ -1593,9 +1624,7 @@ void EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 			victim = std::move(candidate);
 		}
 	};
-	if (beneficiaryPriority == PriorityClass::ForegroundMain
-		|| beneficiaryPriority == PriorityClass::UrgentMain
-		|| beneficiaryPriority == PriorityClass::ForegroundTransfer) {
+	if (IsLanePreemptionPriority(*beneficiary, beneficiaryPriority)) {
 		for (const auto &[attemptId, attempt] : state.attemptStarts) {
 			const auto replaceableMain = beneficiaryPriority
 					== PriorityClass::ForegroundMain
@@ -1841,6 +1870,7 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 	const auto schedule = _endpoints.find(endpointKey);
 	auto foregroundMainWaiting = false;
 	auto urgentMainWaiting = false;
+	auto ordinaryMainWaiting = false;
 	if (schedule != end(_endpoints)) {
 		for (const auto &key : schedule->second.order) {
 			const auto ticket = _tickets.find(key);
@@ -1854,6 +1884,9 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 					|| priority == PriorityClass::ForegroundMain;
 				urgentMainWaiting = urgentMainWaiting
 					|| priority == PriorityClass::UrgentMain;
+				ordinaryMainWaiting = ordinaryMainWaiting
+					|| (ticket->second->use == MtProxy::EndpointUse::Main
+						&& priority == PriorityClass::OrdinaryMain);
 			}
 		}
 	}
@@ -1902,6 +1935,10 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 				&& ProvenEndpointCapacity(state) > 1)) {
 			return false;
 		}
+		if (ordinaryMainWaiting
+			&& entry.use != MtProxy::EndpointUse::Main) {
+			return false;
+		}
 		const auto accountSwitchedToEntry = foreground
 			&& entry.foregroundRuntimeIdAtSuspension
 			&& entry.foregroundRuntimeIdAtSuspension
@@ -1914,9 +1951,9 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 			&& successor != end(_tickets)
 			&& WaitingForHandoff(successor->second->lifecycle)
 			&& ticketCurrentLocked(*successor->second, state)
-			&& (successorPriority == PriorityClass::ForegroundMain
-				|| successorPriority == PriorityClass::UrgentMain
-				|| successorPriority == PriorityClass::ForegroundTransfer)) {
+			&& IsLanePreemptionPriority(
+				*successor->second,
+				successorPriority)) {
 			return false;
 		}
 		const auto successorAttemptActive = entry.successorTicketKey.ticketId
@@ -2428,8 +2465,7 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 				*i->second,
 				state,
 				inputs.now);
-			if (priority == PriorityClass::ForegroundMain
-				|| priority == PriorityClass::UrgentMain) {
+			if (IsMainDemandPriority(*i->second, priority)) {
 				foregroundDemand = true;
 				break;
 			}
@@ -2559,8 +2595,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 				*i->second,
 				state,
 				inputs.now);
-			if (priority == PriorityClass::ForegroundMain
-				|| priority == PriorityClass::UrgentMain) {
+			if (IsMainDemandPriority(*i->second, priority)) {
 				foregroundDemand = true;
 				break;
 			}
@@ -3542,9 +3577,7 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 		|| beneficiary == end(_tickets)
 		|| !WaitingForHandoff(beneficiary->second->lifecycle)
 		|| !ticketCurrentLocked(*beneficiary->second, state->second)
-		|| (priority != PriorityClass::ForegroundMain
-			&& priority != PriorityClass::UrgentMain
-			&& priority != PriorityClass::ForegroundTransfer)
+		|| !IsLanePreemptionPriority(*beneficiary->second, priority)
 		|| boundary > inputs.now
 		|| !baseEligibleLocked(
 			*beneficiary->second,
@@ -3697,10 +3730,10 @@ void EndpointAdmissionArbiter::Private::acknowledgeLaneSuspension(
 					endpointState,
 					inputs.now)
 				: PriorityClass::Count;
-			const auto protectedHandoff = beneficiaryPriority
-					== PriorityClass::ForegroundMain
-				|| beneficiaryPriority == PriorityClass::UrgentMain
-				|| beneficiaryPriority == PriorityClass::ForegroundTransfer;
+			const auto protectedHandoff = beneficiary != end(_tickets)
+				&& IsLanePreemptionPriority(
+					*beneficiary->second,
+					beneficiaryPriority);
 			lane->second.handoffBeneficiary = protectedHandoff
 				? std::optional<AdmissionTicketKey>(beneficiary->second->key)
 				: std::nullopt;
@@ -3964,8 +3997,9 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						*candidate->second,
 						state->second,
 						inputs.now);
-					if (priority == PriorityClass::ForegroundMain
-						|| priority == PriorityClass::UrgentMain) {
+					if (IsMainDemandPriority(
+							*candidate->second,
+							priority)) {
 						foregroundDemand = true;
 						break;
 					}
