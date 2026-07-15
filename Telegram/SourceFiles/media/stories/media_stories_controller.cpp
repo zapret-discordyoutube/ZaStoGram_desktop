@@ -1484,6 +1484,10 @@ void Controller::contentPressed(bool pressed) {
 	}
 }
 
+bool Controller::sliderSeekAvailable() const {
+	return !_photoPlayback && !videoStream();
+}
+
 void Controller::sliderSeekProgress(float64 progress) {
 	_delegate->storiesSeekProgress(progress);
 }

@@ -25,6 +25,36 @@ constexpr auto kOpacityActive = 1.;
 
 } // namespace
 
+class Slider::Widget final : public Ui::RpWidget {
+public:
+	Widget(not_null<Slider*> slider, not_null<QWidget*> parent)
+	: RpWidget(parent)
+	, _slider(slider) {
+	}
+
+private:
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && _slider->seekAvailable()) {
+			_slider->handleSeekStart(e->pos());
+		} else {
+			e->ignore();
+		}
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (_slider->_seeking) {
+			_slider->handleSeekProgress(e->pos());
+		}
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && _slider->_seeking) {
+			_slider->handleSeekFinished(e->pos());
+		}
+	}
+
+	const not_null<Slider*> _slider;
+
+};
+
 Slider::Slider(not_null<Controller*> controller)
 : _controller(controller)
 , _progress(std::make_unique<View::PlaybackProgress>()) {
@@ -42,15 +72,19 @@ void Slider::show(SliderData data) {
 		return;
 	}
 	_data = data;
+	_seeking = false;
 
 	const auto parent = _controller->wrap();
-	auto widget = std::make_unique<Ui::RpWidget>(parent);
+	auto widget = std::make_unique<Widget>(this, parent);
 	const auto raw = widget.get();
 
 	_rects.resize(_data.total);
 
+	const auto minWidth = st::storiesSliderMargin.left()
+		+ st::storiesSliderWidth
+		+ st::storiesSliderMargin.right();
 	raw->widthValue() | rpl::filter([=](int width) {
-		return (width >= st::storiesSliderWidth);
+		return (width >= minWidth);
 	}) | rpl::on_next([=](int width) {
 		layout(width);
 	}, raw->lifetime());
@@ -58,35 +92,14 @@ void Slider::show(SliderData data) {
 	raw->paintRequest(
 	) | rpl::filter([=] {
 		return !_data.videoStream
-			&& (raw->width() >= st::storiesSliderWidth);
+			&& (raw->width() >= minWidth);
 	}) | rpl::on_next([=](QRect clip) {
 		paint(QRectF(clip));
 	}, raw->lifetime());
 
-	raw->events(
-	) | rpl::on_next([=](not_null<QEvent*> event) {
-		if (_data.videoStream) {
-			return;
-		}
-		const auto type = event->type();
-		if (type == QEvent::MouseButtonPress) {
-			const auto mouse = static_cast<QMouseEvent*>(event.get());
-			if (mouse->button() == Qt::LeftButton) {
-				_seeking = true;
-				handleSeekProgress(mouse->pos());
-			}
-		} else if (type == QEvent::MouseMove) {
-			if (_seeking) {
-				const auto mouse = static_cast<QMouseEvent*>(event.get());
-				handleSeekProgress(mouse->pos());
-			}
-		} else if (type == QEvent::MouseButtonRelease) {
-			const auto mouse = static_cast<QMouseEvent*>(event.get());
-			if (_seeking && mouse->button() == Qt::LeftButton) {
-				handleSeekFinished(mouse->pos());
-			}
-		}
-	}, raw->lifetime());
+	if (!_data.videoStream) {
+		raw->setCursor(style::cur_pointer);
+	}
 
 	raw->show();
 	_widget = std::move(widget);
@@ -97,7 +110,7 @@ void Slider::show(SliderData data) {
 
 	_controller->layoutValue(
 	) | rpl::on_next([=](const Layout &layout) {
-		raw->setGeometry(layout.slider - st::storiesSliderMargin);
+		raw->setGeometry(layout.slider);
 	}, raw->lifetime());
 }
 
@@ -116,21 +129,24 @@ void Slider::resetProgress() {
 }
 
 void Slider::layout(int width) {
+	const auto margin = st::storiesSliderMargin;
+	const auto top = margin.top();
+	const auto inner = width - margin.left() - margin.right();
 	const auto single = st::storiesSliderWidth;
 	const auto skip = st::storiesSliderSkip;
-	// width == single * max + skip * (max - 1);
-	// max == (width + skip) / (single + skip);
-	const auto max = (width + skip) / (single + skip);
+	// inner == single * max + skip * (max - 1);
+	// max == (inner + skip) / (single + skip);
+	const auto max = (inner + skip) / (single + skip);
 	Assert(max > 0);
 	const auto count = std::clamp(_data.total, 1, max);
-	const auto one = (width - (count - 1) * skip) / float64(count);
-	auto left = 0.;
+	const auto one = (inner - (count - 1) * skip) / float64(count);
+	auto left = float64(margin.left());
 	for (auto i = 0; i != count; ++i) {
-		_rects[i] = QRectF(left, 0, one, single);
+		_rects[i] = QRectF(left, top, one, single);
 		if (i == _data.index) {
 			const auto from = int(std::floor(left));
 			const auto size = int(std::ceil(left + one)) - from;
-			_activeBoundingRect = QRect(from, 0, size, single);
+			_activeBoundingRect = QRect(from, top, size, single);
 		}
 		left += one + skip;
 	}
@@ -151,6 +167,15 @@ std::optional<float64> Slider::progressAt(QPoint position) const {
 		(position.x() - _activeBoundingRect.x()) / float64(width),
 		0.,
 		1.);
+}
+
+bool Slider::seekAvailable() const {
+	return !_data.videoStream && _controller->sliderSeekAvailable();
+}
+
+void Slider::handleSeekStart(QPoint position) {
+	_seeking = true;
+	handleSeekProgress(position);
 }
 
 void Slider::handleSeekProgress(QPoint position) {
@@ -184,6 +209,7 @@ void Slider::paint(QRectF clip) {
 		} else if (i == _data.index) {
 			const auto progress = _progress->value();
 			const auto full = _rects[i].width();
+			const auto top = _rects[i].top();
 			const auto height = _rects[i].height();
 			const auto min = height;
 			const auto activeWidth = std::max(full * progress, min);
@@ -192,13 +218,13 @@ void Slider::paint(QRectF clip) {
 			const auto inactiveLeft = activeLeft + activeWidth - min;
 			p.setOpacity(kOpacityInactive);
 			p.drawRoundedRect(
-				QRectF(inactiveLeft, 0, inactiveWidth, height),
+				QRectF(inactiveLeft, top, inactiveWidth, height),
 				radius,
 				radius);
 			if (activeWidth > 0.) {
 				p.setOpacity(kOpacityActive);
 				p.drawRoundedRect(
-					QRectF(activeLeft, 0, activeWidth, height),
+					QRectF(activeLeft, top, activeWidth, height),
 					radius,
 					radius);
 			}

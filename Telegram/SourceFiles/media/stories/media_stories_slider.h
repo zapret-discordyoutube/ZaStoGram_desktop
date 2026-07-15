@@ -45,10 +45,14 @@ public:
 	void updatePlayback(const Player::TrackState &state);
 
 private:
+	class Widget;
+
 	void resetProgress();
 
 	void layout(int width);
 	[[nodiscard]] std::optional<float64> progressAt(QPoint position) const;
+	[[nodiscard]] bool seekAvailable() const;
+	void handleSeekStart(QPoint position);
 	void handleSeekProgress(QPoint position);
 	void handleSeekFinished(QPoint position);
 	void paint(QRectF clip);
