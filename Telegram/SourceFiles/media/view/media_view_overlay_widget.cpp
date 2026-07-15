@@ -5034,7 +5034,7 @@ bool OverlayWidget::createStreamingObjects() {
 			|| _document->isVideoFile()
 			|| _document->isVoiceMessage()
 			|| _document->isVideoMessage());
-	if (streamingRequiresControls() || _stories) {
+	if (streamingRequiresControls()) {
 		_streamed->controls = std::make_unique<PlaybackControls>(
 			_body,
 			static_cast<PlaybackControls::Delegate*>(this));
