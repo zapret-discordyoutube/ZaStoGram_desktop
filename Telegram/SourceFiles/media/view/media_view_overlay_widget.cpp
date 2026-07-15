@@ -813,11 +813,7 @@ OverlayWidget::OverlayWidget()
 			// and everything works as expected.
 			//
 			// This doesn't make sense. But it works. :shrug:
-			_titleBugWorkaround->setGeometry(
-				{ 0, 0, size.width(), st::mediaviewTitleButton.height });
-
-			_widget->setGeometry({ QPoint(), size });
-			updateControlsGeometry();
+			updateSurfaceGeometry(size);
 		} else if (type == QEvent::KeyPress) {
 			handleKeyPress(static_cast<QKeyEvent*>(e.get()));
 		} else if (type == QEvent::KeyRelease) {
@@ -1214,6 +1210,7 @@ void OverlayWidget::updateGeometry(bool inMove) {
 			}
 		}
 	}
+	syncSurfaceGeometry();
 }
 
 void OverlayWidget::updateGeometryToScreen(bool inMove) {
@@ -1227,6 +1224,27 @@ void OverlayWidget::updateGeometryToScreen(bool inMove) {
 		.arg(available.width())
 		.arg(available.height()));
 	_window->Ui::RpWidget::setGeometry(available);
+}
+
+void OverlayWidget::updateSurfaceGeometry(QSize size) {
+	_titleBugWorkaround->setGeometry(
+		{ 0, 0, size.width(), st::mediaviewTitleButton.height });
+
+	_widget->setGeometry({ QPoint(), size });
+	updateControlsGeometry();
+}
+
+void OverlayWidget::syncSurfaceGeometry() {
+	// The GL/RHI surface `_widget` is normally sized by the QEvent::Resize
+	// filter on `_body`. On Windows the windowed <-> fullscreen transition
+	// (native show + custom frame margins change) can coalesce away the
+	// final resize event on `_body`, leaving the surface at the stale size
+	// and an uncovered translucent band at the window edge. Resync
+	// explicitly whenever the surface no longer covers the body.
+	const auto size = _body->size();
+	if (_widget->geometry() != QRect(QPoint(), size)) {
+		updateSurfaceGeometry(size);
+	}
 }
 
 void OverlayWidget::updateControlsGeometry() {
@@ -3004,6 +3022,13 @@ void OverlayWidget::toggleFullScreen(bool fullscreen) {
 		updateGeometry();
 		_wasWindowedMode = true;
 	}
+	// The native window transition may report the final geometry
+	// asynchronously, after updateGeometry() already ran, and the resize
+	// event chain that drives the surface geometry may get coalesced
+	// away on Windows. Resync once the transition settles.
+	InvokeQueued(_window, [=] {
+		syncSurfaceGeometry();
+	});
 	savePosition();
 	_helper->clearState();
 }

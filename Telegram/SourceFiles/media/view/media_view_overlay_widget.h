@@ -354,6 +354,8 @@ private:
 	void moveToScreen(bool inMove = false);
 	void updateGeometry(bool inMove = false);
 	void updateGeometryToScreen(bool inMove = false);
+	void updateSurfaceGeometry(QSize size);
+	void syncSurfaceGeometry();
 	bool moveToNext(int delta);
 	void preloadData(int delta);
 
