@@ -105,7 +105,9 @@ void Slider::show(SliderData data) {
 	_widget = std::move(widget);
 
 	_progress->setValueChangedCallback([=](float64, float64) {
-		_widget->update(_activeBoundingRect);
+		const auto handle = st::storiesSliderHandle;
+		_widget->update(_activeBoundingRect
+			+ QMargins(handle, handle, handle, handle));
 	});
 
 	_controller->layoutValue(
@@ -201,12 +203,16 @@ void Slider::paint(QRectF clip) {
 	p.setBrush(st::mediaviewControlFg);
 	p.setPen(Qt::NoPen);
 	const auto radius = st::storiesSliderWidth / 2.;
+	const auto handle = seekAvailable() ? st::storiesSliderHandle : 0;
 	for (auto i = 0; i != int(_rects.size()); ++i) {
 		if (_rects[i].isEmpty()) {
 			break;
-		} else if (!_rects[i].intersects(clip)) {
-			continue;
 		} else if (i == _data.index) {
+			const auto extended = _rects[i].marginsAdded(
+				QMarginsF(handle, handle, handle, handle));
+			if (!extended.intersects(clip)) {
+				continue;
+			}
 			const auto progress = _progress->value();
 			const auto full = _rects[i].width();
 			const auto top = _rects[i].top();
@@ -228,6 +234,17 @@ void Slider::paint(QRectF clip) {
 					radius,
 					radius);
 			}
+			if (handle > 0) {
+				p.setOpacity(kOpacityActive);
+				p.drawEllipse(
+					QPointF(
+						activeLeft + activeWidth - min / 2.,
+						top + height / 2.),
+					handle / 2.,
+					handle / 2.);
+			}
+		} else if (!_rects[i].intersects(clip)) {
+			continue;
 		} else {
 			p.setOpacity((i < _data.index)
 				? kOpacityActive

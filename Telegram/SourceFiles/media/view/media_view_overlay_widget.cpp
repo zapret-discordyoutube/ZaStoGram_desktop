@@ -6012,10 +6012,14 @@ rpl::producer<bool> OverlayWidget::storiesLayerShown() {
 }
 
 void OverlayWidget::storiesTogglePaused(bool paused) {
-	if (!_streamed
-		|| _streamed->instance.player().failed()
-		|| _streamed->instance.player().finished()
-		|| !_streamed->instance.player().active()) {
+	if (!_streamed || _streamed->instance.player().failed()) {
+		return;
+	} else if (_streamed->instance.player().finished()) {
+		if (!paused) {
+			updatePlaybackState();
+		}
+		return;
+	} else if (!_streamed->instance.player().active()) {
 		return;
 	} else if (_streamed->instance.player().paused()) {
 		if (!paused) {
@@ -6162,7 +6166,9 @@ void OverlayWidget::updatePlaybackState() {
 			updatePowerSaveBlocker(state);
 		}
 		if (_stories) {
-			_stories->updatePlayback(state);
+			if (!_stories->paused() || !IsStoppedAtEnd(state.state)) {
+				_stories->updatePlayback(state);
+			}
 		}
 	}
 }
@@ -7510,7 +7516,7 @@ void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 			&& (documentBubbleShown() || !_documentMedia->loaded())) {
 			handleDocumentClick();
 		}
-	} else if (key == Qt::Key_Left) {
+	} else if (key == Qt::Key_Left && (!_stories || !ctrl)) {
 		if (_controlsHideTimer.isActive()) {
 			activateControls();
 		}
@@ -7535,7 +7541,7 @@ void OverlayWidget::handleKeyPress(not_null<QKeyEvent*> e) {
 			validatePhotoCurrentImage();
 			redisplayContent();
 		}
-	} else if (key == Qt::Key_Right) {
+	} else if (key == Qt::Key_Right && (!_stories || !ctrl)) {
 		if (_controlsHideTimer.isActive()) {
 			activateControls();
 		}
