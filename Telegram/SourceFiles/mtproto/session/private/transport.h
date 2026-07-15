@@ -105,6 +105,7 @@ private:
 		uint64 proxyGeneration = 0;
 		bool proxyMigrationSuspended = false;
 		bool proxyMigrationScout = false;
+		bool proxyMigrationDemandDormant = false;
 		bool endpointLaneSuspended = false;
 		uint64 endpointLaneToken = 0;
 		Fn<void()> endpointLaneDemand;
@@ -137,6 +138,7 @@ private:
 		RuntimeTimer clearOldContainersTimer;
 	};
 
+	[[nodiscard]] SessionProxyEndpointUse classifyEndpointUse() const;
 	[[nodiscard]] bool appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,

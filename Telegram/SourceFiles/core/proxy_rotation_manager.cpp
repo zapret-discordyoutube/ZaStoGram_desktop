@@ -164,8 +164,6 @@ bool ProxyRotationManager::canonicalRecoveryEvidence(
 		const MTP::details::MtProxy::ProxyEndpointView &view) const {
 	if (!view.canonicalVerdict
 		|| view.mainProof.strength
-			!= MTP::details::MtProxy::MainRelayProofStrength::None
-		|| view.endpointMainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return false;
 	}
@@ -183,8 +181,6 @@ crl::time ProxyRotationManager::recoveryObservedAt(
 	if (!view.runtimeGeneration.runtimeId
 		|| !view.runtimeGeneration.proxyGeneration
 		|| view.mainProof.strength
-			!= MTP::details::MtProxy::MainRelayProofStrength::None
-		|| view.endpointMainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return 0;
 	}
@@ -361,17 +357,12 @@ void ProxyRotationManager::scheduleGraceEvaluation(
 
 void ProxyRotationManager::recordGraceMainSuccess(
 		const MTP::details::MtProxy::ProxyEndpointView &view) {
-	const auto successAt = std::max({
+	const auto successAt = std::max(
 		view.mainProof.provenAt,
-		view.mainProof.lastPayloadAt,
-		view.endpointMainProof.provenAt,
-		view.endpointMainProof.lastPayloadAt,
-	});
+		view.mainProof.lastPayloadAt);
 	if (!successAt
-		|| (view.mainProof.strength
-			== MTP::details::MtProxy::MainRelayProofStrength::None
-		&& view.endpointMainProof.strength
-			== MTP::details::MtProxy::MainRelayProofStrength::None)) {
+		|| view.mainProof.strength
+			== MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return;
 	}
 	_healthRotationRequestedUntil = 0;
@@ -403,8 +394,6 @@ void ProxyRotationManager::graceTimerDone() {
 				!= MTP::details::MtProxy::EndpointKey(pending->endpoint)
 			|| view->runtimeGeneration != pending->runtimeGeneration
 			|| view->mainProof.strength
-				!= MTP::details::MtProxy::MainRelayProofStrength::None
-			|| view->endpointMainProof.strength
 				!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 			reevaluate();
 			return;

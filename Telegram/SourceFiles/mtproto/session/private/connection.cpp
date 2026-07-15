@@ -58,6 +58,19 @@ base::options::toggle OptionPreferIPv6({
 
 } // namespace
 
+SessionProxyEndpointUse SessionTransport::classifyEndpointUse() const {
+	return isUploadDcId(_owner->_shiftedDcId)
+		? SessionProxyEndpointUse::Upload
+		: (isMediaClusterDcId(_owner->_shiftedDcId)
+			|| _owner->_realDcType == DcType::Cdn)
+		? SessionProxyEndpointUse::Media
+		: (_owner->_role == SessionRole::PrimaryMain)
+		? SessionProxyEndpointUse::Main
+		: (_owner->_role == SessionRole::Maintenance)
+		? SessionProxyEndpointUse::Maintenance
+		: SessionProxyEndpointUse::Auxiliary;
+}
+
 bool SessionTransport::appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
@@ -75,16 +88,7 @@ bool SessionTransport::appendTestConnection(
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
 		+ (protocolSecret.empty() ? 0 : 1);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
-	const auto mtproxyUse = isUploadDcId(_owner->_shiftedDcId)
-		? SessionProxyEndpointUse::Upload
-		: (isMediaClusterDcId(_owner->_shiftedDcId)
-			|| _owner->_realDcType == DcType::Cdn)
-		? SessionProxyEndpointUse::Media
-		: (_owner->_role == SessionRole::PrimaryMain)
-		? SessionProxyEndpointUse::Main
-		: (_owner->_role == SessionRole::Maintenance)
-		? SessionProxyEndpointUse::Maintenance
-		: SessionProxyEndpointUse::Auxiliary;
+	const auto mtproxyUse = classifyEndpointUse();
 	if (_state.proxyMigrationScout
 		&& (!_state.brokerTickets.empty() || !_state.testConnections.empty())) {
 		return false;
@@ -316,6 +320,9 @@ void SessionTransport::armWaitForConnectedTimer() {
 }
 
 void SessionTransport::retryByTimer() {
+	if (_state.proxyMigrationDemandDormant) {
+		return;
+	}
 	const auto proxied = _owner->_sessionState.options
 		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None);
 	const auto maxTimeout = proxied ? kProxyReconnectMaxTimeout : 64000;
@@ -419,6 +426,16 @@ void SessionTransport::applyEndpointLaneCommand(
 }
 
 void SessionTransport::requestEndpointLane() {
+	if (_state.proxyMigrationDemandDormant) {
+		if (!hasEndpointLaneDemand()) {
+			return;
+		}
+		_state.proxyMigrationDemandDormant = false;
+		if (!_timing.retryTimer.isActive()) {
+			connectToServer();
+		}
+		return;
+	}
 	if (_state.endpointLaneSuspended && _state.endpointLaneDemand) {
 		_state.endpointLaneDemand();
 	}
@@ -428,6 +445,7 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	_state.proxyGeneration = generation;
 	_state.proxyMigrationScout = scout;
 	_state.proxyMigrationSuspended = !scout;
+	_state.proxyMigrationDemandDormant = false;
 	_state.endpointLaneSuspended = false;
 	_state.endpointLaneToken = 0;
 	_state.endpointLaneDemand = {};
@@ -454,17 +472,35 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 }
 
 void SessionTransport::releaseProxyMigration(uint64 generation) {
-	if (generation != _state.proxyGeneration || !_state.proxyMigrationSuspended) {
+	if (generation != _state.proxyGeneration) {
 		return;
 	}
+	const auto wasSuspended = _state.proxyMigrationSuspended;
 	_state.proxyMigrationSuspended = false;
 	_state.proxyMigrationScout = false;
+	if (!wasSuspended) {
+		return;
+	}
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
+	_state.proxyMigrationDemandDormant = false;
+	const auto use = classifyEndpointUse();
+	const auto mtproxyTransfer = _owner->_sessionState.options
+		&& _owner->_sessionState.options->proxy.type
+			== ProxyData::Type::Mtproto
+		&& (use == SessionProxyEndpointUse::Media
+			|| use == SessionProxyEndpointUse::Upload);
+	if (mtproxyTransfer && !hasEndpointLaneDemand()) {
+		_state.proxyMigrationDemandDormant = true;
+		return;
+	}
 	connectToServer();
 }
 
 void SessionTransport::connectToServer(bool afterConfig) {
 	if (_state.proxyMigrationSuspended) {
+		return;
+	}
+	if (_state.proxyMigrationDemandDormant) {
 		return;
 	}
 	if (_state.endpointLaneSuspended) {
@@ -623,7 +659,8 @@ void SessionTransport::connectToServer(bool afterConfig) {
 
 void SessionTransport::restart() {
 	DEBUG_LOG(("MTP Info: restarting Connection"));
-	if (_state.endpointLaneSuspended) {
+	if (_state.proxyMigrationDemandDormant
+		|| _state.endpointLaneSuspended) {
 		_timing.retryTimer.cancel();
 		_owner->setState(DisconnectedState);
 		return;

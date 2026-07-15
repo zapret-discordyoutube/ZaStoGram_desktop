@@ -48,7 +48,6 @@ struct EndpointAttemptState {
 	QMetaObject::Connection ownerDestroyed;
 	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
 	bool preempting = false;
-	crl::time transferServiceUntil = 0;
 };
 
 struct RelayProofIdentity {
@@ -547,27 +546,10 @@ inline void RemoveEndpointOutcomesForRuntime(
 	return result;
 }
 
-[[nodiscard]] inline int EndpointTransferLaneCount(
+[[nodiscard]] inline int EndpointCapacityCommitmentCount(
 		const EndpointState &state) {
-	auto result = 0;
-	for (const auto &entry : state.liveLanes) {
-		if (entry.second.use == EndpointUse::Media
-			|| entry.second.use == EndpointUse::Upload) {
-			++result;
-		}
-	}
-	for (const auto &entry : state.attemptStarts) {
-		if (entry.second.use == EndpointUse::Media
-			|| entry.second.use == EndpointUse::Upload) {
-			++result;
-		}
-	}
-	return result;
-}
-
-[[nodiscard]] inline int CurrentEndpointLiveLaneCount(
-		const EndpointState &state) {
-	return int(state.attemptStarts.size() + state.liveLanes.size());
+	return ActiveEndpointAdmissionCount(state)
+		+ EndpointEstablishedLaneCount(state);
 }
 
 inline void SynchronizeEndpointAdmissionAggregate(EndpointState &state) {
