@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
+#include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "mtproto/runtime/connection_status_types.h"
 #include "mtproto/runtime/proxy_endpoint.h"
 
@@ -105,6 +106,7 @@ struct SessionProxyAttempt {
 struct SessionProxyStart {
 	SessionProxyTicketId ticketId = 0;
 	ProxyConnectionAttempt attempt;
+	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
@@ -124,6 +126,9 @@ struct SessionProxyRequest {
 	QString address;
 	int port = 0;
 	SessionProxyEndpointUse use = SessionProxyEndpointUse::Main;
+	MtProxy::MainRecoveryToken requestedRecoveryToken;
+	MtProxy::EndpointId requestedRecoverySourceEndpoint;
+	uint64 requestedRecoverySourceProxyGeneration = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
@@ -143,6 +148,8 @@ public:
 
 		virtual void cancel() = 0;
 		[[nodiscard]] virtual SessionProxyTicketId id() const = 0;
+		[[nodiscard]] virtual MtProxy::MainRecoveryToken
+			acceptedRecoveryToken() const = 0;
 	};
 
 	SessionProxyTicket() = default;
@@ -155,6 +162,11 @@ public:
 
 	void cancel();
 	[[nodiscard]] SessionProxyTicketId id() const;
+	[[nodiscard]] MtProxy::MainRecoveryToken acceptedRecoveryToken() const {
+		return _impl
+			? _impl->acceptedRecoveryToken()
+			: MtProxy::MainRecoveryToken();
+	}
 	[[nodiscard]] explicit operator bool() const;
 
 private:
@@ -192,14 +204,21 @@ public:
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
 		bool receivedBefore,
-		int silentStrikes) = 0;
+		int silentStrikes,
+		MtProxy::MainRecoveryToken &recoveryToken) = 0;
 	virtual void reportConnectTimeout(
 		const SessionProxyAttempt &attempt) = 0;
 	virtual void reportAttemptCancelled(
 		const SessionProxyAttempt &attempt,
 		ProxyCloseOrigin origin) = 0;
 	virtual void reportRelayStall(
-		const SessionProxyAttempt &attempt) = 0;
+		const SessionProxyAttempt &attempt,
+		MtProxy::MainRecoveryToken &recoveryToken) = 0;
+	virtual void cancelMainRecoveryBackoff(
+		not_null<RuntimeEnvironment*> runtime,
+		const MtProxy::EndpointId &endpoint,
+		uint64 proxyGeneration,
+		MtProxy::MainRecoveryToken token) = 0;
 	virtual void logEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,

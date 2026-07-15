@@ -120,11 +120,18 @@ private:
 		request.stealth,
 		request.address,
 		request.port);
+	const auto recoveryMatches = request.requestedRecoveryToken
+		&& request.requestedRecoverySourceEndpoint == endpoint
+		&& request.requestedRecoverySourceProxyGeneration
+			== request.proxyGeneration;
 	return {
 		.proxyGeneration = request.proxyGeneration,
 		.endpoint = std::move(endpoint),
 		.proxy = std::move(request.proxy),
 		.use = request.use,
+		.requestedRecoveryToken = recoveryMatches
+			? request.requestedRecoveryToken
+			: MtProxy::MainRecoveryToken(),
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
 		.connectionPattern = request.connectionPattern,
@@ -138,6 +145,7 @@ private:
 			start({
 				.ticketId = value.ticketId,
 				.attempt = value.attempt,
+				.acceptedRecoveryToken = value.acceptedRecoveryToken,
 				.proxyGeneration = value.proxyGeneration,
 				.endpoint = std::move(value.endpoint),
 				.use = value.use,
@@ -191,6 +199,10 @@ public:
 
 	SessionProxyTicketId id() const override {
 		return _ticket.id();
+	}
+
+	MtProxy::MainRecoveryToken acceptedRecoveryToken() const override {
+		return _ticket.acceptedRecoveryToken();
 	}
 
 private:
@@ -398,14 +410,21 @@ public:
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
 		bool receivedBefore,
-		int silentStrikes) override;
+		int silentStrikes,
+		MtProxy::MainRecoveryToken &recoveryToken) override;
 	void reportConnectTimeout(
 		const SessionProxyAttempt &attempt) override;
 	void reportAttemptCancelled(
 		const SessionProxyAttempt &attempt,
 		ProxyCloseOrigin origin) override;
 	void reportRelayStall(
-		const SessionProxyAttempt &attempt) override;
+		const SessionProxyAttempt &attempt,
+		MtProxy::MainRecoveryToken &recoveryToken) override;
+	void cancelMainRecoveryBackoff(
+		not_null<RuntimeEnvironment*> runtime,
+		const MtProxy::EndpointId &endpoint,
+		uint64 proxyGeneration,
+		MtProxy::MainRecoveryToken token) override;
 	void logEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
@@ -540,7 +559,9 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
 		bool receivedBefore,
-		int silentStrikes) {
+		int silentStrikes,
+		MtProxy::MainRecoveryToken &recoveryToken) {
+	recoveryToken = {};
 	if (EmptySessionProxyAttempt(attempt)) {
 		return;
 	}
@@ -567,7 +588,7 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 			attempt.transport);
 		terminal.message += u" silent_strikes=%1"_q.arg(silentStrikes);
 		ReportProxyLiveness(runtime, std::move(terminal));
-		reportRelayStall(attempt);
+		reportRelayStall(attempt, recoveryToken);
 		return;
 	}
 	if (!ClaimAttemptTerminal(attempt)) {
@@ -666,7 +687,9 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 }
 
 void ProductionSessionProxyPort::reportRelayStall(
-		const SessionProxyAttempt &attempt) {
+		const SessionProxyAttempt &attempt,
+		MtProxy::MainRecoveryToken &recoveryToken) {
+	recoveryToken = {};
 	if (EmptySessionProxyAttempt(attempt)) {
 		return;
 	}
@@ -674,8 +697,22 @@ void ProductionSessionProxyPort::reportRelayStall(
 		return;
 	}
 	const auto runtime = not_null{ attempt.runtime };
-	runtime->proxyServices().control().noteMtproxyRelayStall(
+	recoveryToken = runtime->proxyServices().control().noteMtproxyRelayStall(
 		RelayProofReport(attempt));
+}
+
+void ProductionSessionProxyPort::cancelMainRecoveryBackoff(
+		not_null<RuntimeEnvironment*> runtime,
+		const MtProxy::EndpointId &endpoint,
+		uint64 proxyGeneration,
+		MtProxy::MainRecoveryToken token) {
+	runtime->proxyServices().control().cancelMtproxyMainRecoveryBackoff(
+		endpoint,
+		{
+			.runtimeId = runtime->proxyRuntimeId(),
+			.proxyGeneration = proxyGeneration,
+		},
+		token);
 }
 
 void ProductionSessionProxyPort::logEvent(

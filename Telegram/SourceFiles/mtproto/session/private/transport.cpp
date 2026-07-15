@@ -63,6 +63,10 @@ SessionTransport::SessionTransport(
 	_state.mtproxyAttempt = { .proxyGeneration = proxyGeneration };
 }
 
+SessionTransport::~SessionTransport() {
+	cancelMainRecoveryBackoff();
+}
+
 void SessionTransport::start() {
 	connectToServer();
 }
@@ -215,6 +219,7 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 		_owner->_proxyPort->reportFirstMtprotoPayload(
 			currentProxyAttempt(),
 			&_state.mtproxyLease);
+		_state.mtproxyRecovery = {};
 	} else {
 		_owner->_proxyPort->reportConnected(
 			currentProxyAttempt(),

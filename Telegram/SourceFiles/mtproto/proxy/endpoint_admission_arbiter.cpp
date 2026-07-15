@@ -61,6 +61,7 @@ struct Ticket {
 	MtProxy::EndpointId endpoint;
 	QString endpointKey;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	MtProxy::AdmissionRequest admissionRequest;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
@@ -318,8 +319,11 @@ void GrantAction::run() {
 		&& ticket->callbacks
 		&& ticket->callbacks->grant) {
 		ticket->callbacks->grant(std::move(grant));
-	} else if (const auto strong = context.lock()) {
-		(void)strong->finishTrace(grant.attempt.traceId);
+	} else {
+		if (const auto strong = context.lock()) {
+			(void)strong->finishTrace(grant.attempt.traceId);
+		}
+		grant.admission.lease.release();
 	}
 }
 
@@ -419,7 +423,7 @@ public:
 		EndpointAdmissionRuntimeDispatch dispatch);
 	void unregisterRuntime(ProxyRuntimeId runtimeId);
 	void cancelRuntime(ProxyRuntimeId runtimeId);
-	[[nodiscard]] bool enqueue(
+	[[nodiscard]] EndpointAdmissionEnqueueResult enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
 	void cancel(AdmissionTicketKey key, uint64 revision);
@@ -479,6 +483,7 @@ private:
 	[[nodiscard]] bool ticketCurrentLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state) const;
+	[[nodiscard]] bool ownsMainRecoveryLocked(const Ticket &ticket) const;
 	[[nodiscard]] PriorityClass priorityForLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state,
@@ -773,35 +778,63 @@ void EndpointAdmissionArbiter::Private::composeEndpointViewLocked(
 	view.scheduledOpenAt = selected->scheduledOpenAt;
 }
 
+bool EndpointAdmissionArbiter::Private::ownsMainRecoveryLocked(
+		const Ticket &ticket) const {
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = ticket.key.runtimeId,
+		.proxyGeneration = ticket.proxyGeneration,
+	};
+	const auto recovery = MtProxy::ComposeMainRecoveryViewLocked(
+		_storage,
+		ticket.endpointKey,
+		runtimeGeneration);
+	return ticket.use == MtProxy::EndpointUse::Main
+		&& ticket.acceptedRecoveryToken
+		&& recovery
+		&& recovery->token == ticket.acceptedRecoveryToken
+		&& (recovery->stage == MtProxy::MainRecoveryStage::AdmissionTicket
+			|| recovery->stage
+				== MtProxy::MainRecoveryStage::ReplacementAttempt)
+		&& recovery->adoptedTicketKey == ticket.key;
+}
+
 PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state,
 		crl::time now) const {
 	const auto foreground = ticket.key.runtimeId
 		== _storage.foregroundRuntimeId;
-	const auto hasMainProof = MtProxy::HasCurrentMainRelayProof(state, {
-			.runtimeId = ticket.key.runtimeId,
-			.proxyGeneration = ticket.proxyGeneration,
-		});
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = ticket.key.runtimeId,
+		.proxyGeneration = ticket.proxyGeneration,
+	};
+	const auto hasMainProof = MtProxy::HasCurrentMainRelayProof(
+		state,
+		runtimeGeneration);
 	const auto endpointHasMainProof = MtProxy::EndpointMainRelayProof(state)
 		.strength != MtProxy::MainRelayProofStrength::None;
-	auto result = (ticket.use == MtProxy::EndpointUse::Main)
-		? (foreground && !hasMainProof
+	auto result = PriorityClass::Background;
+	if (ownsMainRecoveryLocked(ticket)) {
+		result = foreground
 			? PriorityClass::ForegroundMain
-		: hasMainProof
-			? PriorityClass::OrdinaryMain
-		: endpointHasMainProof
-			? PriorityClass::OrdinaryMain
-			: PriorityClass::UrgentMain)
-		: (foreground && IsBackground(ticket.use))
-		? PriorityClass::ForegroundTransfer
-		: (ticket.use == MtProxy::EndpointUse::Maintenance)
-		? PriorityClass::Maintenance
-		: (ticket.use == MtProxy::EndpointUse::Auxiliary)
-		? PriorityClass::Auxiliary
-		: (ticket.use == MtProxy::EndpointUse::ProxyCheck)
-		? PriorityClass::ProxyCheck
-		: PriorityClass::Background;
+			: PriorityClass::UrgentMain;
+	} else if (ticket.use == MtProxy::EndpointUse::Main) {
+		if (foreground && !hasMainProof) {
+			result = PriorityClass::ForegroundMain;
+		} else if (hasMainProof || endpointHasMainProof) {
+			result = PriorityClass::OrdinaryMain;
+		} else {
+			result = PriorityClass::UrgentMain;
+		}
+	} else if (foreground && IsBackground(ticket.use)) {
+		result = PriorityClass::ForegroundTransfer;
+	} else if (ticket.use == MtProxy::EndpointUse::Maintenance) {
+		result = PriorityClass::Maintenance;
+	} else if (ticket.use == MtProxy::EndpointUse::Auxiliary) {
+		result = PriorityClass::Auxiliary;
+	} else if (ticket.use == MtProxy::EndpointUse::ProxyCheck) {
+		result = PriorityClass::ProxyCheck;
+	}
 	if (result == PriorityClass::ForegroundMain
 		|| result == PriorityClass::ForegroundTransfer
 		|| result == PriorityClass::UrgentMain
@@ -825,10 +858,20 @@ Ticket *EndpointAdmissionArbiter::Private::selectLocked(
 	auto heads = std::vector<Ticket*>();
 	for (const auto ticket : pool) {
 		auto head = true;
+		const auto ownsRecovery = ownsMainRecoveryLocked(*ticket);
+		const auto priority = priorityForLocked(*ticket, state, now);
 		for (const auto other : pool) {
-			if (other->key.runtimeId == ticket->key.runtimeId
-				&& other->use == ticket->use
-				&& other->sequence < ticket->sequence) {
+			if (other->key.runtimeId != ticket->key.runtimeId
+				|| other->use != ticket->use) {
+				continue;
+			}
+			const auto otherOwnsRecovery = ownsMainRecoveryLocked(*other);
+			const auto otherPriority = priorityForLocked(*other, state, now);
+			if ((otherOwnsRecovery && !ownsRecovery)
+				|| (otherOwnsRecovery == ownsRecovery
+					&& (otherPriority < priority
+						|| (otherPriority == priority
+							&& other->sequence < ticket->sequence)))) {
 				head = false;
 				break;
 			}
@@ -1790,6 +1833,19 @@ void EndpointAdmissionArbiter::Private::cancelTicketLocked(
 		return;
 	}
 	auto &ticket = *i->second;
+	if (ticket.acceptedRecoveryToken) {
+		static_cast<void>(
+			MtProxy::FinishMainRecoveryByAdmissionTicketLocked(
+				_storage,
+				ticket.endpointKey,
+				{
+					.runtimeId = ticket.key.runtimeId,
+					.proxyGeneration = ticket.proxyGeneration,
+				},
+				ticket.use,
+				ticket.acceptedRecoveryToken,
+				ticket.key));
+	}
 	const auto lane = _laneSchedules.find(ticket.endpointKey);
 	if (lane != end(_laneSchedules)) {
 		if (lane->second.handoffBeneficiary
@@ -2715,7 +2771,7 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 	}
 }
 
-bool EndpointAdmissionArbiter::Private::enqueue(
+EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request) {
 	if (!request.key.runtimeId
@@ -2723,7 +2779,7 @@ bool EndpointAdmissionArbiter::Private::enqueue(
 		|| !request.owner
 		|| !request.ownerDestroyed
 		|| !request.grant) {
-		return false;
+		return {};
 	}
 	const auto revision = ++_lastRevision;
 	const auto key = request.key;
@@ -2768,7 +2824,7 @@ bool EndpointAdmissionArbiter::Private::enqueue(
 	ticket->notBeforeAt = inputs.now
 		+ std::max(crl::time(), request.notBefore);
 	auto actions = Actions();
-	auto accepted = false;
+	auto result = EndpointAdmissionEnqueueResult();
 	{
 		QMutexLocker lock(&_storage.mutex);
 		_context = context;
@@ -2793,6 +2849,23 @@ bool EndpointAdmissionArbiter::Private::enqueue(
 			&& traceCurrent
 			&& !staleRuntime
 			&& !staleEndpoint) {
+			const auto runtimeGenerationKey = RuntimeGenerationKey{
+				.runtimeId = key.runtimeId,
+				.proxyGeneration = request.proxyGeneration,
+			};
+			if (request.requestedRecoveryToken
+				&& MtProxy::AdoptMainRecoveryAdmissionTicketLocked(
+					_storage,
+					ticket->endpointKey,
+					runtimeGenerationKey,
+					ticket->use,
+					request.requestedRecoveryToken,
+					key)) {
+				ticket->acceptedRecoveryToken
+					= request.requestedRecoveryToken;
+				result.acceptedRecoveryToken
+					= request.requestedRecoveryToken;
+			}
 			ticket->sequence = ++_lastSequence;
 			auto &schedule = _endpoints[ticket->endpointKey];
 			schedule.order.push_back(key);
@@ -2800,14 +2873,14 @@ bool EndpointAdmissionArbiter::Private::enqueue(
 			postStatusLocked(stored, actions);
 			drainEndpointLocked(stored.endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
-			accepted = true;
+			result.accepted = true;
 		}
 	}
-	if (!accepted) {
+	if (!result.accepted) {
 		QObject::disconnect(ownerDestroyed);
 	}
 	actions.run();
-	return accepted;
+	return result;
 }
 
 void EndpointAdmissionArbiter::Private::cancel(
@@ -2883,15 +2956,34 @@ void EndpointAdmissionArbiter::Private::ownerDestroyed(
 			actions.context = _context;
 			for (const auto &identity : identities) {
 				clearLanePreemptionLocked(endpointKey, state, identity);
+				const auto attempt = state.attemptStarts.find(
+					identity.attemptId);
+				const auto attemptMatches
+					= attempt != end(state.attemptStarts)
+					&& attempt->second.runtimeId == identity.runtimeId
+					&& attempt->second.proxyGeneration
+						== identity.proxyGeneration;
+				const auto lane = state.liveLanes.find(identity);
+				if (attemptMatches || lane != end(state.liveLanes)) {
+					const auto use = attemptMatches
+						? attempt->second.use
+						: lane->second.use;
+					static_cast<void>(
+						MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
+							_storage,
+							endpointKey,
+							{
+								.runtimeId = identity.runtimeId,
+								.proxyGeneration
+									= identity.proxyGeneration,
+							},
+							use,
+							identity.attemptId));
+				}
 				static_cast<void>(MtProxy::RetireRelayProof(
 					state,
 					identity));
-				const auto attempt = state.attemptStarts.find(
-					identity.attemptId);
-				if (attempt != end(state.attemptStarts)
-					&& attempt->second.runtimeId == identity.runtimeId
-					&& attempt->second.proxyGeneration
-						== identity.proxyGeneration) {
+				if (attemptMatches) {
 					state.attemptStarts.erase(attempt);
 				}
 				state.liveLanes.erase(identity);
@@ -3761,6 +3853,37 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 					drainEndpointLocked(endpointKey, inputs, actions);
 					updateWakeLocked(inputs, actions);
 				} else {
+					auto acceptedRecoveryToken
+						= MtProxy::MainRecoveryToken();
+					if (!unscoped && ticket.acceptedRecoveryToken) {
+						const auto runtimeGeneration
+							= RuntimeGenerationKey{
+								.runtimeId = key.runtimeId,
+								.proxyGeneration
+									= ticket.proxyGeneration,
+							};
+						if (MtProxy::AdoptMainRecoveryReplacementAttemptLocked(
+								_storage,
+								ticket.endpointKey,
+								runtimeGeneration,
+								ticket.use,
+								ticket.acceptedRecoveryToken,
+								key,
+								admission->attemptId)) {
+							acceptedRecoveryToken
+								= ticket.acceptedRecoveryToken;
+						} else {
+							static_cast<void>(
+								MtProxy::FinishMainRecoveryByAdmissionTicketLocked(
+									_storage,
+									ticket.endpointKey,
+									runtimeGeneration,
+									ticket.use,
+									ticket.acceptedRecoveryToken,
+									key));
+							ticket.acceptedRecoveryToken = {};
+						}
+					}
 					if (!unscoped) {
 						const auto lane = state->second.attemptStarts.find(
 							admission->attemptId);
@@ -3810,6 +3933,8 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						.proxyGeneration = ticket.proxyGeneration,
 						.endpoint = ticket.endpoint,
 						.use = ticket.use,
+						.acceptedRecoveryToken
+							= acceptedRecoveryToken,
 						.enqueuedAt = ticket.enqueuedAt,
 						.scheduledOpenAt = ticket.scheduledOpenAt,
 						.admission = std::move(*admission),
@@ -3852,7 +3977,7 @@ void EndpointAdmissionArbiter::cancelRuntime(
 	_private->cancelRuntime(runtimeId);
 }
 
-bool EndpointAdmissionArbiter::enqueue(
+EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request) {
 	return _private->enqueue(std::move(context), std::move(request));

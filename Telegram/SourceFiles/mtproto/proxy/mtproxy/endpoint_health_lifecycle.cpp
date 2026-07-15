@@ -21,9 +21,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QMutex>
 
+#include <limits>
 #include <optional>
 
 namespace MTP::details::MtProxy {
+
+struct MainRecoveryTokenAccess {
+	[[nodiscard]] static MainRecoveryToken FromId(uint64 id) {
+		Expects(id != 0);
+		auto result = MainRecoveryToken();
+		result._id = id;
+		return result;
+	}
+};
 
 namespace {
 
@@ -116,7 +126,352 @@ struct RelayProofRetirementResult {
 	};
 }
 
+struct MainRecoveryLookup {
+	EndpointState *state = nullptr;
+	MainRecoveryState *recovery = nullptr;
+};
+
+struct ConstMainRecoveryLookup {
+	const MainRecoveryState *recovery = nullptr;
+};
+
+[[nodiscard]] bool MainRecoveryIdentityIsValidLocked(
+		const EndpointContextStorage &storage,
+		const QString &endpointKey,
+		const EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration,
+		const MainRecoveryState &recovery) {
+	const auto storageGeneration = storage.runtimeGenerations.find(
+		runtimeGeneration.runtimeId);
+	return !endpointKey.isEmpty()
+		&& runtimeGeneration.runtimeId
+		&& runtimeGeneration.proxyGeneration
+		&& storage.runtimes.contains(runtimeGeneration.runtimeId)
+		&& storageGeneration != end(storage.runtimeGenerations)
+		&& (!storageGeneration->second
+			|| storageGeneration->second
+				== runtimeGeneration.proxyGeneration)
+		&& EndpointKey(state.endpoint) == endpointKey
+		&& RuntimeGenerationIsCurrent(state, runtimeGeneration)
+		&& recovery.runtimeGeneration == runtimeGeneration
+		&& recovery.sourceAttempt.runtimeId == runtimeGeneration.runtimeId
+		&& recovery.sourceAttempt.proxyGeneration
+			== runtimeGeneration.proxyGeneration
+		&& recovery.sourceAttempt.attemptId
+		&& recovery.sourceAttempt.use == EndpointUse::Main
+		&& recovery.token;
+}
+
+[[nodiscard]] MainRecoveryLookup FindMainRecoveryLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	const auto endpoint = storage.states.find(endpointKey);
+	if (endpoint == end(storage.states)) {
+		return {};
+	}
+	const auto recovery = endpoint->second.mainRecoveries.find(
+		runtimeGeneration);
+	if (recovery == end(endpoint->second.mainRecoveries)
+		|| !MainRecoveryIdentityIsValidLocked(
+			storage,
+			endpointKey,
+			endpoint->second,
+			runtimeGeneration,
+			recovery->second)) {
+		return {};
+	}
+	return {
+		.state = &endpoint->second,
+		.recovery = &recovery->second,
+	};
+}
+
+[[nodiscard]] ConstMainRecoveryLookup FindMainRecoveryLocked(
+		const EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	const auto endpoint = storage.states.find(endpointKey);
+	if (endpoint == end(storage.states)) {
+		return {};
+	}
+	const auto recovery = endpoint->second.mainRecoveries.find(
+		runtimeGeneration);
+	if (recovery == end(endpoint->second.mainRecoveries)
+		|| !MainRecoveryIdentityIsValidLocked(
+			storage,
+			endpointKey,
+			endpoint->second,
+			runtimeGeneration,
+			recovery->second)) {
+		return {};
+	}
+	return {
+		.recovery = &recovery->second,
+	};
+}
+
+[[nodiscard]] MainRecoveryToken AllocateMainRecoveryTokenLocked(
+		EndpointContextStorage &storage) {
+	if (storage.lastMainRecoveryId
+			== std::numeric_limits<uint64>::max()) {
+		return {};
+	}
+	return MainRecoveryTokenAccess::FromId(++storage.lastMainRecoveryId);
+}
+
 } // namespace
+
+MainRecoveryToken CreateMainRecoveryLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		const ProxyConnectionAttempt &sourceAttempt,
+		crl::time createdAt) {
+	const auto endpoint = storage.states.find(endpointKey);
+	const auto storageGeneration = storage.runtimeGenerations.find(
+		runtimeGeneration.runtimeId);
+	const auto sourceIdentity = RelayProofIdentity{
+		.runtimeId = sourceAttempt.runtimeId,
+		.proxyGeneration = sourceAttempt.proxyGeneration,
+		.attemptId = sourceAttempt.attemptId,
+	};
+	if (endpoint == end(storage.states)
+		|| !runtimeGeneration.runtimeId
+		|| !runtimeGeneration.proxyGeneration
+		|| !storage.runtimes.contains(runtimeGeneration.runtimeId)
+		|| storageGeneration == end(storage.runtimeGenerations)
+		|| (storageGeneration->second
+			&& storageGeneration->second
+				!= runtimeGeneration.proxyGeneration)
+		|| EndpointKey(endpoint->second.endpoint) != endpointKey
+		|| !RuntimeGenerationIsCurrent(
+			endpoint->second,
+			runtimeGeneration)
+		|| HasCurrentMainRelayProof(
+			endpoint->second,
+			runtimeGeneration)
+		|| sourceAttempt.runtimeId != runtimeGeneration.runtimeId
+		|| sourceAttempt.proxyGeneration
+			!= runtimeGeneration.proxyGeneration
+		|| sourceAttempt.use != EndpointUse::Main
+		|| !sourceAttempt.attemptId
+		|| HasRelayProof(endpoint->second, sourceIdentity)
+		|| !endpoint->second.liveLanes.contains(sourceIdentity)
+		|| endpoint->second.mainRecoveries.contains(runtimeGeneration)) {
+		return {};
+	}
+	const auto token = AllocateMainRecoveryTokenLocked(storage);
+	if (!token) {
+		return {};
+	}
+	endpoint->second.mainRecoveries.emplace(
+		runtimeGeneration,
+		MainRecoveryState{
+			.token = token,
+			.runtimeGeneration = runtimeGeneration,
+			.sourceAttempt = sourceAttempt,
+			.createdAt = createdAt,
+			.stage = MainRecoveryStage::TransportBackoff,
+		});
+	return token;
+}
+
+std::optional<MainRecoveryView> ComposeMainRecoveryViewLocked(
+		const EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery) {
+		return std::nullopt;
+	}
+	const auto &recovery = *found.recovery;
+	return MainRecoveryView{
+		.token = recovery.token,
+		.runtimeGeneration = recovery.runtimeGeneration,
+		.sourceAttempt = recovery.sourceAttempt,
+		.createdAt = recovery.createdAt,
+		.stage = recovery.stage,
+		.adoptedTicketKey = recovery.adoptedTicketKey,
+		.replacementAttemptId = recovery.replacementAttemptId,
+	};
+}
+
+bool AdoptMainRecoveryAdmissionTicketLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		MainRecoveryToken token,
+		AdmissionTicketKey ticketKey) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery
+		|| use != EndpointUse::Main
+		|| found.recovery->token != token
+		|| found.recovery->stage != MainRecoveryStage::TransportBackoff
+		|| found.recovery->adoptedTicketKey.runtimeId
+		|| found.recovery->adoptedTicketKey.ticketId
+		|| found.recovery->replacementAttemptId
+		|| ticketKey.runtimeId != runtimeGeneration.runtimeId
+		|| !ticketKey.ticketId) {
+		return false;
+	}
+	found.recovery->stage = MainRecoveryStage::AdmissionTicket;
+	found.recovery->adoptedTicketKey = ticketKey;
+	return true;
+}
+
+bool AdoptMainRecoveryReplacementAttemptLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		MainRecoveryToken token,
+		AdmissionTicketKey ticketKey,
+		uint64 replacementAttemptId) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery
+		|| use != EndpointUse::Main
+		|| found.recovery->token != token
+		|| found.recovery->stage != MainRecoveryStage::AdmissionTicket
+		|| found.recovery->adoptedTicketKey != ticketKey
+		|| found.recovery->replacementAttemptId
+		|| !replacementAttemptId) {
+		return false;
+	}
+	const auto attempt = found.state->attemptStarts.find(
+		replacementAttemptId);
+	if (attempt == end(found.state->attemptStarts)
+		|| attempt->second.runtimeId != runtimeGeneration.runtimeId
+		|| attempt->second.proxyGeneration
+			!= runtimeGeneration.proxyGeneration
+		|| attempt->second.use != EndpointUse::Main
+		|| attempt->second.ticketKey != ticketKey
+		|| attempt->second.terminalVerdict.has_value()) {
+		return false;
+	}
+	found.recovery->stage = MainRecoveryStage::ReplacementAttempt;
+	found.recovery->replacementAttemptId = replacementAttemptId;
+	return true;
+}
+
+bool FinishMainRecoveryByAdmissionTicketLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		MainRecoveryToken token,
+		AdmissionTicketKey ticketKey) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery
+		|| use != EndpointUse::Main
+		|| found.recovery->token != token
+		|| found.recovery->stage != MainRecoveryStage::AdmissionTicket
+		|| found.recovery->adoptedTicketKey != ticketKey
+		|| ticketKey.runtimeId != runtimeGeneration.runtimeId
+		|| !ticketKey.ticketId
+		|| found.recovery->replacementAttemptId) {
+		return false;
+	}
+	return found.state->mainRecoveries.erase(runtimeGeneration) > 0;
+}
+
+bool FinishMainRecoveryByReplacementAttemptLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		uint64 replacementAttemptId) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery
+		|| use != EndpointUse::Main
+		|| found.recovery->stage != MainRecoveryStage::ReplacementAttempt
+		|| found.recovery->replacementAttemptId != replacementAttemptId
+		|| found.recovery->adoptedTicketKey.runtimeId
+			!= runtimeGeneration.runtimeId
+		|| !found.recovery->adoptedTicketKey.ticketId) {
+		return false;
+	}
+	const auto identity = RelayProofIdentity{
+		.runtimeId = runtimeGeneration.runtimeId,
+		.proxyGeneration = runtimeGeneration.proxyGeneration,
+		.attemptId = replacementAttemptId,
+	};
+	const auto attempt = found.state->attemptStarts.find(
+		replacementAttemptId);
+	const auto lane = found.state->liveLanes.find(identity);
+	const auto attemptMatches = attempt != end(found.state->attemptStarts)
+		&& attempt->second.runtimeId == runtimeGeneration.runtimeId
+		&& attempt->second.proxyGeneration
+			== runtimeGeneration.proxyGeneration
+		&& attempt->second.use == EndpointUse::Main
+		&& attempt->second.ticketKey
+			== found.recovery->adoptedTicketKey;
+	const auto laneMatches = lane != end(found.state->liveLanes)
+		&& lane->second.use == EndpointUse::Main
+		&& lane->second.ticketKey == found.recovery->adoptedTicketKey;
+	if (!attemptMatches && !laneMatches) {
+		return false;
+	}
+	return found.state->mainRecoveries.erase(runtimeGeneration) > 0;
+}
+
+bool CancelMainRecoveryBackoffLocked(
+		EndpointContextStorage &storage,
+		const QString &endpointKey,
+		RuntimeGenerationKey runtimeGeneration,
+		MainRecoveryToken token) {
+	const auto found = FindMainRecoveryLocked(
+		storage,
+		endpointKey,
+		runtimeGeneration);
+	if (!found.recovery
+		|| found.recovery->token != token
+		|| found.recovery->stage != MainRecoveryStage::TransportBackoff
+		|| found.recovery->adoptedTicketKey.runtimeId
+		|| found.recovery->adoptedTicketKey.ticketId
+		|| found.recovery->replacementAttemptId) {
+		return false;
+	}
+	return found.state->mainRecoveries.erase(runtimeGeneration) > 0;
+}
+
+bool RemoveMainRecoveryForGenerationLocked(
+		EndpointState &state,
+		RuntimeGenerationKey runtimeGeneration) {
+	return state.mainRecoveries.erase(runtimeGeneration) > 0;
+}
+
+bool RemoveMainRecoveriesForRuntimeLocked(
+		EndpointState &state,
+		ProxyRuntimeId runtimeId) {
+	auto removed = false;
+	for (auto i = begin(state.mainRecoveries);
+			i != end(state.mainRecoveries);) {
+		if (i->first.runtimeId == runtimeId) {
+			i = state.mainRecoveries.erase(i);
+			removed = true;
+		} else {
+			++i;
+		}
+	}
+	return removed;
+}
 
 void EndpointHealth::ResolveLeaseIdentity(FailureReport &report) {
 	if (!report.lease) {
@@ -259,7 +614,10 @@ EndpointHealth::EndpointHealth(
 
 EndpointHealth::~EndpointHealth() = default;
 
-void EndpointHealth::noteRelayStall(RelayProofReport report) {
+void EndpointHealth::noteRelayStall(
+		RelayProofReport report,
+		MainRecoveryToken &recoveryToken) {
+	recoveryToken = {};
 	if (!report.runtimeId) {
 		report.runtimeId = _runtimeId;
 	}
@@ -269,9 +627,14 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 	const auto now = crl::now();
 	const auto staleReport = RelayStallFailureReport(report);
 	auto retirement = RelayProofRetirementResult();
+	auto createdRecoveryToken = MainRecoveryToken();
 	auto recipeLevel = 0;
 	auto capabilityFailure = false;
 	const auto key = EndpointKey(report.endpoint);
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+	};
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -281,16 +644,19 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 			auto &state = i->second;
 			recipeLevel = state.recipeLevel;
 			retirement = RetireRelayProofLocked(state, report, now);
-			const auto runtimeGeneration = RuntimeGenerationKey{
-				.runtimeId = report.runtimeId,
-				.proxyGeneration = report.proxyGeneration,
-			};
 			if ((retirement.outcome
 					== RelayProofRetirement::RetiredWithSurvivors
 					|| retirement.outcome
 						== RelayProofRetirement::RetiredFinal)
 				&& retirement.attempt.use == EndpointUse::Main
 				&& !retirement.mainProofSurvives) {
+				state.endpoint = report.endpoint;
+				createdRecoveryToken = CreateMainRecoveryLocked(
+					storage,
+					key,
+					runtimeGeneration,
+					retirement.attempt,
+					now);
 				const auto terminalAt = now;
 				auto verdict = EndpointVerdict{
 					.sourceAttempt = retirement.attempt,
@@ -317,7 +683,6 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 							state,
 							runtimeGeneration,
 							std::move(verdict))) {
-						state.endpoint = report.endpoint;
 						if (!retirement.endpointProofSurvives) {
 							state.lastFailure
 								= FailureReason::MtpReceiveTimeoutAfterData;
@@ -352,6 +717,35 @@ void EndpointHealth::noteRelayStall(RelayProofReport report) {
 			});
 	}
 	_context->notifyEndpointAdmissible(key);
+	recoveryToken = createdRecoveryToken;
+	return;
+}
+
+void EndpointHealth::cancelMainRecoveryBackoff(
+		const EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MainRecoveryToken token) {
+	const auto key = EndpointKey(endpoint);
+	if (key.isEmpty()
+		|| !runtimeGeneration.runtimeId
+		|| !runtimeGeneration.proxyGeneration
+		|| !token) {
+		return;
+	}
+	auto cancelled = false;
+	{
+		auto &storage = _context->storage();
+		QMutexLocker lock(&storage.mutex);
+		cancelled = CancelMainRecoveryBackoffLocked(
+			storage,
+			key,
+			runtimeGeneration,
+			token);
+	}
+	if (cancelled) {
+		_context->notifyEndpointViewChanged(endpoint, runtimeGeneration);
+		_context->notifyEndpointAdmissible(key);
+	}
 }
 
 void EndpointHealth::retireRelayProof(RelayProofReport report) {

@@ -60,8 +60,12 @@ public:
 		details::MtProxy::FailureReport report);
 	void reportMtproxySuccess(
 		details::MtProxy::SuccessReport report);
-	void noteMtproxyRelayStall(
+	[[nodiscard]] details::MtProxy::MainRecoveryToken noteMtproxyRelayStall(
 		details::MtProxy::RelayProofReport report);
+	void cancelMtproxyMainRecoveryBackoff(
+		const details::MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		details::MtProxy::MainRecoveryToken token);
 	void retireMtproxyRelayProof(
 		details::MtProxy::RelayProofReport report);
 	void noteMtproxyEndpointSelected(

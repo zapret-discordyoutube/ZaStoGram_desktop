@@ -276,6 +276,19 @@ using ItemState = ProxiesBoxController::ItemState;
 	return tr::lng_seconds_tiny(tr::now, lt_count, seconds);
 }
 
+[[nodiscard]] bool ActiveMtproxyMainRecovery(const EndpointView &view) {
+	if (!view.mainRecovery || !view.mainRecovery->token) {
+		return false;
+	}
+	const auto &recovery = *view.mainRecovery;
+	const auto &attempt = recovery.sourceAttempt;
+	return recovery.runtimeGeneration == view.runtimeGeneration
+		&& attempt.runtimeId == view.runtimeGeneration.runtimeId
+		&& attempt.proxyGeneration
+			== view.runtimeGeneration.proxyGeneration
+		&& attempt.use == MTP::ProxyConnectionUse::Main;
+}
+
 [[nodiscard]] bool ActiveMtproxyNetwork(const EndpointView &view) {
 	switch (view.networkPhase) {
 	case MTP::ProxyConnectionPhase::Resolving:
@@ -302,6 +315,7 @@ using ItemState = ProxiesBoxController::ItemState;
 	using Strength = MTP::details::MtProxy::MainRelayProofStrength;
 	using Cause = MTP::details::MtProxy::EndpointVerdictCause;
 	return view.mainProof.strength == Strength::None
+		&& !ActiveMtproxyMainRecovery(view)
 		&& !ActiveMtproxyNetwork(view)
 		&& !WaitingMtproxyOpen(view)
 		&& view.canonicalVerdict
@@ -337,6 +351,17 @@ struct MtproxyRowPresentation {
 	using Cause = MTP::details::MtProxy::EndpointVerdictCause;
 	if (view.mainProof.strength != Strength::None) {
 		return { .state = ItemState::Online };
+	} else if (ActiveMtproxyMainRecovery(view)) {
+		if (!view.canonicalVerdict) {
+			return { .state = ItemState::Connecting };
+		}
+		return {
+			.state = ItemState::Connecting,
+			.statusText = tr::lng_proxy_health_recovering(
+				tr::now,
+				lt_reason,
+				ProxyHealthReasonText(*view.canonicalVerdict)),
+		};
 	} else if (ActiveMtproxyNetwork(view)) {
 		return { .state = ItemState::Connecting };
 	} else if (WaitingMtproxyOpen(view)) {

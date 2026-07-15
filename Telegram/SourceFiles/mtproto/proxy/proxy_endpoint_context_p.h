@@ -49,6 +49,7 @@ struct EndpointContextStorage {
 	ProxyRuntimeId foregroundRuntimeId = 0;
 	ProxyRuntimeId lastRuntimeId = 0;
 	ProxyTraceId lastTraceId = 0;
+	uint64 lastMainRecoveryId = 0;
 };
 
 } // namespace MTP::details::MtProxy

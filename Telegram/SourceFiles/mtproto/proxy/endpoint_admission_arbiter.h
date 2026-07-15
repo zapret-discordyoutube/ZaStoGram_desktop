@@ -56,6 +56,7 @@ struct EndpointAdmissionGrant final {
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	crl::time enqueuedAt = 0;
 	crl::time scheduledOpenAt = 0;
 	MtProxy::Admission admission;
@@ -67,6 +68,7 @@ struct EndpointAdmissionRequest final {
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	crl::time notBefore = 0;
@@ -76,6 +78,11 @@ struct EndpointAdmissionRequest final {
 	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
+};
+
+struct EndpointAdmissionEnqueueResult final {
+	bool accepted = false;
+	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 };
 
 class EndpointAdmissionArbiter final {
@@ -92,7 +99,7 @@ public:
 		EndpointAdmissionRuntimeDispatch dispatch);
 	void unregisterRuntime(ProxyRuntimeId runtimeId);
 	void cancelRuntime(ProxyRuntimeId runtimeId);
-	[[nodiscard]] bool enqueue(
+	[[nodiscard]] EndpointAdmissionEnqueueResult enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
 	void cancel(AdmissionTicketKey key, uint64 revision = 0);

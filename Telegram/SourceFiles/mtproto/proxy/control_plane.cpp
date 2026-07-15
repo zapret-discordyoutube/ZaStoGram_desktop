@@ -305,11 +305,23 @@ void ProxyControlPlane::reportMtproxySuccess(
 	_runtime->proxyEndpointContext().notifyEndpointViewChanged(endpoint);
 }
 
-void ProxyControlPlane::noteMtproxyRelayStall(
+MtProxy::MainRecoveryToken ProxyControlPlane::noteMtproxyRelayStall(
 		MtProxy::RelayProofReport report) {
 	const auto endpoint = report.endpoint;
-	_endpointHealth->noteRelayStall(std::move(report));
+	auto token = MtProxy::MainRecoveryToken();
+	_endpointHealth->noteRelayStall(std::move(report), token);
 	_runtime->proxyEndpointContext().notifyEndpointViewChanged(endpoint);
+	return token;
+}
+
+void ProxyControlPlane::cancelMtproxyMainRecoveryBackoff(
+		const MtProxy::EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MtProxy::MainRecoveryToken token) {
+	_endpointHealth->cancelMainRecoveryBackoff(
+		endpoint,
+		runtimeGeneration,
+		token);
 }
 
 void ProxyControlPlane::retireMtproxyRelayProof(
@@ -439,6 +451,14 @@ void ProxyControlPlane::updateSelectedMtproxyProjection(
 	};
 	const auto hasMainProof = view.mainProof.strength
 		!= MtProxy::MainRelayProofStrength::None;
+	const auto hasMainRecovery = view.mainRecovery
+		&& view.mainRecovery->token
+		&& view.mainRecovery->runtimeGeneration == view.runtimeGeneration
+		&& view.mainRecovery->sourceAttempt.runtimeId
+			== view.runtimeGeneration.runtimeId
+		&& view.mainRecovery->sourceAttempt.proxyGeneration
+			== view.runtimeGeneration.proxyGeneration
+		&& view.mainRecovery->sourceAttempt.use == ProxyConnectionUse::Main;
 	const auto network = _mainNetworkFacts.find(
 		MtProxy::EndpointKey(view.endpoint));
 	if (hasMainProof) {
@@ -450,6 +470,28 @@ void ProxyControlPlane::updateSelectedMtproxyProjection(
 				== view.runtimeGeneration.proxyGeneration
 			&& current.use == ProxyConnectionUse::Main)
 			? current
+			: ProxyConnectionAttempt{
+				.runtimeId = view.runtimeGeneration.runtimeId,
+				.proxyGeneration = view.runtimeGeneration.proxyGeneration,
+				.use = ProxyConnectionUse::Main,
+			};
+	} else if (hasMainRecovery) {
+		const auto &recovery = *view.mainRecovery;
+		const auto replacement = recovery.stage
+				== MtProxy::MainRecoveryStage::ReplacementAttempt
+			&& recovery.replacementAttemptId
+			&& view.mainAttempt.runtimeId
+				== view.runtimeGeneration.runtimeId
+			&& view.mainAttempt.proxyGeneration
+				== view.runtimeGeneration.proxyGeneration
+			&& view.mainAttempt.use == ProxyConnectionUse::Main
+			&& view.mainAttempt.attemptId
+				== recovery.replacementAttemptId
+			&& view.mainAttempt.ticketKey
+				== recovery.adoptedTicketKey;
+		status.phase = ProxyConnectionPhase::Connecting;
+		status.attempt = replacement
+			? view.mainAttempt
 			: ProxyConnectionAttempt{
 				.runtimeId = view.runtimeGeneration.runtimeId,
 				.proxyGeneration = view.runtimeGeneration.proxyGeneration,

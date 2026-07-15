@@ -43,6 +43,20 @@ constexpr auto kSelectedDegradedObserveWindow = 25 * crl::time(1000);
 // every ~2 seconds with a full session-restart storm on each hop.
 constexpr auto kAfterSwitchGracePeriod = 15 * crl::time(1000);
 
+[[nodiscard]] bool ActiveMainRecovery(
+		const MTP::details::MtProxy::ProxyEndpointView &view) {
+	if (!view.mainRecovery || !view.mainRecovery->token) {
+		return false;
+	}
+	const auto &recovery = *view.mainRecovery;
+	const auto &attempt = recovery.sourceAttempt;
+	return recovery.runtimeGeneration == view.runtimeGeneration
+		&& attempt.runtimeId == view.runtimeGeneration.runtimeId
+		&& attempt.proxyGeneration
+			== view.runtimeGeneration.proxyGeneration
+		&& attempt.use == MTP::ProxyConnectionUse::Main;
+}
+
 } // namespace
 
 ProxyRotationManager::ProxyRotationManager()
@@ -163,6 +177,7 @@ bool ProxyRotationManager::selectedProxyNeedsRecovery() const {
 bool ProxyRotationManager::canonicalRecoveryEvidence(
 		const MTP::details::MtProxy::ProxyEndpointView &view) const {
 	if (!view.canonicalVerdict
+		|| ActiveMainRecovery(view)
 		|| view.mainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return false;
@@ -183,6 +198,9 @@ crl::time ProxyRotationManager::recoveryObservedAt(
 		|| view.mainProof.strength
 			!= MTP::details::MtProxy::MainRelayProofStrength::None) {
 		return 0;
+	}
+	if (ActiveMainRecovery(view)) {
+		return view.mainRecovery->createdAt;
 	}
 	auto result = crl::time();
 	auto recovery = false;
@@ -394,7 +412,8 @@ void ProxyRotationManager::graceTimerDone() {
 				!= MTP::details::MtProxy::EndpointKey(pending->endpoint)
 			|| view->runtimeGeneration != pending->runtimeGeneration
 			|| view->mainProof.strength
-				!= MTP::details::MtProxy::MainRelayProofStrength::None) {
+				!= MTP::details::MtProxy::MainRelayProofStrength::None
+			|| ActiveMainRecovery(*view)) {
 			reevaluate();
 			return;
 		}
@@ -735,9 +754,15 @@ bool ProxyRotationManager::shouldSwitchToAvailable() const {
 		return false;
 	}
 	const auto accounts = productionAccounts();
-	return !accounts.empty()
-		&& (hasActiveHealthRotationRequest()
-			|| selectedProxyNeedsRecovery());
+	if (accounts.empty()) {
+		return false;
+	}
+	const auto view = selectedMtproxyView();
+	if (view && ActiveMainRecovery(*view)) {
+		return false;
+	}
+	return hasActiveHealthRotationRequest()
+		|| selectedProxyNeedsRecovery();
 }
 
 } // namespace Core

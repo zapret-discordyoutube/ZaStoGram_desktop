@@ -126,14 +126,17 @@ void ReportAdmissionEvent(
 
 ConnectionTicket::ConnectionTicket(
 		std::weak_ptr<ProxyEndpointContext> context,
-		AdmissionTicketKey key)
+		AdmissionTicketKey key,
+		MtProxy::MainRecoveryToken acceptedRecoveryToken)
 : _context(std::move(context))
-, _key(key) {
+, _key(key)
+, _acceptedRecoveryToken(acceptedRecoveryToken) {
 }
 
 ConnectionTicket::ConnectionTicket(ConnectionTicket &&other) noexcept
 : _context(std::move(other._context))
-, _key(base::take(other._key)) {
+, _key(base::take(other._key))
+, _acceptedRecoveryToken(base::take(other._acceptedRecoveryToken)) {
 }
 
 ConnectionTicket &ConnectionTicket::operator=(
@@ -142,6 +145,8 @@ ConnectionTicket &ConnectionTicket::operator=(
 		cancel();
 		_context = std::move(other._context);
 		_key = base::take(other._key);
+		_acceptedRecoveryToken = base::take(
+			other._acceptedRecoveryToken);
 	}
 	return *this;
 }
@@ -157,11 +162,16 @@ void ConnectionTicket::cancel() {
 			context->endpointAdmissionArbiter().cancel(key);
 		}
 	}
+	_acceptedRecoveryToken = {};
 	_context.reset();
 }
 
 ConnectionTicketId ConnectionTicket::id() const {
 	return _key.ticketId;
+}
+
+MtProxy::MainRecoveryToken ConnectionTicket::acceptedRecoveryToken() const {
+	return _acceptedRecoveryToken;
 }
 
 ConnectionTicket::operator bool() const {
@@ -225,6 +235,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.proxyGeneration = request.proxyGeneration,
 			.endpoint = request.endpoint,
 			.use = request.use,
+			.requestedRecoveryToken = request.requestedRecoveryToken,
 			.stealth = request.stealth,
 			.configuredTlsProfile = request.configuredTlsProfile,
 			.notBefore = request.notBefore,
@@ -275,6 +286,8 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				auto value = ConnectionStart{
 					.ticketId = grant.key.ticketId,
 					.attempt = grant.attempt,
+					.acceptedRecoveryToken
+						= grant.acceptedRecoveryToken,
 					.proxyGeneration = grant.proxyGeneration,
 					.endpoint = std::move(grant.endpoint),
 					.use = grant.use,
@@ -296,14 +309,17 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				}
 			},
 		});
-	if (!accepted) {
+	if (!accepted.accepted) {
 		QObject::disconnect(ownerDestroyed);
 		if (traceId) {
 			(void)_endpointContext->finishTrace(traceId);
 		}
 		return {};
 	}
-	return ConnectionTicket(weak, key);
+	return ConnectionTicket(
+		weak,
+		key,
+		accepted.acceptedRecoveryToken);
 }
 
 void ConnectionBroker::cancel(ConnectionTicketId id) {

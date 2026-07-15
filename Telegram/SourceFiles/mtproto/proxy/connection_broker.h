@@ -40,6 +40,7 @@ struct ConnectionBrokerDecision {
 struct ConnectionStart {
 	ConnectionTicketId ticketId = 0;
 	ProxyConnectionAttempt attempt;
+	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
@@ -58,6 +59,7 @@ struct ConnectionRequest {
 	MtProxy::EndpointId endpoint;
 	ProxyData proxy;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
+	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
@@ -81,6 +83,7 @@ public:
 
 	void cancel();
 	[[nodiscard]] ConnectionTicketId id() const;
+	[[nodiscard]] MtProxy::MainRecoveryToken acceptedRecoveryToken() const;
 	[[nodiscard]] explicit operator bool() const;
 
 private:
@@ -88,10 +91,12 @@ private:
 
 	ConnectionTicket(
 		std::weak_ptr<ProxyEndpointContext> context,
-		AdmissionTicketKey key);
+		AdmissionTicketKey key,
+		MtProxy::MainRecoveryToken acceptedRecoveryToken);
 
 	std::weak_ptr<ProxyEndpointContext> _context;
 	AdmissionTicketKey _key;
+	MtProxy::MainRecoveryToken _acceptedRecoveryToken;
 
 };
 

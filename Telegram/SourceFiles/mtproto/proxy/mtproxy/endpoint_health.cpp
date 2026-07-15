@@ -48,26 +48,28 @@ void NoteCapacityPressure(
 	if (attempt == end(state.attemptStarts)) {
 		return;
 	}
-	const auto occupancy = attempt->second.establishedLanesAtStart;
+	const auto relayProofs = attempt->second.relayProofsAtStart;
 	auto &budget = state.liveBudget;
-	if (!occupancy
-		|| attempt->second.laneEvidenceEpochAtStart != budget.evidenceEpoch
-		|| EndpointEstablishedLaneCount(state, report.attemptId) != occupancy) {
+	if (!relayProofs
+		|| attempt->second.relayProofPromotionEpochAtStart
+			!= budget.relayProofPromotionEpoch
+		|| EndpointRelayProofCount(state) != relayProofs) {
 		return;
 	}
-	const auto sameObservation = budget.pressureOccupancy == occupancy
-		&& budget.pressureObservedAt
-		&& (now - budget.pressureObservedAt <= kCapacityPressureWindow);
-	budget.pressureOccupancy = occupancy;
-	budget.pressureObservedAt = now;
+	const auto sameObservation = budget.pressureRelayProofs == relayProofs
+		&& budget.proofPressureObservedAt
+		&& (now - budget.proofPressureObservedAt
+			<= kCapacityPressureWindow);
+	budget.pressureRelayProofs = relayProofs;
+	budget.proofPressureObservedAt = now;
 	budget.expansionProbeAfter = now + kCapacityPressureWindow;
-	budget.pressureStrikes = sameObservation
-		? (budget.pressureStrikes + 1)
+	budget.proofPressureStrikes = sameObservation
+		? (budget.proofPressureStrikes + 1)
 		: 1;
-	if (budget.pressureStrikes < kCapacityPressureConfirmations) {
+	if (budget.proofPressureStrikes < kCapacityPressureConfirmations) {
 		return;
 	}
-	const auto observedLimit = occupancy;
+	const auto observedLimit = relayProofs;
 	budget.learnedLimit = budget.learnedLimit
 		? std::min(budget.learnedLimit, observedLimit)
 		: observedLimit;
@@ -141,6 +143,7 @@ void NoteRouteSuccess(
 struct TerminalAttemptResult {
 	ProxyConnectionAttempt attempt;
 	bool proofRetired = false;
+	bool finalAttemptTerminal = false;
 };
 
 [[nodiscard]] auto RecordTerminalAttemptLocked(
@@ -226,6 +229,7 @@ struct TerminalAttemptResult {
 			now)) {
 		return std::nullopt;
 	}
+	result.finalAttemptTerminal = attemptTerminal;
 	return result;
 }
 
@@ -297,8 +301,9 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.scheduledOpenAt = scheduledOpenAt,
 		.attemptStartedAt = attemptStartedAt,
 		.phaseStartedAt = attemptStartedAt,
-		.establishedLanesAtStart = EndpointEstablishedLaneCount(state),
-		.laneEvidenceEpochAtStart = state.liveBudget.evidenceEpoch,
+		.relayProofsAtStart = EndpointRelayProofCount(state),
+		.relayProofPromotionEpochAtStart
+			= state.liveBudget.relayProofPromotionEpoch,
 	});
 	SynchronizeEndpointAdmissionAggregate(state);
 	return Admission{
@@ -349,6 +354,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
 	auto noteConnectTimeout = false;
 	auto shouldDrain = false;
+	auto recoveryFinished = false;
 	auto staleRecipeLevel = std::optional<int>();
 	{
 		auto &storage = _context->storage();
@@ -367,14 +373,23 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			if (!terminal) {
 				staleRecipeLevel = state.recipeLevel;
 			} else {
-				shouldDrain = terminal->proofRetired;
-				noteConnectTimeout = FailureNeedsRecipeEscalation(
-					report.reason);
-				state.endpoint = report.endpoint;
 				const auto runtimeGeneration = RuntimeGenerationKey{
 					.runtimeId = report.runtimeId,
 					.proxyGeneration = report.proxyGeneration,
 				};
+				if (terminal->finalAttemptTerminal) {
+					recoveryFinished
+						= FinishMainRecoveryByReplacementAttemptLocked(
+							storage,
+							key,
+							runtimeGeneration,
+							terminal->attempt.use,
+							terminal->attempt.attemptId);
+				}
+				shouldDrain = terminal->proofRetired || recoveryFinished;
+				noteConnectTimeout = FailureNeedsRecipeEscalation(
+					report.reason);
+				state.endpoint = report.endpoint;
 				const auto endpointMainProof = EndpointMainRelayProof(state);
 				const auto endpointHasMainProof = endpointMainProof.strength
 					!= MainRelayProofStrength::None;
@@ -671,9 +686,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.proxyGeneration = report.proxyGeneration,
 		};
 		const auto beforeEndpointMainProof = EndpointMainRelayProof(state);
-		const auto beforeMainProof = CurrentMainRelayProof(
-			state,
-			runtimeGeneration);
+		const auto before = CurrentMainRelayProof(state, runtimeGeneration);
 		const auto hadCanonical = state.canonicalVerdicts.contains(
 			runtimeGeneration);
 		const auto successRecipeLevel = state.recipeLevel;
@@ -700,15 +713,22 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
+			if (report.use == EndpointUse::Main) {
+				static_cast<void>(
+					FinishMainRecoveryByReplacementAttemptLocked(
+						storage,
+						key,
+						runtimeGeneration,
+						report.use,
+						report.attemptId));
+			}
 		}
 		if (probe) {
 			static_cast<void>(RetireRelayProof(state, identity));
 		}
-		const auto afterMainProof = CurrentMainRelayProof(
-			state,
-			runtimeGeneration);
+		const auto after = CurrentMainRelayProof(state, runtimeGeneration);
 		shouldDrain = inserted
-			|| (beforeMainProof.strength != afterMainProof.strength);
+			|| (before.strength != after.strength);
 		if (!routeKey.isEmpty()) {
 			NoteRouteSuccess(storage, state, report.endpoint.route);
 		}
@@ -729,17 +749,17 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			};
 			state.recipeLevel = 0;
 			state.exhaustedSinceSuccess = 0;
-			state.liveBudget.pressureOccupancy = 0;
-			state.liveBudget.pressureStrikes = 0;
-			state.liveBudget.pressureObservedAt = 0;
-			++state.liveBudget.evidenceEpoch;
-			const auto relayLaneCount = EndpointEstablishedLaneCount(state);
+			state.liveBudget.pressureRelayProofs = 0;
+			state.liveBudget.proofPressureStrikes = 0;
+			state.liveBudget.proofPressureObservedAt = 0;
+			++state.liveBudget.relayProofPromotionEpoch;
+			const auto relayProofCount = EndpointRelayProofCount(state);
 			state.liveBudget.provenLowerBound = std::max(
 				state.liveBudget.provenLowerBound,
-				relayLaneCount);
+				relayProofCount);
 			if (state.liveBudget.learnedLimit
-				&& relayLaneCount > state.liveBudget.learnedLimit) {
-				state.liveBudget.learnedLimit = relayLaneCount;
+				&& relayProofCount > state.liveBudget.learnedLimit) {
+				state.liveBudget.learnedLimit = relayProofCount;
 			}
 			if (state.liveBudget.learnedLimit) {
 				state.liveBudget.expansionProbeAfter

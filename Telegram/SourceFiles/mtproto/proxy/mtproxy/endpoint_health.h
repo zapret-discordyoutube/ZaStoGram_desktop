@@ -25,6 +25,36 @@ struct EndpointContextStorage;
 
 using EndpointUse = ProxyConnectionUse;
 
+struct MainRecoveryTokenAccess;
+
+class MainRecoveryToken final {
+public:
+	MainRecoveryToken() = default;
+
+	[[nodiscard]] explicit operator bool() const {
+		return _id != 0;
+	}
+	[[nodiscard]] bool operator!() const {
+		return !_id;
+	}
+
+	friend inline bool operator==(
+		MainRecoveryToken,
+		MainRecoveryToken) = default;
+
+private:
+	friend struct MainRecoveryTokenAccess;
+
+	uint64 _id = 0;
+
+};
+
+enum class MainRecoveryStage {
+	TransportBackoff,
+	AdmissionTicket,
+	ReplacementAttempt,
+};
+
 enum class MainRelayProofStrength {
 	None,
 	SinglePayload,
@@ -69,6 +99,18 @@ struct MainRelayProofView {
 	bool operator==(const MainRelayProofView &other) const = default;
 };
 
+struct MainRecoveryView {
+	MainRecoveryToken token;
+	RuntimeGenerationKey runtimeGeneration;
+	ProxyConnectionAttempt sourceAttempt;
+	crl::time createdAt = 0;
+	MainRecoveryStage stage = MainRecoveryStage::TransportBackoff;
+	AdmissionTicketKey adoptedTicketKey;
+	uint64 replacementAttemptId = 0;
+
+	bool operator==(const MainRecoveryView &other) const = default;
+};
+
 struct ProxyEndpointView {
 	EndpointId endpoint;
 	ProxyConnectionAttempt mainAttempt;
@@ -76,6 +118,7 @@ struct ProxyEndpointView {
 	RuntimeGenerationKey runtimeGeneration;
 	AdmissionTicketKey ticketKey;
 	MainRelayProofView mainProof;
+	std::optional<MainRecoveryView> mainRecovery;
 	MainRelayProofView endpointMainProof;
 	ProxySchedulerLifecycle schedulerLifecycle
 		= ProxySchedulerLifecycle::None;
@@ -260,7 +303,13 @@ public:
 		crl::time attemptStartedAt);
 	void reportFailure(FailureReport report);
 	void reportSuccess(SuccessReport report);
-	void noteRelayStall(RelayProofReport report);
+	void noteRelayStall(
+		RelayProofReport report,
+		MainRecoveryToken &recoveryToken);
+	void cancelMainRecoveryBackoff(
+		const EndpointId &endpoint,
+		RuntimeGenerationKey runtimeGeneration,
+		MainRecoveryToken token);
 	void retireRelayProof(RelayProofReport report);
 	void noteEndpointSelected(const EndpointId &endpoint);
 	void applyProxyGeneration(uint64 proxyGeneration);

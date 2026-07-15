@@ -80,6 +80,10 @@ MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
 			result.mainProof = MtProxy::CurrentMainRelayProof(
 				state,
 				runtimeGeneration);
+			result.mainRecovery = MtProxy::ComposeMainRecoveryViewLocked(
+				storage,
+				key,
+				runtimeGeneration);
 			const auto canonical = state.canonicalVerdicts.find(
 				runtimeGeneration);
 			if (canonical != end(state.canonicalVerdicts)) {
@@ -222,6 +226,7 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 	auto removed = false;
 	auto endpoint = details::MtProxy::EndpointId();
 	auto runtimeGeneration = RuntimeGenerationKey();
+	auto ownerDestroyed = QMetaObject::Connection();
 	{
 		QMutexLocker lock(&_storage->mutex);
 		const auto i = _storage->states.find(key);
@@ -240,11 +245,18 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 				.proxyGeneration = attempt->second.proxyGeneration,
 				.attemptId = attemptId,
 			};
+			static_cast<void>(
+				details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
+					*_storage,
+					key,
+					runtimeGeneration,
+					attempt->second.use,
+					attemptId));
 			static_cast<void>(details::MtProxy::RetireRelayProof(
 				i->second,
 				identity));
 			if (!attempt->second.preempting) {
-				QObject::disconnect(attempt->second.ownerDestroyed);
+				ownerDestroyed = attempt->second.ownerDestroyed;
 			}
 			removed = true;
 		} else {
@@ -260,11 +272,18 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 					.runtimeId = lane->first.runtimeId,
 					.proxyGeneration = lane->first.proxyGeneration,
 				};
+				static_cast<void>(
+					details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
+						*_storage,
+						key,
+						runtimeGeneration,
+						lane->second.use,
+						attemptId));
 				static_cast<void>(details::MtProxy::RetireRelayProof(
 					i->second,
 					lane->first));
 				if (!lane->second.preempting) {
-					QObject::disconnect(lane->second.ownerDestroyed);
+					ownerDestroyed = lane->second.ownerDestroyed;
 				}
 				i->second.liveLanes.erase(lane);
 				removed = true;
@@ -273,6 +292,7 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 		i->second.attemptStarts.erase(attemptId);
 		details::MtProxy::SynchronizeEndpointAdmissionAggregate(i->second);
 	}
+	QObject::disconnect(ownerDestroyed);
 	if (removed) {
 		notifyEndpointViewChanged(endpoint, runtimeGeneration);
 		_arbiter->drainEndpoint(key);

@@ -25,6 +25,7 @@ public:
 		uint64 proxyGeneration,
 		bool proxyMigrationScout,
 		bool proxyMigrationSuspended);
+	~SessionTransport();
 
 	void start();
 	void connectToServer(bool afterConfig = false);
@@ -83,12 +84,26 @@ public:
 	[[nodiscard]] SessionProxyAttempt currentProxyAttempt() const;
 
 private:
+	struct MainRecoveryHandle {
+		MtProxy::MainRecoveryToken token;
+		MtProxy::EndpointId sourceEndpoint;
+		uint64 sourceProxyGeneration = 0;
+
+		[[nodiscard]] explicit operator bool() const {
+			return token
+				&& sourceProxyGeneration
+				&& !EmptySessionProxyEndpoint(sourceEndpoint);
+		}
+
+		bool operator==(const MainRecoveryHandle &other) const = default;
+	};
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
 		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MtProxyAttemptPlan mtproxyPlan;
@@ -98,8 +113,10 @@ private:
 		ConnectionPointer connection;
 		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
+		MainRecoveryHandle mainRecoveryBackoff;
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
@@ -155,7 +172,13 @@ private:
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
 	[[nodiscard]] bool hasEndpointLaneDemand() const;
-	void removeConnectionBrokerTicket(SessionProxyTicketId id);
+	void cancelMainRecoveryBackoff();
+	void clearConnectionBrokerTickets();
+	void clearTestConnections();
+	void cancelTestConnections(ProxyCloseOrigin origin);
+	[[nodiscard]] auto takeConnectionBrokerTicket(
+		SessionProxyTicketId id)
+	-> std::optional<MtProxy::MainRecoveryToken>;
 	void armWaitForConnectedTimer();
 	[[nodiscard]] SessionProxyAttempt proxyAttempt(
 		const TestConnection &connection) const;

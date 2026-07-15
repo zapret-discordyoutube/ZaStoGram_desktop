@@ -42,8 +42,8 @@ struct EndpointAttemptState {
 	crl::time phaseStartedAt = 0;
 	crl::time terminalAt = 0;
 	std::optional<EndpointVerdict> terminalVerdict;
-	int establishedLanesAtStart = 0;
-	uint64 laneEvidenceEpochAtStart = 0;
+	int relayProofsAtStart = 0;
+	uint64 relayProofPromotionEpochAtStart = 0;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
 	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
@@ -118,11 +118,21 @@ struct EndpointOpeningState {
 struct EndpointLiveBudgetState {
 	int learnedLimit = 0;
 	int provenLowerBound = 0;
-	int pressureOccupancy = 0;
-	int pressureStrikes = 0;
-	crl::time pressureObservedAt = 0;
+	int pressureRelayProofs = 0;
+	int proofPressureStrikes = 0;
+	crl::time proofPressureObservedAt = 0;
 	crl::time expansionProbeAfter = 0;
-	uint64 evidenceEpoch = 0;
+	uint64 relayProofPromotionEpoch = 0;
+};
+
+struct MainRecoveryState {
+	MainRecoveryToken token;
+	RuntimeGenerationKey runtimeGeneration;
+	ProxyConnectionAttempt sourceAttempt;
+	crl::time createdAt = 0;
+	MainRecoveryStage stage = MainRecoveryStage::TransportBackoff;
+	AdmissionTicketKey adoptedTicketKey;
+	uint64 replacementAttemptId = 0;
 };
 
 struct EndpointState {
@@ -156,7 +166,58 @@ struct EndpointState {
 	RouteEndpoint lastGoodRoute;
 	std::deque<EndpointTerminalEvidence> terminalEvidence;
 	std::map<RuntimeGenerationKey, EndpointVerdict> canonicalVerdicts;
+	std::map<RuntimeGenerationKey, MainRecoveryState> mainRecoveries;
 };
+
+[[nodiscard]] MainRecoveryToken CreateMainRecoveryLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	const ProxyConnectionAttempt &sourceAttempt,
+	crl::time createdAt);
+[[nodiscard]] std::optional<MainRecoveryView> ComposeMainRecoveryViewLocked(
+	const EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration);
+[[nodiscard]] bool AdoptMainRecoveryAdmissionTicketLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	EndpointUse use,
+	MainRecoveryToken token,
+	AdmissionTicketKey ticketKey);
+[[nodiscard]] bool AdoptMainRecoveryReplacementAttemptLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	EndpointUse use,
+	MainRecoveryToken token,
+	AdmissionTicketKey ticketKey,
+	uint64 replacementAttemptId);
+[[nodiscard]] bool FinishMainRecoveryByAdmissionTicketLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	EndpointUse use,
+	MainRecoveryToken token,
+	AdmissionTicketKey ticketKey);
+[[nodiscard]] bool FinishMainRecoveryByReplacementAttemptLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	EndpointUse use,
+	uint64 replacementAttemptId);
+[[nodiscard]] bool CancelMainRecoveryBackoffLocked(
+	EndpointContextStorage &storage,
+	const QString &endpointKey,
+	RuntimeGenerationKey runtimeGeneration,
+	MainRecoveryToken token);
+[[nodiscard]] bool RemoveMainRecoveryForGenerationLocked(
+	EndpointState &state,
+	RuntimeGenerationKey runtimeGeneration);
+[[nodiscard]] bool RemoveMainRecoveriesForRuntimeLocked(
+	EndpointState &state,
+	ProxyRuntimeId runtimeId);
 
 [[nodiscard]] inline EndpointOpenFailureState &EndpointOpeningFailure(
 		EndpointState &state,
@@ -515,7 +576,7 @@ inline void RemoveEndpointOutcomesForRuntime(
 	return result;
 }
 
-[[nodiscard]] inline int CurrentEndpointRelayLaneCount(
+[[nodiscard]] inline int EndpointRelayProofCount(
 		const EndpointState &state) {
 	auto result = 0;
 	for (const auto &[identity, proof] : state.relayProofs) {
@@ -528,7 +589,7 @@ inline void RemoveEndpointOutcomesForRuntime(
 	return result;
 }
 
-[[nodiscard]] inline int EndpointEstablishedLaneCount(
+[[nodiscard]] inline int EndpointEstablishedCommitmentCount(
 		const EndpointState &state,
 		uint64 excludedAttemptId = 0) {
 	auto result = 0;
@@ -549,7 +610,7 @@ inline void RemoveEndpointOutcomesForRuntime(
 [[nodiscard]] inline int EndpointCapacityCommitmentCount(
 		const EndpointState &state) {
 	return ActiveEndpointAdmissionCount(state)
-		+ EndpointEstablishedLaneCount(state);
+		+ EndpointEstablishedCommitmentCount(state);
 }
 
 inline void SynchronizeEndpointAdmissionAggregate(EndpointState &state) {
@@ -677,6 +738,9 @@ inline void RemoveRelayProofsForRuntime(
 		}
 	}
 	SynchronizeRelayProofAggregate(state);
+	static_cast<void>(RemoveMainRecoveriesForRuntimeLocked(
+		state,
+		runtimeId));
 	RemoveEndpointOutcomesForRuntime(state, runtimeId);
 }
 
@@ -693,6 +757,9 @@ inline void ApplyRuntimeProxyGeneration(
 		return;
 	}
 	state.generations[runtimeId] = proxyGeneration;
+	static_cast<void>(RemoveMainRecoveriesForRuntimeLocked(
+		state,
+		runtimeId));
 	for (auto i = begin(state.opening.expansionFlows);
 			i != end(state.opening.expansionFlows);) {
 		if (i->first.runtimeGeneration.runtimeId == runtimeId
