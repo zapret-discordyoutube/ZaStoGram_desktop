@@ -500,6 +500,27 @@ void OverlayWidget::RendererRhi::render(
 		int(size.width() / _factor),
 		int(size.height() / _factor));
 
+	{
+		// Diagnostics for the uncovered-band-at-the-side defect: log the
+		// whole geometry chain whenever any term of it changes.
+		const auto window = _owner->window();
+		const auto top = _owner->widget()->window();
+		const auto line = QString("QRhi-Geometry: rt=%1x%2 factor=%3 "
+			"widget=%4x%5 top=%6x%7 qwindow=%8x%9 windowDpr=%10"
+			).arg(size.width()).arg(size.height()
+			).arg(_factor
+			).arg(_owner->widget()->width()).arg(_owner->widget()->height()
+			).arg(top->width()).arg(top->height()
+			).arg(window->geometry().width()
+			).arg(window->geometry().height()
+			).arg(window->devicePixelRatio());
+		static auto LastLogged = QString();
+		if (LastLogged != line) {
+			LastLogged = line;
+			LOG(("%1").arg(line));
+		}
+	}
+
 	_rub = rhi->nextResourceUpdateBatch();
 	_pendingVideoStream = nullptr;
 	_videoStreamCommandIndex = -1;
