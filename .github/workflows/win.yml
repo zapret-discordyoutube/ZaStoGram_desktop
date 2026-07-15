@@ -788,10 +788,19 @@ jobs:
       - name: Collect binaries.
         run: |
           mkdir release
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_id="$(printf '%s' "$GITHUB_REF_NAME" | sed 's#[/\\:*?"<>|]#-#g')"
+          else
+            release_id="dev-${GITHUB_RUN_NUMBER}"
+          fi
           for d in artifacts/*/; do
             name="$(basename "$d")"
             arch="$(echo "$name" | sed 's/^Telegram //; s/ qt6//; s/ /_/g')"
-            [ -f "$d/Telegram.exe" ] && cp "$d/Telegram.exe" "release/ZaStoGram-$arch.exe"
+            if [ -f "$d/Telegram.exe" ]; then
+              branded_exe="$GITHUB_WORKSPACE/release/ZaStoGram-$arch.exe"
+              cp "$d/Telegram.exe" "$branded_exe"
+              zip -j -9 "$GITHUB_WORKSPACE/release/ZaStoGram-$release_id-$arch.zip" "$branded_exe"
+            fi
             if [ -f "$d/Telegram.exe" ] && [ -f "$d/Updater.exe" ]; then
               (cd "$d" && zip -j "$GITHUB_WORKSPACE/release/ZaStoGram-portable-$arch.zip" Telegram.exe Updater.exe)
             fi
