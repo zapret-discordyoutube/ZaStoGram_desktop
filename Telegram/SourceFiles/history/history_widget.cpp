@@ -5492,8 +5492,24 @@ void HistoryWidget::send(Api::SendOptions options) {
 		return;
 	}
 
+	auto textWithTags = _field->getTextWithAppliedMarkdown();
+	if (Core::App().settings().instantMarkdown()
+		&& Iv::Editor::CanAuthorRichMessages(&session())
+		&& Iv::TextLooksLikeMarkdownPage(textWithTags.text)) {
+		auto parsed = Iv::ParseMarkdownTextIntoRichPage({
+			textWithTags.text,
+			TextUtilities::ConvertTextTagsToEntities(textWithTags.tags),
+		});
+		if (!parsed.blocks.empty()) {
+			sendRichDraft(
+				std::make_shared<const Iv::RichPage>(std::move(parsed)),
+				options);
+			return;
+		}
+	}
+
 	sendTextWithTags(
-		_field->getTextWithAppliedMarkdown(),
+		std::move(textWithTags),
 		true,
 		options,
 		nullptr);

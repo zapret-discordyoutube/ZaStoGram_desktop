@@ -2554,4 +2554,307 @@ RichPage SplitTextIntoRichPage(TextWithEntities text) {
 	return page;
 }
 
+bool TextLooksLikeMarkdownPage(const QString &text) {
+	const auto size = int(text.size());
+	auto lineFrom = 0;
+	for (auto i = 0; i <= size; ++i) {
+		if (i < size && text[i] != '\n') {
+			continue;
+		}
+		const auto line = QStringView(text)
+			.mid(lineFrom, i - lineFrom)
+			.trimmed();
+		lineFrom = i + 1;
+		if (line.isEmpty()) {
+			continue;
+		} else if (line.startsWith(u"```"_q)) {
+			return true;
+		} else if (line.startsWith(u"-# "_q)
+			&& !line.mid(3).trimmed().isEmpty()) {
+			return true;
+		} else if (line.size() >= 5
+			&& line.startsWith(u"$$"_q)
+			&& line.endsWith(u"$$"_q)) {
+			return true;
+		}
+		auto hashes = 0;
+		while (hashes < line.size() && line[hashes] == '#') {
+			++hashes;
+		}
+		if (hashes > 0
+			&& hashes <= 6
+			&& hashes < line.size()
+			&& line[hashes] == ' '
+			&& !line.mid(hashes + 1).trimmed().isEmpty()) {
+			return true;
+		}
+		if (line.size() >= 3) {
+			const auto first = line[0];
+			if ((first == '-' || first == '*' || first == '_')
+				&& ranges::all_of(line, [&](QChar c) { return c == first; })) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+RichPage ParseMarkdownTextIntoRichPage(TextWithEntities text) {
+	auto page = RichPage();
+	const auto &str = text.text;
+	const auto size = int(str.size());
+
+	const auto blockText = [&](int from, int till) {
+		till = std::max(till, from);
+		auto result = Ui::Text::Mid(text, from, till - from);
+		TextUtilities::Trim(result);
+		return result;
+	};
+
+	auto paragraphFrom = -1;
+	auto paragraphTill = -1;
+	auto quote = TextWithEntities();
+	auto listItems = std::vector<ListItem>();
+	auto listKind = ListKind::Bullet;
+	auto listStart = std::optional<int>();
+	auto fenceActive = false;
+	auto fenceLanguage = QString();
+	auto fenceContentFrom = 0;
+	auto fenceContentTill = 0;
+
+	const auto flushParagraph = [&] {
+		if (paragraphFrom < 0) {
+			return;
+		}
+		auto paragraph = blockText(paragraphFrom, paragraphTill);
+		if (!paragraph.empty()) {
+			page.blocks.push_back(Block{
+				.kind = BlockKind::Paragraph,
+				.text = { std::move(paragraph) },
+			});
+		}
+		paragraphFrom = paragraphTill = -1;
+	};
+	const auto flushQuote = [&] {
+		if (quote.empty()) {
+			return;
+		}
+		auto body = base::take(quote);
+		TextUtilities::Trim(body);
+		if (!body.empty()) {
+			page.blocks.push_back(Block{
+				.kind = BlockKind::Quote,
+				.text = { std::move(body) },
+			});
+		}
+	};
+	const auto flushList = [&] {
+		if (listItems.empty()) {
+			return;
+		}
+		auto block = Block{
+			.kind = BlockKind::List,
+			.listKind = listKind,
+		};
+		if (listKind == ListKind::Ordered) {
+			block.orderedList.start = listStart;
+		}
+		block.listItems = base::take(listItems);
+		page.blocks.push_back(std::move(block));
+		listStart = std::nullopt;
+	};
+	const auto flushAll = [&] {
+		flushParagraph();
+		flushQuote();
+		flushList();
+	};
+
+	auto lineFrom = 0;
+	for (auto i = 0; i <= size; ++i) {
+		if (i < size && str[i] != '\n') {
+			continue;
+		}
+		const auto lineStart = lineFrom;
+		const auto lineTill = i;
+		lineFrom = i + 1;
+		const auto line = QStringView(str).mid(
+			lineStart,
+			lineTill - lineStart);
+		const auto trimmed = line.trimmed();
+
+		if (fenceActive) {
+			if (trimmed == u"```"_q) {
+				fenceActive = false;
+				page.blocks.push_back(Block{
+					.kind = BlockKind::Code,
+					.text = { blockText(fenceContentFrom, fenceContentTill) },
+					.language = fenceLanguage,
+				});
+			} else {
+				fenceContentTill = lineTill;
+			}
+			continue;
+		}
+
+		auto textFrom = lineStart;
+		while (textFrom < lineTill && str[textFrom] == ' ') {
+			++textFrom;
+		}
+
+		if (trimmed.isEmpty()) {
+			flushAll();
+			continue;
+		}
+		if (trimmed.startsWith(u"```"_q)) {
+			flushAll();
+			fenceActive = true;
+			fenceLanguage = trimmed.mid(3).trimmed().toString();
+			fenceContentFrom = fenceContentTill = lineTill + 1;
+			continue;
+		}
+		auto hashes = 0;
+		while (hashes < trimmed.size() && trimmed[hashes] == '#') {
+			++hashes;
+		}
+		if (hashes > 0
+			&& hashes <= 6
+			&& hashes < trimmed.size()
+			&& trimmed[hashes] == ' ') {
+			auto heading = blockText(textFrom + hashes + 1, lineTill);
+			if (!heading.empty()) {
+				flushAll();
+				page.blocks.push_back(Block{
+					.kind = BlockKind::Heading,
+					.text = { std::move(heading) },
+					.headingLevel = hashes,
+				});
+				continue;
+			}
+		}
+		if (trimmed.startsWith(u"-# "_q)) {
+			auto footer = blockText(textFrom + 3, lineTill);
+			if (!footer.empty()) {
+				flushAll();
+				page.blocks.push_back(Block{
+					.kind = BlockKind::Footer,
+					.text = { std::move(footer) },
+				});
+				continue;
+			}
+		}
+		if (trimmed.size() >= 5
+			&& trimmed.startsWith(u"$$"_q)
+			&& trimmed.endsWith(u"$$"_q)) {
+			const auto formula = trimmed.mid(2, trimmed.size() - 4)
+				.trimmed()
+				.toString();
+			if (!formula.isEmpty()) {
+				flushAll();
+				page.blocks.push_back(Block{
+					.kind = BlockKind::Math,
+					.formula = formula,
+				});
+				continue;
+			}
+		}
+		const auto divider = [&] {
+			if (trimmed.size() < 3) {
+				return false;
+			}
+			const auto first = trimmed[0];
+			return (first == '-' || first == '*' || first == '_')
+				&& ranges::all_of(trimmed, [&](QChar c) {
+					return c == first;
+				});
+		}();
+		if (divider) {
+			flushAll();
+			page.blocks.push_back(Block{ .kind = BlockKind::Divider });
+			continue;
+		}
+		if (trimmed.startsWith(u"> "_q) || trimmed == u">"_q) {
+			flushParagraph();
+			flushList();
+			auto inner = blockText(textFrom + 2, lineTill);
+			if (!quote.empty()) {
+				quote.text.append('\n');
+			}
+			quote.append(std::move(inner));
+			continue;
+		}
+		const auto bullet = (trimmed.size() >= 2)
+			&& (trimmed[0] == '-' || trimmed[0] == '*' || trimmed[0] == '+')
+			&& (trimmed[1] == ' ');
+		if (bullet) {
+			flushParagraph();
+			flushQuote();
+			if (!listItems.empty() && listKind != ListKind::Bullet) {
+				flushList();
+			}
+			listKind = ListKind::Bullet;
+			auto contentFrom = textFrom + 2;
+			auto state = TaskState::None;
+			const auto rest = trimmed.mid(2);
+			if (rest.startsWith(u"[ ] "_q)) {
+				state = TaskState::Unchecked;
+				contentFrom += 4;
+			} else if (rest.startsWith(u"[x] "_q)
+				|| rest.startsWith(u"[X] "_q)) {
+				state = TaskState::Checked;
+				contentFrom += 4;
+			}
+			auto item = ListItem();
+			item.taskState = state;
+			item.text = { blockText(contentFrom, lineTill) };
+			listItems.push_back(std::move(item));
+			continue;
+		}
+		auto digits = 0;
+		while (digits < trimmed.size()
+			&& digits < 9
+			&& trimmed[digits].isDigit()) {
+			++digits;
+		}
+		if (digits > 0
+			&& digits + 1 < trimmed.size()
+			&& (trimmed[digits] == '.' || trimmed[digits] == ')')
+			&& trimmed[digits + 1] == ' ') {
+			flushParagraph();
+			flushQuote();
+			if (!listItems.empty() && listKind != ListKind::Ordered) {
+				flushList();
+			}
+			const auto number = trimmed.left(digits).toString();
+			if (listItems.empty()) {
+				listKind = ListKind::Ordered;
+				listStart = number.toInt();
+			}
+			auto item = ListItem();
+			item.number.num = number;
+			item.number.value = number.toInt();
+			item.text = { blockText(textFrom + digits + 2, lineTill) };
+			listItems.push_back(std::move(item));
+			continue;
+		}
+		flushQuote();
+		flushList();
+		if (paragraphFrom < 0) {
+			paragraphFrom = lineStart;
+		}
+		paragraphTill = lineTill;
+	}
+	if (fenceActive) {
+		auto inner = blockText(fenceContentFrom, size);
+		if (!inner.empty()) {
+			page.blocks.push_back(Block{
+				.kind = BlockKind::Code,
+				.text = { std::move(inner) },
+				.language = fenceLanguage,
+			});
+		}
+	}
+	flushAll();
+	return page;
+}
+
 } // namespace Iv
