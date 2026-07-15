@@ -1476,6 +1476,20 @@ void SetupStickersEmoji(
 		} });
 	}
 
+	const auto instantMarkdown = addWithReturn(
+		tr::lng_settings_instant_markdown(tr::now),
+		Core::App().settings().instantMarkdown(),
+		[=](bool checked) {
+			Core::App().settings().setInstantMarkdown(checked);
+			Core::App().saveSettingsDelayed();
+		});
+	if (highlights) {
+		highlights->push_back({ u"chat/instant-markdown"_q, {
+			instantMarkdown,
+			{ .radius = st::boxRadius },
+		} });
+	}
+
 	const auto suggestEmoji = inner->lifetime().make_state<
 		rpl::variable<bool>
 	>(Core::App().settings().suggestEmoji());

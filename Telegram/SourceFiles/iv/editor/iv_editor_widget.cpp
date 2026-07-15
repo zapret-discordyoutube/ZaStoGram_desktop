@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_qptr.h"
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "chat_helpers/message_field.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "core/mime_type.h"
 #include "data/data_msg_id.h"
 #include "data/data_types.h"
@@ -4113,6 +4115,85 @@ bool Widget::handleHardcodedBlockShortcut(QKeyEvent *e) {
 	} else {
 		return false;
 	}
+	e->accept();
+	return true;
+}
+
+bool Widget::handleFieldMarkdownBlockShortcut(QKeyEvent *e) {
+	const auto key = e->key();
+	const auto space = (key == Qt::Key_Space);
+	const auto enter = (key == Qt::Key_Return) || (key == Qt::Key_Enter);
+	if ((!space && !enter)
+		|| (e->modifiers()
+			& ~(Qt::KeypadModifier | Qt::GroupSwitchModifier))
+		|| (_fieldMode != State::FieldMode::Rich)
+		|| !Core::App().settings().instantMarkdown()
+		|| !_state->isActiveTopLevelParagraphOrHeading()) {
+		return false;
+	}
+	const auto cursor = _field->textCursor();
+	if (cursor.hasSelection()) {
+		return false;
+	}
+	const auto position = cursor.position();
+	constexpr auto kMaxPrefix = 8;
+	if (!position || position > kMaxPrefix) {
+		return false;
+	}
+	const auto prefix = _field->getTextWithTagsPart(0, position).text;
+	if (prefix.size() != position) {
+		return false;
+	}
+	const auto allOf = [&](QChar ch) {
+		return ranges::all_of(prefix, [&](QChar c) { return c == ch; });
+	};
+	const auto orderedList = [&] {
+		if (prefix.size() < 2
+			|| (prefix.back() != '.' && prefix.back() != ')')) {
+			return false;
+		}
+		return ranges::all_of(
+			prefix.chopped(1),
+			[](QChar c) { return c.isDigit(); });
+	};
+	auto action = std::optional<State::InsertAction>();
+	if (space && prefix.size() <= 6 && allOf('#')) {
+		action = State::InsertAction{
+			.type = State::InsertBlockType::Heading,
+			.headingLevel = int(prefix.size()),
+		};
+	} else if (space && prefix == u">"_q) {
+		action = State::InsertAction{ State::InsertBlockType::Blockquote };
+	} else if (space && prefix == u">>"_q) {
+		action = State::InsertAction{ State::InsertBlockType::Pullquote };
+	} else if (space
+		&& (prefix == u"-"_q || prefix == u"*"_q || prefix == u"+"_q)) {
+		action = State::InsertAction{ State::InsertBlockType::BulletList };
+	} else if (space && orderedList()) {
+		action = State::InsertAction{ State::InsertBlockType::OrderedList };
+	} else if (space && (prefix == u"[]"_q || prefix == u"[ ]"_q)) {
+		action = State::InsertAction{ State::InsertBlockType::TaskList };
+	} else if (space && prefix == u"-#"_q) {
+		action = State::InsertAction{ State::InsertBlockType::Footer };
+	} else if (prefix == u"```"_q) {
+		action = State::InsertAction{ State::InsertBlockType::Code };
+	} else if (prefix == u"$$"_q) {
+		action = State::InsertAction{ State::InsertBlockType::Math };
+	} else if (enter
+		&& (prefix == u"---"_q
+			|| prefix == u"***"_q
+			|| prefix == u"___"_q
+			|| prefix == QString(QChar(8212)) + u"-"_q)) {
+		action = State::InsertAction{ State::InsertBlockType::Divider };
+	}
+	if (!action) {
+		return false;
+	}
+	auto strip = _field->textCursor();
+	strip.setPosition(0);
+	strip.setPosition(position, QTextCursor::KeepAnchor);
+	strip.removeSelectedText();
+	insertBlock(*action);
 	e->accept();
 	return true;
 }
@@ -9419,6 +9500,9 @@ bool Widget::adjustStructuralSelectionFromKeyboard(bool forward, bool page) {
 bool Widget::handleFieldKey(QKeyEvent *e) {
 	if (_field->isHidden()) {
 		return false;
+	}
+	if (handleFieldMarkdownBlockShortcut(e)) {
+		return true;
 	}
 	const auto key = e->key();
 	if (key == Qt::Key_Escape) {

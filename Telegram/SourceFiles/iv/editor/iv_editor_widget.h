@@ -552,6 +552,7 @@ private:
 	[[nodiscard]] bool handleFieldBlockInsertShortcut(QKeyEvent *e);
 	[[nodiscard]] bool handleStructuralBlockInsertShortcut(QKeyEvent *e);
 	[[nodiscard]] bool handleHardcodedBlockShortcut(QKeyEvent *e);
+	[[nodiscard]] bool handleFieldMarkdownBlockShortcut(QKeyEvent *e);
 	[[nodiscard]] bool fieldMonospaceShortcutUsesCodeBlock() const;
 	[[nodiscard]] bool structuralMonospaceShortcutTargetsCodeBlock() const;
 	void applyFieldMonospaceAction();

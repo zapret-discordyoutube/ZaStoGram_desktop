@@ -1602,6 +1602,7 @@ void WindowHost::Impl::setupWindow(ShowWindowDescriptor &&descriptor) {
 	}
 	window->setTitle(title);
 	window->setWindowTitle(title);
+	window->setNativeFrame(false);
 	window->setMinimumSize(st::ivEditorWindowMinSize);
 	window->setGeometry(DefaultWindowGeometry());
 

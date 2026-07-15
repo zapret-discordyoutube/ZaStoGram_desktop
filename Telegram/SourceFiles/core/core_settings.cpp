@@ -272,7 +272,8 @@ QByteArray Settings::serialize() const {
 	}
 	size += sizeof(qint32) // _audioPlaybackSpeed
 		+ sizeof(qint32) // _mediaGridZoomStep
-		+ sizeof(qint32); // _pullToNextChannel
+		+ sizeof(qint32) // _pullToNextChannel
+		+ sizeof(qint32); // _instantMarkdown
 
 	auto result = QByteArray();
 	result.reserve(size);
@@ -449,6 +450,7 @@ QByteArray Settings::serialize() const {
 		stream << qint32(SerializePlaybackSpeed(_audioPlaybackSpeed.current()));
 		stream << qint32(_mediaGridZoomStep);
 		stream << qint32(_pullToNextChannel.current() ? 1 : 0);
+		stream << qint32(_instantMarkdown.current() ? 1 : 0);
 	}
 
 	Ensures(result.size() == size);
@@ -556,6 +558,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 cornerReply = _cornerReply.current() ? 1 : 0;
 	qint32 cornerReaction = _cornerReaction.current() ? 1 : 0;
 	qint32 pullToNextChannel = _pullToNextChannel.current() ? 1 : 0;
+	qint32 instantMarkdown = _instantMarkdown.current() ? 1 : 0;
 	qint32 legacySkipTranslationForLanguage = _translateButtonEnabled ? 1 : 0;
 	qint32 skipTranslationLanguagesCount = 0;
 	std::vector<LanguageId> skipTranslationLanguages;
@@ -974,6 +977,9 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	if (!stream.atEnd()) {
 		stream >> pullToNextChannel;
 	}
+	if (!stream.atEnd()) {
+		stream >> instantMarkdown;
+	}
 	if (stream.status() != QDataStream::Ok) {
 		LOG(("App Error: "
 			"Bad data for Core::Settings::constructFromSerialized()"));
@@ -1160,6 +1166,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	_cornerReply = (cornerReply == 1);
 	_cornerReaction = (cornerReaction == 1);
 	_pullToNextChannel = (pullToNextChannel == 1);
+	_instantMarkdown = (instantMarkdown == 1);
 	{ // Parse the legacy translation setting.
 		if (legacySkipTranslationForLanguage == 0) {
 			_translateButtonEnabled = false;
@@ -1699,6 +1706,7 @@ void Settings::resetOnLastLogout() {
 	_largeEmoji = true;
 	_replaceEmoji = true;
 	_systemTextReplace = true;
+	_instantMarkdown = true;
 	_suggestEmoji = true;
 	_suggestStickersByEmoji = true;
 	_suggestAnimatedEmoji = true;

@@ -544,6 +544,8 @@ auto InitMessageFieldHandlers(MessageFieldHandlersArgs &&args)
 	field->setMarkdownReplacesEnabled(rpl::single(Ui::MarkdownEnabledState{
 		Ui::MarkdownEnabled{ std::move(args.allowMarkdownTags) }
 	}));
+	field->setMarkdownInstantReplacesEnabled(
+		Core::App().settings().instantMarkdownValue());
 	if (const auto &show = args.show) {
 		field->setEditLinkCallback(
 			DefaultEditLinkCallback(
@@ -646,6 +648,8 @@ Fn<void(not_null<Ui::InputField*>)> FactcheckFieldIniter(
 				}
 			}
 		));
+		field->setMarkdownInstantReplacesEnabled(
+			Core::App().settings().instantMarkdownValue());
 		field->setEditLinkCallback(FactcheckEditLinkCallback(show, field));
 		InitSpellchecker(show, field);
 	};
