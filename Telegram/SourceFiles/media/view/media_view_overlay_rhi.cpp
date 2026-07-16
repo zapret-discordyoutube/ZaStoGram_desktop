@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_media_view.h"
 
 #include <rhi/qrhi.h>
+#include <QtGui/QWindow>
 
 namespace Media::View {
 namespace {
