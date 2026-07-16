@@ -34,35 +34,56 @@ namespace {
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
 constexpr auto kRecentRelayServerHelloTimeout = crl::time(2500);
 constexpr auto kColdServerHelloTimeout = crl::time(5000);
-constexpr auto kCapacityPressureWindow = crl::time(30 * 1000);
+constexpr auto kCapacityProbeCooldown = crl::time(30 * 1000);
+constexpr auto kCapacityPressureConfirmationWindow = crl::time(60 * 1000);
 constexpr auto kCapacityPressureConfirmations = 2;
 
-void NoteCapacityPressure(
+[[nodiscard]] std::optional<int> BeginStableCapacityProbeCooldown(
 		EndpointState &state,
 		const FailureReport &report,
 		crl::time now) {
 	if (report.reason != FailureReason::ClientHelloSentNoServerHello) {
-		return;
+		return std::nullopt;
+	}
+	const auto identity = RelayProofIdentity{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+		.attemptId = report.attemptId,
+	};
+	auto &budget = state.liveBudget;
+	if (!CapacityProbeActiveFor(budget, identity)) {
+		return std::nullopt;
 	}
 	const auto attempt = state.attemptStarts.find(report.attemptId);
 	if (attempt == end(state.attemptStarts)) {
-		return;
+		return std::nullopt;
 	}
 	const auto relayProofs = attempt->second.relayProofsAtStart;
-	auto &budget = state.liveBudget;
 	if (!relayProofs
 		|| attempt->second.relayProofPromotionEpochAtStart
 			!= budget.relayProofPromotionEpoch
 		|| EndpointRelayProofCount(state) != relayProofs) {
-		return;
+		return std::nullopt;
 	}
+	if (!BeginCapacityProbeCooldown(
+			budget,
+			identity,
+			now + kCapacityProbeCooldown)) {
+		return std::nullopt;
+	}
+	return relayProofs;
+}
+
+void NoteCapacityPressure(
+		EndpointLiveBudgetState &budget,
+		int relayProofs,
+		crl::time now) {
 	const auto sameObservation = budget.pressureRelayProofs == relayProofs
 		&& budget.proofPressureObservedAt
 		&& (now - budget.proofPressureObservedAt
-			<= kCapacityPressureWindow);
+			<= kCapacityPressureConfirmationWindow);
 	budget.pressureRelayProofs = relayProofs;
 	budget.proofPressureObservedAt = now;
-	budget.expansionProbeAfter = now + kCapacityPressureWindow;
 	budget.proofPressureStrikes = sameObservation
 		? (budget.proofPressureStrikes + 1)
 		: 1;
@@ -76,6 +97,17 @@ void NoteCapacityPressure(
 	budget.provenLowerBound = budget.provenLowerBound
 		? std::min(budget.provenLowerBound, observedLimit)
 		: observedLimit;
+}
+
+void RaiseProvenEndpointCapacity(
+		EndpointLiveBudgetState &budget,
+		int relayProofCount) {
+	budget.provenLowerBound = std::max(
+		budget.provenLowerBound,
+		relayProofCount);
+	if (budget.learnedLimit && relayProofCount > budget.learnedLimit) {
+		budget.learnedLimit = relayProofCount;
+	}
 }
 
 [[nodiscard]] crl::time ServerHelloTimeoutFor(
@@ -432,15 +464,36 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					report.reason)
 					&& !routeOnly
 					&& !alternateRoute;
-				auto openingRetryUntil = crl::time();
-				if (openingFailure) {
-					const auto bootstrap = (report.use == EndpointUse::Main)
-						&& !endpointHasMainProof;
-					if (!bootstrap
+				const auto bootstrap = (report.use == EndpointUse::Main)
+					&& !endpointHasMainProof;
+				const auto capacityProbeIdentity = RelayProofIdentity{
+					.runtimeId = report.runtimeId,
+					.proxyGeneration = report.proxyGeneration,
+					.attemptId = report.attemptId,
+				};
+				const auto capacityProbeFailure
+					= terminal->finalAttemptTerminal
+					? BeginStableCapacityProbeCooldown(
+						state,
+						report,
+						now)
+					: std::nullopt;
+				const auto capacityCooldownStarted
+					= capacityProbeFailure.has_value();
+				if (capacityProbeFailure) {
+					shouldDrain = true;
+					if (openingFailure
+						&& !bootstrap
 						&& report.use != EndpointUse::ProxyCheck
 						&& report.use != EndpointUse::Maintenance) {
-						NoteCapacityPressure(state, report, now);
+						NoteCapacityPressure(
+							state.liveBudget,
+							*capacityProbeFailure,
+							now);
 					}
+				}
+				auto openingRetryUntil = crl::time();
+				if (openingFailure) {
 					auto &opening = bootstrap
 						? state.opening.bootstrap
 						: EnsureEndpointExpansionFailure(
@@ -497,6 +550,13 @@ void EndpointHealth::reportFailure(FailureReport report) {
 						RecomputeEndpointExpansionThrottle(state);
 					}
 					shouldDrain = true;
+				}
+				if (terminal->finalAttemptTerminal
+					&& !capacityCooldownStarted) {
+					shouldDrain = ReleaseActiveCapacityProbe(
+						state.liveBudget,
+						capacityProbeIdentity)
+						|| shouldDrain;
 				}
 				const auto canonicalEligible = (report.use
 						== EndpointUse::Main)
@@ -713,6 +773,16 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
+			if (probe && CapacityProbeActiveFor(
+					state.liveBudget,
+					identity)) {
+				RaiseProvenEndpointCapacity(
+					state.liveBudget,
+					EndpointRelayProofCount(state));
+			}
+			static_cast<void>(ReleaseActiveCapacityProbe(
+				state.liveBudget,
+				identity));
 			if (report.use == EndpointUse::Main) {
 				static_cast<void>(
 					FinishMainRecoveryByReplacementAttemptLocked(
@@ -753,18 +823,9 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			state.liveBudget.proofPressureStrikes = 0;
 			state.liveBudget.proofPressureObservedAt = 0;
 			++state.liveBudget.relayProofPromotionEpoch;
-			const auto relayProofCount = EndpointRelayProofCount(state);
-			state.liveBudget.provenLowerBound = std::max(
-				state.liveBudget.provenLowerBound,
-				relayProofCount);
-			if (state.liveBudget.learnedLimit
-				&& relayProofCount > state.liveBudget.learnedLimit) {
-				state.liveBudget.learnedLimit = relayProofCount;
-			}
-			if (state.liveBudget.learnedLimit) {
-				state.liveBudget.expansionProbeAfter
-					= payloadAt + kCapacityPressureWindow;
-			}
+			RaiseProvenEndpointCapacity(
+				state.liveBudget,
+				EndpointRelayProofCount(state));
 			const auto bootstrapSuccess = (report.use == EndpointUse::Main)
 				&& (beforeEndpointMainProof.strength
 					== MainRelayProofStrength::None);

@@ -68,6 +68,7 @@ struct ConnectionRequest {
 	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
+	crl::time waitStartedAt = 0;
 };
 
 class ConnectionBroker;

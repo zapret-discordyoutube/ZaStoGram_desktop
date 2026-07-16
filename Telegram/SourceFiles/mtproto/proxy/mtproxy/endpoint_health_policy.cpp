@@ -347,9 +347,19 @@ void ApplyProxyGeneration(
 }
 
 void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
+	static_cast<void>(ExpireCapacityProbeCooldown(
+		state.liveBudget,
+		now));
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (i->second.admissionActive
 			&& now - i->second.startedAt > kAttemptHardTtl) {
+			static_cast<void>(ReleaseActiveCapacityProbe(
+				state.liveBudget,
+				{
+					.runtimeId = i->second.runtimeId,
+					.proxyGeneration = i->second.proxyGeneration,
+					.attemptId = i->first,
+				}));
 			QObject::disconnect(i->second.ownerDestroyed);
 			i = state.attemptStarts.erase(i);
 		} else {

@@ -131,6 +131,8 @@ private:
 		std::vector<TestConnection> testConnections;
 		std::vector<SessionProxyTicket> brokerTickets;
 		crl::time startedConnectingAt = 0;
+		crl::time endpointAdmissionWaitStartedAt = 0;
+		bool endpointAdmissionWaitReplacementPending = false;
 	};
 	struct TimingState {
 		TimingState(
@@ -172,6 +174,7 @@ private:
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
 	[[nodiscard]] bool hasEndpointLaneDemand() const;
+	void resetEndpointAdmissionWait();
 	void cancelMainRecoveryBackoff();
 	void clearConnectionBrokerTickets();
 	void clearTestConnections();

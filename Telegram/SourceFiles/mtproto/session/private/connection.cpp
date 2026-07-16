@@ -170,6 +170,9 @@ bool SessionTransport::appendTestConnection(
 	};
 
 	if (mtproxy) {
+		if (!_state.endpointAdmissionWaitStartedAt) {
+			_state.endpointAdmissionWaitStartedAt = crl::now();
+		}
 		auto ticket = _owner->_proxyPort->requestConnection({
 			.proxyGeneration = _state.proxyGeneration,
 			.proxy = proxy,
@@ -219,6 +222,7 @@ bool SessionTransport::appendTestConnection(
 						.sourceProxyGeneration = start.proxyGeneration,
 					}
 					: MainRecoveryHandle();
+				resetEndpointAdmissionWait();
 				appendStartedConnection(
 					std::move(start.endpoint),
 					start.use,
@@ -231,6 +235,7 @@ bool SessionTransport::appendTestConnection(
 			},
 			.status = [=](SessionProxyAdmissionDecision) {
 			},
+			.waitStartedAt = _state.endpointAdmissionWaitStartedAt,
 		});
 		const auto acceptedRecoveryToken = ticket
 			? ticket.acceptedRecoveryToken()
@@ -252,6 +257,7 @@ bool SessionTransport::appendTestConnection(
 			}
 		}
 		if (!ticket) {
+			resetEndpointAdmissionWait();
 			return false;
 		}
 		_state.brokerTickets.push_back(std::move(ticket));
@@ -277,6 +283,7 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
+	resetEndpointAdmissionWait();
 	clearConnectionBrokerTickets();
 	cancelTestConnections(origin);
 	_owner->_proxyPort->reportAttemptCancelled(
@@ -340,6 +347,11 @@ bool SessionTransport::hasEndpointLaneDemand() const {
 		}
 	}
 	return false;
+}
+
+void SessionTransport::resetEndpointAdmissionWait() {
+	_state.endpointAdmissionWaitStartedAt = 0;
+	_state.endpointAdmissionWaitReplacementPending = false;
 }
 
 void SessionTransport::cancelMainRecoveryBackoff() {
@@ -481,6 +493,7 @@ void SessionTransport::applyEndpointLaneCommand(
 		retrySuspend = ownsCommand && !accepted;
 		if (accepted) {
 			const auto demanded = hasEndpointLaneDemand();
+			resetEndpointAdmissionWait();
 			_state.endpointLaneSuspended = true;
 			_state.endpointLaneToken = command.token;
 			_state.endpointLaneDemand = std::move(command.demand);
@@ -508,6 +521,7 @@ void SessionTransport::applyEndpointLaneCommand(
 			&& !hasEndpointLaneDemand();
 		accepted = ownsCommand && !noDemand;
 		if (accepted) {
+			resetEndpointAdmissionWait();
 			_state.endpointLaneSuspended = false;
 			_state.endpointLaneToken = 0;
 			_state.endpointLaneDemand = {};
@@ -531,6 +545,7 @@ void SessionTransport::requestEndpointLane() {
 		if (!hasEndpointLaneDemand()) {
 			return;
 		}
+		resetEndpointAdmissionWait();
 		_state.proxyMigrationDemandDormant = false;
 		if (!_timing.retryTimer.isActive()) {
 			connectToServer();
@@ -544,6 +559,7 @@ void SessionTransport::requestEndpointLane() {
 
 void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	cancelMainRecoveryBackoff();
+	resetEndpointAdmissionWait();
 	_state.proxyGeneration = generation;
 	_state.proxyMigrationScout = scout;
 	_state.proxyMigrationSuspended = !scout;
@@ -592,6 +608,7 @@ void SessionTransport::releaseProxyMigration(uint64 generation) {
 		&& (use == SessionProxyEndpointUse::Media
 			|| use == SessionProxyEndpointUse::Upload);
 	if (mtproxyTransfer && !hasEndpointLaneDemand()) {
+		resetEndpointAdmissionWait();
 		_state.proxyMigrationDemandDormant = true;
 		return;
 	}
@@ -619,6 +636,10 @@ void SessionTransport::connectToServer(bool afterConfig) {
 		return;
 	}
 
+	const auto replacementWaitStartedAt
+		= _state.endpointAdmissionWaitReplacementPending
+		? _state.endpointAdmissionWaitStartedAt
+		: crl::time();
 	destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);
 
 	if (_owner->realDcTypeChanged() && _owner->_authState.keyCreator) {
@@ -657,6 +678,14 @@ void SessionTransport::connectToServer(bool afterConfig) {
 		? MTP::ConnectionNotice::WssDirectFallback
 		: MTP::ConnectionNotice::None);
 	if (_owner->_sessionState.options->proxy.type == ProxyData::Type::Mtproto) {
+		const auto use = classifyEndpointUse();
+		const auto transferDemand = (use == SessionProxyEndpointUse::Media
+				|| use == SessionProxyEndpointUse::Upload)
+			&& hasEndpointLaneDemand();
+		if (use == SessionProxyEndpointUse::Main || transferDemand) {
+			_state.endpointAdmissionWaitStartedAt
+				= replacementWaitStartedAt;
+		}
 		// host, port, secret for mtproto proxy are taken from proxy.
 		if (!appendTestConnection(
 				DcOptions::Variants::Tcp,
@@ -979,7 +1008,27 @@ void SessionTransport::brokerQueueDeadlineFired() {
 		u"broker ticket not started in %1ms, reconnecting"_q
 			.arg(kBrokerQueueHardDeadline));
 
+	const auto use = classifyEndpointUse();
+	const auto requiredDemand = (use == SessionProxyEndpointUse::Main)
+		|| ((use == SessionProxyEndpointUse::Media
+				|| use == SessionProxyEndpointUse::Upload)
+			&& hasEndpointLaneDemand());
+	const auto preserveWaitStartedAt = (_state.proxyGeneration
+			&& _state.endpointAdmissionWaitStartedAt
+			&& _owner->_sessionState.options
+			&& _owner->_sessionState.options->proxy.type
+				== ProxyData::Type::Mtproto
+			&& !_state.proxyMigrationSuspended
+			&& !_state.proxyMigrationDemandDormant
+			&& !_state.endpointLaneSuspended
+			&& requiredDemand)
+		? _state.endpointAdmissionWaitStartedAt
+		: crl::time();
 	doDisconnect();
+	if (preserveWaitStartedAt) {
+		_state.endpointAdmissionWaitStartedAt = preserveWaitStartedAt;
+		_state.endpointAdmissionWaitReplacementPending = true;
+	}
 
 	if (_owner->_sessionState.options
 		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)

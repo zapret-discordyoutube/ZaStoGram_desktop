@@ -308,6 +308,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 					start(std::move(value));
 				}
 			},
+			.waitStartedAt = request.waitStartedAt,
 		});
 	if (!accepted.accepted) {
 		QObject::disconnect(ownerDestroyed);

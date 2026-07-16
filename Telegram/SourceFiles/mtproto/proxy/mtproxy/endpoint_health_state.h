@@ -60,6 +60,22 @@ struct RelayProofIdentity {
 		RelayProofIdentity) = default;
 };
 
+enum class CapacityProbeStage {
+	Idle,
+	Reserved,
+	Active,
+	Cooldown,
+};
+
+struct CapacityProbeState {
+	CapacityProbeStage stage = CapacityProbeStage::Idle;
+	AdmissionTicketKey reservedTicketKey;
+	RuntimeGenerationKey reservedGeneration;
+	RelayProofIdentity activeAttempt;
+	RuntimeGenerationKey cooldownGeneration;
+	crl::time retryAt = 0;
+};
+
 struct RelayProofState {
 	crl::time provenAt = 0;
 	crl::time lastPayloadAt = 0;
@@ -121,9 +137,160 @@ struct EndpointLiveBudgetState {
 	int pressureRelayProofs = 0;
 	int proofPressureStrikes = 0;
 	crl::time proofPressureObservedAt = 0;
-	crl::time expansionProbeAfter = 0;
+	CapacityProbeState capacityProbe;
 	uint64 relayProofPromotionEpoch = 0;
 };
+
+[[nodiscard]] inline bool CapacityProbeReservedFor(
+		const EndpointLiveBudgetState &budget,
+		AdmissionTicketKey ticketKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	return budget.capacityProbe.stage == CapacityProbeStage::Reserved
+		&& budget.capacityProbe.reservedTicketKey == ticketKey
+		&& budget.capacityProbe.reservedGeneration == runtimeGeneration;
+}
+
+[[nodiscard]] inline bool CapacityProbeActiveFor(
+		const EndpointLiveBudgetState &budget,
+		const RelayProofIdentity &identity) {
+	return budget.capacityProbe.stage == CapacityProbeStage::Active
+		&& budget.capacityProbe.activeAttempt == identity;
+}
+
+[[nodiscard]] inline bool ReserveCapacityProbe(
+		EndpointLiveBudgetState &budget,
+		AdmissionTicketKey ticketKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	if (budget.capacityProbe.stage != CapacityProbeStage::Idle
+		|| !ticketKey.runtimeId
+		|| !ticketKey.ticketId
+		|| runtimeGeneration.runtimeId != ticketKey.runtimeId
+		|| !runtimeGeneration.proxyGeneration) {
+		return false;
+	}
+	budget.capacityProbe = {
+		.stage = CapacityProbeStage::Reserved,
+		.reservedTicketKey = ticketKey,
+		.reservedGeneration = runtimeGeneration,
+	};
+	return true;
+}
+
+[[nodiscard]] inline bool ActivateCapacityProbe(
+		EndpointLiveBudgetState &budget,
+		AdmissionTicketKey ticketKey,
+		const RelayProofIdentity &identity) {
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = identity.runtimeId,
+		.proxyGeneration = identity.proxyGeneration,
+	};
+	if (!CapacityProbeReservedFor(
+			budget,
+			ticketKey,
+			runtimeGeneration)
+		|| !identity.proxyGeneration
+		|| !identity.attemptId) {
+		return false;
+	}
+	budget.capacityProbe = {
+		.stage = CapacityProbeStage::Active,
+		.activeAttempt = identity,
+	};
+	return true;
+}
+
+[[nodiscard]] inline bool ReleaseReservedCapacityProbe(
+		EndpointLiveBudgetState &budget,
+		AdmissionTicketKey ticketKey,
+		RuntimeGenerationKey runtimeGeneration) {
+	if (!CapacityProbeReservedFor(
+			budget,
+			ticketKey,
+			runtimeGeneration)) {
+		return false;
+	}
+	budget.capacityProbe = {};
+	return true;
+}
+
+[[nodiscard]] inline bool ReleaseActiveCapacityProbe(
+		EndpointLiveBudgetState &budget,
+		const RelayProofIdentity &identity) {
+	if (!CapacityProbeActiveFor(budget, identity)) {
+		return false;
+	}
+	budget.capacityProbe = {};
+	return true;
+}
+
+[[nodiscard]] inline bool BeginCapacityProbeCooldown(
+		EndpointLiveBudgetState &budget,
+		const RelayProofIdentity &identity,
+		crl::time retryAt) {
+	if (!CapacityProbeActiveFor(budget, identity) || !retryAt) {
+		return false;
+	}
+	budget.capacityProbe = {
+		.stage = CapacityProbeStage::Cooldown,
+		.cooldownGeneration = {
+			.runtimeId = identity.runtimeId,
+			.proxyGeneration = identity.proxyGeneration,
+		},
+		.retryAt = retryAt,
+	};
+	return true;
+}
+
+[[nodiscard]] inline bool ExpireCapacityProbeCooldown(
+		EndpointLiveBudgetState &budget,
+		crl::time now) {
+	if (budget.capacityProbe.stage != CapacityProbeStage::Cooldown
+		|| budget.capacityProbe.retryAt > now) {
+		return false;
+	}
+	budget.capacityProbe = {};
+	return true;
+}
+
+[[nodiscard]] inline bool RemoveCapacityProbeForRuntime(
+		EndpointLiveBudgetState &budget,
+		ProxyRuntimeId runtimeId) {
+	const auto &probe = budget.capacityProbe;
+	const auto matches = (probe.stage == CapacityProbeStage::Reserved)
+		? (probe.reservedGeneration.runtimeId == runtimeId)
+		: (probe.stage == CapacityProbeStage::Active)
+		? (probe.activeAttempt.runtimeId == runtimeId)
+		: (probe.stage == CapacityProbeStage::Cooldown)
+		? (probe.cooldownGeneration.runtimeId == runtimeId)
+		: false;
+	if (!matches) {
+		return false;
+	}
+	budget.capacityProbe = {};
+	return true;
+}
+
+[[nodiscard]] inline bool RemoveStaleCapacityProbeForGeneration(
+		EndpointLiveBudgetState &budget,
+		ProxyRuntimeId runtimeId,
+		uint64 proxyGeneration) {
+	const auto &probe = budget.capacityProbe;
+	const auto matches = (probe.stage == CapacityProbeStage::Reserved)
+		? (probe.reservedGeneration.runtimeId == runtimeId
+			&& probe.reservedGeneration.proxyGeneration < proxyGeneration)
+		: (probe.stage == CapacityProbeStage::Active)
+		? (probe.activeAttempt.runtimeId == runtimeId
+			&& probe.activeAttempt.proxyGeneration < proxyGeneration)
+		: (probe.stage == CapacityProbeStage::Cooldown)
+		? (probe.cooldownGeneration.runtimeId == runtimeId
+			&& probe.cooldownGeneration.proxyGeneration < proxyGeneration)
+		: false;
+	if (!matches) {
+		return false;
+	}
+	budget.capacityProbe = {};
+	return true;
+}
 
 struct MainRecoveryState {
 	MainRecoveryToken token;
@@ -729,6 +896,9 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 inline void RemoveRelayProofsForRuntime(
 		EndpointState &state,
 		ProxyRuntimeId runtimeId) {
+	static_cast<void>(RemoveCapacityProbeForRuntime(
+		state.liveBudget,
+		runtimeId));
 	for (auto i = begin(state.relayProofs);
 			i != end(state.relayProofs);) {
 		if (i->first.runtimeId == runtimeId) {
@@ -756,6 +926,10 @@ inline void ApplyRuntimeProxyGeneration(
 		&& proxyGeneration <= current->second) {
 		return;
 	}
+	static_cast<void>(RemoveStaleCapacityProbeForGeneration(
+		state.liveBudget,
+		runtimeId,
+		proxyGeneration));
 	state.generations[runtimeId] = proxyGeneration;
 	static_cast<void>(RemoveMainRecoveriesForRuntimeLocked(
 		state,

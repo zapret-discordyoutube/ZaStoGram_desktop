@@ -246,6 +246,10 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 				.attemptId = attemptId,
 			};
 			static_cast<void>(
+				details::MtProxy::ReleaseActiveCapacityProbe(
+					i->second.liveBudget,
+					identity));
+			static_cast<void>(
 				details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
 					*_storage,
 					key,

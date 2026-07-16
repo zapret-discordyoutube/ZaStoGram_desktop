@@ -138,6 +138,7 @@ struct SessionProxyRequest {
 	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
+	crl::time waitStartedAt = 0;
 };
 
 class SessionProxyTicket final {

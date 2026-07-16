@@ -78,6 +78,7 @@ struct EndpointAdmissionRequest final {
 	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
+	crl::time waitStartedAt = 0;
 };
 
 struct EndpointAdmissionEnqueueResult final {

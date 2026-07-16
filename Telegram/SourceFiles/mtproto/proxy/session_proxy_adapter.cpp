@@ -184,6 +184,7 @@ private:
 				.blockedBy = MtProxy::ToProxyConnectionError(value.blockedBy),
 			});
 		},
+		.waitStartedAt = request.waitStartedAt,
 	};
 }
 
