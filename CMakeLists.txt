@@ -62,7 +62,12 @@ set(desktop_app_skip_libs
     variant
 )
 
-add_subdirectory(cmake)
+block(SCOPE_FOR POLICIES)
+    if (POLICY CMP0218)
+        cmake_policy(SET CMP0218 OLD)
+    endif()
+    add_subdirectory(cmake)
+endblock()
 
 if (WIN32 AND NOT DESKTOP_APP_USE_PACKAGED AND TARGET external_ffmpeg)
     target_link_libraries(external_ffmpeg
