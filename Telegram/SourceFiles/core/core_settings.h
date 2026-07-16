@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "core/core_settings_proxy.h"
+#include "base/const_string.h"
+#include "data/data_types.h"
 #include "mtproto/proxy/data.h"
 #include "media/media_common.h"
 #include "dialogs/ui/dialogs_quick_action.h"
