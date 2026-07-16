@@ -1618,6 +1618,8 @@ PRIVATE
     mtproto/proxy/mtproxy/client_hello_rules.cpp
     mtproto/proxy/mtproxy/endpoint_health_capabilities.cpp
     mtproto/proxy/mtproxy/endpoint_health_capabilities.h
+    mtproto/proxy/mtproxy/endpoint_health_capacity.cpp
+    mtproto/proxy/mtproxy/endpoint_health_capacity.h
     mtproto/proxy/mtproxy/endpoint_health.cpp
     mtproto/proxy/mtproxy/endpoint_health.h
     mtproto/proxy/mtproxy/endpoint_health_diagnostics.cpp
