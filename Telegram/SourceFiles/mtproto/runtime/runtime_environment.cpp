@@ -279,6 +279,9 @@ RuntimeEnvironment::RuntimeEnvironment(
 			.randomIndex = _descriptor.async.randomIndex,
 			.singleShot = _descriptor.async.singleShot,
 			.fastProxyWarmup = _descriptor.proxy.fastProxyWarmup,
+			.writeProxyDiagnosticsLine = [this](ProxyDiagnosticsEvent event) {
+				WriteProxyDiagnosticsLine(not_null{ this }, std::move(event));
+			},
 		});
 	_descriptor.diagnostics.reportProxyEvent = [=](ProxyEventReport report) {
 		const auto runtime = not_null{ this };

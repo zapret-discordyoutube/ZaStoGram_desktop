@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/session/pause_state.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/status.h"
 #include "mtproto/runtime/connection_status.h"
@@ -35,8 +36,216 @@ namespace {
 
 constexpr auto kConfigBecomesOldIn = 2 * 60 * crl::time(1000);
 constexpr auto kConfigBecomesOldForBlockedIn = 8 * crl::time(1000);
+constexpr auto kFileTransferSlowRequestThreshold = 8 * crl::time(1000);
 
 using namespace details;
+
+[[nodiscard]] ProxyDiagnosticsDirection FileDiagnosticsDirection(
+		FileTransferDirection direction) {
+	switch (direction) {
+	case FileTransferDirection::Download:
+		return ProxyDiagnosticsDirection::Download;
+	case FileTransferDirection::Upload:
+		return ProxyDiagnosticsDirection::Upload;
+	}
+	Unexpected("File transfer direction.");
+}
+
+[[nodiscard]] ProxyConnectionUse FileDiagnosticsUse(
+		FileTransferDirection direction) {
+	switch (direction) {
+	case FileTransferDirection::Download:
+		return ProxyConnectionUse::Media;
+	case FileTransferDirection::Upload:
+		return ProxyConnectionUse::Upload;
+	}
+	Unexpected("File transfer direction.");
+}
+
+[[nodiscard]] ProxyDiagnosticsRpcKind FileDiagnosticsRpcKind(
+		FileTransferRpcKind kind) {
+	switch (kind) {
+	case FileTransferRpcKind::GetFile:
+		return ProxyDiagnosticsRpcKind::GetFile;
+	case FileTransferRpcKind::GetWebFile:
+		return ProxyDiagnosticsRpcKind::GetWebFile;
+	case FileTransferRpcKind::GetCdnFile:
+		return ProxyDiagnosticsRpcKind::GetCdnFile;
+	case FileTransferRpcKind::GetCdnFileHashes:
+		return ProxyDiagnosticsRpcKind::GetCdnFileHashes;
+	case FileTransferRpcKind::ReuploadCdnFile:
+		return ProxyDiagnosticsRpcKind::ReuploadCdnFile;
+	case FileTransferRpcKind::SaveFilePart:
+		return ProxyDiagnosticsRpcKind::SaveFilePart;
+	case FileTransferRpcKind::SaveBigFilePart:
+		return ProxyDiagnosticsRpcKind::SaveBigFilePart;
+	}
+	Unexpected("File transfer RPC kind.");
+}
+
+[[nodiscard]] ProxyDiagnosticsErrorClass FileDiagnosticsErrorClass(
+		const Error &error) {
+	if (IsFloodError(error) || error.code() == 420) {
+		return ProxyDiagnosticsErrorClass::Flood;
+	}
+	switch (error.code()) {
+	case 400: return ProxyDiagnosticsErrorClass::BadRequest;
+	case 401: return ProxyDiagnosticsErrorClass::Unauthorized;
+	case 403: return ProxyDiagnosticsErrorClass::Forbidden;
+	case 404: return ProxyDiagnosticsErrorClass::NotFound;
+	case 406: return ProxyDiagnosticsErrorClass::NotAcceptable;
+	case 0: return ProxyDiagnosticsErrorClass::Transport;
+	}
+	return (error.code() < 0 || error.code() >= 500)
+		? ProxyDiagnosticsErrorClass::Server
+		: ProxyDiagnosticsErrorClass::Unknown;
+}
+
+[[nodiscard]] ProxyDiagnosticsEvent FileDiagnosticsEvent(
+		const FileTransferRequestTag::Trace &trace,
+		ProxyDiagnosticsTransition transition) {
+	auto event = ProxyDiagnosticsEvent();
+	event.source = ProxyDiagnosticsSource::MTP;
+	event.phase = ProxyDiagnosticsPhase::FileRpc;
+	event.attempt.traceId = trace.traceOrdinal;
+	event.attempt.use = FileDiagnosticsUse(trace.direction);
+	event.transition = transition;
+	event.direction = FileDiagnosticsDirection(trace.direction);
+	event.rpcKind = FileDiagnosticsRpcKind(trace.rpcKind);
+	event.laneOrdinal = trace.laneOrdinal;
+	event.requestOrdinal = trace.requestOrdinal;
+	event.firstInLane = trace.firstInLane;
+	return event;
+}
+
+[[nodiscard]] crl::time FileDiagnosticsDuration(
+		const FileTransferRequestTag::Trace &trace,
+		crl::time terminalAt) {
+	const auto startedAt = trace.enqueuedAt
+		? trace.enqueuedAt
+		: trace.firstSentAt;
+	return (startedAt > 0 && terminalAt > startedAt)
+		? (terminalAt - startedAt)
+		: crl::time();
+}
+
+void ReportFileTransferQueued(
+		not_null<RuntimeEnvironment*> runtime,
+		const SerializedRequest &request,
+		crl::time now) {
+	if (!request || !request->fileTransferTag) {
+		return;
+	}
+	const auto trace = request->fileTransferTag->trace;
+	auto event = std::optional<ProxyDiagnosticsEvent>();
+	{
+		QMutexLocker lock(&trace->mutex);
+		if (!trace->enqueuedAt) {
+			trace->enqueuedAt = now;
+		}
+		if (!trace->firstInLane || trace->queueEventEmitted) {
+			return;
+		}
+		trace->queueEventEmitted = true;
+		event = FileDiagnosticsEvent(
+			*trace,
+			ProxyDiagnosticsTransition::Queued);
+	}
+	WriteProxyDiagnosticsLine(runtime, std::move(*event));
+}
+
+void ReportFileTransferResult(
+		not_null<RuntimeEnvironment*> runtime,
+		const SerializedRequest &request,
+		crl::time now) {
+	if (!request || !request->fileTransferTag) {
+		return;
+	}
+	const auto trace = request->fileTransferTag->trace;
+	auto event = std::optional<ProxyDiagnosticsEvent>();
+	{
+		QMutexLocker lock(&trace->mutex);
+		if (trace->terminalEventEmitted) {
+			return;
+		}
+		trace->terminalAt = now;
+		trace->terminalEventEmitted = true;
+		const auto duration = FileDiagnosticsDuration(*trace, now);
+		if (trace->firstInLane) {
+			event = FileDiagnosticsEvent(
+				*trace,
+				ProxyDiagnosticsTransition::Result);
+		} else if (duration >= kFileTransferSlowRequestThreshold
+			&& !trace->slowEventEmitted) {
+			trace->slowEventEmitted = true;
+			event = FileDiagnosticsEvent(
+				*trace,
+				ProxyDiagnosticsTransition::Slow);
+		}
+		if (event) {
+			event->sendCount = trace->successfulSendCount;
+			event->totalMs = duration;
+			event->isFinal = true;
+		}
+	}
+	if (event) {
+		WriteProxyDiagnosticsLine(runtime, std::move(*event));
+	}
+}
+
+void ReportFileTransferError(
+		not_null<RuntimeEnvironment*> runtime,
+		const SerializedRequest &request,
+		const Error &error,
+		bool terminal,
+		crl::time now) {
+	if (!request || !request->fileTransferTag) {
+		return;
+	}
+	const auto trace = request->fileTransferTag->trace;
+	auto event = ProxyDiagnosticsEvent();
+	{
+		QMutexLocker lock(&trace->mutex);
+		if (terminal) {
+			trace->terminalAt = now;
+			trace->terminalEventEmitted = true;
+		}
+		event = FileDiagnosticsEvent(
+			*trace,
+			ProxyDiagnosticsTransition::Error);
+		event.sendCount = trace->successfulSendCount;
+		event.errorClass = FileDiagnosticsErrorClass(error);
+		event.errorCode = error.code();
+		event.isFinal = terminal;
+	}
+	WriteProxyDiagnosticsLine(runtime, std::move(event));
+}
+
+void ReportFileTransferCancelled(
+		not_null<RuntimeEnvironment*> runtime,
+		const SerializedRequest &request,
+		crl::time now) {
+	if (!request || !request->fileTransferTag) {
+		return;
+	}
+	const auto trace = request->fileTransferTag->trace;
+	auto event = ProxyDiagnosticsEvent();
+	{
+		QMutexLocker lock(&trace->mutex);
+		if (trace->terminalEventEmitted) {
+			return;
+		}
+		trace->terminalAt = now;
+		trace->terminalEventEmitted = true;
+		event = FileDiagnosticsEvent(
+			*trace,
+			ProxyDiagnosticsTransition::Cancelled);
+		event.sendCount = trace->successfulSendCount;
+		event.totalMs = FileDiagnosticsDuration(*trace, now);
+		event.isFinal = true;
+	}
+	WriteProxyDiagnosticsLine(runtime, std::move(event));
+}
 
 std::atomic<int> GlobalAtomicRequestId = 0;
 
@@ -745,6 +954,10 @@ void Instance::Private::cancel(mtpRequestId requestId) {
 
 	DEBUG_LOG(("MTP Info: Cancel request %1.").arg(requestId));
 	auto cancelled = _requests.cancel(requestId);
+	ReportFileTransferCancelled(
+		not_null{ _runtime.get() },
+		cancelled.request,
+		crl::now());
 	resendDependentRequests(std::move(cancelled.dependentRequests));
 	if (cancelled.dcWithShift) {
 		const auto session = getSession(qAbs(*cancelled.dcWithShift));
@@ -1068,6 +1281,10 @@ void Instance::Private::sendRequest(
 	const auto realShiftedDcId = session->getDcWithShift();
 	const auto signedDcId = toMainDc ? -realShiftedDcId : realShiftedDcId;
 	_requests.registerRequest(requestId, signedDcId);
+	ReportFileTransferQueued(
+		not_null{ _runtime.get() },
+		request,
+		crl::now());
 
 	request->lastSentTime = crl::now();
 	request->needsLayer = needsLayer;
@@ -1103,11 +1320,12 @@ void Instance::Private::processCallback(const Response &response) {
 	auto handler = _requests.takeCallback(requestId);
 	const auto unregister = [&] {
 		DEBUG_LOG(("MTP Info: unregistering request %1.").arg(requestId));
-		resendDependentRequests(_requests.unregisterRequest(requestId));
+		return _requests.unregisterRequest(requestId);
 	};
 	if (handler.done || handler.fail) {
 		DEBUG_LOG(("RPC Info: found parser for request %1, trying to parse response...").arg(requestId));
 		const auto handleError = [&](const Error &error) {
+			const auto request = _requests.request(requestId);
 			DEBUG_LOG(("RPC Info: "
 				"error received, code %1, type %2, description: %3").arg(
 					QString::number(error.code()),
@@ -1115,9 +1333,24 @@ void Instance::Private::processCallback(const Response &response) {
 					error.description()));
 			const auto guard = QPointer<Instance>(_instance);
 			if (rpcErrorOccured(response, handler, error) && guard) {
-				unregister();
+				auto unregistered = unregister();
+				const auto terminal = bool(unregistered.request);
+				ReportFileTransferError(
+					not_null{ _runtime.get() },
+					terminal ? unregistered.request : request,
+					error,
+					terminal,
+					crl::now());
+				resendDependentRequests(
+					std::move(unregistered.dependentRequests));
 			} else if (guard) {
 				_requests.restoreCallback(requestId, std::move(handler));
+				ReportFileTransferError(
+					not_null{ _runtime.get() },
+					request,
+					error,
+					false,
+					crl::now());
 			}
 		};
 
@@ -1142,12 +1375,24 @@ void Instance::Private::processCallback(const Response &response) {
 					"Response parse failed."));
 			}
 			if (guard) {
-				unregister();
+				auto unregistered = unregister();
+				ReportFileTransferResult(
+					not_null{ _runtime.get() },
+					unregistered.request,
+					crl::now());
+				resendDependentRequests(
+					std::move(unregistered.dependentRequests));
 			}
 		}
 	} else {
 		DEBUG_LOG(("RPC Info: parser not found for %1").arg(requestId));
-		unregister();
+		auto unregistered = unregister();
+		ReportFileTransferResult(
+			not_null{ _runtime.get() },
+			unregistered.request,
+			crl::now());
+		resendDependentRequests(
+			std::move(unregistered.dependentRequests));
 	}
 }
 

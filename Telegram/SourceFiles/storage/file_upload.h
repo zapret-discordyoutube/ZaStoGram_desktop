@@ -23,6 +23,11 @@ namespace Main {
 class Session;
 } // namespace Main
 
+namespace MTP::details {
+enum class FileTransferRpcKind;
+struct FileTransferRequestTag;
+} // namespace MTP::details
+
 namespace Storage {
 
 // MTP big files methods used for files greater than 30mb.
@@ -103,6 +108,12 @@ public:
 private:
 	struct Entry;
 	struct Request;
+	struct DiagnosticLane {
+		uint64 laneOrdinal = 0;
+		qint64 acknowledgedBytes = 0;
+		crl::time lastProgressEmission = 0;
+		bool firstRequest = true;
+	};
 
 	enum class SendResult : uchar {
 		Success,
@@ -126,9 +137,18 @@ private:
 		-> SendResult;
 	[[nodiscard]] QByteArray readDocPart(not_null<Entry*> entry);
 	void removeDcIndex();
+	void finishDiagnosticSession(int dcIndex);
+	[[nodiscard]] auto fileTransferTag(
+		uchar dcIndex,
+		MTP::details::FileTransferRpcKind rpcKind)
+	-> MTP::details::FileTransferRequestTag;
+	void addAcknowledgedBytes(uint64 laneOrdinal, qint64 bytes);
 
 	template <typename Prepared>
-	void sendPreparedRequest(Prepared &&prepared, Request &&request);
+	void sendPreparedRequest(
+		Prepared &&prepared,
+		MTP::details::FileTransferRpcKind rpcKind,
+		Request &&request);
 
 	void maybeFinishFront();
 	void finishFront();
@@ -164,6 +184,7 @@ private:
 
 	base::flat_map<mtpRequestId, Request> _requests;
 	std::vector<int> _sentPerDcIndex;
+	std::vector<DiagnosticLane> _diagnosticLanes;
 
 	// Fast requests since the latest dc index addition.
 	base::flat_set<uchar> _dcIndicesWithFastRequests;

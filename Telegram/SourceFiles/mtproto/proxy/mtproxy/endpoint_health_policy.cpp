@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 
-#include <QtCore/QObject>
+#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
+#include "mtproto/proxy/proxy_endpoint_context_p.h"
+#include "mtproto/runtime/runtime_environment.h"
 
 #include <algorithm>
 
@@ -30,6 +32,8 @@ constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
 constexpr auto kThrottledRetryCooldown = crl::time(3000);
 constexpr auto kNoAppDataSoftRetry = crl::time(1000);
 constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
+constexpr auto kRecentRelayServerHelloTimeout = crl::time(2500);
+constexpr auto kColdServerHelloTimeout = crl::time(5000);
 
 } // namespace
 
@@ -263,7 +267,10 @@ void ApplyProxyGeneration(
 		EndpointState &state,
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration) {
-	ApplyRuntimeProxyGeneration(state, runtimeId, proxyGeneration);
+	static_cast<void>(ApplyRuntimeProxyGeneration(
+		state,
+		runtimeId,
+		proxyGeneration));
 }
 
 [[nodiscard]] bool FailureFromStaleAttempt(
@@ -346,21 +353,38 @@ void ApplyProxyGeneration(
 			report.attemptStartedAt);
 }
 
-void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
-	static_cast<void>(ExpireCapacityProbeCooldown(
+EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
+		EndpointState &state,
+		crl::time now) {
+	auto cleanup = EndpointDeferredCleanup();
+	static_cast<void>(ExpireTypedCapacityProbeCooldown(
 		state.liveBudget,
 		now));
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (i->second.admissionActive
 			&& now - i->second.startedAt > kAttemptHardTtl) {
-			static_cast<void>(ReleaseActiveCapacityProbe(
+			const auto identity = RelayProofIdentity{
+				.runtimeId = i->second.runtimeId,
+				.proxyGeneration = i->second.proxyGeneration,
+				.attemptId = i->first,
+			};
+			static_cast<void>(ReleaseTypedCapacityProbe(
 				state.liveBudget,
-				{
-					.runtimeId = i->second.runtimeId,
-					.proxyGeneration = i->second.proxyGeneration,
-					.attemptId = i->first,
-				}));
-			QObject::disconnect(i->second.ownerDestroyed);
+				identity));
+			static_cast<void>(ClearForegroundTransferAttemptLineage(
+				state,
+				i->second.transferDemand,
+				i->second.owner,
+				identity));
+			if (state.reclaimEpisode
+				&& state.reclaimEpisode->beneficiaryAttempt == identity) {
+				state.reclaimEpisode->beneficiaryAttempt = {};
+			}
+			if (!i->second.preempting) {
+				DeferEndpointOwnerDisconnect(
+					cleanup,
+					i->second.ownerDestroyed);
+			}
 			i = state.attemptStarts.erase(i);
 		} else {
 			++i;
@@ -368,8 +392,8 @@ void PruneExpiredEndpointState(EndpointState &state, crl::time now) {
 	}
 	SynchronizeEndpointAdmissionAggregate(state);
 	PruneExpiredEndpointOutcomes(state, now);
+	return cleanup;
 }
-
 [[nodiscard]] crl::time CooldownFor(
 		FailureReason reason,
 		int consecutiveFailures) {
@@ -634,6 +658,66 @@ crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
 	case ProxyConnectionPattern::Off: break;
 	}
 	return crl::time(0);
+}
+
+bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime) {
+	const auto &settings = runtime->proxy();
+	return settings.fastProxyWarmup ? settings.fastProxyWarmup() : true;
+}
+
+crl::time ServerHelloTimeoutFor(
+		const EndpointState &state,
+		crl::time attemptStartedAt) {
+	return RecentRelaySuccess(state, attemptStartedAt)
+		? kRecentRelayServerHelloTimeout
+		: kColdServerHelloTimeout;
+}
+
+void NoteRouteFailure(
+		EndpointContextStorage &storage,
+		EndpointState &state,
+		const RouteEndpoint &route,
+		FailureReason reason) {
+	const auto routeKey = RouteKey(route);
+	if (routeKey.isEmpty()) {
+		return;
+	}
+	state.routeKeys.insert(routeKey);
+	auto &routeState = storage.routes[routeKey];
+	routeState.route = route;
+	routeState.lastFailure = reason;
+	routeState.healthy = false;
+	if (reason == FailureReason::ServerHelloOkNoAppData) {
+		++routeState.relaySuspect;
+	}
+}
+
+void NoteRouteSuccess(
+		EndpointContextStorage &storage,
+		EndpointState &state,
+		const RouteEndpoint &route) {
+	const auto routeKey = RouteKey(route);
+	if (routeKey.isEmpty()) {
+		return;
+	}
+	state.routeKeys.insert(routeKey);
+	auto &routeState = storage.routes[routeKey];
+	routeState.route = route;
+	routeState.lastFailure = FailureReason::None;
+	routeState.healthy = true;
+	routeState.relaySuspect = 0;
+}
+
+bool HasHealthyRoute(
+		const EndpointContextStorage &storage,
+		const EndpointState &state) {
+	for (const auto &routeKey : state.routeKeys) {
+		const auto i = storage.routes.find(routeKey);
+		if (i != end(storage.routes) && i->second.healthy) {
+			return true;
+		}
+	}
+	return false;
 }
 
 } // namespace MTP::details::MtProxy

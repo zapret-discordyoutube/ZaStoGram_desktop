@@ -53,7 +53,6 @@ void ApplyProxyGeneration(
 [[nodiscard]] bool SuccessFromStaleAttempt(
 	const SuccessReport &report,
 	const EndpointState &state);
-void PruneExpiredEndpointState(EndpointState &state, crl::time now);
 [[nodiscard]] crl::time CooldownFor(
 	FailureReason reason,
 	int consecutiveFailures);

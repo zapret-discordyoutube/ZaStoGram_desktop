@@ -103,8 +103,35 @@ namespace {
 		return u"attempt_summary"_q;
 	case ProxyDiagnosticsPhase::Liveness:
 		return u"liveness"_q;
+	case ProxyDiagnosticsPhase::CapacityDecision:
+		return u"capacity_decision"_q;
+	case ProxyDiagnosticsPhase::CapacityProbe:
+		return u"capacity_probe"_q;
+	case ProxyDiagnosticsPhase::TransferEntitlement:
+		return u"transfer_entitlement"_q;
+	case ProxyDiagnosticsPhase::CapacityReclaim:
+		return u"capacity_reclaim"_q;
+	case ProxyDiagnosticsPhase::FileRpc:
+		return u"file_rpc"_q;
+	case ProxyDiagnosticsPhase::FileProgress:
+		return u"file_progress"_q;
 	}
 	return u"event"_q;
+}
+
+[[nodiscard]] bool IsDiskOnlyDiagnosticsPhase(
+		ProxyDiagnosticsPhase phase) {
+	switch (phase) {
+	case ProxyDiagnosticsPhase::CapacityDecision:
+	case ProxyDiagnosticsPhase::CapacityProbe:
+	case ProxyDiagnosticsPhase::TransferEntitlement:
+	case ProxyDiagnosticsPhase::CapacityReclaim:
+	case ProxyDiagnosticsPhase::FileRpc:
+	case ProxyDiagnosticsPhase::FileProgress:
+		return true;
+	default:
+		return false;
+	}
 }
 
 [[nodiscard]] QString SeverityText(ProxyDiagnosticsSeverity severity) {
@@ -200,6 +227,184 @@ namespace {
 	case ProxyConnectionUse::ProxyCheck: return u"proxy_check"_q;
 	}
 	return QString();
+}
+
+[[nodiscard]] QString DecisionText(ProxyDiagnosticsDecision decision) {
+	switch (decision) {
+	case ProxyDiagnosticsDecision::None: return QString();
+	case ProxyDiagnosticsDecision::Ordinary: return u"ordinary"_q;
+	case ProxyDiagnosticsDecision::FrontierProbe: return u"frontier_probe"_q;
+	case ProxyDiagnosticsDecision::ExactReplacement:
+		return u"exact_replacement"_q;
+	case ProxyDiagnosticsDecision::Blocked: return u"blocked"_q;
+	case ProxyDiagnosticsDecision::Reservation: return u"reservation"_q;
+	case ProxyDiagnosticsDecision::Transfer: return u"transfer"_q;
+	case ProxyDiagnosticsDecision::Main: return u"main"_q;
+	case ProxyDiagnosticsDecision::Applied: return u"applied"_q;
+	case ProxyDiagnosticsDecision::NotApplicable: return u"not_applicable"_q;
+	case ProxyDiagnosticsDecision::Retry: return u"retry"_q;
+	case ProxyDiagnosticsDecision::NoDemand: return u"no_demand"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString TransitionText(
+		ProxyDiagnosticsTransition transition) {
+	switch (transition) {
+	case ProxyDiagnosticsTransition::None: return QString();
+	case ProxyDiagnosticsTransition::Reserved: return u"reserved"_q;
+	case ProxyDiagnosticsTransition::Activated: return u"activated"_q;
+	case ProxyDiagnosticsTransition::Proved: return u"proved"_q;
+	case ProxyDiagnosticsTransition::Failed: return u"failed"_q;
+	case ProxyDiagnosticsTransition::Cancelled: return u"cancelled"_q;
+	case ProxyDiagnosticsTransition::CooldownStarted:
+		return u"cooldown_started"_q;
+	case ProxyDiagnosticsTransition::Acquired: return u"acquired"_q;
+	case ProxyDiagnosticsTransition::Retained: return u"retained"_q;
+	case ProxyDiagnosticsTransition::Released: return u"released"_q;
+	case ProxyDiagnosticsTransition::VictimSelected:
+		return u"victim_selected"_q;
+	case ProxyDiagnosticsTransition::SuspendRequested:
+		return u"suspend_requested"_q;
+	case ProxyDiagnosticsTransition::SuspendAcknowledged:
+		return u"suspend_acknowledged"_q;
+	case ProxyDiagnosticsTransition::ParkRequested: return u"park_requested"_q;
+	case ProxyDiagnosticsTransition::ParkAcknowledged:
+		return u"park_acknowledged"_q;
+	case ProxyDiagnosticsTransition::ReplacementGranted:
+		return u"replacement_granted"_q;
+	case ProxyDiagnosticsTransition::ReplacementProved:
+		return u"replacement_proved"_q;
+	case ProxyDiagnosticsTransition::ReplacementFailed:
+		return u"replacement_failed"_q;
+	case ProxyDiagnosticsTransition::RollbackRequested:
+		return u"rollback_requested"_q;
+	case ProxyDiagnosticsTransition::Resumed: return u"resumed"_q;
+	case ProxyDiagnosticsTransition::CapacityOneForegroundMain:
+		return u"capacity_one_foreground_main"_q;
+	case ProxyDiagnosticsTransition::Queued: return u"queued"_q;
+	case ProxyDiagnosticsTransition::SendAdmitted: return u"send_admitted"_q;
+	case ProxyDiagnosticsTransition::Sent: return u"sent"_q;
+	case ProxyDiagnosticsTransition::Resent: return u"resent"_q;
+	case ProxyDiagnosticsTransition::Result: return u"result"_q;
+	case ProxyDiagnosticsTransition::Error: return u"error"_q;
+	case ProxyDiagnosticsTransition::Slow: return u"slow"_q;
+	case ProxyDiagnosticsTransition::Accepted: return u"accepted"_q;
+	case ProxyDiagnosticsTransition::Acknowledged: return u"acknowledged"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString DiagnosticsErrorClassText(
+		ProxyDiagnosticsErrorClass errorClass) {
+	switch (errorClass) {
+	case ProxyDiagnosticsErrorClass::None: return QString();
+	case ProxyDiagnosticsErrorClass::BadRequest: return u"bad_request"_q;
+	case ProxyDiagnosticsErrorClass::Unauthorized: return u"unauthorized"_q;
+	case ProxyDiagnosticsErrorClass::Forbidden: return u"forbidden"_q;
+	case ProxyDiagnosticsErrorClass::NotFound: return u"not_found"_q;
+	case ProxyDiagnosticsErrorClass::NotAcceptable: return u"not_acceptable"_q;
+	case ProxyDiagnosticsErrorClass::Flood: return u"flood"_q;
+	case ProxyDiagnosticsErrorClass::Server: return u"server"_q;
+	case ProxyDiagnosticsErrorClass::Transport: return u"transport"_q;
+	case ProxyDiagnosticsErrorClass::Unknown: return u"unknown"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString DirectionText(ProxyDiagnosticsDirection direction) {
+	switch (direction) {
+	case ProxyDiagnosticsDirection::None: return QString();
+	case ProxyDiagnosticsDirection::Download: return u"download"_q;
+	case ProxyDiagnosticsDirection::Upload: return u"upload"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString RpcKindText(ProxyDiagnosticsRpcKind kind) {
+	switch (kind) {
+	case ProxyDiagnosticsRpcKind::None: return QString();
+	case ProxyDiagnosticsRpcKind::GetFile: return u"get_file"_q;
+	case ProxyDiagnosticsRpcKind::GetWebFile: return u"get_web_file"_q;
+	case ProxyDiagnosticsRpcKind::GetCdnFile: return u"get_cdn_file"_q;
+	case ProxyDiagnosticsRpcKind::GetCdnFileHashes:
+		return u"get_cdn_file_hashes"_q;
+	case ProxyDiagnosticsRpcKind::ReuploadCdnFile:
+		return u"reupload_cdn_file"_q;
+	case ProxyDiagnosticsRpcKind::SaveFilePart: return u"save_file_part"_q;
+	case ProxyDiagnosticsRpcKind::SaveBigFilePart:
+		return u"save_big_file_part"_q;
+	}
+	return QString();
+}
+
+[[nodiscard]] QString FormatDiskOnlyDiagnosticsEvent(
+		const ProxyDiagnosticsEvent &event) {
+	auto parts = QStringList();
+	const auto timestamp = event.timestamp.isValid()
+		? event.timestamp.toString(u"hh:mm:ss.zzz"_q)
+		: QDateTime::currentDateTime().toString(u"hh:mm:ss.zzz"_q);
+	parts.push_back(u"[%1]"_q.arg(timestamp));
+	parts.push_back(SourceText(event.source));
+	parts.push_back(SeverityText(event.severity));
+	parts.push_back(PhaseText(event.phase));
+	const auto appendOrdinal = [&](const QString &name, auto value) {
+		if (value) {
+			parts.push_back(name + u"=%1"_q.arg(value));
+		}
+	};
+	const auto appendOptional = [&](const QString &name, const auto &value) {
+		if (value) {
+			parts.push_back(name + u"=%1"_q.arg(*value));
+		}
+	};
+	const auto appendText = [&](const QString &name, const QString &value) {
+		if (!value.isEmpty()) {
+			parts.push_back(name + '=' + value);
+		}
+	};
+	const auto appendFlag = [&](const QString &name, std::optional<bool> value) {
+		if (value) {
+			parts.push_back(name + '=' + (*value ? u"true"_q : u"false"_q));
+		}
+	};
+	appendOrdinal(u"runtime"_q, event.attempt.runtimeId);
+	appendOrdinal(u"generation"_q, event.attempt.proxyGeneration);
+	appendOrdinal(u"trace"_q, event.attempt.traceId);
+	const auto hasUse = event.attempt.runtimeId
+		|| event.attempt.proxyGeneration
+		|| event.attempt.traceId
+		|| event.attempt.ticketId
+		|| event.attempt.routeAttemptId
+		|| event.attempt.attemptId;
+	if (hasUse) {
+		appendText(u"use"_q, ConnectionUseText(event.attempt.use));
+	}
+	appendOrdinal(u"ticket"_q, event.attempt.ticketId);
+	appendOrdinal(u"route_attempt"_q, event.attempt.routeAttemptId);
+	appendOrdinal(u"endpoint_attempt"_q, event.attempt.attemptId);
+	appendOrdinal(u"lane_ordinal"_q, event.laneOrdinal);
+	appendOrdinal(u"request_ordinal"_q, event.requestOrdinal);
+	appendText(u"decision"_q, DecisionText(event.decision));
+	appendText(u"transition"_q, TransitionText(event.transition));
+	appendOptional(u"commitments"_q, event.commitmentCount);
+	appendOptional(u"lower_bound"_q, event.provenLowerBound);
+	appendOptional(u"frontier"_q, event.frontier);
+	appendOptional(u"cap"_q, event.capacityCap);
+	appendOptional(u"send_count"_q, event.sendCount);
+	appendText(u"error_class"_q, DiagnosticsErrorClassText(event.errorClass));
+	appendOptional(u"error_code"_q, event.errorCode);
+	appendOptional(u"queue_ms"_q, event.queueMs);
+	appendOptional(u"total_ms"_q, event.totalMs);
+	const auto retryMs = event.terminalUntil - crl::now();
+	appendOrdinal(u"retry_ms"_q, (retryMs > 0) ? retryMs : crl::time());
+	appendOptional(u"accepted_bytes"_q, event.acceptedBytes);
+	appendOptional(u"acknowledged_bytes"_q, event.acknowledgedBytes);
+	appendText(u"direction"_q, DirectionText(event.direction));
+	appendText(u"rpc"_q, RpcKindText(event.rpcKind));
+	appendFlag(u"first_in_lane"_q, event.firstInLane);
+	appendFlag(u"final"_q, event.isFinal);
+	return parts.join(u" | "_q);
 }
 
 [[nodiscard]] bool IsCancellationOrigin(
@@ -330,6 +535,12 @@ namespace {
 	case ProxyDiagnosticsPhase::RotationSwitched:
 	case ProxyDiagnosticsPhase::AttemptSummary:
 	case ProxyDiagnosticsPhase::Liveness:
+	case ProxyDiagnosticsPhase::CapacityDecision:
+	case ProxyDiagnosticsPhase::CapacityProbe:
+	case ProxyDiagnosticsPhase::TransferEntitlement:
+	case ProxyDiagnosticsPhase::CapacityReclaim:
+	case ProxyDiagnosticsPhase::FileRpc:
+	case ProxyDiagnosticsPhase::FileProgress:
 		return false;
 	}
 	return false;
@@ -412,6 +623,9 @@ QString ProxyDiagnosticsTlsProfileName(ProxyTlsProfile profile) {
 }
 
 QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
+	if (IsDiskOnlyDiagnosticsPhase(event.phase)) {
+		return FormatDiskOnlyDiagnosticsEvent(event);
+	}
 	const auto safe = RedactEvent(event);
 	auto parts = QStringList();
 	const auto timestamp = safe.timestamp.isValid()

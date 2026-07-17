@@ -11,11 +11,86 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <crl/crl_time.h>
 
+#include <memory>
+#include <optional>
+
+#include <QtCore/QMutex>
+
 namespace MTP {
 namespace details {
 
 class RequestData;
 class SerializedRequest;
+
+enum class FileTransferDirection {
+	Download,
+	Upload,
+};
+
+enum class FileTransferRpcKind {
+	GetFile,
+	GetWebFile,
+	GetCdnFile,
+	GetCdnFileHashes,
+	ReuploadCdnFile,
+	SaveFilePart,
+	SaveBigFilePart,
+};
+
+struct FileTransferRequestTag {
+	struct Trace {
+		Trace(
+			FileTransferDirection direction,
+			FileTransferRpcKind rpcKind,
+			uint64 traceOrdinal,
+			uint64 laneOrdinal,
+			uint64 requestOrdinal,
+			bool firstInLane)
+		: direction(direction)
+		, rpcKind(rpcKind)
+		, traceOrdinal(traceOrdinal)
+		, laneOrdinal(laneOrdinal)
+		, requestOrdinal(requestOrdinal)
+		, firstInLane(firstInLane) {
+		}
+
+		QMutex mutex;
+		FileTransferDirection direction;
+		FileTransferRpcKind rpcKind;
+		uint64 traceOrdinal = 0;
+		uint64 laneOrdinal = 0;
+		uint64 requestOrdinal = 0;
+		crl::time enqueuedAt = 0;
+		crl::time firstSentAt = 0;
+		crl::time lastSentAt = 0;
+		crl::time terminalAt = 0;
+		uint64 acceptedBytes = 0;
+		uint64 acknowledgedBytes = 0;
+		int successfulSendCount = 0;
+		bool queueEventEmitted = false;
+		bool terminalEventEmitted = false;
+		bool slowEventEmitted = false;
+		bool firstInLane = false;
+	};
+
+	FileTransferRequestTag(
+		FileTransferDirection direction,
+		FileTransferRpcKind rpcKind,
+		uint64 traceOrdinal,
+		uint64 laneOrdinal,
+		uint64 requestOrdinal,
+		bool firstInLane)
+	: trace(std::make_shared<Trace>(
+		direction,
+		rpcKind,
+		traceOrdinal,
+		laneOrdinal,
+		requestOrdinal,
+		firstInLane)) {
+	}
+
+	std::shared_ptr<Trace> trace;
+};
 
 class RequestConstructHider {
 	struct Tag {};
@@ -99,6 +174,7 @@ public:
 	mtpRequestId requestId = 0;
 	bool needsLayer = false;
 	bool forceSendInContainer = false;
+	std::optional<FileTransferRequestTag> fileTransferTag;
 
 };
 

@@ -25,85 +25,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <optional>
 
 namespace MTP::details::MtProxy {
-
-[[nodiscard]] bool RecentRelaySuccess(
+[[nodiscard]] bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime);
+[[nodiscard]] crl::time ServerHelloTimeoutFor(
 	const EndpointState &state,
-	crl::time now);
+	crl::time attemptStartedAt);
+void NoteRouteFailure(
+	EndpointContextStorage &storage,
+	EndpointState &state,
+	const RouteEndpoint &route,
+	FailureReason reason);
+void NoteRouteSuccess(
+	EndpointContextStorage &storage,
+	EndpointState &state,
+	const RouteEndpoint &route);
+[[nodiscard]] bool HasHealthyRoute(
+	const EndpointContextStorage &storage,
+	const EndpointState &state);
 
 namespace {
 
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
-constexpr auto kRecentRelayServerHelloTimeout = crl::time(2500);
-constexpr auto kColdServerHelloTimeout = crl::time(5000);
-
-[[nodiscard]] crl::time ServerHelloTimeoutFor(
-		const EndpointState &state,
-		crl::time attemptStartedAt) {
-	return RecentRelaySuccess(state, attemptStartedAt)
-		? kRecentRelayServerHelloTimeout
-		: kColdServerHelloTimeout;
-}
-
-void NoteRouteFailure(
-		EndpointContextStorage &storage,
-		EndpointState &state,
-		const RouteEndpoint &route,
-		FailureReason reason) {
-	const auto routeKey = RouteKey(route);
-	if (routeKey.isEmpty()) {
-		return;
-	}
-	state.routeKeys.insert(routeKey);
-	auto &routeState = storage.routes[routeKey];
-	routeState.route = route;
-	routeState.lastFailure = reason;
-	routeState.healthy = false;
-	if (reason == FailureReason::ServerHelloOkNoAppData) {
-		++routeState.relaySuspect;
-	}
-}
-
-void NoteRouteSuccess(
-		EndpointContextStorage &storage,
-		EndpointState &state,
-		const RouteEndpoint &route) {
-	const auto routeKey = RouteKey(route);
-	if (routeKey.isEmpty()) {
-		return;
-	}
-	state.routeKeys.insert(routeKey);
-	auto &routeState = storage.routes[routeKey];
-	routeState.route = route;
-	routeState.lastFailure = FailureReason::None;
-	routeState.healthy = true;
-	routeState.relaySuspect = 0;
-}
-
-[[nodiscard]] bool HasHealthyRoute(
-		const EndpointContextStorage &storage,
-		const EndpointState &state) {
-	for (const auto &routeKey : state.routeKeys) {
-		const auto i = storage.routes.find(routeKey);
-		if (i != end(storage.routes) && i->second.healthy) {
-			return true;
-		}
-	}
-	return false;
-}
-
-[[nodiscard]] bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime) {
-	// Evaluated before taking the storage mutex: the getter reaches into
-	// application settings.
-	const auto &settings = runtime->proxy();
-	return settings.fastProxyWarmup ? settings.fastProxyWarmup() : true;
-}
-
 struct TerminalAttemptResult {
 	ProxyConnectionAttempt attempt;
 	bool proofRetired = false;
 	bool finalAttemptTerminal = false;
 };
-
 [[nodiscard]] auto RecordTerminalAttemptLocked(
 		EndpointState &state,
 		const FailureReport &report,
@@ -158,8 +104,7 @@ struct TerminalAttemptResult {
 			.proxyGeneration = report.proxyGeneration,
 		},
 		.scope = EndpointVerdictScope::Attempt,
-		.cause = (report.reason
-				== FailureReason::MtpReceiveTimeoutAfterData)
+		.cause = (report.reason == FailureReason::MtpReceiveTimeoutAfterData)
 			? EndpointVerdictCause::RelayLiveness
 			: EndpointVerdictCause::Transport,
 		.reason = report.reason,
@@ -227,18 +172,12 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		return std::nullopt;
 	}
 	auto &state = storage.states[key];
-	ApplyProxyGeneration(
-		state,
-		request.runtimeId,
-		request.proxyGeneration);
-	PruneExpiredEndpointState(state, attemptStartedAt);
+	ApplyProxyGeneration(state, request.runtimeId, request.proxyGeneration);
 	state.endpoint = request.endpoint;
 	state.deniedSince = 0;
 	state.lastDenialRotationSignal = 0;
 	auto plan = BuildAttemptPlan(request, state.recipeLevel);
-	plan.serverHelloTimeout = ServerHelloTimeoutFor(
-		state,
-		attemptStartedAt);
+	plan.serverHelloTimeout = ServerHelloTimeoutFor(state, attemptStartedAt);
 	const auto stealth = plan.stealth;
 	const auto effectiveTlsProfile = plan.effectiveTlsProfile;
 	const auto attemptId = ++state.lastAttemptId;
@@ -262,6 +201,7 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.relayProofsAtStart = EndpointRelayProofCount(state),
 		.relayProofPromotionEpochAtStart
 			= state.liveBudget.relayProofPromotionEpoch,
+		.transferDemand = request.transferDemand,
 	});
 	SynchronizeEndpointAdmissionAggregate(state);
 	return Admission{
@@ -310,10 +250,12 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	auto capacityDiagnostics = std::vector<ProxyDiagnosticsEvent>();
 	auto noteConnectTimeout = false;
 	auto shouldDrain = false;
 	auto recoveryFinished = false;
 	auto staleRecipeLevel = std::optional<int>();
+	auto deferredCleanup = EndpointDeferredCleanup();
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -323,7 +265,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			staleRecipeLevel = 0;
 		} else {
 			auto &state = i->second;
-			PruneExpiredEndpointState(state, now);
+			MergeDeferredCleanup(
+				deferredCleanup,
+				PruneExpiredEndpointStateDeferred(state, now));
 			const auto terminal = RecordTerminalAttemptLocked(
 				state,
 				report,
@@ -398,25 +342,46 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					.attemptId = report.attemptId,
 				};
 				const auto capacityProbeFailure
-					= terminal->finalAttemptTerminal
-					? BeginStableCapacityProbeCooldown(
+					= BeginTypedCapacityProbeCooldown(
 						state,
 						report,
-						now)
-					: std::nullopt;
+						terminal->finalAttemptTerminal,
+						now);
 				const auto capacityCooldownStarted
 					= capacityProbeFailure.has_value();
 				if (capacityProbeFailure) {
 					shouldDrain = true;
-					if (openingFailure
-						&& !bootstrap
-						&& report.use != EndpointUse::ProxyCheck
-						&& report.use != EndpointUse::Maintenance) {
-						NoteCapacityPressure(
-							state.liveBudget,
-							*capacityProbeFailure,
-							now);
-					}
+					NoteCapacityPressure(
+						state.liveBudget,
+						capacityProbeFailure->pressureFrontier,
+						now);
+					static_cast<void>(AuthorizeExactProbeReplacement(
+						state,
+						*capacityProbeFailure,
+						capacityProbeIdentity));
+					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
+						ProxyDiagnosticsPhase::CapacityProbe,
+						ProxyDiagnosticsTransition::Failed,
+						terminal->attempt,
+						state));
+					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
+						ProxyDiagnosticsPhase::CapacityProbe,
+						ProxyDiagnosticsTransition::CooldownStarted,
+						terminal->attempt,
+						state));
+				}
+				if (terminal->finalAttemptTerminal
+					&& report.routesExhausted
+					&& MarkExactReplacementRollback(
+						state,
+						capacityProbeIdentity,
+						deferredCleanup)) {
+					shouldDrain = true;
+					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
+						ProxyDiagnosticsPhase::CapacityReclaim,
+						ProxyDiagnosticsTransition::RollbackRequested,
+						terminal->attempt,
+						state));
 				}
 				auto openingRetryUntil = crl::time();
 				if (openingFailure) {
@@ -479,10 +444,17 @@ void EndpointHealth::reportFailure(FailureReport report) {
 				}
 				if (terminal->finalAttemptTerminal
 					&& !capacityCooldownStarted) {
-					shouldDrain = ReleaseActiveCapacityProbe(
+					const auto cancelled = ReleaseTypedCapacityProbe(
 						state.liveBudget,
-						capacityProbeIdentity)
-						|| shouldDrain;
+						capacityProbeIdentity);
+					shouldDrain = cancelled || shouldDrain;
+					if (cancelled) {
+						capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
+							ProxyDiagnosticsPhase::CapacityProbe,
+							ProxyDiagnosticsTransition::Cancelled,
+							terminal->attempt,
+							state));
+					}
 				}
 				const auto canonicalEligible = (report.use
 						== EndpointUse::Main)
@@ -601,8 +573,17 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			}
 		}
 	}
+	const auto hadDeferredCleanup = HasDeferredCleanup(deferredCleanup);
+	DisconnectDeferredOwners(deferredCleanup);
+	if (hadDeferredCleanup) {
+		_context->notifyEndpointViewChanged(report.endpoint);
+		shouldDrain = true;
+	}
 	if (staleRecipeLevel) {
 		LogStaleAttemptFailure(_runtime, report, *staleRecipeLevel);
+		if (shouldDrain) {
+			_context->notifyEndpointAdmissible(key);
+		}
 		return;
 	}
 	if (capabilityFailure) {
@@ -622,6 +603,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
+	}
+	for (auto &event : capacityDiagnostics) {
+		WriteProxyDiagnosticsLine(_runtime, std::move(event));
 	}
 	if (shouldDrain) {
 		_context->notifyEndpointAdmissible(key);
@@ -649,7 +633,29 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	auto capacityDiagnostics = std::vector<ProxyDiagnosticsEvent>();
 	auto shouldDrain = false;
+	auto deferredCleanup = EndpointDeferredCleanup();
+	auto deferredCleanupApplied = false;
+	const auto applyDeferredCleanup = [&] {
+		if (deferredCleanupApplied) {
+			return;
+		}
+		deferredCleanupApplied = true;
+		const auto hadDeferredCleanup = HasDeferredCleanup(deferredCleanup);
+		DisconnectDeferredOwners(deferredCleanup);
+		if (hadDeferredCleanup) {
+			_context->notifyEndpointViewChanged(report.endpoint);
+			shouldDrain = true;
+		}
+	};
+	const auto deferredCleanupGuard = gsl::finally([&] {
+		applyDeferredCleanup();
+		if (shouldDrain) {
+			_context->notifyEndpointAdmissible(key);
+			shouldDrain = false;
+		}
+	});
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -659,7 +665,9 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			return;
 		}
 		auto &state = i->second;
-		PruneExpiredEndpointState(state, now);
+		MergeDeferredCleanup(
+			deferredCleanup,
+			PruneExpiredEndpointStateDeferred(state, now));
 		if (SuccessFromStaleAttempt(report, state)) {
 			return;
 		}
@@ -682,6 +690,12 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.proxyGeneration = report.proxyGeneration,
 			.attemptId = report.attemptId,
 		};
+		const auto activeCapacityProbe = ExactActiveCapacityProbe(
+			state,
+			identity);
+		const auto replacementProof = ExactReplacementBeneficiary(
+			state,
+			identity);
 		if (HasRelayProof(state, identity)) {
 			if (!RefreshRelayProofPayload(state, identity, payloadAt)) {
 				return;
@@ -699,16 +713,13 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
-			if (probe && CapacityProbeActiveFor(
-					state.liveBudget,
-					identity)) {
-				RaiseProvenEndpointCapacity(
-					state.liveBudget,
-					EndpointRelayProofCount(state));
-			}
-			static_cast<void>(ReleaseActiveCapacityProbe(
-				state.liveBudget,
-				identity));
+			shouldDrain = CompleteCapacityProof(
+				state,
+				identity,
+				activeCapacityProbe,
+				replacementProof,
+				report,
+				capacityDiagnostics) || shouldDrain;
 			if (report.use == EndpointUse::Main) {
 				static_cast<void>(
 					FinishMainRecoveryByReplacementAttemptLocked(
@@ -745,13 +756,12 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			};
 			state.recipeLevel = 0;
 			state.exhaustedSinceSuccess = 0;
-			state.liveBudget.pressureRelayProofs = 0;
-			state.liveBudget.proofPressureStrikes = 0;
-			state.liveBudget.proofPressureObservedAt = 0;
+			if (!replacementProof) {
+				state.liveBudget.pressureRelayProofs = 0;
+				state.liveBudget.proofPressureStrikes = 0;
+				state.liveBudget.proofPressureObservedAt = 0;
+			}
 			++state.liveBudget.relayProofPromotionEpoch;
-			RaiseProvenEndpointCapacity(
-				state.liveBudget,
-				EndpointRelayProofCount(state));
 			const auto bootstrapSuccess = (report.use == EndpointUse::Main)
 				&& (beforeEndpointMainProof.strength
 					== MainRelayProofStrength::None);
@@ -787,6 +797,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				u"mtproxy canonical endpoint recovered"_q);
 		}
 	}
+	applyDeferredCleanup();
 	NoteConnectSuccess(_runtime, report.endpoint);
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
@@ -794,11 +805,15 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
 	}
+	for (auto &event : capacityDiagnostics) {
+		WriteProxyDiagnosticsLine(_runtime, std::move(event));
+	}
 	if (probe) {
 		LogProbeAttemptSuccess(_runtime, report);
 	}
 	if (shouldDrain) {
 		_context->notifyEndpointAdmissible(key);
+		shouldDrain = false;
 	}
 }
 

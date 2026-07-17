@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/runtime/connection_status_types.h"
 
+#include <compare>
 #include <memory>
 #include <optional>
 
@@ -26,6 +27,50 @@ struct EndpointContextStorage;
 using EndpointUse = ProxyConnectionUse;
 
 struct MainRecoveryTokenAccess;
+struct ReclaimEpisodeTokenAccess;
+
+struct EndpointTransferDemandKey {
+	ProxyRuntimeId runtimeId = 0;
+	uint64 proxyGeneration = 0;
+	EndpointUse use = EndpointUse::Media;
+	uint64 epoch = 0;
+
+	[[nodiscard]] explicit operator bool() const {
+		return runtimeId
+			&& proxyGeneration
+			&& epoch
+			&& (use == EndpointUse::Media || use == EndpointUse::Upload);
+	}
+	[[nodiscard]] bool operator!() const {
+		return !static_cast<bool>(*this);
+	}
+
+	friend inline auto operator<=>(
+		EndpointTransferDemandKey,
+		EndpointTransferDemandKey) = default;
+};
+
+class ReclaimEpisodeToken final {
+public:
+	ReclaimEpisodeToken() = default;
+
+	[[nodiscard]] explicit operator bool() const {
+		return _id != 0;
+	}
+	[[nodiscard]] bool operator!() const {
+		return !_id;
+	}
+
+	friend inline bool operator==(
+		ReclaimEpisodeToken,
+		ReclaimEpisodeToken) = default;
+
+private:
+	friend struct ReclaimEpisodeTokenAccess;
+
+	uint64 _id = 0;
+
+};
 
 class MainRecoveryToken final {
 public:
@@ -195,6 +240,8 @@ struct AdmissionRequest {
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	uint64 proxyGeneration = 0;
+	EndpointTransferDemandKey transferDemand;
+	ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 struct Admission {

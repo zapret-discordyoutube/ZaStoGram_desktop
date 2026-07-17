@@ -17,6 +17,11 @@ namespace MTP {
 class Error;
 } // namespace MTP
 
+namespace MTP::details {
+enum class FileTransferRpcKind;
+struct FileTransferRequestTag;
+} // namespace MTP::details
+
 namespace Storage {
 
 // Different part sizes are not supported for now :(
@@ -66,6 +71,8 @@ public:
 	}
 
 private:
+	friend class DownloadMtprotoTask;
+
 	class Queue final {
 	public:
 		void enqueue(not_null<Task*> task, int priority);
@@ -100,6 +107,12 @@ private:
 		int timeouts = 0; // Since all sessions had successes >= required.
 		int totalRequested = 0;
 	};
+	struct DiagnosticLane {
+		uint64 laneOrdinal = 0;
+		qint64 acceptedBytes = 0;
+		crl::time lastProgressEmission = 0;
+		bool firstRequest = true;
+	};
 
 	void checkSendNext();
 	void checkSendNext(MTP::DcId dcId, Queue &queue);
@@ -109,6 +122,14 @@ private:
 	void killSessionsCancel(MTP::DcId dcId);
 	void killSessions();
 	void killSessions(MTP::DcId dcId);
+	void finishDiagnosticSession(MTP::ShiftedDcId shiftedDcId);
+	void finishDiagnosticSessions();
+
+	[[nodiscard]] auto fileTransferTag(
+		MTP::ShiftedDcId shiftedDcId,
+		MTP::details::FileTransferRpcKind rpcKind)
+	-> MTP::details::FileTransferRequestTag;
+	void addAcceptedBytes(uint64 laneOrdinal, qint64 bytes);
 
 	void resetGeneration();
 	[[nodiscard]] int sessionLimit() const;
@@ -128,6 +149,7 @@ private:
 	base::Timer _killSessionsTimer;
 
 	base::flat_map<MTP::DcId, Queue> _queues;
+	base::flat_map<MTP::ShiftedDcId, DiagnosticLane> _diagnosticLanes;
 	MTP::DcId _serializedDcCursor = 0;
 	rpl::lifetime _lifetime;
 
@@ -186,6 +208,7 @@ private:
 		mutable int sessionIndex = 0;
 		int requestedInSession = 0;
 		crl::time sent = 0;
+		uint64 diagnosticLaneOrdinal = 0;
 
 		inline bool operator<(const RequestData &other) const {
 			return offset < other.offset;
@@ -233,7 +256,9 @@ private:
 		const MTPVector<MTPFileHash> &result,
 		mtpRequestId requestId);
 
-	void partLoaded(int64 offset, const QByteArray &bytes);
+	bool partLoaded(
+		const RequestData &requestData,
+		const QByteArray &bytes);
 
 	bool partFailed(const MTP::Error &error, mtpRequestId requestId);
 	bool normalPartFailed(
@@ -242,7 +267,12 @@ private:
 		mtpRequestId requestId);
 	bool cdnPartFailed(const MTP::Error &error, mtpRequestId requestId);
 
-	[[nodiscard]] mtpRequestId sendRequest(const RequestData &requestData);
+	[[nodiscard]] mtpRequestId sendRequest(RequestData &requestData);
+	[[nodiscard]] auto fileTransferTag(
+		RequestData &requestData,
+		MTP::ShiftedDcId shiftedDcId,
+		MTP::details::FileTransferRpcKind rpcKind)
+	-> MTP::details::FileTransferRequestTag;
 	void placeSentRequest(
 		mtpRequestId requestId,
 		const RequestData &requestData);

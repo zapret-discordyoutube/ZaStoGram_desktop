@@ -11,12 +11,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/protocol/mtproto_response.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
 #include "apiwrap.h"
 #include "base/openssl_help.h"
+
+#include <atomic>
 
 namespace Storage {
 namespace {
@@ -34,6 +38,34 @@ constexpr auto kMaxTrackedSuccesses = kRetryAddSessionSuccesses
 constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
+constexpr auto kFileProgressInterval = 2 * crl::time(1000);
+
+[[nodiscard]] uint64 NextDownloadLaneOrdinal() {
+	static auto value = std::atomic<uint64>(0);
+	return value.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+[[nodiscard]] uint64 NextDownloadRequestOrdinal() {
+	static auto value = std::atomic<uint64>(0);
+	return value.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+[[nodiscard]] MTP::ProxyDiagnosticsEvent DownloadProgressEvent(
+		uint64 laneOrdinal,
+		qint64 acceptedBytes,
+		bool isFinal) {
+	auto event = MTP::ProxyDiagnosticsEvent();
+	event.source = MTP::ProxyDiagnosticsSource::MTP;
+	event.phase = MTP::ProxyDiagnosticsPhase::FileProgress;
+	event.attempt.traceId = laneOrdinal;
+	event.attempt.use = MTP::ProxyConnectionUse::Media;
+	event.transition = MTP::ProxyDiagnosticsTransition::Accepted;
+	event.direction = MTP::ProxyDiagnosticsDirection::Download;
+	event.laneOrdinal = laneOrdinal;
+	event.acceptedBytes = acceptedBytes;
+	event.isFinal = isFinal;
+	return event;
+}
 
 // Each (session remove by timeouts) we wait for time:
 // kRetryAddSessionTimeout * max(removesCount, kMaxTrackedSessionRemoves)
@@ -141,6 +173,7 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 
 DownloadManagerMtproto::~DownloadManagerMtproto() {
 	killSessions();
+	finishDiagnosticSessions();
 }
 
 void DownloadManagerMtproto::enqueue(not_null<Task*> task, int priority) {
@@ -479,10 +512,90 @@ void DownloadManagerMtproto::killSessions(MTP::DcId dcId) {
 		for (auto j = 0; j != int(sessions.size()); ++j) {
 			Assert(sessions[j].requested == 0);
 			sessions[j] = DcSessionBalanceData();
-			api().instance().stopSession(MTP::downloadDcId(dcId, j));
+			const auto shiftedDcId = MTP::downloadDcId(dcId, j);
+			finishDiagnosticSession(shiftedDcId);
+			api().instance().stopSession(shiftedDcId);
 		}
 		dc.sessions = base::take(sessions);
 	}
+}
+
+void DownloadManagerMtproto::finishDiagnosticSession(
+		MTP::ShiftedDcId shiftedDcId) {
+	const auto i = _diagnosticLanes.find(shiftedDcId);
+	if (i == _diagnosticLanes.end()) {
+		return;
+	}
+	auto event = DownloadProgressEvent(
+		i->second.laneOrdinal,
+		i->second.acceptedBytes,
+		true);
+	_diagnosticLanes.erase(i);
+	MTP::WriteProxyDiagnosticsLine(
+		&api().instance().runtimeEnvironment(),
+		std::move(event));
+}
+
+void DownloadManagerMtproto::finishDiagnosticSessions() {
+	auto lanes = base::take(_diagnosticLanes);
+	const auto runtime = &api().instance().runtimeEnvironment();
+	for (const auto &entry : lanes) {
+		auto event = DownloadProgressEvent(
+			entry.second.laneOrdinal,
+			entry.second.acceptedBytes,
+			true);
+		MTP::WriteProxyDiagnosticsLine(runtime, std::move(event));
+	}
+}
+
+auto DownloadManagerMtproto::fileTransferTag(
+		MTP::ShiftedDcId shiftedDcId,
+		MTP::details::FileTransferRpcKind rpcKind)
+-> MTP::details::FileTransferRequestTag {
+	auto &lane = _diagnosticLanes[shiftedDcId];
+	if (!lane.laneOrdinal) {
+		lane.laneOrdinal = NextDownloadLaneOrdinal();
+	}
+	const auto requestOrdinal = NextDownloadRequestOrdinal();
+	return MTP::details::FileTransferRequestTag(
+		MTP::details::FileTransferDirection::Download,
+		rpcKind,
+		requestOrdinal,
+		lane.laneOrdinal,
+		requestOrdinal,
+		base::take(lane.firstRequest));
+}
+
+void DownloadManagerMtproto::addAcceptedBytes(
+		uint64 laneOrdinal,
+		qint64 bytes) {
+	if (!laneOrdinal || bytes <= 0) {
+		return;
+	}
+	const auto i = ranges::find_if(
+		_diagnosticLanes,
+		[=](const auto &entry) {
+			return (entry.second.laneOrdinal == laneOrdinal);
+		});
+	Assert(i != _diagnosticLanes.end());
+	if (i == _diagnosticLanes.end()) {
+		return;
+	}
+	auto &lane = i->second;
+	lane.acceptedBytes += bytes;
+	const auto now = crl::now();
+	if (lane.lastProgressEmission
+		&& now < lane.lastProgressEmission + kFileProgressInterval) {
+		return;
+	}
+	lane.lastProgressEmission = now;
+	auto event = DownloadProgressEvent(
+		lane.laneOrdinal,
+		lane.acceptedBytes,
+		false);
+	MTP::WriteProxyDiagnosticsLine(
+		&api().instance().runtimeEnvironment(),
+		std::move(event));
 }
 
 DownloadMtprotoTask::DownloadMtprotoTask(
@@ -583,8 +696,7 @@ void DownloadMtprotoTask::removeSession(int sessionIndex) {
 	}
 }
 
-mtpRequestId DownloadMtprotoTask::sendRequest(
-		const RequestData &requestData) {
+mtpRequestId DownloadMtprotoTask::sendRequest(RequestData &requestData) {
 	const auto offset = requestData.offset;
 	const auto limit = Storage::kDownloadPartSize;
 	const auto shiftedDcId = MTP::downloadDcId(
@@ -595,6 +707,10 @@ mtpRequestId DownloadMtprotoTask::sendRequest(
 			MTP_bytes(_cdnToken),
 			MTP_long(offset),
 			MTP_int(limit)
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::GetCdnFile
 		)).done([=](const MTPupload_CdnFile &result, mtpRequestId id) {
 			cdnPartLoaded(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -608,6 +724,10 @@ mtpRequestId DownloadMtprotoTask::sendRequest(
 				MTP_long(location.accessHash())),
 			MTP_int(offset),
 			MTP_int(limit)
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::GetWebFile
 		)).done([=](const MTPupload_WebFile &result, mtpRequestId id) {
 			webPartLoaded(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -628,6 +748,10 @@ mtpRequestId DownloadMtprotoTask::sendRequest(
 				MTP_int(location.scale)),
 			MTP_int(offset),
 			MTP_int(limit)
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::GetWebFile
 		)).done([=](const MTPupload_WebFile &result, mtpRequestId id) {
 			webPartLoaded(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -644,6 +768,10 @@ mtpRequestId DownloadMtprotoTask::sendRequest(
 				MTPstring()),
 			MTP_int(offset),
 			MTP_int(limit)
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::GetWebFile
 		)).done([=](const MTPupload_WebFile &result, mtpRequestId id) {
 			webPartLoaded(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -656,6 +784,10 @@ mtpRequestId DownloadMtprotoTask::sendRequest(
 			location.tl(api().session().userId()),
 			MTP_long(offset),
 			MTP_int(limit)
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::GetFile
 		)).done([=](const MTPupload_File &result, mtpRequestId id) {
 			normalPartLoaded(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -669,7 +801,20 @@ bool DownloadMtprotoTask::setWebFileSizeHook(int64 size) {
 }
 
 void DownloadMtprotoTask::makeRequest(const RequestData &requestData) {
-	placeSentRequest(sendRequest(requestData), requestData);
+	auto data = requestData;
+	placeSentRequest(sendRequest(data), data);
+}
+
+auto DownloadMtprotoTask::fileTransferTag(
+		RequestData &requestData,
+		MTP::ShiftedDcId shiftedDcId,
+		MTP::details::FileTransferRpcKind rpcKind)
+-> MTP::details::FileTransferRequestTag {
+	auto result = _owner->fileTransferTag(
+		shiftedDcId,
+		rpcKind);
+	requestData.diagnosticLaneOrdinal = result.trace->laneOrdinal;
+	return result;
 }
 
 void DownloadMtprotoTask::requestMoreCdnFileHashes() {
@@ -677,13 +822,17 @@ void DownloadMtprotoTask::requestMoreCdnFileHashes() {
 		return;
 	}
 
-	const auto requestData = _cdnUncheckedParts.cbegin()->first;
+	auto requestData = _cdnUncheckedParts.cbegin()->first;
 	const auto shiftedDcId = MTP::downloadDcId(
 		dcId(),
 		requestData.sessionIndex);
 	_cdnHashesRequestId = api().request(MTPupload_GetCdnFileHashes(
 		MTP_bytes(_cdnToken),
 		MTP_long(requestData.offset)
+	)).fileTransferTag(fileTransferTag(
+		requestData,
+		shiftedDcId,
+		MTP::details::FileTransferRpcKind::GetCdnFileHashes
 	)).done([=](const MTPVector<MTPFileHash> &result, mtpRequestId id) {
 		getCdnFileHashesDone(result, id);
 	}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -703,7 +852,7 @@ void DownloadMtprotoTask::normalPartLoaded(
 	result.match([&](const MTPDupload_fileCdnRedirect &data) {
 		switchToCDN(requestData, data);
 	}, [&](const MTPDupload_file &data) {
-		partLoaded(requestData.offset, data.vbytes().v);
+		partLoaded(requestData, data.vbytes().v);
 	});
 
 	// 'this' may be deleted at this point.
@@ -720,7 +869,7 @@ void DownloadMtprotoTask::webPartLoaded(
 	const auto dcId = this->dcId();
 	result.match([&](const MTPDupload_webFile &data) {
 		if (setWebFileSizeHook(data.vsize().v)) {
-			partLoaded(requestData.offset, data.vbytes().v);
+			partLoaded(requestData, data.vbytes().v);
 		}
 	});
 
@@ -730,7 +879,7 @@ void DownloadMtprotoTask::webPartLoaded(
 
 void DownloadMtprotoTask::cdnPartLoaded(const MTPupload_CdnFile &result, mtpRequestId requestId) {
 	result.match([&](const MTPDupload_cdnFileReuploadNeeded &data) {
-		const auto requestData = finishSentRequest(
+		auto requestData = finishSentRequest(
 			requestId,
 			FinishRequestReason::Redirect);
 		const auto shiftedDcId = MTP::downloadDcId(
@@ -739,6 +888,10 @@ void DownloadMtprotoTask::cdnPartLoaded(const MTPupload_CdnFile &result, mtpRequ
 		const auto requestId = api().request(MTPupload_ReuploadCdnFile(
 			MTP_bytes(_cdnToken),
 			data.vrequest_token()
+		)).fileTransferTag(fileTransferTag(
+			requestData,
+			shiftedDcId,
+			MTP::details::FileTransferRpcKind::ReuploadCdnFile
 		)).done([=](const MTPVector<MTPFileHash> &result, mtpRequestId id) {
 			reuploadDone(result, id);
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
@@ -788,7 +941,7 @@ void DownloadMtprotoTask::cdnPartLoaded(const MTPupload_CdnFile &result, mtpRequ
 		} return;
 
 		case CheckCdnHashResult::Good: {
-			partLoaded(requestData.offset, decryptInPlace);
+			partLoaded(requestData, decryptInPlace);
 		} return;
 		}
 		Unexpected("Result of checkCdnFileHash()");
@@ -853,11 +1006,10 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 
 		case CheckCdnHashResult::Good: {
 			someMoreChecked = true;
-			const auto goodOffset = uncheckedData.offset;
 			const auto goodBytes = std::move(i->second);
 			const auto weak = base::make_weak(this);
 			i = _cdnUncheckedParts.erase(i);
-			if (!feedPart(goodOffset, goodBytes) || !weak) {
+			if (!partLoaded(uncheckedData, goodBytes) || !weak) {
 				return;
 			}
 		} break;
@@ -996,10 +1148,13 @@ void DownloadMtprotoTask::removeFromQueue() {
 	_owner->remove(this);
 }
 
-void DownloadMtprotoTask::partLoaded(
-		int64 offset,
+bool DownloadMtprotoTask::partLoaded(
+		const RequestData &requestData,
 		const QByteArray &bytes) {
-	feedPart(offset, bytes);
+	_owner->addAcceptedBytes(
+		requestData.diagnosticLaneOrdinal,
+		bytes.size());
+	return feedPart(requestData.offset, bytes);
 }
 
 bool DownloadMtprotoTask::normalPartFailed(

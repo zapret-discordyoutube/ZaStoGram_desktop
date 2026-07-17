@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/timer.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
@@ -54,8 +55,11 @@ struct RelayProofRetirementResult {
 [[nodiscard]] RelayProofRetirementResult RetireRelayProofLocked(
 		EndpointState &state,
 		const RelayProofReport &report,
-		crl::time now) {
-	PruneExpiredEndpointState(state, now);
+		crl::time now,
+		EndpointDeferredCleanup &deferredCleanup) {
+	MergeDeferredCleanup(
+		deferredCleanup,
+		PruneExpiredEndpointStateDeferred(state, now));
 	const auto runtimeGeneration = RuntimeGenerationKey{
 		.runtimeId = report.runtimeId,
 		.proxyGeneration = report.proxyGeneration,
@@ -630,11 +634,22 @@ void EndpointHealth::noteRelayStall(
 	auto createdRecoveryToken = MainRecoveryToken();
 	auto recipeLevel = 0;
 	auto capabilityFailure = false;
+	auto deferredCleanup = EndpointDeferredCleanup();
 	const auto key = EndpointKey(report.endpoint);
 	const auto runtimeGeneration = RuntimeGenerationKey{
 		.runtimeId = report.runtimeId,
 		.proxyGeneration = report.proxyGeneration,
 	};
+	const auto deferredCleanupGuard = gsl::finally([&] {
+		const auto hadDeferredCleanup = HasDeferredCleanup(deferredCleanup);
+		DisconnectDeferredOwners(deferredCleanup);
+		if (hadDeferredCleanup) {
+			_context->notifyEndpointViewChanged(
+				report.endpoint,
+				runtimeGeneration);
+			_context->notifyEndpointAdmissible(key);
+		}
+	});
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -643,7 +658,11 @@ void EndpointHealth::noteRelayStall(
 			&& i != end(storage.states)) {
 			auto &state = i->second;
 			recipeLevel = state.recipeLevel;
-			retirement = RetireRelayProofLocked(state, report, now);
+			retirement = RetireRelayProofLocked(
+				state,
+				report,
+				now,
+				deferredCleanup);
 			if ((retirement.outcome
 					== RelayProofRetirement::RetiredWithSurvivors
 					|| retirement.outcome
@@ -758,6 +777,21 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 	const auto now = crl::now();
 	const auto key = EndpointKey(report.endpoint);
 	auto retired = false;
+	auto deferredCleanup = EndpointDeferredCleanup();
+	const auto runtimeGeneration = RuntimeGenerationKey{
+		.runtimeId = report.runtimeId,
+		.proxyGeneration = report.proxyGeneration,
+	};
+	const auto deferredCleanupGuard = gsl::finally([&] {
+		const auto hadDeferredCleanup = HasDeferredCleanup(deferredCleanup);
+		DisconnectDeferredOwners(deferredCleanup);
+		if (hadDeferredCleanup) {
+			_context->notifyEndpointViewChanged(
+				report.endpoint,
+				runtimeGeneration);
+			_context->notifyEndpointAdmissible(key);
+		}
+	});
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
@@ -767,7 +801,8 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 			const auto result = RetireRelayProofLocked(
 				i->second,
 				report,
-				now);
+				now,
+				deferredCleanup);
 			retired = (result.outcome
 					== RelayProofRetirement::RetiredWithSurvivors)
 				|| (result.outcome == RelayProofRetirement::RetiredFinal);

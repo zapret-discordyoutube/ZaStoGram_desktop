@@ -41,6 +41,97 @@ constexpr auto kCheckSentRequestTimeout = 10 * crl::time(1000);
 constexpr auto kSendStateRequestWaiting = crl::time(1000);
 constexpr auto kCutContainerOnSize = 16 * 1024;
 
+[[nodiscard]] ProxyDiagnosticsDirection FileDiagnosticsDirection(
+		FileTransferDirection direction) {
+	switch (direction) {
+	case FileTransferDirection::Download:
+		return ProxyDiagnosticsDirection::Download;
+	case FileTransferDirection::Upload:
+		return ProxyDiagnosticsDirection::Upload;
+	}
+	Unexpected("File transfer direction.");
+}
+
+[[nodiscard]] ProxyConnectionUse FileDiagnosticsUse(
+		FileTransferDirection direction) {
+	switch (direction) {
+	case FileTransferDirection::Download:
+		return ProxyConnectionUse::Media;
+	case FileTransferDirection::Upload:
+		return ProxyConnectionUse::Upload;
+	}
+	Unexpected("File transfer direction.");
+}
+
+[[nodiscard]] ProxyDiagnosticsRpcKind FileDiagnosticsRpcKind(
+		FileTransferRpcKind kind) {
+	switch (kind) {
+	case FileTransferRpcKind::GetFile:
+		return ProxyDiagnosticsRpcKind::GetFile;
+	case FileTransferRpcKind::GetWebFile:
+		return ProxyDiagnosticsRpcKind::GetWebFile;
+	case FileTransferRpcKind::GetCdnFile:
+		return ProxyDiagnosticsRpcKind::GetCdnFile;
+	case FileTransferRpcKind::GetCdnFileHashes:
+		return ProxyDiagnosticsRpcKind::GetCdnFileHashes;
+	case FileTransferRpcKind::ReuploadCdnFile:
+		return ProxyDiagnosticsRpcKind::ReuploadCdnFile;
+	case FileTransferRpcKind::SaveFilePart:
+		return ProxyDiagnosticsRpcKind::SaveFilePart;
+	case FileTransferRpcKind::SaveBigFilePart:
+		return ProxyDiagnosticsRpcKind::SaveBigFilePart;
+	}
+	Unexpected("File transfer RPC kind.");
+}
+
+[[nodiscard]] ProxyDiagnosticsEvent FileDiagnosticsEvent(
+		const FileTransferRequestTag::Trace &trace,
+		ProxyDiagnosticsTransition transition) {
+	auto event = ProxyDiagnosticsEvent();
+	event.source = ProxyDiagnosticsSource::MTP;
+	event.phase = ProxyDiagnosticsPhase::FileRpc;
+	event.attempt.traceId = trace.traceOrdinal;
+	event.attempt.use = FileDiagnosticsUse(trace.direction);
+	event.transition = transition;
+	event.direction = FileDiagnosticsDirection(trace.direction);
+	event.rpcKind = FileDiagnosticsRpcKind(trace.rpcKind);
+	event.laneOrdinal = trace.laneOrdinal;
+	event.requestOrdinal = trace.requestOrdinal;
+	event.firstInLane = trace.firstInLane;
+	return event;
+}
+
+void ReportFileTransferSent(
+		not_null<RuntimeEnvironment*> runtime,
+		SessionProxyPort &proxyPort,
+		const std::vector<SerializedRequest> &requests) {
+	auto events = std::vector<ProxyDiagnosticsEvent>();
+	events.reserve(requests.size());
+	const auto now = crl::now();
+	for (const auto &request : requests) {
+		const auto trace = request->fileTransferTag->trace;
+		QMutexLocker lock(&trace->mutex);
+		const auto resent = (trace->successfulSendCount > 0);
+		if (!resent) {
+			trace->firstSentAt = now;
+		}
+		trace->lastSentAt = now;
+		++trace->successfulSendCount;
+		if (trace->firstInLane || resent) {
+			auto event = FileDiagnosticsEvent(
+				*trace,
+				resent
+					? ProxyDiagnosticsTransition::Resent
+					: ProxyDiagnosticsTransition::Sent);
+			event.sendCount = trace->successfulSendCount;
+			events.push_back(std::move(event));
+		}
+	}
+	for (auto &event : events) {
+		proxyPort.writeDiagnosticsEvent(runtime, std::move(event));
+	}
+}
+
 [[nodiscard]] QString ComputeAppVersion() {
 #if defined Q_OS_WIN && defined Q_PROCESSOR_X86_64
 	const auto arch = u" x64"_q;
@@ -467,6 +558,14 @@ void SessionPrivate::tryToSend() {
 		: SessionData::ToSendBatch();
 	auto &toSend = toSendBatch.requests;
 	const auto someSkipped = toSendBatch.someSkipped;
+	auto fileTransferRequests = std::vector<SerializedRequest>();
+	fileTransferRequests.reserve(toSend.size());
+	for (const auto &entry : toSend) {
+		const auto &request = entry.second;
+		if (request->fileTransferTag) {
+			fileTransferRequests.push_back(request);
+		}
+	}
 	SerializedRequest toSendRequest;
 
 	auto scheduleCheckSentRequests = false;
@@ -713,7 +812,9 @@ void SessionPrivate::tryToSend() {
 		&& !_transport.checkSentRequestsTimerActive()) {
 		_transport.scheduleCheckSentRequests(kCheckSentRequestTimeout);
 	}
-	sendSecureRequest(std::move(toSendRequest), needAnyResponse);
+	if (sendSecureRequest(std::move(toSendRequest), needAnyResponse)) {
+		ReportFileTransferSent(_runtime, *_proxyPort, fileTransferRequests);
+	}
 	if (someSkipped) {
 		InvokeQueued(this, [=] {
 			tryToSend();

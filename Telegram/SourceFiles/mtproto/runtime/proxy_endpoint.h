@@ -12,7 +12,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <crl/crl_time.h>
 
+#include <memory>
+
 namespace MTP::details::MtProxy {
+
+class ReclaimEpisodeToken;
 
 enum class RouteAddressFamily {
 	Unknown,
@@ -85,6 +89,8 @@ struct EndpointId {
 enum class EndpointLaneCommandType {
 	Suspend,
 	Resume,
+	ParkMain,
+	ResumeParkedMain,
 };
 
 enum class EndpointLaneCommandResult {
@@ -98,6 +104,8 @@ struct EndpointLaneCommand {
 	EndpointLaneCommandType type = EndpointLaneCommandType::Suspend;
 	uint64 token = 0;
 	uint64 attemptId = 0;
+	uint64 proxyGeneration = 0;
+	std::shared_ptr<const ReclaimEpisodeToken> reclaimEpisodeToken;
 	crl::time deadlineAt = 0;
 	bool demandRequired = false;
 	Fn<bool()> authorize;

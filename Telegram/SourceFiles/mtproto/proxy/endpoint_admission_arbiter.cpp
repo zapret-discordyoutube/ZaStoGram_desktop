@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
@@ -26,6 +27,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <vector>
 
 namespace MTP::details {
+namespace MtProxy {
+
+struct ReclaimEpisodeTokenAccess {
+	[[nodiscard]] static ReclaimEpisodeToken Next(EndpointState &state) {
+		do {
+			++state.lastReclaimEpisodeId;
+		} while (!state.lastReclaimEpisodeId);
+		auto result = ReclaimEpisodeToken();
+		result._id = state.lastReclaimEpisodeId;
+		return result;
+	}
+};
+
+} // namespace MtProxy
+
 namespace {
 
 constexpr auto kAgingStep = crl::time(15 * 1000);
@@ -33,10 +49,15 @@ constexpr auto kMinimumOpenSpacing = crl::time(500);
 constexpr auto kOpenSpacingJitter = crl::time(125);
 constexpr auto kLaneCommandAckTimeout = crl::time(5 * 1000);
 
+[[nodiscard]] crl::time LaneCommandRetryBoundary(crl::time now) {
+	return now + kLaneCommandAckTimeout;
+}
+
 enum class PriorityClass {
 	ForegroundMain,
-	UrgentMain,
+	EntitledTransfer,
 	ForegroundTransfer,
+	UrgentMain,
 	OrdinaryMain,
 	Maintenance,
 	Auxiliary,
@@ -46,15 +67,104 @@ enum class PriorityClass {
 };
 
 enum class CapacityDecisionKind {
-	Blocked,
 	Ordinary,
-	Probe,
+	FrontierProbe,
+	ExactReplacement,
+	Blocked,
 };
 
-struct CandidateCapacityDecision {
-	CapacityDecisionKind kind = CapacityDecisionKind::Blocked;
-	crl::time retryAt = 0;
+enum class CapacityDecisionBlocker {
+	None,
+	BootstrapCommitment,
+	HardCap,
+	FrontierExceeded,
+	ProbeReserved,
+	ProbeActive,
+	ProbeCooldown,
+	ProbePriority,
+	ReplacementUnavailable,
+	ReplacementCapacity,
+	CapacityOneForegroundMain,
 };
+
+[[nodiscard]] ProxyDiagnosticsDecision CapacityDiagnosticsDecision(
+		CapacityDecisionKind kind) {
+	switch (kind) {
+	case CapacityDecisionKind::Ordinary:
+		return ProxyDiagnosticsDecision::Ordinary;
+	case CapacityDecisionKind::FrontierProbe:
+		return ProxyDiagnosticsDecision::FrontierProbe;
+	case CapacityDecisionKind::ExactReplacement:
+		return ProxyDiagnosticsDecision::ExactReplacement;
+	case CapacityDecisionKind::Blocked:
+		return ProxyDiagnosticsDecision::Blocked;
+	}
+	Unexpected("CapacityDecisionKind in CapacityDiagnosticsDecision().");
+}
+
+struct CapacityProbeReservationToken {
+	AdmissionTicketKey ticketKey;
+	RuntimeGenerationKey endpointGeneration;
+	int frontier = 0;
+	MtProxy::EndpointTransferDemandKey demand;
+
+	bool operator==(const CapacityProbeReservationToken &other) const = default;
+};
+
+struct CapacityAdmissionDecision {
+	CapacityDecisionKind kind = CapacityDecisionKind::Blocked;
+	RuntimeGenerationKey endpointGeneration;
+	AdmissionTicketKey ticketKey;
+	uint64 revision = 0;
+	int provenLowerBound = 0;
+	std::optional<int> hardCap;
+	int preCandidateCommitments = 0;
+	int frontier = 0;
+	MtProxy::EndpointTransferDemandKey demand;
+	std::optional<CapacityProbeReservationToken> probeToken;
+	MtProxy::ReclaimEpisodeToken reclaimToken;
+	CapacityDecisionBlocker blocker = CapacityDecisionBlocker::None;
+	crl::time retryBoundary = 0;
+};
+
+[[nodiscard]] bool TransferDemandMatchesRequest(
+		const EndpointAdmissionRequest &request) {
+	const auto &demand = request.transferDemand;
+	if (demand == MtProxy::EndpointTransferDemandKey()) {
+		return true;
+	}
+	return demand
+		&& demand.runtimeId == request.key.runtimeId
+		&& demand.proxyGeneration == request.proxyGeneration
+		&& demand.use == request.use;
+}
+
+[[nodiscard]] bool ParkedResumeMatchesRequest(
+		const EndpointAdmissionRequest &request,
+		const MtProxy::EndpointState *state) {
+	if (!request.reclaimEpisodeToken) {
+		return true;
+	} else if (request.use != MtProxy::EndpointUse::Main
+		|| !state
+		|| !state->parkedReclaimVictim
+		|| !state->reclaimEpisode) {
+		return false;
+	}
+	const auto &parked = *state->parkedReclaimVictim;
+	const auto &episode = *state->reclaimEpisode;
+	return parked.episodeToken == request.reclaimEpisodeToken
+		&& parked.owner == request.owner
+		&& parked.attempt.runtimeId == request.key.runtimeId
+		&& parked.attempt.proxyGeneration == request.proxyGeneration
+		&& !parked.resumeTicketKey.ticketId
+		&& !parked.resumeAttempt.attemptId
+		&& episode.token == request.reclaimEpisodeToken
+		&& episode.stage == MtProxy::ReclaimEpisodeStage::RollbackPending
+		&& episode.victimResumeIssued
+		&& episode.victim.kind == MtProxy::ReclaimVictimKind::MainLane
+		&& episode.victim.ticketKey == parked.ticketKey
+		&& episode.victim.attempt == parked.attempt;
+}
 
 struct TicketCallbacks {
 	Fn<void(EndpointAdmissionUpdate)> status;
@@ -89,7 +199,35 @@ struct Ticket {
 	crl::time jitter = 0;
 	MtProxy::FailureReason blockedBy = MtProxy::FailureReason::None;
 	uint64 reservationId = 0;
+	MtProxy::EndpointTransferDemandKey transferDemand;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
+	std::optional<CapacityAdmissionDecision> capacityDecision;
 };
+
+[[nodiscard]] bool ParkedResumeMatchesTicket(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) {
+	if (ticket.use != MtProxy::EndpointUse::Main
+		|| !ticket.reclaimEpisodeToken
+		|| !state.parkedReclaimVictim
+		|| !state.reclaimEpisode) {
+		return false;
+	}
+	const auto &parked = *state.parkedReclaimVictim;
+	const auto &episode = *state.reclaimEpisode;
+	return parked.episodeToken == ticket.reclaimEpisodeToken
+		&& parked.owner == ticket.owner
+		&& parked.attempt.runtimeId == ticket.key.runtimeId
+		&& parked.attempt.proxyGeneration == ticket.proxyGeneration
+		&& parked.resumeTicketKey == ticket.key
+		&& !parked.resumeAttempt.attemptId
+		&& episode.token == ticket.reclaimEpisodeToken
+		&& episode.stage == MtProxy::ReclaimEpisodeStage::RollbackPending
+		&& episode.victimResumeIssued
+		&& episode.victim.kind == MtProxy::ReclaimVictimKind::MainLane
+		&& episode.victim.ticketKey == parked.ticketKey
+		&& episode.victim.attempt == parked.attempt;
+}
 
 [[nodiscard]] RuntimeGenerationKey TicketRuntimeGeneration(
 		const Ticket &ticket) {
@@ -169,6 +307,7 @@ struct FairnessState {
 struct EndpointSchedule {
 	std::deque<AdmissionTicketKey> order;
 	FairnessState fairness;
+	std::optional<MtProxy::ReclaimVictimIdentity> reclaimCursor;
 };
 
 enum class LaneReclaimKind {
@@ -201,6 +340,7 @@ struct LanePreemption {
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
 	std::shared_ptr<Fn<void(MtProxy::EndpointLaneCommand)>> laneControl;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 	LanePreemptionStage stage = LanePreemptionStage::Requested;
 	bool demanded = false;
 };
@@ -215,11 +355,59 @@ struct LaneVictim {
 	crl::time startedAt = 0;
 	bool foreground = false;
 	bool durable = false;
+	MtProxy::ReclaimVictimIdentity reclaimIdentity;
 };
+
+struct ReservationVictim {
+	Ticket *ticket = nullptr;
+	MtProxy::ReclaimVictimIdentity reclaimIdentity;
+};
+
+[[nodiscard]] auto ReclaimVictimOrderKey(
+		const MtProxy::ReclaimVictimIdentity &identity) {
+	return std::tuple(
+		int(identity.kind),
+		identity.ticketKey.runtimeId,
+		identity.ticketKey.ticketId,
+		identity.attempt.runtimeId,
+		identity.attempt.proxyGeneration,
+		identity.attempt.attemptId,
+		int(identity.use));
+}
+
+[[nodiscard]] bool ReclaimVictimLess(
+		const MtProxy::ReclaimVictimIdentity &a,
+		const MtProxy::ReclaimVictimIdentity &b) {
+	return ReclaimVictimOrderKey(a) < ReclaimVictimOrderKey(b);
+}
+
+template <typename Victim>
+[[nodiscard]] Victim *SelectReclaimVictim(
+		std::vector<Victim> &victims,
+		const std::optional<MtProxy::ReclaimVictimIdentity> &cursor) {
+	if (victims.empty()) {
+		return nullptr;
+	}
+	std::sort(begin(victims), end(victims), [](const auto &a, const auto &b) {
+		return ReclaimVictimLess(a.reclaimIdentity, b.reclaimIdentity);
+	});
+	if (!cursor) {
+		return &victims.front();
+	}
+	const auto selected = std::upper_bound(
+		begin(victims),
+		end(victims),
+		*cursor,
+		[](const auto &value, const auto &entry) {
+			return ReclaimVictimLess(value, entry.reclaimIdentity);
+		});
+	return (selected != end(victims)) ? &*selected : &victims.front();
+}
 
 struct SuspendedLane {
 	uint64 token = 0;
 	crl::time commandDeadlineAt = 0;
+	crl::time resumeRetryAt = 0;
 	MtProxy::RelayProofIdentity identity;
 	AdmissionTicketKey ticketKey;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Media;
@@ -227,7 +415,18 @@ struct SuspendedLane {
 	QMetaObject::Connection ownerDestroyed;
 	std::shared_ptr<Fn<void(MtProxy::EndpointLaneCommand)>> laneControl;
 	AdmissionTicketKey successorTicketKey;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 	bool demanded = false;
+};
+
+struct ParkedMainResume {
+	uint64 token = 0;
+	crl::time commandDeadlineAt = 0;
+	MtProxy::ReclaimEpisodeToken episodeToken;
+	MtProxy::RelayProofIdentity identity;
+	AdmissionTicketKey ticketKey;
+	QPointer<QObject> owner;
+	std::shared_ptr<Fn<void(MtProxy::EndpointLaneCommand)>> laneControl;
 };
 
 struct EndpointLaneSchedule {
@@ -235,6 +434,8 @@ struct EndpointLaneSchedule {
 	std::optional<AdmissionTicketKey> handoffBeneficiary;
 	std::deque<SuspendedLane> suspended;
 	std::optional<SuspendedLane> resuming;
+	std::optional<ParkedMainResume> parkedMainResume;
+	crl::time parkedMainRetryAt = 0;
 };
 
 struct RuntimeInput {
@@ -269,11 +470,20 @@ struct GrantAction {
 	void run();
 };
 
+struct DiagnosticsAction {
+	std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch;
+	ProxyDiagnosticsEvent event;
+
+	void run();
+};
+
 struct Actions {
 	std::vector<std::unique_ptr<Ticket>> removed;
 	std::vector<GrantAction> grants;
 	std::vector<PostAction> posts;
+	std::vector<DiagnosticsAction> diagnostics;
 	std::vector<std::shared_ptr<const EndpointAdmissionRuntimeDispatch>> retired;
+	std::vector<QMetaObject::Connection> ownerConnections;
 	std::weak_ptr<ProxyEndpointContext> context;
 	std::vector<std::pair<
 		MtProxy::EndpointId,
@@ -281,6 +491,14 @@ struct Actions {
 
 	void run();
 };
+
+void DeferEndpointCleanup(
+		Actions &actions,
+		MtProxy::EndpointDeferredCleanup cleanup) {
+	for (auto &connection : cleanup.ownerConnections) {
+		actions.ownerConnections.push_back(std::move(connection));
+	}
+}
 
 void InvalidateRuntimeDispatch(
 		const std::shared_ptr<const EndpointAdmissionRuntimeDispatch> &dispatch) {
@@ -358,7 +576,20 @@ void GrantAction::run() {
 	}
 }
 
+void DiagnosticsAction::run() {
+	if (dispatch
+		&& dispatch->registrationLive
+		&& dispatch->registrationLive->load(std::memory_order_acquire)
+		&& dispatch->writeProxyDiagnosticsLine) {
+		dispatch->writeProxyDiagnosticsLine(std::move(event));
+	}
+}
+
 void Actions::run() {
+	for (const auto &connection : ownerConnections) {
+		QObject::disconnect(connection);
+	}
+	ownerConnections.clear();
 	if (const auto strong = context.lock()) {
 		auto emitted = std::set<std::tuple<QString, uint64, uint64>>();
 		for (const auto &[endpoint, runtimeGeneration] : invalidations) {
@@ -387,6 +618,10 @@ void Actions::run() {
 		post.run();
 	}
 	posts.clear();
+	for (auto &diagnostic : diagnostics) {
+		diagnostic.run();
+	}
+	diagnostics.clear();
 	retired.clear();
 }
 
@@ -399,11 +634,120 @@ void Actions::run() {
 		|| use == MtProxy::EndpointUse::Upload;
 }
 
+[[nodiscard]] std::optional<int> CapacityHardCap(
+		const MtProxy::EndpointLiveBudgetState &budget) {
+	return budget.learnedLimit
+		? std::optional<int>(budget.learnedLimit)
+		: std::nullopt;
+}
+
+[[nodiscard]] auto CapacityProbeDemand(
+		const MtProxy::EndpointTransferDemandKey &demand)
+-> std::optional<MtProxy::EndpointTransferDemandKey> {
+	return demand
+		? std::optional<MtProxy::EndpointTransferDemandKey>(demand)
+		: std::nullopt;
+}
+
+[[nodiscard]] CapacityProbeReservationToken CapacityProbeTokenFor(
+		const Ticket &ticket,
+		int frontier) {
+	return {
+		.ticketKey = ticket.key,
+		.endpointGeneration = TicketRuntimeGeneration(ticket),
+		.frontier = frontier,
+		.demand = ticket.transferDemand,
+	};
+}
+
+[[nodiscard]] bool CapacityDecisionMatchesTicket(
+		const CapacityAdmissionDecision &decision,
+		const Ticket &ticket) {
+	return decision.endpointGeneration == TicketRuntimeGeneration(ticket)
+		&& decision.ticketKey == ticket.key
+		&& decision.revision == ticket.revision
+		&& decision.demand == ticket.transferDemand;
+}
+
+enum class ExactReplacementReservationState {
+	Available,
+	Retained,
+};
+
+[[nodiscard]] bool ExactReplacementReservationMatches(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state,
+		MtProxy::ReclaimEpisodeToken token,
+		ExactReplacementReservationState reservationState) {
+	if (!IsBackground(ticket.use)
+		|| !ticket.transferDemand
+		|| !token
+		|| token != ticket.reclaimEpisodeToken
+		|| !state.foregroundTransferEntitlement
+		|| !state.reclaimEpisode
+		|| !MtProxy::ForegroundTransferEntitlementMatches(
+			*state.foregroundTransferEntitlement,
+			ticket.transferDemand,
+			ticket.owner)
+		|| !MtProxy::ReclaimEpisodeMatches(
+			*state.reclaimEpisode,
+			token,
+			ticket.transferDemand,
+			ticket.owner)) {
+		return false;
+	}
+	const auto &episode = *state.reclaimEpisode;
+	const auto initial = episode.stage
+			== MtProxy::ReclaimEpisodeStage::VictimAcknowledged
+		&& episode.replacementAuthorized
+		&& !episode.replacementConsumed;
+	const auto continuation = (episode.stage
+				== MtProxy::ReclaimEpisodeStage::BeneficiaryGranted
+			|| episode.stage == MtProxy::ReclaimEpisodeStage::Committed)
+		&& !episode.replacementAuthorized
+		&& episode.replacementConsumed
+		&& !episode.beneficiaryAttempt.attemptId;
+	if (!initial && !continuation) {
+		return false;
+	}
+	return (reservationState == ExactReplacementReservationState::Available)
+		? !episode.beneficiaryTicketKey.ticketId
+		: (episode.beneficiaryTicketKey == ticket.key);
+}
+
 [[nodiscard]] int ProvenEndpointCapacity(
 		const MtProxy::EndpointState &state) {
 	return std::max(
 		state.liveBudget.learnedLimit,
 		state.liveBudget.provenLowerBound);
+}
+
+[[nodiscard]] bool OnlyForegroundMainCommitment(
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointUseCounts &scheduled,
+		ProxyRuntimeId foregroundRuntimeId) {
+	if (!foregroundRuntimeId
+		|| MtProxy::TotalEndpointUseCount(scheduled)
+		|| MtProxy::EndpointCapacityCommitmentCount(state) != 1) {
+		return false;
+	}
+	auto matches = 0;
+	for (const auto &[identity, lane] : state.liveLanes) {
+		const auto proof = state.relayProofs.find(identity);
+		if (identity.runtimeId == foregroundRuntimeId
+			&& lane.use == MtProxy::EndpointUse::Main
+			&& !lane.terminalVerdict
+			&& proof != end(state.relayProofs)
+			&& proof->second.use == MtProxy::EndpointUse::Main
+			&& proof->second.ticketKey == lane.ticketKey
+			&& MtProxy::RuntimeGenerationIsCurrent(state, {
+				.runtimeId = identity.runtimeId,
+				.proxyGeneration = identity.proxyGeneration,
+			})) {
+			++matches;
+		}
+	}
+	return matches == 1;
 }
 
 [[nodiscard]] bool IsUrgentMainPriority(PriorityClass priority) {
@@ -457,6 +801,9 @@ public:
 	[[nodiscard]] EndpointAdmissionEnqueueResult enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
+	void endTransferDemand(
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner);
 	void cancel(AdmissionTicketKey key, uint64 revision);
 	void ownerDestroyed(AdmissionTicketKey key);
 	void cancelBeforeGeneration(
@@ -515,6 +862,19 @@ private:
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state) const;
 	[[nodiscard]] bool ownsMainRecoveryLocked(const Ticket &ticket) const;
+	[[nodiscard]] bool foregroundTransferEligibleLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) const;
+	[[nodiscard]] bool retainsTransferEntitlementLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) const;
+	void updateTransferEntitlementLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state,
+		crl::time now);
+	void bindTransferReclaimTicketLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state);
 	[[nodiscard]] PriorityClass priorityForLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state,
@@ -552,13 +912,44 @@ private:
 		int urgentWaiters,
 		crl::time now,
 		bool ignoreTicketRetry = false) const;
-	[[nodiscard]] CandidateCapacityDecision capacityDecisionLocked(
+	[[nodiscard]] CapacityAdmissionDecision capacityDecisionLocked(
 		const Ticket &candidate,
 		const MtProxy::EndpointState &state,
 		const MtProxy::EndpointUseCounts &scheduled,
 		int urgentWaiters,
 		crl::time now,
 		std::optional<AdmissionTicketKey> noVictimUrgentClaimant) const;
+	[[nodiscard]] bool capacityDecisionValidLocked(
+		const Ticket &candidate,
+		const CapacityAdmissionDecision &decision,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointUseCounts &scheduledExcludingCandidate,
+		int urgentWaiters,
+		crl::time now) const;
+	[[nodiscard]] bool requestTransferReclaimLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state,
+		DrainInputs &inputs,
+		Actions &actions);
+	void postLaneSuspensionLocked(
+		const QString &endpointKey,
+		const LanePreemption &preemption,
+		std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch,
+		Actions &actions);
+	void postParkedMainResumeLocked(
+		const QString &endpointKey,
+		const ParkedMainResume &resume,
+		std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch,
+		Actions &actions);
+	[[nodiscard]] bool suspendedLaneCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const SuspendedLane &lane) const;
+	[[nodiscard]] bool reclaimSuspendedLaneCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const SuspendedLane &lane) const;
+	[[nodiscard]] bool parkedReclaimVictimCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const MtProxy::ParkedReclaimVictim &parked) const;
 	[[nodiscard]] auto requestLanePreemptionLocked(
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
@@ -569,6 +960,14 @@ private:
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
+		Actions &actions);
+	void postCapacityDiagnosticsLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state,
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsDecision decision,
+		ProxyDiagnosticsTransition transition,
+		std::optional<int> frontier,
 		Actions &actions);
 	void postStatusLocked(Ticket &ticket, Actions &actions);
 	void postGenerationCancelledStatusLocked(
@@ -581,7 +980,18 @@ private:
 		uint64 revision,
 		Actions &actions);
 	void demoteTicketLocked(Ticket &ticket, Actions &actions);
-	void releaseReservedCapacityProbeLocked(const Ticket &ticket);
+	[[nodiscard]] bool reserveCapacityDecisionLocked(
+		Ticket &ticket,
+		MtProxy::EndpointState &state,
+		CapacityAdmissionDecision decision);
+	void releaseReservedCapacityDecisionLocked(Ticket &ticket);
+	[[nodiscard]] bool activateCapacityDecisionLocked(
+		const Ticket &ticket,
+		MtProxy::EndpointState &state,
+		const MtProxy::Admission &admission);
+	void releaseActiveCapacityProbeLocked(
+		MtProxy::EndpointState &state,
+		const MtProxy::RelayProofIdentity &identity);
 	void detachLanePreemptionBeneficiaryLocked(
 		const QString &endpointKey,
 		AdmissionTicketKey key);
@@ -594,7 +1004,8 @@ private:
 	void expireLaneCommandsLocked(
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
-		crl::time now);
+		crl::time now,
+		Actions &actions);
 	[[nodiscard]] std::unique_ptr<Ticket> takeTicketLocked(
 		AdmissionTicketKey key);
 	void purgeEndpointLocked(
@@ -655,7 +1066,7 @@ EndpointAdmissionArbiter::Private::~Private() {
 		clearWakeLocked(true);
 		for (auto &entry : _tickets) {
 			auto &ticket = entry.second;
-			releaseReservedCapacityProbeLocked(*ticket);
+			releaseReservedCapacityDecisionLocked(*ticket);
 			if (ticket->reservationId) {
 				const auto state = _storage.openStates.find(
 					ticket->endpointKey);
@@ -841,6 +1252,182 @@ bool EndpointAdmissionArbiter::Private::ownsMainRecoveryLocked(
 		&& recovery->adoptedTicketKey == ticket.key;
 }
 
+bool EndpointAdmissionArbiter::Private::foregroundTransferEligibleLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) const {
+	if (!IsBackground(ticket.use)
+		|| ticket.key.runtimeId != _storage.foregroundRuntimeId
+		|| !ticket.transferDemand
+		|| !ticket.owner
+		|| !ticketCurrentLocked(ticket, state)
+		|| ticket.transferDemand.runtimeId != ticket.key.runtimeId
+		|| ticket.transferDemand.proxyGeneration != ticket.proxyGeneration
+		|| ticket.transferDemand.use != ticket.use) {
+		return false;
+	}
+	const auto generation = _storage.runtimeGenerations.find(
+		ticket.key.runtimeId);
+	return generation != end(_storage.runtimeGenerations)
+		&& generation->second == ticket.proxyGeneration
+		&& MtProxy::HasCurrentMainRelayProof(
+			state,
+			TicketRuntimeGeneration(ticket));
+}
+
+bool EndpointAdmissionArbiter::Private::retainsTransferEntitlementLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state) const {
+	return state.foregroundTransferEntitlement
+		&& MtProxy::ForegroundTransferEntitlementMatches(
+			*state.foregroundTransferEntitlement,
+			ticket.transferDemand,
+			ticket.owner)
+		&& state.foregroundTransferEntitlement->ticketKey == ticket.key;
+}
+
+void EndpointAdmissionArbiter::Private::bindTransferReclaimTicketLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state) {
+	if (!state.foregroundTransferEntitlement || !state.reclaimEpisode) {
+		return;
+	}
+	const auto &entitlement = *state.foregroundTransferEntitlement;
+	const auto &episode = *state.reclaimEpisode;
+	if (!MtProxy::ReclaimEpisodeMatches(
+			episode,
+			episode.token,
+			entitlement.demand,
+			entitlement.owner)
+		|| episode.stage == MtProxy::ReclaimEpisodeStage::RollbackPending
+		|| episode.stage == MtProxy::ReclaimEpisodeStage::Terminal
+		|| (!episode.replacementAuthorized
+			&& episode.victim.kind == MtProxy::ReclaimVictimKind::None)
+		|| !entitlement.ticketKey.ticketId) {
+		return;
+	}
+	const auto ticket = _tickets.find(entitlement.ticketKey);
+	if (ticket == end(_tickets)
+		|| !WaitingForHandoff(ticket->second->lifecycle)
+		|| !ticketCurrentLocked(*ticket->second, state)
+		|| !retainsTransferEntitlementLocked(*ticket->second, state)) {
+		return;
+	}
+	ticket->second->reclaimEpisodeToken = episode.token;
+	ticket->second->admissionRequest.reclaimEpisodeToken = episode.token;
+	const auto lane = _laneSchedules.find(endpointKey);
+	if (lane != end(_laneSchedules)
+		&& lane->second.preemption
+		&& lane->second.preemption->reclaimEpisodeToken == episode.token
+		&& !lane->second.preemption->beneficiary.ticketId) {
+		lane->second.preemption->beneficiary = ticket->second->key;
+	}
+}
+
+void EndpointAdmissionArbiter::Private::updateTransferEntitlementLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state,
+		crl::time now) {
+	const auto schedule = _endpoints.find(endpointKey);
+	if (schedule == end(_endpoints)) {
+		return;
+	}
+	if (state.foregroundTransferEntitlement) {
+		auto &entitlement = *state.foregroundTransferEntitlement;
+		if (state.reclaimEpisode
+			&& MtProxy::ReclaimEpisodeMatches(
+				*state.reclaimEpisode,
+				state.reclaimEpisode->token,
+				entitlement.demand,
+				entitlement.owner)
+			&& state.reclaimEpisode->stage
+				== MtProxy::ReclaimEpisodeStage::Requested
+			&& state.reclaimEpisode->victim.kind
+				== MtProxy::ReclaimVictimKind::None
+			&& !state.reclaimEpisode->replacementAuthorized
+			&& !state.reclaimEpisode->replacementConsumed
+			&& state.reclaimEpisode->beneficiaryAttempt.attemptId
+			&& MtProxy::HasRelayProof(
+				state,
+				state.reclaimEpisode->beneficiaryAttempt)) {
+			state.reclaimEpisode.reset();
+		}
+		const auto matches = [&](const Ticket &ticket) {
+			return WaitingForHandoff(ticket.lifecycle)
+				&& ticketCurrentLocked(ticket, state)
+				&& IsBackground(ticket.use)
+				&& ticket.key.runtimeId == _storage.foregroundRuntimeId
+				&& ticket.transferDemand == entitlement.demand
+				&& ticket.owner == entitlement.owner;
+		};
+		if (entitlement.ticketKey.ticketId) {
+			const auto ticket = _tickets.find(entitlement.ticketKey);
+			if (ticket == end(_tickets) || !matches(*ticket->second)) {
+				entitlement.ticketKey = {};
+			}
+		}
+		if (!entitlement.ticketKey.ticketId) {
+			for (const auto &key : schedule->second.order) {
+				const auto ticket = _tickets.find(key);
+				if (ticket != end(_tickets) && matches(*ticket->second)) {
+					entitlement.ticketKey = key;
+					break;
+				}
+			}
+		}
+		bindTransferReclaimTicketLocked(endpointKey, state);
+		return;
+	}
+	auto pool = std::vector<Ticket*>();
+	auto eligible = std::set<AdmissionTicketKey>();
+	for (const auto &key : schedule->second.order) {
+		const auto ticket = _tickets.find(key);
+		if (ticket == end(_tickets)
+			|| !WaitingForHandoff(ticket->second->lifecycle)
+			|| ticket->second->reclaimEpisodeToken
+			|| !foregroundTransferEligibleLocked(*ticket->second, state)) {
+			continue;
+		}
+		pool.push_back(ticket->second.get());
+		eligible.emplace(key);
+	}
+	if (pool.empty()) {
+		return;
+	}
+	const auto selected = selectLocked(
+		pool,
+		eligible,
+		state,
+		now,
+		schedule->second.fairness);
+	if (!selected || !selected->owner) {
+		return;
+	}
+	const auto weak = _context;
+	const auto demand = selected->transferDemand;
+	const auto ownerDestroyed = QObject::connect(
+		selected->owner.data(),
+		&QObject::destroyed,
+		[weak, demand] {
+			if (const auto context = weak.lock()) {
+				context->endpointAdmissionArbiter().endTransferDemand(
+					demand,
+					{});
+			}
+		});
+	if (!selected->owner || !ownerDestroyed) {
+		QObject::disconnect(ownerDestroyed);
+		return;
+	}
+	state.foregroundTransferEntitlement.emplace(
+		MtProxy::ForegroundTransferEntitlement{
+			.demand = demand,
+			.owner = selected->owner,
+			.ownerDestroyed = ownerDestroyed,
+			.ticketKey = selected->key,
+		});
+	bindTransferReclaimTicketLocked(endpointKey, state);
+}
+
 PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state,
@@ -856,12 +1443,18 @@ PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 		runtimeGeneration);
 	auto result = PriorityClass::Background;
 	if (ticket.use == MtProxy::EndpointUse::Main) {
-		result = hasMainProof
-			? PriorityClass::OrdinaryMain
-			: foreground
+		const auto recovery = ParkedResumeMatchesTicket(ticket, state)
+			|| (foreground
+				&& (!hasMainProof || ownsMainRecoveryLocked(ticket)));
+		result = recovery
 			? PriorityClass::ForegroundMain
-			: PriorityClass::UrgentMain;
-	} else if (foreground && IsBackground(ticket.use)) {
+			: !hasMainProof
+			? PriorityClass::UrgentMain
+			: PriorityClass::OrdinaryMain;
+	} else if (retainsTransferEntitlementLocked(ticket, state)) {
+		result = PriorityClass::EntitledTransfer;
+	} else if (!state.foregroundTransferEntitlement
+		&& foregroundTransferEligibleLocked(ticket, state)) {
 		result = PriorityClass::ForegroundTransfer;
 	} else if (ticket.use == MtProxy::EndpointUse::Maintenance) {
 		result = PriorityClass::Maintenance;
@@ -871,6 +1464,7 @@ PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 		result = PriorityClass::ProxyCheck;
 	}
 	if (result == PriorityClass::ForegroundMain
+		|| result == PriorityClass::EntitledTransfer
 		|| result == PriorityClass::ForegroundTransfer
 		|| result == PriorityClass::UrgentMain
 		|| result == PriorityClass::OrdinaryMain) {
@@ -931,7 +1525,19 @@ Ticket *EndpointAdmissionArbiter::Private::selectLocked(
 					&& IsUrgentMainBeneficiary(*ticket, priority);
 			});
 		if (handoff != end(heads)) {
-			return *handoff;
+			const auto handoffPriority = priorityForLocked(
+				**handoff,
+				state,
+				now);
+			const auto higherPriority = ranges::find_if(
+				heads,
+				[&](const Ticket *ticket) {
+					return priorityForLocked(*ticket, state, now)
+						< handoffPriority;
+				});
+			if (higherPriority == end(heads)) {
+				return *handoff;
+			}
 		}
 	}
 	auto best = PriorityClass::Count;
@@ -1167,6 +1773,11 @@ bool EndpointAdmissionArbiter::Private::baseEligibleLocked(
 		|| (!ignoreTicketRetry && ticket.retryAt > now)) {
 		return false;
 	}
+	if (ticket.use == MtProxy::EndpointUse::Main
+		&& ticket.reclaimEpisodeToken
+		&& !ParkedResumeMatchesTicket(ticket, state)) {
+		return false;
+	}
 	if (ticket.use == MtProxy::EndpointUse::Maintenance) {
 		return !urgentWaiters;
 	}
@@ -1193,57 +1804,725 @@ auto EndpointAdmissionArbiter::Private::capacityDecisionLocked(
 		int urgentWaiters,
 		crl::time now,
 		std::optional<AdmissionTicketKey> noVictimUrgentClaimant) const
--> CandidateCapacityDecision {
-	const auto limit = state.liveBudget.learnedLimit;
-	const auto scheduledCount = MtProxy::TotalEndpointUseCount(scheduled);
+-> CapacityAdmissionDecision {
+	const auto &budget = state.liveBudget;
+	const auto hardCap = CapacityHardCap(budget);
 	const auto commitmentCount = MtProxy::EndpointCapacityCommitmentCount(state)
-		+ scheduledCount;
-	if (!limit || commitmentCount < limit) {
-		return { .kind = CapacityDecisionKind::Ordinary };
-	}
-	const auto &probe = state.liveBudget.capacityProbe;
-	const auto blocked = CandidateCapacityDecision{
-		.kind = CapacityDecisionKind::Blocked,
-		.retryAt = (probe.stage == MtProxy::CapacityProbeStage::Cooldown)
-			? probe.retryAt
-			: crl::time(),
+		+ MtProxy::TotalEndpointUseCount(scheduled);
+	auto result = CapacityAdmissionDecision{
+		.endpointGeneration = TicketRuntimeGeneration(candidate),
+		.ticketKey = candidate.key,
+		.revision = candidate.revision,
+		.provenLowerBound = budget.provenLowerBound,
+		.hardCap = hardCap,
+		.preCandidateCommitments = commitmentCount,
+		.demand = candidate.transferDemand,
 	};
-	if (commitmentCount > limit
-		|| scheduledCount
-		|| MtProxy::ActiveEndpointAdmissionCount(state)) {
-		return blocked;
+	const auto blocked = [&](
+			CapacityDecisionBlocker blocker,
+			crl::time retryBoundary = 0) {
+		auto value = result;
+		value.kind = CapacityDecisionKind::Blocked;
+		value.blocker = blocker;
+		value.retryBoundary = retryBoundary;
+		return value;
+	};
+	const auto transferReplacement = IsBackground(candidate.use)
+		&& candidate.transferDemand
+		&& candidate.reclaimEpisodeToken;
+	if (transferReplacement) {
+		if (!ExactReplacementReservationMatches(
+				candidate,
+				state,
+				candidate.reclaimEpisodeToken,
+				ExactReplacementReservationState::Available)) {
+			return blocked(CapacityDecisionBlocker::ReplacementUnavailable);
+		}
+		const auto replacementBoundary = hardCap
+			? *hardCap
+			: budget.provenLowerBound;
+		if (replacementBoundary <= 0
+			|| commitmentCount >= replacementBoundary) {
+			return blocked(CapacityDecisionBlocker::ReplacementCapacity);
+		}
+		const auto &probe = budget.capacityProbe;
+		result.kind = CapacityDecisionKind::ExactReplacement;
+		result.frontier = (probe.frontier > 1
+				&& probe.beneficiaryDemand
+				&& *probe.beneficiaryDemand == candidate.transferDemand)
+			? probe.frontier
+			: (budget.provenLowerBound + 1);
+		result.reclaimToken = candidate.reclaimEpisodeToken;
+		return result;
 	}
-	const auto runtimeGeneration = TicketRuntimeGeneration(candidate);
-	const auto reserved = MtProxy::CapacityProbeReservedFor(
-		state.liveBudget,
-		candidate.key,
-		runtimeGeneration);
-	const auto retained = reserved
-		&& (candidate.lifecycle == ProxySchedulerLifecycle::Scheduled
-			|| candidate.lifecycle == ProxySchedulerLifecycle::Granted);
+	if (hardCap) {
+		if (commitmentCount < *hardCap) {
+			result.kind = CapacityDecisionKind::Ordinary;
+			return result;
+		}
+		if (*hardCap == 1
+			&& commitmentCount == 1
+			&& retainsTransferEntitlementLocked(candidate, state)
+			&& OnlyForegroundMainCommitment(
+				state,
+				scheduled,
+				_storage.foregroundRuntimeId)) {
+			return blocked(
+				CapacityDecisionBlocker::CapacityOneForegroundMain);
+		}
+		return blocked(CapacityDecisionBlocker::HardCap);
+	}
+	const auto &probe = budget.capacityProbe;
+	if (!budget.provenLowerBound) {
+		if (!commitmentCount
+			&& probe.stage == MtProxy::CapacityProbeStage::Idle) {
+			result.kind = CapacityDecisionKind::Ordinary;
+			return result;
+		}
+		return blocked(CapacityDecisionBlocker::BootstrapCommitment);
+	}
+	if (probe.stage != MtProxy::CapacityProbeStage::Idle) {
+		const auto blocker = (probe.stage
+				== MtProxy::CapacityProbeStage::Reserved)
+			? CapacityDecisionBlocker::ProbeReserved
+			: (probe.stage == MtProxy::CapacityProbeStage::Active)
+			? CapacityDecisionBlocker::ProbeActive
+			: CapacityDecisionBlocker::ProbeCooldown;
+		return blocked(
+			blocker,
+			(probe.stage == MtProxy::CapacityProbeStage::Cooldown)
+				? probe.retryAt
+				: crl::time());
+	}
+	if (commitmentCount < budget.provenLowerBound) {
+		result.kind = CapacityDecisionKind::Ordinary;
+		return result;
+	}
+	if (commitmentCount > budget.provenLowerBound) {
+		return blocked(CapacityDecisionBlocker::FrontierExceeded);
+	}
+	if (candidate.transferDemand
+		&& state.reclaimEpisode
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::Terminal
+		&& MtProxy::ReclaimEpisodeMatches(
+			*state.reclaimEpisode,
+			state.reclaimEpisode->token,
+			candidate.transferDemand,
+			candidate.owner)) {
+		return blocked(CapacityDecisionBlocker::ReplacementUnavailable);
+	}
 	const auto urgentMain = IsUrgentMainBeneficiary(
 		candidate,
 		priorityForLocked(candidate, state, now));
 	const auto urgentProbeAllowed = !urgentWaiters
 		|| (urgentMain
-			&& (retained
-				|| (noVictimUrgentClaimant
-					&& *noVictimUrgentClaimant == candidate.key)));
+			&& noVictimUrgentClaimant
+			&& *noVictimUrgentClaimant == candidate.key);
 	if (!urgentProbeAllowed) {
-		return blocked;
+		return blocked(CapacityDecisionBlocker::ProbePriority);
 	}
-	if (candidate.lifecycle == ProxySchedulerLifecycle::Queued) {
-		return (probe.stage == MtProxy::CapacityProbeStage::Idle)
-			? CandidateCapacityDecision{
-				.kind = CapacityDecisionKind::Probe,
-			}
-			: blocked;
+	const auto frontier = budget.provenLowerBound + 1;
+	result.kind = CapacityDecisionKind::FrontierProbe;
+	result.frontier = frontier;
+	result.probeToken = CapacityProbeTokenFor(candidate, frontier);
+	return result;
+}
+
+bool EndpointAdmissionArbiter::Private::capacityDecisionValidLocked(
+		const Ticket &candidate,
+		const CapacityAdmissionDecision &decision,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointUseCounts &scheduledExcludingCandidate,
+		int urgentWaiters,
+		crl::time now) const {
+	const auto &budget = state.liveBudget;
+	const auto hardCap = CapacityHardCap(budget);
+	if (decision.kind == CapacityDecisionKind::Blocked
+		|| decision.blocker != CapacityDecisionBlocker::None
+		|| decision.retryBoundary
+		|| !CapacityDecisionMatchesTicket(decision, candidate)
+		|| decision.hardCap != hardCap) {
+		return false;
 	}
-	return retained
-		? CandidateCapacityDecision{
-			.kind = CapacityDecisionKind::Probe,
+	const auto otherCommitments
+		= MtProxy::EndpointCapacityCommitmentCount(state)
+		+ MtProxy::TotalEndpointUseCount(scheduledExcludingCandidate);
+	const auto totalCommitments = otherCommitments + 1;
+	switch (decision.kind) {
+	case CapacityDecisionKind::Ordinary: {
+		if (decision.frontier
+			|| decision.probeToken
+			|| decision.reclaimToken) {
+			return false;
 		}
-		: blocked;
+		if (hardCap) {
+			return decision.preCandidateCommitments < *hardCap
+				&& totalCommitments <= *hardCap;
+		}
+		const auto bootstrap = !decision.provenLowerBound
+			&& !decision.preCandidateCommitments;
+		if (!bootstrap
+			&& decision.preCandidateCommitments
+				>= decision.provenLowerBound) {
+			return false;
+		}
+		if (!budget.provenLowerBound) {
+			return bootstrap
+				&& budget.capacityProbe.stage
+					== MtProxy::CapacityProbeStage::Idle
+				&& totalCommitments <= 1;
+		}
+		auto maximumCommitments = budget.provenLowerBound;
+		const auto &probe = budget.capacityProbe;
+		if ((probe.stage == MtProxy::CapacityProbeStage::Reserved
+				|| probe.stage == MtProxy::CapacityProbeStage::Active)
+			&& probe.frontier == budget.provenLowerBound + 1) {
+			maximumCommitments = probe.frontier;
+		}
+		return totalCommitments <= maximumCommitments;
+	}
+	case CapacityDecisionKind::FrontierProbe: {
+		if (hardCap
+			|| !decision.probeToken
+			|| decision.reclaimToken
+			|| decision.frontier <= 1
+			|| decision.provenLowerBound + 1 != decision.frontier
+			|| budget.provenLowerBound + 1 != decision.frontier
+			|| otherCommitments != budget.provenLowerBound) {
+			return false;
+		}
+		const auto expectedToken = CapacityProbeTokenFor(
+			candidate,
+			decision.frontier);
+		const auto urgentMain = IsUrgentMainBeneficiary(
+			candidate,
+			priorityForLocked(candidate, state, now));
+		return *decision.probeToken == expectedToken
+			&& (!urgentWaiters || urgentMain)
+			&& MtProxy::CapacityProbeReservedFor(
+				budget,
+				candidate.key,
+				TicketRuntimeGeneration(candidate),
+				decision.frontier,
+				CapacityProbeDemand(candidate.transferDemand));
+	}
+	case CapacityDecisionKind::ExactReplacement: {
+		if (decision.probeToken
+			|| !decision.reclaimToken
+			|| decision.reclaimToken != candidate.reclaimEpisodeToken
+			|| decision.frontier <= 1
+			|| decision.provenLowerBound + 1 != decision.frontier
+			|| !ExactReplacementReservationMatches(
+				candidate,
+				state,
+				decision.reclaimToken,
+				ExactReplacementReservationState::Retained)) {
+			return false;
+		}
+		const auto replacementBoundary = hardCap
+			? *hardCap
+			: budget.provenLowerBound;
+		return replacementBoundary > 0
+			&& decision.preCandidateCommitments < replacementBoundary
+			&& totalCommitments <= replacementBoundary;
+	}
+	case CapacityDecisionKind::Blocked:
+		return false;
+	}
+	Unexpected("CapacityDecisionKind in capacityDecisionValidLocked().");
+}
+
+void EndpointAdmissionArbiter::Private::postLaneSuspensionLocked(
+		const QString &endpointKey,
+		const LanePreemption &preemption,
+		std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch,
+		Actions &actions) {
+	const auto weak = _context;
+	const auto token = preemption.token;
+	const auto deadlineAt = preemption.deadlineAt;
+	const auto identity = preemption.victim;
+	const auto laneControl = preemption.laneControl;
+	const auto parkMain = preemption.victimUse == MtProxy::EndpointUse::Main
+		&& preemption.reclaimEpisodeToken;
+	const auto reclaimEpisodeToken = parkMain
+		? std::make_shared<const MtProxy::ReclaimEpisodeToken>(
+			preemption.reclaimEpisodeToken)
+		: nullptr;
+	actions.posts.push_back({
+		.dispatch = std::move(dispatch),
+		.target = preemption.owner,
+		.callback = [
+			weak,
+			endpointKey,
+			token,
+			deadlineAt,
+			identity,
+			laneControl,
+			parkMain,
+			reclaimEpisodeToken
+		]() mutable {
+			auto command = MtProxy::EndpointLaneCommand{
+				.type = parkMain
+					? MtProxy::EndpointLaneCommandType::ParkMain
+					: MtProxy::EndpointLaneCommandType::Suspend,
+				.token = token,
+				.attemptId = identity.attemptId,
+				.proxyGeneration = identity.proxyGeneration,
+				.reclaimEpisodeToken = reclaimEpisodeToken,
+				.deadlineAt = deadlineAt,
+				.authorize = [weak, endpointKey, token, identity] {
+					if (const auto context = weak.lock()) {
+						return context->endpointAdmissionArbiter(
+						).authorizeLaneSuspension(
+							endpointKey,
+							token,
+							identity.runtimeId,
+							identity.proxyGeneration,
+							identity.attemptId);
+					}
+					return false;
+				},
+				.done = [
+					weak,
+					endpointKey,
+					token,
+					identity
+				](MtProxy::EndpointLaneCommandResult result) {
+					if (const auto context = weak.lock()) {
+						context->endpointAdmissionArbiter(
+						).acknowledgeLaneSuspension(
+							endpointKey,
+							token,
+							identity.runtimeId,
+							identity.proxyGeneration,
+							identity.attemptId,
+							result,
+							true);
+					}
+				},
+			};
+			if (!parkMain) {
+				command.demand = [weak, endpointKey, token, identity] {
+					if (const auto context = weak.lock()) {
+						context->endpointAdmissionArbiter(
+						).demandLaneResume(
+							endpointKey,
+							token,
+							identity.runtimeId,
+							identity.proxyGeneration,
+							identity.attemptId);
+					}
+				};
+			}
+			(*laneControl)(std::move(command));
+		},
+		.missing = [weak, endpointKey, token, identity] {
+			if (const auto context = weak.lock()) {
+				context->endpointAdmissionArbiter(
+				).acknowledgeLaneSuspension(
+					endpointKey,
+					token,
+					identity.runtimeId,
+					identity.proxyGeneration,
+					identity.attemptId,
+					MtProxy::EndpointLaneCommandResult::Retry,
+					false);
+			}
+		},
+	});
+}
+
+void EndpointAdmissionArbiter::Private::postParkedMainResumeLocked(
+		const QString &endpointKey,
+		const ParkedMainResume &resume,
+		std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch,
+		Actions &actions) {
+	const auto weak = _context;
+	const auto token = resume.token;
+	const auto deadlineAt = resume.commandDeadlineAt;
+	const auto identity = resume.identity;
+	const auto laneControl = resume.laneControl;
+	const auto reclaimEpisodeToken
+		= std::make_shared<const MtProxy::ReclaimEpisodeToken>(
+			resume.episodeToken);
+	actions.posts.push_back({
+		.dispatch = std::move(dispatch),
+		.target = resume.owner,
+		.callback = [
+			weak,
+			endpointKey,
+			token,
+			deadlineAt,
+			identity,
+			laneControl,
+			reclaimEpisodeToken
+		]() mutable {
+			(*laneControl)({
+				.type = MtProxy::EndpointLaneCommandType::ResumeParkedMain,
+				.token = token,
+				.attemptId = identity.attemptId,
+				.proxyGeneration = identity.proxyGeneration,
+				.reclaimEpisodeToken = reclaimEpisodeToken,
+				.deadlineAt = deadlineAt,
+				.done = [
+					weak,
+					endpointKey,
+					token,
+					deadlineAt,
+					identity
+				](MtProxy::EndpointLaneCommandResult result) {
+					if (const auto context = weak.lock()) {
+						context->endpointAdmissionArbiter(
+						).acknowledgeLaneResume(
+							endpointKey,
+							token,
+							identity.runtimeId,
+							identity.proxyGeneration,
+							identity.attemptId,
+							deadlineAt,
+							result,
+							true);
+					}
+				},
+			});
+		},
+		.missing = [weak, endpointKey, token, deadlineAt, identity] {
+			if (const auto context = weak.lock()) {
+				context->endpointAdmissionArbiter(
+				).acknowledgeLaneResume(
+					endpointKey,
+					token,
+					identity.runtimeId,
+					identity.proxyGeneration,
+					identity.attemptId,
+					deadlineAt,
+					MtProxy::EndpointLaneCommandResult::Retry,
+					false);
+			}
+		},
+	});
+}
+
+bool EndpointAdmissionArbiter::Private::requestTransferReclaimLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointState &state,
+		DrainInputs &inputs,
+		Actions &actions) {
+	const auto schedule = _endpoints.find(endpointKey);
+	if (schedule == end(_endpoints)
+		|| !state.foregroundTransferEntitlement) {
+		return false;
+	}
+	const auto &entitlement = *state.foregroundTransferEntitlement;
+	const auto beneficiary = _tickets.find(entitlement.ticketKey);
+	if (beneficiary == end(_tickets)
+		|| beneficiary->second->lifecycle
+			!= ProxySchedulerLifecycle::Queued
+		|| !ticketCurrentLocked(*beneficiary->second, state)
+		|| !retainsTransferEntitlementLocked(*beneficiary->second, state)) {
+		return false;
+	}
+	const auto urgentWaiters = urgentWaitersLocked(
+		endpointKey,
+		state,
+		inputs.now);
+	const auto boundary = std::max({
+		beneficiary->second->notBeforeAt,
+		TicketRetryUntil(
+			*beneficiary->second,
+			state,
+			_storage.foregroundRuntimeId),
+		state.nextHandshakeAt,
+	});
+	if (boundary > inputs.now
+		|| !baseEligibleLocked(
+			*beneficiary->second,
+			state,
+			urgentWaiters,
+			inputs.now)) {
+		return false;
+	}
+	const auto active = activeCountsLocked(state);
+	const auto scheduled = scheduledCountsLocked(endpointKey);
+	const auto capacity = capacityDecisionLocked(
+		*beneficiary->second,
+		state,
+		scheduled,
+		urgentWaiters,
+		inputs.now,
+		std::nullopt);
+	const auto hardCapBlocked = capacity.kind
+			== CapacityDecisionKind::Blocked
+		&& capacity.blocker == CapacityDecisionBlocker::HardCap
+		&& capacity.hardCap
+		&& capacity.preCandidateCommitments == *capacity.hardCap;
+	const auto episodeMatches = state.reclaimEpisode
+		&& MtProxy::ReclaimEpisodeMatches(
+			*state.reclaimEpisode,
+			state.reclaimEpisode->token,
+			entitlement.demand,
+			entitlement.owner);
+	const auto failedProbeAuthorized = episodeMatches
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::Requested
+		&& state.reclaimEpisode->victim.kind
+			== MtProxy::ReclaimVictimKind::None
+		&& state.reclaimEpisode->replacementAuthorized
+		&& !state.reclaimEpisode->replacementConsumed;
+	if (!hardCapBlocked && !failedProbeAuthorized) {
+		return false;
+	}
+	if (episodeMatches) {
+		if (state.reclaimEpisode->stage
+				!= MtProxy::ReclaimEpisodeStage::Requested
+			|| state.reclaimEpisode->victim.kind
+				!= MtProxy::ReclaimVictimKind::None
+			|| state.reclaimEpisode->replacementConsumed) {
+			return false;
+		}
+	} else {
+		if (!hardCapBlocked
+			|| (state.reclaimEpisode
+				&& state.reclaimEpisode->stage
+					!= MtProxy::ReclaimEpisodeStage::Terminal)) {
+			return false;
+		}
+		state.reclaimEpisode.emplace(MtProxy::ReclaimEpisode{
+			.token = MtProxy::ReclaimEpisodeTokenAccess::Next(state),
+			.beneficiaryDemand = entitlement.demand,
+			.beneficiaryOwner = entitlement.owner,
+		});
+	}
+	auto &episode = *state.reclaimEpisode;
+	const auto capacityBoundary = capacity.hardCap
+		? *capacity.hardCap
+		: state.liveBudget.provenLowerBound;
+	const auto commitmentCount
+		= MtProxy::EndpointCapacityCommitmentCount(state)
+		+ MtProxy::TotalEndpointUseCount(scheduled);
+	if (capacityBoundary <= 0 || commitmentCount != capacityBoundary) {
+		return false;
+	}
+	const auto beneficiaryPriority = priorityForLocked(
+		*beneficiary->second,
+		state,
+		inputs.now);
+	auto reservationVictims = std::vector<ReservationVictim>();
+	for (const auto &key : schedule->second.order) {
+		const auto ticket = _tickets.find(key);
+		if (ticket == end(_tickets)
+			|| ticket->second.get() == beneficiary->second.get()
+			|| (ticket->second->lifecycle
+					!= ProxySchedulerLifecycle::Scheduled
+				&& ticket->second->lifecycle
+					!= ProxySchedulerLifecycle::Granted)
+			|| ticket->second->use == MtProxy::EndpointUse::ProxyCheck
+			|| ticket->second->key.runtimeId
+				== _storage.foregroundRuntimeId
+			|| !ticket->second->owner
+			|| !ticketCurrentLocked(*ticket->second, state)
+			|| ticket->second->reclaimEpisodeToken
+			|| priorityForLocked(*ticket->second, state, inputs.now)
+				<= beneficiaryPriority) {
+			continue;
+		}
+		const auto withoutVictim = MtProxy::ReleaseEndpointAdmission(
+			scheduled,
+			ticket->second->use);
+		if (!policyLocked(
+				*beneficiary->second,
+				state,
+				active,
+				withoutVictim,
+				urgentWaiters,
+				inputs).admissionAllowed) {
+			continue;
+		}
+		reservationVictims.push_back({
+			.ticket = ticket->second.get(),
+			.reclaimIdentity = {
+				.kind = MtProxy::ReclaimVictimKind::Reservation,
+				.ticketKey = ticket->second->key,
+				.use = ticket->second->use,
+			},
+		});
+	}
+	if (const auto selected = SelectReclaimVictim(
+			reservationVictims,
+			schedule->second.reclaimCursor)) {
+		episode.victim = selected->reclaimIdentity;
+		episode.stage = MtProxy::ReclaimEpisodeStage::VictimAcknowledged;
+		episode.replacementAuthorized = true;
+		beneficiary->second->reclaimEpisodeToken = episode.token;
+		beneficiary->second->admissionRequest.reclaimEpisodeToken
+			= episode.token;
+		demoteTicketLocked(*selected->ticket, actions);
+		schedule->second.reclaimCursor = selected->reclaimIdentity;
+		bindTransferReclaimTicketLocked(endpointKey, state);
+		return true;
+	}
+	if (!policyLocked(
+			*beneficiary->second,
+			state,
+			active,
+			scheduled,
+			urgentWaiters,
+			inputs).admissionAllowed) {
+		return false;
+	}
+	auto laneVictims = std::vector<LaneVictim>();
+	for (const auto &[identity, lane] : state.liveLanes) {
+		const auto proof = state.relayProofs.find(identity);
+		if (!IsBackground(lane.use)
+			|| identity.runtimeId == _storage.foregroundRuntimeId
+			|| lane.ticketKey == beneficiary->second->key
+			|| lane.preempting
+			|| lane.terminalVerdict
+			|| !lane.ticketKey.ticketId
+			|| lane.ticketKey.runtimeId != identity.runtimeId
+			|| !lane.owner
+			|| !lane.laneControl
+			|| proof == end(state.relayProofs)
+			|| proof->second.ticketKey != lane.ticketKey
+			|| proof->second.use != lane.use
+			|| proof->second.owner != lane.owner
+			|| proof->second.laneControl != lane.laneControl
+			|| proof->second.preempting
+			|| !runtimeLiveLocked(identity.runtimeId)
+			|| !MtProxy::RuntimeGenerationIsCurrent(state, {
+				.runtimeId = identity.runtimeId,
+				.proxyGeneration = identity.proxyGeneration,
+			})) {
+			continue;
+		}
+		laneVictims.push_back({
+			.identity = identity,
+			.ticketKey = lane.ticketKey,
+			.use = lane.use,
+			.owner = lane.owner,
+			.ownerDestroyed = lane.ownerDestroyed,
+			.laneControl = lane.laneControl,
+			.startedAt = lane.attemptStartedAt,
+			.foreground = false,
+			.durable = true,
+			.reclaimIdentity = {
+				.kind = MtProxy::ReclaimVictimKind::TransferLane,
+				.ticketKey = lane.ticketKey,
+				.attempt = identity,
+				.use = lane.use,
+			},
+		});
+	}
+	auto selectedVictim = std::optional<LaneVictim>();
+	if (const auto victim = SelectReclaimVictim(
+			laneVictims,
+			schedule->second.reclaimCursor)) {
+		selectedVictim = *victim;
+	}
+	if (!selectedVictim) {
+		auto mainVictims = std::vector<LaneVictim>();
+		for (const auto &[identity, lane] : state.liveLanes) {
+			const auto proof = state.relayProofs.find(identity);
+			if (lane.use != MtProxy::EndpointUse::Main
+				|| identity.runtimeId == _storage.foregroundRuntimeId
+				|| lane.ticketKey == beneficiary->second->key
+				|| lane.preempting
+				|| lane.terminalVerdict
+				|| !lane.ticketKey.ticketId
+				|| lane.ticketKey.runtimeId != identity.runtimeId
+				|| !lane.owner
+				|| !lane.laneControl
+				|| proof == end(state.relayProofs)
+				|| proof->second.ticketKey != lane.ticketKey
+				|| proof->second.use != MtProxy::EndpointUse::Main
+				|| proof->second.owner != lane.owner
+				|| proof->second.laneControl != lane.laneControl
+				|| proof->second.preempting
+				|| !runtimeLiveLocked(identity.runtimeId)
+				|| !MtProxy::RuntimeGenerationIsCurrent(state, {
+					.runtimeId = identity.runtimeId,
+					.proxyGeneration = identity.proxyGeneration,
+				})) {
+				continue;
+			}
+			mainVictims.push_back({
+				.identity = identity,
+				.ticketKey = lane.ticketKey,
+				.use = lane.use,
+				.owner = lane.owner,
+				.ownerDestroyed = lane.ownerDestroyed,
+				.laneControl = lane.laneControl,
+				.startedAt = lane.attemptStartedAt,
+				.foreground = false,
+				.durable = true,
+				.reclaimIdentity = {
+					.kind = MtProxy::ReclaimVictimKind::MainLane,
+					.ticketKey = lane.ticketKey,
+					.attempt = identity,
+					.use = lane.use,
+				},
+			});
+		}
+		if (const auto victim = SelectReclaimVictim(
+				mainVictims,
+				schedule->second.reclaimCursor)) {
+			selectedVictim = *victim;
+		}
+	}
+	if (!selectedVictim) {
+		return false;
+	}
+	const auto &victim = *selectedVictim;
+	const auto runtime = _runtimes.find(victim.identity.runtimeId);
+	if (runtime == end(_runtimes)) {
+		return false;
+	}
+	episode.victim = victim.reclaimIdentity;
+	beneficiary->second->reclaimEpisodeToken = episode.token;
+	beneficiary->second->admissionRequest.reclaimEpisodeToken = episode.token;
+	const auto token = ++_lastLaneToken;
+	const auto deadlineAt = inputs.now + kLaneCommandAckTimeout;
+	state.relayProofs.find(victim.identity)->second.preempting = true;
+	state.liveLanes.find(victim.identity)->second.preempting = true;
+	auto &laneSchedule = _laneSchedules[endpointKey];
+	laneSchedule.preemption = LanePreemption{
+		.token = token,
+		.deadlineAt = deadlineAt,
+		.reclaim = LaneReclaimKind::Capacity,
+		.beneficiary = beneficiary->second->key,
+		.victim = victim.identity,
+		.victimTicketKey = victim.ticketKey,
+		.victimUse = victim.use,
+		.owner = victim.owner,
+		.ownerDestroyed = victim.ownerDestroyed,
+		.laneControl = victim.laneControl,
+		.reclaimEpisodeToken = episode.token,
+	};
+	postCapacityDiagnosticsLocked(
+		*beneficiary->second,
+		state,
+		ProxyDiagnosticsPhase::CapacityReclaim,
+		ProxyDiagnosticsDecision::Transfer,
+		ProxyDiagnosticsTransition::VictimSelected,
+		state.liveBudget.capacityProbe.frontier,
+		actions);
+	postCapacityDiagnosticsLocked(
+		*beneficiary->second,
+		state,
+		ProxyDiagnosticsPhase::CapacityReclaim,
+		ProxyDiagnosticsDecision::Transfer,
+		(victim.use == MtProxy::EndpointUse::Main)
+			? ProxyDiagnosticsTransition::ParkRequested
+			: ProxyDiagnosticsTransition::SuspendRequested,
+		state.liveBudget.capacityProbe.frontier,
+		actions);
+	postLaneSuspensionLocked(
+		endpointKey,
+		*laneSchedule.preemption,
+		runtime->second,
+		actions);
+	return true;
 }
 
 auto EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
@@ -1253,7 +2532,9 @@ auto EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 		Actions &actions)
 -> std::optional<AdmissionTicketKey> {
 	auto &laneSchedule = _laneSchedules[endpointKey];
-	if (laneSchedule.preemption || laneSchedule.resuming) {
+	if (laneSchedule.preemption
+		|| laneSchedule.resuming
+		|| laneSchedule.parkedMainResume) {
 		return std::nullopt;
 	}
 	const auto schedule = _endpoints.find(endpointKey);
@@ -1272,6 +2553,13 @@ auto EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 			|| !IsUrgentMainBeneficiary(*ticket->second, priority)) {
 			detachLanePreemptionBeneficiaryLocked(endpointKey, key);
 		}
+	}
+	if (requestTransferReclaimLocked(
+			endpointKey,
+			state,
+			inputs,
+			actions)) {
+		return std::nullopt;
 	}
 	auto pool = std::vector<Ticket*>();
 	auto eligible = std::set<AdmissionTicketKey>();
@@ -1491,7 +2779,7 @@ auto EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 			urgentWaiters,
 			inputs.now,
 			beneficiary->key);
-		return (capacity.kind == CapacityDecisionKind::Probe)
+		return (capacity.kind == CapacityDecisionKind::FrontierProbe)
 			? std::optional<AdmissionTicketKey>(beneficiary->key)
 			: std::nullopt;
 	}
@@ -1529,80 +2817,88 @@ auto EndpointAdmissionArbiter::Private::requestLanePreemptionLocked(
 		.ownerDestroyed = victim->ownerDestroyed,
 		.laneControl = victim->laneControl,
 	};
-	const auto weak = _context;
-	actions.posts.push_back({
-		.dispatch = runtime->second,
-		.target = victim->owner,
-		.callback = [
-			weak,
-			endpointKey,
-			token,
-			deadlineAt,
-			victimIdentity,
-			laneControl = victim->laneControl
-		]() mutable {
-			(*laneControl)({
-				.type = MtProxy::EndpointLaneCommandType::Suspend,
-				.token = token,
-				.attemptId = victimIdentity.attemptId,
-				.deadlineAt = deadlineAt,
-				.authorize = [weak, endpointKey, token, victimIdentity] {
-					if (const auto context = weak.lock()) {
-						return context->endpointAdmissionArbiter(
-						).authorizeLaneSuspension(
-							endpointKey,
-							token,
-							victimIdentity.runtimeId,
-							victimIdentity.proxyGeneration,
-							victimIdentity.attemptId);
-					}
-					return false;
-				},
-				.demand = [weak, endpointKey, token, victimIdentity] {
-					if (const auto context = weak.lock()) {
-						context->endpointAdmissionArbiter().demandLaneResume(
-							endpointKey,
-							token,
-							victimIdentity.runtimeId,
-							victimIdentity.proxyGeneration,
-							victimIdentity.attemptId);
-					}
-				},
-				.done = [
-					weak,
-					endpointKey,
-					token,
-					victimIdentity
-				](MtProxy::EndpointLaneCommandResult result) {
-					if (const auto context = weak.lock()) {
-						context->endpointAdmissionArbiter(
-						).acknowledgeLaneSuspension(
-							endpointKey,
-							token,
-							victimIdentity.runtimeId,
-							victimIdentity.proxyGeneration,
-							victimIdentity.attemptId,
-							result,
-							true);
-					}
-				},
-			});
-		},
-		.missing = [weak, endpointKey, token, victimIdentity] {
-			if (const auto context = weak.lock()) {
-				context->endpointAdmissionArbiter(
-				).acknowledgeLaneSuspension(
-					endpointKey,
-					token,
-					victimIdentity.runtimeId,
-					victimIdentity.proxyGeneration,
-					victimIdentity.attemptId,
-					MtProxy::EndpointLaneCommandResult::Retry,
-					false);
-			}
-		},
-	});
+	postCapacityDiagnosticsLocked(
+		*beneficiary,
+		state,
+		ProxyDiagnosticsPhase::CapacityReclaim,
+		ProxyDiagnosticsDecision::Reservation,
+		ProxyDiagnosticsTransition::VictimSelected,
+		state.liveBudget.capacityProbe.frontier,
+		actions);
+	postCapacityDiagnosticsLocked(
+		*beneficiary,
+		state,
+		ProxyDiagnosticsPhase::CapacityReclaim,
+		ProxyDiagnosticsDecision::Reservation,
+		ProxyDiagnosticsTransition::SuspendRequested,
+		state.liveBudget.capacityProbe.frontier,
+		actions);
+	postLaneSuspensionLocked(
+		endpointKey,
+		*laneSchedule.preemption,
+		runtime->second,
+		actions);
 	return std::nullopt;
+}
+
+bool EndpointAdmissionArbiter::Private::suspendedLaneCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const SuspendedLane &lane) const {
+	return IsBackground(lane.use)
+		&& lane.token
+		&& lane.identity.runtimeId
+		&& lane.identity.proxyGeneration
+		&& lane.identity.attemptId
+		&& lane.ticketKey.ticketId
+		&& lane.ticketKey.runtimeId == lane.identity.runtimeId
+		&& lane.owner
+		&& lane.laneControl
+		&& runtimeLiveLocked(lane.identity.runtimeId)
+		&& MtProxy::RuntimeGenerationIsCurrent(state, {
+			.runtimeId = lane.identity.runtimeId,
+			.proxyGeneration = lane.identity.proxyGeneration,
+		});
+}
+
+bool EndpointAdmissionArbiter::Private::reclaimSuspendedLaneCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const SuspendedLane &lane) const {
+	return suspendedLaneCurrentLocked(state, lane)
+		&& lane.reclaimEpisodeToken
+		&& state.reclaimEpisode
+		&& state.reclaimEpisode->token == lane.reclaimEpisodeToken
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::RollbackPending
+		&& state.reclaimEpisode->victim.kind
+			== MtProxy::ReclaimVictimKind::TransferLane
+		&& state.reclaimEpisode->victim.ticketKey == lane.ticketKey
+		&& state.reclaimEpisode->victim.attempt == lane.identity;
+}
+
+bool EndpointAdmissionArbiter::Private::parkedReclaimVictimCurrentLocked(
+		const MtProxy::EndpointState &state,
+		const MtProxy::ParkedReclaimVictim &parked) const {
+	return parked.episodeToken
+		&& parked.attempt.runtimeId
+		&& parked.attempt.proxyGeneration
+		&& parked.attempt.attemptId
+		&& parked.ticketKey.ticketId
+		&& parked.ticketKey.runtimeId == parked.attempt.runtimeId
+		&& parked.owner
+		&& parked.laneControl
+		&& runtimeLiveLocked(parked.attempt.runtimeId)
+		&& MtProxy::RuntimeGenerationIsCurrent(state, {
+			.runtimeId = parked.attempt.runtimeId,
+			.proxyGeneration = parked.attempt.proxyGeneration,
+		})
+		&& state.reclaimEpisode
+		&& state.reclaimEpisode->token == parked.episodeToken
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::RollbackPending
+		&& state.reclaimEpisode->victim.kind
+			== MtProxy::ReclaimVictimKind::MainLane
+		&& state.reclaimEpisode->victim.ticketKey == parked.ticketKey
+		&& state.reclaimEpisode->victim.attempt == parked.attempt;
 }
 
 void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
@@ -1610,27 +2906,116 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
 		Actions &actions) {
-	const auto lane = _laneSchedules.find(endpointKey);
+	auto lane = _laneSchedules.find(endpointKey);
+	const auto mainRollback = state.reclaimEpisode
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::RollbackPending
+		&& state.reclaimEpisode->victim.kind
+			== MtProxy::ReclaimVictimKind::MainLane;
+	if (!mainRollback && lane != end(_laneSchedules)) {
+		lane->second.parkedMainRetryAt = 0;
+	}
+	if (mainRollback) {
+		auto &episode = *state.reclaimEpisode;
+		episode.replacementAuthorized = false;
+		episode.beneficiaryTicketKey = {};
+		const auto preemptionPending = lane != end(_laneSchedules)
+			&& lane->second.preemption
+			&& lane->second.preemption->reclaimEpisodeToken == episode.token;
+		if (preemptionPending) {
+			return;
+		}
+		auto parked = state.parkedReclaimVictim
+			? &*state.parkedReclaimVictim
+			: nullptr;
+		const auto parkedCurrent = parked
+			&& parked->episodeToken == episode.token
+			&& parked->attempt == episode.victim.attempt
+			&& parked->ticketKey == episode.victim.ticketKey
+			&& parkedReclaimVictimCurrentLocked(state, *parked);
+		if (!parkedCurrent) {
+			if (lane != end(_laneSchedules)) {
+				lane->second.parkedMainRetryAt = 0;
+			}
+			if (parked
+				&& parked->episodeToken == episode.token
+				&& parked->attempt == episode.victim.attempt) {
+				auto cleanup = MtProxy::EndpointDeferredCleanup();
+				static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+					state,
+					episode.token,
+					episode.victim.attempt,
+					cleanup));
+				DeferEndpointCleanup(actions, std::move(cleanup));
+			} else {
+				episode.stage = MtProxy::ReclaimEpisodeStage::Terminal;
+				episode.victimResumeIssued = true;
+			}
+			return;
+		}
+		auto &laneSchedule = _laneSchedules[endpointKey];
+		lane = _laneSchedules.find(endpointKey);
+		if (parked->resumeTicketKey.ticketId) {
+			if (_tickets.contains(parked->resumeTicketKey)) {
+				return;
+			}
+			parked->resumeTicketKey = {};
+			episode.victimResumeIssued = false;
+			laneSchedule.parkedMainRetryAt = std::max(
+				laneSchedule.parkedMainRetryAt,
+				LaneCommandRetryBoundary(inputs.now));
+		}
+		if (parked->resumeAttempt.attemptId
+			|| laneSchedule.parkedMainResume) {
+			return;
+		}
+		if (episode.victimResumeIssued) {
+			episode.victimResumeIssued = false;
+			laneSchedule.parkedMainRetryAt = std::max(
+				laneSchedule.parkedMainRetryAt,
+				LaneCommandRetryBoundary(inputs.now));
+		}
+		if (laneSchedule.parkedMainRetryAt > inputs.now) {
+			return;
+		}
+		const auto runtime = _runtimes.find(parked->attempt.runtimeId);
+		Assert(runtime != end(_runtimes));
+		laneSchedule.parkedMainRetryAt = 0;
+		episode.victimResumeIssued = true;
+		laneSchedule.parkedMainResume = ParkedMainResume{
+			.token = ++_lastLaneToken,
+			.commandDeadlineAt = inputs.now + kLaneCommandAckTimeout,
+			.episodeToken = episode.token,
+			.identity = parked->attempt,
+			.ticketKey = parked->ticketKey,
+			.owner = parked->owner,
+			.laneControl = parked->laneControl,
+		};
+		postParkedMainResumeLocked(
+			endpointKey,
+			*laneSchedule.parkedMainResume,
+			runtime->second,
+			actions);
+		return;
+	}
 	if (lane == end(_laneSchedules)) {
 		return;
 	}
 	auto &suspended = lane->second.suspended;
 	for (auto i = begin(suspended); i != end(suspended);) {
-		if (!IsBackground(i->use)
-			|| !i->token
-			|| !i->identity.runtimeId
-			|| !i->identity.proxyGeneration
-			|| !i->identity.attemptId
-			|| !i->ticketKey.ticketId
-			|| i->ticketKey.runtimeId != i->identity.runtimeId
-			|| !i->owner
-			|| !i->laneControl
-			|| !runtimeLiveLocked(i->identity.runtimeId)
-			|| !MtProxy::RuntimeGenerationIsCurrent(state, {
-				.runtimeId = i->identity.runtimeId,
-				.proxyGeneration = i->identity.proxyGeneration,
-			})) {
-			QObject::disconnect(i->ownerDestroyed);
+		if (!suspendedLaneCurrentLocked(state, *i)) {
+			if (i->reclaimEpisodeToken
+				&& state.reclaimEpisode
+				&& state.reclaimEpisode->token
+					== i->reclaimEpisodeToken
+				&& state.reclaimEpisode->victim.attempt == i->identity) {
+				state.reclaimEpisode->stage
+					= MtProxy::ReclaimEpisodeStage::Terminal;
+				state.reclaimEpisode->replacementAuthorized = false;
+				state.reclaimEpisode->beneficiaryTicketKey = {};
+				state.reclaimEpisode->victimResumeIssued = true;
+			}
+			actions.ownerConnections.push_back(i->ownerDestroyed);
 			i = suspended.erase(i);
 		} else {
 			++i;
@@ -1638,25 +3023,25 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 	}
 	if (lane->second.resuming) {
 		const auto &entry = *lane->second.resuming;
-		if (!IsBackground(entry.use)
-			|| !entry.token
-			|| !entry.identity.runtimeId
-			|| !entry.identity.proxyGeneration
-			|| !entry.identity.attemptId
-			|| !entry.ticketKey.ticketId
-			|| entry.ticketKey.runtimeId != entry.identity.runtimeId
-			|| !entry.owner
-			|| !entry.laneControl
-			|| !runtimeLiveLocked(entry.identity.runtimeId)
-			|| !MtProxy::RuntimeGenerationIsCurrent(state, {
-				.runtimeId = entry.identity.runtimeId,
-				.proxyGeneration = entry.identity.proxyGeneration,
-			})) {
-			QObject::disconnect(entry.ownerDestroyed);
+		if (!suspendedLaneCurrentLocked(state, entry)) {
+			if (entry.reclaimEpisodeToken
+				&& state.reclaimEpisode
+				&& state.reclaimEpisode->token
+					== entry.reclaimEpisodeToken
+				&& state.reclaimEpisode->victim.attempt == entry.identity) {
+				state.reclaimEpisode->stage
+					= MtProxy::ReclaimEpisodeStage::Terminal;
+				state.reclaimEpisode->replacementAuthorized = false;
+				state.reclaimEpisode->beneficiaryTicketKey = {};
+				state.reclaimEpisode->victimResumeIssued = true;
+			}
+			actions.ownerConnections.push_back(entry.ownerDestroyed);
 			lane->second.resuming.reset();
 		}
 	}
-	if (lane->second.preemption || lane->second.resuming) {
+	if (lane->second.preemption
+		|| lane->second.resuming
+		|| lane->second.parkedMainResume) {
 		return;
 	}
 	if (lane->second.handoffBeneficiary) {
@@ -1672,11 +3057,41 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 			detachLanePreemptionBeneficiaryLocked(endpointKey, key);
 		}
 	}
-	if (suspended.empty()) {
+	auto selected = end(suspended);
+	if (state.reclaimEpisode
+		&& state.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::RollbackPending) {
+		auto &episode = *state.reclaimEpisode;
+		episode.replacementAuthorized = false;
+		episode.beneficiaryTicketKey = {};
+		if (episode.victim.kind
+			== MtProxy::ReclaimVictimKind::TransferLane) {
+			selected = ranges::find_if(
+				suspended,
+				[&](const SuspendedLane &entry) {
+					return entry.reclaimEpisodeToken == episode.token
+						&& entry.identity == episode.victim.attempt;
+				});
+			if (selected != end(suspended)
+				&& episode.victimResumeIssued) {
+				episode.victimResumeIssued = false;
+				selected->resumeRetryAt = std::max(
+					selected->resumeRetryAt,
+					LaneCommandRetryBoundary(inputs.now));
+			}
+		}
+	}
+	if (selected == end(suspended)
+		&& suspended.empty()
+		&& !lane->second.parkedMainResume
+		&& !lane->second.parkedMainRetryAt) {
 		_laneSchedules.erase(lane);
 		return;
 	}
 	const auto resumable = [&](const SuspendedLane &entry) {
+		if (entry.reclaimEpisodeToken) {
+			return false;
+		}
 		const auto runtimeGeneration = RuntimeGenerationKey{
 			.runtimeId = entry.identity.runtimeId,
 			.proxyGeneration = entry.identity.proxyGeneration,
@@ -1695,34 +3110,58 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 					&& IsUrgentMainBeneficiary(
 						*successor->second,
 						successorPriority)));
-		return entry.demanded
+		return entry.resumeRetryAt <= inputs.now
+			&& entry.demanded
 			&& !successorPending
 			&& MtProxy::HasCurrentMainRelayProof(state, runtimeGeneration);
 	};
-	auto selected = ranges::find_if(suspended, [&](const SuspendedLane &entry) {
-		return entry.identity.runtimeId == _storage.foregroundRuntimeId
-			&& resumable(entry);
-	});
 	if (selected == end(suspended)) {
-		selected = ranges::find_if(suspended, resumable);
+		selected = ranges::find_if(
+			suspended,
+			[&](const SuspendedLane &entry) {
+				return entry.identity.runtimeId
+						== _storage.foregroundRuntimeId
+					&& resumable(entry);
+			});
+		if (selected == end(suspended)) {
+			selected = ranges::find_if(suspended, resumable);
+		}
 	}
 	if (selected == end(suspended)) {
 		return;
 	}
+	if (selected->resumeRetryAt > inputs.now) {
+		return;
+	}
 	lane->second.resuming = std::move(*selected);
 	suspended.erase(selected);
+	lane->second.resuming->resumeRetryAt = 0;
 	lane->second.resuming->commandDeadlineAt
 		= inputs.now + kLaneCommandAckTimeout;
+	if (lane->second.resuming->reclaimEpisodeToken
+		&& state.reclaimEpisode
+		&& state.reclaimEpisode->token
+			== lane->second.resuming->reclaimEpisodeToken) {
+		state.reclaimEpisode->victimResumeIssued = true;
+	}
 	const auto &value = *lane->second.resuming;
 	const auto runtime = _runtimes.find(value.identity.runtimeId);
 	if (runtime == end(_runtimes)) {
-		QObject::disconnect(value.ownerDestroyed);
+		actions.ownerConnections.push_back(value.ownerDestroyed);
+		if (value.reclaimEpisodeToken
+			&& state.reclaimEpisode
+			&& state.reclaimEpisode->token == value.reclaimEpisodeToken) {
+			state.reclaimEpisode->stage
+				= MtProxy::ReclaimEpisodeStage::Terminal;
+			state.reclaimEpisode->victimResumeIssued = true;
+		}
 		lane->second.resuming.reset();
 		return;
 	}
 	const auto identity = value.identity;
 	const auto token = value.token;
 	const auto deadlineAt = value.commandDeadlineAt;
+	const auto demandRequired = !value.reclaimEpisodeToken;
 	const auto weak = _context;
 	actions.posts.push_back({
 		.dispatch = runtime->second,
@@ -1733,13 +3172,14 @@ void EndpointAdmissionArbiter::Private::resumeSuspendedLaneLocked(
 			identity,
 			control = value.laneControl,
 			token,
-			deadlineAt
+			deadlineAt,
+			demandRequired
 		]() mutable {
 			(*control)({
 				.type = MtProxy::EndpointLaneCommandType::Resume,
 				.token = token,
 				.deadlineAt = deadlineAt,
-				.demandRequired = true,
+				.demandRequired = demandRequired,
 				.done = [
 					weak,
 					endpointKey,
@@ -1789,6 +3229,43 @@ void EndpointAdmissionArbiter::Private::invalidateTicketLocked(
 			.runtimeId = ticket.key.runtimeId,
 			.proxyGeneration = ticket.proxyGeneration,
 		});
+}
+
+void EndpointAdmissionArbiter::Private::postCapacityDiagnosticsLocked(
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state,
+		ProxyDiagnosticsPhase phase,
+		ProxyDiagnosticsDecision decision,
+		ProxyDiagnosticsTransition transition,
+		std::optional<int> frontier,
+		Actions &actions) {
+	const auto runtime = _runtimes.find(ticket.key.runtimeId);
+	if (runtime == end(_runtimes)) {
+		return;
+	}
+	actions.diagnostics.push_back({
+		.dispatch = runtime->second,
+		.event = {
+			.source = ProxyDiagnosticsSource::MTProxy,
+			.phase = phase,
+			.attempt = {
+				.runtimeId = ticket.key.runtimeId,
+				.traceId = ticket.traceId,
+				.ticketId = ticket.key.ticketId,
+				.proxyGeneration = ticket.proxyGeneration,
+				.use = ticket.use,
+				.ticketKey = ticket.key,
+			},
+			.decision = decision,
+			.transition = transition,
+			.laneOrdinal = ticket.sequence,
+			.commitmentCount = MtProxy::EndpointCapacityCommitmentCount(state),
+			.provenLowerBound = state.liveBudget.provenLowerBound,
+			.frontier = frontier,
+			.capacityCap = state.liveBudget.learnedLimit,
+			.isFinal = true,
+		},
+	});
 }
 
 void EndpointAdmissionArbiter::Private::postStatusLocked(
@@ -1905,23 +3382,205 @@ auto EndpointAdmissionArbiter::Private::takeTicketLocked(
 	if (schedule != end(_endpoints)) {
 		auto &order = schedule->second.order;
 		order.erase(std::remove(begin(order), end(order), key), end(order));
-		if (order.empty()) {
+		if (order.empty() && !schedule->second.reclaimCursor) {
 			_endpoints.erase(schedule);
 		}
 	}
 	return result;
 }
 
-void EndpointAdmissionArbiter::Private::releaseReservedCapacityProbeLocked(
-		const Ticket &ticket) {
-	const auto state = _storage.states.find(ticket.endpointKey);
-	if (state == end(_storage.states)) {
+bool EndpointAdmissionArbiter::Private::reserveCapacityDecisionLocked(
+		Ticket &ticket,
+		MtProxy::EndpointState &state,
+		CapacityAdmissionDecision decision) {
+	if (ticket.capacityDecision
+		|| decision.kind == CapacityDecisionKind::Blocked
+		|| decision.blocker != CapacityDecisionBlocker::None
+		|| decision.retryBoundary
+		|| !CapacityDecisionMatchesTicket(decision, ticket)) {
+		return false;
+	}
+	ticket.capacityDecision = std::move(decision);
+	const auto &retained = *ticket.capacityDecision;
+	switch (retained.kind) {
+	case CapacityDecisionKind::Ordinary: {
+		const auto valid = !retained.frontier
+			&& !retained.probeToken
+			&& !retained.reclaimToken;
+		if (!valid) {
+			ticket.capacityDecision.reset();
+		}
+		return valid;
+	}
+	case CapacityDecisionKind::FrontierProbe: {
+		if (!retained.probeToken) {
+			ticket.capacityDecision.reset();
+			return false;
+		}
+		if (MtProxy::ReserveCapacityProbe(
+				state.liveBudget,
+				retained.probeToken->ticketKey,
+				retained.probeToken->endpointGeneration,
+				retained.probeToken->frontier,
+				CapacityProbeDemand(retained.demand))) {
+			return true;
+		}
+		ticket.capacityDecision.reset();
+		return false;
+	}
+	case CapacityDecisionKind::ExactReplacement: {
+		if (!retained.reclaimToken
+			|| retained.frontier <= 1
+			|| !ExactReplacementReservationMatches(
+				ticket,
+				state,
+				retained.reclaimToken,
+				ExactReplacementReservationState::Available)) {
+			ticket.capacityDecision.reset();
+			return false;
+		}
+		state.reclaimEpisode->beneficiaryTicketKey = ticket.key;
+		return true;
+	}
+	case CapacityDecisionKind::Blocked:
+		ticket.capacityDecision.reset();
+		return false;
+	}
+	Unexpected("CapacityDecisionKind in reserveCapacityDecisionLocked().");
+}
+
+void EndpointAdmissionArbiter::Private::releaseReservedCapacityDecisionLocked(
+		Ticket &ticket) {
+	if (!ticket.capacityDecision) {
 		return;
 	}
-	static_cast<void>(MtProxy::ReleaseReservedCapacityProbe(
-		state->second.liveBudget,
-		ticket.key,
-		TicketRuntimeGeneration(ticket)));
+	const auto decision = *ticket.capacityDecision;
+	const auto state = _storage.states.find(ticket.endpointKey);
+	if (state != end(_storage.states)) {
+		if (decision.kind == CapacityDecisionKind::FrontierProbe
+			&& decision.probeToken) {
+			static_cast<void>(MtProxy::ReleaseReservedCapacityProbe(
+				state->second.liveBudget,
+				decision.probeToken->ticketKey,
+				decision.probeToken->endpointGeneration,
+				decision.probeToken->frontier,
+				CapacityProbeDemand(decision.probeToken->demand)));
+		} else if (decision.kind == CapacityDecisionKind::ExactReplacement
+			&& decision.reclaimToken
+			&& state->second.reclaimEpisode
+			&& MtProxy::ReclaimEpisodeMatches(
+				*state->second.reclaimEpisode,
+				decision.reclaimToken,
+				decision.demand,
+				ticket.owner)
+			&& state->second.reclaimEpisode->beneficiaryTicketKey
+				== ticket.key) {
+			state->second.reclaimEpisode->beneficiaryTicketKey = {};
+		}
+	}
+	ticket.capacityDecision.reset();
+}
+
+bool EndpointAdmissionArbiter::Private::activateCapacityDecisionLocked(
+		const Ticket &ticket,
+		MtProxy::EndpointState &state,
+		const MtProxy::Admission &admission) {
+	if (!ticket.capacityDecision
+		|| !CapacityDecisionMatchesTicket(*ticket.capacityDecision, ticket)
+		|| admission.runtimeId != ticket.key.runtimeId
+		|| admission.proxyGeneration != ticket.proxyGeneration
+		|| !admission.attemptId) {
+		return false;
+	}
+	const auto &decision = *ticket.capacityDecision;
+	const auto identity = MtProxy::RelayProofIdentity{
+		.runtimeId = admission.runtimeId,
+		.proxyGeneration = admission.proxyGeneration,
+		.attemptId = admission.attemptId,
+	};
+	switch (decision.kind) {
+	case CapacityDecisionKind::Ordinary:
+		return true;
+	case CapacityDecisionKind::FrontierProbe: {
+		if (!decision.probeToken) {
+			return false;
+		}
+		if (!MtProxy::ActivateCapacityProbe(
+			state.liveBudget,
+			decision.probeToken->ticketKey,
+			decision.probeToken->endpointGeneration,
+			decision.probeToken->frontier,
+			CapacityProbeDemand(decision.probeToken->demand),
+			identity)) {
+			return false;
+		}
+		if (!retainsTransferEntitlementLocked(ticket, state)) {
+			return true;
+		}
+		const auto matchesCurrentEpisode = state.reclaimEpisode
+			&& MtProxy::ReclaimEpisodeMatches(
+				*state.reclaimEpisode,
+				state.reclaimEpisode->token,
+				ticket.transferDemand,
+				ticket.owner);
+		if (!state.reclaimEpisode
+			|| (state.reclaimEpisode->stage
+					== MtProxy::ReclaimEpisodeStage::Terminal
+				&& !matchesCurrentEpisode)) {
+			state.reclaimEpisode.emplace(MtProxy::ReclaimEpisode{
+				.token = MtProxy::ReclaimEpisodeTokenAccess::Next(state),
+				.beneficiaryDemand = ticket.transferDemand,
+				.beneficiaryOwner = ticket.owner,
+				.beneficiaryAttempt = identity,
+			});
+		} else if (matchesCurrentEpisode
+			&& state.reclaimEpisode->stage
+				== MtProxy::ReclaimEpisodeStage::Requested
+			&& state.reclaimEpisode->victim.kind
+				== MtProxy::ReclaimVictimKind::None
+			&& !state.reclaimEpisode->replacementConsumed) {
+			state.reclaimEpisode->beneficiaryAttempt = identity;
+		}
+		return true;
+	}
+	case CapacityDecisionKind::ExactReplacement: {
+		if (!decision.reclaimToken
+			|| decision.frontier <= 1
+			|| !ExactReplacementReservationMatches(
+				ticket,
+				state,
+				decision.reclaimToken,
+				ExactReplacementReservationState::Retained)) {
+			return false;
+		}
+		state.reclaimEpisode->stage
+			= MtProxy::ReclaimEpisodeStage::BeneficiaryGranted;
+		state.reclaimEpisode->beneficiaryTicketKey = {};
+		state.reclaimEpisode->beneficiaryAttempt = identity;
+		state.reclaimEpisode->replacementAuthorized = false;
+		state.reclaimEpisode->replacementConsumed = true;
+		return true;
+	}
+	case CapacityDecisionKind::Blocked:
+		return false;
+	}
+	Unexpected("CapacityDecisionKind in activateCapacityDecisionLocked().");
+}
+
+void EndpointAdmissionArbiter::Private::releaseActiveCapacityProbeLocked(
+		MtProxy::EndpointState &state,
+		const MtProxy::RelayProofIdentity &identity) {
+	const auto probe = state.liveBudget.capacityProbe;
+	if (probe.stage != MtProxy::CapacityProbeStage::Active) {
+		return;
+	}
+	static_cast<void>(MtProxy::ReleaseActiveCapacityProbe(
+		state.liveBudget,
+		probe.ticketKey,
+		probe.runtimeGeneration,
+		probe.frontier,
+		probe.beneficiaryDemand,
+		identity));
 }
 
 void EndpointAdmissionArbiter::Private::detachLanePreemptionBeneficiaryLocked(
@@ -1974,7 +3633,68 @@ void EndpointAdmissionArbiter::Private::cancelTicketLocked(
 				ticket.key));
 	}
 	detachLanePreemptionBeneficiaryLocked(ticket.endpointKey, key);
-	releaseReservedCapacityProbeLocked(ticket);
+	const auto endpointState = _storage.states.find(ticket.endpointKey);
+	if (endpointState != end(_storage.states)) {
+		static_cast<void>(
+			MtProxy::ClearForegroundTransferTicketLineage(
+				endpointState->second,
+				ticket.transferDemand,
+				ticket.owner,
+				ticket.key));
+		const auto parked = endpointState->second.parkedReclaimVictim
+			? &*endpointState->second.parkedReclaimVictim
+			: nullptr;
+		if (ticket.use == MtProxy::EndpointUse::Main
+			&& ticket.reclaimEpisodeToken
+			&& parked
+			&& parked->episodeToken == ticket.reclaimEpisodeToken
+			&& parked->resumeTicketKey == ticket.key) {
+			const auto parkedAttempt = parked->attempt;
+			if (parkedReclaimVictimCurrentLocked(
+					endpointState->second,
+					*parked)) {
+				parked->resumeTicketKey = {};
+				parked->resumeAttempt = {};
+				auto &laneSchedule = _laneSchedules[ticket.endpointKey];
+				if (laneSchedule.parkedMainResume
+					&& laneSchedule.parkedMainResume->episodeToken
+						== ticket.reclaimEpisodeToken
+					&& laneSchedule.parkedMainResume->identity
+						== parkedAttempt) {
+					laneSchedule.parkedMainResume.reset();
+				}
+				laneSchedule.parkedMainRetryAt = std::max(
+					laneSchedule.parkedMainRetryAt,
+					LaneCommandRetryBoundary(crl::now()));
+				if (endpointState->second.reclaimEpisode
+					&& endpointState->second.reclaimEpisode->token
+						== ticket.reclaimEpisodeToken) {
+					endpointState->second.reclaimEpisode
+						->victimResumeIssued = false;
+				}
+			} else {
+				auto cleanup = MtProxy::EndpointDeferredCleanup();
+				static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+					endpointState->second,
+					ticket.reclaimEpisodeToken,
+					parkedAttempt,
+					cleanup));
+				DeferEndpointCleanup(actions, std::move(cleanup));
+				const auto lane = _laneSchedules.find(ticket.endpointKey);
+				if (lane != end(_laneSchedules)) {
+					lane->second.parkedMainRetryAt = 0;
+					if (lane->second.parkedMainResume
+						&& lane->second.parkedMainResume->episodeToken
+							== ticket.reclaimEpisodeToken
+						&& lane->second.parkedMainResume->identity
+							== parkedAttempt) {
+						lane->second.parkedMainResume.reset();
+					}
+				}
+			}
+		}
+	}
+	releaseReservedCapacityDecisionLocked(ticket);
 	if (ticket.reservationId) {
 		const auto state = _storage.openStates.find(ticket.endpointKey);
 		if (state != end(_storage.openStates)) {
@@ -1998,7 +3718,7 @@ void EndpointAdmissionArbiter::Private::demoteTicketLocked(
 	detachLanePreemptionBeneficiaryLocked(
 		ticket.endpointKey,
 		ticket.key);
-	releaseReservedCapacityProbeLocked(ticket);
+	releaseReservedCapacityDecisionLocked(ticket);
 	if (ticket.reservationId) {
 		const auto state = _storage.openStates.find(ticket.endpointKey);
 		if (state != end(_storage.openStates)) {
@@ -2047,7 +3767,10 @@ void EndpointAdmissionArbiter::Private::finishLanePreemptionLocked(
 	const auto proof = state->relayProofs.find(identity);
 	const auto proofMatches = proof != end(state->relayProofs)
 		&& proof->second.ticketKey == preemption.victimTicketKey
-		&& proof->second.use == preemption.victimUse;
+		&& proof->second.use == preemption.victimUse
+		&& proof->second.owner == preemption.owner
+		&& proof->second.laneControl == preemption.laneControl
+		&& proof->second.preempting;
 	const auto attempt = state->attemptStarts.find(identity.attemptId);
 	const auto attemptMatches = attempt != end(state->attemptStarts)
 		&& attempt->second.runtimeId == identity.runtimeId
@@ -2057,8 +3780,282 @@ void EndpointAdmissionArbiter::Private::finishLanePreemptionLocked(
 	const auto liveLane = state->liveLanes.find(identity);
 	const auto liveLaneMatches = liveLane != end(state->liveLanes)
 		&& liveLane->second.ticketKey == preemption.victimTicketKey
-		&& liveLane->second.use == preemption.victimUse;
+		&& liveLane->second.use == preemption.victimUse
+		&& liveLane->second.owner == preemption.owner
+		&& liveLane->second.laneControl == preemption.laneControl
+		&& liveLane->second.preempting;
 	const auto victimPresent = attemptMatches || liveLaneMatches;
+	if (preemption.reclaimEpisodeToken) {
+		const auto mainReclaim
+			= preemption.victimUse == MtProxy::EndpointUse::Main;
+		const auto expectedVictimKind = mainReclaim
+			? MtProxy::ReclaimVictimKind::MainLane
+			: MtProxy::ReclaimVictimKind::TransferLane;
+		const auto episodeMatches = state->reclaimEpisode
+			&& state->reclaimEpisode->token
+				== preemption.reclaimEpisodeToken
+			&& state->reclaimEpisode->victim.kind
+				== expectedVictimKind
+			&& state->reclaimEpisode->victim.ticketKey
+				== preemption.victimTicketKey
+			&& state->reclaimEpisode->victim.attempt == identity;
+		const auto applied = authorized
+			&& terminal == LanePreemptionTerminal::Applied
+			&& episodeMatches
+			&& proofMatches
+			&& liveLaneMatches;
+		if (!applied) {
+			const auto rollbackPending = episodeMatches
+				&& state->reclaimEpisode->stage
+					== MtProxy::ReclaimEpisodeStage::RollbackPending;
+			const auto authorizedExpired = authorized
+				&& terminal == LanePreemptionTerminal::Expired
+				&& episodeMatches
+				&& victimPresent;
+			const auto canResumeExpired = authorizedExpired
+				&& IsBackground(preemption.victimUse)
+				&& preemption.victimTicketKey.ticketId
+				&& preemption.victimTicketKey.runtimeId == identity.runtimeId
+				&& preemption.owner
+				&& preemption.laneControl
+				&& runtimeLiveLocked(identity.runtimeId)
+				&& MtProxy::RuntimeGenerationIsCurrent(*state, {
+					.runtimeId = identity.runtimeId,
+					.proxyGeneration = identity.proxyGeneration,
+				});
+			if (proofMatches) {
+				proof->second.preempting = false;
+			}
+			if (attemptMatches) {
+				attempt->second.preempting = false;
+			}
+			if (liveLaneMatches) {
+				liveLane->second.preempting = false;
+			}
+			for (auto &[key, ticket] : _tickets) {
+				if (ticket->endpointKey == endpointKey
+					&& ticket->reclaimEpisodeToken
+						== preemption.reclaimEpisodeToken) {
+					ticket->reclaimEpisodeToken = {};
+					ticket->admissionRequest.reclaimEpisodeToken = {};
+				}
+			}
+			if (mainReclaim) {
+				const auto staleVictim
+					= terminal == LanePreemptionTerminal::VictimLost
+					|| terminal == LanePreemptionTerminal::NotApplicable;
+				if (episodeMatches) {
+					auto &episode = *state->reclaimEpisode;
+					if (rollbackPending || staleVictim || !victimPresent) {
+						episode.stage
+							= MtProxy::ReclaimEpisodeStage::Terminal;
+						episode.replacementAuthorized = false;
+						episode.victimResumeIssued = true;
+					} else {
+						episode.stage
+							= MtProxy::ReclaimEpisodeStage::Requested;
+						episode.victim = {};
+						episode.victimResumeIssued = false;
+						const auto beneficiary = _tickets.find(
+							preemption.beneficiary);
+						if (beneficiary != end(_tickets)) {
+							beneficiary->second->retryAt = std::max(
+								beneficiary->second->retryAt,
+								preemption.deadlineAt);
+						}
+					}
+					episode.beneficiaryTicketKey = {};
+				}
+				if (!victimPresent) {
+					QObject::disconnect(preemption.ownerDestroyed);
+				}
+				return;
+			}
+			if (canResumeExpired) {
+				auto &episode = *state->reclaimEpisode;
+				episode.stage = MtProxy::ReclaimEpisodeStage::RollbackPending;
+				episode.replacementAuthorized = false;
+				episode.beneficiaryTicketKey = {};
+				episode.victimResumeIssued = false;
+				const auto existing = ranges::find_if(
+					lane->second.suspended,
+					[&](const SuspendedLane &entry) {
+						return entry.identity == identity;
+					});
+				if (existing != end(lane->second.suspended)) {
+					existing->token = preemption.token;
+					existing->commandDeadlineAt = 0;
+					existing->ticketKey = preemption.victimTicketKey;
+					existing->use = preemption.victimUse;
+					existing->owner = preemption.owner;
+					existing->ownerDestroyed = preemption.ownerDestroyed;
+					existing->laneControl = preemption.laneControl;
+					existing->successorTicketKey = {};
+					existing->reclaimEpisodeToken
+						= preemption.reclaimEpisodeToken;
+					existing->demanded
+						= existing->demanded || preemption.demanded;
+				} else {
+					lane->second.suspended.push_back({
+						.token = preemption.token,
+						.identity = identity,
+						.ticketKey = preemption.victimTicketKey,
+						.use = preemption.victimUse,
+						.owner = preemption.owner,
+						.ownerDestroyed = preemption.ownerDestroyed,
+						.laneControl = preemption.laneControl,
+						.reclaimEpisodeToken
+							= preemption.reclaimEpisodeToken,
+						.demanded = preemption.demanded,
+					});
+				}
+				return;
+			}
+			if (episodeMatches) {
+				auto &episode = *state->reclaimEpisode;
+				if (rollbackPending || !victimPresent) {
+					episode.stage = MtProxy::ReclaimEpisodeStage::Terminal;
+					episode.replacementAuthorized = false;
+					episode.victimResumeIssued = true;
+				} else {
+					episode.stage = MtProxy::ReclaimEpisodeStage::Requested;
+					episode.victim = {};
+					episode.victimResumeIssued = false;
+				}
+				episode.beneficiaryTicketKey = {};
+			}
+			if (!victimPresent) {
+				QObject::disconnect(preemption.ownerDestroyed);
+			}
+			return;
+		}
+		const auto rollbackPending = state->reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::RollbackPending;
+		auto parkedMain = std::optional<MtProxy::ParkedReclaimVictim>();
+		if (mainReclaim
+			&& !state->parkedReclaimVictim
+			&& preemption.victimTicketKey.ticketId
+			&& preemption.victimTicketKey.runtimeId == identity.runtimeId
+			&& preemption.owner
+			&& preemption.laneControl
+			&& runtimeLiveLocked(identity.runtimeId)
+			&& MtProxy::RuntimeGenerationIsCurrent(*state, {
+				.runtimeId = identity.runtimeId,
+				.proxyGeneration = identity.proxyGeneration,
+			})) {
+			parkedMain.emplace(MtProxy::ParkedReclaimVictim{
+				.episodeToken = preemption.reclaimEpisodeToken,
+				.attempt = identity,
+				.ticketKey = preemption.victimTicketKey,
+				.proxyEpoch = proof->second.proxyEpoch,
+				.successEpoch = proof->second.successEpoch,
+				.attemptStartedAt = proof->second.attemptStartedAt,
+				.owner = preemption.owner,
+				.ownerDestroyed = preemption.ownerDestroyed,
+				.laneControl = preemption.laneControl,
+			});
+		}
+		releaseActiveCapacityProbeLocked(*state, identity);
+		static_cast<void>(MtProxy::RetireRelayProof(*state, identity));
+		if (attemptMatches) {
+			state->attemptStarts.erase(attempt);
+		}
+		state->liveLanes.erase(liveLane);
+		MtProxy::SynchronizeEndpointAdmissionAggregate(*state);
+		_endpoints[endpointKey].reclaimCursor
+			= state->reclaimEpisode->victim;
+		if (mainReclaim) {
+			if (!parkedMain) {
+				QObject::disconnect(preemption.ownerDestroyed);
+				state->reclaimEpisode->stage
+					= MtProxy::ReclaimEpisodeStage::Terminal;
+				state->reclaimEpisode->replacementAuthorized = false;
+				state->reclaimEpisode->beneficiaryTicketKey = {};
+				state->reclaimEpisode->victimResumeIssued = true;
+				return;
+			}
+			state->parkedReclaimVictim = std::move(parkedMain);
+			lane->second.parkedMainRetryAt = 0;
+			if (!rollbackPending) {
+				state->reclaimEpisode->stage
+					= MtProxy::ReclaimEpisodeStage::VictimAcknowledged;
+				state->reclaimEpisode->replacementAuthorized = true;
+			} else {
+				state->reclaimEpisode->replacementAuthorized = false;
+				state->reclaimEpisode->beneficiaryTicketKey = {};
+				state->reclaimEpisode->victimResumeIssued = false;
+			}
+			bindTransferReclaimTicketLocked(endpointKey, *state);
+			return;
+		}
+		const auto canPreserve = victimPresent
+			&& IsBackground(preemption.victimUse)
+			&& preemption.victimTicketKey.ticketId
+			&& preemption.victimTicketKey.runtimeId == identity.runtimeId
+			&& preemption.owner
+			&& preemption.laneControl
+			&& runtimeLiveLocked(identity.runtimeId)
+			&& MtProxy::RuntimeGenerationIsCurrent(*state, {
+				.runtimeId = identity.runtimeId,
+				.proxyGeneration = identity.proxyGeneration,
+			});
+		if (!canPreserve) {
+			QObject::disconnect(preemption.ownerDestroyed);
+			state->reclaimEpisode->stage
+				= MtProxy::ReclaimEpisodeStage::Terminal;
+			state->reclaimEpisode->replacementAuthorized = false;
+			state->reclaimEpisode->beneficiaryTicketKey = {};
+			state->reclaimEpisode->victimResumeIssued = true;
+			return;
+		}
+		auto successor = AdmissionTicketKey();
+		if (state->foregroundTransferEntitlement
+			&& MtProxy::ReclaimEpisodeMatches(
+				*state->reclaimEpisode,
+				preemption.reclaimEpisodeToken,
+				state->foregroundTransferEntitlement->demand,
+				state->foregroundTransferEntitlement->owner)) {
+			successor = state->foregroundTransferEntitlement->ticketKey;
+		}
+		const auto existing = ranges::find_if(
+			lane->second.suspended,
+			[&](const SuspendedLane &entry) {
+				return entry.identity == identity;
+			});
+		if (existing != end(lane->second.suspended)) {
+			existing->token = preemption.token;
+			existing->commandDeadlineAt = 0;
+			existing->ticketKey = preemption.victimTicketKey;
+			existing->use = preemption.victimUse;
+			existing->owner = preemption.owner;
+			existing->ownerDestroyed = preemption.ownerDestroyed;
+			existing->laneControl = preemption.laneControl;
+			existing->successorTicketKey = successor;
+			existing->reclaimEpisodeToken
+				= preemption.reclaimEpisodeToken;
+			existing->demanded = existing->demanded || preemption.demanded;
+		} else {
+			lane->second.suspended.push_back({
+				.token = preemption.token,
+				.identity = identity,
+				.ticketKey = preemption.victimTicketKey,
+				.use = preemption.victimUse,
+				.owner = preemption.owner,
+				.ownerDestroyed = preemption.ownerDestroyed,
+				.laneControl = preemption.laneControl,
+				.successorTicketKey = successor,
+				.reclaimEpisodeToken = preemption.reclaimEpisodeToken,
+				.demanded = preemption.demanded,
+			});
+		}
+		if (!rollbackPending) {
+			state->reclaimEpisode->stage
+				= MtProxy::ReclaimEpisodeStage::VictimAcknowledged;
+			state->reclaimEpisode->replacementAuthorized = true;
+		}
+		bindTransferReclaimTicketLocked(endpointKey, *state);
+		return;
+	}
 	if (!preserveSuspended && !retireWithoutSuspension) {
 		if (proofMatches) {
 			proof->second.preempting = false;
@@ -2074,9 +4071,7 @@ void EndpointAdmissionArbiter::Private::finishLanePreemptionLocked(
 		}
 		return;
 	}
-	static_cast<void>(MtProxy::ReleaseActiveCapacityProbe(
-		state->liveBudget,
-		identity));
+	releaseActiveCapacityProbeLocked(*state, identity);
 	if (proofMatches) {
 		static_cast<void>(MtProxy::RetireRelayProof(*state, identity));
 	}
@@ -2144,6 +4139,7 @@ void EndpointAdmissionArbiter::Private::finishLanePreemptionLocked(
 		existing->ownerDestroyed = preemption.ownerDestroyed;
 		existing->laneControl = preemption.laneControl;
 		existing->successorTicketKey = successor;
+		existing->reclaimEpisodeToken = {};
 		existing->demanded = existing->demanded || preemption.demanded;
 	} else {
 		lane->second.suspended.push_back({
@@ -2163,7 +4159,8 @@ void EndpointAdmissionArbiter::Private::finishLanePreemptionLocked(
 void EndpointAdmissionArbiter::Private::expireLaneCommandsLocked(
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
-		crl::time now) {
+		crl::time now,
+		Actions &actions) {
 	const auto lane = _laneSchedules.find(endpointKey);
 	if (lane == end(_laneSchedules)) {
 		return;
@@ -2186,19 +4183,69 @@ void EndpointAdmissionArbiter::Private::expireLaneCommandsLocked(
 		auto value = std::move(*lane->second.resuming);
 		lane->second.resuming.reset();
 		value.commandDeadlineAt = 0;
-		if (IsBackground(value.use)
-			&& value.ticketKey.ticketId
-			&& value.ticketKey.runtimeId == value.identity.runtimeId
-			&& value.owner
-			&& value.laneControl
-			&& runtimeLiveLocked(value.identity.runtimeId)
-			&& MtProxy::RuntimeGenerationIsCurrent(state, {
-				.runtimeId = value.identity.runtimeId,
-				.proxyGeneration = value.identity.proxyGeneration,
-			})) {
+		const auto current = value.reclaimEpisodeToken
+			? reclaimSuspendedLaneCurrentLocked(state, value)
+			: suspendedLaneCurrentLocked(state, value);
+		if (current) {
+			value.resumeRetryAt = LaneCommandRetryBoundary(now);
+			if (value.reclaimEpisodeToken
+				&& state.reclaimEpisode
+				&& state.reclaimEpisode->token
+					== value.reclaimEpisodeToken) {
+				state.reclaimEpisode->victimResumeIssued = false;
+			}
 			lane->second.suspended.push_front(std::move(value));
 		} else {
-			QObject::disconnect(value.ownerDestroyed);
+			if (value.reclaimEpisodeToken
+				&& state.reclaimEpisode
+				&& state.reclaimEpisode->token
+					== value.reclaimEpisodeToken) {
+				state.reclaimEpisode->stage
+					= MtProxy::ReclaimEpisodeStage::Terminal;
+				state.reclaimEpisode->replacementAuthorized = false;
+				state.reclaimEpisode->beneficiaryTicketKey = {};
+				state.reclaimEpisode->victimResumeIssued = true;
+			}
+			actions.ownerConnections.push_back(value.ownerDestroyed);
+		}
+	}
+	if (lane->second.parkedMainResume
+		&& lane->second.parkedMainResume->commandDeadlineAt
+		&& lane->second.parkedMainResume->commandDeadlineAt <= now) {
+		auto value = std::move(*lane->second.parkedMainResume);
+		lane->second.parkedMainResume.reset();
+		const auto parked = state.parkedReclaimVictim
+			? &*state.parkedReclaimVictim
+			: nullptr;
+		const auto acceptedTicket = parked
+			&& parked->episodeToken == value.episodeToken
+			&& parked->attempt == value.identity
+			&& parked->ticketKey == value.ticketKey
+			&& parked->resumeTicketKey.ticketId;
+		if (acceptedTicket) {
+			lane->second.parkedMainRetryAt = 0;
+		} else if (parked
+			&& parked->episodeToken == value.episodeToken
+			&& parked->attempt == value.identity
+			&& parked->ticketKey == value.ticketKey) {
+			if (parkedReclaimVictimCurrentLocked(state, *parked)) {
+				lane->second.parkedMainRetryAt
+					= LaneCommandRetryBoundary(now);
+				if (state.reclaimEpisode
+					&& state.reclaimEpisode->token
+						== value.episodeToken) {
+					state.reclaimEpisode->victimResumeIssued = false;
+				}
+			} else {
+				auto cleanup = MtProxy::EndpointDeferredCleanup();
+				static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+					state,
+					value.episodeToken,
+					value.identity,
+					cleanup));
+				DeferEndpointCleanup(actions, std::move(cleanup));
+				lane->second.parkedMainRetryAt = 0;
+			}
 		}
 	}
 }
@@ -2274,18 +4321,15 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 			keptCounts,
 			urgentWaiters,
 			inputs);
-		const auto capacity = capacityDecisionLocked(
-			*ticket,
-			state,
-			keptCounts,
-			urgentWaiters,
-			inputs.now,
-			std::nullopt);
 		if (policy.admissionAllowed
-			&& capacity.kind != CapacityDecisionKind::Blocked) {
-			if (capacity.kind == CapacityDecisionKind::Ordinary) {
-				releaseReservedCapacityProbeLocked(*ticket);
-			}
+			&& ticket->capacityDecision
+			&& capacityDecisionValidLocked(
+				*ticket,
+				*ticket->capacityDecision,
+				state,
+				keptCounts,
+				urgentWaiters,
+				inputs.now)) {
 			keptCounts = MtProxy::BeginEndpointAdmission(
 				keptCounts,
 				ticket->use);
@@ -2408,8 +4452,13 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		auto eligible = std::set<AdmissionTicketKey>();
 		auto capacityDecisions = std::map<
 			AdmissionTicketKey,
-			CandidateCapacityDecision>();
+			CapacityAdmissionDecision>();
 		for (const auto ticket : pool) {
+			if (ticket->capacityDecision
+				&& ticket->capacityDecision->kind
+					== CapacityDecisionKind::Blocked) {
+				ticket->capacityDecision.reset();
+			}
 			const auto boundary = std::max(
 				TicketRetryUntil(
 					*ticket,
@@ -2434,6 +4483,23 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 				inputs.now,
 				noVictimUrgentClaimant);
 			capacityDecisions.emplace(ticket->key, capacity);
+			if (capacity.kind == CapacityDecisionKind::Blocked
+				&& capacity.blocker
+					== CapacityDecisionBlocker::CapacityOneForegroundMain) {
+				const auto changed = !ticket->capacityDecision
+					|| ticket->capacityDecision->blocker != capacity.blocker;
+				ticket->capacityDecision = capacity;
+				if (changed) {
+					postCapacityDiagnosticsLocked(
+						*ticket,
+						state,
+						ProxyDiagnosticsPhase::CapacityDecision,
+						ProxyDiagnosticsDecision::Blocked,
+						ProxyDiagnosticsTransition::CapacityOneForegroundMain,
+						capacity.frontier,
+						actions);
+				}
+			}
 			if (baseEligibleLocked(
 					*ticket,
 					state,
@@ -2445,10 +4511,10 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 			} else {
 				ticket->blockedBy = TicketFailureReason(*ticket, state);
 				ticket->retryAfter = policy.retryAfter;
-				if (capacity.retryAt) {
+				if (capacity.retryBoundary) {
 					ticket->retryAt = std::max(
 						ticket->retryAt,
-						capacity.retryAt);
+						capacity.retryBoundary);
 				}
 				if (ticket->use == MtProxy::EndpointUse::Main) {
 					ticket->reevaluateAt = 0;
@@ -2483,15 +4549,11 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		selected->blockedBy = MtProxy::FailureReason::None;
 		const auto selectedCapacity = capacityDecisions.find(selected->key);
 		Assert(selectedCapacity != end(capacityDecisions));
-		if (selectedCapacity->second.kind == CapacityDecisionKind::Probe) {
-			if (!MtProxy::ReserveCapacityProbe(
-					state.liveBudget,
-					selected->key,
-					TicketRuntimeGeneration(*selected))) {
-				return;
-			}
-		} else {
-			releaseReservedCapacityProbeLocked(*selected);
+		if (!reserveCapacityDecisionLocked(
+				*selected,
+				state,
+				selectedCapacity->second)) {
+			return;
 		}
 		if (selected->use == MtProxy::EndpointUse::ProxyCheck) {
 			selected->scheduledOpenAt = std::max(
@@ -2519,7 +4581,7 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 					.jitter = selected->jitter,
 				});
 			if (!reservation.id) {
-				releaseReservedCapacityProbeLocked(*selected);
+				releaseReservedCapacityDecisionLocked(*selected);
 				return;
 			}
 			selected->reservationId = reservation.id;
@@ -2531,6 +4593,25 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 			crl::time(),
 			selected->scheduledOpenAt - inputs.now);
 		++selected->transition;
+		const auto &retained = *selected->capacityDecision;
+		postCapacityDiagnosticsLocked(
+			*selected,
+			state,
+			ProxyDiagnosticsPhase::CapacityDecision,
+			CapacityDiagnosticsDecision(retained.kind),
+			ProxyDiagnosticsTransition::Reserved,
+			retained.frontier ? std::optional<int>(retained.frontier) : std::nullopt,
+			actions);
+		if (retained.kind == CapacityDecisionKind::FrontierProbe) {
+			postCapacityDiagnosticsLocked(
+				*selected,
+				state,
+				ProxyDiagnosticsPhase::CapacityProbe,
+				ProxyDiagnosticsDecision::FrontierProbe,
+				ProxyDiagnosticsTransition::Reserved,
+				retained.frontier,
+				actions);
+		}
 		AdvanceFairness(
 			fairness,
 			*selected,
@@ -2571,11 +4652,16 @@ void EndpointAdmissionArbiter::Private::drainEndpointLocked(
 	if (schedule == end(_endpoints) || schedule->second.order.empty()) {
 		const auto state = _storage.states.find(endpointKey);
 		if (state != end(_storage.states)) {
-			MtProxy::PruneExpiredEndpointState(state->second, inputs.now);
+			DeferEndpointCleanup(
+				actions,
+				MtProxy::PruneExpiredEndpointStateDeferred(
+					state->second,
+					inputs.now));
 			expireLaneCommandsLocked(
 				endpointKey,
 				state->second,
-				inputs.now);
+				inputs.now,
+				actions);
 			resumeSuspendedLaneLocked(
 				endpointKey,
 				state->second,
@@ -2622,8 +4708,14 @@ void EndpointAdmissionArbiter::Private::drainEndpointLocked(
 			state.endpoint = ticket->second->endpoint;
 		}
 	}
-	MtProxy::PruneExpiredEndpointState(state, inputs.now);
-	expireLaneCommandsLocked(endpointKey, state, inputs.now);
+	DeferEndpointCleanup(
+		actions,
+		MtProxy::PruneExpiredEndpointStateDeferred(state, inputs.now));
+	expireLaneCommandsLocked(
+		endpointKey,
+		state,
+		inputs.now,
+		actions);
 	purgeEndpointLocked(endpointKey, state, actions);
 	if (!_endpoints.contains(endpointKey)) {
 		resumeSuspendedLaneLocked(
@@ -2633,6 +4725,10 @@ void EndpointAdmissionArbiter::Private::drainEndpointLocked(
 			actions);
 		return;
 	}
+	updateTransferEntitlementLocked(
+		endpointKey,
+		state,
+		inputs.now);
 	revalidateReservationsLocked(endpointKey, state, inputs, actions);
 	resumeSuspendedLaneLocked(endpointKey, state, inputs, actions);
 	const auto noVictimUrgentClaimant = requestLanePreemptionLocked(
@@ -2715,8 +4811,19 @@ void EndpointAdmissionArbiter::Private::updateWakeLocked(
 		const auto resumeAt = lane.resuming
 			? lane.resuming->commandDeadlineAt
 			: crl::time();
-		for (const auto boundary : { preemptionAt, resumeAt }) {
+		const auto parkedMainResumeAt = lane.parkedMainResume
+			? lane.parkedMainResume->commandDeadlineAt
+			: crl::time();
+		for (const auto boundary : {
+				preemptionAt,
+				resumeAt,
+				parkedMainResumeAt,
+				lane.parkedMainRetryAt,
+			}) {
 			considerBoundary(boundary);
+		}
+		for (const auto &suspended : lane.suspended) {
+			considerBoundary(suspended.resumeRetryAt);
 		}
 	}
 	if (!wakeAt) {
@@ -2956,9 +5063,17 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 					i->second.resuming->ownerDestroyed);
 				i->second.resuming.reset();
 			}
+			if (i->second.parkedMainResume
+				&& i->second.parkedMainResume->identity.runtimeId
+					== runtimeId) {
+				i->second.parkedMainResume.reset();
+				i->second.parkedMainRetryAt = 0;
+			}
 			if (suspended.empty()
 				&& !i->second.preemption
-				&& !i->second.resuming) {
+				&& !i->second.resuming
+				&& !i->second.parkedMainResume
+				&& !i->second.parkedMainRetryAt) {
 				i = _laneSchedules.erase(i);
 			} else {
 				++i;
@@ -2978,13 +5093,11 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 			for (auto i = begin(state.attemptStarts);
 					i != end(state.attemptStarts);) {
 				if (i->second.runtimeId == runtimeId) {
-					static_cast<void>(MtProxy::ReleaseActiveCapacityProbe(
-						state.liveBudget,
-						{
-							.runtimeId = i->second.runtimeId,
-							.proxyGeneration = i->second.proxyGeneration,
-							.attemptId = i->first,
-						}));
+					releaseActiveCapacityProbeLocked(state, {
+						.runtimeId = i->second.runtimeId,
+						.proxyGeneration = i->second.proxyGeneration,
+						.attemptId = i->first,
+					});
 					QObject::disconnect(i->second.ownerDestroyed);
 					i = state.attemptStarts.erase(i);
 				} else {
@@ -3001,7 +5114,8 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 				}
 			}
 			MtProxy::SynchronizeEndpointAdmissionAggregate(state);
-			MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);
+			auto cleanup = MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);
+			DeferEndpointCleanup(actions, std::move(cleanup));
 			MtProxy::RemoveEndpointExpansionFailuresForRuntime(
 				state,
 				runtimeId);
@@ -3024,7 +5138,8 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 		|| !request.key.ticketId
 		|| !request.owner
 		|| !request.ownerDestroyed
-		|| !request.grant) {
+		|| !request.grant
+		|| !TransferDemandMatchesRequest(request)) {
 		return {};
 	}
 	const auto revision = ++_lastRevision;
@@ -3046,6 +5161,8 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 			+ QString::number(key.ticketId);
 	}
 	ticket->use = request.use;
+	ticket->transferDemand = request.transferDemand;
+	ticket->reclaimEpisodeToken = request.reclaimEpisodeToken;
 	ticket->admissionRequest = {
 		.endpoint = request.endpoint,
 		.use = request.use,
@@ -3053,6 +5170,8 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
 		.proxyGeneration = request.proxyGeneration,
+		.transferDemand = ticket->transferDemand,
+		.reclaimEpisodeToken = ticket->reclaimEpisodeToken,
 	};
 	ticket->owner = request.owner;
 	ticket->ownerDestroyed = ownerDestroyed;
@@ -3088,6 +5207,22 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 				state->second,
 				key.runtimeId,
 				request.proxyGeneration);
+		const auto parkedResumeMatches = ParkedResumeMatchesRequest(
+			request,
+			(state != end(_storage.states)) ? &state->second : nullptr);
+		const auto laneSchedule = _laneSchedules.find(ticket->endpointKey);
+		const auto parkedResumeCommandMatches
+			= !request.reclaimEpisodeToken
+			|| (laneSchedule != end(_laneSchedules)
+				&& laneSchedule->second.parkedMainResume
+				&& laneSchedule->second.parkedMainResume->episodeToken
+					== request.reclaimEpisodeToken
+				&& laneSchedule->second.parkedMainResume->owner
+					== request.owner
+				&& laneSchedule->second.parkedMainResume->identity.runtimeId
+					== request.key.runtimeId
+				&& laneSchedule->second.parkedMainResume
+					->identity.proxyGeneration == request.proxyGeneration);
 		const auto traceCurrent = MtProxy::EndpointEmpty(request.endpoint)
 			|| (request.traceId
 				&& _storage.activeTraces.contains(request.traceId));
@@ -3096,7 +5231,9 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 			&& ticket->owner
 			&& traceCurrent
 			&& !staleRuntime
-			&& !staleEndpoint) {
+			&& !staleEndpoint
+			&& parkedResumeMatches
+			&& parkedResumeCommandMatches) {
 			const auto runtimeGenerationKey = RuntimeGenerationKey{
 				.runtimeId = key.runtimeId,
 				.proxyGeneration = request.proxyGeneration,
@@ -3118,6 +5255,15 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 			auto &schedule = _endpoints[ticket->endpointKey];
 			schedule.order.push_back(key);
 			auto &stored = *_tickets.emplace(key, std::move(ticket)).first->second;
+			if (request.reclaimEpisodeToken
+				&& state != end(_storage.states)
+				&& state->second.parkedReclaimVictim
+				&& state->second.parkedReclaimVictim->episodeToken
+					== request.reclaimEpisodeToken
+				&& !state->second.parkedReclaimVictim
+					->resumeTicketKey.ticketId) {
+				state->second.parkedReclaimVictim->resumeTicketKey = key;
+			}
 			postStatusLocked(stored, actions);
 			drainEndpointLocked(stored.endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
@@ -3129,6 +5275,59 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 	}
 	actions.run();
 	return result;
+}
+
+void EndpointAdmissionArbiter::Private::endTransferDemand(
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner) {
+	if (!demand) {
+		return;
+	}
+	auto actions = Actions();
+	auto affected = std::set<QString>();
+	{
+		QMutexLocker lock(&_storage.mutex);
+		if (owner) {
+			const auto generation = _storage.runtimeGenerations.find(
+				demand.runtimeId);
+			if (!runtimeLiveLocked(demand.runtimeId)
+				|| generation == end(_storage.runtimeGenerations)
+				|| generation->second != demand.proxyGeneration) {
+				return;
+			}
+		}
+		for (auto &[endpointKey, state] : _storage.states) {
+			if (!state.foregroundTransferEntitlement
+				|| state.foregroundTransferEntitlement->demand != demand
+				|| (owner
+					? state.foregroundTransferEntitlement->owner != owner
+					: static_cast<bool>(
+						state.foregroundTransferEntitlement->owner))) {
+				continue;
+			}
+			auto cleanup = MtProxy::EndpointDeferredCleanup();
+			const auto entitlementOwner
+				= state.foregroundTransferEntitlement->owner;
+			const auto cause = owner
+				? MtProxy::ForegroundTransferEntitlementReleaseCause
+					::DemandEnded
+				: MtProxy::ForegroundTransferEntitlementReleaseCause
+					::OwnerDestroyed;
+			if (MtProxy::ReleaseForegroundTransferEntitlement(
+					state,
+					demand,
+					entitlementOwner,
+					cause,
+					cleanup)) {
+				affected.emplace(endpointKey);
+				DeferEndpointCleanup(actions, std::move(cleanup));
+			}
+		}
+	}
+	actions.run();
+	for (const auto &endpointKey : affected) {
+		drainEndpoint(endpointKey);
+	}
 }
 
 void EndpointAdmissionArbiter::Private::cancel(
@@ -3197,7 +5396,46 @@ void EndpointAdmissionArbiter::Private::ownerDestroyed(
 				identities.emplace(
 					laneSchedule->second.preemption->victim);
 			}
+			auto parkedRemoved = false;
+			if (state.parkedReclaimVictim
+				&& state.parkedReclaimVictim->ticketKey == key) {
+				const auto episodeToken
+					= state.parkedReclaimVictim->episodeToken;
+				const auto parkedAttempt
+					= state.parkedReclaimVictim->attempt;
+				const auto resumeTicketKey
+					= state.parkedReclaimVictim->resumeTicketKey;
+				if (resumeTicketKey.ticketId) {
+					cancelTicketLocked(resumeTicketKey, 0, actions);
+				}
+				if (state.parkedReclaimVictim
+					&& state.parkedReclaimVictim->episodeToken
+						== episodeToken
+					&& state.parkedReclaimVictim->attempt
+						== parkedAttempt) {
+					auto cleanup = MtProxy::EndpointDeferredCleanup();
+					static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+						state,
+						episodeToken,
+						parkedAttempt,
+						cleanup));
+					DeferEndpointCleanup(actions, std::move(cleanup));
+				}
+				if (laneSchedule != end(_laneSchedules)
+					&& laneSchedule->second.parkedMainResume
+					&& laneSchedule->second.parkedMainResume->episodeToken
+						== episodeToken) {
+					laneSchedule->second.parkedMainResume.reset();
+				}
+				if (laneSchedule != end(_laneSchedules)) {
+					laneSchedule->second.parkedMainRetryAt = 0;
+				}
+				parkedRemoved = true;
+			}
 			if (identities.empty()) {
+				if (parkedRemoved) {
+					affected.emplace(endpointKey);
+				}
 				continue;
 			}
 			affected.emplace(endpointKey);
@@ -3238,9 +5476,7 @@ void EndpointAdmissionArbiter::Private::ownerDestroyed(
 							use,
 							identity.attemptId));
 				}
-				static_cast<void>(MtProxy::ReleaseActiveCapacityProbe(
-					state.liveBudget,
-					identity));
+				releaseActiveCapacityProbeLocked(state, identity);
 				static_cast<void>(MtProxy::RetireRelayProof(
 					state,
 					identity));
@@ -3293,6 +5529,12 @@ void EndpointAdmissionArbiter::Private::ownerDestroyed(
 				QObject::disconnect(
 					laneSchedule.resuming->ownerDestroyed);
 				laneSchedule.resuming.reset();
+				affected.emplace(endpointKey);
+			}
+			if (laneSchedule.parkedMainResume
+				&& laneSchedule.parkedMainResume->ticketKey == key) {
+				laneSchedule.parkedMainResume.reset();
+				laneSchedule.parkedMainRetryAt = 0;
 				affected.emplace(endpointKey);
 			}
 		}
@@ -3353,10 +5595,13 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 					victim,
 					LanePreemptionTerminal::VictimLost);
 			}
+			auto cleanup = MtProxy::EndpointDeferredCleanup();
 			MtProxy::ApplyRuntimeProxyGeneration(
 				state,
 				runtimeId,
-				proxyGeneration);
+				proxyGeneration,
+				&cleanup);
+			DeferEndpointCleanup(actions, std::move(cleanup));
 			const auto currentLane = _laneSchedules.find(endpointKey);
 			if (currentLane != end(_laneSchedules)) {
 				auto detached = std::set<AdmissionTicketKey>();
@@ -3410,6 +5655,14 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 					QObject::disconnect(
 						currentLane->second.resuming->ownerDestroyed);
 					currentLane->second.resuming.reset();
+				}
+				if (currentLane->second.parkedMainResume
+					&& currentLane->second.parkedMainResume
+						->identity.runtimeId == runtimeId
+					&& currentLane->second.parkedMainResume
+						->identity.proxyGeneration < proxyGeneration) {
+					currentLane->second.parkedMainResume.reset();
+					currentLane->second.parkedMainRetryAt = 0;
 				}
 			}
 			affected.emplace(endpointKey);
@@ -3481,6 +5734,13 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 	}
 	auto &preemption = *lane->second.preemption;
 	const auto beneficiary = _tickets.find(preemption.beneficiary);
+	const auto transferReclaim = static_cast<bool>(
+		preemption.reclaimEpisodeToken);
+	const auto mainReclaim = transferReclaim
+		&& preemption.victimUse == MtProxy::EndpointUse::Main;
+	const auto expectedVictimKind = mainReclaim
+		? MtProxy::ReclaimVictimKind::MainLane
+		: MtProxy::ReclaimVictimKind::TransferLane;
 	const auto priority = (beneficiary != end(_tickets))
 		? priorityForLocked(*beneficiary->second, state->second, inputs.now)
 		: PriorityClass::Count;
@@ -3488,13 +5748,47 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 		? TicketVerdict(*beneficiary->second, state->second)
 		: nullptr;
 	const auto boundary = (beneficiary != end(_tickets))
-		? std::max({
-			beneficiary->second->notBeforeAt,
-			state->second.opening.bootstrap.retryUntil,
-			verdict ? verdict->retryUntil : crl::time(),
-			state->second.nextHandshakeAt,
-		})
+		? transferReclaim
+			? std::max({
+				beneficiary->second->notBeforeAt,
+				TicketRetryUntil(
+					*beneficiary->second,
+					state->second,
+					_storage.foregroundRuntimeId),
+				state->second.nextHandshakeAt,
+			})
+			: std::max({
+				beneficiary->second->notBeforeAt,
+				state->second.opening.bootstrap.retryUntil,
+				verdict ? verdict->retryUntil : crl::time(),
+				state->second.nextHandshakeAt,
+			})
 		: crl::time();
+	const auto transferEpisodeMatches = transferReclaim
+		&& beneficiary != end(_tickets)
+		&& state->second.foregroundTransferEntitlement
+		&& state->second.reclaimEpisode
+		&& retainsTransferEntitlementLocked(
+			*beneficiary->second,
+			state->second)
+		&& beneficiary->second->reclaimEpisodeToken
+			== preemption.reclaimEpisodeToken
+		&& MtProxy::ReclaimEpisodeMatches(
+			*state->second.reclaimEpisode,
+			preemption.reclaimEpisodeToken,
+			beneficiary->second->transferDemand,
+			beneficiary->second->owner)
+		&& state->second.reclaimEpisode->stage
+			== MtProxy::ReclaimEpisodeStage::Requested
+		&& state->second.reclaimEpisode->victim.kind
+			== expectedVictimKind
+		&& state->second.reclaimEpisode->victim.ticketKey
+			== preemption.victimTicketKey
+		&& state->second.reclaimEpisode->victim.attempt == identity;
+	const auto beneficiaryMatches = transferReclaim
+		? transferEpisodeMatches
+		: (beneficiary != end(_tickets)
+			&& IsUrgentMainBeneficiary(*beneficiary->second, priority));
 	auto victim = static_cast<const MtProxy::EndpointAttemptState*>(nullptr);
 	auto admissionActiveVictim = false;
 	const auto opening = state->second.attemptStarts.find(attemptId);
@@ -3518,7 +5812,7 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 		|| beneficiary == end(_tickets)
 		|| !WaitingForHandoff(beneficiary->second->lifecycle)
 		|| !ticketCurrentLocked(*beneficiary->second, state->second)
-		|| !IsUrgentMainBeneficiary(*beneficiary->second, priority)
+		|| !beneficiaryMatches
 		|| boundary > inputs.now
 		|| !baseEligibleLocked(
 			*beneficiary->second,
@@ -3528,9 +5822,12 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 				state->second,
 				inputs.now),
 			inputs.now,
-			true)
+			!transferReclaim)
 		|| !victim
-		|| !IsBackground(victim->use)
+		|| (mainReclaim
+			? victim->use != MtProxy::EndpointUse::Main
+				|| admissionActiveVictim
+			: !IsBackground(victim->use))
 		|| victim->ticketKey != preemption.victimTicketKey
 		|| victim->use != preemption.victimUse
 		|| victim->owner != preemption.owner
@@ -3542,6 +5839,17 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 			.runtimeId = runtimeId,
 			.proxyGeneration = proxyGeneration,
 		})) {
+		return false;
+	}
+	const auto reclaimProof = state->second.relayProofs.find(identity);
+	if (transferReclaim
+		&& (reclaimProof == end(state->second.relayProofs)
+			|| reclaimProof->second.ticketKey
+				!= preemption.victimTicketKey
+			|| reclaimProof->second.use != preemption.victimUse
+			|| reclaimProof->second.owner != preemption.owner
+			|| reclaimProof->second.laneControl != preemption.laneControl
+			|| !reclaimProof->second.preempting)) {
 		return false;
 	}
 	const auto active = activeCountsLocked(state->second);
@@ -3557,7 +5865,7 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 		scheduled,
 		urgentWaiters,
 		inputs,
-		true);
+		!transferReclaim);
 	const auto openingReclaim = preemption.reclaim
 			== LaneReclaimKind::Opening
 		&& admissionActiveVictim
@@ -3582,10 +5890,25 @@ bool EndpointAdmissionArbiter::Private::authorizeLaneSuspension(
 		&& limit
 		&& commitmentCount >= limit
 		&& (commitmentCount - 1) < limit;
-	if (!openingReclaim && !capacityReclaim) {
+	const auto replacementBoundary = limit
+		? limit
+		: state->second.liveBudget.provenLowerBound;
+	const auto transferCapacityReclaim = transferReclaim
+		&& preemption.reclaim == LaneReclaimKind::Capacity
+		&& openingPolicy.admissionAllowed
+		&& replacementBoundary > 0
+		&& commitmentCount == replacementBoundary
+		&& (commitmentCount - 1) < replacementBoundary;
+	if (!openingReclaim
+		&& !capacityReclaim
+		&& !transferCapacityReclaim) {
 		return false;
 	}
 	preemption.stage = LanePreemptionStage::Authorized;
+	if (transferReclaim) {
+		state->second.reclaimEpisode->stage
+			= MtProxy::ReclaimEpisodeStage::Authorized;
+	}
 	return true;
 }
 
@@ -3707,16 +6030,32 @@ void EndpointAdmissionArbiter::Private::acknowledgeLaneSuspension(
 		if (preemption.token != token || preemption.victim != identity) {
 			return;
 		}
+		const auto beneficiary = _tickets.find(preemption.beneficiary);
+		if (beneficiary != end(_tickets)) {
+			postCapacityDiagnosticsLocked(
+				*beneficiary->second,
+				state->second,
+				ProxyDiagnosticsPhase::CapacityReclaim,
+				(preemption.reclaim == LaneReclaimKind::Capacity)
+					? ProxyDiagnosticsDecision::Transfer
+					: ProxyDiagnosticsDecision::Reservation,
+				(preemption.victimUse == MtProxy::EndpointUse::Main)
+					? ProxyDiagnosticsTransition::ParkAcknowledged
+					: ProxyDiagnosticsTransition::SuspendAcknowledged,
+				state->second.liveBudget.capacityProbe.frontier,
+				actions);
+		}
 		auto terminal = LanePreemptionTerminal::Retry;
 		if (delivered
 			&& result == MtProxy::EndpointLaneCommandResult::NotApplicable) {
 			terminal = LanePreemptionTerminal::NotApplicable;
+		} else if (delivered
+			&& result == MtProxy::EndpointLaneCommandResult::Applied) {
+			terminal = LanePreemptionTerminal::Applied;
 		} else if (preemption.deadlineAt <= inputs.now) {
 			terminal = LanePreemptionTerminal::Expired;
 		} else if (!delivered) {
 			terminal = LanePreemptionTerminal::DeliveryFailed;
-		} else if (result == MtProxy::EndpointLaneCommandResult::Applied) {
-			terminal = LanePreemptionTerminal::Applied;
 		}
 		finishLanePreemptionLocked(
 			endpointKey,
@@ -3753,7 +6092,6 @@ void EndpointAdmissionArbiter::Private::acknowledgeLaneResume(
 		const auto lane = _laneSchedules.find(endpointKey);
 		const auto state = _storage.states.find(endpointKey);
 		if (lane == end(_laneSchedules)
-			|| !lane->second.resuming
 			|| state == end(_storage.states)) {
 			return;
 		}
@@ -3762,39 +6100,169 @@ void EndpointAdmissionArbiter::Private::acknowledgeLaneResume(
 			.proxyGeneration = proxyGeneration,
 			.attemptId = attemptId,
 		};
-		const auto &resuming = *lane->second.resuming;
-		if (resuming.token != token
-			|| resuming.identity != identity
-			|| resuming.commandDeadlineAt != deadlineAt
-			|| !IsBackground(resuming.use)
-			|| !resuming.ticketKey.ticketId
-			|| resuming.ticketKey.runtimeId != runtimeId) {
-			return;
-		}
-		auto value = std::move(*lane->second.resuming);
-		lane->second.resuming.reset();
-		const auto noDemand = delivered
-			&& result == MtProxy::EndpointLaneCommandResult::NoDemand;
-		const auto retry = !delivered
-			|| result == MtProxy::EndpointLaneCommandResult::Retry;
-		const auto keepSuspended = (retry || noDemand)
-			&& IsBackground(value.use)
-			&& value.ticketKey.ticketId
-			&& value.ticketKey.runtimeId == value.identity.runtimeId
-			&& value.owner
-			&& value.laneControl
-			&& runtimeLiveLocked(value.identity.runtimeId)
-			&& MtProxy::RuntimeGenerationIsCurrent(state->second, {
-				.runtimeId = value.identity.runtimeId,
-				.proxyGeneration = value.identity.proxyGeneration,
-			});
-		if (keepSuspended) {
-			if (noDemand) {
-				value.demanded = false;
+		if (lane->second.parkedMainResume) {
+			const auto &resume = *lane->second.parkedMainResume;
+			if (resume.token != token
+				|| resume.identity != identity
+				|| resume.commandDeadlineAt != deadlineAt) {
+				return;
 			}
-			lane->second.suspended.push_front(std::move(value));
+			auto value = std::move(*lane->second.parkedMainResume);
+			lane->second.parkedMainResume.reset();
+			const auto parked = state->second.parkedReclaimVictim
+				? &*state->second.parkedReclaimVictim
+				: nullptr;
+			const auto accepted = delivered
+				&& result == MtProxy::EndpointLaneCommandResult::Applied
+				&& parked
+				&& parked->episodeToken == value.episodeToken
+				&& parked->attempt == value.identity
+				&& parked->ticketKey == value.ticketKey
+				&& parked->resumeTicketKey.ticketId;
+			const auto exactParked = parked
+				&& parked->episodeToken == value.episodeToken
+				&& parked->attempt == value.identity
+				&& parked->ticketKey == value.ticketKey;
+			const auto notApplicable = delivered
+				&& result
+					== MtProxy::EndpointLaneCommandResult::NotApplicable;
+			if (accepted) {
+				lane->second.parkedMainRetryAt = 0;
+			} else if (exactParked && notApplicable) {
+				const auto resumeTicketKey = parked->resumeTicketKey;
+				parked->resumeTicketKey = {};
+				if (resumeTicketKey.ticketId) {
+					cancelTicketLocked(resumeTicketKey, 0, actions);
+				}
+				if (state->second.parkedReclaimVictim
+					&& state->second.parkedReclaimVictim->episodeToken
+						== value.episodeToken
+					&& state->second.parkedReclaimVictim->attempt
+						== value.identity) {
+					auto cleanup = MtProxy::EndpointDeferredCleanup();
+					static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+						state->second,
+						value.episodeToken,
+						value.identity,
+						cleanup));
+					DeferEndpointCleanup(actions, std::move(cleanup));
+				}
+				lane->second.parkedMainRetryAt = 0;
+			} else if (exactParked
+				&& parkedReclaimVictimCurrentLocked(
+					state->second,
+					*parked)) {
+				const auto resumeTicketKey = parked->resumeTicketKey;
+				if (resumeTicketKey.ticketId) {
+					cancelTicketLocked(resumeTicketKey, 0, actions);
+				}
+				if (state->second.reclaimEpisode
+					&& state->second.reclaimEpisode->token
+						== value.episodeToken) {
+					state->second.reclaimEpisode->victimResumeIssued
+						= false;
+				}
+				lane->second.parkedMainRetryAt = std::max(
+					lane->second.parkedMainRetryAt,
+					LaneCommandRetryBoundary(inputs.now));
+			} else if (exactParked) {
+				const auto resumeTicketKey = parked->resumeTicketKey;
+				parked->resumeTicketKey = {};
+				if (resumeTicketKey.ticketId) {
+					cancelTicketLocked(resumeTicketKey, 0, actions);
+				}
+				if (state->second.parkedReclaimVictim
+					&& state->second.parkedReclaimVictim->episodeToken
+						== value.episodeToken
+					&& state->second.parkedReclaimVictim->attempt
+						== value.identity) {
+					auto cleanup = MtProxy::EndpointDeferredCleanup();
+					static_cast<void>(MtProxy::RemoveParkedReclaimVictim(
+						state->second,
+						value.episodeToken,
+						value.identity,
+						cleanup));
+					DeferEndpointCleanup(actions, std::move(cleanup));
+				}
+				lane->second.parkedMainRetryAt = 0;
+			}
 		} else {
-			QObject::disconnect(value.ownerDestroyed);
+			if (!lane->second.resuming) {
+				return;
+			}
+			const auto &resuming = *lane->second.resuming;
+			if (resuming.token != token
+				|| resuming.identity != identity
+				|| resuming.commandDeadlineAt != deadlineAt
+				|| !IsBackground(resuming.use)
+				|| !resuming.ticketKey.ticketId
+				|| resuming.ticketKey.runtimeId != runtimeId) {
+				return;
+			}
+			auto value = std::move(*lane->second.resuming);
+			lane->second.resuming.reset();
+			value.commandDeadlineAt = 0;
+			const auto applied = delivered
+				&& result == MtProxy::EndpointLaneCommandResult::Applied;
+			const auto notApplicable = delivered
+				&& result
+					== MtProxy::EndpointLaneCommandResult::NotApplicable;
+			const auto noDemand = delivered
+				&& result == MtProxy::EndpointLaneCommandResult::NoDemand;
+			const auto retry = !delivered
+				|| result == MtProxy::EndpointLaneCommandResult::Retry;
+			const auto keepSuspended = value.reclaimEpisodeToken
+				? reclaimSuspendedLaneCurrentLocked(state->second, value)
+				: suspendedLaneCurrentLocked(state->second, value);
+			if (keepSuspended) {
+				if (value.reclaimEpisodeToken && applied) {
+					auto &episode = *state->second.reclaimEpisode;
+					episode.stage = MtProxy::ReclaimEpisodeStage::Terminal;
+					episode.replacementAuthorized = false;
+					episode.beneficiaryTicketKey = {};
+					episode.victimResumeIssued = true;
+					actions.ownerConnections.push_back(
+						value.ownerDestroyed);
+				} else if (value.reclaimEpisodeToken && !notApplicable) {
+					value.resumeRetryAt
+						= LaneCommandRetryBoundary(inputs.now);
+					state->second.reclaimEpisode->victimResumeIssued
+						= false;
+					lane->second.suspended.push_front(std::move(value));
+				} else if (!value.reclaimEpisodeToken
+					&& (retry || noDemand)) {
+					if (noDemand) {
+						value.demanded = false;
+					} else {
+						value.resumeRetryAt
+							= LaneCommandRetryBoundary(inputs.now);
+					}
+					lane->second.suspended.push_front(std::move(value));
+				} else {
+					if (value.reclaimEpisodeToken) {
+						auto &episode = *state->second.reclaimEpisode;
+						episode.stage
+							= MtProxy::ReclaimEpisodeStage::Terminal;
+						episode.replacementAuthorized = false;
+						episode.beneficiaryTicketKey = {};
+						episode.victimResumeIssued = true;
+					}
+					actions.ownerConnections.push_back(
+						value.ownerDestroyed);
+				}
+			} else {
+				if (value.reclaimEpisodeToken
+					&& state->second.reclaimEpisode
+					&& state->second.reclaimEpisode->token
+						== value.reclaimEpisodeToken) {
+					auto &episode = *state->second.reclaimEpisode;
+					episode.stage = MtProxy::ReclaimEpisodeStage::Terminal;
+					episode.replacementAuthorized = false;
+					episode.beneficiaryTicketKey = {};
+					episode.victimResumeIssued = true;
+				}
+				actions.ownerConnections.push_back(value.ownerDestroyed);
+			}
 		}
 		drainEndpointLocked(endpointKey, inputs, actions);
 		updateWakeLocked(inputs, actions);
@@ -3906,6 +6374,13 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 		const auto endpointKey = ticket.endpointKey;
 		const auto unscoped = MtProxy::EndpointEmpty(ticket.endpoint);
 		const auto state = _storage.states.find(endpointKey);
+		if (!unscoped && state != end(_storage.states)) {
+			DeferEndpointCleanup(
+				actions,
+				MtProxy::PruneExpiredEndpointStateDeferred(
+					state->second,
+					inputs.now));
+		}
 		const auto trace = ticket.traceId
 			? _storage.activeTraces.find(ticket.traceId)
 			: end(_storage.activeTraces);
@@ -3920,11 +6395,9 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 		const auto current = unscoped
 			|| (state != end(_storage.states)
 				&& ticketCurrentLocked(ticket, state->second));
-		auto capacity = CandidateCapacityDecision{
-			.kind = unscoped
-				? CapacityDecisionKind::Ordinary
-				: CapacityDecisionKind::Blocked,
-		};
+		const auto parkedResumeTicket = !unscoped
+			&& state != end(_storage.states)
+			&& ParkedResumeMatchesTicket(ticket, state->second);
 		auto finalEligible = unscoped;
 		if (!unscoped && state != end(_storage.states) && current) {
 			auto scheduled = scheduledCountsLocked(endpointKey);
@@ -3942,32 +6415,26 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 				scheduled,
 				urgentWaiters,
 				inputs);
-			capacity = capacityDecisionLocked(
-				ticket,
-				state->second,
-				scheduled,
-				urgentWaiters,
-				inputs.now,
-				std::nullopt);
 			finalEligible = baseEligibleLocked(
 				ticket,
 				state->second,
 				urgentWaiters,
 				inputs.now)
 				&& policy.admissionAllowed
-				&& capacity.kind != CapacityDecisionKind::Blocked;
+				&& ticket.capacityDecision
+				&& capacityDecisionValidLocked(
+					ticket,
+					*ticket.capacityDecision,
+					state->second,
+					scheduled,
+					urgentWaiters,
+					inputs.now);
 		}
 		const auto grantContextCurrent = context
 			&& ticket.owner
 			&& runtimeLiveLocked(key.runtimeId)
 			&& traceCurrent
 			&& current;
-		if (grantContextCurrent
-			&& finalEligible
-			&& !unscoped
-			&& capacity.kind == CapacityDecisionKind::Ordinary) {
-			releaseReservedCapacityProbeLocked(ticket);
-		}
 		if (!grantContextCurrent) {
 			cancelTicketLocked(key, revision, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
@@ -4013,24 +6480,53 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 					cancelTicketLocked(key, revision, actions);
 					drainEndpointLocked(endpointKey, inputs, actions);
 					updateWakeLocked(inputs, actions);
-				} else if (capacity.kind == CapacityDecisionKind::Probe
-					&& !MtProxy::ActivateCapacityProbe(
-						state->second.liveBudget,
-						key,
-						{
-							.runtimeId = admission->runtimeId,
-							.proxyGeneration
-								= admission->proxyGeneration,
-							.attemptId = admission->attemptId,
-						})) {
+				} else if (!unscoped
+					&& !activateCapacityDecisionLocked(
+						ticket,
+						state->second,
+						*admission)) {
 					rejectedAdmission.emplace(std::move(*admission));
 					cancelTicketLocked(key, revision, actions);
 					drainEndpointLocked(endpointKey, inputs, actions);
-					updateWakeLocked(inputs, actions);
-				} else {
-					auto acceptedRecoveryToken
-						= MtProxy::MainRecoveryToken();
-					if (!unscoped && ticket.acceptedRecoveryToken) {
+						updateWakeLocked(inputs, actions);
+					} else {
+						if (!unscoped) {
+							const auto &decision = *ticket.capacityDecision;
+							postCapacityDiagnosticsLocked(
+								ticket,
+								state->second,
+								ProxyDiagnosticsPhase::CapacityDecision,
+								CapacityDiagnosticsDecision(decision.kind),
+								ProxyDiagnosticsTransition::Activated,
+								decision.frontier
+									? std::optional<int>(decision.frontier)
+									: std::nullopt,
+								actions);
+							if (decision.kind
+								== CapacityDecisionKind::FrontierProbe) {
+								postCapacityDiagnosticsLocked(
+									ticket,
+									state->second,
+									ProxyDiagnosticsPhase::CapacityProbe,
+									ProxyDiagnosticsDecision::FrontierProbe,
+									ProxyDiagnosticsTransition::Activated,
+									decision.frontier,
+									actions);
+							} else if (decision.kind
+								== CapacityDecisionKind::ExactReplacement) {
+								postCapacityDiagnosticsLocked(
+									ticket,
+									state->second,
+									ProxyDiagnosticsPhase::CapacityReclaim,
+									ProxyDiagnosticsDecision::ExactReplacement,
+									ProxyDiagnosticsTransition::ReplacementGranted,
+									decision.frontier,
+									actions);
+							}
+						}
+						auto acceptedRecoveryToken
+							= MtProxy::MainRecoveryToken();
+						if (!unscoped && ticket.acceptedRecoveryToken) {
 						const auto runtimeGeneration
 							= RuntimeGenerationKey{
 								.runtimeId = key.runtimeId,
@@ -4067,6 +6563,63 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						lane->second.ownerDestroyed
 							= ticket.ownerDestroyed;
 						lane->second.laneControl = ticket.laneControl;
+						if (parkedResumeTicket) {
+							const auto resumedAttempt
+								= MtProxy::RelayProofIdentity{
+									.runtimeId = admission->runtimeId,
+									.proxyGeneration
+										= admission->proxyGeneration,
+									.attemptId = admission->attemptId,
+								};
+							auto &parked = *state->second
+								.parkedReclaimVictim;
+							const auto episodeToken = parked.episodeToken;
+							const auto parkedAttempt = parked.attempt;
+							parked.resumeAttempt = resumedAttempt;
+							auto cleanup
+								= MtProxy::EndpointDeferredCleanup();
+							const auto removed
+								= MtProxy::RemoveParkedReclaimVictim(
+									state->second,
+									episodeToken,
+									parkedAttempt,
+									cleanup);
+							Assert(removed);
+							DeferEndpointCleanup(
+								actions,
+								std::move(cleanup));
+							const auto laneSchedule = _laneSchedules.find(
+								ticket.endpointKey);
+							if (laneSchedule != end(_laneSchedules)
+								&& laneSchedule->second.parkedMainResume
+								&& laneSchedule->second.parkedMainResume
+									->episodeToken == episodeToken
+								&& laneSchedule->second.parkedMainResume
+									->identity == parkedAttempt) {
+								laneSchedule->second.parkedMainResume.reset();
+							}
+							if (laneSchedule != end(_laneSchedules)) {
+								laneSchedule->second.parkedMainRetryAt = 0;
+							}
+						}
+						if (state->second.foregroundTransferEntitlement
+							&& MtProxy::ForegroundTransferEntitlementMatches(
+								*state->second
+									.foregroundTransferEntitlement,
+								ticket.transferDemand,
+								ticket.owner)
+							&& state->second.foregroundTransferEntitlement
+								->ticketKey == ticket.key) {
+							auto &entitlement = *state->second
+								.foregroundTransferEntitlement;
+							entitlement.ticketKey = {};
+							entitlement.attempt = {
+								.runtimeId = admission->runtimeId,
+								.proxyGeneration
+									= admission->proxyGeneration,
+								.attemptId = admission->attemptId,
+							};
+						}
 					}
 					auto attempt = ProxyConnectionAttempt{
 						.runtimeId = key.runtimeId,
@@ -4159,6 +6712,12 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request) {
 	return _private->enqueue(std::move(context), std::move(request));
+}
+
+void EndpointAdmissionArbiter::endTransferDemand(
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner) {
+	_private->endTransferDemand(demand, std::move(owner));
 }
 
 void EndpointAdmissionArbiter::cancel(

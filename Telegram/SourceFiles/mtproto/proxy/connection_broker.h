@@ -69,6 +69,8 @@ struct ConnectionRequest {
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 	crl::time waitStartedAt = 0;
+	MtProxy::EndpointTransferDemandKey transferDemand;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 class ConnectionBroker;
@@ -109,6 +111,9 @@ public:
 	~ConnectionBroker();
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
+	void endTransferDemand(
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner);
 	void cancel(ConnectionTicketId id);
 	void cancelByProxyGeneration(uint64 generation);
 	void cancelByOwnerDestruction();

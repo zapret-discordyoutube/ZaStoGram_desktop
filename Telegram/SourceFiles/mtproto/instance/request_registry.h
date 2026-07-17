@@ -41,8 +41,14 @@ public:
 		SerializedRequest request;
 	};
 
+	struct UnregisteredRequest {
+		SerializedRequest request;
+		std::vector<DependentRequest> dependentRequests;
+	};
+
 	struct CancelledRequest {
 		std::optional<ShiftedDcId> dcWithShift;
+		SerializedRequest request;
 		mtpMsgId msgId = 0;
 		std::vector<DependentRequest> dependentRequests;
 	};
@@ -63,7 +69,7 @@ public:
 	void restoreCallback(
 		mtpRequestId requestId,
 		ResponseHandler &&callbacks);
-	[[nodiscard]] std::vector<DependentRequest> unregisterRequest(
+	[[nodiscard]] UnregisteredRequest unregisterRequest(
 		mtpRequestId requestId);
 	[[nodiscard]] DependencyAction prepareDependency(
 		mtpRequestId requestId,

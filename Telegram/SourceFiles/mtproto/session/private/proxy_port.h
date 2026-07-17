@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 class RuntimeEnvironment;
+struct ProxyDiagnosticsEvent;
 enum class ProxyDiagnosticsPhase;
 enum class ProxyDiagnosticsSeverity;
 
@@ -139,6 +140,8 @@ struct SessionProxyRequest {
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
 	crl::time waitStartedAt = 0;
+	MtProxy::EndpointTransferDemandKey transferDemand;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 class SessionProxyTicket final {
@@ -183,6 +186,10 @@ public:
 	virtual void cancelByProxyGeneration(
 		RuntimeEnvironment *runtime,
 		uint64 generation) = 0;
+	virtual void endTransferDemand(
+		RuntimeEnvironment *runtime,
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner) = 0;
 	[[nodiscard]] virtual SessionProxyEndpointSnapshot endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const = 0;
@@ -220,6 +227,9 @@ public:
 		const MtProxy::EndpointId &endpoint,
 		uint64 proxyGeneration,
 		MtProxy::MainRecoveryToken token) = 0;
+	virtual void writeDiagnosticsEvent(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyDiagnosticsEvent event) = 0;
 	virtual void logEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,

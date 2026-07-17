@@ -109,7 +109,16 @@ private:
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 	};
+	struct ParkedMainState {
+		MtProxy::ReclaimEpisodeToken episodeToken;
+		uint64 attemptId = 0;
+		uint64 proxyGeneration = 0;
+		uint64 resumeCommandToken = 0;
+		bool resumeRequestArmed = false;
+	};
 	struct ConnectionState {
+		~ConnectionState();
+
 		ConnectionPointer connection;
 		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
@@ -120,12 +129,17 @@ private:
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
+		uint64 nextTransferDemandEpoch = 1;
+		std::optional<MtProxy::EndpointTransferDemandKey>
+			activeTransferDemand;
+		Fn<void(MtProxy::EndpointTransferDemandKey)> transferDemandEnd;
 		bool proxyMigrationSuspended = false;
 		bool proxyMigrationScout = false;
 		bool proxyMigrationDemandDormant = false;
 		bool endpointLaneSuspended = false;
 		uint64 endpointLaneToken = 0;
 		Fn<void()> endpointLaneDemand;
+		std::optional<ParkedMainState> parkedMain;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
 		std::vector<TestConnection> testConnections;

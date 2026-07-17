@@ -302,10 +302,19 @@ public:
 			setAfter(requestId);
 			return *this;
 		}
+		[[nodiscard]] SpecificRequestBuilder &fileTransferTag(
+				details::FileTransferRequestTag tag) noexcept {
+			_fileTransferTag = std::move(tag);
+			return *this;
+		}
 
 		mtpRequestId send() {
+			auto request = details::SerializedRequest::Serialize(_request);
+			if (_fileTransferTag) {
+				request->fileTransferTag = std::move(_fileTransferTag);
+			}
 			const auto id = sender()->sendSerializedRequest(
-				details::SerializedRequest::Serialize(_request),
+				std::move(request),
 				ResponseHandler{ takeOnDone(), takeOnFail() },
 				takeDcId(),
 				takeCanWait(),
@@ -317,6 +326,7 @@ public:
 
 	private:
 		Request _request;
+		std::optional<details::FileTransferRequestTag> _fileTransferTag;
 
 	};
 

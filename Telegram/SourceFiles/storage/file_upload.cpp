@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_send_progress.h"
 #include "mtproto/dc_id.h"
 #include "mtproto/instance/mtp_instance.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "storage/localimageloader.h"
 #include "storage/file_download.h"
@@ -27,6 +29,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/storage_account.h"
 #include "apiwrap.h"
+
+#include <atomic>
 
 namespace Storage {
 namespace {
@@ -63,10 +67,38 @@ constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
 constexpr auto kMaxSessionsCount = 8;
 constexpr auto kFastRequestThreshold = 1 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
+constexpr auto kFileProgressInterval = 2 * crl::time(1000);
 
 // Request is 'fast' if it was done in less than 1s and
 // (it-s size + queued before size) >= 512kb.
 constexpr auto kAcceptAsFastIfTotalAtLeast = 512 * 1024;
+
+[[nodiscard]] uint64 NextUploadLaneOrdinal() {
+	static auto value = std::atomic<uint64>(0);
+	return value.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+[[nodiscard]] uint64 NextUploadRequestOrdinal() {
+	static auto value = std::atomic<uint64>(0);
+	return value.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+[[nodiscard]] MTP::ProxyDiagnosticsEvent UploadProgressEvent(
+		uint64 laneOrdinal,
+		qint64 acknowledgedBytes,
+		bool isFinal) {
+	auto event = MTP::ProxyDiagnosticsEvent();
+	event.source = MTP::ProxyDiagnosticsSource::MTP;
+	event.phase = MTP::ProxyDiagnosticsPhase::FileProgress;
+	event.attempt.traceId = laneOrdinal;
+	event.attempt.use = MTP::ProxyConnectionUse::Upload;
+	event.transition = MTP::ProxyDiagnosticsTransition::Acknowledged;
+	event.direction = MTP::ProxyDiagnosticsDirection::Upload;
+	event.laneOrdinal = laneOrdinal;
+	event.acknowledgedBytes = acknowledgedBytes;
+	event.isFinal = isFinal;
+	return event;
+}
 
 [[nodiscard]] const char *ThumbnailFormat(const QString &mime) {
 	return Core::IsMimeSticker(mime) ? "WEBP" : "JPG";
@@ -106,6 +138,7 @@ struct Uploader::Request {
 	FullMsgId itemId;
 	crl::time sent = 0;
 	QByteArray bytes;
+	uint64 diagnosticLaneOrdinal = 0;
 	int queued = 0;
 	ushort part = 0;
 	uchar dcIndex = 0;
@@ -429,12 +462,76 @@ void Uploader::stopSessions() {
 	if (ranges::any_of(_sentPerDcIndex, rpl::mappers::_1 != 0)) {
 		_stopSessionsTimer.callOnce(kKillSessionTimeout);
 	} else {
+		Assert(_diagnosticLanes.size() == _sentPerDcIndex.size());
 		for (auto i = 0; i != int(_sentPerDcIndex.size()); ++i) {
+			finishDiagnosticSession(i);
 			_api->instance().stopSession(MTP::uploadDcId(i));
 		}
 		_sentPerDcIndex.clear();
+		_diagnosticLanes.clear();
 		_dcIndicesWithFastRequests.clear();
 	}
+}
+
+void Uploader::finishDiagnosticSession(int dcIndex) {
+	Expects(dcIndex >= 0 && dcIndex < int(_diagnosticLanes.size()));
+
+	const auto lane = base::take(_diagnosticLanes[dcIndex]);
+	auto event = UploadProgressEvent(
+		lane.laneOrdinal,
+		lane.acknowledgedBytes,
+		true);
+	MTP::WriteProxyDiagnosticsLine(
+		&_api->instance().runtimeEnvironment(),
+		std::move(event));
+}
+
+auto Uploader::fileTransferTag(
+		uchar dcIndex,
+		MTP::details::FileTransferRpcKind rpcKind)
+-> MTP::details::FileTransferRequestTag {
+	Expects(dcIndex < _diagnosticLanes.size());
+
+	auto &lane = _diagnosticLanes[dcIndex];
+	const auto requestOrdinal = NextUploadRequestOrdinal();
+	return MTP::details::FileTransferRequestTag(
+		MTP::details::FileTransferDirection::Upload,
+		rpcKind,
+		requestOrdinal,
+		lane.laneOrdinal,
+		requestOrdinal,
+		base::take(lane.firstRequest));
+}
+
+void Uploader::addAcknowledgedBytes(
+		uint64 laneOrdinal,
+		qint64 bytes) {
+	if (!laneOrdinal || bytes <= 0) {
+		return;
+	}
+	const auto i = ranges::find_if(
+		_diagnosticLanes,
+		[=](const auto &lane) {
+			return (lane.laneOrdinal == laneOrdinal);
+		});
+	Assert(i != _diagnosticLanes.end());
+	if (i == _diagnosticLanes.end()) {
+		return;
+	}
+	i->acknowledgedBytes += bytes;
+	const auto now = crl::now();
+	if (i->lastProgressEmission
+		&& now < i->lastProgressEmission + kFileProgressInterval) {
+		return;
+	}
+	i->lastProgressEmission = now;
+	auto event = UploadProgressEvent(
+		i->laneOrdinal,
+		i->acknowledgedBytes,
+		false);
+	MTP::WriteProxyDiagnosticsLine(
+		&_api->instance().runtimeEnvironment(),
+		std::move(event));
 }
 
 QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
@@ -499,6 +596,8 @@ std::optional<uchar> Uploader::chooseDcIndexForNextRequest(
 	if (canAddDcIndex()) {
 		const auto result = int(_sentPerDcIndex.size());
 		_sentPerDcIndex.push_back(0);
+		_diagnosticLanes.emplace_back();
+		_diagnosticLanes.back().laneOrdinal = NextUploadLaneOrdinal();
 		_dcIndicesWithFastRequests.clear();
 		_latestDcIndexAdded = crl::now();
 
@@ -543,13 +642,19 @@ auto Uploader::sendPart(not_null<Entry*> entry, uchar dcIndex)
 }
 
 template <typename Prepared>
-void Uploader::sendPreparedRequest(Prepared &&prepared, Request &&request) {
+void Uploader::sendPreparedRequest(
+		Prepared &&prepared,
+		MTP::details::FileTransferRpcKind rpcKind,
+		Request &&request) {
 	auto &sentInSession = _sentPerDcIndex[request.dcIndex];
 	const auto queued = sentInSession;
 	sentInSession += int(request.bytes.size());
+	auto tag = fileTransferTag(request.dcIndex, rpcKind);
+	request.diagnosticLaneOrdinal = tag.trace->laneOrdinal;
 
 	const auto requestId = _api->request(
 		std::move(prepared)
+	).fileTransferTag(std::move(tag)
 	).done([=](const MTPBool &result, mtpRequestId requestId) {
 		partLoaded(result, requestId);
 	}).fail([=](const MTP::Error &error, mtpRequestId requestId) {
@@ -573,19 +678,23 @@ auto Uploader::sendPendingPart(not_null<Entry*> entry, uchar dcIndex)
 	const auto bytes = request.bytes;
 	request.dcIndex = dcIndex;
 	if (request.bigPart) {
-		sendPreparedRequest(MTPupload_SaveBigFilePart(
-			MTP_long(entry->file->id),
-			MTP_int(part),
-			MTP_int(entry->docPartsCount),
-			MTP_bytes(bytes)
-		), std::move(request));
+		sendPreparedRequest(
+			MTPupload_SaveBigFilePart(
+				MTP_long(entry->file->id),
+				MTP_int(part),
+				MTP_int(entry->docPartsCount),
+				MTP_bytes(bytes)),
+			MTP::details::FileTransferRpcKind::SaveBigFilePart,
+			std::move(request));
 	} else {
 		const auto id = request.docPart ? entry->file->id : entry->partsOfId;
-		sendPreparedRequest(MTPupload_SaveFilePart(
-			MTP_long(id),
-			MTP_int(part),
-			MTP_bytes(bytes)
-		), std::move(request));
+		sendPreparedRequest(
+			MTPupload_SaveFilePart(
+				MTP_long(id),
+				MTP_int(part),
+				MTP_bytes(bytes)),
+			MTP::details::FileTransferRpcKind::SaveFilePart,
+			std::move(request));
 	}
 	return SendResult::Success;
 }
@@ -609,29 +718,39 @@ auto Uploader::sendDocPart(not_null<Entry*> entry, uchar dcIndex)
 	const auto part = entry->docPartsSent++;
 	++entry->docPartsWaiting;
 
-	const auto send = [&](auto &&request, bool big) {
-		sendPreparedRequest(std::move(request), {
-			.itemId = itemId,
-			.bytes = partBytes,
-			.part = part,
-			.dcIndex = dcIndex,
-			.docPart = true,
-			.bigPart = big,
-		});
+	const auto send = [&](
+			auto &&prepared,
+			MTP::details::FileTransferRpcKind rpcKind,
+			bool big) {
+		sendPreparedRequest(
+			std::move(prepared),
+			rpcKind,
+			{
+				.itemId = itemId,
+				.bytes = partBytes,
+				.part = part,
+				.dcIndex = dcIndex,
+				.docPart = true,
+				.bigPart = big,
+			});
 	};
 	if (entry->docSize > kUseBigFilesFrom) {
-		send(MTPupload_SaveBigFilePart(
-			MTP_long(entry->file->id),
-			MTP_int(part),
-			MTP_int(entry->docPartsCount),
-			MTP_bytes(partBytes)
-		), true);
+		send(
+			MTPupload_SaveBigFilePart(
+				MTP_long(entry->file->id),
+				MTP_int(part),
+				MTP_int(entry->docPartsCount),
+				MTP_bytes(partBytes)),
+			MTP::details::FileTransferRpcKind::SaveBigFilePart,
+			true);
 	} else {
-		send(MTPupload_SaveFilePart(
-			MTP_long(entry->file->id),
-			MTP_int(part),
-			MTP_bytes(partBytes)
-		), false);
+		send(
+			MTPupload_SaveFilePart(
+				MTP_long(entry->file->id),
+				MTP_int(part),
+				MTP_bytes(partBytes)),
+			MTP::details::FileTransferRpcKind::SaveFilePart,
+			false);
 	}
 	return SendResult::Success;
 }
@@ -648,15 +767,17 @@ auto Uploader::sendSlicedPart(not_null<Entry*> entry, uchar dcIndex)
 	++entry->partsWaiting;
 	const auto index = entry->partsSent++;
 	const auto partBytes = entry->parts->at(index);
-	sendPreparedRequest(MTPupload_SaveFilePart(
-		MTP_long(entry->partsOfId),
-		MTP_int(index),
-		MTP_bytes(partBytes)
-	), {
-		.itemId = itemId,
-		.bytes = partBytes,
-		.dcIndex = dcIndex,
-	});
+	sendPreparedRequest(
+		MTPupload_SaveFilePart(
+			MTP_long(entry->partsOfId),
+			MTP_int(index),
+			MTP_bytes(partBytes)),
+		MTP::details::FileTransferRpcKind::SaveFilePart,
+		{
+			.itemId = itemId,
+			.bytes = partBytes,
+			.dcIndex = dcIndex,
+		});
 	return SendResult::Success;
 }
 
@@ -786,6 +907,7 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 	const auto fast = (duration < kFastRequestThreshold);
 	const auto slowish = !fast;
 	const auto slow = (duration >= kSlowRequestThreshold);
+	auto removeSlowDcIndex = false;
 
 	if (slowish) {
 		_dcIndicesWithFastRequests.clear();
@@ -794,8 +916,7 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 			const auto remove = (elapsed >= kWaitForNormalizeTimeout);
 			if (remove && _sentPerDcIndex.size() > 1) {
 				DEBUG_LOG(("Uploader: Slow request, removing dc index."));
-				removeDcIndex();
-				_latestDcIndexRemoved = now;
+				removeSlowDcIndex = true;
 			} else {
 				DEBUG_LOG(("Uploader: Slow request, clear fast records."));
 			}
@@ -817,6 +938,11 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 	} else {
 		--entry.partsWaiting;
 		entry.sentSize += bytes;
+	}
+	addAcknowledgedBytes(request.diagnosticLaneOrdinal, bytes);
+	if (removeSlowDcIndex) {
+		removeDcIndex();
+		_latestDcIndexRemoved = now;
 	}
 
 	if (entry.file->type == SendMediaType::Photo) {
@@ -870,7 +996,10 @@ void Uploader::removeDcIndex() {
 		}
 	}
 	Assert(_sentPerDcIndex.back() == 0);
+	Assert(_diagnosticLanes.size() == _sentPerDcIndex.size());
+	finishDiagnosticSession(dcIndex);
 	_sentPerDcIndex.pop_back();
+	_diagnosticLanes.pop_back();
 	_dcIndicesWithFastRequests.remove(dcIndex);
 	_api->instance().stopSession(MTP::uploadDcId(dcIndex));
 	DEBUG_LOG(("Uploader: Removed dc index %1.").arg(dcIndex));

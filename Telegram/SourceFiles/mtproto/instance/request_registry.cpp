@@ -90,19 +90,25 @@ void RequestRegistry::restoreCallback(
 	}
 }
 
-std::vector<RequestRegistry::DependentRequest>
+RequestRegistry::UnregisteredRequest
 RequestRegistry::unregisterRequest(mtpRequestId requestId) {
+	auto result = UnregisteredRequest();
 	_requestsDelays.erase(requestId);
 
 	{
 		QWriteLocker locker(&_requestMapLock);
-		_requestMap.erase(requestId);
+		const auto it = _requestMap.find(requestId);
+		if (it != _requestMap.end()) {
+			result.request = it->second;
+			_requestMap.erase(it);
+		}
 	}
 	{
 		QMutexLocker locker(&_requestByDcLock);
 		_requestsByDc.erase(requestId);
 	}
-	return unregisterRequestUnchecked(requestId);
+	result.dependentRequests = unregisterRequestUnchecked(requestId);
+	return result;
 }
 
 RequestRegistry::DependencyAction RequestRegistry::prepareDependency(
@@ -182,15 +188,10 @@ RequestRegistry::CancelledRequest RequestRegistry::cancel(
 		mtpRequestId requestId) {
 	auto result = CancelledRequest();
 	result.dcWithShift = queryDc(requestId);
-	{
-		QWriteLocker locker(&_requestMapLock);
-		const auto it = _requestMap.find(requestId);
-		if (it != _requestMap.end()) {
-			result.msgId = it->second.getMsgId();
-			_requestMap.erase(it);
-		}
-	}
-	result.dependentRequests = unregisterRequest(requestId);
+	auto unregistered = unregisterRequest(requestId);
+	result.request = unregistered.request;
+	result.msgId = result.request ? result.request.getMsgId() : 0;
+	result.dependentRequests = std::move(unregistered.dependentRequests);
 
 	QMutexLocker locker(&_parserMapLock);
 	_parserMap.erase(requestId);

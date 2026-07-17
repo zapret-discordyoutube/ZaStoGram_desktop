@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 class ProxyEndpointContext;
+struct ProxyDiagnosticsEvent;
 
 } // namespace MTP
 
@@ -36,6 +37,7 @@ struct EndpointAdmissionRuntimeDispatch final {
 	Fn<int(int)> randomIndex;
 	Fn<void(crl::time, QObject*, Fn<void()>)> singleShot;
 	Fn<bool()> fastProxyWarmup;
+	Fn<void(ProxyDiagnosticsEvent)> writeProxyDiagnosticsLine;
 	std::shared_ptr<std::atomic<bool>> registrationLive;
 };
 
@@ -79,6 +81,8 @@ struct EndpointAdmissionRequest final {
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
 	crl::time waitStartedAt = 0;
+	MtProxy::EndpointTransferDemandKey transferDemand;
+	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 struct EndpointAdmissionEnqueueResult final {
@@ -103,6 +107,9 @@ public:
 	[[nodiscard]] EndpointAdmissionEnqueueResult enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
+	void endTransferDemand(
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner);
 	void cancel(AdmissionTicketKey key, uint64 revision = 0);
 	void ownerDestroyed(AdmissionTicketKey key);
 	void cancelBeforeGeneration(

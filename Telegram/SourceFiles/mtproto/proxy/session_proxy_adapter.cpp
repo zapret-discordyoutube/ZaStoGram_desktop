@@ -185,6 +185,8 @@ private:
 			});
 		},
 		.waitStartedAt = request.waitStartedAt,
+		.transferDemand = request.transferDemand,
+		.reclaimEpisodeToken = request.reclaimEpisodeToken,
 	};
 }
 
@@ -382,6 +384,18 @@ void ReportConnectionFailure(
 		FailureReport(attempt, reason, failure, lease));
 }
 
+class SessionProxyControl final {
+public:
+	explicit SessionProxyControl(ProxyControlPlane &control);
+
+	[[nodiscard]] MtProxy::ProxyEndpointView mtproxyEndpointSnapshot(
+		const MtProxy::EndpointId &endpoint) const;
+
+private:
+	ProxyControlPlane &_control;
+
+};
+
 class ProductionSessionProxyPort final : public SessionProxyPort {
 public:
 	[[nodiscard]] SessionProxyTicket requestConnection(
@@ -389,6 +403,10 @@ public:
 	void cancelByProxyGeneration(
 		RuntimeEnvironment *runtime,
 		uint64 generation) override;
+	void endTransferDemand(
+		RuntimeEnvironment *runtime,
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner) override;
 	[[nodiscard]] SessionProxyEndpointSnapshot endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const override;
@@ -426,6 +444,9 @@ public:
 		const MtProxy::EndpointId &endpoint,
 		uint64 proxyGeneration,
 		MtProxy::MainRecoveryToken token) override;
+	void writeDiagnosticsEvent(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyDiagnosticsEvent event) override;
 	void logEvent(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
@@ -435,6 +456,15 @@ public:
 		ProxyDiagnosticsSeverity severity,
 		const QString &message) override;
 };
+
+SessionProxyControl::SessionProxyControl(ProxyControlPlane &control)
+: _control(control) {
+}
+
+MtProxy::ProxyEndpointView SessionProxyControl::mtproxyEndpointSnapshot(
+		const MtProxy::EndpointId &endpoint) const {
+	return _control.mtproxyEndpointView(endpoint);
+}
 
 } // namespace
 
@@ -460,11 +490,22 @@ void ProductionSessionProxyPort::cancelByProxyGeneration(
 	}
 }
 
+void ProductionSessionProxyPort::endTransferDemand(
+		RuntimeEnvironment *runtime,
+		MtProxy::EndpointTransferDemandKey demand,
+		QPointer<QObject> owner) {
+	if (runtime) {
+		not_null{ runtime }->proxyServices().broker().endTransferDemand(
+			demand,
+			std::move(owner));
+	}
+}
+
 SessionProxyEndpointSnapshot ProductionSessionProxyPort::endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const {
-	const auto view = runtime->proxyServices().control(
-	).mtproxyEndpointView(endpoint);
+	const auto view = SessionProxyControl(
+		runtime->proxyServices().control()).mtproxyEndpointSnapshot(endpoint);
 	const auto proven = view.mainProof.strength
 		!= MtProxy::MainRelayProofStrength::None;
 	return {
@@ -524,7 +565,9 @@ void ProductionSessionProxyPort::reportConnectionError(
 		return;
 	}
 	const auto runtime = not_null{ attempt.runtime };
-	if (!ClaimAttemptTerminal(attempt)) {
+	const auto postTerminal = !ClaimAttemptTerminal(attempt);
+	const auto snapshot = endpointSnapshot(runtime, attempt.endpoint);
+	if (snapshot.healthy && !snapshot.halfOpen && postTerminal) {
 		if (ignoreHealthyRemoteClosed
 			&& failure.livenessReported
 			&& (reason == MtProxy::FailureReason::AppDataRemoteClosed)) {
@@ -540,6 +583,9 @@ void ProductionSessionProxyPort::reportConnectionError(
 					u"post_success_connection_closed"_q,
 					std::move(failure)));
 		}
+		return;
+	}
+	if (postTerminal) {
 		return;
 	}
 	ReportConnectionFailure(attempt, reason, failure, lease);
@@ -665,12 +711,8 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 		return;
 	}
 	const auto runtime = not_null{ attempt.runtime };
-	const auto claimed = ClaimAttemptTerminal(attempt);
 	runtime->proxyServices().control().retireMtproxyRelayProof(
 		RelayProofReport(attempt));
-	if (!claimed) {
-		return;
-	}
 	const auto message = (origin == ProxyCloseOrigin::ProxySwitch)
 		? u"proxy_attempt_cancelled_by_proxy_switch"_q
 		: (origin == ProxyCloseOrigin::OwnerDestroyed)
@@ -684,7 +726,7 @@ void ProductionSessionProxyPort::reportAttemptCancelled(
 		message,
 		attempt.transport);
 	report.closeOrigin = origin;
-	ReportClaimedAttemptSummary(runtime, std::move(report));
+	static_cast<void>(ReportProxyAttemptSummary(runtime, std::move(report)));
 }
 
 void ProductionSessionProxyPort::reportRelayStall(
@@ -714,6 +756,12 @@ void ProductionSessionProxyPort::cancelMainRecoveryBackoff(
 			.proxyGeneration = proxyGeneration,
 		},
 		token);
+}
+
+void ProductionSessionProxyPort::writeDiagnosticsEvent(
+		not_null<RuntimeEnvironment*> runtime,
+		ProxyDiagnosticsEvent event) {
+	WriteProxyDiagnosticsLine(runtime, std::move(event));
 }
 
 void ProductionSessionProxyPort::logEvent(
