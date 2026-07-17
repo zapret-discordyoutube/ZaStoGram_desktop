@@ -254,8 +254,9 @@ def test_established_idle_close_is_not_a_health_failure():
     assert "retireMtproxyRelayProof(" in cancelled
     assert "RelayProofReport(attempt)" in cancelled
     assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(
-        "ReportClaimedAttemptSummary(")
-    healthy = connection_error.index("if (!ClaimAttemptTerminal(attempt)) {")
+        "ReportProxyAttemptSummary(")
+    healthy = connection_error.index(
+        "const auto postTerminal = !ClaimAttemptTerminal(attempt);")
     retirement = connection_error.index("retireMtproxyRelayProof(")
     liveness = connection_error.index("ReportProxyLiveness(")
     assert healthy < retirement < liveness
