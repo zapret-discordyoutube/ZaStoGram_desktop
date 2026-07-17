@@ -89,6 +89,7 @@ private:
 	void paintRecognitionOverlay(
 		const QImage &image,
 		ContentGeometry geometry);
+	[[nodiscard]] QColor backgroundColor() const;
 
 	struct Control {
 		int index = -1;
