@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
