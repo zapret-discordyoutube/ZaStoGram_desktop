@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -24,7 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <optional>
 
 namespace MTP::details::MtProxy {
-[[nodiscard]] bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime);
 [[nodiscard]] crl::time ServerHelloTimeoutFor(
 	const EndpointState &state,
 	crl::time attemptStartedAt);
@@ -44,8 +43,40 @@ void NoteRouteSuccess(
 namespace {
 
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
+
+[[nodiscard]] EndpointOpeningAttemptKey OpeningAttemptKey(
+		uint64 attemptId,
+		const EndpointAttemptState &attempt) {
+	return {
+		.runtimeId = attempt.runtimeId,
+		.traceId = attempt.traceId,
+		.ticketId = attempt.ticketKey.ticketId,
+		.proxyGeneration = attempt.proxyGeneration,
+		.proxyEpoch = attempt.proxyEpoch,
+		.successEpoch = attempt.successEpoch,
+		.attemptId = attemptId,
+		.use = attempt.use,
+		.ticketKey = attempt.ticketKey,
+	};
+}
+
+[[nodiscard]] EndpointOpeningAttemptIdentity OpeningAttemptIdentity(
+		const EndpointId &endpoint,
+		EndpointOpeningAttemptKey key) {
+	return {
+		.flow = {
+			.endpoint = endpoint.canonical,
+			.runtimeId = key.runtimeId,
+			.proxyGeneration = key.proxyGeneration,
+			.use = key.use,
+		},
+		.key = std::move(key),
+	};
+}
+
 struct TerminalAttemptResult {
 	ProxyConnectionAttempt attempt;
+	EndpointOpeningAttemptKey openingKey;
 	bool proofRetired = false;
 	bool finalAttemptTerminal = false;
 };
@@ -76,6 +107,17 @@ struct TerminalAttemptResult {
 			.use = proof->second.use,
 			.ticketKey = proof->second.ticketKey,
 		};
+		result.openingKey = {
+			.runtimeId = report.runtimeId,
+			.traceId = proof->second.traceId,
+			.ticketId = proof->second.ticketKey.ticketId,
+			.proxyGeneration = report.proxyGeneration,
+			.proxyEpoch = proof->second.proxyEpoch,
+			.successEpoch = proof->second.successEpoch,
+			.attemptId = report.attemptId,
+			.use = proof->second.use,
+			.ticketKey = proof->second.ticketKey,
+		};
 		result.proofRetired = RetireRelayProof(state, identity);
 	} else {
 		const auto attempt = state.attemptStarts.find(report.attemptId);
@@ -94,6 +136,9 @@ struct TerminalAttemptResult {
 			.use = attempt->second.use,
 			.ticketKey = attempt->second.ticketKey,
 		};
+		result.openingKey = OpeningAttemptKey(
+			report.attemptId,
+			attempt->second);
 	}
 	const auto terminalAt = report.terminalAt ? report.terminalAt : now;
 	auto verdict = EndpointVerdict{
@@ -173,8 +218,6 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 	auto &state = storage.states[key];
 	ApplyProxyGeneration(state, request.runtimeId, request.proxyGeneration);
 	state.endpoint = request.endpoint;
-	state.deniedSince = 0;
-	state.lastDenialRotationSignal = 0;
 	auto plan = BuildAttemptPlan(request, state.recipeLevel);
 	plan.serverHelloTimeout = ServerHelloTimeoutFor(state, attemptStartedAt);
 	const auto stealth = plan.stealth;
@@ -186,7 +229,6 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.proxyEpoch = state.proxyEpoch,
 		.successEpoch = state.successEpoch,
 		.startedAt = attemptStartedAt,
-		.admissionActive = true,
 		.use = request.use,
 		.schedulerLifecycle = ProxySchedulerLifecycle::HandedOff,
 		.admissionPhase = ProxyAdmissionPhase::Resolving,
@@ -198,7 +240,6 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.attemptStartedAt = attemptStartedAt,
 		.phaseStartedAt = attemptStartedAt,
 	});
-	SynchronizeEndpointAdmissionAggregate(state);
 	return Admission{
 		.stealth = stealth,
 		.effectiveTlsProfile = effectiveTlsProfile,
@@ -241,13 +282,11 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	const auto diagnostic = ToLegacyDiagnostic(report.reason);
 	const auto now = crl::now();
-	const auto fastWarmup = FastWarmupEnabled(_runtime);
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto noteConnectTimeout = false;
+	auto pressureFailure = std::optional<PressureFailure>();
 	auto shouldDrain = false;
-	auto recoveryFinished = false;
 	auto staleRecipeLevel = std::optional<int>();
 	auto deferredCleanup = EndpointDeferredCleanup();
 	{
@@ -274,17 +313,16 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					.proxyGeneration = report.proxyGeneration,
 				};
 				if (terminal->finalAttemptTerminal) {
-					recoveryFinished
+					shouldDrain
 						= FinishMainRecoveryByReplacementAttemptLocked(
 							storage,
 							key,
 							runtimeGeneration,
 							terminal->attempt.use,
-							terminal->attempt.attemptId);
+							terminal->attempt.attemptId)
+						|| shouldDrain;
 				}
-				shouldDrain = terminal->proofRetired || recoveryFinished;
-				noteConnectTimeout = FailureNeedsRecipeEscalation(
-					report.reason);
+				shouldDrain = terminal->proofRetired || shouldDrain;
 				state.endpoint = report.endpoint;
 				const auto endpointMainProof = EndpointMainRelayProof(state);
 				const auto endpointHasMainProof = endpointMainProof.strength
@@ -315,79 +353,43 @@ void EndpointHealth::reportFailure(FailureReport report) {
 				const auto routeOnly = FailureIsRouteOnly(report.reason)
 					&& !report.routesExhausted;
 				if (routeOnly) {
-					noteConnectTimeout = true;
 					shouldDrain = true;
-				}
-				if (report.routesExhausted) {
-					++state.exhaustedSinceSuccess;
 				}
 				const auto alternateRoute = !routeKey.isEmpty()
 					&& HasHealthyRoute(storage, state)
 					&& !report.routesExhausted;
-				const auto openingFailure = FailureAffectsOpening(
-					report.reason)
-					&& !routeOnly
-					&& !alternateRoute;
-				const auto bootstrap = (report.use == EndpointUse::Main)
-					&& !endpointHasMainProof;
-				auto openingRetryUntil = crl::time();
-				if (openingFailure) {
-					auto &opening = bootstrap
-						? state.opening.bootstrap
-						: EnsureEndpointExpansionFailure(
-							state,
-							runtimeGeneration,
-							report.use);
-					if (opening.runtimeGeneration != runtimeGeneration
-						|| opening.use != report.use) {
-						opening.consecutiveFailures = 0;
-					}
-					opening.reason = report.reason;
-					opening.runtimeGeneration = runtimeGeneration;
-					opening.use = report.use;
-					if (opening.retryUntil <= now) {
-						auto &failureCount = bootstrap
-							? state.consecutiveFailures
-							: opening.consecutiveFailures;
-						const auto policy = EndpointConcurrencyPolicyFor(
-							state,
-							report.use,
-							runtimeGeneration,
-							now,
-							fastWarmup);
-						const auto lastMainPayload = std::max(
-							endpointMainProof.provenAt,
-							endpointMainProof.lastPayloadAt);
-						const auto recentSuccess = lastMainPayload
-							&& (now - lastMainPayload
+				if (terminal->finalAttemptTerminal) {
+					if (!FailureNeedsRecipeEscalation(report.reason)) {
+						state.recipeFailureStreak = 0;
+					} else {
+						const auto recentRelay = state.lastRelaySuccessAt
+							&& (now - state.lastRelaySuccessAt
 								< kRecentSuccessWindow);
-						if (policy.recipeEscalationAllowed
-							&& state.recipeLevel < 2
-							&& !recentSuccess
-							&& (bootstrap
-								? state.consecutiveFailures >= 1
-								: opening.consecutiveFailures >= 1)) {
-							++state.recipeLevel;
+						if (recentRelay) {
+							state.recipeFailureStreak = 0;
+						} else {
+							if (state.recipeFailureStreak >= 1
+								&& state.recipeLevel < 2) {
+								++state.recipeLevel;
+							}
+							if (state.recipeFailureStreak < 2) {
+								++state.recipeFailureStreak;
+							}
 						}
-						++failureCount;
-						auto cooldown = CooldownFor(
-							report.reason,
-							failureCount);
-						if (recentSuccess
-							&& FailureNeedsRecipeEscalation(
-								report.reason)) {
-							cooldown = std::min(
-								cooldown,
-								ThrottledRetryCooldown());
-							noteConnectTimeout = true;
-						}
-						opening.retryUntil = now + cooldown;
 					}
-					openingRetryUntil = opening.retryUntil;
-					if (!bootstrap) {
-						RecomputeEndpointExpansionThrottle(state);
-					}
-					shouldDrain = true;
+				}
+				if (terminal->finalAttemptTerminal
+					&& report.routesExhausted
+					&& report.reason
+						== FailureReason::ClientHelloSentNoServerHello) {
+					pressureFailure = PressureFailure{
+						.identity = OpeningAttemptIdentity(
+							report.endpoint,
+							terminal->openingKey),
+						.observedAt = report.terminalAt
+							? report.terminalAt
+							: now,
+					};
 				}
 				const auto canonicalEligible = (report.use
 						== EndpointUse::Main)
@@ -401,35 +403,16 @@ void EndpointHealth::reportFailure(FailureReport report) {
 						state,
 						report.reason,
 						now);
-					if (softNoAppData) {
-						state.nextHandshakeAt = now + NoAppDataSoftRetry();
-					}
 					const auto applyGlobalPenalty = !state.relayProven
 						? !softNoAppData
 						: !endpointHasMainProof && !softNoAppData;
 					if (applyGlobalPenalty) {
 						state.lastFailure = report.reason;
 						state.lastDiagnostic = diagnostic;
-						if (openingFailure) {
-							state.terminalUntil = std::max(
-								state.terminalUntil,
-								openingRetryUntil);
-						} else if (state.terminalUntil <= now) {
-							const auto policy = EndpointConcurrencyPolicyFor(
-								state,
-								report.use,
-								runtimeGeneration,
-								now,
-								fastWarmup);
+						if (state.terminalUntil <= now) {
 							const auto recentSuccess = state.lastSuccessAt
 								&& (now - state.lastSuccessAt
 									< kRecentSuccessWindow);
-							if (policy.recipeEscalationAllowed
-								&& state.recipeLevel < 2
-								&& !recentSuccess
-								&& state.consecutiveFailures >= 1) {
-								++state.recipeLevel;
-							}
 							const auto needsCooldown = FailureNeedsCooldown(
 								report.reason) || report.routesExhausted;
 							if (needsCooldown) {
@@ -445,17 +428,11 @@ void EndpointHealth::reportFailure(FailureReport report) {
 									cooldown = std::min(
 										cooldown,
 										ThrottledRetryCooldown());
-									noteConnectTimeout = true;
 								}
 								state.terminalUntil = now + cooldown;
 							}
 						}
 					}
-					const auto retryUntil = std::max(
-						openingRetryUntil,
-						std::max(
-							state.terminalUntil,
-							state.nextHandshakeAt));
 					auto verdict = EndpointVerdict{
 						.sourceAttempt = terminal->attempt,
 						.runtimeGeneration = runtimeGeneration,
@@ -479,7 +456,7 @@ void EndpointHealth::reportFailure(FailureReport report) {
 						.terminalAt = report.terminalAt
 							? report.terminalAt
 							: now,
-						.retryUntil = retryUntil,
+						.retryUntil = state.terminalUntil,
 					};
 					if (SetCurrentCanonicalVerdict(
 							state,
@@ -512,6 +489,10 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		_context->notifyEndpointViewChanged(report.endpoint);
 		shouldDrain = true;
 	}
+	if (pressureFailure) {
+		_context->endpointAdmissionArbiter().openingEvent(
+			std::move(*pressureFailure));
+	}
 	if (staleRecipeLevel) {
 		LogStaleAttemptFailure(_runtime, report, *staleRecipeLevel);
 		if (shouldDrain) {
@@ -527,9 +508,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	}
 	if (capabilityRelayFailure) {
 		NoteCapabilityMtproxyRelayFailure(_runtime, *capabilityRelayFailure);
-	}
-	if (noteConnectTimeout) {
-		NoteConnectTimeout(_runtime, report.endpoint);
 	}
 	if (report.use == EndpointUse::ProxyCheck) {
 		LogProbeAttemptFailure(_runtime, report);
@@ -563,6 +541,7 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	auto relayReady = std::optional<RelayReady>();
 	auto shouldDrain = false;
 	auto deferredCleanup = EndpointDeferredCleanup();
 	auto deferredCleanupApplied = false;
@@ -608,7 +587,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.runtimeId = report.runtimeId,
 			.proxyGeneration = report.proxyGeneration,
 		};
-		const auto beforeEndpointMainProof = EndpointMainRelayProof(state);
 		const auto before = CurrentMainRelayProof(state, runtimeGeneration);
 		const auto hadCanonical = state.canonicalVerdicts.contains(
 			runtimeGeneration);
@@ -624,6 +602,13 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 		} else {
+			const auto opening = state.attemptStarts.find(report.attemptId);
+			if (opening == end(state.attemptStarts)) {
+				return;
+			}
+			const auto openingKey = OpeningAttemptKey(
+				report.attemptId,
+				opening->second);
 			const auto promotion = PromoteRelayProof(
 				state,
 				identity,
@@ -636,6 +621,12 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
+			relayReady = RelayReady{
+				.identity = OpeningAttemptIdentity(
+					report.endpoint,
+					openingKey),
+				.observedAt = payloadAt,
+			};
 			if (report.use == EndpointUse::Main) {
 				static_cast<void>(
 					FinishMainRecoveryByReplacementAttemptLocked(
@@ -670,24 +661,12 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				.recipeLevel = successRecipeLevel,
 				.relayProven = true,
 			};
+			state.recipeFailureStreak = 0;
 			state.recipeLevel = 0;
-			state.exhaustedSinceSuccess = 0;
-			const auto bootstrapSuccess = (report.use == EndpointUse::Main)
-				&& (beforeEndpointMainProof.strength
-					== MainRelayProofStrength::None);
-			if (bootstrapSuccess) {
-				state.opening = {};
-			} else {
-				RemoveEndpointExpansionFailure(
-					state,
-					runtimeGeneration,
-					report.use);
-			}
 			if (report.use == EndpointUse::Main) {
 				state.lastFailure = FailureReason::None;
 				state.lastDiagnostic.clear();
 				state.terminalUntil = 0;
-				state.nextHandshakeAt = 0;
 				state.consecutiveFailures = 0;
 				state.healthy = true;
 				state.halfOpen = false;
@@ -708,7 +687,10 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		}
 	}
 	applyDeferredCleanup();
-	NoteConnectSuccess(_runtime, report.endpoint);
+	if (relayReady) {
+		_context->endpointAdmissionArbiter().openingEvent(
+			std::move(*relayReady));
+	}
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
 	}

@@ -67,7 +67,10 @@ public:
 	}
 
 	void releaseAdmissionForRelayCandidate() override {
-		_lease.releaseAdmissionForRelayCandidate();
+		if (!_transportReady) {
+			_transportReady = true;
+			_lease.transportReady();
+		}
 	}
 
 	bool active() const override {
@@ -104,6 +107,8 @@ public:
 
 private:
 	MtProxy::EndpointAttemptLease _lease;
+	bool _transportReady = false;
+
 };
 
 [[nodiscard]] MtProxy::EndpointAttemptLease *EndpointLease(
@@ -250,7 +255,7 @@ private:
 		.proxyEpoch = attempt.attempt.proxyEpoch,
 		.successEpoch = attempt.attempt.successEpoch,
 		.attemptStartedAt = attempt.attemptStartedAt,
-		.routesExhausted = MtProxy::FailureIsRouteOnly(reason),
+		.routesExhausted = true,
 		.ticketKey = attempt.attempt.ticketKey,
 		.attribution = FailureAttribution(reason, failure),
 		.terminalAt = crl::now(),

@@ -12,7 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/dns_resolver_cache.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -240,8 +239,7 @@ void RecordRouteOutcome(
 		const ProxyData &proxy,
 		int ipIndex,
 		RouteOutcomeKind kind,
-		MtProxy::FailureReason reason,
-		bool endpointTerminal) {
+		MtProxy::FailureReason reason) {
 	if (proxy.type != ProxyData::Type::Mtproto
 		|| kind == RouteOutcomeKind::RaceLost) {
 		return;
@@ -251,9 +249,6 @@ void RecordRouteOutcome(
 		runtime,
 		endpoint,
 		MtProxy::ToLegacyDiagnostic(reason));
-	if (!endpointTerminal && MtProxy::FailureIsRouteOnly(reason)) {
-		MtProxy::NoteConnectTimeout(runtime, endpoint);
-	}
 }
 
 void ReportRouteEvent(
@@ -623,8 +618,6 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		return;
 	}
 	const auto ipIndex = victim->ipIndex;
-	const auto endpointTerminal = (_routeAttempts.size() == 1)
-		&& (_nextRoutePosition >= int(_routeOrder.size()));
 	auto routeAttempt = _mtproxyAttempt;
 	routeAttempt.routeAttemptId = victim->routeAttemptId;
 	const auto fallbackReason = RouteTimeoutReason(
@@ -645,8 +638,7 @@ void ResolvingConnection::handleRouteAttemptTimeout() {
 		_proxy,
 		ipIndex,
 		RouteOutcomeKind::Failed,
-		reason,
-		endpointTerminal);
+		reason);
 	ReportRouteEvent(
 		_runtime,
 		_proxy,
@@ -753,8 +745,6 @@ void ResolvingConnection::handleError(
 	}
 	const auto fallbackReason = ChildFailureReason(child, errorCode);
 	if (const auto attempt = findRouteAttempt(child)) {
-		const auto endpointTerminal = (_routeAttempts.size() == 1)
-			&& (_nextRoutePosition >= int(_routeOrder.size()));
 		const auto failure = TypedRouteFailure(
 			child,
 			fallbackReason,
@@ -770,8 +760,7 @@ void ResolvingConnection::handleError(
 			_proxy,
 			attempt->ipIndex,
 			RouteOutcomeKind::Failed,
-			reason,
-			endpointTerminal);
+			reason);
 		auto routeConnectionAttempt = _mtproxyAttempt;
 		routeConnectionAttempt.routeAttemptId = attempt->routeAttemptId;
 		ReportRouteEvent(
@@ -844,8 +833,7 @@ void ResolvingConnection::promoteRouteAttempt(AbstractConnection *child) {
 				_proxy,
 				attempt.ipIndex,
 				RouteOutcomeKind::RaceLost,
-				MtProxy::FailureReason::None,
-				false);
+				MtProxy::FailureReason::None);
 			ReportRouteEvent(
 				_runtime,
 				_proxy,

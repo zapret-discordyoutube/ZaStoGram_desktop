@@ -560,13 +560,13 @@ void EndpointAttemptLease::release() {
 	}
 	_active = false;
 	if (_context) {
-		_context->releaseEndpointAttempt(_key, _attemptId);
+		_context->cancelEndpointAttempt(_key, _attemptId);
 	}
 }
 
-void EndpointAttemptLease::releaseAdmissionForRelayCandidate() {
+void EndpointAttemptLease::transportReady() {
 	if (_active && _context) {
-		_context->releaseAdmissionForRelayCandidate(
+		_context->transportReady(
 			_key,
 			_runtimeId,
 			_proxyGeneration,
@@ -813,58 +813,28 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 }
 
 void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
-	// A manual (re-)selection is explicit user evidence that the proxy is
-	// worth trying right now: drop the cooldown ladder and denial
-	// bookkeeping so the scout probes immediately, and restart the ladder
-	// at the first rung if it fails again. Keep what was learned at cost:
-	// recipeLevel (the DPI adaptation - resetting it would burn the fresh
-	// probe on the exact fingerprint that just got blocked), lastFailure,
-	// relay proofs and the last good profile/route.
 	const auto key = EndpointKey(endpoint);
 	if (key.isEmpty()) {
 		return;
 	}
-	const auto now = crl::now();
-	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
+	auto requester = RuntimeGenerationKey();
 	{
 		auto &storage = _context->storage();
 		QMutexLocker lock(&storage.mutex);
-		const auto i = storage.states.find(key);
-		if (i == end(storage.states)) {
+		const auto generation = storage.runtimeGenerations.find(_runtimeId);
+		if (!storage.runtimes.contains(_runtimeId)
+			|| generation == end(storage.runtimeGenerations)
+			|| !generation->second) {
 			return;
 		}
-		auto &state = i->second;
-		// nextHandshakeAt gates admission too (spacing / soft-retry), so a
-		// selection that clears only it must still wake the queued scout.
-		const auto hadPenalty = (state.terminalUntil > 0)
-			|| (state.opening.bootstrap.retryUntil > 0)
-			|| (state.opening.expansion.retryUntil > 0)
-			|| state.halfOpen
-			|| (state.nextHandshakeAt > now)
-			|| (state.consecutiveFailures > 0);
-		state.terminalUntil = 0;
-		state.opening = {};
-		state.halfOpen = false;
-		state.nextHandshakeAt = 0;
-		state.deniedSince = 0;
-		state.lastDenialRotationSignal = 0;
-		state.consecutiveFailures = 0;
-		state.exhaustedSinceSuccess = 0;
-		if (hadPenalty) {
-			diagnosticsEvent = CanonicalDiagnosticsEvent(
-				ProxyDiagnosticsPhase::CanonicalRecovered,
-				state,
-				FailureReason::None,
-				u"mtproxy penalty cleared by manual selection"_q);
-		}
+		requester = {
+			.runtimeId = _runtimeId,
+			.proxyGeneration = generation->second,
+		};
 	}
-	if (diagnosticsEvent) {
-		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
-		// The penalty was cleared early by the manual selection - wake the
-		// broker so the scout's queued request drains immediately instead
-		// of waiting out its stale cooldown timer.
-		_context->notifyEndpointAdmissible(key);
-	}
+	_context->endpointAdmissionArbiter().requestImmediateScout(
+		endpoint.canonical,
+		requester);
 }
 
 void EndpointHealth::applyProxyGeneration(uint64 proxyGeneration) {

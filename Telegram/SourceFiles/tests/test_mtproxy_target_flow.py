@@ -182,7 +182,6 @@ def test_route_failure_stays_local_until_main_canonical_exhaustion():
     assert "!HasCurrentMainRelayProof(" in failure
     assert "SetCurrentCanonicalVerdict(" in failure
     assert "report.routesExhausted" in failure
-    assert "++state.exhaustedSinceSuccess;" in failure
     assert "const auto needsCooldown = FailureNeedsCooldown(" in failure
     assert "report.reason) || report.routesExhausted;" in compact(failure)
     assert "kThrottledRetryCooldown" in policy
@@ -194,7 +193,6 @@ def test_route_failure_stays_local_until_main_canonical_exhaustion():
     assert "SuccessFromStaleAttempt(report, state)" in success
     assert "NoteRouteSuccess(storage, state, report.endpoint.route);" in success
     assert "state.recipeLevel = 0;" in success
-    assert "state.exhaustedSinceSuccess = 0;" in success
     assert "state.lastFailure = FailureReason::None;" in success
     assert "state.healthy = true;" in success
     assert "NoteCapabilityMtproxySuccess(" in success
@@ -214,7 +212,7 @@ def test_safe_attempt_plan_escalates_before_any_wss_fallback():
     wss_recommend = function_body(policy, "bool WssNeedsProxyRecommendation(")
 
     assert "state.recipeLevel < 2" in health
-    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in health_policy
+    assert "FailureNeedsRecipeEscalation(report.reason)" in health
     assert "ProxyTlsProfile::ChromeModern" in attempt_plan
     assert "ProxyConnectionPattern::Soft" in attempt_plan
     assert "ProxyClientHelloFragmentation::Soft" in attempt_plan
@@ -251,16 +249,6 @@ def test_logs_and_left_proxy_shield_expose_target_flow_state():
     assert "_cacheErrorData" in window
 
 
-if __name__ == "__main__":
-    test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan()
-    test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
-    test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded()
-    test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress()
-    test_route_failure_stays_local_until_main_canonical_exhaustion()
-    test_safe_attempt_plan_escalates_before_any_wss_fallback()
-    test_logs_and_left_proxy_shield_expose_target_flow_state()
-
-
 def test_first_app_data_reported_once_per_tls_socket():
     tls = read(TLS_SOCKET_RECORDS_CPP)
     body = function_body(tls, "bool TlsSocket::checkNextPacket(")
@@ -282,24 +270,18 @@ def test_route_timeouts_and_exhaustion_reach_endpoint_health():
     error = function_body(
         resolving,
         "void ResolvingConnection::handleError(")
-    exhausted = function_body(resolving, "void ReportAllRoutesFailed(")
 
-    # A route attempt killed by our own timeout produces no socket error,
-    # so its failure must be reported to EndpointHealth explicitly.
-    assert "ReportRouteFailureToHealth(" in timeout
-    # The dying attempt reports its own phase first: FakeTLS-ok-but-no-
-    # telegram-data must land as server_hello_ok_no_appdata (recipe
-    # escalation), not as a generic tcp connect timeout.
     assert "child->timedOut();" in timeout
     assert timeout.index("child->timedOut();") < timeout.index(
         "_routeAttempts.erase(victim);")
-    # Once the last route fails the canonical endpoint must degrade so a
-    # fully blackholed proxy gets a cooldown and can trigger rotation.
-    assert "ReportAllRoutesFailed(" in timeout
-    assert "ReportAllRoutesFailed(" in error
-    # An error on an established connection is not route exhaustion.
-    assert "if (!_connected) {" in error
-    assert ".routesExhausted = true," in exhausted
+    assert "TypedRouteFailure(" in timeout
+    assert "MergeExhaustedFailure(_lastFailure, failure);" in timeout
+    assert "MergeExhaustedFailure(_lastFailure, failure);" in error
+    assert "routesExhausted" not in resolving
+    adapter = read(PROXY_DIR / "session_proxy_adapter.cpp")
+    check = read(PROXY_DIR / "check.cpp")
+    assert ".routesExhausted = true," in adapter
+    assert ".routesExhausted = true," in check
 
 
 def test_resolving_connection_forwards_timeout_to_route_attempts():
@@ -334,31 +316,21 @@ def test_proxied_connects_get_their_full_time_budget():
     assert "_sessionState.options->proxy.type != ProxyData::Type::None" in arm
     assert "fullConnectTimeout()" in arm
     assert "accumulate_max(_timing.waitForConnected, minWait);" in arm
-    # The last remaining route gets the patient timeout: there is
-    # nothing to race it against, so let TCP retransmit SYN.
-    assert "kOnlyRouteAttemptTimeout" in refresh
-    assert "_nextRoutePosition >= int(_routeOrder.size())" in refresh
-    # But once the ClientHello is on the wire we wait only for ServerHello,
-    # which a working proxy answers in milliseconds - fail fast (adaptive by
-    # whether the endpoint has recently proven it relays) instead of holding
-    # the single admission slot for the full SYN-retransmit budget.
-    assert "HandshakePhase::ClientHelloSent" in refresh
-    assert "serverHelloWaitBudget()" in refresh
+    assert "routePhaseBudget(phase)" in refresh
     budget = function_body(
         resolving,
-        "crl::time ResolvingConnection::serverHelloWaitBudget(")
-    assert "snapshot.relayProven" in budget
-    assert "kServerHelloWaitProven" in budget
-    assert "kServerHelloWaitUnproven" in budget
-    assert "kServerHelloWaitProven = crl::time(2500)" in resolving
-    # The relay wait (proxy -> DC) still keeps the patient budget.
-    assert "HandshakePhase::ServerHelloOk" in refresh
-    # Health reports feed the adaptive open pacing.
-    assert "NoteConnectTimeout(_runtime, report.endpoint);" in failure
-    assert "NoteConnectSuccess(_runtime, report.endpoint);" in success
+        "crl::time ResolvingConnection::routePhaseBudget(")
+    assert "HandshakePhase::ClientHelloSent" in budget
+    assert "return 0;" in budget
+    assert "HandshakePhase::ServerHelloOk" in budget
+    assert "HandshakePhase::FirstDataReceived" in budget
+    assert "kOnlyRouteAttemptTimeout" in budget
+    assert "_nextRoutePosition >= int(_routeOrder.size())" in budget
+    assert "NoteConnectTimeout(" not in failure
+    assert "NoteConnectSuccess(" not in success
     assert success.index(
         "if (report.scope != SuccessScope::Relay) {") < success.index(
-            "NoteConnectSuccess(_runtime, report.endpoint);")
+            "relayReady = RelayReady{")
 
 
 def test_stealth_option_changes_restart_proxy_connections():
@@ -381,3 +353,18 @@ def test_stealth_option_changes_restart_proxy_connections():
     assert "Core::App().settings().setProxyStealthOptions(" not in box
     assert "Core::App().applyProxyStealthOptions(o);" in box
     assert "Core::App().restartProxyConnections();" in box
+
+
+if __name__ == "__main__":
+    test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan()
+    test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
+    test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded()
+    test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress()
+    test_route_failure_stays_local_until_main_canonical_exhaustion()
+    test_safe_attempt_plan_escalates_before_any_wss_fallback()
+    test_logs_and_left_proxy_shield_expose_target_flow_state()
+    test_first_app_data_reported_once_per_tls_socket()
+    test_route_timeouts_and_exhaustion_reach_endpoint_health()
+    test_resolving_connection_forwards_timeout_to_route_attempts()
+    test_proxied_connects_get_their_full_time_budget()
+    test_stealth_option_changes_restart_proxy_connections()

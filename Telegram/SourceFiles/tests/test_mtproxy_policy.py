@@ -4,6 +4,7 @@ from session_private_sources import read_session_private_sources
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT_DIR = SOURCE_DIR.parents[1]
+PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 POLICY_H = MTPROXY_DIR / "policy.h"
 POLICY_CPP = MTPROXY_DIR / "policy.cpp"
@@ -57,9 +58,36 @@ def test_legacy_mtproxy_policy_module_is_removed():
     assert "CooldownMsForEndpoint(" not in session
     assert "MtProxy::ConnectionSpacing(" not in session
     assert "ReserveOpenSlot" not in broker
-    assert "MtProxy::ReserveOpenSlotLocked(" in arbiter
+    assert "MtProxy::ReserveOpenSlot(" in arbiter
+    assert "MtProxy::ReflowOpenSlots(" in arbiter
+    assert "MtProxy::CommitOpenSlot(" in arbiter
+    assert "adaptiveSpacing" not in arbiter
+    assert "NoteConnectTimeout" not in arbiter
+    assert "NoteConnectSuccess" not in arbiter
     assert "MtProxy::ConnectionSpacing(" in tls_handshake
     assert "MtproxyEndpointCooldown(" not in session
+    proxy_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in PROXY_DIR.rglob("*")
+        if path.suffix in (".cpp", ".h"))
+    for old_seam in (
+        "opening.bootstrap",
+        "opening.expansion",
+        "nextHandshakeAt",
+        "admissionActive",
+        "adaptiveSpacing",
+        "NoteConnectTimeout",
+        "NoteConnectSuccess",
+        "EndpointConcurrencyPolicy",
+        "EvaluateEndpointAdmission",
+        "ReserveOpenSlotLocked",
+        "CancelOpenSlotLocked",
+        "CommitOpenSlotLocked",
+        "ReflowOpenSlotsLocked",
+        "SynchronizeEndpointAdmissionAggregate",
+        "ReleaseAdmissionForRelayCandidate",
+    ):
+        assert old_seam not in proxy_sources
 
 
 def test_tls_socket_reports_endpoint_state_through_endpoint_health():

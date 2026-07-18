@@ -1401,6 +1401,7 @@ def test_capability_cache_relay_proof_ages_out():
 def test_source_seams_match_truth_table_contract():
     control = read(CONTROL_CPP)
     broker = read(BROKER_CPP)
+    arbiter_header = read(PROXY_DIR / "endpoint_admission_arbiter.h")
     arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
     check = read(CHECK_CPP)
     health_header = read(ENDPOINT_HEALTH_H)
@@ -1443,13 +1444,24 @@ def test_source_seams_match_truth_table_contract():
     assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
     assert "ProxySchedulerLifecycle::HandedOff" in arbiter
     assert "cancelBeforeGeneration(" in arbiter
-    assert "MtProxy::CancelOpenSlotLocked(" in arbiter
+    assert "kEndpointOpeningPermitCount = 4" in arbiter_header
+    assert "EndpointOpeningFlowKey" in arbiter_header
+    assert "EndpointOpeningIdentity" in arbiter_header
+    assert "EndpointOpeningEvent" in arbiter_header
+    for event in ("TransportReady", "RelayReady", "PressureFailure", "Cancelled"):
+        assert f"struct {event}" in arbiter_header
+    assert "MtProxy::CancelOpenSlot(" in arbiter
+    assert "MtProxy::CancelOpenSlotLocked(" not in arbiter
+    assert "openingAdmissionDecisionLocked(" in arbiter
+    assert "gate.pressureWindow.size() >= 3 && flows.size() >= 2" in arbiter
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "control.mtproxyEndpointView(endpoint)" in check
     assert "noteMtproxyRelayFailure(" in capabilities
     assert "card.relayProven = false;" in capabilities
     assert "relayProvenAt" in capabilities
-    assert "releaseAdmissionForRelayCandidate(" in endpoint_context
+    assert "void ProxyEndpointContext::transportReady(" in endpoint_context
+    assert "details::MtProxy::TransportReady{" in endpoint_context
+    assert "releaseAdmissionForRelayCandidate(" not in endpoint_context
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "view.mainProof.strength" in session_adapter
 

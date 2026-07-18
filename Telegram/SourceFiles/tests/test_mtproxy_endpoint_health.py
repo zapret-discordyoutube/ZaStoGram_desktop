@@ -133,6 +133,9 @@ def test_endpoint_view_rejects_a_mismatched_generation():
         "result.mainProof = MtProxy::CurrentMainRelayProof(")
     assert "state.canonicalVerdicts.find(" in compose
     assert "arbiter.composeEndpointViewLocked(" in compose
+    assert "EndpointOpenGateStage" not in compose
+    assert "openDeadline" not in compose
+    assert "recoveryNextOpenAt" not in compose
 
 
 def test_tls_socket_owns_one_absolute_serverhello_terminal():

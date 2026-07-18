@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,31 @@ struct MainAttemptSelection {
 	uint64 attemptId = 0;
 	const MtProxy::EndpointAttemptState *attempt = nullptr;
 };
+
+MtProxy::EndpointOpeningAttemptIdentity OpeningAttemptIdentity(
+		const MtProxy::EndpointId &endpoint,
+		uint64 attemptId,
+		const MtProxy::EndpointAttemptState &attempt) {
+	return {
+		.flow = {
+			.endpoint = endpoint.canonical,
+			.runtimeId = attempt.runtimeId,
+			.proxyGeneration = attempt.proxyGeneration,
+			.use = attempt.use,
+		},
+		.key = {
+			.runtimeId = attempt.runtimeId,
+			.traceId = attempt.traceId,
+			.ticketId = attempt.ticketKey.ticketId,
+			.proxyGeneration = attempt.proxyGeneration,
+			.proxyEpoch = attempt.proxyEpoch,
+			.successEpoch = attempt.successEpoch,
+			.attemptId = attemptId,
+			.use = attempt.use,
+			.ticketKey = attempt.ticketKey,
+		},
+	};
+}
 
 MainAttemptSelection SelectMainAttempt(
 		const MtProxy::EndpointState &state,
@@ -69,7 +95,6 @@ MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
 	if (i != end(storage.states)) {
 		const auto &state = i->second;
 		result.endpointMainProof = MtProxy::EndpointMainRelayProof(state);
-		result.retryUntil = state.opening.bootstrap.retryUntil;
 		const auto generation = state.generations.find(
 			runtimeGeneration.runtimeId);
 		if (generation != end(state.generations)
@@ -89,9 +114,7 @@ MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
 			if (canonical != end(state.canonicalVerdicts)) {
 				result.canonicalVerdict = canonical->second;
 				result.terminalAt = canonical->second.terminalAt;
-				result.retryUntil = std::max(
-					result.retryUntil,
-					canonical->second.retryUntil);
+				result.retryUntil = canonical->second.retryUntil;
 			}
 			const auto selected = SelectMainAttempt(
 				state,
@@ -217,7 +240,7 @@ bool ProxyEndpointContext::finishTrace(ProxyTraceId traceId) {
 	return _storage->activeTraces.erase(traceId) > 0;
 }
 
-void ProxyEndpointContext::releaseEndpointAttempt(
+void ProxyEndpointContext::cancelEndpointAttempt(
 		const QString &key,
 		uint64 attemptId) {
 	if (key.isEmpty() || !attemptId) {
@@ -226,6 +249,7 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 	auto removed = false;
 	auto endpoint = details::MtProxy::EndpointId();
 	auto runtimeGeneration = RuntimeGenerationKey();
+	auto openingEvent = std::optional<details::MtProxy::Cancelled>();
 	auto cleanup = details::MtProxy::EndpointDeferredCleanup();
 	{
 		QMutexLocker lock(&_storage->mutex);
@@ -245,6 +269,17 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 				.runtimeId = attemptState.runtimeId,
 				.proxyGeneration = attemptState.proxyGeneration,
 				.attemptId = attemptId,
+			};
+			const auto openingIdentity = OpeningAttemptIdentity(
+				endpoint,
+				attemptId,
+				attemptState);
+			openingEvent = details::MtProxy::Cancelled{
+				.identity = {
+					.flow = openingIdentity.flow,
+					.owner = openingIdentity.key,
+				},
+				.observedAt = crl::now(),
 			};
 			static_cast<void>(
 				details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
@@ -275,6 +310,17 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 					.runtimeId = identity.runtimeId,
 					.proxyGeneration = identity.proxyGeneration,
 				};
+				const auto openingIdentity = OpeningAttemptIdentity(
+					endpoint,
+					attemptId,
+					laneState);
+				openingEvent = details::MtProxy::Cancelled{
+					.identity = {
+						.flow = openingIdentity.flow,
+						.owner = openingIdentity.key,
+					},
+					.observedAt = crl::now(),
+				};
 				static_cast<void>(
 					details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
 						*_storage,
@@ -293,18 +339,19 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 			}
 		}
 		i->second.attemptStarts.erase(attemptId);
-		details::MtProxy::SynchronizeEndpointAdmissionAggregate(i->second);
 	}
 	for (const auto &connection : cleanup.ownerConnections) {
 		QObject::disconnect(connection);
 	}
+	if (openingEvent) {
+		_arbiter->openingEvent(std::move(*openingEvent));
+	}
 	if (removed) {
 		notifyEndpointViewChanged(endpoint, runtimeGeneration);
-		_arbiter->drainEndpoint(key);
 	}
 }
 
-void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
+void ProxyEndpointContext::transportReady(
 		const QString &key,
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration,
@@ -312,30 +359,30 @@ void ProxyEndpointContext::releaseAdmissionForRelayCandidate(
 	if (key.isEmpty() || !runtimeId || !attemptId) {
 		return;
 	}
-	auto released = false;
-	auto endpoint = details::MtProxy::EndpointId();
+	auto openingEvent = std::optional<details::MtProxy::TransportReady>();
 	{
 		QMutexLocker lock(&_storage->mutex);
 		const auto i = _storage->states.find(key);
 		if (i == end(_storage->states)) {
 			return;
 		}
-		endpoint = i->second.endpoint;
-		const auto identity = details::MtProxy::RelayProofIdentity{
-			.runtimeId = runtimeId,
-			.proxyGeneration = proxyGeneration,
-			.attemptId = attemptId,
+		const auto attempt = i->second.attemptStarts.find(attemptId);
+		if (attempt == end(i->second.attemptStarts)
+			|| attempt->second.runtimeId != runtimeId
+			|| attempt->second.proxyGeneration != proxyGeneration
+			|| attempt->second.terminalVerdict.has_value()) {
+			return;
+		}
+		openingEvent = details::MtProxy::TransportReady{
+			.identity = OpeningAttemptIdentity(
+				i->second.endpoint,
+				attemptId,
+				attempt->second),
+			.observedAt = crl::now(),
 		};
-		released = details::MtProxy::ReleaseAdmissionForRelayCandidate(
-			i->second,
-			identity);
 	}
-	if (released) {
-		notifyEndpointViewChanged(endpoint, {
-			.runtimeId = runtimeId,
-			.proxyGeneration = proxyGeneration,
-		});
-		_arbiter->drainEndpoint(key);
+	if (openingEvent) {
+		_arbiter->openingEvent(std::move(*openingEvent));
 	}
 }
 

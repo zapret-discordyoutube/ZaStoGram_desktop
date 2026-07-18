@@ -8,7 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
-#include "mtproto/runtime/runtime_environment.h"
 
 #include <algorithm>
 
@@ -19,17 +18,9 @@ constexpr auto kFirstCooldown = crl::time(15 * 1000);
 constexpr auto kSecondCooldown = crl::time(45 * 1000);
 constexpr auto kMaxCooldown = crl::time(120 * 1000);
 constexpr auto kDnsNegativeTtl = crl::time(30 * 1000);
-constexpr auto kColdActiveCap = 1;
-constexpr auto kUnknownActiveCap = kColdActiveCap;
-constexpr auto kDpiFailureActiveCap = 1;
-constexpr auto kHealthyActiveCap = 1;
-constexpr auto kFastHealthyActiveCap = 2;
-constexpr auto kHealthyHandshakeSpacing = crl::time(500);
-constexpr auto kQueuedRetry = crl::time(1000);
 constexpr auto kAttemptHardTtl = crl::time(120 * 1000);
 constexpr auto kRecentRelaySuccessWindow = crl::time(60 * 1000);
 constexpr auto kThrottledRetryCooldown = crl::time(3000);
-constexpr auto kNoAppDataSoftRetry = crl::time(1000);
 constexpr auto kNoAppDataWarningCooldown = crl::time(3000);
 constexpr auto kRecentRelayServerHelloTimeout = crl::time(2500);
 constexpr auto kColdServerHelloTimeout = crl::time(5000);
@@ -161,28 +152,6 @@ FailureTraits TraitsFor(FailureReason reason) {
 	return TraitsFor(reason).escalatesRecipe;
 }
 
-[[nodiscard]] bool FailureAffectsOpening(FailureReason reason) {
-	switch (reason) {
-	case FailureReason::DnsFailed:
-	case FailureReason::TcpConnectTimeout:
-	case FailureReason::TcpConnectedNoClientHelloWrite:
-	case FailureReason::ClientHelloSentNoServerHello:
-	case FailureReason::TlsAlertAfterClientHello:
-	case FailureReason::ServerHelloHmacMismatch:
-	case FailureReason::ProxyProtocolBadResponse:
-		return true;
-	case FailureReason::None:
-	case FailureReason::ServerHelloOkNoAppData:
-	case FailureReason::ServerHelloOkNoMtprotoData:
-	case FailureReason::AppDataRemoteClosed:
-	case FailureReason::ConnectedNoMtprotoData:
-	case FailureReason::MtpReceiveTimeoutAfterData:
-	case FailureReason::Network:
-		return false;
-	}
-	return false;
-}
-
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason) {
 	return TraitsFor(reason).rotatesTls;
 }
@@ -210,19 +179,8 @@ FailureTraits TraitsFor(FailureReason reason) {
 		&& RecentRelaySuccess(state, now);
 }
 
-crl::time NoAppDataSoftRetry() {
-	return kNoAppDataSoftRetry;
-}
-
 crl::time ThrottledRetryCooldown() {
 	return kThrottledRetryCooldown;
-}
-
-[[nodiscard]] bool NoAppDataWarningStrike(
-		FailureReason reason,
-		int consecutiveFailures) {
-	return (reason == FailureReason::ServerHelloOkNoAppData)
-		&& (consecutiveFailures <= 3);
 }
 
 [[nodiscard]] bool ReportTicketMatches(
@@ -352,13 +310,17 @@ void ApplyProxyGeneration(
 			report.attemptStartedAt);
 }
 
+crl::time EndpointAttemptHardDeadline(
+		const EndpointAttemptState &attempt) {
+	return attempt.startedAt + kAttemptHardTtl;
+}
+
 EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 		EndpointState &state,
 		crl::time now) {
 	auto cleanup = EndpointDeferredCleanup();
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
-		if (i->second.admissionActive
-			&& now - i->second.startedAt > kAttemptHardTtl) {
+		if (now >= EndpointAttemptHardDeadline(i->second)) {
 			DeferEndpointOwnerDisconnect(
 				cleanup,
 				i->second.ownerDestroyed);
@@ -367,10 +329,10 @@ EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 			++i;
 		}
 	}
-	SynchronizeEndpointAdmissionAggregate(state);
 	PruneExpiredEndpointOutcomes(state, now);
 	return cleanup;
 }
+
 [[nodiscard]] crl::time CooldownFor(
 		FailureReason reason,
 		int consecutiveFailures) {
@@ -411,230 +373,6 @@ EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 	return kMaxCooldown;
 }
 
-int EndpointUseCount(
-		const EndpointUseCounts &counts,
-		EndpointUse use) {
-	switch (use) {
-	case EndpointUse::Main: return counts.main;
-	case EndpointUse::Maintenance: return counts.maintenance;
-	case EndpointUse::Auxiliary: return counts.auxiliary;
-	case EndpointUse::Media: return counts.media;
-	case EndpointUse::Upload: return counts.upload;
-	case EndpointUse::ProxyCheck: return counts.proxyCheck;
-	}
-	return 0;
-}
-
-int TotalEndpointUseCount(const EndpointUseCounts &counts) {
-	return std::max(0, counts.main)
-		+ std::max(0, counts.maintenance)
-		+ std::max(0, counts.auxiliary)
-		+ std::max(0, counts.media)
-		+ std::max(0, counts.upload)
-		+ std::max(0, counts.proxyCheck);
-}
-
-EndpointUseCounts BeginEndpointAdmission(
-		EndpointUseCounts counts,
-		EndpointUse use) {
-	switch (use) {
-	case EndpointUse::Main:
-		++counts.main;
-		break;
-	case EndpointUse::Maintenance:
-		++counts.maintenance;
-		break;
-	case EndpointUse::Auxiliary:
-		++counts.auxiliary;
-		break;
-	case EndpointUse::Media:
-		++counts.media;
-		break;
-	case EndpointUse::Upload:
-		++counts.upload;
-		break;
-	case EndpointUse::ProxyCheck:
-		++counts.proxyCheck;
-		break;
-	}
-	return counts;
-}
-
-EndpointUseCounts ReleaseEndpointAdmission(
-		EndpointUseCounts counts,
-		EndpointUse use) {
-	switch (use) {
-	case EndpointUse::Main:
-		counts.main = std::max(0, counts.main - 1);
-		break;
-	case EndpointUse::Maintenance:
-		counts.maintenance = std::max(0, counts.maintenance - 1);
-		break;
-	case EndpointUse::Auxiliary:
-		counts.auxiliary = std::max(0, counts.auxiliary - 1);
-		break;
-	case EndpointUse::Media:
-		counts.media = std::max(0, counts.media - 1);
-		break;
-	case EndpointUse::Upload:
-		counts.upload = std::max(0, counts.upload - 1);
-		break;
-	case EndpointUse::ProxyCheck:
-		counts.proxyCheck = std::max(0, counts.proxyCheck - 1);
-		break;
-	}
-	return counts;
-}
-
-EndpointConcurrencyPolicy EvaluateEndpointAdmission(
-		const EndpointAdmissionPolicyInput &input) {
-	auto policy = EndpointConcurrencyPolicy();
-	const auto hasMainProof = input.mainProof
-		!= MainRelayProofStrength::None;
-	const auto endpointHasMainProof = input.endpointMainProof
-		!= MainRelayProofStrength::None;
-	const auto repeatedMainProof = input.mainProof
-		== MainRelayProofStrength::RepeatedPayload;
-	const auto repeatedEndpointMainProof = input.endpointMainProof
-		== MainRelayProofStrength::RepeatedPayload;
-	const auto background = (input.use == EndpointUse::Media)
-		|| (input.use == EndpointUse::Upload);
-	const auto maintenance = (input.use == EndpointUse::Maintenance);
-	const auto auxiliary = (input.use == EndpointUse::Auxiliary);
-	const auto localFastWarmup = input.fastWarmup && repeatedMainProof;
-	const auto endpointFastWarmup = input.fastWarmup
-		&& repeatedEndpointMainProof;
-	const auto fastWarmup = (background || auxiliary)
-		? localFastWarmup
-		: endpointFastWarmup;
-	if (FailureNeedsRecipeEscalation(input.lastFailure)) {
-		if (input.bootstrapFailure) {
-			policy.activeCap = kDpiFailureActiveCap;
-		} else if (endpointHasMainProof) {
-			policy.activeCap = fastWarmup
-				? kFastHealthyActiveCap
-				: kHealthyActiveCap;
-			policy.handshakeSpacing = kHealthyHandshakeSpacing;
-		} else {
-			policy.activeCap = kUnknownActiveCap;
-		}
-		policy.retryAfter = kQueuedRetry;
-		if (input.bootstrapFailure) {
-			policy.recipeEscalationAllowed = true;
-		}
-		if ((!input.endpointRelayProven || !endpointHasMainProof)
-			&& background) {
-			policy.useAllowed = false;
-		}
-	} else if (!input.endpointRelayProven
-		|| !endpointHasMainProof
-		|| !input.lastRelaySuccessAt) {
-		policy.activeCap = kUnknownActiveCap;
-		policy.retryAfter = kQueuedRetry;
-		if (background) {
-			policy.useAllowed = false;
-		}
-	} else if (input.healthy) {
-		policy.activeCap = fastWarmup
-			? kFastHealthyActiveCap
-			: kHealthyActiveCap;
-		policy.handshakeSpacing = kHealthyHandshakeSpacing;
-		policy.retryAfter = kHealthyHandshakeSpacing;
-	} else {
-		policy.activeCap = kUnknownActiveCap;
-		policy.retryAfter = kQueuedRetry;
-	}
-	const auto urgentMainDemand = (input.foregroundTransfer
-			&& policy.activeCap > 1)
-		? 0
-		: std::max(0, input.urgentMainDemand);
-	if (background && (!hasMainProof || urgentMainDemand > 0)) {
-		policy.useAllowed = false;
-	}
-	if (auxiliary && (!hasMainProof || urgentMainDemand > 0)) {
-		policy.useAllowed = false;
-	}
-	if (maintenance && urgentMainDemand > 0) {
-		policy.useAllowed = false;
-	}
-	const auto candidateIsUrgentMain = (input.use == EndpointUse::Main)
-		&& !hasMainProof;
-	const auto mainOpening = input.active.main + input.scheduled.main;
-	policy.mainLaneReserved = (urgentMainDemand > 0)
-		&& !candidateIsUrgentMain
-		&& (mainOpening == 0);
-	const auto availableCap = std::max(
-		0,
-		policy.activeCap - (policy.mainLaneReserved ? 1 : 0));
-	const auto occupied = TotalEndpointUseCount(input.active)
-		+ TotalEndpointUseCount(input.scheduled);
-	const auto nonMainOccupied = occupied - mainOpening;
-	const auto nonMainCandidate = input.use != EndpointUse::Main;
-	policy.admissionAllowed = policy.useAllowed
-		&& (occupied < availableCap)
-		&& (!nonMainCandidate || nonMainOccupied < 1);
-	if (input.retryUntil > input.now) {
-		policy.retryAfter = std::max(
-			policy.retryAfter,
-			input.retryUntil - input.now);
-		policy.admissionAllowed = false;
-	}
-	if (input.nextHandshakeAt > input.now
-		&& (!endpointHasMainProof
-			|| policy.handshakeSpacing > 0)) {
-		policy.retryAfter = std::max(
-			policy.retryAfter,
-			input.nextHandshakeAt - input.now);
-		policy.admissionAllowed = false;
-	}
-	return policy;
-}
-
-[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
-		const EndpointState &state,
-		EndpointUse use,
-		RuntimeGenerationKey runtimeGeneration,
-		crl::time now,
-		bool fastWarmup) {
-	const auto mainProof = EndpointMainRelayProof(state);
-	const auto bootstrap = (use == EndpointUse::Main)
-		&& (mainProof.strength == MainRelayProofStrength::None);
-	const auto expansion = FindEndpointExpansionFailure(
-		state,
-		runtimeGeneration,
-		use);
-	const auto &opening = bootstrap
-		? state.opening.bootstrap
-		: expansion
-		? *expansion
-		: state.opening.expansion;
-	auto active = EndpointUseCounts();
-	for (const auto &entry : state.attemptStarts) {
-		const auto &attempt = entry.second;
-		if (attempt.admissionActive) {
-			active = BeginEndpointAdmission(active, attempt.use);
-		}
-	}
-	return EvaluateEndpointAdmission({
-		.active = active,
-		.use = use,
-		.mainProof = mainProof.strength,
-		.endpointMainProof = mainProof.strength,
-		.lastFailure = opening.reason,
-		.retryUntil = opening.retryUntil,
-		.nextHandshakeAt = state.nextHandshakeAt,
-		.lastRelaySuccessAt = std::max(
-			mainProof.provenAt,
-			mainProof.lastPayloadAt),
-		.now = now,
-		.endpointRelayProven = mainProof.strength
-			!= MainRelayProofStrength::None,
-		.healthy = state.healthy,
-		.fastWarmup = fastWarmup,
-		.bootstrapFailure = bootstrap,
-	});
-}
-
 crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
 	switch (pattern) {
 	case ProxyConnectionPattern::Soft: return crl::time(150);
@@ -644,11 +382,6 @@ crl::time ConnectionSpacing(ProxyConnectionPattern pattern) {
 	case ProxyConnectionPattern::Off: break;
 	}
 	return crl::time(0);
-}
-
-bool FastWarmupEnabled(not_null<RuntimeEnvironment*> runtime) {
-	const auto &settings = runtime->proxy();
-	return settings.fastProxyWarmup ? settings.fastProxyWarmup() : true;
 }
 
 crl::time ServerHelloTimeoutFor(

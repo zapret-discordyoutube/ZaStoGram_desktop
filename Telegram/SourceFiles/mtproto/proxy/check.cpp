@@ -437,7 +437,7 @@ void StartProxyCheck(
 					.proxyEpoch = state->mtproxyAttempt.proxyEpoch,
 					.successEpoch = state->mtproxyAttempt.successEpoch,
 					.attemptStartedAt = state->mtproxyAttemptStartedAt,
-					.routesExhausted = MtProxy::FailureIsRouteOnly(reason),
+					.routesExhausted = true,
 					.ticketKey = state->mtproxyAttempt.ticketKey,
 					.attribution = ProxyCheckFailureAttribution(
 						reason,

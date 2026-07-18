@@ -9,6 +9,8 @@ TLS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp"
 TLS_SOCKET_RECORDS_CPP = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket_records.cpp")
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
+CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
+CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 
 
 def test_session_uses_endpoint_health_admission_instead_of_local_cooldown():
@@ -47,6 +49,18 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
         PROXY_ADAPTER_CPP.read_text(encoding="utf-8"))
     assert "reportMtproxySuccess(" in (
         TLS_SOCKET_RECORDS_CPP.read_text(encoding="utf-8"))
+    connection = CONNECTION_CPP.read_text(encoding="utf-8")
+    adapter = PROXY_ADAPTER_CPP.read_text(encoding="utf-8")
+    lease = function_body(
+        adapter, "void releaseAdmissionForRelayCandidate() override")
+    assert "_transportReady" in lease
+    assert "_lease.transportReady();" in lease
+    assert connection.count("mtproxyLease.releaseAdmissionForRelayCandidate();") == 2
+    assert ".waitStartedAt = _state.endpointAdmissionWaitStartedAt" in connection
+    assert "preserveWaitStartedAt" in connection
+    assert "_state.endpointAdmissionWaitStartedAt = preserveWaitStartedAt;" in connection
+    assert ".routesExhausted = true," in adapter
+    assert ".routesExhausted = true," in CHECK_CPP.read_text(encoding="utf-8")
 
 
 def function_body(text: str, signature: str) -> str:

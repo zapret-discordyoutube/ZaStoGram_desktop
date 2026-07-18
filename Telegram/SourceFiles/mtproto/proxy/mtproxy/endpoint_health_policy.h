@@ -30,7 +30,6 @@ struct FailureTraits {
 	const AdmissionRequest &request,
 	int recipeLevel);
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason);
-[[nodiscard]] bool FailureAffectsOpening(FailureReason reason);
 [[nodiscard]] bool FailureNeedsTlsRotation(FailureReason reason);
 [[nodiscard]] bool FailureIsRouteOnly(FailureReason reason);
 [[nodiscard]] bool RelayFailureInvalidatesCapability(FailureReason reason);
@@ -38,11 +37,7 @@ struct FailureTraits {
 	const EndpointState &state,
 	FailureReason reason,
 	crl::time now);
-[[nodiscard]] crl::time NoAppDataSoftRetry();
 [[nodiscard]] crl::time ThrottledRetryCooldown();
-[[nodiscard]] bool NoAppDataWarningStrike(
-	FailureReason reason,
-	int consecutiveFailures);
 void ApplyProxyGeneration(
 	EndpointState &state,
 	ProxyRuntimeId runtimeId,
@@ -53,29 +48,13 @@ void ApplyProxyGeneration(
 [[nodiscard]] bool SuccessFromStaleAttempt(
 	const SuccessReport &report,
 	const EndpointState &state);
+[[nodiscard]] crl::time EndpointAttemptHardDeadline(
+	const EndpointAttemptState &attempt);
 [[nodiscard]] EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 	EndpointState &state,
 	crl::time now);
 [[nodiscard]] crl::time CooldownFor(
 	FailureReason reason,
 	int consecutiveFailures);
-[[nodiscard]] int EndpointUseCount(
-	const EndpointUseCounts &counts,
-	EndpointUse use);
-[[nodiscard]] int TotalEndpointUseCount(const EndpointUseCounts &counts);
-[[nodiscard]] EndpointUseCounts BeginEndpointAdmission(
-	EndpointUseCounts counts,
-	EndpointUse use);
-[[nodiscard]] EndpointUseCounts ReleaseEndpointAdmission(
-	EndpointUseCounts counts,
-	EndpointUse use);
-[[nodiscard]] EndpointConcurrencyPolicy EvaluateEndpointAdmission(
-	const EndpointAdmissionPolicyInput &input);
-[[nodiscard]] EndpointConcurrencyPolicy EndpointConcurrencyPolicyFor(
-	const EndpointState &state,
-	EndpointUse use,
-	RuntimeGenerationKey runtimeGeneration,
-	crl::time now,
-	bool fastWarmup);
 
 } // namespace MTP::details::MtProxy

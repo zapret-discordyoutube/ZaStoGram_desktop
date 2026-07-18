@@ -7,13 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "base/basic_types.h"
+#include "mtproto/runtime/proxy_data.h"
 
+#include <optional>
 #include <vector>
 
 namespace MTP::details::MtProxy {
-
-struct OpenState;
 
 struct OpenSlotRequest {
 	crl::time now = 0;
@@ -38,28 +38,49 @@ struct OpenSlotReflowRequest {
 	crl::time jitter = 0;
 };
 
-[[nodiscard]] OpenSlotAssignment ReserveOpenSlotLocked(
-	OpenState &state,
+struct OpenSlotRecord {
+	uint64 id = 0;
+	crl::time openAt = 0;
+	crl::time nextOpenAt = 0;
+
+	bool operator==(const OpenSlotRecord &other) const = default;
+};
+
+struct OpenSlotSchedule {
+	uint64 lastReservationId = 0;
+	std::vector<OpenSlotRecord> recent;
+	std::vector<OpenSlotRecord> pending;
+
+	bool operator==(const OpenSlotSchedule &other) const = default;
+};
+
+struct OpenSlotReduction {
+	OpenSlotSchedule schedule;
+	std::optional<OpenSlotAssignment> assignment;
+	bool applied = false;
+};
+
+struct OpenSlotReflowReduction {
+	OpenSlotSchedule schedule;
+	std::vector<OpenSlotAssignment> assignments;
+	bool applied = false;
+};
+
+[[nodiscard]] OpenSlotReduction ReserveOpenSlot(
+	const OpenSlotSchedule &schedule,
 	const OpenSlotRequest &request);
-[[nodiscard]] bool CancelOpenSlotLocked(OpenState &state, uint64 id);
-[[nodiscard]] bool CommitOpenSlotLocked(OpenState &state, uint64 id);
-[[nodiscard]] std::vector<OpenSlotAssignment> ReflowOpenSlotsLocked(
-	OpenState &state,
+[[nodiscard]] OpenSlotReduction CancelOpenSlot(
+	const OpenSlotSchedule &schedule,
+	uint64 id);
+[[nodiscard]] OpenSlotReduction CommitOpenSlot(
+	const OpenSlotSchedule &schedule,
+	uint64 id);
+[[nodiscard]] OpenSlotReflowReduction ReflowOpenSlots(
+	const OpenSlotSchedule &schedule,
 	const std::vector<OpenSlotReflowRequest> &ordered,
 	crl::time now);
 
 [[nodiscard]] crl::time OpenConnectionSpacing(ProxyConnectionPattern pattern);
-
-// Failure-driven pacing feedback, independent of the stealth pattern:
-// connect timeouts grow a per-endpoint spacing floor for new opens,
-// successes shrink it back to zero. A proxy that throttles bursts of
-// new connections gets approached gently instead of hammered by every
-// reconnecting session at once.
-void NoteConnectTimeout(
-	not_null<RuntimeEnvironment*> runtime,
-	const EndpointId &endpoint);
-void NoteConnectSuccess(
-	not_null<RuntimeEnvironment*> runtime,
-	const EndpointId &endpoint);
+[[nodiscard]] crl::time OpenConnectionJitter(int randomValue);
 
 } // namespace MTP::details::MtProxy

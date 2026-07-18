@@ -13,35 +13,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMutex>
 #include <rpl/event_stream.h>
 
-#include <deque>
 #include <map>
 #include <set>
 
 namespace MTP::details::MtProxy {
 
-struct OpenRecord {
-	crl::time openAt = 0;
-	crl::time nextOpenAt = 0;
-};
-
-struct PendingOpenRecord {
-	uint64 id = 0;
-	crl::time openAt = 0;
-	crl::time nextOpenAt = 0;
-};
-
-struct OpenState {
-	crl::time adaptiveSpacing = 0;
-	uint64 lastReservationId = 0;
-	std::deque<OpenRecord> recentOpens;
-	std::deque<PendingOpenRecord> pendingOpens;
-};
-
 struct EndpointContextStorage {
 	QMutex mutex;
 	std::map<QString, EndpointState> states;
 	std::map<QString, RouteState> routes;
-	std::map<QString, OpenState> openStates;
 	rpl::event_stream<EndpointViewInvalidation> viewInvalidations;
 	std::set<ProxyRuntimeId> runtimes;
 	std::map<ProxyRuntimeId, uint64> runtimeGenerations;

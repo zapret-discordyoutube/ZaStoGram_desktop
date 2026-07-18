@@ -250,19 +250,14 @@ def test_status_reducer_shadows_old_proxy_generation_facts():
     assert "generation=%1" in diagnostics
 
 
-def test_manual_selection_clears_endpoint_penalty_before_scout():
+def test_manual_selection_requests_scout_without_clearing_health():
     instance = read(INSTANCE_CPP)
     lifecycle = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "endpoint_health_lifecycle.cpp")
     migrate = function_body(instance, "void Instance::Private::migrateProxy(bool manual)")
 
-    # A manual (re-)selection gives the endpoint a fresh chance: the
-    # cooldown/denial bookkeeping resets before the scout connects, and
-    # before stale requests are cancelled.
     assert "noteMtproxyEndpointSelected(" in migrate
     assert "selected.type == ProxyData::Type::Mtproto" in migrate
-    # Only a genuine user selection resets the penalty; automatic rotation
-    # and blanket restarts pass manual=false and must not.
     assert "void migrateProxy(bool manual)" in instance
     assert "manual && selected" in migrate
     assert migrate.index("applyMtproxyProxyGeneration(") < migrate.index(
@@ -272,27 +267,24 @@ def test_manual_selection_clears_endpoint_penalty_before_scout():
 
     cleared = function_body(
         lifecycle, "void EndpointHealth::noteEndpointSelected(")
-    for reset in (
-        "state.terminalUntil = 0;",
-        "state.halfOpen = false;",
-        "state.nextHandshakeAt = 0;",
-        "state.deniedSince = 0;",
-        "state.lastDenialRotationSignal = 0;",
-        "state.consecutiveFailures = 0;",
-        "state.exhaustedSinceSuccess = 0;",
-    ):
-        assert reset in cleared
-    # The DPI adaptation and relay history survive the reset.
-    for kept in (
-        "state.recipeLevel = 0;",
-        "state.lastFailure = FailureReason::None;",
-        "state.relayProven",
-    ):
-        assert kept not in cleared
+    assert "requestImmediateScout(" in cleared
+    assert "RuntimeGenerationKey" in cleared
+    assert "state.terminalUntil = 0;" not in cleared
+    assert "state.halfOpen = false;" not in cleared
+    assert "state.consecutiveFailures = 0;" not in cleared
+    arbiter = read(ARBITER_CPP)
+    scout = function_body(
+        arbiter,
+        "void EndpointAdmissionArbiter::Private::requestImmediateScout(")
+    assert "EndpointOpenGateStage::Open" in scout
+    assert "gate->second.immediateScoutRequest" in scout
+    assert "generation->second != requester.proxyGeneration" in scout
+    assert "current.backoffRung" not in scout
+    assert "current.pressureWindow" not in scout
 
 
 if __name__ == "__main__":
-    test_manual_selection_clears_endpoint_penalty_before_scout()
+    test_manual_selection_requests_scout_without_clearing_health()
     test_proxy_switch_uses_atomic_migration_not_global_restart()
     test_reapplying_selected_proxy_keeps_live_connections()
     test_session_proxy_switch_suspends_old_generation_silently()

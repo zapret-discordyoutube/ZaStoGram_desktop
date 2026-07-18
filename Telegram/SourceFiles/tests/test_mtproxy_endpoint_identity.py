@@ -11,6 +11,7 @@ ENDPOINT_IDENTITY_CPP = MTPROXY_DIR / "endpoint_identity.cpp"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
+ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 RUNTIME_PROXY_ENDPOINT_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
@@ -70,6 +71,15 @@ def test_endpoint_identity_is_split_into_canonical_and_route():
         identity_header)
     assert "QString RouteKey(const RouteEndpoint &route)" in identity_header
     assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
+    arbiter = read(ARBITER_H)
+    flow = function_body(arbiter, "struct EndpointOpeningFlowKey")
+    attempt = function_body(arbiter, "struct EndpointOpeningAttemptKey")
+    assert "CanonicalProxyEndpoint endpoint;" in flow
+    assert "ProxyRuntimeId runtimeId = 0;" in flow
+    assert "uint64 proxyGeneration = 0;" in flow
+    assert "EndpointUse use = EndpointUse::Main;" in flow
+    for field in ("traceId", "ticketId", "proxyEpoch", "successEpoch", "attemptId"):
+        assert field in attempt
 
 
 def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():

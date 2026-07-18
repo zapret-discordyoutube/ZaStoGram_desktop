@@ -76,8 +76,14 @@ def test_arbiter_owns_queue_reservation_and_lifecycle():
         assert priority in source
     for lifecycle in ("Queued", "Scheduled", "Granted", "HandedOff", "Cancelled"):
         assert f"ProxySchedulerLifecycle::{lifecycle}" in source
-    assert "MtProxy::ReserveOpenSlotLocked(" in source
-    assert "MtProxy::CancelOpenSlotLocked(" in cancel
+    assert "kEndpointOpeningPermitCount = 4" in header
+    assert "std::array<" in header
+    assert "std::optional<EndpointOpeningPermit>" in header
+    assert "while (freePermitLocked(gate) >= 0)" in source
+    assert "MtProxy::ReserveOpenSlot(" in source
+    assert "assignPermitLocked(" in source
+    assert "MtProxy::CancelOpenSlot(" in cancel
+    assert "retireOwnerLocked(gate->second, ticketIdentityLocked(ticket));" in cancel
     assert "actions.removed.push_back(takeTicketLocked(key));" in cancel
     assert "QMutexLocker" not in actions
     assert "posts" in actions
@@ -101,6 +107,13 @@ def test_session_pending_tickets_have_one_hard_deadline():
     assert "_timing.brokerQueueDeadlineTimer.cancel();" in destroy
     assert "doDisconnect();" in deadline
     assert "kProxyReconnectMinTimeout" in deadline
+    arbiter = read(ARBITER_CPP)
+    wake = function_body(
+        arbiter, "void EndpointAdmissionArbiter::Private::updateWakeLocked(")
+    assert "const auto hasDemand = ranges::find_if(" in wake
+    assert "state->second.attemptStarts" in wake
+    assert "MtProxy::EndpointAttemptHardDeadline(entry.second)" in wake
+    assert "wakeEndpointKey = endpointKey;" in wake
 
 
 def test_proxy_check_uses_the_shared_broker():

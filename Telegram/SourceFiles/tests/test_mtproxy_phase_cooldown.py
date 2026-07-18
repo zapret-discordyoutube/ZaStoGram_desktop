@@ -19,6 +19,8 @@ DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
+ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 PROXY_ENDPOINT_H = RUNTIME_DIR / "proxy_endpoint.h"
 CONNECTION_STATUS_TYPES_H = RUNTIME_DIR / "connection_status_types.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
@@ -106,19 +108,22 @@ def test_phase_cooldown_and_recipe_policy_is_reason_based():
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(adaptive, "bool FailureNeedsTlsProfileRotation(")
 
-    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in policy
-    assert "policy.recipeEscalationAllowed" in report_failure
+    assert "FailureNeedsRecipeEscalation(report.reason)" in report_failure
     assert "FailureNeedsTlsRotation(report.reason)" not in source
     assert "state.recipeLevel < 2" in report_failure
-    # Recipe escalation is gated: a fingerprint accepted seconds ago cannot
-    # be the cause, so escalate only after a repeat failure with no recent
-    # success (the server is rate/IP-throttling, not signature-filtering).
-    assert "!recentSuccess" in report_failure
-    assert "state.consecutiveFailures >= 1" in report_failure
+    assert "recentRelay" in report_failure
+    assert "state.recipeFailureStreak >= 1" in report_failure
+    assert "if (!FailureNeedsRecipeEscalation(report.reason))" in report_failure
+    reset = report_failure.index(
+        "if (!FailureNeedsRecipeEscalation(report.reason))")
+    escalate = report_failure.index("const auto recentRelay", reset)
+    assert report_failure.index(
+        "state.recipeFailureStreak = 0;", reset) < escalate
     escalation_block = report_failure.split(
-        "policy.recipeEscalationAllowed", 1)[1].split("}", 1)[0]
-    assert "!recentSuccess" in escalation_block
-    assert "state.consecutiveFailures >= 1" in escalation_block
+        "FailureNeedsRecipeEscalation(report.reason)", 1)[1].split(
+            "const auto canonicalEligible", 1)[0]
+    assert "recentRelay" in escalation_block
+    assert "state.recipeFailureStreak >= 1" in escalation_block
     assert "FailureNeedsRecipe(diagnostic)" not in source
     assert "FailureNeedsTlsProfileRotation(diagnostic)" not in source
 
@@ -189,9 +194,6 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     adaptive = read(ADAPTIVE_POLICY_CPP)
     report_failure = function_body(health, "void EndpointHealth::reportFailure(")
-    policy = function_body(
-        policy_source,
-        "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
     traits = function_body(policy_source, "FailureTraits TraitsFor(")
     adaptive_recipe = function_body(adaptive, "bool FailureNeedsRecipe(")
     adaptive_rotation = function_body(
@@ -231,15 +233,20 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "--state.recipeLevel;" not in policy_source
     assert "DowngradeRecipeForRelayStall" not in report_failure
     assert "++state.recipeLevel;" in report_failure
-    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in policy
+    assert "FailureNeedsRecipeEscalation(report.reason)" in report_failure
 
-    assert "!input.endpointRelayProven" in policy
-    assert "input.fastWarmup && repeatedMainProof" in policy
-    assert "? kFastHealthyActiveCap" in policy
-    assert ": kHealthyActiveCap;" in policy
-    assert "policy.handshakeSpacing = kHealthyHandshakeSpacing;" in policy
-    assert "policy.activeCap = kUnknownActiveCap;" in policy
-    assert "policy.retryAfter = kQueuedRetry;" in policy
+    assert "EndpointConcurrencyPolicy" not in policy_source
+    assert "EvaluateEndpointAdmission(" not in policy_source
+    assert "activeCap" not in policy_source
+    arbiter_header = read(ARBITER_H)
+    arbiter = read(ARBITER_CPP)
+    assert "EndpointOpenGateStage" in arbiter_header
+    assert "kEndpointOpeningPermitCount = 4" in arbiter_header
+    assert "kPressureWindow = crl::time(12 * 1000)" in arbiter
+    assert "kOpenDelays = std::array" in arbiter
+    for delay in (15, 30, 60, 120):
+        assert f"crl::time({delay} * 1000)" in arbiter
+    assert "kRecoveryOpenSpacing = crl::time(6 * 1000)" in arbiter
 
 
 def test_logs_and_proxy_status_use_phase_specific_names():

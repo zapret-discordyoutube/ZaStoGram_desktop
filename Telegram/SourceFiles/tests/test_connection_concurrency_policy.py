@@ -2,9 +2,9 @@ from pathlib import Path
 
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
-POLICY_H = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.h"
-POLICY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp"
+ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 STATE_H = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_state.h"
+POLICY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health_policy.cpp"
 HEALTH_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 
@@ -15,72 +15,66 @@ def read(path):
 
 
 def test_endpoint_policy_accounts_for_active_and_scheduled_slots():
-    header = read(POLICY_H)
+    header = read(ARBITER_H)
     state = read(STATE_H)
-    policy = function_body(
-        read(POLICY_CPP),
-        "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
+    source = read(ARBITER_CPP)
 
-    assert "struct EndpointAdmissionPolicyInput" in state
-    assert "EndpointUseCounts active;" in state
-    assert "EndpointUseCounts scheduled;" in state
-    assert "int urgentMainDemand = 0;" in state
-    assert "bool mainLaneReserved = false;" in state
-    assert "EvaluateEndpointAdmission(" in header
-    assert "TotalEndpointUseCount(input.active)" in policy
-    assert "+ TotalEndpointUseCount(input.scheduled)" in policy
-    assert "policy.admissionAllowed = policy.useAllowed" in policy
-    assert "occupied < availableCap" in policy
+    assert "inline constexpr auto kEndpointOpeningPermitCount = 4;" in header
+    assert "std::optional<EndpointOpeningPermit>" in header
+    assert "OpeningAdmissionDecision" in header
+    assert "while (freePermitLocked(gate) >= 0)" in source
+    assert "assignPermitLocked(" in source
+    assert "EndpointAdmissionPolicyInput" not in state
+    assert "EndpointUseCounts active" not in state
+    assert "EndpointUseCounts scheduled" not in state
+    assert "EvaluateEndpointAdmission(" not in state
 
 
 def test_background_requires_current_main_proof_and_yields_to_urgent_main():
-    policy = function_body(
-        read(POLICY_CPP),
-        "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
     arbiter = function_body(
         read(ARBITER_CPP),
         "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
 
-    assert "input.mainProof != MainRelayProofStrength::None" in compact(policy)
-    assert "background && (!hasMainProof || urgentMainDemand > 0)" in compact(policy)
-    assert "policy.useAllowed = false;" in policy
     assert "!urgentWaiters" in arbiter
     assert "MtProxy::HasCurrentMainRelayProof(state" in arbiter
     assert "ticket.key.runtimeId" in arbiter
     assert "ticket.proxyGeneration" in arbiter
 
 
-def test_capacity_two_reserves_one_lane_for_main():
-    source = read(POLICY_CPP)
-    policy = function_body(
-        source, "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
+def test_closed_gate_exposes_four_opening_permits():
+    header = read(ARBITER_H)
+    source = read(ARBITER_CPP)
+    decision = function_body(
+        source,
+        "EndpointAdmissionArbiter::Private::openingAdmissionDecisionLocked(")
 
-    assert "kHealthyActiveCap = 1" in source
-    assert "kFastHealthyActiveCap = 2" in source
-    assert "input.fastWarmup && repeatedMainProof" in policy
-    assert "policy.mainLaneReserved = (urgentMainDemand > 0)" in policy
-    assert "!candidateIsUrgentMain" in policy
-    assert "policy.activeCap - (policy.mainLaneReserved ? 1 : 0)" in compact(policy)
+    assert "kEndpointOpeningPermitCount = 4" in header
+    assert "case MtProxy::EndpointOpenGateStage::Closed:" in decision
+    assert "freePermitLocked(current) >= 0" in decision
+    assert "ticket.key.runtimeId == request.requester.runtimeId" in decision
+    assert "ticket.proxyGeneration" in decision
+    assert "request.requester.proxyGeneration" in decision
+    assert "while (freePermitLocked(gate) >= 0)" in source
+    assert "kHealthyActiveCap" not in source
+    assert "mainLaneReserved" not in source
 
 
 def test_dpi_failures_keep_strict_cap_and_recipe_escalation():
-    source = read(POLICY_CPP)
-    traits = function_body(source, "FailureTraits TraitsFor(")
-    policy = function_body(
-        source, "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
+    health = function_body(
+        read(HEALTH_CPP), "void EndpointHealth::reportFailure(")
+    arbiter = function_body(
+        read(ARBITER_CPP),
+        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
+        "\t\tconst MtProxy::PressureFailure &event,")
 
-    for reason in (
-        "ClientHelloSentNoServerHello",
-        "TlsAlertAfterClientHello",
-        "ServerHelloHmacMismatch",
-    ):
-        row = traits.split(
-            f"case FailureReason::{reason}:", 1)[1].split(
-                "case FailureReason::", 1)[0]
-        assert ".escalatesRecipe = true" in row
-    assert "FailureNeedsRecipeEscalation(input.lastFailure)" in policy
-    assert "policy.activeCap = kDpiFailureActiveCap;" in policy
-    assert "policy.recipeEscalationAllowed = true;" in policy
+    assert "report.routesExhausted" in health
+    assert "FailureReason::ClientHelloSentNoServerHello" in health
+    assert "pressureFailure = PressureFailure{" in health
+    assert "state.recipeFailureStreak" in health
+    assert "kPressureWindow = crl::time(12 * 1000)" in read(ARBITER_CPP)
+    assert "gate.pressureWindow.size() >= 3 && flows.size() >= 2" in arbiter
+    assert "TlsAlertAfterClientHello" not in arbiter
+    assert "ServerHelloHmacMismatch" not in arbiter
 
 
 def test_route_failures_remain_local_until_routes_are_exhausted():
@@ -142,7 +136,7 @@ def function_body(text: str, signature: str) -> str:
 if __name__ == "__main__":
     test_endpoint_policy_accounts_for_active_and_scheduled_slots()
     test_background_requires_current_main_proof_and_yields_to_urgent_main()
-    test_capacity_two_reserves_one_lane_for_main()
+    test_closed_gate_exposes_four_opening_permits()
     test_dpi_failures_keep_strict_cap_and_recipe_escalation()
     test_route_failures_remain_local_until_routes_are_exhausted()
     test_arbiter_prioritizes_and_fairly_ages_endpoint_requests()

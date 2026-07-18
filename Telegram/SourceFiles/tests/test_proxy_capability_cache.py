@@ -197,7 +197,8 @@ def test_endpoint_health_updates_capabilities_after_state_lock_release():
     assert failure_unlock < failure.index("NoteCapabilityMtproxyFailure(")
     assert failure_unlock < failure.index("NoteCapabilityMtproxyRelayFailure(")
     success_unlock = success.index("\n\t}\n\tapplyDeferredCleanup();")
-    assert success_unlock < success.index("NoteConnectSuccess(")
+    assert "NoteConnectSuccess(" not in success
+    assert success_unlock < success.index("endpointAdmissionArbiter().openingEvent(")
     assert success_unlock < success.index("NoteCapabilityMtproxySuccess(")
     stall_unlock = stall.index(
         "\n\t}\n\tif (retirement.outcome == RelayProofRetirement::StaleGeneration")

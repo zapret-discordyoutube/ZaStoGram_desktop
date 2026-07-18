@@ -44,7 +44,10 @@ def test_shared_context_owns_storage_and_one_admission_arbiter():
     assert "std::make_unique<details::MtProxy::EndpointContextStorage>()" in source
     assert "std::make_unique<details::EndpointAdmissionArbiter>(*_storage)" in source
     assert "std::map<QString, EndpointState> states;" in storage
-    assert "std::map<QString, OpenState> openStates;" in storage
+    assert "openStates" not in storage
+    assert "EndpointOpenGateState" in read(ARBITER_H)
+    assert "std::map<QString, MtProxy::EndpointOpenGateState> _gates;" in read(
+        ARBITER_CPP)
     assert "std::set<ProxyRuntimeId> runtimes;" in storage
     assert "admissionReleaseListeners" not in storage
 
@@ -84,19 +87,18 @@ def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
 
 def test_release_frees_capacity_then_drains_outside_the_mutex():
     source = read(CONTEXT_CPP)
-    release = function_body(
-        source, "void ProxyEndpointContext::releaseEndpointAttempt(")
-    candidate = function_body(
-        source,
-        "void ProxyEndpointContext::releaseAdmissionForRelayCandidate(")
+    cancel = function_body(
+        source, "void ProxyEndpointContext::cancelEndpointAttempt(")
+    ready = function_body(source, "void ProxyEndpointContext::transportReady(")
 
-    for body in (release, candidate):
-        assert "QMutexLocker lock(&_storage->mutex);" in body
-        assert "_arbiter->drainEndpoint(key);" in body
-        assert body.rindex("_arbiter->drainEndpoint(key);") > body.index("\n\t}")
-        assert "notifyEndpointViewChanged(" in body
-    assert "SynchronizeEndpointAdmissionAggregate(i->second);" in release
-    assert "ReleaseAdmissionForRelayCandidate(" in candidate
+    assert "QMutexLocker lock(&_storage->mutex);" in cancel
+    assert "details::MtProxy::Cancelled{" in cancel
+    assert cancel.rindex("_arbiter->openingEvent(") > cancel.index("\n\t}")
+    assert "QMutexLocker lock(&_storage->mutex);" in ready
+    assert "details::MtProxy::TransportReady{" in ready
+    assert ready.rindex("_arbiter->openingEvent(") > ready.index("\n\t}")
+    assert "SynchronizeEndpointAdmissionAggregate" not in source
+    assert "ReleaseAdmissionForRelayCandidate" not in source
 
 
 def test_composed_view_is_generation_scoped_and_main_only():

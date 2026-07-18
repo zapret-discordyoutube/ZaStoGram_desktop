@@ -127,8 +127,10 @@ def test_handshake_success_does_not_clear_relay_silence_cooldown():
     assert skip < success.index("state.terminalUntil = 0;")
     assert skip < success.index("state.consecutiveFailures = 0;")
     assert skip < success.index("state.recipeLevel = 0;")
-    assert skip < success.index(
-        "NoteConnectSuccess(_runtime, report.endpoint);")
+    assert "NoteConnectSuccess(" not in success
+    assert skip < success.index("relayReady = RelayReady{")
+    assert success.index("relayReady = RelayReady{") < success.index(
+        "endpointAdmissionArbiter().openingEvent(")
     assert "SuccessScope::FakeTlsAppData" in records
     assert "SuccessScope::Relay" not in function_body(
         records,
@@ -196,21 +198,20 @@ def test_session_reports_silence_and_recovers_temporary_key():
 
 
 def test_full_concurrency_needs_current_main_relay_proof():
-    policy_source = read(ENDPOINT_HEALTH_POLICY_CPP)
     state_source = read(ENDPOINT_HEALTH_STATE_H)
     health = read(ENDPOINT_HEALTH_CPP)
-    policy = function_body(
-        policy_source, "EndpointConcurrencyPolicy EvaluateEndpointAdmission(")
+    arbiter = read(SOURCE_DIR / "mtproto" / "proxy" /
+        "endpoint_admission_arbiter.cpp")
+    eligible = function_body(
+        arbiter,
+        "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     failure = function_body(health, "void EndpointHealth::reportFailure(")
 
-    assert "const auto hasMainProof = input.mainProof" in policy
-    assert "MainRelayProofStrength::None" in policy
-    assert "const auto repeatedMainProof = input.mainProof" in policy
-    assert "MainRelayProofStrength::RepeatedPayload" in policy
-    assert "background && (!hasMainProof || urgentMainDemand > 0)" in policy
-    assert "policy.useAllowed = false;" in policy
-    assert "input.fastWarmup && repeatedMainProof" in policy
+    assert "MtProxy::HasCurrentMainRelayProof(state" in eligible
+    assert "ticket.key.runtimeId" in eligible
+    assert "ticket.proxyGeneration" in eligible
+    assert "!urgentWaiters" in eligible
     assert "CurrentMainRelayProof(" in state_source
     assert "proof.use != EndpointUse::Main" in state_source
     assert "SuccessFromStaleAttempt(report, state)" in success

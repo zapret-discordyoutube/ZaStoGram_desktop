@@ -135,13 +135,6 @@ struct ProxyEndpointView {
 	bool operator==(const ProxyEndpointView &other) const = default;
 };
 
-enum class AdmissionAction {
-	StartNow,
-	StartAfter,
-	Queued,
-	SkipCooldown,
-};
-
 class EndpointHealth;
 
 class EndpointAttemptLease final {
@@ -154,7 +147,7 @@ public:
 	~EndpointAttemptLease();
 
 	void release();
-	void releaseAdmissionForRelayCandidate();
+	void transportReady();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;
@@ -199,9 +192,6 @@ struct AdmissionRequest {
 };
 
 struct Admission {
-	AdmissionAction action = AdmissionAction::StartNow;
-	crl::time retryAfter = 0;
-	FailureReason blockedBy = FailureReason::None;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile effectiveTlsProfile = ProxyTlsProfile::Auto;
 	MtProxyAttemptPlan plan;
