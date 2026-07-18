@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/timer.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"

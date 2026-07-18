@@ -103,14 +103,6 @@ namespace {
 		return u"attempt_summary"_q;
 	case ProxyDiagnosticsPhase::Liveness:
 		return u"liveness"_q;
-	case ProxyDiagnosticsPhase::CapacityDecision:
-		return u"capacity_decision"_q;
-	case ProxyDiagnosticsPhase::CapacityProbe:
-		return u"capacity_probe"_q;
-	case ProxyDiagnosticsPhase::TransferEntitlement:
-		return u"transfer_entitlement"_q;
-	case ProxyDiagnosticsPhase::CapacityReclaim:
-		return u"capacity_reclaim"_q;
 	case ProxyDiagnosticsPhase::FileRpc:
 		return u"file_rpc"_q;
 	case ProxyDiagnosticsPhase::FileProgress:
@@ -122,10 +114,6 @@ namespace {
 [[nodiscard]] bool IsDiskOnlyDiagnosticsPhase(
 		ProxyDiagnosticsPhase phase) {
 	switch (phase) {
-	case ProxyDiagnosticsPhase::CapacityDecision:
-	case ProxyDiagnosticsPhase::CapacityProbe:
-	case ProxyDiagnosticsPhase::TransferEntitlement:
-	case ProxyDiagnosticsPhase::CapacityReclaim:
 	case ProxyDiagnosticsPhase::FileRpc:
 	case ProxyDiagnosticsPhase::FileProgress:
 		return true;
@@ -229,59 +217,11 @@ namespace {
 	return QString();
 }
 
-[[nodiscard]] QString DecisionText(ProxyDiagnosticsDecision decision) {
-	switch (decision) {
-	case ProxyDiagnosticsDecision::None: return QString();
-	case ProxyDiagnosticsDecision::Ordinary: return u"ordinary"_q;
-	case ProxyDiagnosticsDecision::FrontierProbe: return u"frontier_probe"_q;
-	case ProxyDiagnosticsDecision::ExactReplacement:
-		return u"exact_replacement"_q;
-	case ProxyDiagnosticsDecision::Blocked: return u"blocked"_q;
-	case ProxyDiagnosticsDecision::Reservation: return u"reservation"_q;
-	case ProxyDiagnosticsDecision::Transfer: return u"transfer"_q;
-	case ProxyDiagnosticsDecision::Main: return u"main"_q;
-	case ProxyDiagnosticsDecision::Applied: return u"applied"_q;
-	case ProxyDiagnosticsDecision::NotApplicable: return u"not_applicable"_q;
-	case ProxyDiagnosticsDecision::Retry: return u"retry"_q;
-	case ProxyDiagnosticsDecision::NoDemand: return u"no_demand"_q;
-	}
-	return QString();
-}
-
 [[nodiscard]] QString TransitionText(
 		ProxyDiagnosticsTransition transition) {
 	switch (transition) {
 	case ProxyDiagnosticsTransition::None: return QString();
-	case ProxyDiagnosticsTransition::Reserved: return u"reserved"_q;
-	case ProxyDiagnosticsTransition::Activated: return u"activated"_q;
-	case ProxyDiagnosticsTransition::Proved: return u"proved"_q;
-	case ProxyDiagnosticsTransition::Failed: return u"failed"_q;
 	case ProxyDiagnosticsTransition::Cancelled: return u"cancelled"_q;
-	case ProxyDiagnosticsTransition::CooldownStarted:
-		return u"cooldown_started"_q;
-	case ProxyDiagnosticsTransition::Acquired: return u"acquired"_q;
-	case ProxyDiagnosticsTransition::Retained: return u"retained"_q;
-	case ProxyDiagnosticsTransition::Released: return u"released"_q;
-	case ProxyDiagnosticsTransition::VictimSelected:
-		return u"victim_selected"_q;
-	case ProxyDiagnosticsTransition::SuspendRequested:
-		return u"suspend_requested"_q;
-	case ProxyDiagnosticsTransition::SuspendAcknowledged:
-		return u"suspend_acknowledged"_q;
-	case ProxyDiagnosticsTransition::ParkRequested: return u"park_requested"_q;
-	case ProxyDiagnosticsTransition::ParkAcknowledged:
-		return u"park_acknowledged"_q;
-	case ProxyDiagnosticsTransition::ReplacementGranted:
-		return u"replacement_granted"_q;
-	case ProxyDiagnosticsTransition::ReplacementProved:
-		return u"replacement_proved"_q;
-	case ProxyDiagnosticsTransition::ReplacementFailed:
-		return u"replacement_failed"_q;
-	case ProxyDiagnosticsTransition::RollbackRequested:
-		return u"rollback_requested"_q;
-	case ProxyDiagnosticsTransition::Resumed: return u"resumed"_q;
-	case ProxyDiagnosticsTransition::CapacityOneForegroundMain:
-		return u"capacity_one_foreground_main"_q;
 	case ProxyDiagnosticsTransition::Queued: return u"queued"_q;
 	case ProxyDiagnosticsTransition::SendAdmitted: return u"send_admitted"_q;
 	case ProxyDiagnosticsTransition::Sent: return u"sent"_q;
@@ -385,12 +325,7 @@ namespace {
 	appendOrdinal(u"endpoint_attempt"_q, event.attempt.attemptId);
 	appendOrdinal(u"lane_ordinal"_q, event.laneOrdinal);
 	appendOrdinal(u"request_ordinal"_q, event.requestOrdinal);
-	appendText(u"decision"_q, DecisionText(event.decision));
 	appendText(u"transition"_q, TransitionText(event.transition));
-	appendOptional(u"commitments"_q, event.commitmentCount);
-	appendOptional(u"lower_bound"_q, event.provenLowerBound);
-	appendOptional(u"frontier"_q, event.frontier);
-	appendOptional(u"cap"_q, event.capacityCap);
 	appendOptional(u"send_count"_q, event.sendCount);
 	appendText(u"error_class"_q, DiagnosticsErrorClassText(event.errorClass));
 	appendOptional(u"error_code"_q, event.errorCode);
@@ -535,10 +470,6 @@ namespace {
 	case ProxyDiagnosticsPhase::RotationSwitched:
 	case ProxyDiagnosticsPhase::AttemptSummary:
 	case ProxyDiagnosticsPhase::Liveness:
-	case ProxyDiagnosticsPhase::CapacityDecision:
-	case ProxyDiagnosticsPhase::CapacityProbe:
-	case ProxyDiagnosticsPhase::TransferEntitlement:
-	case ProxyDiagnosticsPhase::CapacityReclaim:
 	case ProxyDiagnosticsPhase::FileRpc:
 	case ProxyDiagnosticsPhase::FileProgress:
 		return false;

@@ -10,13 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/basic_types.h"
 #include "mtproto/runtime/proxy_data.h"
 
-#include <crl/crl_time.h>
-
-#include <memory>
-
 namespace MTP::details::MtProxy {
-
-class ReclaimEpisodeToken;
 
 enum class RouteAddressFamily {
 	Unknown,
@@ -84,33 +78,6 @@ struct EndpointId {
 		return (canonical == other.canonical)
 			&& (route == other.route);
 	}
-};
-
-enum class EndpointLaneCommandType {
-	Suspend,
-	Resume,
-	ParkMain,
-	ResumeParkedMain,
-};
-
-enum class EndpointLaneCommandResult {
-	Applied,
-	NotApplicable,
-	Retry,
-	NoDemand,
-};
-
-struct EndpointLaneCommand {
-	EndpointLaneCommandType type = EndpointLaneCommandType::Suspend;
-	uint64 token = 0;
-	uint64 attemptId = 0;
-	uint64 proxyGeneration = 0;
-	std::shared_ptr<const ReclaimEpisodeToken> reclaimEpisodeToken;
-	crl::time deadlineAt = 0;
-	bool demandRequired = false;
-	Fn<bool()> authorize;
-	Fn<void()> demand;
-	Fn<void(EndpointLaneCommandResult)> done;
 };
 
 } // namespace MTP::details::MtProxy

@@ -60,10 +60,6 @@ enum class ProxyDiagnosticsPhase {
 	MtpRestart,
 	AttemptSummary,
 	Liveness,
-	CapacityDecision,
-	CapacityProbe,
-	TransferEntitlement,
-	CapacityReclaim,
 	FileRpc,
 	FileProgress,
 };
@@ -74,43 +70,9 @@ enum class ProxyDiagnosticsSeverity {
 	Error,
 };
 
-enum class ProxyDiagnosticsDecision {
-	None,
-	Ordinary,
-	FrontierProbe,
-	ExactReplacement,
-	Blocked,
-	Reservation,
-	Transfer,
-	Main,
-	Applied,
-	NotApplicable,
-	Retry,
-	NoDemand,
-};
-
 enum class ProxyDiagnosticsTransition {
 	None,
-	Reserved,
-	Activated,
-	Proved,
-	Failed,
 	Cancelled,
-	CooldownStarted,
-	Acquired,
-	Retained,
-	Released,
-	VictimSelected,
-	SuspendRequested,
-	SuspendAcknowledged,
-	ParkRequested,
-	ParkAcknowledged,
-	ReplacementGranted,
-	ReplacementProved,
-	ReplacementFailed,
-	RollbackRequested,
-	Resumed,
-	CapacityOneForegroundMain,
 	Queued,
 	SendAdmitted,
 	Sent,
@@ -203,7 +165,6 @@ struct ProxyDiagnosticsEvent {
 	std::optional<crl::time> totalMs;
 	int traceSchema = 0;
 	QDateTime timestamp;
-	ProxyDiagnosticsDecision decision = ProxyDiagnosticsDecision::None;
 	ProxyDiagnosticsTransition transition = ProxyDiagnosticsTransition::None;
 	ProxyDiagnosticsErrorClass errorClass
 		= ProxyDiagnosticsErrorClass::None;
@@ -211,10 +172,6 @@ struct ProxyDiagnosticsEvent {
 	ProxyDiagnosticsRpcKind rpcKind = ProxyDiagnosticsRpcKind::None;
 	uint64 laneOrdinal = 0;
 	uint64 requestOrdinal = 0;
-	std::optional<int> commitmentCount;
-	std::optional<int> provenLowerBound;
-	std::optional<int> frontier;
-	std::optional<int> capacityCap;
 	std::optional<int> sendCount;
 	std::optional<int> errorCode;
 	std::optional<qint64> acceptedBytes;

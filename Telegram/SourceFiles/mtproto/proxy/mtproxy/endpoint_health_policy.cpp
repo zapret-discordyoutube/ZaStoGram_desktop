@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 
-#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 #include "mtproto/runtime/runtime_environment.h"
 
@@ -357,34 +356,12 @@ EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 		EndpointState &state,
 		crl::time now) {
 	auto cleanup = EndpointDeferredCleanup();
-	static_cast<void>(ExpireTypedCapacityProbeCooldown(
-		state.liveBudget,
-		now));
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (i->second.admissionActive
 			&& now - i->second.startedAt > kAttemptHardTtl) {
-			const auto identity = RelayProofIdentity{
-				.runtimeId = i->second.runtimeId,
-				.proxyGeneration = i->second.proxyGeneration,
-				.attemptId = i->first,
-			};
-			static_cast<void>(ReleaseTypedCapacityProbe(
-				state.liveBudget,
-				identity));
-			static_cast<void>(ClearForegroundTransferAttemptLineage(
-				state,
-				i->second.transferDemand,
-				i->second.owner,
-				identity));
-			if (state.reclaimEpisode
-				&& state.reclaimEpisode->beneficiaryAttempt == identity) {
-				state.reclaimEpisode->beneficiaryAttempt = {};
-			}
-			if (!i->second.preempting) {
-				DeferEndpointOwnerDisconnect(
-					cleanup,
-					i->second.ownerDestroyed);
-			}
+			DeferEndpointOwnerDisconnect(
+				cleanup,
+				i->second.ownerDestroyed);
 			i = state.attemptStarts.erase(i);
 		} else {
 			++i;
@@ -631,12 +608,21 @@ EndpointConcurrencyPolicy EvaluateEndpointAdmission(
 		: expansion
 		? *expansion
 		: state.opening.expansion;
+	auto active = EndpointUseCounts();
+	for (const auto &entry : state.attemptStarts) {
+		const auto &attempt = entry.second;
+		if (attempt.admissionActive) {
+			active = BeginEndpointAdmission(active, attempt.use);
+		}
+	}
 	return EvaluateEndpointAdmission({
+		.active = active,
 		.use = use,
 		.mainProof = mainProof.strength,
 		.endpointMainProof = mainProof.strength,
 		.lastFailure = opening.reason,
 		.retryUntil = opening.retryUntil,
+		.nextHandshakeAt = state.nextHandshakeAt,
 		.lastRelaySuccessAt = std::max(
 			mainProof.provenAt,
 			mainProof.lastPayloadAt),

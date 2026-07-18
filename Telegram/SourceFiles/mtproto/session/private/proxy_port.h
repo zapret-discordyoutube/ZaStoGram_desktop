@@ -132,16 +132,12 @@ struct SessionProxyRequest {
 	uint64 requestedRecoverySourceProxyGeneration = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
-	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	crl::time notBefore = 0;
 	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
-	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
 	crl::time waitStartedAt = 0;
-	MtProxy::EndpointTransferDemandKey transferDemand;
-	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 class SessionProxyTicket final {
@@ -186,10 +182,6 @@ public:
 	virtual void cancelByProxyGeneration(
 		RuntimeEnvironment *runtime,
 		uint64 generation) = 0;
-	virtual void endTransferDemand(
-		RuntimeEnvironment *runtime,
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner) = 0;
 	[[nodiscard]] virtual SessionProxyEndpointSnapshot endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const = 0;

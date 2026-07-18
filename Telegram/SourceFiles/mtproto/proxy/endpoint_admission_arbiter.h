@@ -77,12 +77,9 @@ struct EndpointAdmissionRequest final {
 	ProxyTraceId traceId = 0;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
-	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
 	crl::time waitStartedAt = 0;
-	MtProxy::EndpointTransferDemandKey transferDemand;
-	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 struct EndpointAdmissionEnqueueResult final {
@@ -107,43 +104,11 @@ public:
 	[[nodiscard]] EndpointAdmissionEnqueueResult enqueue(
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
-	void endTransferDemand(
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner);
 	void cancel(AdmissionTicketKey key, uint64 revision = 0);
 	void ownerDestroyed(AdmissionTicketKey key);
 	void cancelBeforeGeneration(
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration);
-	[[nodiscard]] bool authorizeLaneSuspension(
-		const QString &endpointKey,
-		uint64 token,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration,
-		uint64 attemptId);
-	void demandLaneResume(
-		const QString &endpointKey,
-		uint64 token,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration,
-		uint64 attemptId);
-	void acknowledgeLaneSuspension(
-		const QString &endpointKey,
-		uint64 token,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration,
-		uint64 attemptId,
-		MtProxy::EndpointLaneCommandResult result,
-		bool delivered);
-	void acknowledgeLaneResume(
-		const QString &endpointKey,
-		uint64 token,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration,
-		uint64 attemptId,
-		crl::time deadlineAt,
-		MtProxy::EndpointLaneCommandResult result,
-		bool delivered);
 	void drainEndpoint(const QString &endpointKey);
 	void composeEndpointViewLocked(
 		const MtProxy::EndpointId &endpoint,
@@ -158,12 +123,26 @@ private:
 		AdmissionTicketKey key,
 		uint64 revision,
 		uint64 transition,
-		ProxySchedulerLifecycle lifecycle);
+		ProxySchedulerLifecycle lifecycle,
+		const std::shared_ptr<std::atomic<bool>> &registrationLive);
 	void deliverGrant(
 		AdmissionTicketKey key,
 		uint64 revision,
 		uint64 transition,
-		ProxySchedulerLifecycle lifecycle);
+		ProxySchedulerLifecycle lifecycle,
+		const std::shared_ptr<std::atomic<bool>> &registrationLive);
+	void statusDeliveryMissing(
+		AdmissionTicketKey key,
+		uint64 revision,
+		uint64 transition,
+		ProxySchedulerLifecycle lifecycle,
+		const std::shared_ptr<std::atomic<bool>> &registrationLive);
+	void grantDeliveryMissing(
+		AdmissionTicketKey key,
+		uint64 revision,
+		uint64 transition,
+		ProxySchedulerLifecycle lifecycle,
+		const std::shared_ptr<std::atomic<bool>> &registrationLive);
 
 	const std::unique_ptr<Private> _private;
 

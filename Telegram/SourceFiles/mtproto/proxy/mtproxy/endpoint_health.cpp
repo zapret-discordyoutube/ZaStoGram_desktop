@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_diagnostics.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
@@ -198,10 +197,6 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.scheduledOpenAt = scheduledOpenAt,
 		.attemptStartedAt = attemptStartedAt,
 		.phaseStartedAt = attemptStartedAt,
-		.relayProofsAtStart = EndpointRelayProofCount(state),
-		.relayProofPromotionEpochAtStart
-			= state.liveBudget.relayProofPromotionEpoch,
-		.transferDemand = request.transferDemand,
 	});
 	SynchronizeEndpointAdmissionAggregate(state);
 	return Admission{
@@ -250,7 +245,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto capacityDiagnostics = std::vector<ProxyDiagnosticsEvent>();
 	auto noteConnectTimeout = false;
 	auto shouldDrain = false;
 	auto recoveryFinished = false;
@@ -336,53 +330,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 					&& !alternateRoute;
 				const auto bootstrap = (report.use == EndpointUse::Main)
 					&& !endpointHasMainProof;
-				const auto capacityProbeIdentity = RelayProofIdentity{
-					.runtimeId = report.runtimeId,
-					.proxyGeneration = report.proxyGeneration,
-					.attemptId = report.attemptId,
-				};
-				const auto capacityProbeFailure
-					= BeginTypedCapacityProbeCooldown(
-						state,
-						report,
-						terminal->finalAttemptTerminal,
-						now);
-				const auto capacityCooldownStarted
-					= capacityProbeFailure.has_value();
-				if (capacityProbeFailure) {
-					shouldDrain = true;
-					NoteCapacityPressure(
-						state.liveBudget,
-						capacityProbeFailure->pressureFrontier,
-						now);
-					static_cast<void>(AuthorizeExactProbeReplacement(
-						state,
-						*capacityProbeFailure,
-						capacityProbeIdentity));
-					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
-						ProxyDiagnosticsPhase::CapacityProbe,
-						ProxyDiagnosticsTransition::Failed,
-						terminal->attempt,
-						state));
-					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
-						ProxyDiagnosticsPhase::CapacityProbe,
-						ProxyDiagnosticsTransition::CooldownStarted,
-						terminal->attempt,
-						state));
-				}
-				if (terminal->finalAttemptTerminal
-					&& report.routesExhausted
-					&& MarkExactReplacementRollback(
-						state,
-						capacityProbeIdentity,
-						deferredCleanup)) {
-					shouldDrain = true;
-					capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
-						ProxyDiagnosticsPhase::CapacityReclaim,
-						ProxyDiagnosticsTransition::RollbackRequested,
-						terminal->attempt,
-						state));
-				}
 				auto openingRetryUntil = crl::time();
 				if (openingFailure) {
 					auto &opening = bootstrap
@@ -441,20 +388,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 						RecomputeEndpointExpansionThrottle(state);
 					}
 					shouldDrain = true;
-				}
-				if (terminal->finalAttemptTerminal
-					&& !capacityCooldownStarted) {
-					const auto cancelled = ReleaseTypedCapacityProbe(
-						state.liveBudget,
-						capacityProbeIdentity);
-					shouldDrain = cancelled || shouldDrain;
-					if (cancelled) {
-						capacityDiagnostics.push_back(CapacityDiagnosticsEvent(
-							ProxyDiagnosticsPhase::CapacityProbe,
-							ProxyDiagnosticsTransition::Cancelled,
-							terminal->attempt,
-							state));
-					}
 				}
 				const auto canonicalEligible = (report.use
 						== EndpointUse::Main)
@@ -604,9 +537,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
 	}
-	for (auto &event : capacityDiagnostics) {
-		WriteProxyDiagnosticsLine(_runtime, std::move(event));
-	}
 	if (shouldDrain) {
 		_context->notifyEndpointAdmissible(key);
 	}
@@ -633,7 +563,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto capacityDiagnostics = std::vector<ProxyDiagnosticsEvent>();
 	auto shouldDrain = false;
 	auto deferredCleanup = EndpointDeferredCleanup();
 	auto deferredCleanupApplied = false;
@@ -690,12 +619,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			.proxyGeneration = report.proxyGeneration,
 			.attemptId = report.attemptId,
 		};
-		const auto activeCapacityProbe = ExactActiveCapacityProbe(
-			state,
-			identity);
-		const auto replacementProof = ExactReplacementBeneficiary(
-			state,
-			identity);
 		if (HasRelayProof(state, identity)) {
 			if (!RefreshRelayProofPayload(state, identity, payloadAt)) {
 				return;
@@ -713,13 +636,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
-			shouldDrain = CompleteCapacityProof(
-				state,
-				identity,
-				activeCapacityProbe,
-				replacementProof,
-				report,
-				capacityDiagnostics) || shouldDrain;
 			if (report.use == EndpointUse::Main) {
 				static_cast<void>(
 					FinishMainRecoveryByReplacementAttemptLocked(
@@ -756,12 +672,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			};
 			state.recipeLevel = 0;
 			state.exhaustedSinceSuccess = 0;
-			if (!replacementProof) {
-				state.liveBudget.pressureRelayProofs = 0;
-				state.liveBudget.proofPressureStrikes = 0;
-				state.liveBudget.proofPressureObservedAt = 0;
-			}
-			++state.liveBudget.relayProofPromotionEpoch;
 			const auto bootstrapSuccess = (report.use == EndpointUse::Main)
 				&& (beforeEndpointMainProof.strength
 					== MainRelayProofStrength::None);
@@ -804,9 +714,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	}
 	if (diagnosticsEvent) {
 		WriteProxyDiagnosticsLine(_runtime, std::move(*diagnosticsEvent));
-	}
-	for (auto &event : capacityDiagnostics) {
-		WriteProxyDiagnosticsLine(_runtime, std::move(event));
 	}
 	if (probe) {
 		LogProbeAttemptSuccess(_runtime, report);

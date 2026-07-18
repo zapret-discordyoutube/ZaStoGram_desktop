@@ -62,15 +62,11 @@ struct ConnectionRequest {
 	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
-	ProxyConnectionPattern connectionPattern = ProxyConnectionPattern::Off;
 	crl::time notBefore = 0;
 	QPointer<QObject> context;
-	Fn<void(MtProxy::EndpointLaneCommand)> laneControl;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 	crl::time waitStartedAt = 0;
-	MtProxy::EndpointTransferDemandKey transferDemand;
-	MtProxy::ReclaimEpisodeToken reclaimEpisodeToken;
 };
 
 class ConnectionBroker;
@@ -111,9 +107,6 @@ public:
 	~ConnectionBroker();
 
 	[[nodiscard]] ConnectionTicket request(ConnectionRequest request);
-	void endTransferDemand(
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner);
 	void cancel(ConnectionTicketId id);
 	void cancelByProxyGeneration(uint64 generation);
 	void cancelByOwnerDestruction();

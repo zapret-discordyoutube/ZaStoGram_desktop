@@ -131,13 +131,11 @@ private:
 		.use = request.use,
 		.requestedRecoveryToken = recoveryMatches
 			? request.requestedRecoveryToken
-			: MtProxy::MainRecoveryToken(),
+				: MtProxy::MainRecoveryToken(),
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
-		.connectionPattern = request.connectionPattern,
 		.notBefore = request.notBefore,
 		.context = std::move(request.context),
-		.laneControl = std::move(request.laneControl),
 		.start = [start = std::move(request.start)](ConnectionStart value) mutable {
 			if (!start) {
 				return;
@@ -185,8 +183,6 @@ private:
 			});
 		},
 		.waitStartedAt = request.waitStartedAt,
-		.transferDemand = request.transferDemand,
-		.reclaimEpisodeToken = request.reclaimEpisodeToken,
 	};
 }
 
@@ -403,10 +399,6 @@ public:
 	void cancelByProxyGeneration(
 		RuntimeEnvironment *runtime,
 		uint64 generation) override;
-	void endTransferDemand(
-		RuntimeEnvironment *runtime,
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner) override;
 	[[nodiscard]] SessionProxyEndpointSnapshot endpointSnapshot(
 		not_null<RuntimeEnvironment*> runtime,
 		const MtProxy::EndpointId &endpoint) const override;
@@ -487,17 +479,6 @@ void ProductionSessionProxyPort::cancelByProxyGeneration(
 	if (runtime) {
 		not_null{ runtime }->proxyServices().broker().cancelByProxyGeneration(
 			generation);
-	}
-}
-
-void ProductionSessionProxyPort::endTransferDemand(
-		RuntimeEnvironment *runtime,
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner) {
-	if (runtime) {
-		not_null{ runtime }->proxyServices().broker().endTransferDemand(
-			demand,
-			std::move(owner));
 	}
 }
 

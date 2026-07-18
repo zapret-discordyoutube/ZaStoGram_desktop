@@ -8,7 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/proxy_endpoint_context.h"
 
 #include "base/timer.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_capacity.h"
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
@@ -149,10 +148,7 @@ void ProxyEndpointContext::unregisterRuntime(ProxyRuntimeId runtimeId) {
 }
 
 void ProxyEndpointContext::setForegroundRuntime(ProxyRuntimeId runtimeId) {
-	using EntitlementReleaseCause
-		= details::MtProxy::ForegroundTransferEntitlementReleaseCause;
 	auto endpoints = std::vector<QString>();
-	auto ownerConnections = std::vector<QMetaObject::Connection>();
 	{
 		QMutexLocker lock(&_storage->mutex);
 		if ((runtimeId && !_storage->runtimes.contains(runtimeId))
@@ -161,32 +157,9 @@ void ProxyEndpointContext::setForegroundRuntime(ProxyRuntimeId runtimeId) {
 		}
 		_storage->foregroundRuntimeId = runtimeId;
 		endpoints.reserve(_storage->states.size());
-		for (auto &[endpointKey, state] : _storage->states) {
-			endpoints.push_back(endpointKey);
-			if (!state.foregroundTransferEntitlement) {
-				continue;
-			}
-			const auto demand
-				= state.foregroundTransferEntitlement->demand;
-			const auto owner
-				= state.foregroundTransferEntitlement->owner;
-			auto cleanup = details::MtProxy::EndpointDeferredCleanup();
-			const auto cause = EntitlementReleaseCause::ForegroundChanged;
-			if (!details::MtProxy::ReleaseForegroundTransferEntitlement(
-					state,
-					demand,
-					owner,
-					cause,
-					cleanup)) {
-				continue;
-			}
-			for (auto &connection : cleanup.ownerConnections) {
-				ownerConnections.push_back(std::move(connection));
-			}
+		for (const auto &entry : _storage->states) {
+			endpoints.push_back(entry.first);
 		}
-	}
-	for (const auto &connection : ownerConnections) {
-		QObject::disconnect(connection);
 	}
 	for (const auto &endpoint : endpoints) {
 		_arbiter->drainEndpoint(endpoint);
@@ -274,20 +247,6 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 				.attemptId = attemptId,
 			};
 			static_cast<void>(
-				details::MtProxy::ReleaseTypedCapacityProbe(
-					i->second.liveBudget,
-					identity));
-			static_cast<void>(
-				details::MtProxy::ClearForegroundTransferAttemptLineage(
-					i->second,
-					attemptState.transferDemand,
-					attemptState.owner,
-					identity));
-			if (i->second.reclaimEpisode
-				&& i->second.reclaimEpisode->beneficiaryAttempt == identity) {
-				i->second.reclaimEpisode->beneficiaryAttempt = {};
-			}
-			static_cast<void>(
 				details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
 					*_storage,
 					key,
@@ -297,11 +256,9 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 			static_cast<void>(details::MtProxy::RetireRelayProof(
 				i->second,
 				identity));
-			if (!attemptState.preempting) {
-				details::MtProxy::DeferEndpointOwnerDisconnect(
-					cleanup,
-					attemptState.ownerDestroyed);
-			}
+			details::MtProxy::DeferEndpointOwnerDisconnect(
+				cleanup,
+				attemptState.ownerDestroyed);
 			removed = true;
 		} else {
 			const auto lane = std::find_if(
@@ -319,17 +276,6 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 					.proxyGeneration = identity.proxyGeneration,
 				};
 				static_cast<void>(
-					details::MtProxy::ClearForegroundTransferAttemptLineage(
-						i->second,
-						laneState.transferDemand,
-						laneState.owner,
-						identity));
-				if (i->second.reclaimEpisode
-					&& i->second.reclaimEpisode->beneficiaryAttempt
-						== identity) {
-					i->second.reclaimEpisode->beneficiaryAttempt = {};
-				}
-				static_cast<void>(
 					details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
 						*_storage,
 						key,
@@ -339,11 +285,9 @@ void ProxyEndpointContext::releaseEndpointAttempt(
 				static_cast<void>(details::MtProxy::RetireRelayProof(
 					i->second,
 					identity));
-				if (!laneState.preempting) {
-					details::MtProxy::DeferEndpointOwnerDisconnect(
-						cleanup,
-						laneState.ownerDestroyed);
-				}
+				details::MtProxy::DeferEndpointOwnerDisconnect(
+					cleanup,
+					laneState.ownerDestroyed);
 				i->second.liveLanes.erase(lane);
 				removed = true;
 			}

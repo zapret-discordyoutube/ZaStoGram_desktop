@@ -242,7 +242,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.traceId = traceId,
 			.owner = request.context,
 			.ownerDestroyed = ownerDestroyed,
-			.laneControl = std::move(request.laneControl),
 			.status = [
 				runtime,
 				diagnostics,
@@ -309,8 +308,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				}
 			},
 			.waitStartedAt = request.waitStartedAt,
-			.transferDemand = request.transferDemand,
-			.reclaimEpisodeToken = request.reclaimEpisodeToken,
 		});
 	if (!accepted.accepted) {
 		QObject::disconnect(ownerDestroyed);
@@ -323,19 +320,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		weak,
 		key,
 		accepted.acceptedRecoveryToken);
-}
-
-void ConnectionBroker::endTransferDemand(
-		MtProxy::EndpointTransferDemandKey demand,
-		QPointer<QObject> owner) {
-	if (!demand
-		|| demand.runtimeId != _runtime->proxyRuntimeId()
-		|| !owner) {
-		return;
-	}
-	_endpointContext->endpointAdmissionArbiter().endTransferDemand(
-		demand,
-		std::move(owner));
 }
 
 void ConnectionBroker::cancel(ConnectionTicketId id) {

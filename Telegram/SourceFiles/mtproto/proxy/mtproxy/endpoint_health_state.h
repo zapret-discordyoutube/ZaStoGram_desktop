@@ -10,12 +10,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
 
 #include <QtCore/QObject>
-#include <QtCore/QPointer>
 
 #include <algorithm>
 #include <compare>
 #include <cstddef>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <set>
 #include <utility>
@@ -43,13 +43,7 @@ struct EndpointAttemptState {
 	crl::time phaseStartedAt = 0;
 	crl::time terminalAt = 0;
 	std::optional<EndpointVerdict> terminalVerdict;
-	int relayProofsAtStart = 0;
-	uint64 relayProofPromotionEpochAtStart = 0;
-	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
-	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
-	bool preempting = false;
-	EndpointTransferDemandKey transferDemand;
 };
 
 struct RelayProofIdentity {
@@ -62,23 +56,6 @@ struct RelayProofIdentity {
 		RelayProofIdentity) = default;
 };
 
-enum class CapacityProbeStage {
-	Idle,
-	Reserved,
-	Active,
-	Cooldown,
-};
-
-struct CapacityProbeState {
-	CapacityProbeStage stage = CapacityProbeStage::Idle;
-	AdmissionTicketKey ticketKey;
-	RuntimeGenerationKey runtimeGeneration;
-	RelayProofIdentity activeAttempt;
-	int frontier = 0;
-	std::optional<EndpointTransferDemandKey> beneficiaryDemand;
-	crl::time retryAt = 0;
-};
-
 struct RelayProofState {
 	crl::time provenAt = 0;
 	crl::time lastPayloadAt = 0;
@@ -89,9 +66,6 @@ struct RelayProofState {
 	uint64 successEpoch = 0;
 	crl::time attemptStartedAt = 0;
 	uint8 payloadCount = 0;
-	QPointer<QObject> owner;
-	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
-	bool preempting = false;
 };
 
 inline constexpr auto kRelayProofPayloadCountLimit = uint8(2);
@@ -134,307 +108,8 @@ struct EndpointOpeningState {
 	std::map<EndpointOpeningFlowKey, EndpointOpenFailureState> expansionFlows;
 };
 
-struct EndpointLiveBudgetState {
-	int learnedLimit = 0;
-	int provenLowerBound = 0;
-	int pressureRelayProofs = 0;
-	int proofPressureStrikes = 0;
-	crl::time proofPressureObservedAt = 0;
-	CapacityProbeState capacityProbe;
-	uint64 relayProofPromotionEpoch = 0;
-};
-
-[[nodiscard]] inline bool CapacityProbeReservedFor(
-		const EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand) {
-	return budget.capacityProbe.stage == CapacityProbeStage::Reserved
-		&& budget.capacityProbe.ticketKey == ticketKey
-		&& budget.capacityProbe.runtimeGeneration == runtimeGeneration
-		&& budget.capacityProbe.frontier == frontier
-		&& budget.capacityProbe.beneficiaryDemand == beneficiaryDemand;
-}
-
-[[nodiscard]] inline bool CapacityProbeActiveFor(
-		const EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &activeAttempt) {
-	return budget.capacityProbe.stage == CapacityProbeStage::Active
-		&& budget.capacityProbe.ticketKey == ticketKey
-		&& budget.capacityProbe.runtimeGeneration == runtimeGeneration
-		&& budget.capacityProbe.activeAttempt == activeAttempt
-		&& budget.capacityProbe.frontier == frontier
-		&& budget.capacityProbe.beneficiaryDemand == beneficiaryDemand;
-}
-
-[[nodiscard]] inline bool CapacityProbeCooldownFor(
-		const EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &activeAttempt) {
-	return budget.capacityProbe.stage == CapacityProbeStage::Cooldown
-		&& budget.capacityProbe.ticketKey == ticketKey
-		&& budget.capacityProbe.runtimeGeneration == runtimeGeneration
-		&& budget.capacityProbe.activeAttempt == activeAttempt
-		&& budget.capacityProbe.frontier == frontier
-		&& budget.capacityProbe.beneficiaryDemand == beneficiaryDemand;
-}
-
-[[nodiscard]] inline bool CapacityProbeDemandMatchesGeneration(
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		RuntimeGenerationKey runtimeGeneration) {
-	return !beneficiaryDemand
-		|| (static_cast<bool>(*beneficiaryDemand)
-			&& beneficiaryDemand->runtimeId == runtimeGeneration.runtimeId
-			&& beneficiaryDemand->proxyGeneration
-				== runtimeGeneration.proxyGeneration);
-}
-
-[[nodiscard]] inline bool ReserveCapacityProbe(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		std::optional<EndpointTransferDemandKey> beneficiaryDemand) {
-	if (budget.capacityProbe.stage != CapacityProbeStage::Idle
-		|| !ticketKey.runtimeId
-		|| !ticketKey.ticketId
-		|| runtimeGeneration.runtimeId != ticketKey.runtimeId
-		|| !runtimeGeneration.proxyGeneration
-		|| budget.provenLowerBound <= 0
-		|| frontier != budget.provenLowerBound + 1
-		|| !CapacityProbeDemandMatchesGeneration(
-			beneficiaryDemand,
-			runtimeGeneration)) {
-		return false;
-	}
-	budget.capacityProbe = {
-		.stage = CapacityProbeStage::Reserved,
-		.ticketKey = ticketKey,
-		.runtimeGeneration = runtimeGeneration,
-		.frontier = frontier,
-		.beneficiaryDemand = std::move(beneficiaryDemand),
-	};
-	return true;
-}
-
-[[nodiscard]] inline bool ActivateCapacityProbe(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &identity) {
-	if (!CapacityProbeReservedFor(
-			budget,
-			ticketKey,
-			runtimeGeneration,
-			frontier,
-			beneficiaryDemand)
-		|| runtimeGeneration.runtimeId != identity.runtimeId
-		|| runtimeGeneration.proxyGeneration != identity.proxyGeneration
-		|| !identity.proxyGeneration
-		|| !identity.attemptId) {
-		return false;
-	}
-	budget.capacityProbe.stage = CapacityProbeStage::Active;
-	budget.capacityProbe.activeAttempt = identity;
-	return true;
-}
-
-[[nodiscard]] inline bool ReleaseReservedCapacityProbe(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand) {
-	if (!CapacityProbeReservedFor(
-			budget,
-			ticketKey,
-			runtimeGeneration,
-			frontier,
-			beneficiaryDemand)) {
-		return false;
-	}
-	budget.capacityProbe = {};
-	return true;
-}
-
-[[nodiscard]] inline bool ReleaseActiveCapacityProbe(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &activeAttempt) {
-	if (!CapacityProbeActiveFor(
-			budget,
-			ticketKey,
-			runtimeGeneration,
-			frontier,
-			beneficiaryDemand,
-			activeAttempt)) {
-		return false;
-	}
-	budget.capacityProbe = {};
-	return true;
-}
-
-[[nodiscard]] inline bool BeginCapacityProbeCooldown(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &activeAttempt,
-		crl::time retryAt) {
-	if (!CapacityProbeActiveFor(
-			budget,
-			ticketKey,
-			runtimeGeneration,
-			frontier,
-			beneficiaryDemand,
-			activeAttempt)
-		|| !retryAt) {
-		return false;
-	}
-	budget.capacityProbe.stage = CapacityProbeStage::Cooldown;
-	budget.capacityProbe.retryAt = retryAt;
-	return true;
-}
-
-[[nodiscard]] inline bool ExpireCapacityProbeCooldown(
-		EndpointLiveBudgetState &budget,
-		AdmissionTicketKey ticketKey,
-		RuntimeGenerationKey runtimeGeneration,
-		int frontier,
-		const std::optional<EndpointTransferDemandKey> &beneficiaryDemand,
-		const RelayProofIdentity &activeAttempt,
-		crl::time now) {
-	if (!CapacityProbeCooldownFor(
-			budget,
-			ticketKey,
-			runtimeGeneration,
-			frontier,
-			beneficiaryDemand,
-			activeAttempt)
-		|| budget.capacityProbe.retryAt > now) {
-		return false;
-	}
-	budget.capacityProbe = {};
-	return true;
-}
-
-[[nodiscard]] inline bool RemoveCapacityProbeForRuntime(
-		EndpointLiveBudgetState &budget,
-		ProxyRuntimeId runtimeId) {
-	const auto &probe = budget.capacityProbe;
-	const auto matches = probe.stage != CapacityProbeStage::Idle
-		&& probe.runtimeGeneration.runtimeId == runtimeId;
-	if (!matches) {
-		return false;
-	}
-	budget.capacityProbe = {};
-	return true;
-}
-
-[[nodiscard]] inline bool RemoveStaleCapacityProbeForGeneration(
-		EndpointLiveBudgetState &budget,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration) {
-	const auto &probe = budget.capacityProbe;
-	const auto matches = probe.stage != CapacityProbeStage::Idle
-		&& probe.runtimeGeneration.runtimeId == runtimeId
-		&& probe.runtimeGeneration.proxyGeneration < proxyGeneration;
-	if (!matches) {
-		return false;
-	}
-	budget.capacityProbe = {};
-	return true;
-}
-
-enum class ReclaimEpisodeStage {
-	Requested,
-	Authorized,
-	VictimAcknowledged,
-	BeneficiaryGranted,
-	Committed,
-	RollbackPending,
-	Terminal,
-};
-
-enum class ReclaimVictimKind {
-	None,
-	Reservation,
-	TransferLane,
-	MainLane,
-};
-
-struct ReclaimVictimIdentity {
-	ReclaimVictimKind kind = ReclaimVictimKind::None;
-	AdmissionTicketKey ticketKey;
-	RelayProofIdentity attempt;
-	EndpointUse use = EndpointUse::Main;
-
-	bool operator==(const ReclaimVictimIdentity &other) const = default;
-};
-
-struct ForegroundTransferEntitlement {
-	EndpointTransferDemandKey demand;
-	QPointer<QObject> owner;
-	QMetaObject::Connection ownerDestroyed;
-	AdmissionTicketKey ticketKey;
-	RelayProofIdentity attempt;
-};
-
-struct ReclaimEpisode {
-	ReclaimEpisodeToken token;
-	EndpointTransferDemandKey beneficiaryDemand;
-	QPointer<QObject> beneficiaryOwner;
-	ReclaimEpisodeStage stage = ReclaimEpisodeStage::Requested;
-	ReclaimVictimIdentity victim;
-	AdmissionTicketKey beneficiaryTicketKey;
-	RelayProofIdentity beneficiaryAttempt;
-	bool replacementAuthorized = false;
-	bool replacementConsumed = false;
-	bool victimResumeIssued = false;
-};
-
-struct ParkedReclaimVictim {
-	ReclaimEpisodeToken episodeToken;
-	RelayProofIdentity attempt;
-	AdmissionTicketKey ticketKey;
-	uint64 proxyEpoch = 0;
-	uint64 successEpoch = 0;
-	crl::time attemptStartedAt = 0;
-	QPointer<QObject> owner;
-	QMetaObject::Connection ownerDestroyed;
-	std::shared_ptr<Fn<void(EndpointLaneCommand)>> laneControl;
-	AdmissionTicketKey resumeTicketKey;
-	RelayProofIdentity resumeAttempt;
-};
-
-enum class ForegroundTransferEntitlementReleaseCause {
-	DemandEnded,
-	OwnerDestroyed,
-	RuntimeRemoved,
-	GenerationChanged,
-	ForegroundChanged,
-	TerminalRollback,
-};
-
 struct EndpointDeferredCleanup {
 	std::vector<QMetaObject::Connection> ownerConnections;
-	std::vector<ReclaimEpisodeToken> rollbackEpisodes;
-	std::optional<ForegroundTransferEntitlementReleaseCause>
-		entitlementReleaseCause;
 };
 
 struct MainRecoveryState {
@@ -454,17 +129,12 @@ struct EndpointState {
 	QString lastDiagnostic;
 	crl::time terminalUntil = 0;
 	EndpointOpeningState opening;
-	EndpointLiveBudgetState liveBudget;
 	int active = 0;
 	int consecutiveFailures = 0;
 	int recipeLevel = 0;
 	crl::time nextHandshakeAt = 0;
 	bool healthy = false;
 	bool halfOpen = false;
-	uint64 lastReclaimEpisodeId = 0;
-	std::optional<ForegroundTransferEntitlement> foregroundTransferEntitlement;
-	std::optional<ReclaimEpisode> reclaimEpisode;
-	std::optional<ParkedReclaimVictim> parkedReclaimVictim;
 	std::map<ProxyRuntimeId, uint64> generations;
 	uint64 proxyEpoch = 1;
 	uint64 lastAttemptId = 0;
@@ -485,60 +155,6 @@ struct EndpointState {
 	std::map<RuntimeGenerationKey, MainRecoveryState> mainRecoveries;
 };
 
-[[nodiscard]] inline bool ForegroundTransferEntitlementMatches(
-		const ForegroundTransferEntitlement &entitlement,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner) {
-	return static_cast<bool>(demand)
-		&& entitlement.demand == demand
-		&& entitlement.owner == owner;
-}
-
-[[nodiscard]] inline bool ClearForegroundTransferTicketLineage(
-		EndpointState &state,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner,
-		AdmissionTicketKey ticketKey) {
-	if (!state.foregroundTransferEntitlement
-		|| !ForegroundTransferEntitlementMatches(
-			*state.foregroundTransferEntitlement,
-			demand,
-			owner)
-		|| state.foregroundTransferEntitlement->ticketKey != ticketKey) {
-		return false;
-	}
-	state.foregroundTransferEntitlement->ticketKey = {};
-	return true;
-}
-
-[[nodiscard]] inline bool ClearForegroundTransferAttemptLineage(
-		EndpointState &state,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner,
-		const RelayProofIdentity &attempt) {
-	if (!state.foregroundTransferEntitlement
-		|| !ForegroundTransferEntitlementMatches(
-			*state.foregroundTransferEntitlement,
-			demand,
-			owner)
-		|| state.foregroundTransferEntitlement->attempt != attempt) {
-		return false;
-	}
-	state.foregroundTransferEntitlement->attempt = {};
-	return true;
-}
-
-[[nodiscard]] inline bool ReclaimEpisodeMatches(
-		const ReclaimEpisode &episode,
-		ReclaimEpisodeToken token,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner) {
-	return token
-		&& episode.token == token
-		&& episode.beneficiaryDemand == demand
-		&& episode.beneficiaryOwner == owner;
-}
-
 inline void DeferEndpointOwnerDisconnect(
 		EndpointDeferredCleanup &cleanup,
 		QMetaObject::Connection connection) {
@@ -547,140 +163,25 @@ inline void DeferEndpointOwnerDisconnect(
 	}
 }
 
-inline void DeferReclaimEpisodeRollback(
-		EndpointDeferredCleanup &cleanup,
-		ReclaimEpisodeToken token) {
-	if (token
-		&& std::find(
-			begin(cleanup.rollbackEpisodes),
-			end(cleanup.rollbackEpisodes),
-			token) == end(cleanup.rollbackEpisodes)) {
-		cleanup.rollbackEpisodes.push_back(token);
-	}
+inline void MergeDeferredCleanup(
+		EndpointDeferredCleanup &target,
+		EndpointDeferredCleanup source) {
+	target.ownerConnections.insert(
+		end(target.ownerConnections),
+		std::make_move_iterator(begin(source.ownerConnections)),
+		std::make_move_iterator(end(source.ownerConnections)));
 }
 
-[[nodiscard]] inline bool MarkReclaimEpisodeRollbackPending(
-		EndpointState &state,
-		ReclaimEpisodeToken token,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner,
-		EndpointDeferredCleanup &cleanup) {
-	if (!state.reclaimEpisode
-		|| !ReclaimEpisodeMatches(
-			*state.reclaimEpisode,
-			token,
-			demand,
-			owner)
-		|| state.reclaimEpisode->stage == ReclaimEpisodeStage::Terminal) {
-		return false;
-	}
-	if (state.reclaimEpisode->stage != ReclaimEpisodeStage::RollbackPending) {
-		state.reclaimEpisode->stage = ReclaimEpisodeStage::RollbackPending;
-		DeferReclaimEpisodeRollback(cleanup, token);
-	}
-	return true;
+[[nodiscard]] inline bool HasDeferredCleanup(
+		const EndpointDeferredCleanup &cleanup) {
+	return !cleanup.ownerConnections.empty();
 }
 
-[[nodiscard]] inline bool ReleaseForegroundTransferEntitlement(
-		EndpointState &state,
-		const EndpointTransferDemandKey &demand,
-		const QPointer<QObject> &owner,
-		ForegroundTransferEntitlementReleaseCause cause,
-		EndpointDeferredCleanup &cleanup) {
-	if (!state.foregroundTransferEntitlement
-		|| !ForegroundTransferEntitlementMatches(
-			*state.foregroundTransferEntitlement,
-			demand,
-			owner)) {
-		return false;
+inline void DisconnectDeferredOwners(EndpointDeferredCleanup &cleanup) {
+	for (const auto &connection : cleanup.ownerConnections) {
+		QObject::disconnect(connection);
 	}
-	if (state.reclaimEpisode
-		&& ReclaimEpisodeMatches(
-			*state.reclaimEpisode,
-			state.reclaimEpisode->token,
-			demand,
-			owner)) {
-		static_cast<void>(MarkReclaimEpisodeRollbackPending(
-			state,
-			state.reclaimEpisode->token,
-			demand,
-			owner,
-			cleanup));
-	}
-	DeferEndpointOwnerDisconnect(
-		cleanup,
-		state.foregroundTransferEntitlement->ownerDestroyed);
-	state.foregroundTransferEntitlement.reset();
-	cleanup.entitlementReleaseCause = cause;
-	return true;
-}
-
-[[nodiscard]] inline bool RemoveParkedReclaimVictim(
-		EndpointState &state,
-		ReclaimEpisodeToken token,
-		const RelayProofIdentity &attempt,
-		EndpointDeferredCleanup &cleanup) {
-	if (!state.parkedReclaimVictim
-		|| state.parkedReclaimVictim->episodeToken != token
-		|| state.parkedReclaimVictim->attempt != attempt) {
-		return false;
-	}
-	DeferEndpointOwnerDisconnect(
-		cleanup,
-		state.parkedReclaimVictim->ownerDestroyed);
-	state.parkedReclaimVictim.reset();
-	if (state.reclaimEpisode
-		&& state.reclaimEpisode->token == token) {
-		state.reclaimEpisode->stage = ReclaimEpisodeStage::Terminal;
-	}
-	cleanup.rollbackEpisodes.erase(
-		std::remove(
-			begin(cleanup.rollbackEpisodes),
-			end(cleanup.rollbackEpisodes),
-			token),
-		end(cleanup.rollbackEpisodes));
-	return true;
-}
-
-[[nodiscard]] inline auto PrepareEndpointOwnershipCleanup(
-		EndpointState &state,
-		ProxyRuntimeId runtimeId,
-		uint64 staleBeforeGeneration,
-		ForegroundTransferEntitlementReleaseCause cause)
--> EndpointDeferredCleanup {
-	auto result = EndpointDeferredCleanup();
-	if (!runtimeId) {
-		return result;
-	}
-	if (state.foregroundTransferEntitlement
-		&& state.foregroundTransferEntitlement->demand.runtimeId
-			== runtimeId
-		&& (!staleBeforeGeneration
-			|| state.foregroundTransferEntitlement->demand.proxyGeneration
-				< staleBeforeGeneration)) {
-		const auto demand = state.foregroundTransferEntitlement->demand;
-		const auto owner = state.foregroundTransferEntitlement->owner;
-		static_cast<void>(ReleaseForegroundTransferEntitlement(
-			state,
-			demand,
-			owner,
-			cause,
-			result));
-	}
-	if (state.parkedReclaimVictim
-		&& state.parkedReclaimVictim->attempt.runtimeId == runtimeId
-		&& (!staleBeforeGeneration
-			|| state.parkedReclaimVictim->attempt.proxyGeneration
-				< staleBeforeGeneration)) {
-		const auto token = state.parkedReclaimVictim->episodeToken;
-		const auto attempt = state.parkedReclaimVictim->attempt;
-		static_cast<void>(RemoveParkedReclaimVictim(
-			state,
-			token,
-			attempt,
-			result));
-	}
-	return result;
+	cleanup.ownerConnections.clear();
 }
 
 [[nodiscard]] MainRecoveryToken CreateMainRecoveryLocked(
@@ -1090,43 +591,6 @@ inline void RemoveEndpointOutcomesForRuntime(
 	return result;
 }
 
-[[nodiscard]] inline int EndpointRelayProofCount(
-		const EndpointState &state) {
-	auto result = 0;
-	for (const auto &[identity, proof] : state.relayProofs) {
-		const auto generation = state.generations.find(identity.runtimeId);
-		if (generation != end(state.generations)
-			&& generation->second == identity.proxyGeneration) {
-			++result;
-		}
-	}
-	return result;
-}
-
-[[nodiscard]] inline int EndpointEstablishedCommitmentCount(
-		const EndpointState &state,
-		uint64 excludedAttemptId = 0) {
-	auto result = 0;
-	for (const auto &entry : state.liveLanes) {
-		if (entry.first.attemptId != excludedAttemptId) {
-			++result;
-		}
-	}
-	for (const auto &[attemptId, attempt] : state.attemptStarts) {
-		if (attemptId == excludedAttemptId || attempt.admissionActive) {
-			continue;
-		}
-		++result;
-	}
-	return result;
-}
-
-[[nodiscard]] inline int EndpointCapacityCommitmentCount(
-		const EndpointState &state) {
-	return ActiveEndpointAdmissionCount(state)
-		+ EndpointEstablishedCommitmentCount(state);
-}
-
 inline void SynchronizeEndpointAdmissionAggregate(EndpointState &state) {
 	state.active = ActiveEndpointAdmissionCount(state);
 }
@@ -1191,9 +655,6 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	proof.proxyEpoch = attempt->second.proxyEpoch;
 	proof.successEpoch = attempt->second.successEpoch;
 	proof.attemptStartedAt = attempt->second.attemptStartedAt;
-	proof.owner = attempt->second.owner;
-	proof.laneControl = attempt->second.laneControl;
-	proof.preempting = attempt->second.preempting;
 	if (!proof.lastPayloadAt) {
 		proof.lastPayloadAt = proof.provenAt;
 	}
@@ -1240,17 +701,9 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 	return true;
 }
 
-[[nodiscard]] inline EndpointDeferredCleanup RemoveRelayProofsForRuntime(
+inline void RemoveRelayProofsForRuntime(
 		EndpointState &state,
 		ProxyRuntimeId runtimeId) {
-	auto cleanup = PrepareEndpointOwnershipCleanup(
-		state,
-		runtimeId,
-		0,
-		ForegroundTransferEntitlementReleaseCause::RuntimeRemoved);
-	static_cast<void>(RemoveCapacityProbeForRuntime(
-		state.liveBudget,
-		runtimeId));
 	for (auto i = begin(state.relayProofs);
 			i != end(state.relayProofs);) {
 		if (i->first.runtimeId == runtimeId) {
@@ -1264,7 +717,6 @@ inline void SynchronizeRelayProofAggregate(EndpointState &state) {
 		state,
 		runtimeId));
 	RemoveEndpointOutcomesForRuntime(state, runtimeId);
-	return cleanup;
 }
 
 inline void ApplyRuntimeProxyGeneration(
@@ -1280,15 +732,7 @@ inline void ApplyRuntimeProxyGeneration(
 		&& proxyGeneration <= current->second) {
 		return;
 	}
-	auto cleanup = PrepareEndpointOwnershipCleanup(
-		state,
-		runtimeId,
-		proxyGeneration,
-		ForegroundTransferEntitlementReleaseCause::GenerationChanged);
-	static_cast<void>(RemoveStaleCapacityProbeForGeneration(
-		state.liveBudget,
-		runtimeId,
-		proxyGeneration));
+	auto cleanup = EndpointDeferredCleanup();
 	state.generations[runtimeId] = proxyGeneration;
 	static_cast<void>(RemoveMainRecoveriesForRuntimeLocked(
 		state,
@@ -1311,11 +755,9 @@ inline void ApplyRuntimeProxyGeneration(
 			i != end(state.attemptStarts);) {
 		if (i->second.runtimeId == runtimeId
 			&& i->second.proxyGeneration < proxyGeneration) {
-			if (!i->second.preempting) {
-				DeferEndpointOwnerDisconnect(
-					cleanup,
-					i->second.ownerDestroyed);
-			}
+			DeferEndpointOwnerDisconnect(
+				cleanup,
+				i->second.ownerDestroyed);
 			i = state.attemptStarts.erase(i);
 		} else {
 			++i;
@@ -1324,11 +766,9 @@ inline void ApplyRuntimeProxyGeneration(
 	for (auto i = begin(state.liveLanes); i != end(state.liveLanes);) {
 		if (i->first.runtimeId == runtimeId
 			&& i->first.proxyGeneration < proxyGeneration) {
-			if (!i->second.preempting) {
-				DeferEndpointOwnerDisconnect(
-					cleanup,
-					i->second.ownerDestroyed);
-			}
+			DeferEndpointOwnerDisconnect(
+				cleanup,
+				i->second.ownerDestroyed);
 			i = state.liveLanes.erase(i);
 		} else {
 			++i;
@@ -1397,7 +837,6 @@ struct EndpointConcurrencyPolicy {
 	bool admissionAllowed = true;
 	bool mainLaneReserved = false;
 };
-
 struct CapabilitySuccess {
 	QString proxyKey;
 	QString routeKey;
