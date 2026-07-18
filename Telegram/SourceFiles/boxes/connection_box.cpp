@@ -87,18 +87,6 @@ using EndpointVerdict = MTP::details::MtProxy::EndpointVerdict;
 using EndpointView = MTP::details::MtProxy::ProxyEndpointView;
 using ItemState = ProxiesBoxController::ItemState;
 
-[[nodiscard]] bool ProxyCheckWasPreempted(
-		const MTP::ProxyCheckConnection &v4,
-		const MTP::ProxyCheckConnection &v6,
-		MTP::details::AbstractConnection *raw) {
-	const auto checker = (v4.get() == raw)
-		? &v4
-		: (v6.get() == raw)
-		? &v6
-		: nullptr;
-	return checker && checker->state()->preempted;
-}
-
 [[nodiscard]] bool NetworkBlockingThresholdReached(
 		const EndpointVerdict &verdict) {
 	using Reason = MTP::details::MtProxy::FailureReason;
@@ -2686,18 +2674,10 @@ void ProxiesBoxController::ShowApplyConfirmation(
 						if (!weak || state->finished) {
 							return;
 						}
-						const auto preempted = ProxyCheckWasPreempted(
-							state->v4,
-							state->v6,
-							raw);
 						MTP::DropProxyChecker(state->v4, state->v6, raw);
 						if (!MTP::HasProxyCheckers(state->v4, state->v6)) {
 							state->finished = true;
-							if (preempted) {
-								setIdle();
-							} else {
-								setUnavailable();
-							}
+							setUnavailable();
 						}
 					},
 					setProgress);
@@ -2825,20 +2805,11 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 			if (item == end(_list)) {
 				return;
 			}
-			const auto preempted = ProxyCheckWasPreempted(
-				item->checker,
-				item->checkerv6,
-				raw);
 			MTP::DropProxyChecker(item->checker, item->checkerv6, raw);
 			if (!MTP::HasProxyCheckers(item->checker, item->checkerv6)
 				&& item->state == ItemState::Checking) {
-				if (preempted) {
-					item->state = ItemState::Unknown;
-					item->progressStatus = MTP::ProxyCheckStatus::Idle;
-				} else {
-					item->state = ItemState::Unavailable;
-					item->progressStatus = MTP::ProxyCheckStatus::Idle;
-				}
+				item->state = ItemState::Unavailable;
+				item->progressStatus = MTP::ProxyCheckStatus::Idle;
 				updateView(*item);
 			}
 		},
