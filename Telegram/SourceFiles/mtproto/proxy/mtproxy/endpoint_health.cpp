@@ -14,7 +14,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/mtproxy/endpoint_health_state.h"
 
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -44,39 +43,8 @@ namespace {
 
 constexpr auto kRecentSuccessWindow = crl::time(60 * 1000);
 
-[[nodiscard]] EndpointOpeningAttemptKey OpeningAttemptKey(
-		uint64 attemptId,
-		const EndpointAttemptState &attempt) {
-	return {
-		.runtimeId = attempt.runtimeId,
-		.traceId = attempt.traceId,
-		.ticketId = attempt.ticketKey.ticketId,
-		.proxyGeneration = attempt.proxyGeneration,
-		.proxyEpoch = attempt.proxyEpoch,
-		.successEpoch = attempt.successEpoch,
-		.attemptId = attemptId,
-		.use = attempt.use,
-		.ticketKey = attempt.ticketKey,
-	};
-}
-
-[[nodiscard]] EndpointOpeningAttemptIdentity OpeningAttemptIdentity(
-		const EndpointId &endpoint,
-		EndpointOpeningAttemptKey key) {
-	return {
-		.flow = {
-			.endpoint = endpoint.canonical,
-			.runtimeId = key.runtimeId,
-			.proxyGeneration = key.proxyGeneration,
-			.use = key.use,
-		},
-		.key = std::move(key),
-	};
-}
-
 struct TerminalAttemptResult {
 	ProxyConnectionAttempt attempt;
-	EndpointOpeningAttemptKey openingKey;
 	bool proofRetired = false;
 	bool finalAttemptTerminal = false;
 };
@@ -107,17 +75,6 @@ struct TerminalAttemptResult {
 			.use = proof->second.use,
 			.ticketKey = proof->second.ticketKey,
 		};
-		result.openingKey = {
-			.runtimeId = report.runtimeId,
-			.traceId = proof->second.traceId,
-			.ticketId = proof->second.ticketKey.ticketId,
-			.proxyGeneration = report.proxyGeneration,
-			.proxyEpoch = proof->second.proxyEpoch,
-			.successEpoch = proof->second.successEpoch,
-			.attemptId = report.attemptId,
-			.use = proof->second.use,
-			.ticketKey = proof->second.ticketKey,
-		};
 		result.proofRetired = RetireRelayProof(state, identity);
 	} else {
 		const auto attempt = state.attemptStarts.find(report.attemptId);
@@ -136,9 +93,6 @@ struct TerminalAttemptResult {
 			.use = attempt->second.use,
 			.ticketKey = attempt->second.ticketKey,
 		};
-		result.openingKey = OpeningAttemptKey(
-			report.attemptId,
-			attempt->second);
 	}
 	const auto terminalAt = report.terminalAt ? report.terminalAt : now;
 	auto verdict = EndpointVerdict{
@@ -223,6 +177,17 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 	const auto stealth = plan.stealth;
 	const auto effectiveTlsProfile = plan.effectiveTlsProfile;
 	const auto attemptId = ++state.lastAttemptId;
+	const auto attempt = ProxyConnectionAttempt{
+		.runtimeId = request.runtimeId,
+		.traceId = traceId,
+		.ticketId = ticketKey.ticketId,
+		.proxyGeneration = request.proxyGeneration,
+		.proxyEpoch = state.proxyEpoch,
+		.successEpoch = state.successEpoch,
+		.attemptId = attemptId,
+		.use = request.use,
+		.ticketKey = ticketKey,
+	};
 	state.attemptStarts.emplace(attemptId, EndpointAttemptState{
 		.runtimeId = request.runtimeId,
 		.proxyGeneration = request.proxyGeneration,
@@ -247,11 +212,7 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 		.lease = EndpointAttemptLease(
 			std::move(context),
 			key,
-			request.runtimeId,
-			attemptId,
-			request.proxyGeneration,
-			state.proxyEpoch,
-			state.successEpoch,
+			attempt,
 			attemptStartedAt),
 		.runtimeId = request.runtimeId,
 		.proxyGeneration = request.proxyGeneration,
@@ -264,11 +225,6 @@ std::optional<Admission> EndpointHealth::BeginScheduledAttemptLocked(
 
 void EndpointHealth::reportFailure(FailureReport report) {
 	ResolveLeaseIdentity(report);
-	const auto releaseLease = gsl::finally([&] {
-		if (report.lease) {
-			report.lease->release();
-		}
-	});
 	if (!report.runtimeId) {
 		report.runtimeId = _runtimeId;
 	}
@@ -285,7 +241,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 	auto capabilityFailure = std::optional<CapabilityFailure>();
 	auto capabilityRelayFailure = std::optional<CapabilityFailure>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto pressureFailure = std::optional<PressureFailure>();
 	auto shouldDrain = false;
 	auto staleRecipeLevel = std::optional<int>();
 	auto deferredCleanup = EndpointDeferredCleanup();
@@ -377,19 +332,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 							}
 						}
 					}
-				}
-				if (terminal->finalAttemptTerminal
-					&& report.routesExhausted
-					&& report.reason
-						== FailureReason::ClientHelloSentNoServerHello) {
-					pressureFailure = PressureFailure{
-						.identity = OpeningAttemptIdentity(
-							report.endpoint,
-							terminal->openingKey),
-						.observedAt = report.terminalAt
-							? report.terminalAt
-							: now,
-					};
 				}
 				const auto canonicalEligible = (report.use
 						== EndpointUse::Main)
@@ -489,10 +431,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 		_context->notifyEndpointViewChanged(report.endpoint);
 		shouldDrain = true;
 	}
-	if (pressureFailure) {
-		_context->endpointAdmissionArbiter().openingEvent(
-			std::move(*pressureFailure));
-	}
 	if (staleRecipeLevel) {
 		LogStaleAttemptFailure(_runtime, report, *staleRecipeLevel);
 		if (shouldDrain) {
@@ -523,12 +461,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 void EndpointHealth::reportSuccess(SuccessReport report) {
 	ResolveLeaseIdentity(report);
 	const auto probe = (report.use == EndpointUse::ProxyCheck);
-	const auto durableRelay = (report.scope == SuccessScope::Relay) && !probe;
-	const auto releaseLease = gsl::finally([&] {
-		if (report.lease && !durableRelay) {
-			report.lease->release();
-		}
-	});
 	if (!report.runtimeId) {
 		report.runtimeId = _runtimeId;
 	}
@@ -541,7 +473,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 	const auto routeKey = RouteKey(report.endpoint.route);
 	auto capabilitySuccess = std::optional<CapabilitySuccess>();
 	auto diagnosticsEvent = std::optional<ProxyDiagnosticsEvent>();
-	auto relayReady = std::optional<RelayReady>();
 	auto shouldDrain = false;
 	auto deferredCleanup = EndpointDeferredCleanup();
 	auto deferredCleanupApplied = false;
@@ -606,9 +537,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 			if (opening == end(state.attemptStarts)) {
 				return;
 			}
-			const auto openingKey = OpeningAttemptKey(
-				report.attemptId,
-				opening->second);
 			const auto promotion = PromoteRelayProof(
 				state,
 				identity,
@@ -621,12 +549,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 				return;
 			}
 			inserted = true;
-			relayReady = RelayReady{
-				.identity = OpeningAttemptIdentity(
-					report.endpoint,
-					openingKey),
-				.observedAt = payloadAt,
-			};
 			if (report.use == EndpointUse::Main) {
 				static_cast<void>(
 					FinishMainRecoveryByReplacementAttemptLocked(
@@ -687,10 +609,6 @@ void EndpointHealth::reportSuccess(SuccessReport report) {
 		}
 	}
 	applyDeferredCleanup();
-	if (relayReady) {
-		_context->endpointAdmissionArbiter().openingEvent(
-			std::move(*relayReady));
-	}
 	if (capabilitySuccess) {
 		NoteCapabilityMtproxySuccess(_runtime, *capabilitySuccess);
 	}

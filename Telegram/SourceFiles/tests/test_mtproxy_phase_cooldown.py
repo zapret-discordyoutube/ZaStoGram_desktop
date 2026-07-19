@@ -240,13 +240,22 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "activeCap" not in policy_source
     arbiter_header = read(ARBITER_H)
     arbiter = read(ARBITER_CPP)
-    assert "EndpointOpenGateStage" in arbiter_header
-    assert "kEndpointOpeningPermitCount = 4" in arbiter_header
-    assert "kPressureWindow = crl::time(12 * 1000)" in arbiter
-    assert "kOpenDelays = std::array" in arbiter
-    for delay in (15, 30, 60, 120):
-        assert f"crl::time({delay} * 1000)" in arbiter
-    assert "kRecoveryOpenSpacing = crl::time(6 * 1000)" in arbiter
+    for deleted in (
+        "EndpointOpenGateStage",
+        "kEndpointOpeningPermitCount",
+        "kPressureWindow",
+        "kOpenDelays",
+        "kRecoveryOpenSpacing",
+    ):
+        assert deleted not in arbiter_header
+        assert deleted not in arbiter
+    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in arbiter_header
+    assert "enum class LiveSlotPhase" in arbiter_header
+    assert "void EndpointAdmissionArbiter::Private::releaseLiveSlot(" in arbiter
+    release = function_body(
+        arbiter, "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
+    assert "slot.incarnation != slotKey.incarnation" in release
+    assert "AttemptOwnerMatches" in release
 
 
 def test_logs_and_proxy_status_use_phase_specific_names():

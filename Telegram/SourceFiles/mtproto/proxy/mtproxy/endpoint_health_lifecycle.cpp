@@ -503,19 +503,11 @@ void EndpointHealth::ResolveLeaseIdentity(SuccessReport &report) {
 EndpointAttemptLease::EndpointAttemptLease(
 		std::shared_ptr<ProxyEndpointContext> context,
 		QString key,
-		ProxyRuntimeId runtimeId,
-		uint64 attemptId,
-		uint64 proxyGeneration,
-		uint64 proxyEpoch,
-		uint64 successEpoch,
+		ProxyConnectionAttempt attempt,
 		crl::time startedAt)
 : _context(std::move(context))
 , _key(std::move(key))
-, _runtimeId(runtimeId)
-, _attemptId(attemptId)
-, _proxyGeneration(proxyGeneration)
-, _proxyEpoch(proxyEpoch)
-, _successEpoch(successEpoch)
+, _attempt(std::move(attempt))
 , _startedAt(startedAt)
 , _active(true) {
 }
@@ -524,11 +516,10 @@ EndpointAttemptLease::EndpointAttemptLease(
 		EndpointAttemptLease &&other) noexcept
 : _context(std::move(other._context))
 , _key(std::move(other._key))
-, _runtimeId(base::take(other._runtimeId))
-, _attemptId(base::take(other._attemptId))
-, _proxyGeneration(base::take(other._proxyGeneration))
-, _proxyEpoch(base::take(other._proxyEpoch))
-, _successEpoch(base::take(other._successEpoch))
+, _attempt(base::take(other._attempt))
+, _slotEndpointKey(std::move(other._slotEndpointKey))
+, _slotIndex(base::take(other._slotIndex))
+, _slotIncarnation(base::take(other._slotIncarnation))
 , _startedAt(base::take(other._startedAt))
 , _active(base::take(other._active)) {
 }
@@ -539,11 +530,10 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		release();
 		_context = std::move(other._context);
 		_key = std::move(other._key);
-		_runtimeId = base::take(other._runtimeId);
-		_attemptId = base::take(other._attemptId);
-		_proxyGeneration = base::take(other._proxyGeneration);
-		_proxyEpoch = base::take(other._proxyEpoch);
-		_successEpoch = base::take(other._successEpoch);
+		_attempt = base::take(other._attempt);
+		_slotEndpointKey = std::move(other._slotEndpointKey);
+		_slotIndex = base::take(other._slotIndex);
+		_slotIncarnation = base::take(other._slotIncarnation);
 		_startedAt = base::take(other._startedAt);
 		_active = base::take(other._active);
 	}
@@ -554,23 +544,38 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
+void EndpointAttemptLease::bindLiveSlot(
+		const LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt) {
+	if (!_active
+		|| _slotIncarnation
+		|| slotKey.endpointKey != _key
+		|| slotKey.index < 0
+		|| !slotKey.incarnation
+		|| !(attempt == _attempt)) {
+		return;
+	}
+	_slotEndpointKey = slotKey.endpointKey;
+	_slotIndex = slotKey.index;
+	_slotIncarnation = slotKey.incarnation;
+}
+
 void EndpointAttemptLease::release() {
 	if (!_active) {
 		return;
 	}
 	_active = false;
 	if (_context) {
-		_context->cancelEndpointAttempt(_key, _attemptId);
-	}
-}
-
-void EndpointAttemptLease::transportReady() {
-	if (_active && _context) {
-		_context->transportReady(
-			_key,
-			_runtimeId,
-			_proxyGeneration,
-			_attemptId);
+		_context->cancelEndpointAttempt(_key, _attempt);
+		if (_slotIncarnation) {
+			_context->endpointAdmissionArbiter().releaseLiveSlot(
+				{
+					.endpointKey = _slotEndpointKey,
+					.index = _slotIndex,
+					.incarnation = _slotIncarnation,
+				},
+				_attempt);
+		}
 	}
 }
 
@@ -579,23 +584,23 @@ bool EndpointAttemptLease::active() const {
 }
 
 ProxyRuntimeId EndpointAttemptLease::runtimeId() const {
-	return _runtimeId;
+	return _attempt.runtimeId;
 }
 
 uint64 EndpointAttemptLease::attemptId() const {
-	return _attemptId;
+	return _attempt.attemptId;
 }
 
 uint64 EndpointAttemptLease::proxyGeneration() const {
-	return _proxyGeneration;
+	return _attempt.proxyGeneration;
 }
 
 uint64 EndpointAttemptLease::proxyEpoch() const {
-	return _proxyEpoch;
+	return _attempt.proxyEpoch;
 }
 
 uint64 EndpointAttemptLease::successEpoch() const {
-	return _successEpoch;
+	return _attempt.successEpoch;
 }
 
 crl::time EndpointAttemptLease::startedAt() const {
@@ -810,31 +815,6 @@ void EndpointHealth::retireRelayProof(RelayProofReport report) {
 	if (retired) {
 		_context->notifyEndpointAdmissible(key);
 	}
-}
-
-void EndpointHealth::noteEndpointSelected(const EndpointId &endpoint) {
-	const auto key = EndpointKey(endpoint);
-	if (key.isEmpty()) {
-		return;
-	}
-	auto requester = RuntimeGenerationKey();
-	{
-		auto &storage = _context->storage();
-		QMutexLocker lock(&storage.mutex);
-		const auto generation = storage.runtimeGenerations.find(_runtimeId);
-		if (!storage.runtimes.contains(_runtimeId)
-			|| generation == end(storage.runtimeGenerations)
-			|| !generation->second) {
-			return;
-		}
-		requester = {
-			.runtimeId = _runtimeId,
-			.proxyGeneration = generation->second,
-		};
-	}
-	_context->endpointAdmissionArbiter().requestImmediateScout(
-		endpoint.canonical,
-		requester);
 }
 
 void EndpointHealth::applyProxyGeneration(uint64 proxyGeneration) {

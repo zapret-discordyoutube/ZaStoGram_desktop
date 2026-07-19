@@ -47,6 +47,9 @@ struct AdmissionDiagnostics final {
 [[nodiscard]] ConnectionBrokerDecision DecisionFromUpdate(
 		const EndpointAdmissionUpdate &update) {
 	auto result = ConnectionBrokerDecision{
+		.key = update.key,
+		.revision = update.revision,
+		.waitReason = update.waitReason,
 		.retryAfter = update.retryAfter,
 		.blockedBy = update.blockedBy,
 	};
@@ -127,15 +130,18 @@ void ReportAdmissionEvent(
 ConnectionTicket::ConnectionTicket(
 		std::weak_ptr<ProxyEndpointContext> context,
 		AdmissionTicketKey key,
+		uint64 revision,
 		MtProxy::MainRecoveryToken acceptedRecoveryToken)
 : _context(std::move(context))
 , _key(key)
+, _revision(revision)
 , _acceptedRecoveryToken(acceptedRecoveryToken) {
 }
 
 ConnectionTicket::ConnectionTicket(ConnectionTicket &&other) noexcept
 : _context(std::move(other._context))
 , _key(base::take(other._key))
+, _revision(base::take(other._revision))
 , _acceptedRecoveryToken(base::take(other._acceptedRecoveryToken)) {
 }
 
@@ -145,6 +151,7 @@ ConnectionTicket &ConnectionTicket::operator=(
 		cancel();
 		_context = std::move(other._context);
 		_key = base::take(other._key);
+		_revision = base::take(other._revision);
 		_acceptedRecoveryToken = base::take(
 			other._acceptedRecoveryToken);
 	}
@@ -157,13 +164,24 @@ ConnectionTicket::~ConnectionTicket() {
 
 void ConnectionTicket::cancel() {
 	const auto key = base::take(_key);
+	const auto revision = base::take(_revision);
 	if (key.runtimeId && key.ticketId) {
 		if (const auto context = _context.lock()) {
-			context->endpointAdmissionArbiter().cancel(key);
+			context->endpointAdmissionArbiter().cancel(key, revision);
 		}
 	}
 	_acceptedRecoveryToken = {};
 	_context.reset();
+}
+
+void ConnectionTicket::reevaluate() {
+	if (_key.runtimeId && _key.ticketId && _revision) {
+		if (const auto context = _context.lock()) {
+			context->endpointAdmissionArbiter().reevaluate(
+				_key,
+				_revision);
+		}
+	}
 }
 
 ConnectionTicketId ConnectionTicket::id() const {
@@ -196,12 +214,15 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		.ticketId = ++_lastTicketId,
 	};
 	const auto weak = std::weak_ptr<ProxyEndpointContext>(_endpointContext);
+	const auto ticketRevision = std::make_shared<std::atomic<uint64>>(0);
 	const auto ownerDestroyed = QObject::connect(
 		request.context,
 		&QObject::destroyed,
-		[weak, key] {
+		[weak, key, ticketRevision] {
 			if (const auto context = weak.lock()) {
-				context->endpointAdmissionArbiter().ownerDestroyed(key);
+				context->endpointAdmissionArbiter().ownerDestroyed(
+					key,
+					ticketRevision->load(std::memory_order_acquire));
 			}
 		});
 	if (!ownerDestroyed) {
@@ -242,6 +263,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.traceId = traceId,
 			.owner = request.context,
 			.ownerDestroyed = ownerDestroyed,
+			.reclaim = std::move(request.reclaim),
 			.status = [
 				runtime,
 				diagnostics,
@@ -273,6 +295,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				start = std::move(request.start)
 			](EndpointAdmissionGrant grant) mutable {
 				auto admission = std::move(grant.admission);
+				admission.lease.bindLiveSlot(grant.slotKey, grant.attempt);
 				ReportAdmissionEvent(
 					runtime.data(),
 					*diagnostics,
@@ -285,6 +308,7 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				auto value = ConnectionStart{
 					.ticketId = grant.key.ticketId,
 					.attempt = grant.attempt,
+					.slotKey = std::move(grant.slotKey),
 					.acceptedRecoveryToken
 						= grant.acceptedRecoveryToken,
 					.proxyGeneration = grant.proxyGeneration,
@@ -316,18 +340,22 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 		}
 		return {};
 	}
+	ticketRevision->store(accepted.revision, std::memory_order_release);
 	return ConnectionTicket(
 		weak,
 		key,
+		accepted.revision,
 		accepted.acceptedRecoveryToken);
 }
 
 void ConnectionBroker::cancel(ConnectionTicketId id) {
 	if (id) {
-		_endpointContext->endpointAdmissionArbiter().cancel({
-			.runtimeId = _runtime->proxyRuntimeId(),
-			.ticketId = id,
-		});
+		_endpointContext->endpointAdmissionArbiter().cancel(
+			{
+				.runtimeId = _runtime->proxyRuntimeId(),
+				.ticketId = id,
+			},
+			0);
 	}
 }
 

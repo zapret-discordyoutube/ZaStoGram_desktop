@@ -48,6 +48,7 @@ constexpr auto kWaitForProxyTimeout = 2000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
 constexpr auto kBrokerQueueHardDeadline = 90 * crl::time(1000);
+constexpr auto kTransferDemandGrace = 5 * crl::time(1000);
 constexpr auto kSilentTimeoutsToAssumeKeyDestroyed = 2;
 
 base::options::toggle OptionPreferIPv6({
@@ -102,6 +103,7 @@ bool SessionTransport::appendTestConnection(
 			MtProxy::EndpointId startEndpoint,
 			SessionProxyEndpointUse startUse,
 			SessionProxyLease startLease,
+			MtProxy::LiveSlotKey startSlotKey,
 			ProxyConnectionAttempt startAttempt,
 			MainRecoveryHandle startRecovery,
 			MtProxyAttemptPlan startPlan,
@@ -122,6 +124,7 @@ bool SessionTransport::appendTestConnection(
 			.mtproxyUse = startUse,
 			.mtproxyRecovery = std::move(startRecovery),
 			.mtproxyLease = std::move(startLease),
+			.mtproxySlotKey = std::move(startSlotKey),
 			.mtproxyAttempt = startAttempt,
 			.mtproxyPlan = startPlan,
 			.mtproxyAttemptStartedAt = startAttemptStartedAt,
@@ -188,6 +191,9 @@ bool SessionTransport::appendTestConnection(
 			.configuredTlsProfile = stealth.tlsProfile,
 			.runtime = _owner->_runtime,
 			.context = static_cast<QObject*>(_owner.get()),
+			.reclaim = [=](MtProxy::LiveSlotKey key) {
+				reclaimMtproxySlot(std::move(key));
+			},
 			.start = [=](SessionProxyStart start) mutable {
 				const auto acceptedRecoveryToken
 					= takeConnectionBrokerTicket(start.ticketId);
@@ -197,6 +203,7 @@ bool SessionTransport::appendTestConnection(
 					&& start.attempt.ticketKey.runtimeId
 						== start.attempt.runtimeId
 					&& start.attempt.ticketKey.ticketId == start.ticketId
+					&& start.slotKey == start.lease.slotKey()
 					&& start.attempt.proxyGeneration
 						== start.proxyGeneration;
 				const auto recoveryMatches = !start.acceptedRecoveryToken
@@ -223,13 +230,26 @@ bool SessionTransport::appendTestConnection(
 					std::move(start.endpoint),
 					start.use,
 					std::move(start.lease),
+					std::move(start.slotKey),
 					start.attempt,
 					std::move(acceptedRecovery),
 					start.plan,
 					start.attemptStartedAt,
 					start.stealth);
 			},
-			.status = [=](SessionProxyAdmissionDecision) {
+			.status = [=](SessionProxyAdmissionDecision decision) {
+				const auto current = ranges::find(
+					_state.brokerTickets,
+					decision.key.ticketId,
+					[](const SessionProxyTicket &ticket) {
+						return ticket.id();
+					});
+				if (current == end(_state.brokerTickets)) {
+					return;
+				}
+				_state.endpointAdmissionWaitKey = decision.key;
+				_state.endpointAdmissionWaitRevision = decision.revision;
+				_state.endpointAdmissionWaitReason = decision.waitReason;
 			},
 			.waitStartedAt = _state.endpointAdmissionWaitStartedAt,
 		});
@@ -265,6 +285,7 @@ bool SessionTransport::appendTestConnection(
 		MtProxy::EndpointId(),
 		SessionProxyEndpointUse::Main,
 		SessionProxyLease(),
+		MtProxy::LiveSlotKey(),
 		{ .proxyGeneration = _state.proxyGeneration },
 		MainRecoveryHandle(),
 		MtProxyAttemptPlan(),
@@ -279,13 +300,16 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
+	_timing.transferDemandGraceTimer.cancel();
 	resetEndpointAdmissionWait();
 	clearConnectionBrokerTickets();
 	cancelTestConnections(origin);
 	_owner->_proxyPort->reportAttemptCancelled(
 		currentProxyAttempt(),
 		origin);
+	_state.connection.reset();
 	_state.mtproxyLease.release();
+	_state.mtproxySlotKey = {};
 	_state.mtproxyRecovery = {};
 	_state.mtproxyEndpoint = MtProxy::EndpointId();
 	_state.mtproxyUse = SessionProxyEndpointUse::Main;
@@ -293,7 +317,6 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_state.mtproxyPlan = {};
 	_state.mtproxyAttemptStartedAt = 0;
 	_state.mtprotoDataReceived = false;
-	_state.connection = nullptr;
 	_state.mtproxyLease = SessionProxyLease();
 }
 
@@ -345,9 +368,76 @@ bool SessionTransport::hasTransferDemand() const {
 	return false;
 }
 
+void SessionTransport::reclaimMtproxySlot(MtProxy::LiveSlotKey key) {
+	if (key.endpointKey.isEmpty() || key.index < 0 || !key.incarnation) {
+		return;
+	}
+	const auto candidate = ranges::find(
+		_state.testConnections,
+		key,
+		[](const TestConnection &connection) {
+			return connection.mtproxySlotKey;
+		});
+	if (candidate != end(_state.testConnections)) {
+		_owner->_proxyPort->reportAttemptCancelled(
+			proxyAttempt(*candidate),
+			ProxyCloseOrigin::BrokerCancelled);
+		candidate->data.reset();
+		candidate->mtproxyLease.release();
+		candidate->mtproxySlotKey = {};
+		candidate->mtproxyRecovery = {};
+		_state.testConnections.erase(candidate);
+		if (!_state.testConnections.empty()
+			|| !_state.brokerTickets.empty()
+			|| _state.connection) {
+			return;
+		}
+		_timing.waitForConnectedTimer.cancel();
+		_timing.waitForBetterTimer.cancel();
+	} else if (_state.mtproxySlotKey == key) {
+		_owner->_proxyPort->reportAttemptCancelled(
+			currentProxyAttempt(),
+			ProxyCloseOrigin::BrokerCancelled);
+		_state.connection.reset();
+		_state.mtproxyLease.release();
+		_state.mtproxySlotKey = {};
+		_state.mtproxyRecovery = {};
+		_state.mtproxyEndpoint = {};
+		_state.mtproxyUse = SessionProxyEndpointUse::Main;
+		_state.mtproxyAttempt = {
+			.proxyGeneration = _state.proxyGeneration,
+		};
+		_state.mtproxyPlan = {};
+		_state.mtproxyAttemptStartedAt = 0;
+		_state.mtprotoDataReceived = false;
+		_timing.waitForReceivedTimer.cancel();
+	} else {
+		return;
+	}
+	resetEndpointAdmissionWait();
+	_owner->setState(DisconnectedState);
+	if (_state.proxyMigrationSuspended) {
+		return;
+	}
+	const auto use = classifyEndpointUse();
+	const auto transfer = (use == SessionProxyEndpointUse::Media
+		|| use == SessionProxyEndpointUse::Upload);
+	if (transfer && !hasTransferDemand()) {
+		_timing.transferDemandGraceTimer.cancel();
+		_state.mtproxyTransferDemandDormant = true;
+		return;
+	}
+	_state.mtproxyTransferDemandDormant = false;
+	InvokeQueued(_owner, [=] { connectToServer(); });
+}
+
 void SessionTransport::resetEndpointAdmissionWait() {
 	_state.endpointAdmissionWaitStartedAt = 0;
 	_state.endpointAdmissionWaitReplacementPending = false;
+	_state.endpointAdmissionWaitKey = {};
+	_state.endpointAdmissionWaitRevision = 0;
+	_state.endpointAdmissionWaitReason
+		= MtProxy::EndpointAdmissionWaitReason::None;
 }
 
 void SessionTransport::cancelMainRecoveryBackoff() {
@@ -371,11 +461,17 @@ void SessionTransport::clearConnectionBrokerTickets() {
 	}
 	_state.brokerTickets.clear();
 	_timing.brokerQueueDeadlineTimer.cancel();
+	_state.endpointAdmissionWaitKey = {};
+	_state.endpointAdmissionWaitRevision = 0;
+	_state.endpointAdmissionWaitReason
+		= MtProxy::EndpointAdmissionWaitReason::None;
 }
 
 void SessionTransport::clearTestConnections() {
 	for (auto &connection : _state.testConnections) {
+		connection.data.reset();
 		connection.mtproxyLease.release();
+		connection.mtproxySlotKey = {};
 		connection.mtproxyRecovery = {};
 	}
 	_state.testConnections.clear();
@@ -403,6 +499,12 @@ auto SessionTransport::takeConnectionBrokerTicket(
 		acceptedRecoveryToken = i->acceptedRecoveryToken();
 		i->cancel();
 		_state.brokerTickets.erase(i);
+		if (_state.endpointAdmissionWaitKey.ticketId == id) {
+			_state.endpointAdmissionWaitKey = {};
+			_state.endpointAdmissionWaitRevision = 0;
+			_state.endpointAdmissionWaitReason
+				= MtProxy::EndpointAdmissionWaitReason::None;
+		}
 	}
 	if (_state.brokerTickets.empty()) {
 		_timing.brokerQueueDeadlineTimer.cancel();
@@ -429,7 +531,7 @@ void SessionTransport::armWaitForConnectedTimer() {
 }
 
 void SessionTransport::retryByTimer() {
-	if (_state.proxyMigrationDemandDormant) {
+	if (_state.mtproxyTransferDemandDormant) {
 		return;
 	}
 	const auto proxied = _owner->_sessionState.options
@@ -457,15 +559,48 @@ void SessionTransport::reevaluateTransferDemand() {
 		|| use == SessionProxyEndpointUse::Upload);
 	const auto mtproxy = _owner->_sessionState.data->options().proxy.type
 		== ProxyData::Type::Mtproto;
-	const auto demanded = transfer && mtproxy && hasTransferDemand();
-	if (!_state.proxyMigrationDemandDormant || !demanded) {
+	if (!transfer || !mtproxy) {
+		_timing.transferDemandGraceTimer.cancel();
+		return;
+	}
+	const auto demanded = hasTransferDemand();
+	if (!demanded) {
+		if (!_state.connection
+			&& _state.testConnections.empty()
+			&& _state.brokerTickets.empty()) {
+			_state.mtproxyTransferDemandDormant = true;
+			resetEndpointAdmissionWait();
+			return;
+		}
+		if (!_timing.transferDemandGraceTimer.isActive()) {
+			_timing.transferDemandGraceTimer.callOnce(kTransferDemandGrace);
+		}
+		return;
+	}
+	_timing.transferDemandGraceTimer.cancel();
+	if (!_state.mtproxyTransferDemandDormant) {
 		return;
 	}
 	resetEndpointAdmissionWait();
-	_state.proxyMigrationDemandDormant = false;
+	_state.mtproxyTransferDemandDormant = false;
 	if (!_timing.retryTimer.isActive()) {
 		connectToServer();
 	}
+}
+
+void SessionTransport::transferDemandGraceFired() {
+	const auto use = classifyEndpointUse();
+	const auto transfer = (use == SessionProxyEndpointUse::Media
+		|| use == SessionProxyEndpointUse::Upload);
+	const auto mtproxy = _owner->_sessionState.options
+		&& _owner->_sessionState.options->proxy.type
+			== ProxyData::Type::Mtproto;
+	if (!transfer || !mtproxy || hasTransferDemand()) {
+		return;
+	}
+	destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);
+	_state.mtproxyTransferDemandDormant = true;
+	_owner->setState(DisconnectedState);
 }
 
 void SessionPrivate::reevaluateTransferDemand() {
@@ -478,7 +613,7 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	_state.proxyGeneration = generation;
 	_state.proxyMigrationScout = scout;
 	_state.proxyMigrationSuspended = !scout;
-	_state.proxyMigrationDemandDormant = false;
+	_state.mtproxyTransferDemandDormant = false;
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
 	_owner->_sessionState.options = std::make_unique<SessionOptions>(_owner->_sessionState.data->options());
 	_timing.retryTimer.cancel();
@@ -486,6 +621,7 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	_timing.waitForConnectedTimer.cancel();
 	_timing.waitForBetterTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
+	_timing.transferDemandGraceTimer.cancel();
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpRestart,
 		ProxyDiagnosticsSeverity::Info,
@@ -513,7 +649,7 @@ void SessionTransport::releaseProxyMigration(uint64 generation) {
 		return;
 	}
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
-	_state.proxyMigrationDemandDormant = false;
+	_state.mtproxyTransferDemandDormant = false;
 	const auto use = classifyEndpointUse();
 	const auto mtproxyTransfer = _owner->_sessionState.options
 		&& _owner->_sessionState.options->proxy.type
@@ -522,7 +658,7 @@ void SessionTransport::releaseProxyMigration(uint64 generation) {
 			|| use == SessionProxyEndpointUse::Upload);
 	if (mtproxyTransfer && !hasTransferDemand()) {
 		resetEndpointAdmissionWait();
-		_state.proxyMigrationDemandDormant = true;
+		_state.mtproxyTransferDemandDormant = true;
 		return;
 	}
 	reevaluateTransferDemand();
@@ -533,10 +669,13 @@ void SessionTransport::connectToServer(bool afterConfig) {
 	if (_state.proxyMigrationSuspended) {
 		return;
 	}
-	if (_state.proxyMigrationDemandDormant) {
+	if (_state.mtproxyTransferDemandDormant) {
 		return;
 	}
 	reevaluateTransferDemand();
+	if (_state.mtproxyTransferDemandDormant) {
+		return;
+	}
 	if (afterConfig
 		&& (!_state.testConnections.empty()
 			|| !_state.brokerTickets.empty()
@@ -702,7 +841,7 @@ void SessionTransport::connectToServer(bool afterConfig) {
 
 void SessionTransport::restart() {
 	DEBUG_LOG(("MTP Info: restarting Connection"));
-	if (_state.proxyMigrationDemandDormant) {
+	if (_state.mtproxyTransferDemandDormant) {
 		_timing.retryTimer.cancel();
 		_owner->setState(DisconnectedState);
 		return;
@@ -911,6 +1050,31 @@ void SessionTransport::brokerQueueDeadlineFired() {
 	if (_state.brokerTickets.empty() || !_state.testConnections.empty()) {
 		return;
 	}
+	const auto waiting = ranges::find(
+		_state.brokerTickets,
+		_state.endpointAdmissionWaitKey.ticketId,
+		[](const SessionProxyTicket &ticket) { return ticket.id(); });
+	const auto exactWait = waiting != end(_state.brokerTickets)
+		&& _state.endpointAdmissionWaitKey.ticketId
+		&& _state.endpointAdmissionWaitRevision;
+	const auto waitReason = _state.endpointAdmissionWaitReason;
+	if (exactWait
+		&& (waitReason == MtProxy::EndpointAdmissionWaitReason::Slot
+			|| waitReason
+				== MtProxy::EndpointAdmissionWaitReason::ClosingSlot)) {
+		waiting->reevaluate();
+		_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);
+		return;
+	}
+	if (!exactWait
+		|| waitReason
+			!= MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore) {
+		for (auto &ticket : _state.brokerTickets) {
+			ticket.reevaluate();
+		}
+		_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);
+		return;
+	}
 	DEBUG_LOG(("MTP Info: broker ticket not started in %1ms, reconnecting"
 		).arg(kBrokerQueueHardDeadline));
 	_owner->logMtprotoEvent(
@@ -930,7 +1094,7 @@ void SessionTransport::brokerQueueDeadlineFired() {
 			&& _owner->_sessionState.options->proxy.type
 				== ProxyData::Type::Mtproto
 			&& !_state.proxyMigrationSuspended
-			&& !_state.proxyMigrationDemandDormant
+			&& !_state.mtproxyTransferDemandDormant
 			&& requiredDemand)
 		? _state.endpointAdmissionWaitStartedAt
 		: crl::time();
@@ -1000,7 +1164,6 @@ void SessionTransport::onConnected(
 	if (!canProveMtproxyRelay()) {
 		reportMtproxyConnectionUsable(*i);
 	}
-	i->mtproxyLease.releaseAdmissionForRelayCandidate();
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_state.testConnections,
@@ -1022,9 +1185,11 @@ void SessionTransport::onConnected(
 		_state.mtproxyRecovery = std::move(i->mtproxyRecovery);
 		i->mtproxyRecovery = {};
 		_state.mtproxyLease = std::move(i->mtproxyLease);
+		_state.mtproxySlotKey = std::move(i->mtproxySlotKey);
 		_state.testConnections.erase(i);
 		clearConnectionBrokerTickets();
 		clearTestConnections();
+		_state.mtproxyLease.transportReady();
 		_owner->checkAuthKey();
 	}
 }
@@ -1072,7 +1237,6 @@ void SessionTransport::confirmBestConnection() {
 	if (!canProveMtproxyRelay()) {
 		reportMtproxyConnectionUsable(*i);
 	}
-	i->mtproxyLease.releaseAdmissionForRelayCandidate();
 	_state.mtproxyAttempt = i->mtproxyAttempt;
 	_state.mtproxyPlan = i->mtproxyPlan;
 	_state.mtproxyAttempt.proxyEpoch = i->mtproxyLease.proxyEpoch();
@@ -1085,9 +1249,11 @@ void SessionTransport::confirmBestConnection() {
 	_state.mtproxyRecovery = std::move(i->mtproxyRecovery);
 	i->mtproxyRecovery = {};
 	_state.mtproxyLease = std::move(i->mtproxyLease);
+	_state.mtproxySlotKey = std::move(i->mtproxySlotKey);
 	_state.testConnections.erase(i);
 	clearConnectionBrokerTickets();
 	clearTestConnections();
+	_state.mtproxyLease.transportReady();
 
 	_owner->checkAuthKey();
 }
@@ -1099,7 +1265,9 @@ void SessionTransport::removeTestConnection(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	if (i != end(_state.testConnections)) {
+		i->data.reset();
 		i->mtproxyLease.release();
+		i->mtproxySlotKey = {};
 		i->mtproxyRecovery = {};
 		_state.testConnections.erase(i);
 	}

@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/runtime/connection_status_types.h"
 #include "mtproto/runtime/proxy_endpoint.h"
 
@@ -38,6 +39,10 @@ enum class SessionProxyAdmissionAction {
 
 struct SessionProxyAdmissionDecision {
 	SessionProxyAdmissionAction action = SessionProxyAdmissionAction::StartNow;
+	AdmissionTicketKey key;
+	uint64 revision = 0;
+	MtProxy::EndpointAdmissionWaitReason waitReason
+		= MtProxy::EndpointAdmissionWaitReason::None;
 	crl::time retryAfter = 0;
 	ProxyConnectionError blockedBy = ProxyConnectionError::None;
 };
@@ -62,8 +67,9 @@ public:
 		virtual ~Impl();
 
 		virtual void release() = 0;
-		virtual void releaseAdmissionForRelayCandidate() = 0;
+		virtual void transportReady() = 0;
 		[[nodiscard]] virtual bool active() const = 0;
+		[[nodiscard]] virtual MtProxy::LiveSlotKey slotKey() const = 0;
 		[[nodiscard]] virtual uint64 attemptId() const = 0;
 		[[nodiscard]] virtual uint64 proxyGeneration() const = 0;
 		[[nodiscard]] virtual uint64 proxyEpoch() const = 0;
@@ -81,8 +87,9 @@ public:
 	~SessionProxyLease();
 
 	void release();
-	void releaseAdmissionForRelayCandidate();
+	void transportReady();
 	[[nodiscard]] bool active() const;
+	[[nodiscard]] MtProxy::LiveSlotKey slotKey() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;
 	[[nodiscard]] uint64 proxyEpoch() const;
@@ -107,6 +114,7 @@ struct SessionProxyAttempt {
 struct SessionProxyStart {
 	SessionProxyTicketId ticketId = 0;
 	ProxyConnectionAttempt attempt;
+	MtProxy::LiveSlotKey slotKey;
 	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
@@ -135,6 +143,7 @@ struct SessionProxyRequest {
 	crl::time notBefore = 0;
 	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
+	Fn<void(MtProxy::LiveSlotKey)> reclaim;
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
 	crl::time waitStartedAt = 0;
@@ -147,6 +156,7 @@ public:
 		virtual ~Impl();
 
 		virtual void cancel() = 0;
+		virtual void reevaluate() = 0;
 		[[nodiscard]] virtual SessionProxyTicketId id() const = 0;
 		[[nodiscard]] virtual MtProxy::MainRecoveryToken
 			acceptedRecoveryToken() const = 0;
@@ -161,6 +171,7 @@ public:
 	~SessionProxyTicket();
 
 	void cancel();
+	void reevaluate();
 	[[nodiscard]] SessionProxyTicketId id() const;
 	[[nodiscard]] MtProxy::MainRecoveryToken acceptedRecoveryToken() const {
 		return _impl

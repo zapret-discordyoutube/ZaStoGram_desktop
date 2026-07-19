@@ -8,7 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/endpoint_admission_arbiter.h"
 
 #include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_endpoint_context_p.h"
 
@@ -29,16 +28,8 @@ namespace MTP::details {
 namespace {
 
 constexpr auto kAgingStep = crl::time(15 * 1000);
-constexpr auto kMinimumOpenSpacing = crl::time(500);
 constexpr auto kOpenSpacingJitter = crl::time(125);
-constexpr auto kPressureWindow = crl::time(12 * 1000);
-constexpr auto kRecoveryOpenSpacing = crl::time(6 * 1000);
-constexpr auto kOpenDelays = std::array{
-	crl::time(15 * 1000),
-	crl::time(30 * 1000),
-	crl::time(60 * 1000),
-	crl::time(120 * 1000),
-};
+constexpr auto kLiveQuantum = crl::time(60 * 1000);
 
 enum class PriorityClass {
 	ForegroundMain,
@@ -76,8 +67,11 @@ struct Ticket {
 	MtProxy::AdmissionRequest admissionRequest;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
+	Fn<void(MtProxy::LiveSlotKey)> reclaim;
 	std::shared_ptr<TicketCallbacks> callbacks;
 	ProxySchedulerLifecycle lifecycle = ProxySchedulerLifecycle::None;
+	MtProxy::EndpointAdmissionWaitReason waitReason
+		= MtProxy::EndpointAdmissionWaitReason::None;
 	crl::time enqueuedAt = 0;
 	crl::time notBeforeAt = 0;
 	crl::time scheduledOpenAt = 0;
@@ -88,6 +82,7 @@ struct Ticket {
 	crl::time jitter = 0;
 	MtProxy::FailureReason blockedBy = MtProxy::FailureReason::None;
 	uint64 reservationId = 0;
+	std::optional<MtProxy::LiveSlotKey> slotKey;
 };
 
 struct FairnessState {
@@ -207,21 +202,6 @@ void PostAction::run() {
 		});
 }
 
-[[nodiscard]] MtProxy::EndpointOpeningAttemptKey AttemptKeyFrom(
-		const ProxyConnectionAttempt &attempt) {
-	return {
-		.runtimeId = attempt.runtimeId,
-		.traceId = attempt.traceId,
-		.ticketId = attempt.ticketId,
-		.proxyGeneration = attempt.proxyGeneration,
-		.proxyEpoch = attempt.proxyEpoch,
-		.successEpoch = attempt.successEpoch,
-		.attemptId = attempt.attemptId,
-		.use = attempt.use,
-		.ticketKey = attempt.ticketKey,
-	};
-}
-
 void GrantAction::run() {
 	if (!ticket) {
 		return;
@@ -230,25 +210,15 @@ void GrantAction::run() {
 		&& ticket->callbacks
 		&& ticket->callbacks->grant) {
 		ticket->callbacks->grant(std::move(grant));
-	} else {
-		if (const auto strong = context.lock()) {
-			(void)strong->finishTrace(grant.attempt.traceId);
-			strong->endpointAdmissionArbiter().openingEvent(
-				MtProxy::Cancelled{
-					.identity = {
-						.flow = {
-							.endpoint = grant.endpoint.canonical,
-							.runtimeId = grant.attempt.runtimeId,
-							.proxyGeneration
-								= grant.attempt.proxyGeneration,
-							.use = grant.attempt.use,
-						},
-						.owner = AttemptKeyFrom(grant.attempt),
-					},
-				});
-		}
-		grant.admission.lease.release();
+		return;
 	}
+	if (const auto strong = context.lock()) {
+		(void)strong->finishTrace(grant.attempt.traceId);
+		strong->endpointAdmissionArbiter().releaseLiveSlot(
+			grant.slotKey,
+			grant.attempt);
+	}
+	grant.admission.lease.release();
 }
 
 void Actions::run() {
@@ -291,7 +261,7 @@ void Actions::run() {
 	return int(value);
 }
 
-[[nodiscard]] bool IsBackground(MtProxy::EndpointUse use) {
+[[nodiscard]] bool IsTransfer(MtProxy::EndpointUse use) {
 	return use == MtProxy::EndpointUse::Media
 		|| use == MtProxy::EndpointUse::Upload;
 }
@@ -319,29 +289,53 @@ void AdvanceFairness(
 	}
 }
 
-[[nodiscard]] bool AttemptIdentityConsistent(
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-	const auto &attempt = identity.key;
-	return !MtProxy::EndpointEmpty(identity.flow.endpoint)
-		&& identity.flow.runtimeId
-		&& identity.flow.runtimeId == attempt.runtimeId
-		&& identity.flow.proxyGeneration == attempt.proxyGeneration
-		&& identity.flow.use == attempt.use
-		&& attempt.attemptId
-		&& attempt.ticketKey.runtimeId == attempt.runtimeId
-		&& attempt.ticketKey.ticketId;
+[[nodiscard]] std::optional<MtProxy::LiveSlotEntitlement> NativeEntitlement(
+		ProxyRuntimeId runtimeId,
+		MtProxy::EndpointUse use,
+		ProxyRuntimeId foregroundRuntimeId) {
+	if (use == MtProxy::EndpointUse::Main) {
+		return (runtimeId == foregroundRuntimeId)
+			? MtProxy::LiveSlotEntitlement::ForegroundMain
+			: MtProxy::LiveSlotEntitlement::BackgroundMain;
+	}
+	if (runtimeId != foregroundRuntimeId) {
+		return std::nullopt;
+	}
+	if (use == MtProxy::EndpointUse::Media) {
+		return MtProxy::LiveSlotEntitlement::ForegroundMedia;
+	}
+	if (use == MtProxy::EndpointUse::Upload) {
+		return MtProxy::LiveSlotEntitlement::ForegroundUpload;
+	}
+	return std::nullopt;
 }
 
-[[nodiscard]] bool OpeningIdentityMatches(
-		const MtProxy::EndpointOpeningIdentity &a,
-		const MtProxy::EndpointOpeningIdentity &b) {
-	return a == b;
+[[nodiscard]] bool TicketOwnerMatches(
+		const MtProxy::LiveSlotTicketOwner &owner,
+		const Ticket &ticket) {
+	return owner.key == ticket.key && owner.revision == ticket.revision;
 }
 
-[[nodiscard]] bool AttemptIdentityMatches(
-		const MtProxy::EndpointOpeningAttemptIdentity &a,
-		const MtProxy::EndpointOpeningAttemptIdentity &b) {
-	return a == b;
+[[nodiscard]] bool AttemptOwnerMatches(
+		const MtProxy::LiveSlotAttemptOwner &owner,
+		const ProxyConnectionAttempt &attempt) {
+	return owner.attempt == attempt;
+}
+
+[[nodiscard]] MtProxy::LiveSlotKey SlotKey(
+		const QString &endpointKey,
+		int index,
+		const MtProxy::EndpointLiveSlot &slot) {
+	return {
+		.endpointKey = endpointKey,
+		.index = index,
+		.incarnation = slot.incarnation,
+	};
+}
+
+[[nodiscard]] uint64 NextIncarnation(uint64 value) {
+	const auto next = value + 1;
+	return next ? next : 1;
 }
 
 } // namespace
@@ -360,15 +354,18 @@ public:
 		std::weak_ptr<ProxyEndpointContext> context,
 		EndpointAdmissionRequest request);
 	void cancel(AdmissionTicketKey key, uint64 revision);
-	void ownerDestroyed(AdmissionTicketKey key);
+	void ownerDestroyed(AdmissionTicketKey key, uint64 revision);
 	void cancelBeforeGeneration(
 		ProxyRuntimeId runtimeId,
 		uint64 proxyGeneration);
 	void drainEndpoint(const QString &endpointKey);
-	void openingEvent(MtProxy::EndpointOpeningEvent event);
-	void requestImmediateScout(
-		const MtProxy::CanonicalProxyEndpoint &endpoint,
-		RuntimeGenerationKey requester);
+	void reevaluate(AdmissionTicketKey key, uint64 revision);
+	void markTransportReady(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt);
+	void releaseLiveSlot(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt);
 	void composeEndpointViewLocked(
 		const MtProxy::EndpointId &endpoint,
 		RuntimeGenerationKey runtimeGeneration,
@@ -419,85 +416,38 @@ private:
 	[[nodiscard]] bool baseEligibleLocked(
 		const Ticket &ticket,
 		const MtProxy::EndpointState &state) const;
-	[[nodiscard]] MtProxy::EndpointOpeningIdentity ticketIdentityLocked(
+	[[nodiscard]] int entitlementSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
+		MtProxy::LiveSlotEntitlement entitlement) const;
+	[[nodiscard]] int reservedSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
 		const Ticket &ticket) const;
-	[[nodiscard]] MtProxy::OpeningAdmissionDecision
-	openingAdmissionDecisionLocked(
+	[[nodiscard]] bool successorSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket) const;
+	[[nodiscard]] bool reservationCurrentLocked(
 		const Ticket &ticket,
-		const MtProxy::EndpointState &state,
-		crl::time now) const;
-	[[nodiscard]] int findPermitLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity) const;
-	[[nodiscard]] int freePermitLocked(
-		const MtProxy::EndpointOpenGateState &gate) const;
-	[[nodiscard]] uint64 assignPermitLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity,
-		ProxySchedulerLifecycle lifecycle,
-		uint64 reservationId);
-	void retireOwnerLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity);
-	void retireAttemptsLocked(
-		Fn<bool(const MtProxy::EndpointOpeningAttemptIdentity&)> matches);
-	void retireScoutRequestsLocked(
-		Fn<bool(const MtProxy::EndpointImmediateScoutRequest&)> matches);
-	void retireMissingAttemptsLocked(
-		const QString &endpointKey,
-		const MtProxy::EndpointState &state);
-	void advanceGateLocked(const QString &endpointKey, crl::time now);
-	void openGateLocked(
-		const QString &endpointKey,
-		crl::time now,
-		bool advanceRung,
-		Actions &actions);
-	void closeGateLocked(MtProxy::EndpointOpenGateState &gate);
-	void tripGateLocked(
-		const QString &endpointKey,
-		crl::time now,
-		Actions &actions);
-	[[nodiscard]] bool transferPermitLocked(
-		const QString &endpointKey,
-		const MtProxy::EndpointOpeningIdentity &from,
-		const MtProxy::EndpointOpeningAttemptIdentity &to);
-	[[nodiscard]] bool attemptKnownLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) const;
-	[[nodiscard]] bool attemptTerminalLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) const;
-	void retireAttemptTerminalLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity);
-	void applyOpeningEventLocked(
-		const MtProxy::TransportReady &event,
-		crl::time now,
-		Actions &actions);
-	void applyOpeningEventLocked(
-		const MtProxy::RelayReady &event,
-		crl::time now,
-		Actions &actions);
-	void applyOpeningEventLocked(
-		const MtProxy::PressureFailure &event,
-		crl::time now,
-		Actions &actions);
-	void applyOpeningEventLocked(
-		const MtProxy::Cancelled &event,
-		crl::time now,
-		Actions &actions);
+		const MtProxy::EndpointLivePool &pool) const;
 	void invalidateTicketLocked(Ticket &ticket, Actions &actions);
 	void postStatusLocked(Ticket &ticket, Actions &actions);
 	void postGenerationCancelledStatusLocked(
 		const Ticket &ticket,
 		Actions &actions);
 	void postGrantLocked(Ticket &ticket, Actions &actions);
+	void updateQueuedStatusLocked(
+		Ticket &ticket,
+		MtProxy::EndpointAdmissionWaitReason waitReason,
+		MtProxy::FailureReason blockedBy,
+		crl::time retryAfter,
+		crl::time reevaluateAt,
+		Actions &actions);
 	[[nodiscard]] bool deliveryRegistrationCurrentLocked(
 		Ticket &ticket,
 		const std::shared_ptr<std::atomic<bool>> &registrationLive,
 		TicketDelivery delivery,
 		DrainInputs &inputs,
 		Actions &actions);
+	void clearTicketSlotLocked(Ticket &ticket);
 	void cancelTicketLocked(
 		AdmissionTicketKey key,
 		uint64 revision,
@@ -509,10 +459,44 @@ private:
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
 		Actions &actions);
+	[[nodiscard]] bool reserveTicketLocked(
+		const QString &endpointKey,
+		int slotIndex,
+		Ticket &ticket,
+		MtProxy::EndpointState &state,
+		DrainInputs &inputs,
+		Actions &actions);
 	void revalidateReservationsLocked(
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
+		Actions &actions);
+	void reconcileForegroundLocked(
+		const QString &endpointKey,
+		MtProxy::EndpointLivePool &pool);
+	[[nodiscard]] bool slotBorrowableLocked(
+		const QString &endpointKey,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket,
+		int slotIndex) const;
+	[[nodiscard]] int borrowableSlotLocked(
+		const QString &endpointKey,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket) const;
+	void bindClosingSuccessorLocked(
+		MtProxy::EndpointLiveSlot &slot,
+		Ticket &ticket,
+		Actions &actions);
+	void closeSlotLocked(
+		const QString &endpointKey,
+		int slotIndex,
+		std::optional<MtProxy::LiveSlotTicketOwner> successor,
+		bool fairness,
+		Actions &actions);
+	void closeMatchingAttemptsLocked(
+		Fn<bool(const ProxyConnectionAttempt&)> matches,
 		Actions &actions);
 	void assignReservationsLocked(
 		const QString &endpointKey,
@@ -534,7 +518,7 @@ private:
 	MtProxy::EndpointContextStorage &_storage;
 	std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;
 	std::map<QString, EndpointSchedule> _endpoints;
-	std::map<QString, MtProxy::EndpointOpenGateState> _gates;
+	std::map<QString, MtProxy::EndpointLivePool> _pools;
 	std::map<
 		ProxyRuntimeId,
 		std::shared_ptr<const EndpointAdmissionRuntimeDispatch>> _runtimes;
@@ -544,14 +528,13 @@ private:
 	uint64 _wakeToken = 0;
 	ProxyRuntimeId _wakeDriver = 0;
 	crl::time _wakeAt = 0;
-	QString _wakeEndpointKey;
 	std::shared_ptr<std::atomic<bool>> _wakeRegistrationLive;
 	bool _wakeArmed = false;
 
 };
 
 EndpointAdmissionArbiter::Private::Private(
-	MtProxy::EndpointContextStorage &storage)
+		MtProxy::EndpointContextStorage &storage)
 : _storage(storage) {
 }
 
@@ -565,7 +548,7 @@ EndpointAdmissionArbiter::Private::~Private() {
 		}
 		_tickets.clear();
 		_endpoints.clear();
-		_gates.clear();
+		_pools.clear();
 		for (auto &entry : _runtimes) {
 			auto &dispatch = entry.second;
 			InvalidateRuntimeDispatch(dispatch);
@@ -747,7 +730,7 @@ PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 			? PriorityClass::OrdinaryMain
 			: PriorityClass::UrgentMain;
 	} else if (foreground
-		&& IsBackground(ticket.use)
+		&& IsTransfer(ticket.use)
 		&& hasMainProof) {
 		result = PriorityClass::ForegroundTransfer;
 	} else if (ticket.use == MtProxy::EndpointUse::Maintenance) {
@@ -826,7 +809,7 @@ Ticket *EndpointAdmissionArbiter::Private::selectLocked(
 		if (ticket->key.runtimeId != *runtime
 			|| priorityForLocked(*ticket, state, now) != best
 			|| (desiredAvailable
-				&& IsBackground(ticket->use)
+				&& IsTransfer(ticket->use)
 				&& ticket->use != desired)) {
 			continue;
 		}
@@ -835,7 +818,6 @@ Ticket *EndpointAdmissionArbiter::Private::selectLocked(
 			|| (ticket->enqueuedAt == result->enqueuedAt
 				&& ticket->sequence < result->sequence)) {
 			result = ticket;
-			continue;
 		}
 	}
 	return result;
@@ -878,7 +860,7 @@ bool EndpointAdmissionArbiter::Private::baseEligibleLocked(
 	if (!ticketCurrentLocked(ticket, state)) {
 		return false;
 	}
-	if (!IsBackground(ticket.use)) {
+	if (!IsTransfer(ticket.use)) {
 		return true;
 	}
 	auto urgentWaiters = false;
@@ -898,585 +880,59 @@ bool EndpointAdmissionArbiter::Private::baseEligibleLocked(
 		});
 }
 
-MtProxy::EndpointOpeningIdentity
-EndpointAdmissionArbiter::Private::ticketIdentityLocked(
+int EndpointAdmissionArbiter::Private::entitlementSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
+		MtProxy::LiveSlotEntitlement entitlement) const {
+	for (auto i = 0; i != int(pool.slots.size()); ++i) {
+		if (pool.slots[i].entitlement == entitlement) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+int EndpointAdmissionArbiter::Private::reservedSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
 		const Ticket &ticket) const {
-	return {
-		.flow = {
-			.endpoint = ticket.endpoint.canonical,
-			.runtimeId = ticket.key.runtimeId,
-			.proxyGeneration = ticket.proxyGeneration,
-			.use = ticket.use,
-		},
-		.owner = MtProxy::EndpointOpeningTicketOwner{
-			.key = ticket.key,
-			.revision = ticket.revision,
-		},
-	};
+	for (auto i = 0; i != int(pool.slots.size()); ++i) {
+		const auto &slot = pool.slots[i];
+		const auto owner = std::get_if<MtProxy::LiveSlotTicketOwner>(
+			&slot.owner);
+		if (slot.phase == MtProxy::LiveSlotPhase::Reserved
+			&& owner
+			&& TicketOwnerMatches(*owner, ticket)) {
+			return i;
+		}
+	}
+	return -1;
 }
 
-MtProxy::OpeningAdmissionDecision
-EndpointAdmissionArbiter::Private::openingAdmissionDecisionLocked(
+bool EndpointAdmissionArbiter::Private::successorSlotLocked(
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket) const {
+	for (const auto &slot : pool.slots) {
+		const auto closing = std::get_if<MtProxy::LiveSlotClosingState>(
+			&slot.owner);
+		if (slot.phase == MtProxy::LiveSlotPhase::Closing
+			&& closing
+			&& closing->pendingSuccessor
+			&& closing->pendingSuccessor->key == ticket.key
+			&& closing->pendingSuccessor->revision == ticket.revision) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool EndpointAdmissionArbiter::Private::reservationCurrentLocked(
 		const Ticket &ticket,
-		const MtProxy::EndpointState &state,
-		crl::time now) const {
-	auto result = MtProxy::OpeningAdmissionDecision{
-		.identity = ticketIdentityLocked(ticket),
-		.lifecycle = ticket.lifecycle,
-		.openAt = std::max(ticket.notBeforeAt, ticket.scheduledOpenAt),
-		.retryAt = ticket.reevaluateAt,
-		.blockedBy = ticket.blockedBy,
-		.reservationId = ticket.reservationId,
-	};
-	if (MtProxy::EndpointEmpty(ticket.endpoint)) {
-		result.allowed = baseEligibleLocked(ticket, state);
-		return result;
-	}
-	const auto gate = _gates.find(ticket.endpointKey);
-	if (gate == end(_gates)) {
-		result.stage = MtProxy::EndpointOpenGateStage::Closed;
-		result.allowed = ticket.lifecycle
-				== ProxySchedulerLifecycle::Queued
-			&& baseEligibleLocked(ticket, state);
-		return result;
-	}
-	const auto &current = gate->second;
-	result.stage = current.stage;
-	result.gateRevision = current.revision;
-	const auto permitIndex = findPermitLocked(current, result.identity);
-	const auto hasPermit = permitIndex >= 0;
-	if (hasPermit) {
-		const auto &permit = *current.permits[permitIndex];
-		result.permitIndex = permitIndex;
-		result.permitId = permit.id;
-		if (permit.reservationId != ticket.reservationId
-			|| permit.lifecycle != ticket.lifecycle) {
-			return result;
-		}
-	}
-	const auto queued = ticket.lifecycle == ProxySchedulerLifecycle::Queued;
-	const auto planned = ticket.lifecycle
-			== ProxySchedulerLifecycle::Scheduled
-		|| ticket.lifecycle == ProxySchedulerLifecycle::Granted;
-	if ((!queued && !planned)
-		|| (queued && hasPermit)
-		|| (planned && (!hasPermit || !ticket.reservationId))
-		|| (planned && ticket.scheduledOpenAt < ticket.notBeforeAt)
-		|| !baseEligibleLocked(ticket, state)) {
-		return result;
-	}
-	const auto ownerMatches = current.stageOwner
-		&& OpeningIdentityMatches(*current.stageOwner, result.identity);
-	switch (current.stage) {
-	case MtProxy::EndpointOpenGateStage::Closed:
-		result.allowed = hasPermit || freePermitLocked(current) >= 0;
-		break;
-	case MtProxy::EndpointOpenGateStage::Open:
-		result.retryAt = current.openDeadline;
-		if (current.immediateScoutRequest) {
-			const auto &request = *current.immediateScoutRequest;
-			const auto generation = _storage.runtimeGenerations.find(
-				request.requester.runtimeId);
-			const auto requestLive = runtimeLiveLocked(
-					request.requester.runtimeId)
-				&& generation != end(_storage.runtimeGenerations)
-				&& generation->second
-					== request.requester.proxyGeneration;
-			result.allowed = requestLive
-				&& ticket.key.runtimeId == request.requester.runtimeId
-				&& ticket.proxyGeneration
-					== request.requester.proxyGeneration
-				&& queued
-				&& !current.stageOwner
-				&& freePermitLocked(current) >= 0;
-		}
-		break;
-	case MtProxy::EndpointOpenGateStage::HalfOpen:
-		result.allowed = ownerMatches
-			|| (!current.stageOwner
-				&& (hasPermit || freePermitLocked(current) >= 0));
-		break;
-	case MtProxy::EndpointOpenGateStage::Recovering:
-		result.retryAt = current.recoveryNextOpenAt;
-		result.allowed = ownerMatches
-			|| (!current.stageOwner
-				&& now >= current.recoveryNextOpenAt
-				&& (hasPermit || freePermitLocked(current) >= 0));
-		break;
-	}
-	return result;
-}
-
-int EndpointAdmissionArbiter::Private::findPermitLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity) const {
-	for (auto i = 0; i != int(gate.permits.size()); ++i) {
-		if (gate.permits[i]
-			&& OpeningIdentityMatches(gate.permits[i]->owner, identity)) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-int EndpointAdmissionArbiter::Private::freePermitLocked(
-		const MtProxy::EndpointOpenGateState &gate) const {
-	for (auto i = 0; i != int(gate.permits.size()); ++i) {
-		if (!gate.permits[i]) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-uint64 EndpointAdmissionArbiter::Private::assignPermitLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity,
-		ProxySchedulerLifecycle lifecycle,
-		uint64 reservationId) {
-	const auto index = freePermitLocked(gate);
-	if (index < 0) {
-		return 0;
-	}
-	const auto id = ++gate.lastPermitId;
-	gate.permits[index] = MtProxy::EndpointOpeningPermit{
-		.id = id,
-		.reservationId = reservationId,
-		.owner = identity,
-		.lifecycle = lifecycle,
-	};
-	++gate.revision;
-	return id;
-}
-
-void EndpointAdmissionArbiter::Private::retireOwnerLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningIdentity &identity) {
-	auto changed = false;
-	const auto permit = findPermitLocked(gate, identity);
-	if (permit >= 0) {
-		gate.permits[permit].reset();
-		changed = true;
-	}
-	if (gate.stageOwner
-		&& OpeningIdentityMatches(*gate.stageOwner, identity)) {
-		gate.stageOwner.reset();
-		changed = true;
-	}
-	if (const auto attempt = std::get_if<
-			MtProxy::EndpointOpeningAttemptKey>(&identity.owner)) {
-		const auto exact = MtProxy::EndpointOpeningAttemptIdentity{
-			.flow = identity.flow,
-			.key = *attempt,
-		};
-		const auto removed = std::remove_if(
-			begin(gate.proofPendingAttempts),
-			end(gate.proofPendingAttempts),
-			[&](const auto &value) {
-				return AttemptIdentityMatches(value, exact);
-			});
-		if (removed != end(gate.proofPendingAttempts)) {
-			gate.proofPendingAttempts.erase(
-				removed,
-				end(gate.proofPendingAttempts));
-			changed = true;
-		}
-	}
-	if (changed) {
-		++gate.revision;
-	}
-}
-
-void EndpointAdmissionArbiter::Private::retireAttemptsLocked(
-		Fn<bool(const MtProxy::EndpointOpeningAttemptIdentity&)> matches) {
-	for (auto &entry : _gates) {
-		auto &gate = entry.second;
-		auto identities = std::vector<MtProxy::EndpointOpeningAttemptIdentity>();
-		for (const auto &permit : gate.permits) {
-			if (!permit) {
-				continue;
-			}
-			const auto owner = std::get_if<
-				MtProxy::EndpointOpeningAttemptKey>(&permit->owner.owner);
-			if (owner) {
-				identities.push_back({
-					.flow = permit->owner.flow,
-					.key = *owner,
-				});
-			}
-		}
-		for (const auto &identity : gate.proofPendingAttempts) {
-			identities.push_back(identity);
-		}
-		for (const auto &identity : identities) {
-			if (matches(identity)) {
-				retireOwnerLocked(gate, {
-					.flow = identity.flow,
-					.owner = identity.key,
-				});
-			}
-		}
-		const auto removed = std::remove_if(
-			begin(gate.terminalAttempts),
-			end(gate.terminalAttempts),
-			[&](const auto &identity) {
-				return matches(identity);
-			});
-		if (removed != end(gate.terminalAttempts)) {
-			gate.terminalAttempts.erase(
-				removed,
-				end(gate.terminalAttempts));
-			++gate.revision;
-		}
-	}
-}
-
-void EndpointAdmissionArbiter::Private::retireScoutRequestsLocked(
-		Fn<bool(const MtProxy::EndpointImmediateScoutRequest&)> matches) {
-	for (auto &entry : _gates) {
-		auto &gate = entry.second;
-		if (!gate.immediateScoutRequest
-			|| !matches(*gate.immediateScoutRequest)) {
-			continue;
-		}
-		gate.immediateScoutRequest.reset();
-		++gate.revision;
-	}
-}
-
-void EndpointAdmissionArbiter::Private::retireMissingAttemptsLocked(
-		const QString &endpointKey,
-		const MtProxy::EndpointState &state) {
-	retireAttemptsLocked([&](
-			const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-		if (MtProxy::EndpointKey(identity.flow.endpoint) != endpointKey) {
-			return false;
-		}
-		const auto &attempt = identity.key;
-		const auto opening = state.attemptStarts.find(attempt.attemptId);
-		if (opening != end(state.attemptStarts)
-			&& opening->second.runtimeId == attempt.runtimeId
-			&& opening->second.proxyGeneration == attempt.proxyGeneration
-			&& opening->second.ticketKey == attempt.ticketKey) {
-			return false;
-		}
-		const auto proof = MtProxy::RelayProofIdentity{
-			.runtimeId = attempt.runtimeId,
-			.proxyGeneration = attempt.proxyGeneration,
-			.attemptId = attempt.attemptId,
-		};
-		return !state.liveLanes.contains(proof)
-			&& !state.relayProofs.contains(proof);
-	});
-}
-
-void EndpointAdmissionArbiter::Private::advanceGateLocked(
-		const QString &endpointKey,
-		crl::time now) {
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)) {
-		return;
-	}
-	auto &gate = i->second;
-	if (gate.stage == MtProxy::EndpointOpenGateStage::Open
-		&& !gate.stageOwner
-		&& gate.openDeadline
-		&& gate.openDeadline <= now) {
-		gate.stage = MtProxy::EndpointOpenGateStage::HalfOpen;
-		gate.openDeadline = 0;
-		++gate.revision;
-	}
-}
-
-void EndpointAdmissionArbiter::Private::openGateLocked(
-		const QString &endpointKey,
-		crl::time now,
-		bool advanceRung,
-		Actions &actions) {
-	auto &gate = _gates[endpointKey];
-	if (advanceRung) {
-		gate.backoffRung = std::min(
-			gate.backoffRung + 1,
-			int(kOpenDelays.size()) - 1);
-	}
-	gate.stage = MtProxy::EndpointOpenGateStage::Open;
-	gate.openDeadline = now + kOpenDelays[gate.backoffRung];
-	gate.stageOwner.reset();
-	gate.recoverySuccessCount = 0;
-	gate.recoveryNextOpenAt = 0;
-	++gate.revision;
-	const auto schedule = _endpoints.find(endpointKey);
-	if (schedule == end(_endpoints)) {
-		return;
-	}
-	for (const auto &key : schedule->second.order) {
-		const auto ticket = _tickets.find(key);
-		if (ticket == end(_tickets)
-			|| (ticket->second->lifecycle
-					!= ProxySchedulerLifecycle::Scheduled
-				&& ticket->second->lifecycle
-					!= ProxySchedulerLifecycle::Granted)) {
-			continue;
-		}
-		retireOwnerLocked(
-			gate,
-			ticketIdentityLocked(*ticket->second));
-		ticket->second->revision = ++_lastRevision;
-		demoteTicketLocked(*ticket->second, actions);
-	}
-}
-
-void EndpointAdmissionArbiter::Private::closeGateLocked(
-		MtProxy::EndpointOpenGateState &gate) {
-	gate.stage = MtProxy::EndpointOpenGateStage::Closed;
-	gate.pressureWindow.clear();
-	gate.backoffRung = 0;
-	gate.openDeadline = 0;
-	gate.stageOwner.reset();
-	gate.recoverySuccessCount = 0;
-	gate.recoveryNextOpenAt = 0;
-	gate.immediateScoutRequest.reset();
-	++gate.revision;
-}
-
-void EndpointAdmissionArbiter::Private::tripGateLocked(
-		const QString &endpointKey,
-		crl::time now,
-		Actions &actions) {
-	openGateLocked(endpointKey, now, false, actions);
-}
-
-bool EndpointAdmissionArbiter::Private::transferPermitLocked(
-		const QString &endpointKey,
-		const MtProxy::EndpointOpeningIdentity &from,
-		const MtProxy::EndpointOpeningAttemptIdentity &to) {
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)) {
-		return false;
-	}
-	auto &gate = i->second;
-	const auto permit = findPermitLocked(gate, from);
-	if (permit < 0) {
-		return false;
-	}
-	const auto owner = MtProxy::EndpointOpeningIdentity{
-		.flow = to.flow,
-		.owner = to.key,
-	};
-	gate.permits[permit]->owner = owner;
-	gate.permits[permit]->lifecycle = ProxySchedulerLifecycle::HandedOff;
-	if (gate.stageOwner
-		&& OpeningIdentityMatches(*gate.stageOwner, from)) {
-		gate.stageOwner = owner;
-	}
-	if (std::find_if(
-			begin(gate.proofPendingAttempts),
-			end(gate.proofPendingAttempts),
-			[&](const auto &value) {
-				return AttemptIdentityMatches(value, to);
-			}) == end(gate.proofPendingAttempts)) {
-		gate.proofPendingAttempts.push_back(to);
-	}
-	++gate.revision;
-	return true;
-}
-
-bool EndpointAdmissionArbiter::Private::attemptKnownLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) const {
-	const auto owner = MtProxy::EndpointOpeningIdentity{
-		.flow = identity.flow,
-		.owner = identity.key,
-	};
-	return findPermitLocked(gate, owner) >= 0
-		|| std::find_if(
-			begin(gate.proofPendingAttempts),
-			end(gate.proofPendingAttempts),
-			[&](const auto &value) {
-				return AttemptIdentityMatches(value, identity);
-			})
-			!= end(gate.proofPendingAttempts)
-		|| (gate.stageOwner
-			&& OpeningIdentityMatches(*gate.stageOwner, owner));
-}
-
-bool EndpointAdmissionArbiter::Private::attemptTerminalLocked(
-		const MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) const {
-	return std::find_if(
-		begin(gate.terminalAttempts),
-		end(gate.terminalAttempts),
-		[&](const auto &value) {
-			return AttemptIdentityMatches(value, identity);
-		})
-		!= end(gate.terminalAttempts);
-}
-
-void EndpointAdmissionArbiter::Private::retireAttemptTerminalLocked(
-		MtProxy::EndpointOpenGateState &gate,
-		const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-	retireOwnerLocked(gate, {
-		.flow = identity.flow,
-		.owner = identity.key,
-	});
-	if (!attemptTerminalLocked(gate, identity)) {
-		gate.terminalAttempts.push_back(identity);
-	}
-}
-
-void EndpointAdmissionArbiter::Private::applyOpeningEventLocked(
-		const MtProxy::TransportReady &event,
-		crl::time,
-		Actions &) {
-	if (!AttemptIdentityConsistent(event.identity)) {
-		return;
-	}
-	const auto endpointKey = MtProxy::EndpointKey(event.identity.flow.endpoint);
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)
-		|| attemptTerminalLocked(i->second, event.identity)
-		|| !attemptKnownLocked(i->second, event.identity)) {
-		return;
-	}
-	auto &gate = i->second;
-	const auto owner = MtProxy::EndpointOpeningIdentity{
-		.flow = event.identity.flow,
-		.owner = event.identity.key,
-	};
-	const auto permit = findPermitLocked(gate, owner);
-	if (permit >= 0) {
-		gate.permits[permit].reset();
-		++gate.revision;
-	}
-}
-
-void EndpointAdmissionArbiter::Private::applyOpeningEventLocked(
-		const MtProxy::RelayReady &event,
-		crl::time now,
-		Actions &) {
-	if (!AttemptIdentityConsistent(event.identity)) {
-		return;
-	}
-	const auto endpointKey = MtProxy::EndpointKey(event.identity.flow.endpoint);
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)
-		|| attemptTerminalLocked(i->second, event.identity)
-		|| !attemptKnownLocked(i->second, event.identity)) {
-		return;
-	}
-	auto &gate = i->second;
-	const auto owner = MtProxy::EndpointOpeningIdentity{
-		.flow = event.identity.flow,
-		.owner = event.identity.key,
-	};
-	const auto stage = gate.stage;
-	const auto stageOwner = gate.stageOwner
-		&& OpeningIdentityMatches(*gate.stageOwner, owner);
-	retireAttemptTerminalLocked(gate, event.identity);
-	if (!stageOwner) {
-		return;
-	}
-	if (stage == MtProxy::EndpointOpenGateStage::HalfOpen) {
-		gate.stage = MtProxy::EndpointOpenGateStage::Recovering;
-		gate.recoverySuccessCount = 1;
-		gate.recoveryNextOpenAt = now + kRecoveryOpenSpacing;
-		++gate.revision;
-	} else if (stage == MtProxy::EndpointOpenGateStage::Recovering) {
-		++gate.recoverySuccessCount;
-		if (gate.recoverySuccessCount >= 3) {
-			closeGateLocked(gate);
-		} else {
-			gate.recoveryNextOpenAt = now + kRecoveryOpenSpacing;
-			++gate.revision;
-		}
-	}
-}
-
-void EndpointAdmissionArbiter::Private::applyOpeningEventLocked(
-		const MtProxy::PressureFailure &event,
-		crl::time now,
-		Actions &actions) {
-	if (!AttemptIdentityConsistent(event.identity)) {
-		return;
-	}
-	const auto endpointKey = MtProxy::EndpointKey(event.identity.flow.endpoint);
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)
-		|| attemptTerminalLocked(i->second, event.identity)
-		|| !attemptKnownLocked(i->second, event.identity)) {
-		return;
-	}
-	auto &gate = i->second;
-	const auto owner = MtProxy::EndpointOpeningIdentity{
-		.flow = event.identity.flow,
-		.owner = event.identity.key,
-	};
-	const auto stage = gate.stage;
-	const auto stageOwner = gate.stageOwner
-		&& OpeningIdentityMatches(*gate.stageOwner, owner);
-	retireAttemptTerminalLocked(gate, event.identity);
-	if ((stage == MtProxy::EndpointOpenGateStage::HalfOpen
-			|| stage == MtProxy::EndpointOpenGateStage::Recovering)
-		&& stageOwner) {
-		openGateLocked(endpointKey, now, true, actions);
-		return;
-	}
-	if (stage != MtProxy::EndpointOpenGateStage::Closed) {
-		return;
-	}
-	const auto cutoff = now - kPressureWindow;
-	while (!gate.pressureWindow.empty()
-		&& gate.pressureWindow.front().observedAt < cutoff) {
-		gate.pressureWindow.pop_front();
-	}
-	auto pressure = event;
-	pressure.observedAt = now;
-	gate.pressureWindow.push_back(std::move(pressure));
-	auto flows = std::vector<MtProxy::EndpointOpeningFlowKey>();
-	for (const auto &entry : gate.pressureWindow) {
-		if (std::find(begin(flows), end(flows), entry.identity.flow)
-			== end(flows)) {
-			flows.push_back(entry.identity.flow);
-		}
-	}
-	if (gate.pressureWindow.size() >= 3 && flows.size() >= 2) {
-		tripGateLocked(endpointKey, now, actions);
-	}
-}
-
-void EndpointAdmissionArbiter::Private::applyOpeningEventLocked(
-		const MtProxy::Cancelled &event,
-		crl::time,
-		Actions &) {
-	const auto endpointKey = MtProxy::EndpointKey(event.identity.flow.endpoint);
-	const auto i = _gates.find(endpointKey);
-	if (i == end(_gates)) {
-		return;
-	}
-	auto &gate = i->second;
-	if (const auto attempt = std::get_if<
-			MtProxy::EndpointOpeningAttemptKey>(&event.identity.owner)) {
-		const auto identity = MtProxy::EndpointOpeningAttemptIdentity{
-			.flow = event.identity.flow,
-			.key = *attempt,
-		};
-		if (!AttemptIdentityConsistent(identity)
-			|| attemptTerminalLocked(gate, identity)
-			|| !attemptKnownLocked(gate, identity)) {
-			return;
-		}
-		retireAttemptTerminalLocked(gate, identity);
-		return;
-	}
-	const auto ticket = std::get_if<
-		MtProxy::EndpointOpeningTicketOwner>(&event.identity.owner);
-	if (!ticket
-		|| event.identity.flow.runtimeId != ticket->key.runtimeId
-		|| !ticket->key.ticketId
-		|| findPermitLocked(gate, event.identity) < 0) {
-		return;
-	}
-	retireOwnerLocked(gate, event.identity);
+		const MtProxy::EndpointLivePool &pool) const {
+	const auto index = reservedSlotLocked(pool, ticket);
+	return index >= 0
+		&& ticket.slotKey
+		&& ticket.slotKey->index == index
+		&& ticket.slotKey->endpointKey == ticket.endpointKey
+		&& ticket.slotKey->incarnation == pool.slots[index].incarnation;
 }
 
 void EndpointAdmissionArbiter::Private::invalidateTicketLocked(
@@ -1567,6 +1023,7 @@ void EndpointAdmissionArbiter::Private::postGenerationCancelledStatusLocked(
 		.enqueuedAt = ticket.enqueuedAt,
 		.scheduledOpenAt = ticket.scheduledOpenAt,
 		.retryAfter = ticket.retryAfter,
+		.waitReason = ticket.waitReason,
 		.blockedBy = ticket.blockedBy,
 	};
 	actions.posts.push_back({
@@ -1633,6 +1090,27 @@ void EndpointAdmissionArbiter::Private::postGrantLocked(
 	});
 }
 
+void EndpointAdmissionArbiter::Private::updateQueuedStatusLocked(
+		Ticket &ticket,
+		MtProxy::EndpointAdmissionWaitReason waitReason,
+		MtProxy::FailureReason blockedBy,
+		crl::time retryAfter,
+		crl::time reevaluateAt,
+		Actions &actions) {
+	if (ticket.waitReason == waitReason
+		&& ticket.blockedBy == blockedBy
+		&& ticket.retryAfter == retryAfter
+		&& ticket.reevaluateAt == reevaluateAt) {
+		return;
+	}
+	ticket.waitReason = waitReason;
+	ticket.blockedBy = blockedBy;
+	ticket.retryAfter = retryAfter;
+	ticket.reevaluateAt = reevaluateAt;
+	++ticket.transition;
+	postStatusLocked(ticket, actions);
+}
+
 auto EndpointAdmissionArbiter::Private::takeTicketLocked(
 		AdmissionTicketKey key)
 -> std::unique_ptr<Ticket> {
@@ -1651,6 +1129,39 @@ auto EndpointAdmissionArbiter::Private::takeTicketLocked(
 		}
 	}
 	return result;
+}
+
+void EndpointAdmissionArbiter::Private::clearTicketSlotLocked(
+		Ticket &ticket) {
+	const auto pool = _pools.find(ticket.endpointKey);
+	if (pool == end(_pools)) {
+		ticket.slotKey.reset();
+		return;
+	}
+	auto &current = pool->second;
+	const auto reserved = reservedSlotLocked(current, ticket);
+	if (reserved >= 0) {
+		auto &slot = current.slots[reserved];
+		slot.phase = MtProxy::LiveSlotPhase::Empty;
+		slot.owner = std::monostate();
+	}
+	for (auto &slot : current.slots) {
+		auto closing = std::get_if<MtProxy::LiveSlotClosingState>(
+			&slot.owner);
+		if (slot.phase == MtProxy::LiveSlotPhase::Closing
+			&& closing
+			&& closing->pendingSuccessor
+			&& closing->pendingSuccessor->key == ticket.key
+			&& closing->pendingSuccessor->revision == ticket.revision) {
+			closing->pendingSuccessor.reset();
+		}
+	}
+	if (ticket.reservationId) {
+		current.openings = MtProxy::CancelOpenSlot(
+			current.openings,
+			ticket.reservationId).schedule;
+	}
+	ticket.slotKey.reset();
 }
 
 void EndpointAdmissionArbiter::Private::cancelTicketLocked(
@@ -1676,21 +1187,11 @@ void EndpointAdmissionArbiter::Private::cancelTicketLocked(
 				ticket.acceptedRecoveryToken,
 				ticket.key));
 	}
-	if (ticket.reservationId) {
-		const auto gate = _gates.find(ticket.endpointKey);
-		if (gate != end(_gates)) {
-			gate->second.openings = MtProxy::CancelOpenSlot(
-				gate->second.openings,
-				ticket.reservationId).schedule;
-		}
-	}
-	const auto gate = _gates.find(ticket.endpointKey);
-	if (gate != end(_gates)) {
-		retireOwnerLocked(gate->second, ticketIdentityLocked(ticket));
-	}
+	clearTicketSlotLocked(ticket);
 	if (ticket.traceId) {
 		_storage.activeTraces.erase(ticket.traceId);
 	}
+	ticket.reservationId = 0;
 	ticket.lifecycle = ProxySchedulerLifecycle::Cancelled;
 	++ticket.transition;
 	invalidateTicketLocked(ticket, actions);
@@ -1700,23 +1201,13 @@ void EndpointAdmissionArbiter::Private::cancelTicketLocked(
 void EndpointAdmissionArbiter::Private::demoteTicketLocked(
 		Ticket &ticket,
 		Actions &actions) {
-	if (ticket.reservationId) {
-		const auto gate = _gates.find(ticket.endpointKey);
-		if (gate != end(_gates)) {
-			gate->second.openings = MtProxy::CancelOpenSlot(
-				gate->second.openings,
-				ticket.reservationId).schedule;
-		}
-	}
-	const auto gate = _gates.find(ticket.endpointKey);
-	if (gate != end(_gates)) {
-		retireOwnerLocked(gate->second, ticketIdentityLocked(ticket));
-	}
+	clearTicketSlotLocked(ticket);
 	ticket.reservationId = 0;
 	ticket.scheduledOpenAt = 0;
 	ticket.nextOpenAt = 0;
 	ticket.reevaluateAt = 0;
 	ticket.retryAfter = 0;
+	ticket.waitReason = MtProxy::EndpointAdmissionWaitReason::Slot;
 	ticket.lifecycle = ProxySchedulerLifecycle::Queued;
 	++ticket.transition;
 	postStatusLocked(ticket, actions);
@@ -1742,16 +1233,74 @@ void EndpointAdmissionArbiter::Private::purgeEndpointLocked(
 	}
 }
 
+bool EndpointAdmissionArbiter::Private::reserveTicketLocked(
+		const QString &endpointKey,
+		int slotIndex,
+		Ticket &ticket,
+		MtProxy::EndpointState &state,
+		DrainInputs &inputs,
+		Actions &actions) {
+	auto &pool = _pools[endpointKey];
+	if (slotIndex < 0
+		|| slotIndex >= int(pool.slots.size())
+		|| pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty
+		|| ticket.lifecycle != ProxySchedulerLifecycle::Queued
+		|| !baseEligibleLocked(ticket, state)) {
+		return false;
+	}
+	const auto plan = MtProxy::BuildAttemptPlan(
+		ticket.admissionRequest,
+		state.recipeLevel);
+	ticket.spacing = MtProxy::OpenConnectionSpacing(
+		plan.stealth.connectionPattern);
+	ticket.jitter = inputs.takeJitter(ticket.key.runtimeId);
+	const auto reduction = MtProxy::ReserveOpenSlot(
+		pool.openings,
+		{
+			.now = inputs.now,
+			.earliestOpenAt = ticket.notBeforeAt,
+			.spacing = ticket.spacing,
+			.jitter = ticket.jitter,
+		});
+	if (!reduction.applied || !reduction.assignment) {
+		return false;
+	}
+	pool.openings = reduction.schedule;
+	const auto reservation = *reduction.assignment;
+	auto &slot = pool.slots[slotIndex];
+	slot.incarnation = NextIncarnation(slot.incarnation);
+	slot.phase = MtProxy::LiveSlotPhase::Reserved;
+	slot.owner = MtProxy::LiveSlotTicketOwner{
+		.key = ticket.key,
+		.revision = ticket.revision,
+	};
+	ticket.reservationId = reservation.id;
+	ticket.scheduledOpenAt = reservation.openAt;
+	ticket.nextOpenAt = reservation.nextOpenAt;
+	ticket.retryAfter = std::max(
+		crl::time(),
+		reservation.openAt - inputs.now);
+	ticket.reevaluateAt = 0;
+	ticket.blockedBy = MtProxy::FailureReason::None;
+	ticket.waitReason = MtProxy::EndpointAdmissionWaitReason::None;
+	ticket.slotKey = SlotKey(endpointKey, slotIndex, slot);
+	ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
+	++ticket.transition;
+	postStatusLocked(ticket, actions);
+	return true;
+}
+
 void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 		const QString &endpointKey,
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
 		Actions &actions) {
 	const auto schedule = _endpoints.find(endpointKey);
-	if (schedule == end(_endpoints)) {
+	const auto pool = _pools.find(endpointKey);
+	if (schedule == end(_endpoints) || pool == end(_pools)) {
 		return;
 	}
-	auto pool = std::vector<Ticket*>();
+	auto planned = std::vector<Ticket*>();
 	for (const auto &key : schedule->second.order) {
 		const auto i = _tickets.find(key);
 		if (i == end(_tickets)
@@ -1760,35 +1309,24 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 					!= ProxySchedulerLifecycle::Granted)) {
 			continue;
 		}
-		if (openingAdmissionDecisionLocked(
-				*i->second,
-				state,
-				inputs.now).allowed) {
-			pool.push_back(i->second.get());
-		} else {
+		if (!baseEligibleLocked(*i->second, state)
+			|| !reservationCurrentLocked(*i->second, pool->second)) {
 			demoteTicketLocked(*i->second, actions);
+		} else {
+			planned.push_back(i->second.get());
 		}
 	}
+	if (planned.empty()) {
+		return;
+	}
 	auto ordered = orderLocked(
-		std::move(pool),
+		std::move(planned),
 		state,
 		inputs.now,
 		schedule->second.fairness);
 	auto requests = std::vector<MtProxy::OpenSlotReflowRequest>();
-	auto openTickets = std::vector<Ticket*>();
-	auto &gate = _gates[endpointKey];
+	requests.reserve(ordered.size());
 	for (const auto ticket : ordered) {
-		if (!ticket->reservationId) {
-			continue;
-		}
-		const auto plan = MtProxy::BuildAttemptPlan(
-			ticket->admissionRequest,
-			state.recipeLevel);
-		ticket->spacing = std::max(
-			kMinimumOpenSpacing,
-			MtProxy::OpenConnectionSpacing(
-				plan.stealth.connectionPattern));
-		openTickets.push_back(ticket);
 		requests.push_back({
 			.id = ticket->reservationId,
 			.earliestOpenAt = ticket->notBeforeAt,
@@ -1796,42 +1334,249 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 			.jitter = ticket->jitter,
 		});
 	}
-	if (requests.empty()) {
-		return;
-	}
 	const auto reflow = MtProxy::ReflowOpenSlots(
-		gate.openings,
+		pool->second.openings,
 		requests,
 		inputs.now);
 	if (!reflow.applied
-		|| reflow.assignments.size() != openTickets.size()) {
+		|| reflow.assignments.size() != ordered.size()) {
 		return;
 	}
-	gate.openings = reflow.schedule;
-	++gate.revision;
-	for (auto i = std::size_t(); i != reflow.assignments.size(); ++i) {
-		auto &ticket = *openTickets[i];
+	pool->second.openings = reflow.schedule;
+	for (auto i = std::size_t(); i != ordered.size(); ++i) {
+		auto &ticket = *ordered[i];
 		const auto changed = ticket.scheduledOpenAt
 			!= reflow.assignments[i].openAt;
 		ticket.scheduledOpenAt = reflow.assignments[i].openAt;
 		ticket.nextOpenAt = reflow.assignments[i].nextOpenAt;
 		ticket.retryAfter = std::max(
 			crl::time(),
-			reflow.assignments[i].openAt - inputs.now);
+			ticket.scheduledOpenAt - inputs.now);
 		if (changed) {
 			if (ticket.lifecycle == ProxySchedulerLifecycle::Granted) {
 				ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
-				const auto permit = findPermitLocked(
-					gate,
-					ticketIdentityLocked(ticket));
-				if (permit >= 0) {
-					gate.permits[permit]->lifecycle
-						= ProxySchedulerLifecycle::Scheduled;
-					++gate.revision;
-				}
 			}
 			++ticket.transition;
 			postStatusLocked(ticket, actions);
+		}
+	}
+}
+
+void EndpointAdmissionArbiter::Private::reconcileForegroundLocked(
+		const QString &,
+		MtProxy::EndpointLivePool &pool) {
+	const auto foreground = _storage.foregroundRuntimeId;
+	if (!foreground) {
+		return;
+	}
+	const auto foregroundSlot = entitlementSlotLocked(
+		pool,
+		MtProxy::LiveSlotEntitlement::ForegroundMain);
+	if (foregroundSlot < 0) {
+		return;
+	}
+	auto ownedSlot = -1;
+	for (auto i = 0; i != int(pool.slots.size()); ++i) {
+		const auto &slot = pool.slots[i];
+		if (slot.phase != MtProxy::LiveSlotPhase::Opening
+			&& slot.phase != MtProxy::LiveSlotPhase::Live) {
+			continue;
+		}
+		const auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(
+			&slot.owner);
+		if (owner
+			&& owner->attempt.runtimeId == foreground
+			&& owner->attempt.use == MtProxy::EndpointUse::Main) {
+			ownedSlot = i;
+			break;
+		}
+	}
+	const auto foregroundPhase = pool.slots[foregroundSlot].phase;
+	if (ownedSlot >= 0
+		&& ownedSlot != foregroundSlot
+		&& foregroundPhase != MtProxy::LiveSlotPhase::Reserved
+		&& foregroundPhase != MtProxy::LiveSlotPhase::Closing) {
+		std::swap(
+			pool.slots[ownedSlot].entitlement,
+			pool.slots[foregroundSlot].entitlement);
+	}
+}
+
+bool EndpointAdmissionArbiter::Private::slotBorrowableLocked(
+		const QString &endpointKey,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket,
+		int slotIndex) const {
+	if (slotIndex < 0
+		|| slotIndex >= int(pool.slots.size())
+		|| pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty
+		|| !baseEligibleLocked(ticket, state)) {
+		return false;
+	}
+	const auto native = NativeEntitlement(
+		ticket.key.runtimeId,
+		ticket.use,
+		_storage.foregroundRuntimeId);
+	const auto entitlement = pool.slots[slotIndex].entitlement;
+	if (native && *native == entitlement) {
+		return true;
+	}
+	const auto schedule = _endpoints.find(endpointKey);
+	if (schedule == end(_endpoints)) {
+		return false;
+	}
+	for (const auto &key : schedule->second.order) {
+		const auto i = _tickets.find(key);
+		if (i == end(_tickets)
+			|| i->second.get() == &ticket
+			|| i->second->lifecycle != ProxySchedulerLifecycle::Queued
+			|| !baseEligibleLocked(*i->second, state)) {
+			continue;
+		}
+		const auto claimant = NativeEntitlement(
+			i->second->key.runtimeId,
+			i->second->use,
+			_storage.foregroundRuntimeId);
+		if (claimant && *claimant == entitlement) {
+			return false;
+		}
+	}
+	return true;
+}
+
+int EndpointAdmissionArbiter::Private::borrowableSlotLocked(
+		const QString &endpointKey,
+		const MtProxy::EndpointState &state,
+		const MtProxy::EndpointLivePool &pool,
+		const Ticket &ticket) const {
+	const auto native = NativeEntitlement(
+		ticket.key.runtimeId,
+		ticket.use,
+		_storage.foregroundRuntimeId);
+	if (native) {
+		const auto preferred = entitlementSlotLocked(pool, *native);
+		if (slotBorrowableLocked(
+				endpointKey,
+				state,
+				pool,
+				ticket,
+				preferred)) {
+			return preferred;
+		}
+	}
+	for (auto i = 0; i != int(pool.slots.size()); ++i) {
+		if (slotBorrowableLocked(
+				endpointKey,
+				state,
+				pool,
+				ticket,
+				i)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+void EndpointAdmissionArbiter::Private::bindClosingSuccessorLocked(
+		MtProxy::EndpointLiveSlot &slot,
+		Ticket &ticket,
+		Actions &actions) {
+	if (slot.phase != MtProxy::LiveSlotPhase::Closing
+		|| ticket.lifecycle != ProxySchedulerLifecycle::Queued) {
+		return;
+	}
+	auto closing = std::get_if<MtProxy::LiveSlotClosingState>(&slot.owner);
+	if (!closing || closing->pendingSuccessor) {
+		return;
+	}
+	closing->pendingSuccessor = MtProxy::LiveSlotTicketOwner{
+		.key = ticket.key,
+		.revision = ticket.revision,
+	};
+	updateQueuedStatusLocked(
+		ticket,
+		MtProxy::EndpointAdmissionWaitReason::ClosingSlot,
+		MtProxy::FailureReason::None,
+		0,
+		0,
+		actions);
+}
+
+void EndpointAdmissionArbiter::Private::closeSlotLocked(
+		const QString &endpointKey,
+		int slotIndex,
+		std::optional<MtProxy::LiveSlotTicketOwner> successor,
+		bool fairness,
+		Actions &actions) {
+	const auto pool = _pools.find(endpointKey);
+	if (pool == end(_pools)
+		|| slotIndex < 0
+		|| slotIndex >= int(pool->second.slots.size())) {
+		return;
+	}
+	auto &slot = pool->second.slots[slotIndex];
+	if (slot.phase == MtProxy::LiveSlotPhase::Closing) {
+		auto closing = std::get_if<MtProxy::LiveSlotClosingState>(
+			&slot.owner);
+		if (closing && !closing->pendingSuccessor && successor) {
+			closing->pendingSuccessor = successor;
+		}
+		return;
+	}
+	if (slot.phase != MtProxy::LiveSlotPhase::Opening
+		&& slot.phase != MtProxy::LiveSlotPhase::Live) {
+		return;
+	}
+	auto incumbent = std::get_if<MtProxy::LiveSlotAttemptOwner>(&slot.owner);
+	if (!incumbent) {
+		return;
+	}
+	auto closing = MtProxy::LiveSlotClosingState{
+		.incumbent = std::move(*incumbent),
+		.pendingSuccessor = successor,
+	};
+	const auto slotKey = SlotKey(endpointKey, slotIndex, slot);
+	slot.phase = MtProxy::LiveSlotPhase::Closing;
+	slot.owner = std::move(closing);
+	if (fairness) {
+		pool->second.fairnessClosing = slotKey;
+	}
+	const auto &stored = std::get<MtProxy::LiveSlotClosingState>(slot.owner);
+	const auto runtime = _runtimes.find(stored.incumbent.attempt.runtimeId);
+	if (runtime == end(_runtimes) || !stored.incumbent.reclaim) {
+		return;
+	}
+	const auto reclaim = stored.incumbent.reclaim;
+	actions.posts.push_back({
+		.dispatch = runtime->second,
+		.target = stored.incumbent.owner,
+		.callback = [reclaim, slotKey] {
+			reclaim(slotKey);
+		},
+	});
+}
+
+void EndpointAdmissionArbiter::Private::closeMatchingAttemptsLocked(
+		Fn<bool(const ProxyConnectionAttempt&)> matches,
+		Actions &actions) {
+	for (auto &[endpointKey, pool] : _pools) {
+		for (auto i = 0; i != int(pool.slots.size()); ++i) {
+			const auto &slot = pool.slots[i];
+			if (slot.phase != MtProxy::LiveSlotPhase::Opening
+				&& slot.phase != MtProxy::LiveSlotPhase::Live) {
+				continue;
+			}
+			const auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(
+				&slot.owner);
+			if (owner && matches(owner->attempt)) {
+				closeSlotLocked(
+					endpointKey,
+					i,
+					std::nullopt,
+					false,
+					actions);
+			}
 		}
 	}
 }
@@ -1841,156 +1586,435 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		MtProxy::EndpointState &state,
 		DrainInputs &inputs,
 		Actions &actions) {
-	auto fairness = _endpoints[endpointKey].fairness;
-	auto planned = std::vector<Ticket*>();
-	for (const auto &key : _endpoints[endpointKey].order) {
-		const auto i = _tickets.find(key);
-		if (i != end(_tickets)
-			&& (i->second->lifecycle == ProxySchedulerLifecycle::Scheduled
-				|| i->second->lifecycle
-					== ProxySchedulerLifecycle::Granted)) {
-			planned.push_back(i->second.get());
+	const auto schedule = _endpoints.find(endpointKey);
+	if (schedule == end(_endpoints)) {
+		return;
+	}
+	auto &pool = _pools[endpointKey];
+	if (pool.fairnessClosing) {
+		const auto key = *pool.fairnessClosing;
+		const auto valid = key.index >= 0
+			&& key.index < int(pool.slots.size())
+			&& pool.slots[key.index].phase
+				== MtProxy::LiveSlotPhase::Closing
+			&& pool.slots[key.index].incarnation == key.incarnation;
+		if (!valid) {
+			pool.fairnessClosing.reset();
 		}
 	}
-	std::sort(begin(planned), end(planned), [](Ticket *a, Ticket *b) {
-		return std::tie(a->scheduledOpenAt, a->sequence)
-			< std::tie(b->scheduledOpenAt, b->sequence);
-	});
-	for (const auto ticket : planned) {
-		AdvanceFairness(
-			fairness,
-			*ticket,
-			priorityForLocked(*ticket, state, inputs.now));
-	}
-	auto &gate = _gates[endpointKey];
-	while (freePermitLocked(gate) >= 0) {
-		const auto schedule = _endpoints.find(endpointKey);
-		if (schedule == end(_endpoints)) {
-			return;
-		}
-		auto pool = std::vector<Ticket*>();
+	reconcileForegroundLocked(endpointKey, pool);
+	const auto entitlements = std::array{
+		MtProxy::LiveSlotEntitlement::ForegroundMain,
+		MtProxy::LiveSlotEntitlement::ForegroundMedia,
+		MtProxy::LiveSlotEntitlement::ForegroundUpload,
+		MtProxy::LiveSlotEntitlement::BackgroundMain,
+	};
+	for (const auto entitlement : entitlements) {
+		auto candidates = std::vector<Ticket*>();
+		auto eligible = std::set<AdmissionTicketKey>();
 		for (const auto &key : schedule->second.order) {
 			const auto i = _tickets.find(key);
-			if (i != end(_tickets)
-				&& i->second->lifecycle == ProxySchedulerLifecycle::Queued) {
-				pool.push_back(i->second.get());
-			}
-		}
-		if (pool.empty()) {
-			return;
-		}
-		auto eligible = std::set<AdmissionTicketKey>();
-		for (const auto ticket : pool) {
-			const auto decision = openingAdmissionDecisionLocked(
-				*ticket,
-				state,
-				inputs.now);
-			if (decision.allowed) {
-				eligible.emplace(ticket->key);
+			if (i == end(_tickets)
+				|| i->second->lifecycle != ProxySchedulerLifecycle::Queued
+				|| successorSlotLocked(pool, *i->second)) {
 				continue;
 			}
-			const auto verdict = state.canonicalVerdicts.find({
-				.runtimeId = ticket->key.runtimeId,
-				.proxyGeneration = ticket->proxyGeneration,
-			});
-			ticket->blockedBy = (verdict != end(state.canonicalVerdicts))
-				? verdict->second.reason
-				: state.lastFailure;
-			ticket->retryAfter = 0;
-			if (ticket->use == MtProxy::EndpointUse::Main) {
-				ticket->reevaluateAt = 0;
-			} else {
-				const auto base = (ticket->use
-						== MtProxy::EndpointUse::ProxyCheck)
-					? PriorityIndex(PriorityClass::ProxyCheck)
-					: PriorityIndex(PriorityClass::Background);
-				const auto age = std::max(
-					crl::time(),
-					inputs.now - ticket->enqueuedAt);
-				const auto improvement = int(age / kAgingStep);
-				ticket->reevaluateAt = (base - improvement
-						> PriorityIndex(PriorityClass::OrdinaryMain))
-					? (ticket->enqueuedAt
-						+ crl::time(improvement + 1) * kAgingStep)
-					: crl::time();
+			const auto native = NativeEntitlement(
+				i->second->key.runtimeId,
+				i->second->use,
+				_storage.foregroundRuntimeId);
+			if (!native || *native != entitlement) {
+				continue;
+			}
+			candidates.push_back(i->second.get());
+			if (baseEligibleLocked(*i->second, state)) {
+				eligible.emplace(key);
 			}
 		}
-		const auto selected = selectLocked(
-			pool,
+		auto selected = selectLocked(
+			candidates,
 			eligible,
 			state,
 			inputs.now,
-			fairness);
+			schedule->second.fairness);
 		if (!selected) {
-			return;
+			continue;
 		}
-		selected->reevaluateAt = 0;
-		selected->blockedBy = MtProxy::FailureReason::None;
-		const auto plan = MtProxy::BuildAttemptPlan(
-			selected->admissionRequest,
-			state.recipeLevel);
-		selected->spacing = std::max(
-			kMinimumOpenSpacing,
-			MtProxy::OpenConnectionSpacing(
-				plan.stealth.connectionPattern));
-		selected->jitter = inputs.takeJitter(selected->key.runtimeId);
-		const auto reduction = MtProxy::ReserveOpenSlot(
-			gate.openings,
-			{
-				.now = inputs.now,
-				.earliestOpenAt = selected->notBeforeAt,
-				.spacing = selected->spacing,
-				.jitter = selected->jitter,
-			});
-		if (!reduction.applied || !reduction.assignment) {
-			return;
+		const auto slotIndex = entitlementSlotLocked(pool, entitlement);
+		if (slotIndex < 0) {
+			continue;
 		}
-		const auto reservation = *reduction.assignment;
-		gate.openings = reduction.schedule;
-		selected->reservationId = reservation.id;
-		selected->scheduledOpenAt = reservation.openAt;
-		selected->nextOpenAt = reservation.nextOpenAt;
-		selected->lifecycle = ProxySchedulerLifecycle::Scheduled;
-		const auto identity = ticketIdentityLocked(*selected);
-		if (!assignPermitLocked(
-				gate,
-				identity,
-				selected->lifecycle,
-				selected->reservationId)) {
-			gate.openings = MtProxy::CancelOpenSlot(
-				gate.openings,
-				selected->reservationId).schedule;
-			selected->reservationId = 0;
-			selected->scheduledOpenAt = 0;
-			selected->nextOpenAt = 0;
-			selected->lifecycle = ProxySchedulerLifecycle::Queued;
-			return;
+		auto &slot = pool.slots[slotIndex];
+		if (slot.phase == MtProxy::LiveSlotPhase::Empty) {
+			reserveTicketLocked(
+				endpointKey,
+				slotIndex,
+				*selected,
+				state,
+				inputs,
+				actions);
+			continue;
 		}
-		if (gate.stage == MtProxy::EndpointOpenGateStage::Open
-			&& gate.immediateScoutRequest) {
-			gate.stage = MtProxy::EndpointOpenGateStage::HalfOpen;
-			gate.openDeadline = 0;
-			++gate.revision;
-		}
-		if ((gate.stage == MtProxy::EndpointOpenGateStage::HalfOpen
-				|| gate.stage
-					== MtProxy::EndpointOpenGateStage::Recovering)
-			&& !gate.stageOwner) {
-			gate.stageOwner = identity;
-			if (gate.stage == MtProxy::EndpointOpenGateStage::HalfOpen) {
-				gate.immediateScoutRequest.reset();
+		if (slot.phase == MtProxy::LiveSlotPhase::Reserved) {
+			const auto owner = std::get_if<MtProxy::LiveSlotTicketOwner>(
+				&slot.owner);
+			const auto occupying = owner ? _tickets.find(owner->key) : end(_tickets);
+			const auto native = (occupying != end(_tickets))
+				? NativeEntitlement(
+					occupying->second->key.runtimeId,
+					occupying->second->use,
+					_storage.foregroundRuntimeId)
+				: std::nullopt;
+			if (!native || *native != entitlement) {
+				if (occupying != end(_tickets)
+					&& occupying->second->key.runtimeId
+						== _storage.foregroundRuntimeId
+					&& occupying->second->use
+						== MtProxy::EndpointUse::Main) {
+					continue;
+				}
+				if (occupying != end(_tickets)
+					&& owner->revision == occupying->second->revision) {
+					demoteTicketLocked(*occupying->second, actions);
+				}
+				if (pool.slots[slotIndex].phase
+						== MtProxy::LiveSlotPhase::Empty) {
+					reserveTicketLocked(
+						endpointKey,
+						slotIndex,
+						*selected,
+						state,
+						inputs,
+						actions);
+				}
 			}
-			++gate.revision;
+			continue;
 		}
-		selected->retryAfter = std::max(
-			crl::time(),
-			selected->scheduledOpenAt - inputs.now);
-		++selected->transition;
+		if (slot.phase == MtProxy::LiveSlotPhase::Closing) {
+			auto closing = std::get_if<MtProxy::LiveSlotClosingState>(
+				&slot.owner);
+			const auto incumbentNative = closing
+				? NativeEntitlement(
+					closing->incumbent.attempt.runtimeId,
+					closing->incumbent.attempt.use,
+					_storage.foregroundRuntimeId)
+				: std::nullopt;
+			if (closing
+				&& (!incumbentNative || *incumbentNative != entitlement)
+				&& closing->pendingSuccessor
+				&& (closing->pendingSuccessor->key != selected->key
+					|| closing->pendingSuccessor->revision
+						!= selected->revision)) {
+				const auto previous = _tickets.find(
+					closing->pendingSuccessor->key);
+				if (previous != end(_tickets)
+					&& previous->second->revision
+						== closing->pendingSuccessor->revision) {
+					updateQueuedStatusLocked(
+						*previous->second,
+						MtProxy::EndpointAdmissionWaitReason::Slot,
+						MtProxy::FailureReason::None,
+						0,
+						0,
+						actions);
+				}
+				closing->pendingSuccessor.reset();
+			}
+			bindClosingSuccessorLocked(slot, *selected, actions);
+			continue;
+		}
+		const auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(
+			&slot.owner);
+		if (!owner) {
+			continue;
+		}
+		const auto ownerNative = NativeEntitlement(
+			owner->attempt.runtimeId,
+			owner->attempt.use,
+			_storage.foregroundRuntimeId);
+		if (!ownerNative || *ownerNative != entitlement) {
+			if (owner->attempt.runtimeId == _storage.foregroundRuntimeId
+				&& owner->attempt.use == MtProxy::EndpointUse::Main) {
+				continue;
+			}
+			auto reclaimIndex = slotIndex;
+			if (entitlement
+					== MtProxy::LiveSlotEntitlement::ForegroundMain
+				&& owner->attempt.runtimeId
+					!= _storage.foregroundRuntimeId) {
+				auto alternate = -1;
+				for (auto i = 0; i != int(pool.slots.size()); ++i) {
+					if (i == slotIndex) {
+						continue;
+					}
+					const auto &candidateSlot = pool.slots[i];
+					if (candidateSlot.phase != MtProxy::LiveSlotPhase::Opening
+						&& candidateSlot.phase
+							!= MtProxy::LiveSlotPhase::Live) {
+						continue;
+					}
+					const auto candidate = std::get_if<
+						MtProxy::LiveSlotAttemptOwner>(&candidateSlot.owner);
+					if (!candidate
+						|| (candidate->attempt.runtimeId
+								== _storage.foregroundRuntimeId
+							&& candidate->attempt.use
+								== MtProxy::EndpointUse::Main)
+						|| (candidate->attempt.runtimeId
+								== _storage.foregroundRuntimeId
+							&& IsTransfer(candidate->attempt.use))) {
+						continue;
+					}
+					if (alternate < 0) {
+						alternate = i;
+						continue;
+					}
+					const auto current = std::get_if<
+						MtProxy::LiveSlotAttemptOwner>(
+							&pool.slots[alternate].owner);
+					if (current
+						&& candidate->liveSince < current->liveSince) {
+						alternate = i;
+					}
+				}
+				if (alternate >= 0) {
+					std::swap(
+						pool.slots[alternate].entitlement,
+						pool.slots[slotIndex].entitlement);
+					reclaimIndex = alternate;
+				}
+			}
+			closeSlotLocked(
+				endpointKey,
+				reclaimIndex,
+				MtProxy::LiveSlotTicketOwner{
+					.key = selected->key,
+					.revision = selected->revision,
+				},
+				false,
+				actions);
+			updateQueuedStatusLocked(
+				*selected,
+				MtProxy::EndpointAdmissionWaitReason::ClosingSlot,
+				MtProxy::FailureReason::None,
+				0,
+				0,
+				actions);
+			continue;
+		}
+		const auto fairnessEntitlement
+			= entitlement == MtProxy::LiveSlotEntitlement::ForegroundMedia
+			|| entitlement == MtProxy::LiveSlotEntitlement::ForegroundUpload
+			|| entitlement == MtProxy::LiveSlotEntitlement::BackgroundMain;
+		if (fairnessEntitlement
+			&& slot.phase == MtProxy::LiveSlotPhase::Live
+			&& owner->liveSince
+			&& owner->liveSince + kLiveQuantum <= inputs.now
+			&& !pool.fairnessClosing) {
+			closeSlotLocked(
+				endpointKey,
+				slotIndex,
+				MtProxy::LiveSlotTicketOwner{
+					.key = selected->key,
+					.revision = selected->revision,
+				},
+				true,
+				actions);
+			updateQueuedStatusLocked(
+				*selected,
+				MtProxy::EndpointAdmissionWaitReason::ClosingSlot,
+				MtProxy::FailureReason::None,
+				0,
+				0,
+				actions);
+		}
+	}
+
+	while (true) {
+		auto candidates = std::vector<Ticket*>();
+		auto eligible = std::set<AdmissionTicketKey>();
+		for (const auto &key : schedule->second.order) {
+			const auto i = _tickets.find(key);
+			if (i == end(_tickets)
+				|| i->second->lifecycle != ProxySchedulerLifecycle::Queued
+				|| successorSlotLocked(pool, *i->second)) {
+				continue;
+			}
+			candidates.push_back(i->second.get());
+			if (borrowableSlotLocked(
+					endpointKey,
+					state,
+					pool,
+					*i->second) >= 0) {
+				eligible.emplace(key);
+			}
+		}
+		const auto selected = selectLocked(
+			candidates,
+			eligible,
+			state,
+			inputs.now,
+			schedule->second.fairness);
+		if (!selected) {
+			break;
+		}
+		const auto slotIndex = borrowableSlotLocked(
+			endpointKey,
+			state,
+			pool,
+			*selected);
+		if (!reserveTicketLocked(
+				endpointKey,
+				slotIndex,
+				*selected,
+				state,
+				inputs,
+				actions)) {
+			break;
+		}
 		AdvanceFairness(
-			fairness,
+			schedule->second.fairness,
 			*selected,
 			priorityForLocked(*selected, state, inputs.now));
-		postStatusLocked(*selected, actions);
+	}
+
+	if (!pool.fairnessClosing) {
+		auto waiters = std::vector<Ticket*>();
+		auto eligible = std::set<AdmissionTicketKey>();
+		for (const auto &key : schedule->second.order) {
+			const auto i = _tickets.find(key);
+			if (i == end(_tickets)
+				|| i->second->lifecycle != ProxySchedulerLifecycle::Queued
+				|| i->second->use != MtProxy::EndpointUse::Main
+				|| i->second->key.runtimeId
+					== _storage.foregroundRuntimeId
+				|| successorSlotLocked(pool, *i->second)) {
+				continue;
+			}
+			waiters.push_back(i->second.get());
+			if (baseEligibleLocked(*i->second, state)) {
+				eligible.emplace(key);
+			}
+		}
+		const auto selected = selectLocked(
+			waiters,
+			eligible,
+			state,
+			inputs.now,
+			schedule->second.fairness);
+		if (selected) {
+			auto victim = -1;
+			for (auto i = 0; i != int(pool.slots.size()); ++i) {
+				const auto &slot = pool.slots[i];
+				const auto owner = std::get_if<
+					MtProxy::LiveSlotAttemptOwner>(&slot.owner);
+				if (slot.phase != MtProxy::LiveSlotPhase::Live
+					|| !owner
+					|| owner->attempt.use != MtProxy::EndpointUse::Main
+					|| owner->attempt.runtimeId
+						== _storage.foregroundRuntimeId
+					|| !owner->liveSince
+					|| owner->liveSince + kLiveQuantum > inputs.now) {
+					continue;
+				}
+				if (victim < 0) {
+					victim = i;
+					continue;
+				}
+				const auto current = std::get_if<
+					MtProxy::LiveSlotAttemptOwner>(
+						&pool.slots[victim].owner);
+				if (current && owner->liveSince < current->liveSince) {
+					victim = i;
+				}
+			}
+			if (victim >= 0) {
+				closeSlotLocked(
+					endpointKey,
+					victim,
+					MtProxy::LiveSlotTicketOwner{
+						.key = selected->key,
+						.revision = selected->revision,
+					},
+					true,
+					actions);
+				updateQueuedStatusLocked(
+					*selected,
+					MtProxy::EndpointAdmissionWaitReason::ClosingSlot,
+					MtProxy::FailureReason::None,
+					0,
+					0,
+					actions);
+			}
+		}
+	}
+
+	for (const auto &key : schedule->second.order) {
+		const auto i = _tickets.find(key);
+		if (i == end(_tickets)
+			|| i->second->lifecycle != ProxySchedulerLifecycle::Queued) {
+			continue;
+		}
+		auto &ticket = *i->second;
+		if (successorSlotLocked(pool, ticket)) {
+			updateQueuedStatusLocked(
+				ticket,
+				MtProxy::EndpointAdmissionWaitReason::ClosingSlot,
+				MtProxy::FailureReason::None,
+				0,
+				0,
+				actions);
+			continue;
+		}
+		if (!baseEligibleLocked(ticket, state)) {
+			const auto verdict = state.canonicalVerdicts.find({
+				.runtimeId = ticket.key.runtimeId,
+				.proxyGeneration = ticket.proxyGeneration,
+			});
+			const auto blockedBy = (verdict != end(state.canonicalVerdicts))
+				? verdict->second.reason
+				: state.lastFailure;
+			updateQueuedStatusLocked(
+				ticket,
+				MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore,
+				blockedBy,
+				0,
+				0,
+				actions);
+			continue;
+		}
+		auto waitReason = MtProxy::EndpointAdmissionWaitReason::Slot;
+		auto retryAfter = crl::time();
+		const auto native = NativeEntitlement(
+			ticket.key.runtimeId,
+			ticket.use,
+			_storage.foregroundRuntimeId);
+		if (native) {
+			const auto slotIndex = entitlementSlotLocked(pool, *native);
+			if (slotIndex >= 0
+				&& pool.slots[slotIndex].phase
+					== MtProxy::LiveSlotPhase::Closing) {
+				waitReason = MtProxy::EndpointAdmissionWaitReason::ClosingSlot;
+			} else if (slotIndex >= 0
+				&& pool.slots[slotIndex].phase
+					== MtProxy::LiveSlotPhase::Live) {
+				const auto owner = std::get_if<
+					MtProxy::LiveSlotAttemptOwner>(
+						&pool.slots[slotIndex].owner);
+				if (owner && owner->liveSince) {
+					retryAfter = std::max(
+						crl::time(),
+						owner->liveSince + kLiveQuantum - inputs.now);
+				}
+			}
+		}
+		updateQueuedStatusLocked(
+			ticket,
+			waitReason,
+			MtProxy::FailureReason::None,
+			retryAfter,
+			retryAfter ? inputs.now + retryAfter : crl::time(),
+			actions);
 	}
 }
 
@@ -2010,30 +2034,19 @@ void EndpointAdmissionArbiter::Private::grantDueLocked(
 			continue;
 		}
 		auto &ticket = *i->second;
-		const auto state = _storage.states.find(endpointKey);
-		if (state == end(_storage.states)
-			|| !openingAdmissionDecisionLocked(
-				ticket,
-				state->second,
-				now).allowed) {
-			continue;
+		if (!MtProxy::EndpointEmpty(ticket.endpoint)) {
+			const auto pool = _pools.find(endpointKey);
+			const auto state = _storage.states.find(endpointKey);
+			if (pool == end(_pools)
+				|| state == end(_storage.states)
+				|| !baseEligibleLocked(ticket, state->second)
+				|| !reservationCurrentLocked(ticket, pool->second)) {
+				continue;
+			}
 		}
 		ticket.lifecycle = ProxySchedulerLifecycle::Granted;
-		const auto gate = _gates.find(endpointKey);
-		if (gate == end(_gates)) {
-			continue;
-		}
-		const auto permit = findPermitLocked(
-			gate->second,
-			ticketIdentityLocked(ticket));
-		if (permit < 0) {
-			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
-			continue;
-		}
-		gate->second.permits[permit]->lifecycle
-			= ProxySchedulerLifecycle::Granted;
-		++gate->second.revision;
 		ticket.retryAfter = 0;
+		ticket.waitReason = MtProxy::EndpointAdmissionWaitReason::None;
 		++ticket.transition;
 		postStatusLocked(ticket, actions);
 		postGrantLocked(ticket, actions);
@@ -2072,6 +2085,7 @@ void EndpointAdmissionArbiter::Private::drainEndpointLocked(
 			ticket.retryAfter = std::max(
 				crl::time(),
 				ticket.scheduledOpenAt - inputs.now);
+			ticket.waitReason = MtProxy::EndpointAdmissionWaitReason::None;
 			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
 			++ticket.transition;
 			postStatusLocked(ticket, actions);
@@ -2086,12 +2100,10 @@ void EndpointAdmissionArbiter::Private::drainEndpointLocked(
 			state.endpoint = ticket->second->endpoint;
 		}
 	}
-	_gates.try_emplace(endpointKey);
-	advanceGateLocked(endpointKey, inputs.now);
+	_pools.try_emplace(endpointKey);
 	DeferEndpointCleanup(
 		actions,
 		MtProxy::PruneExpiredEndpointStateDeferred(state, inputs.now));
-	retireMissingAttemptsLocked(endpointKey, state);
 	purgeEndpointLocked(endpointKey, state, actions);
 	if (!_endpoints.contains(endpointKey)) {
 		return;
@@ -2109,16 +2121,9 @@ bool EndpointAdmissionArbiter::Private::wakeOwnerLiveLocked() const {
 		return false;
 	}
 	const auto runtime = _runtimes.find(_wakeDriver);
-	const auto gate = _gates.find(_wakeEndpointKey);
 	return runtime != end(_runtimes)
 		&& runtimeLiveLocked(_wakeDriver)
-		&& runtime->second->registrationLive == _wakeRegistrationLive
-		&& gate != end(_gates)
-		&& gate->second.wake
-		&& gate->second.wake->token == _wakeToken
-		&& gate->second.wake->driverRuntimeId == _wakeDriver
-		&& gate->second.wake->gateRevision == gate->second.revision
-		&& gate->second.wake->wakeAt == _wakeAt;
+		&& runtime->second->registrationLive == _wakeRegistrationLive;
 }
 
 void EndpointAdmissionArbiter::Private::clearWakeLocked(
@@ -2126,14 +2131,9 @@ void EndpointAdmissionArbiter::Private::clearWakeLocked(
 	if (invalidateToken && _wakeArmed) {
 		++_wakeToken;
 	}
-	const auto gate = _gates.find(_wakeEndpointKey);
-	if (gate != end(_gates)) {
-		gate->second.wake.reset();
-	}
 	_wakeArmed = false;
 	_wakeDriver = 0;
 	_wakeAt = 0;
-	_wakeEndpointKey.clear();
 	_wakeRegistrationLive.reset();
 }
 
@@ -2143,72 +2143,63 @@ void EndpointAdmissionArbiter::Private::updateWakeLocked(
 	if (_wakeArmed && !wakeOwnerLiveLocked()) {
 		clearWakeLocked(true);
 	}
-	if (_wakeArmed
-		&& _wakeAt
-		&& _wakeAt <= inputs.now
-		&& wakeOwnerLiveLocked()) {
-		return;
-	}
 	auto wakeAt = crl::time();
-	auto wakeEndpointKey = QString();
+	const auto consider = [&](crl::time boundary) {
+		if (boundary > inputs.now
+			&& (!wakeAt || boundary < wakeAt)) {
+			wakeAt = boundary;
+		}
+	};
 	for (const auto &entry : _tickets) {
-		const auto &ticket = entry.second;
-		auto boundary = (ticket->lifecycle
-				== ProxySchedulerLifecycle::Scheduled)
-			? ticket->scheduledOpenAt
-			: crl::time();
-		if (ticket->lifecycle == ProxySchedulerLifecycle::Queued
-			&& ticket->reevaluateAt > inputs.now
-			&& (!boundary || ticket->reevaluateAt < boundary)) {
-			boundary = ticket->reevaluateAt;
-		}
-		if (boundary > inputs.now
-			&& (!wakeAt || boundary < wakeAt)) {
-			wakeAt = boundary;
-			wakeEndpointKey = ticket->endpointKey;
+		const auto &ticket = *entry.second;
+		if (ticket.lifecycle == ProxySchedulerLifecycle::Scheduled) {
+			consider(ticket.scheduledOpenAt);
+		} else if (ticket.lifecycle == ProxySchedulerLifecycle::Queued) {
+			consider(ticket.reevaluateAt);
 		}
 	}
-	for (const auto &[endpointKey, schedule] : _endpoints) {
-		const auto hasDemand = ranges::find_if(
-			schedule.order,
-			[&](AdmissionTicketKey key) {
-				const auto ticket = _tickets.find(key);
-				return ticket != end(_tickets)
-					&& (ticket->second->lifecycle
-							== ProxySchedulerLifecycle::Queued
-						|| ticket->second->lifecycle
-							== ProxySchedulerLifecycle::Scheduled);
-			}) != end(schedule.order);
-		if (!hasDemand) {
+	for (const auto &[endpointKey, pool] : _pools) {
+		const auto schedule = _endpoints.find(endpointKey);
+		if (schedule == end(_endpoints)) {
 			continue;
 		}
-		const auto state = _storage.states.find(endpointKey);
-		if (state == end(_storage.states)) {
-			continue;
-		}
-		for (const auto &entry : state->second.attemptStarts) {
-			const auto boundary = std::max(
-				inputs.now,
-				MtProxy::EndpointAttemptHardDeadline(entry.second));
-			if (!wakeAt || boundary < wakeAt) {
-				wakeAt = boundary;
-				wakeEndpointKey = endpointKey;
+		for (const auto &slot : pool.slots) {
+			if (slot.phase != MtProxy::LiveSlotPhase::Live) {
+				continue;
 			}
-		}
-	}
-	for (const auto &[endpointKey, gate] : _gates) {
-		auto boundary = crl::time();
-		if (gate.stage == MtProxy::EndpointOpenGateStage::Open) {
-			boundary = gate.openDeadline;
-		} else if (gate.stage
-				== MtProxy::EndpointOpenGateStage::Recovering
-			&& !gate.stageOwner) {
-			boundary = gate.recoveryNextOpenAt;
-		}
-		if (boundary > inputs.now
-			&& (!wakeAt || boundary < wakeAt)) {
-			wakeAt = boundary;
-			wakeEndpointKey = endpointKey;
+			const auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(
+				&slot.owner);
+			if (!owner || !owner->liveSince) {
+				continue;
+			}
+			auto demanded = false;
+			for (const auto &key : schedule->second.order) {
+				const auto ticket = _tickets.find(key);
+				if (ticket == end(_tickets)
+					|| ticket->second->lifecycle
+						!= ProxySchedulerLifecycle::Queued) {
+					continue;
+				}
+				const auto sameTransfer = IsTransfer(owner->attempt.use)
+					&& ticket->second->use == owner->attempt.use
+					&& ticket->second->key.runtimeId
+						== owner->attempt.runtimeId;
+				const auto backgroundMain
+					= owner->attempt.use == MtProxy::EndpointUse::Main
+					&& owner->attempt.runtimeId
+						!= _storage.foregroundRuntimeId
+					&& ticket->second->use
+						== MtProxy::EndpointUse::Main
+					&& ticket->second->key.runtimeId
+						!= _storage.foregroundRuntimeId;
+				if (sameTransfer || backgroundMain) {
+					demanded = true;
+					break;
+				}
+			}
+			if (demanded) {
+				consider(owner->liveSince + kLiveQuantum);
+			}
 		}
 	}
 	if (!wakeAt) {
@@ -2240,7 +2231,6 @@ void EndpointAdmissionArbiter::Private::updateWakeLocked(
 	if (_wakeArmed
 		&& _wakeDriver == driver
 		&& _wakeAt == wakeAt
-		&& _wakeEndpointKey == wakeEndpointKey
 		&& wakeOwnerLiveLocked()) {
 		return;
 	}
@@ -2249,32 +2239,7 @@ void EndpointAdmissionArbiter::Private::updateWakeLocked(
 	_wakeArmed = true;
 	_wakeDriver = driver;
 	_wakeAt = wakeAt;
-	_wakeEndpointKey = wakeEndpointKey;
 	_wakeRegistrationLive = dispatch->registrationLive;
-	auto &gate = _gates[wakeEndpointKey];
-	auto endpoint = MtProxy::CanonicalProxyEndpoint();
-	const auto state = _storage.states.find(wakeEndpointKey);
-	if (state != end(_storage.states)) {
-		endpoint = state->second.endpoint.canonical;
-	} else {
-		const auto schedule = _endpoints.find(wakeEndpointKey);
-		if (schedule != end(_endpoints)
-			&& !schedule->second.order.empty()) {
-			const auto ticket = _tickets.find(
-				schedule->second.order.front());
-			if (ticket != end(_tickets)) {
-				endpoint = ticket->second->endpoint.canonical;
-			}
-		}
-	}
-	gate.wake = MtProxy::EndpointOpeningWakeIdentity{
-		.endpoint = endpoint,
-		.driverRuntimeId = driver,
-		.gateRevision = gate.revision,
-		.token = token,
-		.stage = gate.stage,
-		.wakeAt = wakeAt,
-	};
 	const auto weak = _context;
 	actions.posts.push_back({
 		.dispatch = dispatch,
@@ -2347,13 +2312,14 @@ void EndpointAdmissionArbiter::Private::cancelRuntime(
 	if (!runtimeId) {
 		return;
 	}
+	auto inputs = prepareInputs();
 	auto actions = Actions();
-	auto affected = std::set<QString>();
 	{
 		QMutexLocker lock(&_storage.mutex);
 		if (!_storage.runtimes.contains(runtimeId)) {
 			return;
 		}
+		auto affected = std::set<QString>();
 		auto cancelled = std::vector<AdmissionTicketKey>();
 		for (const auto &[key, ticket] : _tickets) {
 			if (key.runtimeId == runtimeId) {
@@ -2364,22 +2330,20 @@ void EndpointAdmissionArbiter::Private::cancelRuntime(
 		for (const auto &key : cancelled) {
 			cancelTicketLocked(key, 0, actions);
 		}
-		retireAttemptsLocked([=](
-				const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-			return identity.flow.runtimeId == runtimeId;
-		});
-		retireScoutRequestsLocked([=](
-				const MtProxy::EndpointImmediateScoutRequest &request) {
-			return request.requester.runtimeId == runtimeId;
-		});
-		for (const auto &entry : _gates) {
+		closeMatchingAttemptsLocked(
+			[=](const ProxyConnectionAttempt &attempt) {
+				return attempt.runtimeId == runtimeId;
+			},
+			actions);
+		for (const auto &entry : _pools) {
 			affected.emplace(entry.first);
 		}
+		for (const auto &endpointKey : affected) {
+			drainEndpointLocked(endpointKey, inputs, actions);
+		}
+		updateWakeLocked(inputs, actions);
 	}
 	actions.run();
-	for (const auto &endpointKey : affected) {
-		drainEndpoint(endpointKey);
-	}
 }
 
 void EndpointAdmissionArbiter::Private::unregisterRuntime(
@@ -2387,10 +2351,15 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 	if (!runtimeId) {
 		return;
 	}
+	auto inputs = prepareInputs();
 	auto actions = Actions();
-	auto affected = std::set<QString>();
 	{
 		QMutexLocker lock(&_storage.mutex);
+		closeMatchingAttemptsLocked(
+			[=](const ProxyConnectionAttempt &attempt) {
+				return attempt.runtimeId == runtimeId;
+			},
+			actions);
 		_storage.runtimes.erase(runtimeId);
 		_storage.runtimeGenerations.erase(runtimeId);
 		if (_storage.foregroundRuntimeId == runtimeId) {
@@ -2406,20 +2375,11 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 		for (const auto &[key, ticket] : _tickets) {
 			if (key.runtimeId == runtimeId) {
 				cancelled.push_back(key);
-				affected.emplace(ticket->endpointKey);
 			}
 		}
 		for (const auto &key : cancelled) {
 			cancelTicketLocked(key, 0, actions);
 		}
-		retireAttemptsLocked([=](
-				const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-			return identity.flow.runtimeId == runtimeId;
-		});
-		retireScoutRequestsLocked([=](
-				const MtProxy::EndpointImmediateScoutRequest &request) {
-			return request.requester.runtimeId == runtimeId;
-		});
 		for (auto &entry : _endpoints) {
 			for (auto &cursor : entry.second.fairness.lastRuntime) {
 				if (cursor == runtimeId) {
@@ -2429,7 +2389,7 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 			entry.second.fairness.nextBackground.erase(runtimeId);
 		}
 		for (auto i = begin(_storage.activeTraces);
-				i != end(_storage.activeTraces);) {
+			i != end(_storage.activeTraces);) {
 			if (i->second.runtimeId == runtimeId) {
 				i = _storage.activeTraces.erase(i);
 			} else {
@@ -2437,7 +2397,6 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 			}
 		}
 		for (auto &[endpointKey, state] : _storage.states) {
-			affected.emplace(endpointKey);
 			state.generations.erase(runtimeId);
 			for (auto i = begin(state.attemptStarts);
 					i != end(state.attemptStarts);) {
@@ -2460,16 +2419,14 @@ void EndpointAdmissionArbiter::Private::unregisterRuntime(
 				}
 			}
 			MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);
+			if (_endpoints.contains(endpointKey)) {
+				drainEndpointLocked(endpointKey, inputs, actions);
+			}
 		}
 		clearWakeLocked(true);
-		for (const auto &entry : _endpoints) {
-			affected.emplace(entry.first);
-		}
+		updateWakeLocked(inputs, actions);
 	}
 	actions.run();
-	for (const auto &endpointKey : affected) {
-		drainEndpoint(endpointKey);
-	}
 }
 
 EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
@@ -2511,6 +2468,7 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 	};
 	ticket->owner = request.owner;
 	ticket->ownerDestroyed = ownerDestroyed;
+	ticket->reclaim = std::move(request.reclaim);
 	ticket->callbacks = std::make_shared<TicketCallbacks>(TicketCallbacks{
 		.status = std::move(request.status),
 		.grant = std::move(request.grant),
@@ -2567,10 +2525,13 @@ EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(
 			ticket->sequence = ++_lastSequence;
 			auto &schedule = _endpoints[ticket->endpointKey];
 			schedule.order.push_back(key);
-			auto &stored = *_tickets.emplace(key, std::move(ticket)).first->second;
+			auto &stored = *_tickets.emplace(
+				key,
+				std::move(ticket)).first->second;
 			postStatusLocked(stored, actions);
 			drainEndpointLocked(stored.endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
+			result.revision = revision;
 			result.accepted = true;
 		}
 	}
@@ -2605,105 +2566,20 @@ void EndpointAdmissionArbiter::Private::cancel(
 }
 
 void EndpointAdmissionArbiter::Private::ownerDestroyed(
-		AdmissionTicketKey key) {
-	if (!key.runtimeId || !key.ticketId) {
+		AdmissionTicketKey key,
+		uint64 revision) {
+	if (!key.runtimeId || !key.ticketId || !revision) {
 		return;
 	}
 	auto inputs = prepareInputs();
 	auto actions = Actions();
 	{
 		QMutexLocker lock(&_storage.mutex);
-		auto affected = std::set<QString>();
 		const auto ticket = _tickets.find(key);
-		if (ticket != end(_tickets)) {
-			affected.emplace(ticket->second->endpointKey);
-			cancelTicketLocked(key, 0, actions);
-		}
-		for (auto &[endpointKey, state] : _storage.states) {
-			auto identities = std::set<MtProxy::RelayProofIdentity>();
-			for (const auto &[attemptId, attempt] : state.attemptStarts) {
-				if (attempt.ticketKey == key) {
-					identities.emplace(MtProxy::RelayProofIdentity{
-						.runtimeId = attempt.runtimeId,
-						.proxyGeneration = attempt.proxyGeneration,
-						.attemptId = attemptId,
-					});
-				}
-			}
-			for (const auto &[identity, lane] : state.liveLanes) {
-				if (lane.ticketKey == key) {
-					identities.emplace(identity);
-				}
-			}
-			for (const auto &[identity, proof] : state.relayProofs) {
-				if (proof.ticketKey == key) {
-					identities.emplace(identity);
-				}
-			}
-			if (identities.empty()) {
-				continue;
-			}
-			affected.emplace(endpointKey);
-			actions.context = _context;
-			for (const auto &identity : identities) {
-				const auto attempt = state.attemptStarts.find(
-					identity.attemptId);
-				const auto attemptMatches
-					= attempt != end(state.attemptStarts)
-					&& attempt->second.runtimeId == identity.runtimeId
-					&& attempt->second.proxyGeneration
-						== identity.proxyGeneration;
-				const auto lane = state.liveLanes.find(identity);
-				if (attemptMatches || lane != end(state.liveLanes)) {
-					const auto use = attemptMatches
-						? attempt->second.use
-						: lane->second.use;
-					static_cast<void>(
-						MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
-							_storage,
-							endpointKey,
-							{
-								.runtimeId = identity.runtimeId,
-								.proxyGeneration
-									= identity.proxyGeneration,
-							},
-							use,
-							identity.attemptId));
-				}
-				static_cast<void>(MtProxy::RetireRelayProof(
-					state,
-					identity));
-				if (attemptMatches) {
-					actions.ownerConnections.push_back(
-						std::move(attempt->second.ownerDestroyed));
-					state.attemptStarts.erase(attempt);
-				}
-				if (lane != end(state.liveLanes)) {
-					actions.ownerConnections.push_back(
-						std::move(lane->second.ownerDestroyed));
-					state.liveLanes.erase(lane);
-				}
-				actions.invalidations.emplace_back(
-					state.endpoint,
-					RuntimeGenerationKey{
-						.runtimeId = identity.runtimeId,
-						.proxyGeneration = identity.proxyGeneration,
-					});
-			}
-		}
-		for (auto i = begin(_storage.activeTraces);
-				i != end(_storage.activeTraces);) {
-			if (i->second.ticketKey == key) {
-				i = _storage.activeTraces.erase(i);
-			} else {
-				++i;
-			}
-		}
-		retireAttemptsLocked([&](
-				const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-			return identity.key.ticketKey == key;
-		});
-		for (const auto &endpointKey : affected) {
+		if (ticket != end(_tickets)
+			&& ticket->second->revision == revision) {
+			const auto endpointKey = ticket->second->endpointKey;
+			cancelTicketLocked(key, revision, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
 		}
 		updateWakeLocked(inputs, actions);
@@ -2717,8 +2593,8 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 	if (!runtimeId) {
 		return;
 	}
+	auto inputs = prepareInputs();
 	auto actions = Actions();
-	auto affected = std::set<QString>();
 	{
 		QMutexLocker lock(&_storage.mutex);
 		if (!_storage.runtimes.contains(runtimeId)) {
@@ -2729,6 +2605,7 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 			return;
 		}
 		runtimeGeneration = proxyGeneration;
+		auto affected = std::set<QString>();
 		for (auto &[endpointKey, state] : _storage.states) {
 			const auto current = state.generations.find(runtimeId);
 			if (current != end(state.generations)
@@ -2745,7 +2622,7 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 			affected.emplace(endpointKey);
 		}
 		for (auto i = begin(_storage.activeTraces);
-				i != end(_storage.activeTraces);) {
+			i != end(_storage.activeTraces);) {
 			if (i->second.runtimeId == runtimeId
 				&& i->second.proxyGeneration < proxyGeneration) {
 				i = _storage.activeTraces.erase(i);
@@ -2763,37 +2640,28 @@ void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(
 		}
 		for (const auto &key : cancelled) {
 			const auto ticket = _tickets.find(key);
-			if (ticket != end(_tickets)
-				&& (ticket->second->lifecycle
-						== ProxySchedulerLifecycle::Queued
-					|| ticket->second->lifecycle
-						== ProxySchedulerLifecycle::Scheduled
-					|| ticket->second->lifecycle
-						== ProxySchedulerLifecycle::Granted)) {
+			if (ticket != end(_tickets)) {
 				postGenerationCancelledStatusLocked(
 					*ticket->second,
 					actions);
 			}
 			cancelTicketLocked(key, 0, actions);
 		}
-		retireAttemptsLocked([=](
-				const MtProxy::EndpointOpeningAttemptIdentity &identity) {
-			return identity.flow.runtimeId == runtimeId
-				&& identity.flow.proxyGeneration < proxyGeneration;
-		});
-		retireScoutRequestsLocked([=](
-				const MtProxy::EndpointImmediateScoutRequest &request) {
-			return request.requester.runtimeId == runtimeId
-				&& request.requester.proxyGeneration < proxyGeneration;
-		});
-		for (const auto &entry : _gates) {
+		closeMatchingAttemptsLocked(
+			[=](const ProxyConnectionAttempt &attempt) {
+				return attempt.runtimeId == runtimeId
+					&& attempt.proxyGeneration < proxyGeneration;
+			},
+			actions);
+		for (const auto &entry : _pools) {
 			affected.emplace(entry.first);
 		}
+		for (const auto &endpointKey : affected) {
+			drainEndpointLocked(endpointKey, inputs, actions);
+		}
+		updateWakeLocked(inputs, actions);
 	}
 	actions.run();
-	for (const auto &endpointKey : affected) {
-		drainEndpoint(endpointKey);
-	}
 }
 
 void EndpointAdmissionArbiter::Private::drainEndpoint(
@@ -2811,66 +2679,130 @@ void EndpointAdmissionArbiter::Private::drainEndpoint(
 	actions.run();
 }
 
-void EndpointAdmissionArbiter::Private::openingEvent(
-		MtProxy::EndpointOpeningEvent event) {
-	auto inputs = prepareInputs();
-	const auto endpointKey = std::visit([](const auto &value) {
-		return MtProxy::EndpointKey(value.identity.flow.endpoint);
-	}, event);
-	const auto observedAt = std::visit([](const auto &value) {
-		return value.observedAt;
-	}, event);
-	const auto now = observedAt
-		? std::max(inputs.now, observedAt)
-		: inputs.now;
-	inputs.now = now;
-	auto actions = Actions();
-	{
-		QMutexLocker lock(&_storage.mutex);
-		std::visit([&](const auto &value) {
-			applyOpeningEventLocked(value, now, actions);
-		}, event);
-		if (!endpointKey.isEmpty()) {
-			drainEndpointLocked(endpointKey, inputs, actions);
-		}
-		updateWakeLocked(inputs, actions);
-	}
-	actions.run();
-}
-
-void EndpointAdmissionArbiter::Private::requestImmediateScout(
-		const MtProxy::CanonicalProxyEndpoint &endpoint,
-		RuntimeGenerationKey requester) {
-	const auto endpointKey = MtProxy::EndpointKey(endpoint);
-	if (endpointKey.isEmpty()
-		|| !requester.runtimeId
-		|| !requester.proxyGeneration) {
+void EndpointAdmissionArbiter::Private::reevaluate(
+		AdmissionTicketKey key,
+		uint64 revision) {
+	if (!key.runtimeId || !key.ticketId || !revision) {
 		return;
 	}
 	auto inputs = prepareInputs();
 	auto actions = Actions();
 	{
 		QMutexLocker lock(&_storage.mutex);
-		const auto gate = _gates.find(endpointKey);
-		const auto generation = _storage.runtimeGenerations.find(
-			requester.runtimeId);
-		if (gate == end(_gates)
-			|| gate->second.stage != MtProxy::EndpointOpenGateStage::Open
-			|| gate->second.immediateScoutRequest
-			|| !runtimeLiveLocked(requester.runtimeId)
-			|| generation == end(_storage.runtimeGenerations)
-			|| generation->second != requester.proxyGeneration) {
+		const auto ticket = _tickets.find(key);
+		if (ticket == end(_tickets)
+			|| ticket->second->revision != revision) {
 			return;
 		}
-		auto &current = gate->second;
-		current.immediateScoutRequest = MtProxy::EndpointImmediateScoutRequest{
-			.endpoint = endpoint,
-			.requester = requester,
-			.requestId = ++current.lastScoutRequestId,
-			.requestedAt = inputs.now,
-		};
-		++current.revision;
-		drainEndpointLocked(endpointKey, inputs, actions);
+		drainEndpointLocked(ticket->second->endpointKey, inputs, actions);
+		updateWakeLocked(inputs, actions);
+	}
+	actions.run();
+}
+
+void EndpointAdmissionArbiter::Private::markTransportReady(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt) {
+	if (slotKey.endpointKey.isEmpty()
+		|| slotKey.index < 0
+		|| !slotKey.incarnation) {
+		return;
+	}
+	auto inputs = prepareInputs();
+	auto actions = Actions();
+	{
+		QMutexLocker lock(&_storage.mutex);
+		const auto pool = _pools.find(slotKey.endpointKey);
+		if (pool == end(_pools)
+			|| slotKey.index >= int(pool->second.slots.size())) {
+			return;
+		}
+		auto &slot = pool->second.slots[slotKey.index];
+		auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(&slot.owner);
+		if (slot.phase != MtProxy::LiveSlotPhase::Opening
+			|| slot.incarnation != slotKey.incarnation
+			|| !owner
+			|| !AttemptOwnerMatches(*owner, attempt)) {
+			return;
+		}
+		slot.phase = MtProxy::LiveSlotPhase::Live;
+		owner->liveSince = inputs.now;
+		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
+		updateWakeLocked(inputs, actions);
+	}
+	actions.run();
+}
+
+void EndpointAdmissionArbiter::Private::releaseLiveSlot(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt) {
+	if (slotKey.endpointKey.isEmpty()
+		|| slotKey.index < 0
+		|| !slotKey.incarnation) {
+		return;
+	}
+	auto inputs = prepareInputs();
+	auto actions = Actions();
+	{
+		QMutexLocker lock(&_storage.mutex);
+		const auto pool = _pools.find(slotKey.endpointKey);
+		if (pool == end(_pools)
+			|| slotKey.index >= int(pool->second.slots.size())) {
+			return;
+		}
+		auto &slot = pool->second.slots[slotKey.index];
+		if (slot.incarnation != slotKey.incarnation) {
+			return;
+		}
+		auto successor = std::optional<MtProxy::LiveSlotTicketOwner>();
+		if (slot.phase == MtProxy::LiveSlotPhase::Closing) {
+			const auto closing = std::get_if<
+				MtProxy::LiveSlotClosingState>(&slot.owner);
+			if (!closing
+				|| !AttemptOwnerMatches(closing->incumbent, attempt)) {
+				return;
+			}
+			successor = closing->pendingSuccessor;
+			if (pool->second.fairnessClosing
+				&& *pool->second.fairnessClosing == slotKey) {
+				pool->second.fairnessClosing.reset();
+			}
+		} else if (slot.phase == MtProxy::LiveSlotPhase::Opening
+			|| slot.phase == MtProxy::LiveSlotPhase::Live) {
+			const auto owner = std::get_if<MtProxy::LiveSlotAttemptOwner>(
+				&slot.owner);
+			if (!owner || !AttemptOwnerMatches(*owner, attempt)) {
+				return;
+			}
+		} else {
+			return;
+		}
+		slot.phase = MtProxy::LiveSlotPhase::Empty;
+		slot.owner = std::monostate();
+		if (successor) {
+			const auto ticket = _tickets.find(successor->key);
+			const auto state = _storage.states.find(slotKey.endpointKey);
+			if (ticket != end(_tickets)
+				&& ticket->second->revision == successor->revision
+				&& ticket->second->lifecycle
+					== ProxySchedulerLifecycle::Queued
+				&& state != end(_storage.states)
+				&& slotBorrowableLocked(
+					slotKey.endpointKey,
+					state->second,
+					pool->second,
+					*ticket->second,
+					slotKey.index)) {
+				reserveTicketLocked(
+					slotKey.endpointKey,
+					slotKey.index,
+					*ticket->second,
+					state->second,
+					inputs,
+					actions);
+			}
+		}
+		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
 		updateWakeLocked(inputs, actions);
 	}
 	actions.run();
@@ -2945,6 +2877,7 @@ void EndpointAdmissionArbiter::Private::deliverStatus(
 			.enqueuedAt = ticket.enqueuedAt,
 			.scheduledOpenAt = ticket.scheduledOpenAt,
 			.retryAfter = ticket.retryAfter,
+			.waitReason = ticket.waitReason,
 			.blockedBy = ticket.blockedBy,
 		};
 	}
@@ -2970,7 +2903,7 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 			|| i->second->revision != revision
 			|| i->second->transition != transition
 			|| i->second->lifecycle != lifecycle
-			|| i->second->lifecycle != ProxySchedulerLifecycle::Granted) {
+			|| lifecycle != ProxySchedulerLifecycle::Granted) {
 			return;
 		}
 		if (!deliveryRegistrationCurrentLocked(
@@ -2987,6 +2920,7 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 		const auto endpointKey = ticket.endpointKey;
 		const auto unscoped = MtProxy::EndpointEmpty(ticket.endpoint);
 		const auto state = _storage.states.find(endpointKey);
+		const auto schedule = _endpoints.find(endpointKey);
 		if (!unscoped && state != end(_storage.states)) {
 			DeferEndpointCleanup(
 				actions,
@@ -3008,53 +2942,34 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 		const auto current = unscoped
 			|| (state != end(_storage.states)
 				&& ticketCurrentLocked(ticket, state->second));
-		const auto decision = unscoped
-			? MtProxy::OpeningAdmissionDecision{
-				.allowed = true,
-			}
-			: (state != end(_storage.states))
-			? openingAdmissionDecisionLocked(
-				ticket,
-				state->second,
-				inputs.now)
-			: MtProxy::OpeningAdmissionDecision();
-		const auto grantContextCurrent = context
-			&& ticket.owner
-			&& runtimeLiveLocked(key.runtimeId)
-			&& traceCurrent
-			&& current;
-		if (!grantContextCurrent) {
+		const auto pool = _pools.find(endpointKey);
+		const auto reserved = unscoped
+			|| (pool != end(_pools)
+				&& reservationCurrentLocked(ticket, pool->second));
+		if (!context
+			|| !ticket.owner
+			|| !runtimeLiveLocked(key.runtimeId)
+			|| !traceCurrent
+			|| !current
+			|| !reserved) {
 			cancelTicketLocked(key, revision, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
-		} else if (!decision.allowed) {
+		} else if (!unscoped
+			&& !baseEligibleLocked(ticket, state->second)) {
 			demoteTicketLocked(ticket, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
 		} else if (ticket.scheduledOpenAt > inputs.now) {
 			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
-			const auto gate = _gates.find(endpointKey);
-			if (gate != end(_gates)) {
-				const auto permit = findPermitLocked(
-					gate->second,
-					ticketIdentityLocked(ticket));
-				if (permit >= 0) {
-					gate->second.permits[permit]->lifecycle
-						= ProxySchedulerLifecycle::Scheduled;
-					++gate->second.revision;
-				}
-			}
 			++ticket.transition;
 			postStatusLocked(ticket, actions);
 			drainEndpointLocked(endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
 		} else {
-			const auto gate = _gates.find(ticket.endpointKey);
-			const auto reduction = (!unscoped
-				&& gate != end(_gates)
-				&& ticket.reservationId)
+			const auto reduction = (!unscoped && ticket.reservationId)
 				? MtProxy::CommitOpenSlot(
-					gate->second.openings,
+					pool->second.openings,
 					ticket.reservationId)
 				: MtProxy::OpenSlotReduction();
 			const auto openCommitted = unscoped
@@ -3066,11 +2981,10 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 				updateWakeLocked(inputs, actions);
 			} else {
 				if (!unscoped) {
-					gate->second.openings = reduction.schedule;
+					pool->second.openings = reduction.schedule;
 				}
 				auto admission = unscoped
-					? std::optional<MtProxy::Admission>(
-						MtProxy::Admission())
+					? std::optional<MtProxy::Admission>(MtProxy::Admission())
 					: MtProxy::EndpointHealth::BeginScheduledAttemptLocked(
 						_storage,
 						context,
@@ -3091,8 +3005,7 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						const auto runtimeGeneration
 							= RuntimeGenerationKey{
 								.runtimeId = key.runtimeId,
-								.proxyGeneration
-									= ticket.proxyGeneration,
+								.proxyGeneration = ticket.proxyGeneration,
 							};
 						if (MtProxy::AdoptMainRecoveryReplacementAttemptLocked(
 								_storage,
@@ -3135,54 +3048,32 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						.use = ticket.use,
 						.ticketKey = key,
 					};
+					auto slotKey = MtProxy::LiveSlotKey();
 					if (!unscoped) {
-						const auto openingIdentity
-							= MtProxy::EndpointOpeningAttemptIdentity{
-								.flow = {
-									.endpoint = ticket.endpoint.canonical,
-									.runtimeId = key.runtimeId,
-									.proxyGeneration
-										= ticket.proxyGeneration,
-									.use = ticket.use,
-								},
-								.key = AttemptKeyFrom(attempt),
-							};
-						Assert(transferPermitLocked(
-							endpointKey,
-							ticketIdentityLocked(ticket),
-							openingIdentity));
-						const auto &gateState = gate->second;
-						const auto openingOwner
-							= MtProxy::EndpointOpeningIdentity{
-								.flow = openingIdentity.flow,
-								.owner = openingIdentity.key,
-							};
-						if (gateState.stage
-								== MtProxy::EndpointOpenGateStage::Recovering
-							&& gateState.stageOwner
-							&& OpeningIdentityMatches(
-								*gateState.stageOwner,
-								openingOwner)) {
-							gate->second.recoveryNextOpenAt = std::max(
-								gate->second.recoveryNextOpenAt,
-								inputs.now + kRecoveryOpenSpacing);
-							++gate->second.revision;
-						}
+						const auto slotIndex = reservedSlotLocked(
+							pool->second,
+							ticket);
+						Assert(slotIndex >= 0);
+						auto &slot = pool->second.slots[slotIndex];
+						slotKey = SlotKey(endpointKey, slotIndex, slot);
+						slot.phase = MtProxy::LiveSlotPhase::Opening;
+						slot.owner = MtProxy::LiveSlotAttemptOwner{
+							.attempt = attempt,
+							.owner = ticket.owner,
+							.reclaim = std::move(ticket.reclaim),
+						};
 					}
 					if (trace != end(_storage.activeTraces)) {
 						trace->second = attempt;
 					}
-					if (!unscoped) {
-						const auto schedule = _endpoints.find(endpointKey);
-						if (schedule != end(_endpoints)) {
-							AdvanceFairness(
-								schedule->second.fairness,
+					if (!unscoped && schedule != end(_endpoints)) {
+						AdvanceFairness(
+							schedule->second.fairness,
+							ticket,
+							priorityForLocked(
 								ticket,
-								priorityForLocked(
-									ticket,
-									state->second,
-									inputs.now));
-						}
+								state->second,
+								inputs.now));
 					} else {
 						actions.ownerConnections.push_back(
 							std::move(ticket.ownerDestroyed));
@@ -3194,11 +3085,11 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 					auto grant = EndpointAdmissionGrant{
 						.key = key,
 						.revision = revision,
+						.slotKey = slotKey,
 						.proxyGeneration = ticket.proxyGeneration,
 						.endpoint = ticket.endpoint,
 						.use = ticket.use,
-						.acceptedRecoveryToken
-							= acceptedRecoveryToken,
+						.acceptedRecoveryToken = acceptedRecoveryToken,
 						.enqueuedAt = ticket.enqueuedAt,
 						.scheduledOpenAt = ticket.scheduledOpenAt,
 						.admission = std::move(*admission),
@@ -3320,8 +3211,9 @@ void EndpointAdmissionArbiter::cancel(
 }
 
 void EndpointAdmissionArbiter::ownerDestroyed(
-		AdmissionTicketKey key) {
-	_private->ownerDestroyed(key);
+		AdmissionTicketKey key,
+		uint64 revision) {
+	_private->ownerDestroyed(key, revision);
 }
 
 void EndpointAdmissionArbiter::cancelBeforeGeneration(
@@ -3335,15 +3227,22 @@ void EndpointAdmissionArbiter::drainEndpoint(
 	_private->drainEndpoint(endpointKey);
 }
 
-void EndpointAdmissionArbiter::openingEvent(
-		MtProxy::EndpointOpeningEvent event) {
-	_private->openingEvent(std::move(event));
+void EndpointAdmissionArbiter::reevaluate(
+		AdmissionTicketKey key,
+		uint64 revision) {
+	_private->reevaluate(key, revision);
 }
 
-void EndpointAdmissionArbiter::requestImmediateScout(
-		const MtProxy::CanonicalProxyEndpoint &endpoint,
-		RuntimeGenerationKey requester) {
-	_private->requestImmediateScout(endpoint, requester);
+void EndpointAdmissionArbiter::markTransportReady(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt) {
+	_private->markTransportReady(slotKey, attempt);
+}
+
+void EndpointAdmissionArbiter::releaseLiveSlot(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt) {
+	_private->releaseLiveSlot(slotKey, attempt);
 }
 
 void EndpointAdmissionArbiter::composeEndpointViewLocked(

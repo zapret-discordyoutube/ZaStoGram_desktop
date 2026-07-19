@@ -113,7 +113,10 @@ def test_mtproxy_admission_delays_are_logged_as_queued_status():
         "bool SessionTransport::appendTestConnection(")
 
     assert "_owner->_proxyPort->requestConnection({" in append_body
-    assert ".status = [=](SessionProxyAdmissionDecision)" in append_body
+    assert ".status = [=](SessionProxyAdmissionDecision decision)" in append_body
+    assert "_state.endpointAdmissionWaitKey = decision.key;" in append_body
+    assert "_state.endpointAdmissionWaitRevision = decision.revision;" in append_body
+    assert "_state.endpointAdmissionWaitReason = decision.waitReason;" in append_body
     decision = function_body(
         broker,
         "ConnectionBrokerDecision DecisionFromUpdate(")

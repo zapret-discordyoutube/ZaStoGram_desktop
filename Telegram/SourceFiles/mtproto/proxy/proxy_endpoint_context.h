@@ -47,12 +47,9 @@ public:
 		ProxyRuntimeId runtimeId) const
 		-> std::vector<ProxyConnectionAttempt>;
 	[[nodiscard]] bool finishTrace(ProxyTraceId traceId);
-	void cancelEndpointAttempt(const QString &key, uint64 attemptId);
-	void transportReady(
+	void cancelEndpointAttempt(
 		const QString &key,
-		ProxyRuntimeId runtimeId,
-		uint64 proxyGeneration,
-		uint64 attemptId);
+		const ProxyConnectionAttempt &attempt);
 
 	void notifyEndpointAdmissible(const QString &key);
 	void notifyEndpointViewChanged(

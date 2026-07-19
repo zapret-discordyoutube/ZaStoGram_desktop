@@ -23,6 +23,7 @@ class RuntimeEnvironment;
 namespace MTP::details::MtProxy {
 
 struct EndpointContextStorage;
+struct LiveSlotKey;
 
 using EndpointUse = ProxyConnectionUse;
 
@@ -146,8 +147,10 @@ public:
 	EndpointAttemptLease &operator=(EndpointAttemptLease &&other) noexcept;
 	~EndpointAttemptLease();
 
+	void bindLiveSlot(
+		const LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt);
 	void release();
-	void transportReady();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;
@@ -163,20 +166,15 @@ private:
 	EndpointAttemptLease(
 		std::shared_ptr<ProxyEndpointContext> context,
 		QString key,
-		ProxyRuntimeId runtimeId,
-		uint64 attemptId,
-		uint64 proxyGeneration,
-		uint64 proxyEpoch,
-		uint64 successEpoch,
+		ProxyConnectionAttempt attempt,
 		crl::time startedAt);
 
 	std::shared_ptr<ProxyEndpointContext> _context;
 	QString _key;
-	ProxyRuntimeId _runtimeId = 0;
-	uint64 _attemptId = 0;
-	uint64 _proxyGeneration = 0;
-	uint64 _proxyEpoch = 0;
-	uint64 _successEpoch = 0;
+	ProxyConnectionAttempt _attempt;
+	QString _slotEndpointKey;
+	int _slotIndex = -1;
+	uint64 _slotIncarnation = 0;
 	crl::time _startedAt = 0;
 	bool _active = false;
 
@@ -302,7 +300,6 @@ public:
 		RuntimeGenerationKey runtimeGeneration,
 		MainRecoveryToken token);
 	void retireRelayProof(RelayProofReport report);
-	void noteEndpointSelected(const EndpointId &endpoint);
 	void applyProxyGeneration(uint64 proxyGeneration);
 
 private:

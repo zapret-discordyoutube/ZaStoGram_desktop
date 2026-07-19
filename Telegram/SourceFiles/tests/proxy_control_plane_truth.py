@@ -1410,6 +1410,7 @@ def test_source_seams_match_truth_table_contract():
     health_state = read(ENDPOINT_HEALTH_STATE_H)
     endpoint_context = read(PROXY_ENDPOINT_CONTEXT_CPP)
     session_adapter = read(SESSION_PROXY_ADAPTER_CPP)
+    session_proxy_port = read(SESSION_PROXY_PORT_H)
     instance = read(INSTANCE_CPP)
     tls_records = read(TLS_SOCKET_RECORDS_CPP)
     capabilities = read(CAPABILITIES_CPP)
@@ -1444,24 +1445,42 @@ def test_source_seams_match_truth_table_contract():
     assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
     assert "ProxySchedulerLifecycle::HandedOff" in arbiter
     assert "cancelBeforeGeneration(" in arbiter
-    assert "kEndpointOpeningPermitCount = 4" in arbiter_header
-    assert "EndpointOpeningFlowKey" in arbiter_header
-    assert "EndpointOpeningIdentity" in arbiter_header
-    assert "EndpointOpeningEvent" in arbiter_header
-    for event in ("TransportReady", "RelayReady", "PressureFailure", "Cancelled"):
-        assert f"struct {event}" in arbiter_header
+    assert "kEndpointLiveSlotCount = 4" in arbiter_header
+    assert "struct LiveSlotKey" in arbiter_header
+    assert "struct EndpointLivePool" in arbiter_header
+    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in arbiter_header
+    for phase in ("Empty", "Reserved", "Opening", "Live", "Closing"):
+        assert f"{phase}," in arbiter_header
+    for entitlement in (
+        "ForegroundMain",
+        "ForegroundMedia",
+        "ForegroundUpload",
+        "BackgroundMain",
+    ):
+        assert entitlement in arbiter_header
+    for reason in ("None", "Slot", "ClosingSlot", "HealthOrNotBefore"):
+        assert f"{reason}," in arbiter_header
     assert "MtProxy::CancelOpenSlot(" in arbiter
     assert "MtProxy::CancelOpenSlotLocked(" not in arbiter
-    assert "openingAdmissionDecisionLocked(" in arbiter
-    assert "gate.pressureWindow.size() >= 3 && flows.size() >= 2" in arbiter
+    assert "EndpointAdmissionArbiter::Private::markTransportReady(" in arbiter
+    assert "EndpointAdmissionArbiter::Private::releaseLiveSlot(" in arbiter
+    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in arbiter
+    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in arbiter
+    assert "slot.incarnation != slotKey.incarnation" in arbiter
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "control.mtproxyEndpointView(endpoint)" in check
     assert "noteMtproxyRelayFailure(" in capabilities
     assert "card.relayProven = false;" in capabilities
     assert "relayProvenAt" in capabilities
-    assert "void ProxyEndpointContext::transportReady(" in endpoint_context
-    assert "details::MtProxy::TransportReady{" in endpoint_context
-    assert "releaseAdmissionForRelayCandidate(" not in endpoint_context
+    assert "void ProxyEndpointContext::transportReady(" not in endpoint_context
+    assert "EndpointOpeningEvent" not in health
+    assert "endpointAdmissionArbiter().openingEvent(" not in health
+    assert "admission.lease.bindLiveSlot(grant.slotKey, grant.attempt);" in broker
+    assert "void transportReady() override" in session_adapter
+    assert "endpointAdmissionArbiter().markTransportReady(" in session_adapter
+    assert "MtProxy::LiveSlotKey slotKey() const override" in session_adapter
+    assert "virtual void transportReady() = 0;" in session_proxy_port
+    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in session_proxy_port
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "view.mainProof.strength" in session_adapter
 

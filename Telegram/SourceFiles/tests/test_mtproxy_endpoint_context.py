@@ -11,6 +11,7 @@ ARBITER_H = PROXY_DIR / "endpoint_admission_arbiter.h"
 ARBITER_CPP = PROXY_DIR / "endpoint_admission_arbiter.cpp"
 HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+HEALTH_LIFECYCLE_CPP = MTPROXY_DIR / "endpoint_health_lifecycle.cpp"
 STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 
@@ -45,9 +46,11 @@ def test_shared_context_owns_storage_and_one_admission_arbiter():
     assert "std::make_unique<details::EndpointAdmissionArbiter>(*_storage)" in source
     assert "std::map<QString, EndpointState> states;" in storage
     assert "openStates" not in storage
-    assert "EndpointOpenGateState" in read(ARBITER_H)
-    assert "std::map<QString, MtProxy::EndpointOpenGateState> _gates;" in read(
-        ARBITER_CPP)
+    arbiter_header = read(ARBITER_H)
+    arbiter = read(ARBITER_CPP)
+    assert "struct EndpointLivePool" in arbiter_header
+    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in arbiter_header
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
     assert "std::set<ProxyRuntimeId> runtimes;" in storage
     assert "admissionReleaseListeners" not in storage
 
@@ -63,10 +66,13 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
     assert "_storage.runtimes.erase(runtimeId);" in arbiter
     assert "InvalidateRuntimeDispatch(dispatch->second);" in arbiter
     assert "cancelTicketLocked(key, 0, actions);" in arbiter
+    assert "closeMatchingAttemptsLocked(" in arbiter
     assert "state.generations.erase(runtimeId);" in arbiter
     assert "i->second.runtimeId == runtimeId" in arbiter
     assert "MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);" in arbiter
-    assert arbiter.index("actions.run();") < arbiter.index("drainEndpoint(endpointKey);")
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in arbiter
+    assert arbiter.rindex("actions.run();") > arbiter.rindex(
+        "updateWakeLocked(inputs, actions);")
 
 
 def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
@@ -85,20 +91,28 @@ def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
     assert cancel.index("actions.run();") > cancel.rindex("}")
 
 
-def test_release_frees_capacity_then_drains_outside_the_mutex():
-    source = read(CONTEXT_CPP)
+def test_health_retirement_and_exact_live_slot_release_are_separate():
+    context = read(CONTEXT_CPP)
+    lifecycle = read(HEALTH_LIFECYCLE_CPP)
+    arbiter = read(ARBITER_CPP)
     cancel = function_body(
-        source, "void ProxyEndpointContext::cancelEndpointAttempt(")
-    ready = function_body(source, "void ProxyEndpointContext::transportReady(")
+        context, "void ProxyEndpointContext::cancelEndpointAttempt(")
+    release = function_body(lifecycle, "void EndpointAttemptLease::release()")
+    ready = function_body(
+        arbiter, "void EndpointAdmissionArbiter::Private::markTransportReady(")
 
     assert "QMutexLocker lock(&_storage->mutex);" in cancel
-    assert "details::MtProxy::Cancelled{" in cancel
-    assert cancel.rindex("_arbiter->openingEvent(") > cancel.index("\n\t}")
-    assert "QMutexLocker lock(&_storage->mutex);" in ready
-    assert "details::MtProxy::TransportReady{" in ready
-    assert ready.rindex("_arbiter->openingEvent(") > ready.index("\n\t}")
-    assert "SynchronizeEndpointAdmissionAggregate" not in source
-    assert "ReleaseAdmissionForRelayCandidate" not in source
+    assert "AttemptIdentity(owner.attemptId, attemptState) == owner" in cancel
+    assert "_context->cancelEndpointAttempt(_key, _attempt);" in release
+    assert "endpointAdmissionArbiter().releaseLiveSlot(" in release
+    assert release.index("cancelEndpointAttempt(") < release.index("releaseLiveSlot(")
+    assert "slot.phase != MtProxy::LiveSlotPhase::Opening" in ready
+    assert "slot.incarnation != slotKey.incarnation" in ready
+    assert "AttemptOwnerMatches(*owner, attempt)" in ready
+    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in ready
+    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" not in ready
+    assert "SynchronizeEndpointAdmissionAggregate" not in context
+    assert "EndpointOpeningEvent" not in lifecycle
 
 
 def test_composed_view_is_generation_scoped_and_main_only():
@@ -128,10 +142,12 @@ def test_generation_change_cancels_only_older_tickets():
     assert "MtProxy::ApplyRuntimeProxyGeneration(" in cancel
     assert "ticket->proxyGeneration < proxyGeneration" in cancel
     assert "postGenerationCancelledStatusLocked(" in cancel
-    for lifecycle in ("Queued", "Scheduled", "Granted"):
-        assert f"ProxySchedulerLifecycle::{lifecycle}" in cancel
     assert "cancelTicketLocked(key, 0, actions);" in cancel
-    assert cancel.index("actions.run();") < cancel.index("drainEndpoint(endpointKey);")
+    assert "closeMatchingAttemptsLocked(" in cancel
+    assert "attempt.proxyGeneration < proxyGeneration" in cancel
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
+    assert cancel.rindex("actions.run();") > cancel.rindex(
+        "updateWakeLocked(inputs, actions);")
 
 
 def test_admission_freezes_a_bounded_faketls_plan():
@@ -205,7 +221,7 @@ if __name__ == "__main__":
     test_shared_context_owns_storage_and_one_admission_arbiter()
     test_runtime_unregister_cancels_tickets_and_prunes_generation_state()
     test_ticket_callbacks_are_invalidated_and_delivered_after_unlock()
-    test_release_frees_capacity_then_drains_outside_the_mutex()
+    test_health_retirement_and_exact_live_slot_release_are_separate()
     test_composed_view_is_generation_scoped_and_main_only()
     test_generation_change_cancels_only_older_tickets()
     test_admission_freezes_a_bounded_faketls_plan()

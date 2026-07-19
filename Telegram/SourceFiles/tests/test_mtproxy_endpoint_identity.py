@@ -12,6 +12,8 @@ ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
+CONNECTION_STATUS_TYPES_H = (
+    SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h")
 RUNTIME_PROXY_ENDPOINT_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
@@ -72,13 +74,26 @@ def test_endpoint_identity_is_split_into_canonical_and_route():
     assert "QString RouteKey(const RouteEndpoint &route)" in identity_header
     assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
     arbiter = read(ARBITER_H)
-    flow = function_body(arbiter, "struct EndpointOpeningFlowKey")
-    attempt = function_body(arbiter, "struct EndpointOpeningAttemptKey")
-    assert "CanonicalProxyEndpoint endpoint;" in flow
-    assert "ProxyRuntimeId runtimeId = 0;" in flow
-    assert "uint64 proxyGeneration = 0;" in flow
-    assert "EndpointUse use = EndpointUse::Main;" in flow
-    for field in ("traceId", "ticketId", "proxyEpoch", "successEpoch", "attemptId"):
+    slot_key = function_body(arbiter, "struct LiveSlotKey")
+    slot_owner = function_body(arbiter, "struct LiveSlotAttemptOwner")
+    attempt = function_body(
+        read(CONNECTION_STATUS_TYPES_H), "struct ProxyConnectionAttempt")
+    assert "QString endpointKey;" in slot_key
+    assert "int index = -1;" in slot_key
+    assert "uint64 incarnation = 0;" in slot_key
+    assert "ProxyConnectionAttempt attempt;" in slot_owner
+    assert "Fn<void(LiveSlotKey)> reclaim;" in slot_owner
+    for field in (
+        "runtimeId",
+        "traceId",
+        "ticketId",
+        "proxyGeneration",
+        "proxyEpoch",
+        "successEpoch",
+        "attemptId",
+        "use",
+        "ticketKey",
+    ):
         assert field in attempt
 
 

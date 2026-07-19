@@ -330,7 +330,9 @@ def test_proxied_connects_get_their_full_time_budget():
     assert "NoteConnectSuccess(" not in success
     assert success.index(
         "if (report.scope != SuccessScope::Relay) {") < success.index(
-            "relayReady = RelayReady{")
+            "PromoteRelayProof(")
+    assert "endpointAdmissionArbiter().openingEvent(" not in success
+    assert "RelayReady{" not in success
 
 
 def test_stealth_option_changes_restart_proxy_connections():

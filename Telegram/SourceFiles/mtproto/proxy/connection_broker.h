@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/proxy/endpoint_admission_arbiter.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 
 #include <QtCore/QPointer>
@@ -33,6 +34,10 @@ enum class ConnectionBrokerAction {
 
 struct ConnectionBrokerDecision {
 	ConnectionBrokerAction action = ConnectionBrokerAction::StartNow;
+	AdmissionTicketKey key;
+	uint64 revision = 0;
+	MtProxy::EndpointAdmissionWaitReason waitReason
+		= MtProxy::EndpointAdmissionWaitReason::None;
 	crl::time retryAfter = 0;
 	MtProxy::FailureReason blockedBy = MtProxy::FailureReason::None;
 };
@@ -40,6 +45,7 @@ struct ConnectionBrokerDecision {
 struct ConnectionStart {
 	ConnectionTicketId ticketId = 0;
 	ProxyConnectionAttempt attempt;
+	MtProxy::LiveSlotKey slotKey;
 	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
@@ -64,6 +70,7 @@ struct ConnectionRequest {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	crl::time notBefore = 0;
 	QPointer<QObject> context;
+	Fn<void(MtProxy::LiveSlotKey)> reclaim;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 	crl::time waitStartedAt = 0;
@@ -81,6 +88,7 @@ public:
 	~ConnectionTicket();
 
 	void cancel();
+	void reevaluate();
 	[[nodiscard]] ConnectionTicketId id() const;
 	[[nodiscard]] MtProxy::MainRecoveryToken acceptedRecoveryToken() const;
 	[[nodiscard]] explicit operator bool() const;
@@ -91,10 +99,12 @@ private:
 	ConnectionTicket(
 		std::weak_ptr<ProxyEndpointContext> context,
 		AdmissionTicketKey key,
+		uint64 revision,
 		MtProxy::MainRecoveryToken acceptedRecoveryToken);
 
 	std::weak_ptr<ProxyEndpointContext> _context;
 	AdmissionTicketKey _key;
+	uint64 _revision = 0;
 	MtProxy::MainRecoveryToken _acceptedRecoveryToken;
 
 };

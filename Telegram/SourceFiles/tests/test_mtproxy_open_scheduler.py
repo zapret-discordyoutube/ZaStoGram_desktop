@@ -8,6 +8,7 @@ MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 SCHEDULER_H = MTPROXY_DIR / "open_scheduler.h"
 SCHEDULER_CPP = MTPROXY_DIR / "open_scheduler.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
+ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
@@ -65,68 +66,53 @@ def test_scheduler_uses_pattern_spacing_without_adaptive_feedback():
     assert "NoteConnectSuccess" not in source
 
 
-def test_arbiter_reserves_reflows_and_commits_the_shared_slot():
+def test_arbiter_reserves_reflows_and_commits_exact_live_slots():
+    header = read(ARBITER_H)
     source = read(ARBITER_CPP)
-    assign = function_body(
+    reserve = function_body(
         source,
-        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(")
+        "bool EndpointAdmissionArbiter::Private::reserveTicketLocked(")
     revalidate = function_body(
         source,
         "void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(")
     grant = function_body(
         source, "void EndpointAdmissionArbiter::Private::deliverGrant(")
-    transport = function_body(
+    transport_ready = function_body(
         source,
-        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
-        "\t\tconst MtProxy::TransportReady &event,")
-    relay = function_body(
+        "void EndpointAdmissionArbiter::Private::markTransportReady(")
+    release = function_body(
         source,
-        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
-        "\t\tconst MtProxy::RelayReady &event,")
-    pressure = function_body(
-        source,
-        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
-        "\t\tconst MtProxy::PressureFailure &event,")
-    cancelled = function_body(
-        source,
-        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
-        "\t\tconst MtProxy::Cancelled &event,")
-    open_gate = function_body(
-        source, "void EndpointAdmissionArbiter::Private::openGateLocked(")
+        "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
 
-    assert "kMinimumOpenSpacing = crl::time(500)" in source
+    assert "kMinimumOpenSpacing = crl::time(500)" in read(SCHEDULER_CPP)
     assert "kOpenSpacingJitter = crl::time(125)" in source
-    assert "openingAdmissionDecisionLocked(" in assign
-    assert "MtProxy::ReserveOpenSlot(" in assign
-    assert "assignPermitLocked(" in assign
+    assert "kEndpointLiveSlotCount = 4" in header
+    assert "pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty" in reserve
+    assert "MtProxy::ReserveOpenSlot(" in reserve
+    assert "slot.phase = MtProxy::LiveSlotPhase::Reserved;" in reserve
+    assert "ticket.slotKey = SlotKey(endpointKey, slotIndex, slot);" in reserve
     assert "MtProxy::ReflowOpenSlots(" in revalidate
-    assert "openingAdmissionDecisionLocked(" in revalidate
     assert "MtProxy::CommitOpenSlot(" in grant
-    assert "openingAdmissionDecisionLocked(" in grant
     assert "ProxySchedulerLifecycle::HandedOff" in grant
-    assert "gate.permits[permit].reset();" in transport
-    assert "retireAttemptTerminalLocked" not in transport
-    assert "gate.stageOwner.reset()" not in transport
-    assert "attemptTerminalLocked" in transport
-    assert "!attemptKnownLocked" in transport
-    assert "const auto stageOwner" in relay
-    assert "EndpointOpenGateStage::HalfOpen" in relay
-    assert "EndpointOpenGateStage::Recovering" in relay
-    assert "gate.recoverySuccessCount = 1;" in relay
-    assert "++gate.recoverySuccessCount;" in relay
-    assert "gate.recoverySuccessCount >= 3" in relay
-    assert "now + kRecoveryOpenSpacing" in relay
-    assert "attemptTerminalLocked" in pressure
-    assert "!attemptKnownLocked" in pressure
-    assert "gate.pressureWindow.size() >= 3 && flows.size() >= 2" in pressure
-    assert "openGateLocked(endpointKey, now, true, actions);" in pressure
-    assert "attemptTerminalLocked" in cancelled
-    assert "retireAttemptTerminalLocked" in cancelled
-    assert "ProxySchedulerLifecycle::Scheduled" in open_gate
-    assert "ProxySchedulerLifecycle::Granted" in open_gate
-    assert "demoteTicketLocked" in open_gate
-    assert "disconnect" not in open_gate
-    assert "HandedOff" not in open_gate
+    assert "slot.phase = MtProxy::LiveSlotPhase::Opening;" in grant
+    assert "slot.owner = MtProxy::LiveSlotAttemptOwner{" in grant
+    assert "slot.phase != MtProxy::LiveSlotPhase::Opening" in transport_ready
+    assert "slot.incarnation != slotKey.incarnation" in transport_ready
+    assert "AttemptOwnerMatches(*owner, attempt)" in transport_ready
+    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in transport_ready
+    assert "LiveSlotPhase::Empty" not in transport_ready
+    assert "slot.incarnation != slotKey.incarnation" in release
+    assert "AttemptOwnerMatches" in release
+    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in release
+    assert "successor = closing->pendingSuccessor;" in release
+    for deleted in (
+        "applyOpeningEventLocked",
+        "PressureFailure",
+        "EndpointOpenGateStage",
+        "kPressureWindow",
+        "kRecoveryOpenSpacing",
+    ):
+        assert deleted not in source
 
 
 def test_cancelled_ticket_releases_reservation_and_redistributes():
@@ -134,11 +120,16 @@ def test_cancelled_ticket_releases_reservation_and_redistributes():
     cancel_ticket = function_body(
         source,
         "void EndpointAdmissionArbiter::Private::cancelTicketLocked(")
+    clear_slot = function_body(
+        source,
+        "void EndpointAdmissionArbiter::Private::clearTicketSlotLocked(")
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancel(")
 
-    assert "MtProxy::CancelOpenSlot(" in cancel_ticket
-    assert "retireOwnerLocked(" in cancel_ticket
+    assert "clearTicketSlotLocked(ticket);" in cancel_ticket
+    assert "MtProxy::CancelOpenSlot(" in clear_slot
+    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in clear_slot
+    assert "closing->pendingSuccessor.reset();" in clear_slot
     assert "actions.removed.push_back(takeTicketLocked(key));" in cancel_ticket
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
     assert "updateWakeLocked(inputs, actions);" in cancel
@@ -200,7 +191,7 @@ if __name__ == "__main__":
     test_open_scheduler_and_arbiter_are_registered()
     test_scheduler_exposes_only_pure_reservation_reducers()
     test_scheduler_uses_pattern_spacing_without_adaptive_feedback()
-    test_arbiter_reserves_reflows_and_commits_the_shared_slot()
+    test_arbiter_reserves_reflows_and_commits_exact_live_slots()
     test_cancelled_ticket_releases_reservation_and_redistributes()
     test_connection_broker_is_not_a_second_scheduler()
     test_live_and_probe_connections_enter_through_the_same_broker()

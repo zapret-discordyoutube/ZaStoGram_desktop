@@ -334,7 +334,6 @@ void ProxyControlPlane::retireMtproxyRelayProof(
 void ProxyControlPlane::noteMtproxyEndpointSelected(
 		const MtProxy::EndpointId &endpoint) {
 	_selectedMtproxyEndpoint = endpoint;
-	_endpointHealth->noteEndpointSelected(endpoint);
 	_runtime->proxyEndpointContext().notifyEndpointViewChanged(endpoint);
 }
 

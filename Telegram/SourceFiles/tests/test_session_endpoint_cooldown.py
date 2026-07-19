@@ -28,7 +28,10 @@ def test_session_uses_endpoint_health_admission_instead_of_local_cooldown():
     assert "MtproxyEndpointCooldown(" not in source
     assert "EndpointHealth::Instance().admit(" not in append_body
     assert "_owner->_proxyPort->requestConnection({" in append_body
-    assert ".status = [=](SessionProxyAdmissionDecision)" in append_body
+    assert ".status = [=](SessionProxyAdmissionDecision decision)" in append_body
+    assert "_state.endpointAdmissionWaitKey = decision.key;" in append_body
+    assert "_state.endpointAdmissionWaitRevision = decision.revision;" in append_body
+    assert "_state.endpointAdmissionWaitReason = decision.waitReason;" in append_body
     assert "ConnectionBrokerAction::Queued" in CONNECTION_BROKER_CPP.read_text(
         encoding="utf-8")
     assert "ProxyDiagnosticsPhase::AdmissionQueued" in CONNECTION_BROKER_CPP.read_text(
@@ -52,10 +55,49 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     connection = CONNECTION_CPP.read_text(encoding="utf-8")
     adapter = PROXY_ADAPTER_CPP.read_text(encoding="utf-8")
     lease = function_body(
-        adapter, "void releaseAdmissionForRelayCandidate() override")
+        adapter, "void transportReady() override")
     assert "_transportReady" in lease
-    assert "_lease.transportReady();" in lease
-    assert connection.count("mtproxyLease.releaseAdmissionForRelayCandidate();") == 2
+    assert "endpointAdmissionArbiter().markTransportReady(" in lease
+    assert "_lease.release();" not in lease
+    assert connection.count("_state.mtproxyLease.transportReady();") == 2
+    destroy = function_body(
+        connection, "void SessionTransport::destroyAllConnections(")
+    reclaim = function_body(
+        connection, "void SessionTransport::reclaimMtproxySlot(")
+    clear = function_body(
+        connection, "void SessionTransport::clearTestConnections()")
+    remove = function_body(
+        connection, "void SessionTransport::removeTestConnection(")
+    assert destroy.index("_state.connection.reset();") < destroy.index(
+        "_state.mtproxyLease.release();")
+    assert reclaim.index("candidate->data.reset();") < reclaim.index(
+        "candidate->mtproxyLease.release();")
+    assert reclaim.index("_state.connection.reset();") < reclaim.index(
+        "_state.mtproxyLease.release();")
+    assert clear.index("connection.data.reset();") < clear.index(
+        "connection.mtproxyLease.release();")
+    assert remove.index("i->data.reset();") < remove.index(
+        "i->mtproxyLease.release();")
+    grace = function_body(
+        connection, "void SessionTransport::transferDemandGraceFired()")
+    assert "kTransferDemandGrace = 5 * crl::time(1000)" in connection
+    assert "hasTransferDemand()" in grace
+    assert "destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);" in grace
+    assert destroy.index("_state.connection.reset();") < destroy.index(
+        "_state.mtproxyLease.release();")
+    deadline = function_body(
+        connection, "void SessionTransport::brokerQueueDeadlineFired()")
+    assert "_state.endpointAdmissionWaitKey.ticketId" in deadline
+    assert "_state.endpointAdmissionWaitRevision" in deadline
+    assert "MtProxy::EndpointAdmissionWaitReason::Slot" in deadline
+    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" in deadline
+    assert "waiting->reevaluate();" in deadline
+    assert deadline.index("waiting->reevaluate();") < deadline.index(
+        "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);")
+    assert "MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore" in deadline
+    slot_branch = deadline.split(
+        "if (exactWait", 1)[1].split("if (!exactWait", 1)[0]
+    assert "doDisconnect();" not in slot_branch
     assert ".waitStartedAt = _state.endpointAdmissionWaitStartedAt" in connection
     assert "preserveWaitStartedAt" in connection
     assert "_state.endpointAdmissionWaitStartedAt = preserveWaitStartedAt;" in connection

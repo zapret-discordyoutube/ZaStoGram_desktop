@@ -14,23 +14,27 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
-def test_endpoint_policy_accounts_for_active_and_scheduled_slots():
+def test_endpoint_policy_accounts_for_every_live_slot_phase():
     header = read(ARBITER_H)
     state = read(STATE_H)
     source = read(ARBITER_CPP)
 
-    assert "inline constexpr auto kEndpointOpeningPermitCount = 4;" in header
-    assert "std::optional<EndpointOpeningPermit>" in header
-    assert "OpeningAdmissionDecision" in header
-    assert "while (freePermitLocked(gate) >= 0)" in source
-    assert "assignPermitLocked(" in source
+    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in header
+    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in header
+    for phase in ("Empty", "Reserved", "Opening", "Live", "Closing"):
+        assert f"{phase}," in header
+    reserve = function_body(
+        source, "bool EndpointAdmissionArbiter::Private::reserveTicketLocked(")
+    assert "pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty" in reserve
+    assert "slot.phase = MtProxy::LiveSlotPhase::Reserved;" in reserve
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in source
     assert "EndpointAdmissionPolicyInput" not in state
     assert "EndpointUseCounts active" not in state
     assert "EndpointUseCounts scheduled" not in state
     assert "EvaluateEndpointAdmission(" not in state
 
 
-def test_background_requires_current_main_proof_and_yields_to_urgent_main():
+def test_transfer_requires_current_main_proof_and_yields_to_main_recovery():
     arbiter = function_body(
         read(ARBITER_CPP),
         "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
@@ -41,40 +45,41 @@ def test_background_requires_current_main_proof_and_yields_to_urgent_main():
     assert "ticket.proxyGeneration" in arbiter
 
 
-def test_closed_gate_exposes_four_opening_permits():
+def test_fixed_pool_exposes_four_occupied_slot_records():
     header = read(ARBITER_H)
     source = read(ARBITER_CPP)
-    decision = function_body(
-        source,
-        "EndpointAdmissionArbiter::Private::openingAdmissionDecisionLocked(")
+    ready = function_body(
+        source, "void EndpointAdmissionArbiter::Private::markTransportReady(")
+    release = function_body(
+        source, "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
 
-    assert "kEndpointOpeningPermitCount = 4" in header
-    assert "case MtProxy::EndpointOpenGateStage::Closed:" in decision
-    assert "freePermitLocked(current) >= 0" in decision
-    assert "ticket.key.runtimeId == request.requester.runtimeId" in decision
-    assert "ticket.proxyGeneration" in decision
-    assert "request.requester.proxyGeneration" in decision
-    assert "while (freePermitLocked(gate) >= 0)" in source
+    assert "kEndpointLiveSlotCount = 4" in header
+    assert "LiveSlotPhase::Opening" in ready
+    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in ready
+    assert "slot.incarnation != slotKey.incarnation" in ready
+    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in release
+    assert "AttemptOwnerMatches" in release
+    assert "slot.incarnation != slotKey.incarnation" in release
     assert "kHealthyActiveCap" not in source
     assert "mainLaneReserved" not in source
 
 
-def test_dpi_failures_keep_strict_cap_and_recipe_escalation():
+def test_dpi_failures_stay_health_owned_without_capacity_breaker():
     health = function_body(
         read(HEALTH_CPP), "void EndpointHealth::reportFailure(")
-    arbiter = function_body(
-        read(ARBITER_CPP),
-        "EndpointAdmissionArbiter::Private::applyOpeningEventLocked(\n"
-        "\t\tconst MtProxy::PressureFailure &event,")
+    arbiter = read(ARBITER_CPP)
 
     assert "report.routesExhausted" in health
-    assert "FailureReason::ClientHelloSentNoServerHello" in health
-    assert "pressureFailure = PressureFailure{" in health
+    assert "FailureNeedsRecipeEscalation(report.reason)" in health
     assert "state.recipeFailureStreak" in health
-    assert "kPressureWindow = crl::time(12 * 1000)" in read(ARBITER_CPP)
-    assert "gate.pressureWindow.size() >= 3 && flows.size() >= 2" in arbiter
-    assert "TlsAlertAfterClientHello" not in arbiter
-    assert "ServerHelloHmacMismatch" not in arbiter
+    for deleted in (
+        "PressureFailure",
+        "kPressureWindow",
+        "kOpenDelays",
+        "EndpointOpenGateStage",
+        "applyOpeningEventLocked",
+    ):
+        assert deleted not in arbiter
 
 
 def test_route_failures_remain_local_until_routes_are_exhausted():
@@ -134,9 +139,9 @@ def function_body(text: str, signature: str) -> str:
 
 
 if __name__ == "__main__":
-    test_endpoint_policy_accounts_for_active_and_scheduled_slots()
-    test_background_requires_current_main_proof_and_yields_to_urgent_main()
-    test_closed_gate_exposes_four_opening_permits()
-    test_dpi_failures_keep_strict_cap_and_recipe_escalation()
+    test_endpoint_policy_accounts_for_every_live_slot_phase()
+    test_transfer_requires_current_main_proof_and_yields_to_main_recovery()
+    test_fixed_pool_exposes_four_occupied_slot_records()
+    test_dpi_failures_stay_health_owned_without_capacity_breaker()
     test_route_failures_remain_local_until_routes_are_exhausted()
     test_arbiter_prioritizes_and_fairly_ages_endpoint_requests()

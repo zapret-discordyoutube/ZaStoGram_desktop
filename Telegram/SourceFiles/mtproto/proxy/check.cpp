@@ -235,6 +235,50 @@ void ReportClaimedProxyCheckSummary(
 	ReportProxyEvent(runtime, std::move(report));
 }
 
+void ResetProxyCheckState(
+		const std::shared_ptr<ProxyCheckConnection::Data> &state,
+		ProxyCloseOrigin origin) {
+	if (!state) {
+		return;
+	}
+	state->connectionTicket.cancel();
+	if (state->runtime && state->mtproxyAttempt.traceId) {
+		const auto runtime = not_null{ state->runtime };
+		if (ClaimProxyCheckTerminal(runtime, state)) {
+			auto report = ProxyCheckAttemptReport(
+				state,
+				state->proxy,
+				state->dcId,
+				state->connection.get(),
+				ProxyConnectionError::None,
+				MtProxy::FailureReason::None,
+				ProxyDiagnosticsSeverity::Warning,
+				u"proxy_check_owner_destroyed"_q);
+			report.closeOrigin = origin;
+			ReportClaimedProxyCheckSummary(runtime, std::move(report));
+		}
+	}
+	state->connection.reset();
+	state->handshakeGate.release();
+	state->mtproxyLease.release();
+	state->mtproxySlotKey = {};
+	state->mtproxySlotAttempt = {};
+	state->mtproxyEndpoint = MtProxy::EndpointId();
+	state->mtproxyAttempt = {};
+	state->mtproxyPlan = {};
+	state->mtproxyAttemptStartedAt = 0;
+	state->finished = true;
+	state->networkStarted = false;
+	state->progressStatus = ProxyCheckStatus::Idle;
+	state->runtime = nullptr;
+	state->proxy = ProxyData();
+	state->dcId = 0;
+	if (!state->probeKey.isEmpty()) {
+		ReleaseActiveProxyCheckKey(state->probeKey);
+		state->probeKey.clear();
+	}
+}
+
 } // namespace
 
 [[nodiscard]] MtProxy::FailureReason ProxyCheckFailureReason(
@@ -298,42 +342,7 @@ std::shared_ptr<ProxyCheckConnection::Data> ProxyCheckConnection::state() const 
 }
 
 void ProxyCheckConnection::reset() {
-	if (_data) {
-		_data->connectionTicket.cancel();
-		if (_data->runtime && _data->mtproxyAttempt.traceId) {
-			const auto runtime = not_null{ _data->runtime };
-			if (ClaimProxyCheckTerminal(runtime, _data)) {
-				auto report = ProxyCheckAttemptReport(
-					_data,
-					_data->proxy,
-					_data->dcId,
-					_data->connection.get(),
-					ProxyConnectionError::None,
-					MtProxy::FailureReason::None,
-					ProxyDiagnosticsSeverity::Warning,
-					u"proxy_check_owner_destroyed"_q);
-				report.closeOrigin = ProxyCloseOrigin::OwnerDestroyed;
-				ReportClaimedProxyCheckSummary(runtime, std::move(report));
-			}
-		}
-		_data->handshakeGate.release();
-		_data->mtproxyLease.release();
-		_data->mtproxyEndpoint = MtProxy::EndpointId();
-		_data->mtproxyAttempt = {};
-		_data->mtproxyPlan = {};
-		_data->mtproxyAttemptStartedAt = 0;
-		_data->finished = true;
-		_data->networkStarted = false;
-		_data->progressStatus = ProxyCheckStatus::Idle;
-		_data->runtime = nullptr;
-		_data->proxy = ProxyData();
-		_data->dcId = 0;
-		if (!_data->probeKey.isEmpty()) {
-			ReleaseActiveProxyCheckKey(_data->probeKey);
-			_data->probeKey.clear();
-		}
-		_data->connection = nullptr;
-	}
+	ResetProxyCheckState(_data, ProxyCloseOrigin::OwnerDestroyed);
 }
 
 void ResetProxyCheckers(
@@ -499,9 +508,14 @@ void StartProxyCheck(
 			if (state->connection.get() != raw || state->finished) {
 				return;
 			}
-			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)
-				&& !ClaimProxyCheckTerminal(runtime, state)) {
-				return;
+			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
+				runtime->proxyEndpointContext()
+					.endpointAdmissionArbiter().markTransportReady(
+						state->mtproxySlotKey,
+						state->mtproxySlotAttempt);
+				if (!ClaimProxyCheckTerminal(runtime, state)) {
+					return;
+				}
 			}
 			SetProxyCheckProgress(
 				state,
@@ -589,12 +603,34 @@ void StartProxyCheck(
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.notBefore = gateDelay,
 			.context = raw,
+			.reclaim = [weak = std::weak_ptr<ProxyCheckConnection::Data>(state),
+					raw,
+					fail](MtProxy::LiveSlotKey key) {
+				const auto state = weak.lock();
+				if (!state
+					|| state->connection.get() != raw
+					|| state->mtproxySlotKey != key) {
+					return;
+				}
+				if (fail) {
+					fail(raw);
+				}
+				if (state->connection.get() != raw
+					|| state->mtproxySlotKey != key) {
+					return;
+				}
+				ResetProxyCheckState(
+					state,
+					ProxyCloseOrigin::BrokerCancelled);
+			},
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
 				if (state->connection.get() != raw) {
 					return;
 				}
 				state->mtproxyEndpoint = start.endpoint;
+				state->mtproxySlotKey = std::move(start.slotKey);
+				state->mtproxySlotAttempt = start.attempt;
 				state->mtproxyLease = std::move(start.lease);
 				state->mtproxyStealth = start.stealth;
 				state->mtproxySentProfile = start.effectiveTlsProfile;

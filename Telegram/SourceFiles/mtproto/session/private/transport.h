@@ -44,6 +44,7 @@ public:
 	void retryByTimer();
 	void waitConnectedFailed();
 	void brokerQueueDeadlineFired();
+	void transferDemandGraceFired();
 	void waitReceivedFailed();
 	void waitBetterFailed();
 	void markConnectionOld();
@@ -104,6 +105,7 @@ private:
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
+		MtProxy::LiveSlotKey mtproxySlotKey;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
@@ -114,6 +116,7 @@ private:
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
+		MtProxy::LiveSlotKey mtproxySlotKey;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MainRecoveryHandle mainRecoveryBackoff;
 		MtProxyAttemptPlan mtproxyPlan;
@@ -121,7 +124,7 @@ private:
 		uint64 proxyGeneration = 0;
 		bool proxyMigrationSuspended = false;
 		bool proxyMigrationScout = false;
-		bool proxyMigrationDemandDormant = false;
+		bool mtproxyTransferDemandDormant = false;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
 		std::vector<TestConnection> testConnections;
@@ -129,6 +132,10 @@ private:
 		crl::time startedConnectingAt = 0;
 		crl::time endpointAdmissionWaitStartedAt = 0;
 		bool endpointAdmissionWaitReplacementPending = false;
+		AdmissionTicketKey endpointAdmissionWaitKey;
+		uint64 endpointAdmissionWaitRevision = 0;
+		MtProxy::EndpointAdmissionWaitReason endpointAdmissionWaitReason
+			= MtProxy::EndpointAdmissionWaitReason::None;
 	};
 	struct TimingState {
 		TimingState(
@@ -145,6 +152,7 @@ private:
 		RuntimeTimer waitForReceivedTimer;
 		RuntimeTimer waitForBetterTimer;
 		RuntimeTimer brokerQueueDeadlineTimer;
+		RuntimeTimer transferDemandGraceTimer;
 		crl::time waitForReceived = 0;
 		crl::time waitForConnected = 0;
 		crl::time firstSentAt = -1;
@@ -170,6 +178,7 @@ private:
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
 	[[nodiscard]] bool hasTransferDemand() const;
+	void reclaimMtproxySlot(MtProxy::LiveSlotKey key);
 	void resetEndpointAdmissionWait();
 	void cancelMainRecoveryBackoff();
 	void clearConnectionBrokerTickets();

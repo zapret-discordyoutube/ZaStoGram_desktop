@@ -228,6 +228,8 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "ticket->proxyGeneration < proxyGeneration" in generation_cancel
     assert "postGenerationCancelledStatusLocked(" in generation_cancel
     assert "cancelTicketLocked(key, 0, actions);" in generation_cancel
+    assert "closeMatchingAttemptsLocked(" in generation_cancel
+    assert "attempt.proxyGeneration < proxyGeneration" in generation_cancel
     assert "ProxySchedulerLifecycle::Cancelled" in arbiter
     assert ".proxyGeneration = grant.proxyGeneration" in source
 
@@ -250,11 +252,15 @@ def test_status_reducer_shadows_old_proxy_generation_facts():
     assert "generation=%1" in diagnostics
 
 
-def test_manual_selection_requests_scout_without_clearing_health():
+def test_manual_selection_uses_normal_generation_migration_without_scout():
     instance = read(INSTANCE_CPP)
     lifecycle = read(SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
         "endpoint_health_lifecycle.cpp")
+    control = read(CONTROL_CPP)
+    arbiter = read(ARBITER_CPP)
     migrate = function_body(instance, "void Instance::Private::migrateProxy(bool manual)")
+    selected = function_body(
+        control, "void ProxyControlPlane::noteMtproxyEndpointSelected(")
 
     assert "noteMtproxyEndpointSelected(" in migrate
     assert "selected.type == ProxyData::Type::Mtproto" in migrate
@@ -264,27 +270,21 @@ def test_manual_selection_requests_scout_without_clearing_health():
         "noteMtproxyEndpointSelected(")
     assert migrate.index("noteMtproxyEndpointSelected(") < migrate.index(
         "cancelByProxyGeneration(")
-
-    cleared = function_body(
-        lifecycle, "void EndpointHealth::noteEndpointSelected(")
-    assert "requestImmediateScout(" in cleared
-    assert "RuntimeGenerationKey" in cleared
-    assert "state.terminalUntil = 0;" not in cleared
-    assert "state.halfOpen = false;" not in cleared
-    assert "state.consecutiveFailures = 0;" not in cleared
-    arbiter = read(ARBITER_CPP)
-    scout = function_body(
-        arbiter,
-        "void EndpointAdmissionArbiter::Private::requestImmediateScout(")
-    assert "EndpointOpenGateStage::Open" in scout
-    assert "gate->second.immediateScoutRequest" in scout
-    assert "generation->second != requester.proxyGeneration" in scout
-    assert "current.backoffRung" not in scout
-    assert "current.pressureWindow" not in scout
+    assert "_selectedMtproxyEndpoint = endpoint;" in selected
+    assert "notifyEndpointViewChanged(endpoint);" in selected
+    for deleted in (
+        "requestImmediateScout",
+        "immediateScoutRequest",
+        "EndpointOpenGateStage",
+        "pressureWindow",
+        "backoffRung",
+    ):
+        assert deleted not in lifecycle
+        assert deleted not in arbiter
 
 
 if __name__ == "__main__":
-    test_manual_selection_requests_scout_without_clearing_health()
+    test_manual_selection_uses_normal_generation_migration_without_scout()
     test_proxy_switch_uses_atomic_migration_not_global_restart()
     test_reapplying_selected_proxy_keeps_live_connections()
     test_session_proxy_switch_suspends_old_generation_silently()

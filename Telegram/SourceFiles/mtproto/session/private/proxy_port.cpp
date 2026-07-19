@@ -38,14 +38,18 @@ void SessionProxyLease::release() {
 	}
 }
 
-void SessionProxyLease::releaseAdmissionForRelayCandidate() {
+void SessionProxyLease::transportReady() {
 	if (_impl) {
-		_impl->releaseAdmissionForRelayCandidate();
+		_impl->transportReady();
 	}
 }
 
 bool SessionProxyLease::active() const {
 	return _impl ? _impl->active() : false;
+}
+
+MtProxy::LiveSlotKey SessionProxyLease::slotKey() const {
+	return _impl ? _impl->slotKey() : MtProxy::LiveSlotKey();
 }
 
 uint64 SessionProxyLease::attemptId() const {
@@ -99,6 +103,12 @@ void SessionProxyTicket::cancel() {
 	if (_impl) {
 		_impl->cancel();
 		_impl = nullptr;
+	}
+}
+
+void SessionProxyTicket::reevaluate() {
+	if (_impl) {
+		_impl->reevaluate();
 	}
 }
 

@@ -128,9 +128,9 @@ def test_handshake_success_does_not_clear_relay_silence_cooldown():
     assert skip < success.index("state.consecutiveFailures = 0;")
     assert skip < success.index("state.recipeLevel = 0;")
     assert "NoteConnectSuccess(" not in success
-    assert skip < success.index("relayReady = RelayReady{")
-    assert success.index("relayReady = RelayReady{") < success.index(
-        "endpointAdmissionArbiter().openingEvent(")
+    assert skip < success.index("PromoteRelayProof(")
+    assert "endpointAdmissionArbiter().openingEvent(" not in success
+    assert "RelayReady{" not in success
     assert "SuccessScope::FakeTlsAppData" in records
     assert "SuccessScope::Relay" not in function_body(
         records,
@@ -158,9 +158,19 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "_owner->_authState.keyCreator" in can_prove_relay
     assert "getTemporaryKey(" in can_prove_relay
     assert "if (!canProveMtproxyRelay()) {" in connected
-    assert "mtproxyLease.releaseAdmissionForRelayCandidate();" in connected
+    assert "_state.mtproxyLease.transportReady();" in connected
+    assert connected.index("_state.connection = std::move(i->data);") < connected.index(
+        "_state.mtproxyLease.transportReady();")
+    assert connected.index(
+        "_state.mtproxyLease = std::move(i->mtproxyLease);") < connected.index(
+        "_state.mtproxyLease.transportReady();")
     assert "if (!canProveMtproxyRelay()) {" in confirm
-    assert "mtproxyLease.releaseAdmissionForRelayCandidate();" in confirm
+    assert "_state.mtproxyLease.transportReady();" in confirm
+    assert confirm.index("_state.connection = std::move(i->data);") < confirm.index(
+        "_state.mtproxyLease.transportReady();")
+    assert confirm.index(
+        "_state.mtproxyLease = std::move(i->mtproxyLease);") < confirm.index(
+        "_state.mtproxyLease.transportReady();")
 
     # A connection that connects (even passing the plaintext fake-pq
     # check) but never delivers an MTProto payload reports relay silence,
@@ -252,6 +262,8 @@ def test_established_idle_close_is_not_a_health_failure():
     assert "destroyAllConnections();" in disconnected
     assert "reportAttemptCancelled(" in destroy
     assert "currentProxyAttempt()" in destroy
+    assert destroy.index("_state.connection.reset();") < destroy.index(
+        "_state.mtproxyLease.release();")
     assert "retireMtproxyRelayProof(" in cancelled
     assert "RelayProofReport(attempt)" in cancelled
     assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(
