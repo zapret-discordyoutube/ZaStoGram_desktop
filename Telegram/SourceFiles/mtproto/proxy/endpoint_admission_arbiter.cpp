@@ -1646,13 +1646,13 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		}
 		auto &slot = pool.slots[slotIndex];
 		if (slot.phase == MtProxy::LiveSlotPhase::Empty) {
-			reserveTicketLocked(
+			static_cast<void>(reserveTicketLocked(
 				endpointKey,
 				slotIndex,
 				*selected,
 				state,
 				inputs,
-				actions);
+				actions));
 			continue;
 		}
 		if (slot.phase == MtProxy::LiveSlotPhase::Reserved) {
@@ -1679,13 +1679,13 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 				}
 				if (pool.slots[slotIndex].phase
 						== MtProxy::LiveSlotPhase::Empty) {
-					reserveTicketLocked(
+					static_cast<void>(reserveTicketLocked(
 						endpointKey,
 						slotIndex,
 						*selected,
 						state,
 						inputs,
-						actions);
+						actions));
 				}
 			}
 			continue;
@@ -2793,13 +2793,13 @@ void EndpointAdmissionArbiter::Private::releaseLiveSlot(
 					pool->second,
 					*ticket->second,
 					slotKey.index)) {
-				reserveTicketLocked(
+				static_cast<void>(reserveTicketLocked(
 					slotKey.endpointKey,
 					slotKey.index,
 					*ticket->second,
 					state->second,
 					inputs,
-					actions);
+					actions));
 			}
 		}
 		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
