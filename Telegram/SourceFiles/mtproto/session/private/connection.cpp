@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/session.h"
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/transport/connection_abstract.h"
 #include "base/options.h"
 #include "base/random.h"

@@ -21,6 +21,7 @@ DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 SESSION_H = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.h"
+CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
 RECEIVE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "receive.cpp"
 TRANSPORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.h"
 
@@ -139,6 +140,7 @@ def test_handshake_success_does_not_clear_relay_silence_cooldown():
 
 def test_session_reports_silence_and_recovers_temporary_key():
     session = read_session_private_sources()
+    connection = read(CONNECTION_CPP)
     header = read(TRANSPORT_H)
     wait_received = function_body(
         session, "void SessionTransport::waitReceivedFailed(")
@@ -163,6 +165,9 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "getTemporaryKey(" in can_prove_relay
     assert "&AbstractConnection::handshakeProgress" in append
     assert "onHandshakeProgress(weak);" in append
+    assert (
+        '#include "mtproto/transport/details/mtproto_abstract_socket.h"'
+        in connection)
     assert "connection->handshakePhase() < HandshakePhase::ServerHelloOk" in handshake
     assert "i->mtproxyLease.transportReady();" in handshake
     assert "_state.mtproxyLease.transportReady();" in handshake
