@@ -38,8 +38,6 @@ public:
 		details::HandshakeGateLease handshakeGate;
 		details::MtProxy::EndpointId mtproxyEndpoint;
 		details::MtProxy::EndpointAttemptLease mtproxyLease;
-		details::MtProxy::LiveSlotKey mtproxySlotKey;
-		ProxyConnectionAttempt mtproxySlotAttempt;
 		ProxyStealthOptions mtproxyStealth;
 		ProxyTlsProfile mtproxySentProfile = ProxyTlsProfile::Auto;
 		ProxyConnectionAttempt mtproxyAttempt;

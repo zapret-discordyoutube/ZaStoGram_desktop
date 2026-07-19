@@ -74,15 +74,18 @@ def test_endpoint_identity_is_split_into_canonical_and_route():
     assert "QString RouteKey(const RouteEndpoint &route)" in identity_header
     assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
     arbiter = read(ARBITER_H)
-    slot_key = function_body(arbiter, "struct LiveSlotKey")
-    slot_owner = function_body(arbiter, "struct LiveSlotAttemptOwner")
+    ticket_owner = function_body(arbiter, "struct OpeningPermitTicketOwner")
+    permit = function_body(arbiter, "struct EndpointOpeningPermit")
     attempt = function_body(
         read(CONNECTION_STATUS_TYPES_H), "struct ProxyConnectionAttempt")
-    assert "QString endpointKey;" in slot_key
-    assert "int index = -1;" in slot_key
-    assert "uint64 incarnation = 0;" in slot_key
-    assert "ProxyConnectionAttempt attempt;" in slot_owner
-    assert "Fn<void(LiveSlotKey)> reclaim;" in slot_owner
+    assert "AdmissionTicketKey key;" in ticket_owner
+    assert "uint64 revision = 0;" in ticket_owner
+    assert "EndpointOpeningPermitOwner owner;" in permit
+    assert "OpenSlotSchedule openings;" in permit
+    assert "using EndpointOpeningPermitOwner = std::variant<" in arbiter
+    assert "ProxyConnectionAttempt>" in arbiter
+    assert "LiveSlot" not in arbiter
+    assert "reclaim" not in arbiter
     for field in (
         "runtimeId",
         "traceId",

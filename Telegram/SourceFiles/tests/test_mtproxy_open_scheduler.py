@@ -12,6 +12,7 @@ ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+HEALTH_LIFECYCLE_CPP = MTPROXY_DIR / "endpoint_health_lifecycle.cpp"
 
 
 def read(path):
@@ -66,45 +67,67 @@ def test_scheduler_uses_pattern_spacing_without_adaptive_feedback():
     assert "NoteConnectSuccess" not in source
 
 
-def test_arbiter_reserves_reflows_and_commits_exact_live_slots():
+def test_arbiter_reserves_and_hands_off_one_exact_opening_permit():
     header = read(ARBITER_H)
     source = read(ARBITER_CPP)
     reserve = function_body(
         source,
         "bool EndpointAdmissionArbiter::Private::reserveTicketLocked(")
+    boundary = function_body(
+        source, "TicketOpeningBoundary OpeningBoundaryForTicket(")
     revalidate = function_body(
         source,
         "void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(")
     grant = function_body(
         source, "void EndpointAdmissionArbiter::Private::deliverGrant(")
-    transport_ready = function_body(
-        source,
-        "void EndpointAdmissionArbiter::Private::markTransportReady(")
     release = function_body(
         source,
-        "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
+        "void EndpointAdmissionArbiter::Private::releaseOpeningPermit(")
+    lifecycle = read(HEALTH_LIFECYCLE_CPP)
+    ready = function_body(lifecycle, "void EndpointAttemptLease::transportReady()")
+    terminal = function_body(lifecycle, "void EndpointAttemptLease::release()")
+    session = read_session_private_sources()
+    session_ready = function_body(
+        session, "void SessionTransport::onHandshakeProgress(")
+    check_ready = block_after(
+        read(CHECK_CPP), "&Connection::handshakeProgress")
 
     assert "kMinimumOpenSpacing = crl::time(500)" in read(SCHEDULER_CPP)
     assert "kOpenSpacingJitter = crl::time(125)" in source
-    assert "kEndpointLiveSlotCount = 4" in header
-    assert "pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty" in reserve
+    assert "struct EndpointOpeningPermit" in header
+    assert "std::holds_alternative<std::monostate>(permit.owner)" in reserve
+    assert "OpeningRetryBoundaryFor(state)" in boundary
+    assert "std::max(ticket.notBeforeAt, pressure.retryUntil)" in boundary
+    assert "const auto boundary = OpeningBoundaryForTicket(ticket, state);" in reserve
+    assert "if (boundary.at > inputs.now)" in reserve
+    assert reserve.index("if (boundary.at > inputs.now)") < reserve.index(
+        "MtProxy::ReserveOpenSlot(")
     assert "MtProxy::ReserveOpenSlot(" in reserve
-    assert "slot.phase = MtProxy::LiveSlotPhase::Reserved;" in reserve
-    assert "ticket.slotKey = SlotKey(endpointKey, slotIndex, slot);" in reserve
+    assert "permit.owner = MtProxy::OpeningPermitTicketOwner{" in reserve
     assert "MtProxy::ReflowOpenSlots(" in revalidate
+    assert "|| boundary.at > inputs.now" in revalidate
     assert "MtProxy::CommitOpenSlot(" in grant
+    assert "EndpointHealth::BeginScheduledAttemptLocked(" in grant
     assert "ProxySchedulerLifecycle::HandedOff" in grant
-    assert "slot.phase = MtProxy::LiveSlotPhase::Opening;" in grant
-    assert "slot.owner = MtProxy::LiveSlotAttemptOwner{" in grant
-    assert "slot.phase != MtProxy::LiveSlotPhase::Opening" in transport_ready
-    assert "slot.incarnation != slotKey.incarnation" in transport_ready
-    assert "AttemptOwnerMatches(*owner, attempt)" in transport_ready
-    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in transport_ready
-    assert "LiveSlotPhase::Empty" not in transport_ready
-    assert "slot.incarnation != slotKey.incarnation" in release
-    assert "AttemptOwnerMatches" in release
-    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in release
-    assert "successor = closing->pendingSuccessor;" in release
+    assert "permit->second.owner = attempt;" in grant
+    assert "admission->lease.armOpeningPermit(attempt);" in grant
+    assert grant.index("permit->second.owner = attempt;") < grant.index(
+        "ticket.lifecycle = ProxySchedulerLifecycle::HandedOff;")
+    assert grant.index("admission->lease.armOpeningPermit(attempt);") < grant.index(
+        "actions.grants.push_back({")
+    assert "const auto owner = std::get_if<ProxyConnectionAttempt>" in release
+    assert "!owner || !AttemptOwnerMatches(*owner, attempt)" in release
+    assert "permit->second.owner = std::monostate();" in release
+    assert "base::take(_openingPermitHeld)" in ready
+    assert "releaseOpeningPermit(" in ready
+    assert "HandshakePhase::ServerHelloOk" in session_ready
+    assert "mtproxyLease.transportReady();" in session_ready
+    assert "phase >= details::HandshakePhase::ServerHelloOk" in check_ready
+    assert "state->mtproxyLease.transportReady();" in check_ready
+    assert terminal.index("cancelEndpointAttempt(") < terminal.index(
+        "releaseOpeningPermit(")
+    assert "LiveSlot" not in header
+    assert "LiveSlot" not in source
     for deleted in (
         "applyOpeningEventLocked",
         "PressureFailure",
@@ -120,16 +143,16 @@ def test_cancelled_ticket_releases_reservation_and_redistributes():
     cancel_ticket = function_body(
         source,
         "void EndpointAdmissionArbiter::Private::cancelTicketLocked(")
-    clear_slot = function_body(
+    clear_reservation = function_body(
         source,
-        "void EndpointAdmissionArbiter::Private::clearTicketSlotLocked(")
+        "void EndpointAdmissionArbiter::Private::clearTicketReservationLocked(")
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancel(")
 
-    assert "clearTicketSlotLocked(ticket);" in cancel_ticket
-    assert "MtProxy::CancelOpenSlot(" in clear_slot
-    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in clear_slot
-    assert "closing->pendingSuccessor.reset();" in clear_slot
+    assert "clearTicketReservationLocked(ticket);" in cancel_ticket
+    assert "MtProxy::CancelOpenSlot(" in clear_reservation
+    assert "TicketOwnerMatches(*owner, ticket)" in clear_reservation
+    assert "current.owner = std::monostate();" in clear_reservation
     assert "actions.removed.push_back(takeTicketLocked(key));" in cancel_ticket
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
     assert "updateWakeLocked(inputs, actions);" in cancel
@@ -187,11 +210,25 @@ def function_body(text, signature):
     raise AssertionError(f"function body not found: {signature}")
 
 
+def block_after(text: str, marker: str) -> str:
+    start = text.index(marker)
+    brace = text.index("{", start)
+    depth = 0
+    for index in range(brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:index]
+    raise AssertionError(f"block not found after {marker}")
+
+
 if __name__ == "__main__":
     test_open_scheduler_and_arbiter_are_registered()
     test_scheduler_exposes_only_pure_reservation_reducers()
     test_scheduler_uses_pattern_spacing_without_adaptive_feedback()
-    test_arbiter_reserves_reflows_and_commits_exact_live_slots()
+    test_arbiter_reserves_and_hands_off_one_exact_opening_permit()
     test_cancelled_ticket_releases_reservation_and_redistributes()
     test_connection_broker_is_not_a_second_scheduler()
     test_live_and_probe_connections_enter_through_the_same_broker()

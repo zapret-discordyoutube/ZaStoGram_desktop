@@ -261,8 +261,6 @@ void ResetProxyCheckState(
 	state->connection.reset();
 	state->handshakeGate.release();
 	state->mtproxyLease.release();
-	state->mtproxySlotKey = {};
-	state->mtproxySlotAttempt = {};
 	state->mtproxyEndpoint = MtProxy::EndpointId();
 	state->mtproxyAttempt = {};
 	state->mtproxyPlan = {};
@@ -466,6 +464,7 @@ void StartProxyCheck(
 						u"proxy_check_failed"_q));
 			}
 		}
+		state->mtproxyLease.release();
 		ReportProxyEvent(runtime, {
 			.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 			.error = error,
@@ -509,10 +508,7 @@ void StartProxyCheck(
 				return;
 			}
 			if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
-				runtime->proxyEndpointContext()
-					.endpointAdmissionArbiter().markTransportReady(
-						state->mtproxySlotKey,
-						state->mtproxySlotAttempt);
+				state->mtproxyLease.transportReady();
 				if (!ClaimProxyCheckTerminal(runtime, state)) {
 					return;
 				}
@@ -574,9 +570,13 @@ void StartProxyCheck(
 			if (state->connection.get() != raw || state->finished) {
 				return;
 			}
+			const auto phase = raw->handshakePhase();
+			if (phase >= details::HandshakePhase::ServerHelloOk) {
+				state->mtproxyLease.transportReady();
+			}
 			SetProxyCheckProgress(
 				state,
-				ProxyCheckStatusForHandshake(raw->handshakePhase()));
+				ProxyCheckStatusForHandshake(phase));
 		});
 	};
 	const auto start = [&](
@@ -603,34 +603,12 @@ void StartProxyCheck(
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.notBefore = gateDelay,
 			.context = raw,
-			.reclaim = [weak = std::weak_ptr<ProxyCheckConnection::Data>(state),
-					raw,
-					fail](MtProxy::LiveSlotKey key) {
-				const auto state = weak.lock();
-				if (!state
-					|| state->connection.get() != raw
-					|| state->mtproxySlotKey != key) {
-					return;
-				}
-				if (fail) {
-					fail(raw);
-				}
-				if (state->connection.get() != raw
-					|| state->mtproxySlotKey != key) {
-					return;
-				}
-				ResetProxyCheckState(
-					state,
-					ProxyCloseOrigin::BrokerCancelled);
-			},
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
 				if (state->connection.get() != raw) {
 					return;
 				}
 				state->mtproxyEndpoint = start.endpoint;
-				state->mtproxySlotKey = std::move(start.slotKey);
-				state->mtproxySlotAttempt = start.attempt;
 				state->mtproxyLease = std::move(start.lease);
 				state->mtproxyStealth = start.stealth;
 				state->mtproxySentProfile = start.effectiveTlsProfile;

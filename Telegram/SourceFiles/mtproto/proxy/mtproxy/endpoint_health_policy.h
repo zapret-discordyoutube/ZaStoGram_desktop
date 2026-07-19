@@ -26,6 +26,8 @@ struct FailureTraits {
 [[nodiscard]] FailureTraits TraitsFor(FailureReason reason);
 
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason);
+[[nodiscard]] EndpointOpeningPressure OpeningRetryBoundaryFor(
+	const EndpointState &state);
 [[nodiscard]] MtProxyAttemptPlan BuildAttemptPlan(
 	const AdmissionRequest &request,
 	int recipeLevel);

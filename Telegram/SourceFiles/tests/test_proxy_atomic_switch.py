@@ -228,8 +228,12 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "ticket->proxyGeneration < proxyGeneration" in generation_cancel
     assert "postGenerationCancelledStatusLocked(" in generation_cancel
     assert "cancelTicketLocked(key, 0, actions);" in generation_cancel
-    assert "closeMatchingAttemptsLocked(" in generation_cancel
+    assert "MtProxy::ApplyRuntimeProxyGeneration(" in generation_cancel
+    assert "releaseMatchingPermitsLocked(" in generation_cancel
     assert "attempt.proxyGeneration < proxyGeneration" in generation_cancel
+    assert generation_cancel.index(
+        "MtProxy::ApplyRuntimeProxyGeneration("
+    ) < generation_cancel.index("releaseMatchingPermitsLocked(")
     assert "ProxySchedulerLifecycle::Cancelled" in arbiter
     assert ".proxyGeneration = grant.proxyGeneration" in source
 

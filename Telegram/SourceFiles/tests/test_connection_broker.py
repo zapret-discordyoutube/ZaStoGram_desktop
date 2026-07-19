@@ -62,14 +62,23 @@ def test_ticket_cancellation_uses_runtime_and_ticket_identity():
     assert "_context.reset();" in cancel
 
 
-def test_arbiter_owns_queue_reservation_and_lifecycle():
+def test_arbiter_owns_one_exact_opening_permit_and_cleanup():
     header = read(ARBITER_H)
     source = read(ARBITER_CPP)
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancelTicketLocked(")
-    clear_slot = function_body(
-        source, "void EndpointAdmissionArbiter::Private::clearTicketSlotLocked(")
+    clear_reservation = function_body(
+        source,
+        "void EndpointAdmissionArbiter::Private::clearTicketReservationLocked(")
+    owner_destroyed = function_body(
+        source, "void EndpointAdmissionArbiter::Private::ownerDestroyed(")
+    missing = function_body(
+        source, "void EndpointAdmissionArbiter::Private::deliveryMissing(")
+    deliver = function_body(
+        source, "void EndpointAdmissionArbiter::Private::deliverGrant(")
+    grant_action = function_body(source, "void GrantAction::run()")
     actions = function_body(source, "void Actions::run()")
+    permit = block_after(header, "struct EndpointOpeningPermit")
 
     assert "struct EndpointSchedule" in source
     assert "std::deque<AdmissionTicketKey> order;" in source
@@ -88,19 +97,35 @@ def test_arbiter_owns_queue_reservation_and_lifecycle():
         assert priority in source
     for lifecycle in ("Queued", "Scheduled", "Granted", "HandedOff", "Cancelled"):
         assert f"ProxySchedulerLifecycle::{lifecycle}" in source
-    assert "kEndpointLiveSlotCount = 4" in header
-    assert "struct EndpointLivePool" in header
-    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in header
-    for phase in ("Reserved", "Opening", "Live", "Closing"):
-        assert f"LiveSlotPhase::{phase}" in source
-    assert "LiveSlotTicketOwner" in header
-    assert "LiveSlotAttemptOwner" in header
-    assert "LiveSlotClosingState" in header
-    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in source
+    assert "struct EndpointOpeningPermit" in header
+    assert "OpeningPermitTicketOwner" in header
+    assert "using EndpointOpeningPermitOwner = std::variant<" in header
+    assert "std::monostate," in header
+    assert "OpeningPermitTicketOwner," in header
+    assert "ProxyConnectionAttempt>" in header
+    assert "EndpointOpeningPermitOwner owner;" in permit
+    assert "OpenSlotSchedule openings;" in permit
+    assert "QPointer" not in permit
+    assert "Fn<" not in permit
+    assert "std::map<QString, MtProxy::EndpointOpeningPermit> _permits;" in source
+    assert "LiveSlot" not in header
+    assert "LiveSlot" not in source
     assert "MtProxy::ReserveOpenSlot(" in source
-    assert "MtProxy::CancelOpenSlot(" in clear_slot
-    assert "clearTicketSlotLocked(ticket);" in cancel
+    assert "MtProxy::CancelOpenSlot(" in clear_reservation
+    assert "TicketOwnerMatches(*owner, ticket)" in clear_reservation
+    assert "current.owner = std::monostate();" in clear_reservation
+    assert "clearTicketReservationLocked(ticket);" in cancel
     assert "actions.removed.push_back(takeTicketLocked(key));" in cancel
+    assert "cancelTicketLocked(key, revision, actions);" in owner_destroyed
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in owner_destroyed
+    assert "cancelTicketLocked(key, revision, actions);" in missing
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in missing
+    assert "if (!openCommitted)" in deliver
+    assert "if (!admission)" in deliver
+    assert "if (recoveryAdoptionFailed)" in deliver
+    assert deliver.count("cancelTicketLocked(key, revision, actions);") >= 3
+    assert "admission->lease.abandon();" in deliver
+    assert "grant.admission.lease.release();" in grant_action
     assert "QMutexLocker" not in actions
     assert "posts" in actions
     assert "grants" in actions
@@ -122,7 +147,7 @@ def test_session_pending_tickets_have_one_hard_deadline():
     assert "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);" in connect
     assert "_timing.brokerQueueDeadlineTimer.cancel();" in destroy
     assert "MtProxy::EndpointAdmissionWaitReason::Slot" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" in deadline
+    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" not in deadline
     assert "waiting->reevaluate();" in deadline
     assert deadline.index("waiting->reevaluate();") < deadline.index(
         "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);")
@@ -137,10 +162,8 @@ def test_session_pending_tickets_have_one_hard_deadline():
         arbiter, "void EndpointAdmissionArbiter::Private::updateWakeLocked(")
     assert "ticket.scheduledOpenAt" in wake
     assert "ticket.reevaluateAt" in wake
-    assert "slot.phase != MtProxy::LiveSlotPhase::Live" in wake
-    assert "const auto sameTransfer" in wake
-    assert "const auto backgroundMain" in wake
-    assert "consider(owner->liveSince + kLiveQuantum);" in wake
+    assert "kLiveQuantum" not in wake
+    assert "liveSince" not in wake
 
 
 def test_proxy_check_uses_the_shared_broker():
@@ -148,38 +171,24 @@ def test_proxy_check_uses_the_shared_broker():
     source = read(PROXY_CHECK_CPP)
     start = function_body(source, "void StartProxyCheck(")
     reset = function_body(source, "void ResetProxyCheckState(")
-    reclaim = block_after(start, ".reclaim = [")
+    handshake = block_after(start, "&Connection::handshakeProgress")
+    connected = block_after(start, "&Connection::connected")
 
     assert '#include "mtproto/proxy/connection_broker.h"' in header
     assert "details::ConnectionTicket connectionTicket;" in header
     assert "runtime->proxyServices().broker().request({" in start
     assert "MtProxy::EndpointUse::ProxyCheck" in start
     assert "MtProxy::ReserveOpenSlot(" not in start
-    assert ".reclaim = [weak = std::weak_ptr<ProxyCheckConnection::Data>(state)," in start
-    assert "const auto state = weak.lock();" in start
-    assert "state->connection.get() != raw" in start
-    assert "state->mtproxySlotKey != key" in start
-    assert "if (fail) {" in reclaim
-    assert "fail(raw);" in reclaim
-    assert reclaim.count("state->connection.get() != raw") == 2
-    assert reclaim.count("state->mtproxySlotKey != key") == 2
-    fail_at = reclaim.index("fail(raw);")
-    assert reclaim.index("state->connection.get() != raw") < fail_at
-    assert reclaim.index("state->mtproxySlotKey != key") < fail_at
-    assert fail_at < reclaim.rindex("state->connection.get() != raw")
-    assert fail_at < reclaim.rindex("state->mtproxySlotKey != key")
-    assert reclaim.rindex("state->mtproxySlotKey != key") < reclaim.index(
-        "ResetProxyCheckState(")
-    assert "ResetProxyCheckState(" in start
-    assert "ProxyCloseOrigin::BrokerCancelled" in start
-    assert "endpointAdmissionArbiter().markTransportReady(" in start
-    assert "state->mtproxySlotKey" in start
-    assert "state->mtproxySlotAttempt" in start
+    assert ".reclaim =" not in start
+    assert "phase >= details::HandshakePhase::ServerHelloOk" in handshake
+    assert "state->mtproxyLease.transportReady();" in handshake
+    assert handshake.index("state->mtproxyLease.transportReady();") < (
+        handshake.index("SetProxyCheckProgress("))
+    assert "state->mtproxyLease.transportReady();" in connected
     assert "state->mtproxyLease = std::move(start.lease);" in start
     assert reset.index("state->connection.reset();") < reset.index(
         "state->mtproxyLease.release();")
-    assert "state->mtproxySlotKey = {};" in reset
-    assert "state->mtproxySlotAttempt = {};" in reset
+    assert "mtproxySlot" not in reset
     assert "ConnectionBrokerAction::Rejected" in start
 
 
@@ -244,7 +253,7 @@ def block_after(text: str, marker: str) -> str:
 if __name__ == "__main__":
     test_connection_broker_is_a_facade_over_the_shared_arbiter()
     test_ticket_cancellation_uses_runtime_and_ticket_identity()
-    test_arbiter_owns_queue_reservation_and_lifecycle()
+    test_arbiter_owns_one_exact_opening_permit_and_cleanup()
     test_session_pending_tickets_have_one_hard_deadline()
     test_proxy_check_uses_the_shared_broker()
     test_proxy_check_connection_request_designators_match_struct_order()

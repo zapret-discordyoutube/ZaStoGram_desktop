@@ -8,6 +8,7 @@ RUNTIME_DIR = SOURCE_DIR / "mtproto" / "runtime"
 ENDPOINT_IDENTITY_H = MTPROXY_DIR / "endpoint_identity.h"
 ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
+ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
 ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
@@ -249,13 +250,24 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     ):
         assert deleted not in arbiter_header
         assert deleted not in arbiter
-    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in arbiter_header
-    assert "enum class LiveSlotPhase" in arbiter_header
-    assert "void EndpointAdmissionArbiter::Private::releaseLiveSlot(" in arbiter
+    assert "struct EndpointOpeningPermit" in arbiter_header
+    assert "EndpointOpeningPermitOwner owner;" in arbiter_header
+    assert "LiveSlot" not in arbiter_header
+    assert "LiveSlot" not in arbiter
+    assert "struct EndpointOpeningPressure" in read(ENDPOINT_HEALTH_STATE_H)
+    assert "OpeningRetryBoundaryFor(state)" in arbiter
+    assert "void EndpointAdmissionArbiter::Private::releaseOpeningPermit(" in arbiter
     release = function_body(
-        arbiter, "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
-    assert "slot.incarnation != slotKey.incarnation" in release
+        arbiter, "void EndpointAdmissionArbiter::Private::releaseOpeningPermit(")
+    assert "std::get_if<ProxyConnectionAttempt>" in release
     assert "AttemptOwnerMatches" in release
+    assert "permit->second.owner = std::monostate();" in release
+    pressure = report_failure.split(
+        "if (terminal->finalAttemptTerminal", 1)[1].split(
+            "const auto runtimeGeneration", 1)[0]
+    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
+    assert "FailureReason::ServerHelloOkNoAppData" not in pressure
+    assert "state.openingPressure = {" in pressure
 
 
 def test_logs_and_proxy_status_use_phase_specific_names():

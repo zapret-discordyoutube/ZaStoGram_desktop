@@ -18,12 +18,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 class ProxyEndpointContext;
 class RuntimeEnvironment;
+namespace details {
+class EndpointAdmissionArbiter;
+} // namespace details
 } // namespace MTP
 
 namespace MTP::details::MtProxy {
 
 struct EndpointContextStorage;
-struct LiveSlotKey;
 
 using EndpointUse = ProxyConnectionUse;
 
@@ -147,9 +149,7 @@ public:
 	EndpointAttemptLease &operator=(EndpointAttemptLease &&other) noexcept;
 	~EndpointAttemptLease();
 
-	void bindLiveSlot(
-		const LiveSlotKey &slotKey,
-		const ProxyConnectionAttempt &attempt);
+	void transportReady();
 	void release();
 	[[nodiscard]] bool active() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
@@ -161,6 +161,7 @@ public:
 	[[nodiscard]] const QString &endpointKey() const;
 
 private:
+	friend class MTP::details::EndpointAdmissionArbiter;
 	friend class EndpointHealth;
 
 	EndpointAttemptLease(
@@ -168,15 +169,15 @@ private:
 		QString key,
 		ProxyConnectionAttempt attempt,
 		crl::time startedAt);
+	void armOpeningPermit(const ProxyConnectionAttempt &attempt);
+	void abandon();
 
 	std::shared_ptr<ProxyEndpointContext> _context;
 	QString _key;
 	ProxyConnectionAttempt _attempt;
-	QString _slotEndpointKey;
-	int _slotIndex = -1;
-	uint64 _slotIncarnation = 0;
 	crl::time _startedAt = 0;
 	bool _active = false;
+	bool _openingPermitHeld = false;
 
 };
 

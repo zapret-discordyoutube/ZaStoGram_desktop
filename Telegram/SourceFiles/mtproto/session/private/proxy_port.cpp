@@ -48,10 +48,6 @@ bool SessionProxyLease::active() const {
 	return _impl ? _impl->active() : false;
 }
 
-MtProxy::LiveSlotKey SessionProxyLease::slotKey() const {
-	return _impl ? _impl->slotKey() : MtProxy::LiveSlotKey();
-}
-
 uint64 SessionProxyLease::attemptId() const {
 	return _impl ? _impl->attemptId() : 0;
 }

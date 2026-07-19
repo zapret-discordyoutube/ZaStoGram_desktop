@@ -105,7 +105,6 @@ private:
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
-		MtProxy::LiveSlotKey mtproxySlotKey;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
@@ -116,7 +115,6 @@ private:
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
 		MainRecoveryHandle mtproxyRecovery;
 		SessionProxyLease mtproxyLease;
-		MtProxy::LiveSlotKey mtproxySlotKey;
 		ProxyConnectionAttempt mtproxyAttempt;
 		MainRecoveryHandle mainRecoveryBackoff;
 		MtProxyAttemptPlan mtproxyPlan;
@@ -173,12 +171,13 @@ private:
 	void onError(
 		not_null<AbstractConnection*> connection,
 		qint32 errorCode);
+	void onHandshakeProgress(
+		not_null<AbstractConnection*> connection);
 	void onConnected(not_null<AbstractConnection*> connection);
 	void onDisconnected(not_null<AbstractConnection*> connection);
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
 	[[nodiscard]] bool hasTransferDemand() const;
-	void reclaimMtproxySlot(MtProxy::LiveSlotKey key);
 	void resetEndpointAdmissionWait();
 	void cancelMainRecoveryBackoff();
 	void clearConnectionBrokerTickets();

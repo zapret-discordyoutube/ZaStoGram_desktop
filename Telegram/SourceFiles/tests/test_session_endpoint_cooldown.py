@@ -11,6 +11,9 @@ TLS_SOCKET_RECORDS_CPP = (
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+ENDPOINT_HEALTH_LIFECYCLE_CPP = (
+    SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
+    "endpoint_health_lifecycle.cpp")
 
 
 def test_session_uses_endpoint_health_admission_instead_of_local_cooldown():
@@ -56,23 +59,29 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     adapter = PROXY_ADAPTER_CPP.read_text(encoding="utf-8")
     lease = function_body(
         adapter, "void transportReady() override")
-    assert "_transportReady" in lease
-    assert "endpointAdmissionArbiter().markTransportReady(" in lease
+    endpoint_lease = function_body(
+        ENDPOINT_HEALTH_LIFECYCLE_CPP.read_text(encoding="utf-8"),
+        "void EndpointAttemptLease::transportReady()")
+    assert "_lease.transportReady();" in lease
     assert "_lease.release();" not in lease
-    assert connection.count("_state.mtproxyLease.transportReady();") == 2
+    assert "base::take(_openingPermitHeld)" in endpoint_lease
+    assert "releaseOpeningPermit(" in endpoint_lease
+    append = function_body(
+        connection, "bool SessionTransport::appendTestConnection(")
+    handshake = function_body(
+        connection, "void SessionTransport::onHandshakeProgress(")
+    assert "&AbstractConnection::handshakeProgress" in append
+    assert "HandshakePhase::ServerHelloOk" in handshake
+    assert "i->mtproxyLease.transportReady();" in handshake
+    assert "_state.mtproxyLease.transportReady();" in handshake
+    assert connection.count("_state.mtproxyLease.transportReady();") == 3
     destroy = function_body(
         connection, "void SessionTransport::destroyAllConnections(")
-    reclaim = function_body(
-        connection, "void SessionTransport::reclaimMtproxySlot(")
     clear = function_body(
         connection, "void SessionTransport::clearTestConnections()")
     remove = function_body(
         connection, "void SessionTransport::removeTestConnection(")
     assert destroy.index("_state.connection.reset();") < destroy.index(
-        "_state.mtproxyLease.release();")
-    assert reclaim.index("candidate->data.reset();") < reclaim.index(
-        "candidate->mtproxyLease.release();")
-    assert reclaim.index("_state.connection.reset();") < reclaim.index(
         "_state.mtproxyLease.release();")
     assert clear.index("connection.data.reset();") < clear.index(
         "connection.mtproxyLease.release();")
@@ -83,6 +92,13 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     assert "kTransferDemandGrace = 5 * crl::time(1000)" in connection
     assert "hasTransferDemand()" in grace
     assert "destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);" in grace
+    assert "reclaimMtproxySlot" not in connection
+    assert "LiveSlot" not in connection
+    classify = function_body(
+        connection, "SessionProxyEndpointUse SessionTransport::classifyEndpointUse(")
+    assert "SessionProxyEndpointUse::Upload" in classify
+    assert "SessionProxyEndpointUse::Media" in classify
+    assert "std::vector<TestConnection> testConnections;" in header
     assert destroy.index("_state.connection.reset();") < destroy.index(
         "_state.mtproxyLease.release();")
     deadline = function_body(
@@ -90,7 +106,7 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     assert "_state.endpointAdmissionWaitKey.ticketId" in deadline
     assert "_state.endpointAdmissionWaitRevision" in deadline
     assert "MtProxy::EndpointAdmissionWaitReason::Slot" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" in deadline
+    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" not in deadline
     assert "waiting->reevaluate();" in deadline
     assert deadline.index("waiting->reevaluate();") < deadline.index(
         "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);")

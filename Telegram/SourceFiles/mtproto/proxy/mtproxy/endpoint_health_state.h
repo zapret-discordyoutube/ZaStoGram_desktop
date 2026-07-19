@@ -98,9 +98,15 @@ struct MainRecoveryState {
 	uint64 replacementAttemptId = 0;
 };
 
+struct EndpointOpeningPressure {
+	FailureReason reason = FailureReason::None;
+	crl::time retryUntil = 0;
+};
+
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
+	EndpointOpeningPressure openingPressure;
 	FailureReason lastFailure = FailureReason::None;
 	QString lastDiagnostic;
 	crl::time terminalUntil = 0;

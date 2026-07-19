@@ -45,7 +45,6 @@ struct ConnectionBrokerDecision {
 struct ConnectionStart {
 	ConnectionTicketId ticketId = 0;
 	ProxyConnectionAttempt attempt;
-	MtProxy::LiveSlotKey slotKey;
 	MtProxy::MainRecoveryToken acceptedRecoveryToken;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
@@ -70,7 +69,6 @@ struct ConnectionRequest {
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
 	crl::time notBefore = 0;
 	QPointer<QObject> context;
-	Fn<void(MtProxy::LiveSlotKey)> reclaim;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 	crl::time waitStartedAt = 0;

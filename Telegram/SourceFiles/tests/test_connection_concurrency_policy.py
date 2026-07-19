@@ -14,61 +14,97 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
-def test_endpoint_policy_accounts_for_every_live_slot_phase():
+def test_endpoint_policy_owns_one_short_opening_permit():
     header = read(ARBITER_H)
     state = read(STATE_H)
     source = read(ARBITER_CPP)
 
-    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in header
-    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in header
-    for phase in ("Empty", "Reserved", "Opening", "Live", "Closing"):
-        assert f"{phase}," in header
+    assert "struct EndpointOpeningPermit" in header
+    assert "EndpointOpeningPermitOwner owner;" in header
+    assert "OpeningPermitTicketOwner" in header
+    assert "ProxyConnectionAttempt>" in header
     reserve = function_body(
         source, "bool EndpointAdmissionArbiter::Private::reserveTicketLocked(")
-    assert "pool.slots[slotIndex].phase != MtProxy::LiveSlotPhase::Empty" in reserve
-    assert "slot.phase = MtProxy::LiveSlotPhase::Reserved;" in reserve
-    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in source
+    revalidate = function_body(
+        source,
+        "void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(")
+    assign = function_body(
+        source,
+        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(")
+    boundary = function_body(
+        source, "TicketOpeningBoundary OpeningBoundaryForTicket(")
+    assert "std::holds_alternative<std::monostate>(permit.owner)" in reserve
+    assert "permit.owner = MtProxy::OpeningPermitTicketOwner{" in reserve
+    assert "if (std::holds_alternative<std::monostate>(permit.owner))" in assign
+    assert ".at = std::max(ticket.notBeforeAt, pressure.retryUntil)" in boundary
+    assert "if (boundary.at > inputs.now)" in reserve
+    assert reserve.index("if (boundary.at > inputs.now)") < reserve.index(
+        "MtProxy::ReserveOpenSlot(")
+    assert reserve.index("if (boundary.at > inputs.now)") < reserve.index(
+        "permit.owner = MtProxy::OpeningPermitTicketOwner{")
+    assert "|| boundary.at > inputs.now" in revalidate
+    assert "&& boundary.at <= inputs.now" in assign
+    assert assign.index("&& boundary.at <= inputs.now") < assign.index(
+        "const auto selected = selectLocked(")
+    assert assign.index("if (boundary.at > inputs.now)") < assign.index(
+        "if (occupied)")
+    delayed_status = assign.split(
+        "if (boundary.at > inputs.now)", 1)[1].split("if (occupied)", 1)[0]
+    assert "EndpointAdmissionWaitReason::HealthOrNotBefore" in delayed_status
+    assert "boundary.at - inputs.now" in delayed_status
+    assert "boundary.at" in delayed_status
+    assert "std::map<QString, MtProxy::EndpointOpeningPermit> _permits;" in source
+    assert "LiveSlot" not in header
+    assert "LiveSlot" not in source
     assert "EndpointAdmissionPolicyInput" not in state
     assert "EndpointUseCounts active" not in state
     assert "EndpointUseCounts scheduled" not in state
     assert "EvaluateEndpointAdmission(" not in state
 
 
-def test_transfer_requires_current_main_proof_and_yields_to_main_recovery():
+def test_transfer_requires_exact_current_local_main_proof():
     arbiter = function_body(
         read(ARBITER_CPP),
         "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
 
-    assert "!urgentWaiters" in arbiter
     assert "MtProxy::HasCurrentMainRelayProof(state" in arbiter
     assert "ticket.key.runtimeId" in arbiter
     assert "ticket.proxyGeneration" in arbiter
+    assert "EndpointMainRelayProof" not in arbiter
+    assert "urgentWaiters" not in arbiter
 
 
-def test_fixed_pool_exposes_four_occupied_slot_records():
+def test_opening_permit_releases_only_the_exact_attempt():
     header = read(ARBITER_H)
     source = read(ARBITER_CPP)
-    ready = function_body(
-        source, "void EndpointAdmissionArbiter::Private::markTransportReady(")
     release = function_body(
-        source, "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
+        source, "void EndpointAdmissionArbiter::Private::releaseOpeningPermit(")
 
-    assert "kEndpointLiveSlotCount = 4" in header
-    assert "LiveSlotPhase::Opening" in ready
-    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in ready
-    assert "slot.incarnation != slotKey.incarnation" in ready
-    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in release
+    assert "EndpointOpeningPermitOwner" in header
+    assert "const auto owner = std::get_if<ProxyConnectionAttempt>" in release
     assert "AttemptOwnerMatches" in release
-    assert "slot.incarnation != slotKey.incarnation" in release
+    assert "permit->second.owner = std::monostate();" in release
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in release
+    assert "markTransportReady" not in source
+    assert "releaseLiveSlot" not in source
     assert "kHealthyActiveCap" not in source
     assert "mainLaneReserved" not in source
 
 
-def test_dpi_failures_stay_health_owned_without_capacity_breaker():
+def test_opening_pressure_is_health_owned_and_read_by_the_arbiter():
     health = function_body(
         read(HEALTH_CPP), "void EndpointHealth::reportFailure(")
     arbiter = read(ARBITER_CPP)
 
+    assert "struct EndpointOpeningPressure" in read(STATE_H)
+    assert "OpeningRetryBoundaryFor(" in read(POLICY_CPP)
+    assert "return state.openingPressure;" in read(POLICY_CPP)
+    assert "terminal->finalAttemptTerminal" in health
+    assert "FailureReason::ClientHelloSentNoServerHello" in health
+    assert "state.openingPressure.retryUntil" in health
+    assert "state.openingPressure = {" in health
+    assert "const auto pressure = MtProxy::OpeningRetryBoundaryFor(state);" in arbiter
+    assert ".at = std::max(ticket.notBeforeAt, pressure.retryUntil)" in arbiter
     assert "report.routesExhausted" in health
     assert "FailureNeedsRecipeEscalation(report.reason)" in health
     assert "state.recipeFailureStreak" in health
@@ -108,8 +144,23 @@ def test_arbiter_prioritizes_and_fairly_ages_endpoint_requests():
         source, "Ticket *EndpointAdmissionArbiter::Private::selectLocked(")
 
     assert "kAgingStep = crl::time(15 * 1000)" in source
-    for name in ("UrgentMain", "OrdinaryMain", "ProxyCheck", "Background"):
+    for name in (
+            "ForegroundMain",
+            "ForegroundTransfer",
+            "UrgentMain",
+            "OrdinaryMain",
+            "Auxiliary",
+            "Background"):
         assert name in source
+    assert source.index("ForegroundMain,") < source.index("ForegroundTransfer,")
+    assert source.index("ForegroundTransfer,") < source.index("UrgentMain,")
+    assert source.index("UrgentMain,") < source.index("Auxiliary,")
+    compact_priority = compact(priority)
+    assert "ticket.use == MtProxy::EndpointUse::Main" in priority
+    assert "result = foreground ? PriorityClass::ForegroundMain" in compact_priority
+    assert "&& IsTransfer(ticket.use) && hasMainProof" in compact_priority
+    assert "result = PriorityClass::ForegroundTransfer;" in priority
+    assert "ownsMainRecoveryLocked" not in priority
     assert "PriorityClass::OrdinaryMain" in priority
     assert "PriorityClass::UrgentMain" in priority
     assert "PriorityIndex(PriorityClass::OrdinaryMain)" in priority
@@ -139,9 +190,9 @@ def function_body(text: str, signature: str) -> str:
 
 
 if __name__ == "__main__":
-    test_endpoint_policy_accounts_for_every_live_slot_phase()
-    test_transfer_requires_current_main_proof_and_yields_to_main_recovery()
-    test_fixed_pool_exposes_four_occupied_slot_records()
-    test_dpi_failures_stay_health_owned_without_capacity_breaker()
+    test_endpoint_policy_owns_one_short_opening_permit()
+    test_transfer_requires_exact_current_local_main_proof()
+    test_opening_permit_releases_only_the_exact_attempt()
+    test_opening_pressure_is_health_owned_and_read_by_the_arbiter()
     test_route_failures_remain_local_until_routes_are_exhausted()
     test_arbiter_prioritizes_and_fairly_ages_endpoint_requests()

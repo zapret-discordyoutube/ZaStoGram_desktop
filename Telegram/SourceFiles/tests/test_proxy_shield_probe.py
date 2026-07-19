@@ -56,6 +56,7 @@ def test_active_session_shortcut_requires_a_live_main_proof():
 def test_queued_and_rejected_admission_have_distinct_probe_outcomes():
     start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
 
+    assert ".reclaim =" not in start
     assert ".status = [=](details::ConnectionBrokerDecision decision)" in start
     assert "ConnectionBrokerAction::Queued" in start
     assert "ConnectionBrokerAction::StartAfter" in start
@@ -79,7 +80,17 @@ def test_proxy_check_reports_progressive_transport_phases():
         "ProxyCheckStatus::FirstTlsAppData",
     ):
         assert status in phase_map
-    assert "ProxyCheckStatusForHandshake(raw->handshakePhase())" in start
+    assert "const auto phase = raw->handshakePhase();" in start
+    assert "phase >= details::HandshakePhase::ServerHelloOk" in start
+    assert "state->mtproxyLease.transportReady();" in start
+    assert "ProxyCheckStatusForHandshake(phase)" in start
+    assert start.index(
+        "state->mtproxyLease.transportReady();",
+        start.index("&Connection::handshakeProgress"),
+    ) < start.index(
+        "ProxyCheckStatusForHandshake(phase)",
+        start.index("&Connection::handshakeProgress"),
+    )
     assert "ProxyCheckStatus::FirstMtprotoPayload" in start
     assert ".scope = MtProxy::SuccessScope::Relay" in start
 
@@ -132,6 +143,23 @@ def test_probe_terminal_is_telemetry_not_canonical_health():
     assert "EndpointUse::Main" in canonical
 
 
+def test_probe_failure_releases_exact_permit_before_external_callback():
+    start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
+    finish = function_body(start, "const auto finishWithFail = [=](")
+    terminal = function_body(
+        finish, "if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint))")
+
+    assert "reportMtproxyFailure({" in terminal
+    assert "state->mtproxyLease.release();" not in terminal
+    assert finish.count("state->mtproxyLease.release();") == 1
+    assert finish.index("reportMtproxyFailure({") < finish.index(
+        "state->mtproxyLease.release();")
+    assert finish.index("state->mtproxyLease.release();") < finish.index(
+        "ReportProxyEvent(runtime, {")
+    assert finish.index("state->mtproxyLease.release();") < finish.index(
+        "fail(raw);")
+
+
 def test_connection_box_uses_probe_status_and_composed_view():
     source = read(CONNECTION_BOX_CPP)
     header = read(CONNECTION_BOX_H)
@@ -182,4 +210,5 @@ if __name__ == "__main__":
     test_probe_timeout_starts_after_handoff_and_uses_network_budget()
     test_probe_facts_do_not_publish_selected_main_status()
     test_probe_terminal_is_telemetry_not_canonical_health()
+    test_probe_failure_releases_exact_permit_before_external_callback()
     test_connection_box_uses_probe_status_and_composed_view()

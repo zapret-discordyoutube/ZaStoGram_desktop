@@ -8,6 +8,7 @@ HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
+POLICY_H = MTPROXY_DIR / "endpoint_health_policy.h"
 CONTEXT_CPP = SOURCE_DIR / "mtproto" / "proxy" / "proxy_endpoint_context.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 TLS_CPP = MTPROXY_DIR / "tls_socket.cpp"
@@ -40,6 +41,15 @@ def test_endpoint_health_declares_typed_view_and_verdict_contracts():
     assert "ProxySchedulerLifecycle schedulerLifecycle" in header
     assert "int recipeLevel" in state
     assert "QString lastDiagnostic" in state
+    assert "struct EndpointOpeningPressure" in state
+    assert "FailureReason reason = FailureReason::None;" in state
+    assert "crl::time retryUntil = 0;" in state
+    assert "EndpointOpeningPressure openingPressure;" in state
+    assert "EndpointOpeningPressure OpeningRetryBoundaryFor(" in read(POLICY_H)
+    reader = function_body(read(POLICY_CPP), "OpeningRetryBoundaryFor(")
+    assert "return state.openingPressure;" in reader
+    assert "canonicalVerdicts" not in reader
+    assert "runtime" not in reader
     assert "Snapshot" not in header
     assert "EndpointEvent" not in header
 
@@ -73,6 +83,31 @@ def test_terminal_outcome_is_recorded_once_per_current_attempt():
     assert "if (!terminal)" in failure
     assert failure.index("if (!terminal)") < failure.index(
         "state.lastFailure = report.reason;")
+    pressure = failure.split(
+        "if (terminal->finalAttemptTerminal", 1)[1].split(
+            "const auto runtimeGeneration", 1)[0]
+    assert "report.reason" in pressure
+    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
+    assert "report.terminalAt" in pressure
+    assert "CooldownFor(" in pressure
+    assert "state.consecutiveFailures + 1" in pressure
+    assert "retryUntil > state.openingPressure.retryUntil" in pressure
+    assert "state.openingPressure = {" in pressure
+    for excluded in (
+            "DnsFailed",
+            "TcpConnectTimeout",
+            "TcpConnectedNoClientHelloWrite",
+            "TlsAlertAfterClientHello",
+            "ServerHelloHmacMismatch",
+            "ServerHelloOkNoAppData",
+            "ServerHelloOkNoMtprotoData",
+            "ConnectedNoMtprotoData",
+            "MtpReceiveTimeoutAfterData",
+            "AppDataRemoteClosed"):
+        assert f"FailureReason::{excluded}" not in pressure
+    assert source.count("state.openingPressure = {") == 1
+    assert failure.index("if (!terminal)") < failure.index(
+        "if (terminal->finalAttemptTerminal")
 
 
 def test_only_main_without_live_main_proof_can_degrade_canonical_view():
@@ -107,6 +142,7 @@ def test_relay_success_is_generation_scoped_and_main_proof_is_typed():
     assert "RetireRelayProof(state, identity)" in success
     assert "if (report.use == EndpointUse::Main)" in success
     assert "PruneEndpointOutcomesAfterSuccess(" in success
+    assert "openingPressure" not in success
     assert "result.mainProof = MtProxy::CurrentMainRelayProof(" in context
     assert "runtimeGeneration" in context
 
@@ -156,10 +192,12 @@ def test_tls_socket_owns_one_absolute_serverhello_terminal():
     assert "reportTransportEvent(" in terminal
 
 
-def test_resolving_backstop_includes_the_frozen_serverhello_budget():
+def test_resolving_forwards_phase_and_keeps_the_frozen_serverhello_budget():
     source = read(RESOLVING_CPP)
     budget = function_body(
         source, "crl::time ResolvingConnection::fullConnectTimeout() const")
+    add_route = function_body(source, "void ResolvingConnection::addRouteAttempt(")
+    phase = function_body(source, "HandshakePhase ResolvingConnection::handshakePhase() const")
 
     assert "_mtproxyPlan.serverHelloTimeout" in budget
     assert "kRouteAttemptTimeout" in budget
@@ -169,6 +207,11 @@ def test_resolving_backstop_includes_the_frozen_serverhello_budget():
     assert "+ serverHelloTimeout" in budget
     assert "MergeExhaustedFailure(" in source
     assert "TypedRouteFailure(" in source
+    assert "&AbstractConnection::handshakeProgress" in add_route
+    assert add_route.index("refreshAttemptTimeout();") < add_route.index(
+        "handshakeProgress();")
+    assert "_child->handshakePhase()" in phase
+    assert "ChildHandshakePhase(attempt.child.get())" in phase
 
 
 def test_arbiter_handoff_is_the_only_attempt_creation_path():
@@ -205,5 +248,5 @@ if __name__ == "__main__":
     test_old_generation_reports_are_rejected_before_state_mutation()
     test_endpoint_view_rejects_a_mismatched_generation()
     test_tls_socket_owns_one_absolute_serverhello_terminal()
-    test_resolving_backstop_includes_the_frozen_serverhello_budget()
+    test_resolving_forwards_phase_and_keeps_the_frozen_serverhello_budget()
     test_arbiter_handoff_is_the_only_attempt_creation_path()

@@ -48,9 +48,11 @@ def test_shared_context_owns_storage_and_one_admission_arbiter():
     assert "openStates" not in storage
     arbiter_header = read(ARBITER_H)
     arbiter = read(ARBITER_CPP)
-    assert "struct EndpointLivePool" in arbiter_header
-    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in arbiter_header
-    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
+    assert "struct EndpointOpeningPermit" in arbiter_header
+    assert "EndpointOpeningPermitOwner owner;" in arbiter_header
+    assert "std::map<QString, MtProxy::EndpointOpeningPermit> _permits;" in arbiter
+    assert "LiveSlot" not in arbiter_header
+    assert "LiveSlot" not in arbiter
     assert "std::set<ProxyRuntimeId> runtimes;" in storage
     assert "admissionReleaseListeners" not in storage
 
@@ -61,12 +63,16 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
     arbiter = function_body(
         read(ARBITER_CPP),
         "void EndpointAdmissionArbiter::Private::unregisterRuntime(")
+    release_permits = function_body(
+        read(ARBITER_CPP),
+        "void EndpointAdmissionArbiter::Private::releaseMatchingPermitsLocked(")
 
     assert "_arbiter->unregisterRuntime(runtimeId);" in context
     assert "_storage.runtimes.erase(runtimeId);" in arbiter
     assert "InvalidateRuntimeDispatch(dispatch->second);" in arbiter
     assert "cancelTicketLocked(key, 0, actions);" in arbiter
-    assert "closeMatchingAttemptsLocked(" in arbiter
+    assert "releaseMatchingPermitsLocked(" in arbiter
+    assert "permit.owner = std::monostate();" in release_permits
     assert "state.generations.erase(runtimeId);" in arbiter
     assert "i->second.runtimeId == runtimeId" in arbiter
     assert "MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);" in arbiter
@@ -75,12 +81,37 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
         "updateWakeLocked(inputs, actions);")
 
 
+def test_runtime_cancel_retires_exact_opening_before_permit_reuse():
+    source = read(ARBITER_CPP)
+    retire = function_body(
+        source,
+        "void EndpointAdmissionArbiter::Private::retireOpeningAttemptLocked(")
+    cancel = function_body(
+        source, "void EndpointAdmissionArbiter::Private::cancelRuntime(")
+
+    assert "attemptStarts.find(owner.attemptId)" in retire
+    assert "AttemptOwnerMatches(owner, exact)" in retire
+    assert "FinishMainRecoveryByReplacementAttemptLocked(" in retire
+    assert "std::move(opening->second.ownerDestroyed)" in retire
+    assert "attemptStarts.erase(opening);" in retire
+    assert "activeTraces.erase" not in retire
+    assert "liveLanes" not in retire
+    assert "std::get_if<ProxyConnectionAttempt>(" in cancel
+    retirement = cancel.index("retireOpeningAttemptLocked(endpointKey, *owner, actions);")
+    release = cancel.index("permit.owner = std::monostate();", retirement)
+    drain = cancel.index("drainEndpointLocked(endpointKey, inputs, actions);", release)
+    assert retirement < release < drain
+
+
 def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
     source = read(ARBITER_CPP)
     post = function_body(source, "void PostAction::run()")
     actions = function_body(source, "void Actions::run()")
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancel(")
+    missing = function_body(
+        source, "void EndpointAdmissionArbiter::Private::deliveryMissing(")
+    grant = function_body(source, "void GrantAction::run()")
 
     assert "registrationLive->load(std::memory_order_acquire)" in post
     assert "guardedTarget" in post
@@ -89,28 +120,41 @@ def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
     assert "grant.run();" in actions
     assert cancel.index("QMutexLocker lock(&_storage.mutex);") < cancel.index("actions.run();")
     assert cancel.index("actions.run();") > cancel.rindex("}")
+    assert "cancelTicketLocked(key, revision, actions);" in missing
+    assert "drainEndpointLocked(endpointKey, inputs, actions);" in missing
+    assert "grant.admission.lease.release();" in grant
 
 
-def test_health_retirement_and_exact_live_slot_release_are_separate():
+def test_moved_lease_separates_health_retirement_from_exact_permit_release():
     context = read(CONTEXT_CPP)
     lifecycle = read(HEALTH_LIFECYCLE_CPP)
     arbiter = read(ARBITER_CPP)
+    health_header = read(HEALTH_H)
     cancel = function_body(
         context, "void ProxyEndpointContext::cancelEndpointAttempt(")
     release = function_body(lifecycle, "void EndpointAttemptLease::release()")
+    grant = function_body(
+        arbiter, "void EndpointAdmissionArbiter::Private::deliverGrant(")
     ready = function_body(
-        arbiter, "void EndpointAdmissionArbiter::Private::markTransportReady(")
+        lifecycle, "void EndpointAttemptLease::transportReady()")
 
     assert "QMutexLocker lock(&_storage->mutex);" in cancel
     assert "AttemptIdentity(owner.attemptId, attemptState) == owner" in cancel
     assert "_context->cancelEndpointAttempt(_key, _attempt);" in release
-    assert "endpointAdmissionArbiter().releaseLiveSlot(" in release
-    assert release.index("cancelEndpointAttempt(") < release.index("releaseLiveSlot(")
-    assert "slot.phase != MtProxy::LiveSlotPhase::Opening" in ready
-    assert "slot.incarnation != slotKey.incarnation" in ready
-    assert "AttemptOwnerMatches(*owner, attempt)" in ready
-    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in ready
-    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" not in ready
+    assert "endpointAdmissionArbiter().releaseOpeningPermit(" in release
+    assert release.index("cancelEndpointAttempt(") < release.index(
+        "releaseOpeningPermit(")
+    assert "base::take(_openingPermitHeld)" in ready
+    assert "cancelEndpointAttempt(" not in ready
+    assert "releaseOpeningPermit(" in ready
+    assert ", _openingPermitHeld(base::take(other._openingPermitHeld))" in lifecycle
+    assert "_openingPermitHeld = base::take(other._openingPermitHeld);" in lifecycle
+    assert "permit->second.owner = attempt;" in grant
+    assert "admission->lease.armOpeningPermit(attempt);" in grant
+    assert grant.index("admission->lease.armOpeningPermit(attempt);") < grant.index(
+        "actions.grants.push_back({")
+    assert "LiveSlot" not in health_header
+    assert "slotKey" not in health_header
     assert "SynchronizeEndpointAdmissionAggregate" not in context
     assert "EndpointOpeningEvent" not in lifecycle
 
@@ -143,7 +187,7 @@ def test_generation_change_cancels_only_older_tickets():
     assert "ticket->proxyGeneration < proxyGeneration" in cancel
     assert "postGenerationCancelledStatusLocked(" in cancel
     assert "cancelTicketLocked(key, 0, actions);" in cancel
-    assert "closeMatchingAttemptsLocked(" in cancel
+    assert "releaseMatchingPermitsLocked(" in cancel
     assert "attempt.proxyGeneration < proxyGeneration" in cancel
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
     assert cancel.rindex("actions.run();") > cancel.rindex(
@@ -220,8 +264,9 @@ if __name__ == "__main__":
     test_domain_injects_one_shared_endpoint_context_into_all_runtimes()
     test_shared_context_owns_storage_and_one_admission_arbiter()
     test_runtime_unregister_cancels_tickets_and_prunes_generation_state()
+    test_runtime_cancel_retires_exact_opening_before_permit_reuse()
     test_ticket_callbacks_are_invalidated_and_delivered_after_unlock()
-    test_health_retirement_and_exact_live_slot_release_are_separate()
+    test_moved_lease_separates_health_retirement_from_exact_permit_release()
     test_composed_view_is_generation_scoped_and_main_only()
     test_generation_change_cancels_only_older_tickets()
     test_admission_freezes_a_bounded_faketls_plan()

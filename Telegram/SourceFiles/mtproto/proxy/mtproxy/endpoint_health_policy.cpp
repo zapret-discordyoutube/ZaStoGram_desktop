@@ -148,6 +148,11 @@ FailureTraits TraitsFor(FailureReason reason) {
 	return TraitsFor(reason).needsCooldown;
 }
 
+EndpointOpeningPressure OpeningRetryBoundaryFor(
+		const EndpointState &state) {
+	return state.openingPressure;
+}
+
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
 	return TraitsFor(reason).escalatesRecipe;
 }

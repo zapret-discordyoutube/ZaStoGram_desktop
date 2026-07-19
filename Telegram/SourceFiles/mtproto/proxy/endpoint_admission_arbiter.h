@@ -14,7 +14,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 
-#include <array>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -31,78 +30,26 @@ namespace MTP::details::MtProxy {
 
 struct EndpointContextStorage;
 
-struct LiveSlotKey {
-	QString endpointKey;
-	int index = -1;
-	uint64 incarnation = 0;
-
-	bool operator==(const LiveSlotKey &other) const = default;
-};
-
-enum class LiveSlotEntitlement {
-	ForegroundMain,
-	ForegroundMedia,
-	ForegroundUpload,
-	BackgroundMain,
-};
-
-enum class LiveSlotPhase {
-	Empty,
-	Reserved,
-	Opening,
-	Live,
-	Closing,
-};
-
 enum class EndpointAdmissionWaitReason {
 	None,
 	Slot,
-	ClosingSlot,
 	HealthOrNotBefore,
 };
 
-struct LiveSlotTicketOwner {
+struct OpeningPermitTicketOwner {
 	AdmissionTicketKey key;
 	uint64 revision = 0;
 
-	bool operator==(const LiveSlotTicketOwner &other) const = default;
+	bool operator==(const OpeningPermitTicketOwner &other) const = default;
 };
 
-struct LiveSlotAttemptOwner {
-	ProxyConnectionAttempt attempt;
-	QPointer<QObject> owner;
-	Fn<void(LiveSlotKey)> reclaim;
-	crl::time liveSince = 0;
-};
-
-struct LiveSlotClosingState {
-	LiveSlotAttemptOwner incumbent;
-	std::optional<LiveSlotTicketOwner> pendingSuccessor;
-};
-
-using LiveSlotOwner = std::variant<
+using EndpointOpeningPermitOwner = std::variant<
 	std::monostate,
-	LiveSlotTicketOwner,
-	LiveSlotAttemptOwner,
-	LiveSlotClosingState>;
+	OpeningPermitTicketOwner,
+	ProxyConnectionAttempt>;
 
-struct EndpointLiveSlot {
-	LiveSlotEntitlement entitlement = LiveSlotEntitlement::ForegroundMain;
-	LiveSlotPhase phase = LiveSlotPhase::Empty;
-	uint64 incarnation = 0;
-	LiveSlotOwner owner;
-};
-
-inline constexpr auto kEndpointLiveSlotCount = 4;
-
-struct EndpointLivePool {
-	std::array<EndpointLiveSlot, kEndpointLiveSlotCount> slots = {{
-		{ LiveSlotEntitlement::ForegroundMain },
-		{ LiveSlotEntitlement::ForegroundMedia },
-		{ LiveSlotEntitlement::ForegroundUpload },
-		{ LiveSlotEntitlement::BackgroundMain },
-	}};
-	std::optional<LiveSlotKey> fairnessClosing;
+struct EndpointOpeningPermit {
+	EndpointOpeningPermitOwner owner;
 	OpenSlotSchedule openings;
 };
 
@@ -136,7 +83,6 @@ struct EndpointAdmissionUpdate final {
 struct EndpointAdmissionGrant final {
 	AdmissionTicketKey key;
 	uint64 revision = 0;
-	MtProxy::LiveSlotKey slotKey;
 	uint64 proxyGeneration = 0;
 	MtProxy::EndpointId endpoint;
 	MtProxy::EndpointUse use = MtProxy::EndpointUse::Main;
@@ -159,7 +105,6 @@ struct EndpointAdmissionRequest final {
 	ProxyTraceId traceId = 0;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
-	Fn<void(MtProxy::LiveSlotKey)> reclaim;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
 	crl::time waitStartedAt = 0;
@@ -195,11 +140,8 @@ public:
 		uint64 proxyGeneration);
 	void drainEndpoint(const QString &endpointKey);
 	void reevaluate(AdmissionTicketKey key, uint64 revision);
-	void markTransportReady(
-		const MtProxy::LiveSlotKey &slotKey,
-		const ProxyConnectionAttempt &attempt);
-	void releaseLiveSlot(
-		const MtProxy::LiveSlotKey &slotKey,
+	void releaseOpeningPermit(
+		const QString &endpointKey,
 		const ProxyConnectionAttempt &attempt);
 	void composeEndpointViewLocked(
 		const MtProxy::EndpointId &endpoint,

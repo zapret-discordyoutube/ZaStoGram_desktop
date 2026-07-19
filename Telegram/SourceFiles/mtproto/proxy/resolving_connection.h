@@ -40,6 +40,7 @@ public:
 	bool isConnected() const override;
 	void timedOut() override;
 	void markProxyMtprotoPayloadReceived() override;
+	HandshakePhase handshakePhase() const override;
 	ProxyConnectionAttempt proxyConnectionAttempt() const override;
 	ProxyTransportFailure proxyTransportFailure() const override;
 

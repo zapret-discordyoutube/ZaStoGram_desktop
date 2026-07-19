@@ -263,7 +263,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.traceId = traceId,
 			.owner = request.context,
 			.ownerDestroyed = ownerDestroyed,
-			.reclaim = std::move(request.reclaim),
 			.status = [
 				runtime,
 				diagnostics,
@@ -295,7 +294,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				start = std::move(request.start)
 			](EndpointAdmissionGrant grant) mutable {
 				auto admission = std::move(grant.admission);
-				admission.lease.bindLiveSlot(grant.slotKey, grant.attempt);
 				ReportAdmissionEvent(
 					runtime.data(),
 					*diagnostics,
@@ -308,7 +306,6 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 				auto value = ConnectionStart{
 					.ticketId = grant.key.ticketId,
 					.attempt = grant.attempt,
-					.slotKey = std::move(grant.slotKey),
 					.acceptedRecoveryToken
 						= grant.acceptedRecoveryToken,
 					.proxyGeneration = grant.proxyGeneration,

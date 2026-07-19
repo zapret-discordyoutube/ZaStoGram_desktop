@@ -377,7 +377,10 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 		raw,
 		&AbstractConnection::handshakeProgress,
 		this,
-		[=] { refreshAttemptTimeout(); });
+		[=] {
+			refreshAttemptTimeout();
+			handshakeProgress();
+		});
 	connect(
 		raw,
 		&AbstractConnection::error,
@@ -984,6 +987,19 @@ void ResolvingConnection::connectToServer(
 
 bool ResolvingConnection::isConnected() const {
 	return _child ? _child->isConnected() : false;
+}
+
+HandshakePhase ResolvingConnection::handshakePhase() const {
+	if (_connected && _child) {
+		return _child->handshakePhase();
+	}
+	auto result = HandshakePhase::None;
+	for (const auto &attempt : _routeAttempts) {
+		result = std::max(
+			result,
+			ChildHandshakePhase(attempt.child.get()));
+	}
+	return result;
 }
 
 ProxyConnectionAttempt ResolvingConnection::proxyConnectionAttempt() const {

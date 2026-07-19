@@ -46,9 +46,9 @@ STALE_ATTEMPT = "StaleAttempt"
 MISSING_OR_DUPLICATE = "MissingOrDuplicate"
 RETIRED_WITH_SURVIVORS = "RetiredWithSurvivors"
 RETIRED_FINAL = "RetiredFinal"
-PUNISHED_MISSING = "PunishedMissing"
-HEALTHY_ACTIVE_CAP = 1
+TERMINAL_ATTEMPT = "TerminalAttempt"
 ATTEMPT_HARD_TTL = 120000
+OPENING_PRESSURE_COOLDOWN = 15000
 ABC_ENDPOINT = "151.247.209.166.sslip.io:45632"
 
 
@@ -89,7 +89,6 @@ class EndpointAttemptState:
     runtime_id: int = 0
     proxy_generation: int = 0
     started_at: int = 0
-    admission_active: bool = True
 
 
 @dataclass(frozen=True)
@@ -112,7 +111,9 @@ class RelayReport:
 class EndpointState:
     generations: dict = field(default_factory=dict)
     attempt_starts: dict = field(default_factory=dict)
-    active: int = 0
+    opening_permit: RelayProofIdentity | None = None
+    opening_pressure_reason: str = NONE
+    opening_pressure_retry_until: int = 0
     proxy_epoch: int = 1
     success_epoch: int = 0
     relay_proofs: dict = field(default_factory=dict)
@@ -325,29 +326,10 @@ def has_relay_proof(state, identity):
     return identity in state.relay_proofs
 
 
-def active_endpoint_admission_count(state):
-    return sum(
-        admission.admission_active
-        for admission in state.attempt_starts.values())
-
-
-def synchronize_endpoint_admission_aggregate(state):
-    state.active = active_endpoint_admission_count(state)
-
-
-def release_admission_for_relay_candidate(state, identity):
-    admission = state.attempt_starts.get(identity.attempt_id)
-    if (
-        admission is None
-        or admission.runtime_id != identity.runtime_id
-        or admission.proxy_generation != identity.proxy_generation
-        or not admission.admission_active
-    ):
+def release_opening_permit(state, identity):
+    if state.opening_permit != identity:
         return False
-    state.attempt_starts[identity.attempt_id] = replace(
-        admission,
-        admission_active=False)
-    synchronize_endpoint_admission_aggregate(state)
+    state.opening_permit = None
     return True
 
 
@@ -387,7 +369,12 @@ def apply_runtime_proxy_generation(state, runtime_id, proxy_generation):
             and admission.proxy_generation < proxy_generation
         )
     }
-    synchronize_endpoint_admission_aggregate(state)
+    if (
+        state.opening_permit is not None
+        and state.opening_permit.runtime_id == runtime_id
+        and state.opening_permit.proxy_generation < proxy_generation
+    ):
+        state.opening_permit = None
     state.relay_proofs = {
         identity: proof
         for identity, proof in state.relay_proofs.items()
@@ -405,7 +392,11 @@ def prune_expired_endpoint_state(state, now):
         for attempt_id, admission in state.attempt_starts.items()
         if now - admission.started_at <= ATTEMPT_HARD_TTL
     }
-    synchronize_endpoint_admission_aggregate(state)
+    if (
+        state.opening_permit is not None
+        and not has_endpoint_attempt(state, state.opening_permit)
+    ):
+        state.opening_permit = None
 
 
 def seed_admission(store, report):
@@ -418,10 +409,9 @@ def seed_admission(store, report):
         runtime_id=report.runtime_id,
         proxy_generation=report.proxy_generation,
         started_at=report.started_at)
-    synchronize_endpoint_admission_aggregate(state)
 
 
-def public_admit(store, report, now):
+def admit_opening(store, report, now):
     state = store.state(report.endpoint)
     prune_expired_endpoint_state(state, now)
     if runtime_proxy_generation_is_stale(
@@ -433,9 +423,13 @@ def public_admit(store, report, now):
         state,
         report.runtime_id,
         report.proxy_generation)
-    if state.active >= HEALTHY_ACTIVE_CAP:
+    if (
+        state.opening_permit is not None
+        or state.opening_pressure_retry_until > now
+    ):
         return False
     seed_admission(store, report)
+    state.opening_permit = relay_proof_identity(report)
     return True
 
 
@@ -446,7 +440,6 @@ def promote_relay_proof(state, identity, proof):
         return MISSING_ADMISSION
     state.relay_proofs[identity] = proof
     del state.attempt_starts[identity.attempt_id]
-    synchronize_endpoint_admission_aggregate(state)
     synchronize_relay_proof_aggregate(state)
     return INSERTED
 
@@ -611,15 +604,27 @@ def report_failure(store, report, reason, now):
         report.proxy_generation)
     if failure_from_stale_attempt(report, state):
         return STALE_ATTEMPT
-    retired = retire_relay_proof_record(state, relay_proof_identity(report))
+    identity = relay_proof_identity(report)
+    owned_attempt = has_endpoint_attempt(state, identity)
+    retired = retire_relay_proof_record(state, identity)
+    if not owned_attempt and not retired:
+        return MISSING_OR_DUPLICATE
+    if owned_attempt:
+        del state.attempt_starts[report.attempt_id]
+        if reason == NO_SERVERHELLO:
+            retry_until = now + OPENING_PRESSURE_COOLDOWN
+            if retry_until > state.opening_pressure_retry_until:
+                state.opening_pressure_reason = reason
+                state.opening_pressure_retry_until = retry_until
+        release_opening_permit(state, identity)
     if state.relay_proven:
         return (
             RETIRED_WITH_SURVIVORS
             if retired
-            else MISSING_OR_DUPLICATE
+            else TERMINAL_ATTEMPT
         )
     punish_final_failure(state, reason, now)
-    return RETIRED_FINAL if retired else PUNISHED_MISSING
+    return RETIRED_FINAL if retired else TERMINAL_ATTEMPT
 
 
 def report_relay_stall(store, report, now):
@@ -678,7 +683,11 @@ def unregister_runtime(store, runtime_id):
             for attempt_id, admission in state.attempt_starts.items()
             if admission.runtime_id != runtime_id
         }
-        synchronize_endpoint_admission_aggregate(state)
+        if (
+            state.opening_permit is not None
+            and state.opening_permit.runtime_id == runtime_id
+        ):
+            state.opening_permit = None
         state.relay_proofs = {
             identity: proof
             for identity, proof in state.relay_proofs.items()
@@ -875,20 +884,20 @@ def make_relay_report(
         started_at=started_at)
 
 
-def test_keyless_release_preserves_exact_promotion_lineage():
+def test_opening_permit_release_preserves_exact_promotion_lineage():
     report = make_relay_report()
     unrelated = replace(report, attempt_id=169)
     store = CanonicalEndpointStore()
-    assert public_admit(store, report, now=100)
+    assert admit_opening(store, report, now=100)
     state = store.state(report.endpoint)
     identity = relay_proof_identity(report)
 
-    assert state.active == HEALTHY_ACTIVE_CAP
-    assert release_admission_for_relay_candidate(state, identity)
-    assert state.active == 0
+    assert state.opening_permit == identity
+    assert release_opening_permit(state, identity)
+    assert state.opening_permit is None
     assert set(state.attempt_starts) == {report.attempt_id}
     assert has_endpoint_attempt(state, identity)
-    assert not release_admission_for_relay_candidate(
+    assert not release_opening_permit(
         state,
         relay_proof_identity(unrelated))
     assert report_relay_success(store, unrelated, now=150) == MISSING_ADMISSION
@@ -903,15 +912,23 @@ def test_canonical_endpoint_abc_lifecycle():
     c = make_relay_report(runtime_id=3, attempt_id=170, started_at=120)
 
     serialized = CanonicalEndpointStore()
-    assert public_admit(serialized, a, now=90)
-    assert not public_admit(serialized, b, now=90)
-    assert serialized.state(ABC_ENDPOINT).active == HEALTHY_ACTIVE_CAP
+    assert admit_opening(serialized, a, now=90)
+    assert not admit_opening(serialized, b, now=90)
+    serialized_state = serialized.state(ABC_ENDPOINT)
+    assert serialized_state.opening_permit == relay_proof_identity(a)
+    assert report_failure(serialized, a, NO_SERVERHELLO, now=100) == (
+        TERMINAL_ATTEMPT)
+    assert serialized_state.opening_permit is None
+    assert serialized_state.opening_pressure_reason == NO_SERVERHELLO
+    assert serialized_state.opening_pressure_retry_until == 15100
+    assert not admit_opening(serialized, b, now=15099)
+    assert admit_opening(serialized, b, now=15100)
 
     store = CanonicalEndpointStore()
     for report in (a, b, c):
         seed_admission(store, report)
     state = store.state(ABC_ENDPOINT)
-    assert state.active == 3
+    assert len(state.attempt_starts) == 3
 
     assert report_relay_success(store, a, now=1000) == INSERTED
     assert report_relay_success(store, b, now=1100) == INSERTED
@@ -922,7 +939,7 @@ def test_canonical_endpoint_abc_lifecycle():
         relay_proof_identity(c),
     }
     assert set(state.relay_proofs) == identities
-    assert state.active == 0
+    assert not state.attempt_starts
     assert state.proxy_epoch == 4
     assert state.success_epoch == 3
     assert state.relay_proven
@@ -1178,24 +1195,24 @@ def test_runtime_unregister_cleanup_is_runtime_scoped():
     assert state.generations[5] == 36
     assert set(state.relay_proofs) == {relay_proof_identity(b)}
     assert set(state.attempt_starts) == {pending_b.attempt_id}
-    assert state.active == 1
+    assert len(state.attempt_starts) == 1
     assert state.relay_proven
     assert state.healthy
     assert state.last_relay_success_at == 1100
 
 
-def test_inactive_candidates_are_removed_by_generation_and_runtime_cleanup():
+def test_unresolved_attempts_are_removed_by_generation_and_runtime_cleanup():
     a = make_relay_report(runtime_id=2, attempt_id=172, started_at=100)
     b = make_relay_report(runtime_id=5, attempt_id=173, started_at=110)
     expired = make_relay_report(runtime_id=7, attempt_id=174, started_at=0)
     store = CanonicalEndpointStore()
     for report in (a, b, expired):
-        seed_admission(store, report)
-        assert release_admission_for_relay_candidate(
+        assert admit_opening(store, report, now=120)
+        assert release_opening_permit(
             store.state(report.endpoint),
             relay_proof_identity(report))
     state = store.state(ABC_ENDPOINT)
-    assert state.active == 0
+    assert state.opening_permit is None
     assert set(state.attempt_starts) == {
         a.attempt_id,
         b.attempt_id,
@@ -1204,12 +1221,12 @@ def test_inactive_candidates_are_removed_by_generation_and_runtime_cleanup():
 
     apply_proxy_generation(store, runtime_id=2, proxy_generation=37, now=200)
     assert set(state.attempt_starts) == {b.attempt_id, expired.attempt_id}
-    assert state.active == 0
+    assert state.opening_permit is None
     unregister_runtime(store, runtime_id=5)
     assert set(state.attempt_starts) == {expired.attempt_id}
     prune_expired_endpoint_state(state, ATTEMPT_HARD_TTL + 1)
     assert not state.attempt_starts
-    assert state.active == 0
+    assert state.opening_permit is None
 
 
 def test_live_proof_survives_ten_minutes_and_state_touches():
@@ -1230,7 +1247,8 @@ def test_live_proof_survives_ten_minutes_and_state_touches():
 
     snapshot = snapshot_endpoint_state(store, ABC_ENDPOINT, late)
     assert set(snapshot.relay_proofs) == identities
-    assert public_admit(store, touch, now=late)
+    assert admit_opening(store, touch, now=late)
+    assert release_opening_permit(state, relay_proof_identity(touch))
     prune_expired_endpoint_state(state, late + 1)
     assert set(state.relay_proofs) == identities
     assert state.last_relay_success_at == 1100
@@ -1270,7 +1288,7 @@ def test_repeated_success_and_terminal_cycles_return_to_empty():
         state = store.state(ABC_ENDPOINT)
         assert not state.attempt_starts
         assert not state.relay_proofs
-        assert state.active == 0
+        assert state.opening_permit is None
         assert not state.relay_proven
 
 
@@ -1307,10 +1325,11 @@ def test_generation_zero_is_stale_after_generation_36():
 def test_faketls_appdata_does_not_prove_relay_or_bump_epoch():
     report = make_relay_report(proxy_generation=1)
     store = CanonicalEndpointStore()
-    assert public_admit(store, report, now=100)
-    assert faketls_appdata_success(store, report, now=200)
+    assert admit_opening(store, report, now=100)
     state = store.state(report.endpoint)
     identity = relay_proof_identity(report)
+    assert release_opening_permit(state, identity)
+    assert faketls_appdata_success(store, report, now=200)
     assert not state.relay_proven
     assert not state.relay_proofs
     assert state.proxy_epoch == 1
@@ -1319,18 +1338,19 @@ def test_faketls_appdata_does_not_prove_relay_or_bump_epoch():
     assert state.last_success_at == 200
     assert set(state.attempt_starts) == {report.attempt_id}
     assert has_endpoint_attempt(state, identity)
-    assert state.active == HEALTHY_ACTIVE_CAP
+    assert state.opening_permit is None
 
     blocked = replace(report, attempt_id=169, started_at=210)
-    assert not public_admit(store, blocked, now=250)
-    assert set(state.attempt_starts) == {report.attempt_id}
-    assert state.active == HEALTHY_ACTIVE_CAP
+    assert admit_opening(store, blocked, now=250)
+    assert release_opening_permit(state, relay_proof_identity(blocked))
+    assert set(state.attempt_starts) == {report.attempt_id, blocked.attempt_id}
+    assert state.opening_permit is None
 
     assert report_relay_success(store, report, now=300) == INSERTED
     assert state.relay_proven
     assert set(state.relay_proofs) == {identity}
-    assert not state.attempt_starts
-    assert state.active == 0
+    assert set(state.attempt_starts) == {blocked.attempt_id}
+    assert state.opening_permit is None
     assert state.proxy_epoch == 2
     assert state.success_epoch == 1
     assert state.last_relay_success_at == 300
@@ -1445,28 +1465,27 @@ def test_source_seams_match_truth_table_contract():
     assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
     assert "ProxySchedulerLifecycle::HandedOff" in arbiter
     assert "cancelBeforeGeneration(" in arbiter
-    assert "kEndpointLiveSlotCount = 4" in arbiter_header
-    assert "struct LiveSlotKey" in arbiter_header
-    assert "struct EndpointLivePool" in arbiter_header
-    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount>" in arbiter_header
-    for phase in ("Empty", "Reserved", "Opening", "Live", "Closing"):
-        assert f"{phase}," in arbiter_header
-    for entitlement in (
-        "ForegroundMain",
-        "ForegroundMedia",
-        "ForegroundUpload",
-        "BackgroundMain",
-    ):
-        assert entitlement in arbiter_header
-    for reason in ("None", "Slot", "ClosingSlot", "HealthOrNotBefore"):
+    assert "struct OpeningPermitTicketOwner" in arbiter_header
+    assert "using EndpointOpeningPermitOwner = std::variant<" in arbiter_header
+    assert "OpeningPermitTicketOwner," in arbiter_header
+    assert "ProxyConnectionAttempt>" in arbiter_header
+    assert "struct EndpointOpeningPermit" in arbiter_header
+    assert "EndpointOpeningPermitOwner owner;" in arbiter_header
+    assert "std::map<QString, MtProxy::EndpointOpeningPermit> _permits;" in arbiter
+    assert "LiveSlot" not in arbiter_header
+    assert "LiveSlot" not in arbiter
+    for reason in ("None", "Slot", "HealthOrNotBefore"):
         assert f"{reason}," in arbiter_header
+    assert "ClosingSlot" not in arbiter_header
     assert "MtProxy::CancelOpenSlot(" in arbiter
     assert "MtProxy::CancelOpenSlotLocked(" not in arbiter
-    assert "EndpointAdmissionArbiter::Private::markTransportReady(" in arbiter
-    assert "EndpointAdmissionArbiter::Private::releaseLiveSlot(" in arbiter
-    assert "slot.phase = MtProxy::LiveSlotPhase::Live;" in arbiter
-    assert "slot.phase = MtProxy::LiveSlotPhase::Empty;" in arbiter
-    assert "slot.incarnation != slotKey.incarnation" in arbiter
+    assert "OpeningRetryBoundaryFor(state)" in arbiter
+    assert "EndpointAdmissionArbiter::Private::releaseOpeningPermit(" in arbiter
+    assert "permit->second.owner = std::monostate();" in arbiter
+    assert "AttemptOwnerMatches(*owner, attempt)" in arbiter
+    assert "struct EndpointOpeningPressure" in health_state
+    assert "EndpointOpeningPressure openingPressure;" in health_state
+    assert "return state.openingPressure;" in policy
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "control.mtproxyEndpointView(endpoint)" in check
     assert "noteMtproxyRelayFailure(" in capabilities
@@ -1475,12 +1494,15 @@ def test_source_seams_match_truth_table_contract():
     assert "void ProxyEndpointContext::transportReady(" not in endpoint_context
     assert "EndpointOpeningEvent" not in health
     assert "endpointAdmissionArbiter().openingEvent(" not in health
-    assert "admission.lease.bindLiveSlot(grant.slotKey, grant.attempt);" in broker
+    assert "bindLiveSlot" not in broker
+    assert "slotKey" not in broker
     assert "void transportReady() override" in session_adapter
-    assert "endpointAdmissionArbiter().markTransportReady(" in session_adapter
-    assert "MtProxy::LiveSlotKey slotKey() const override" in session_adapter
+    assert "_lease.transportReady();" in session_adapter
+    assert "markTransportReady" not in session_adapter
+    assert "LiveSlot" not in session_adapter
     assert "virtual void transportReady() = 0;" in session_proxy_port
-    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in session_proxy_port
+    assert "slotKey" not in session_proxy_port
+    assert "reclaim" not in session_proxy_port
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "view.mainProof.strength" in session_adapter
 
@@ -1494,6 +1516,11 @@ def test_source_seams_match_truth_table_contract():
         "void EndpointHealth::reportSuccess(", 1)[0]
     assert failure.index("RecordTerminalAttemptLocked(") < (
         failure.index("state.lastFailure = report.reason;"))
+    pressure = failure.split(
+        "if (terminal->finalAttemptTerminal", 1)[1].split(
+            "const auto runtimeGeneration", 1)[0]
+    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
+    assert "state.openingPressure = {" in pressure
     assert "report.use" in failure
     assert "EndpointUse::Main" in failure
     assert "!HasCurrentMainRelayProof(" in failure
@@ -1511,7 +1538,7 @@ def run_all_truth_tables():
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()
     test_selected_status_success_epoch_shadows_late_failures()
-    test_keyless_release_preserves_exact_promotion_lineage()
+    test_opening_permit_release_preserves_exact_promotion_lineage()
     test_canonical_endpoint_abc_lifecycle()
     test_unowned_current_epoch_success_is_rejected()
     test_same_tuple_is_namespaced_by_canonical_endpoint()
@@ -1524,7 +1551,7 @@ def run_all_truth_tables():
     test_cancellation_after_handled_failure_is_noop()
     test_proxy_switch_generation_cleanup_is_runtime_scoped()
     test_runtime_unregister_cleanup_is_runtime_scoped()
-    test_inactive_candidates_are_removed_by_generation_and_runtime_cleanup()
+    test_unresolved_attempts_are_removed_by_generation_and_runtime_cleanup()
     test_live_proof_survives_ten_minutes_and_state_touches()
     test_repeated_success_and_terminal_cycles_return_to_empty()
     test_retained_old_generation_membership_cannot_override_rejection()

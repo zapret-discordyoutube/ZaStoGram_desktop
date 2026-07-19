@@ -58,15 +58,9 @@ namespace {
 
 class EndpointSessionProxyLease final : public SessionProxyLease::Impl {
 public:
-	EndpointSessionProxyLease(
-		std::weak_ptr<ProxyEndpointContext> context,
-		MtProxy::LiveSlotKey slotKey,
-		ProxyConnectionAttempt attempt,
+	explicit EndpointSessionProxyLease(
 		MtProxy::EndpointAttemptLease lease)
-	: _context(std::move(context))
-	, _slotKey(std::move(slotKey))
-	, _attempt(std::move(attempt))
-	, _lease(std::move(lease)) {
+	: _lease(std::move(lease)) {
 	}
 
 	void release() override {
@@ -74,25 +68,11 @@ public:
 	}
 
 	void transportReady() override {
-		if (_transportReady || !_lease.active()) {
-			return;
-		}
-		if (_slotKey.endpointKey.isEmpty()) {
-			_transportReady = true;
-		} else if (const auto context = _context.lock()) {
-			_transportReady = true;
-			context->endpointAdmissionArbiter().markTransportReady(
-				_slotKey,
-				_attempt);
-		}
+		_lease.transportReady();
 	}
 
 	bool active() const override {
 		return _lease.active();
-	}
-
-	MtProxy::LiveSlotKey slotKey() const override {
-		return _slotKey;
 	}
 
 	uint64 attemptId() const override {
@@ -124,11 +104,7 @@ public:
 	}
 
 private:
-	std::weak_ptr<ProxyEndpointContext> _context;
-	MtProxy::LiveSlotKey _slotKey;
-	ProxyConnectionAttempt _attempt;
 	MtProxy::EndpointAttemptLease _lease;
-	bool _transportReady = false;
 
 };
 
@@ -141,11 +117,6 @@ private:
 }
 
 [[nodiscard]] ConnectionRequest ToBrokerRequest(SessionProxyRequest request) {
-	const auto endpointContext = request.runtime
-		? request.runtime->proxyEndpointContextShared()
-		: std::shared_ptr<ProxyEndpointContext>();
-	const auto weakEndpointContext
-		= std::weak_ptr<ProxyEndpointContext>(endpointContext);
 	const auto endpoint = MtProxy::EndpointIdFromProxy(
 		request.proxy,
 		request.stealth,
@@ -167,18 +138,14 @@ private:
 		.configuredTlsProfile = request.configuredTlsProfile,
 		.notBefore = request.notBefore,
 		.context = std::move(request.context),
-		.reclaim = std::move(request.reclaim),
-		.start = [
-			weakEndpointContext,
-			start = std::move(request.start)
-		](ConnectionStart value) mutable {
+		.start = [start = std::move(request.start)](
+				ConnectionStart value) mutable {
 			if (!start) {
 				return;
 			}
 			start({
 				.ticketId = value.ticketId,
 				.attempt = value.attempt,
-				.slotKey = value.slotKey,
 				.acceptedRecoveryToken = value.acceptedRecoveryToken,
 				.proxyGeneration = value.proxyGeneration,
 				.endpoint = std::move(value.endpoint),
@@ -188,9 +155,6 @@ private:
 				.plan = value.plan,
 				.lease = SessionProxyLease(
 					std::make_unique<EndpointSessionProxyLease>(
-						weakEndpointContext,
-						std::move(value.slotKey),
-						value.attempt,
 						std::move(value.lease))),
 				.attemptId = value.attemptId,
 				.proxyEpoch = value.proxyEpoch,

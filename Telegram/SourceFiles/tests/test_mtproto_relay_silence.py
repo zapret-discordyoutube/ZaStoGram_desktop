@@ -147,6 +147,10 @@ def test_session_reports_silence_and_recovers_temporary_key():
     can_prove_relay = function_body(
         session, "bool SessionTransport::canProveMtproxyRelay() const")
     connected = function_body(session, "void SessionTransport::onConnected(")
+    handshake = function_body(
+        session, "void SessionTransport::onHandshakeProgress(")
+    append = function_body(
+        session, "bool SessionTransport::appendTestConnection(")
     confirm = function_body(
         session,
         "void SessionTransport::confirmBestConnection()")
@@ -157,6 +161,13 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "_owner->_sessionState.keyId" in can_prove_relay
     assert "_owner->_authState.keyCreator" in can_prove_relay
     assert "getTemporaryKey(" in can_prove_relay
+    assert "&AbstractConnection::handshakeProgress" in append
+    assert "onHandshakeProgress(weak);" in append
+    assert "connection->handshakePhase() < HandshakePhase::ServerHelloOk" in handshake
+    assert "i->mtproxyLease.transportReady();" in handshake
+    assert "_state.mtproxyLease.transportReady();" in handshake
+    assert "checkAuthKey(" not in handshake
+    assert "reportFirstMtprotoPayload(" not in handshake
     assert "if (!canProveMtproxyRelay()) {" in connected
     assert "_state.mtproxyLease.transportReady();" in connected
     assert connected.index("_state.connection = std::move(i->data);") < connected.index(
@@ -221,7 +232,7 @@ def test_full_concurrency_needs_current_main_relay_proof():
     assert "MtProxy::HasCurrentMainRelayProof(state" in eligible
     assert "ticket.key.runtimeId" in eligible
     assert "ticket.proxyGeneration" in eligible
-    assert "!urgentWaiters" in eligible
+    assert "urgentWaiters" not in eligible
     assert "CurrentMainRelayProof(" in state_source
     assert "proof.use != EndpointUse::Main" in state_source
     assert "SuccessFromStaleAttempt(report, state)" in success
@@ -251,6 +262,9 @@ def test_established_idle_close_is_not_a_health_failure():
     connection_error = function_body(
         adapter,
         "void ProductionSessionProxyPort::reportConnectionError(")
+    on_error = function_body(
+        session,
+        "void SessionTransport::onError(")
 
     # Proxies close idle established connections routinely; only a close
     # shortly after the handshake may count against endpoint health.
@@ -264,6 +278,12 @@ def test_established_idle_close_is_not_a_health_failure():
     assert "currentProxyAttempt()" in destroy
     assert destroy.index("_state.connection.reset();") < destroy.index(
         "_state.mtproxyLease.release();")
+    assert on_error.index("reportConnectionError(") < on_error.index(
+        "removeTestConnection(connection);")
+    assert "ReportConnectionFailure(attempt, reason, failure, lease);" in (
+        connection_error)
+    assert "openingPressure" not in cancelled
+    assert "openingPressure" not in connection_error
     assert "retireMtproxyRelayProof(" in cancelled
     assert "RelayProofReport(attempt)" in cancelled
     assert cancelled.index("retireMtproxyRelayProof(") < cancelled.index(

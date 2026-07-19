@@ -71,9 +71,15 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportReceiveTimeout(" in port_header
     assert "reportConnectTimeout(" in port_header
     assert "reportAttemptCancelled(" in port_header
+    assert "virtual void transportReady() = 0;" in port_header
+    assert "void transportReady();" in port_header
+    assert "struct SessionProxyStart" in port_header
+    assert "struct SessionProxyRequest" in port_header
+    assert "LiveSlot" not in port_header
+    assert "slotKey" not in port_header
+    assert "reclaim" not in port_header
     assert "logEvent(" in port_header
-    assert "virtual void releaseAdmissionForRelayCandidate() = 0;" in port_header
-    assert "void releaseAdmissionForRelayCandidate();" in port_header
+    assert "releaseAdmissionForRelayCandidate" not in port_header
     assert "retireMtproxyRelayProof" not in port_header
     assert "RelayProofReport" not in port_header
     assert "applyMtproxyProxyGeneration" not in port_header
@@ -105,13 +111,15 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     generation_cancel = function_body(
         adapter_cpp,
         "void ProductionSessionProxyPort::cancelByProxyGeneration(")
+    ready = function_body(adapter_cpp, "void transportReady() override")
+    broker_request = function_body(
+        adapter_cpp, "ConnectionRequest ToBrokerRequest(")
 
     assert '#include "mtproto/session/private/proxy_port.h"' not in adapter_h
     assert "public SessionProxyPort" not in adapter_h
     assert '#include "mtproto/session/private/proxy_port.h"' in adapter_cpp
     assert "class ProductionSessionProxyPort final" in adapter_cpp
-    assert "void releaseAdmissionForRelayCandidate() override" in adapter_cpp
-    assert "_lease.releaseAdmissionForRelayCandidate();" in adapter_cpp
+    assert "releaseAdmissionForRelayCandidate" not in adapter_cpp
     assert "DefaultSessionProxyPort()" in adapter_cpp
     assert "proxyServices().broker().request(" in adapter_cpp
     assert "proxyServices().broker().cancelByProxyGeneration(" in adapter_cpp
@@ -122,6 +130,13 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     assert ").mtproxyEndpointSnapshot(endpoint)" in adapter_cpp
     assert "ReportProxyEvent(" in adapter_cpp
     assert "WriteProxyDiagnosticsLine(" in adapter_cpp
+    assert "_lease.transportReady();" in ready
+    assert "_lease.release();" not in ready
+    assert ".lease = SessionProxyLease(" in broker_request
+    assert "std::move(value.lease)" in broker_request
+    assert ".reclaim =" not in broker_request
+    assert ".slotKey =" not in broker_request
+    assert "LiveSlot" not in adapter_cpp
 
     for field in (
             ".endpoint = attempt.endpoint",

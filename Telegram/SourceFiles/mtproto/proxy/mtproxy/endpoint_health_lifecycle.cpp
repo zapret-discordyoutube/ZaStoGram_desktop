@@ -517,11 +517,9 @@ EndpointAttemptLease::EndpointAttemptLease(
 : _context(std::move(other._context))
 , _key(std::move(other._key))
 , _attempt(base::take(other._attempt))
-, _slotEndpointKey(std::move(other._slotEndpointKey))
-, _slotIndex(base::take(other._slotIndex))
-, _slotIncarnation(base::take(other._slotIncarnation))
 , _startedAt(base::take(other._startedAt))
-, _active(base::take(other._active)) {
+, _active(base::take(other._active))
+, _openingPermitHeld(base::take(other._openingPermitHeld)) {
 }
 
 EndpointAttemptLease &EndpointAttemptLease::operator=(
@@ -531,11 +529,9 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		_context = std::move(other._context);
 		_key = std::move(other._key);
 		_attempt = base::take(other._attempt);
-		_slotEndpointKey = std::move(other._slotEndpointKey);
-		_slotIndex = base::take(other._slotIndex);
-		_slotIncarnation = base::take(other._slotIncarnation);
 		_startedAt = base::take(other._startedAt);
 		_active = base::take(other._active);
+		_openingPermitHeld = base::take(other._openingPermitHeld);
 	}
 	return *this;
 }
@@ -544,20 +540,32 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
-void EndpointAttemptLease::bindLiveSlot(
-		const LiveSlotKey &slotKey,
+void EndpointAttemptLease::armOpeningPermit(
 		const ProxyConnectionAttempt &attempt) {
 	if (!_active
-		|| _slotIncarnation
-		|| slotKey.endpointKey != _key
-		|| slotKey.index < 0
-		|| !slotKey.incarnation
+		|| _openingPermitHeld
 		|| !(attempt == _attempt)) {
 		return;
 	}
-	_slotEndpointKey = slotKey.endpointKey;
-	_slotIndex = slotKey.index;
-	_slotIncarnation = slotKey.incarnation;
+	_openingPermitHeld = true;
+}
+
+void EndpointAttemptLease::abandon() {
+	_context.reset();
+	_key.clear();
+	_attempt = {};
+	_startedAt = 0;
+	_active = false;
+	_openingPermitHeld = false;
+}
+
+void EndpointAttemptLease::transportReady() {
+	if (!_active || !base::take(_openingPermitHeld) || !_context) {
+		return;
+	}
+	_context->endpointAdmissionArbiter().releaseOpeningPermit(
+		_key,
+		_attempt);
 }
 
 void EndpointAttemptLease::release() {
@@ -567,13 +575,9 @@ void EndpointAttemptLease::release() {
 	_active = false;
 	if (_context) {
 		_context->cancelEndpointAttempt(_key, _attempt);
-		if (_slotIncarnation) {
-			_context->endpointAdmissionArbiter().releaseLiveSlot(
-				{
-					.endpointKey = _slotEndpointKey,
-					.index = _slotIndex,
-					.incarnation = _slotIncarnation,
-				},
+		if (base::take(_openingPermitHeld)) {
+			_context->endpointAdmissionArbiter().releaseOpeningPermit(
+				_key,
 				_attempt);
 		}
 	}
