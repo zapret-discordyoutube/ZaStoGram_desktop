@@ -142,6 +142,7 @@ struct GrantAction {
 };
 
 struct ReclaimAction {
+	std::shared_ptr<const EndpointAdmissionRuntimeDispatch> dispatch;
 	QPointer<QObject> target;
 	Fn<void()> callback;
 
@@ -149,6 +150,7 @@ struct ReclaimAction {
 };
 
 struct PhysicalSlotBinding {
+	ProxyRuntimeId runtimeId = 0;
 	QPointer<QObject> owner;
 	Fn<void(
 		MtProxy::LiveSlotKey,
@@ -250,9 +252,28 @@ void GrantAction::run() {
 }
 
 void ReclaimAction::run() {
-	if (target && callback) {
-		callback();
+	if (!dispatch
+		|| !dispatch->dispatcher
+		|| !dispatch->singleShot
+		|| !target
+		|| !callback) {
+		return;
 	}
+	const auto dispatcher = dispatch->dispatcher;
+	const auto guardedTarget = target;
+	auto guardedCallback = std::move(callback);
+	dispatch->singleShot(
+		0,
+		dispatcher,
+		[
+			dispatcher,
+			guardedTarget,
+			callback = std::move(guardedCallback)
+		]() mutable {
+			if (dispatcher && guardedTarget) {
+				callback();
+			}
+		});
 }
 
 void Actions::run() {
@@ -1496,11 +1517,16 @@ void EndpointAdmissionArbiter::Private::queueCloseLocked(
 		|| !binding->second.reclaim) {
 		return;
 	}
+	const auto runtime = _runtimes.find(binding->second.runtimeId);
+	if (runtime == end(_runtimes)) {
+		return;
+	}
 	const auto target = binding->second.owner;
 	auto reclaim = std::move(binding->second.reclaim);
 	const auto key = close.key;
 	const auto purpose = close.resumePurpose;
 	actions.reclaims.push_back({
+		.dispatch = runtime->second,
 		.target = target,
 		.callback = [
 			reclaim = std::move(reclaim),
@@ -2782,6 +2808,7 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 						const auto slotKey = *ticket.slotKey;
 						admission->lease.armLiveSlot(slotKey, attempt);
 						_slotBindings[slotKey] = {
+							.runtimeId = ticket.key.runtimeId,
 							.owner = ticket.owner,
 							.reclaim = std::move(ticket.reclaim),
 						};

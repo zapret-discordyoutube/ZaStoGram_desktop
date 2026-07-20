@@ -397,8 +397,8 @@ void SessionTransport::reclaimMtproxySlot(
 		ownerRemains = !_state.testConnections.empty()
 			|| !_state.brokerTickets.empty()
 			|| _state.connection;
+		armWaitForConnectedTimer();
 		if (!ownerRemains) {
-			_timing.waitForConnectedTimer.cancel();
 			_timing.waitForBetterTimer.cancel();
 		}
 	} else if (_state.connection
@@ -507,6 +507,7 @@ void SessionTransport::clearTestConnections() {
 		connection.mtproxyRecovery = {};
 	}
 	_state.testConnections.clear();
+	_timing.waitForConnectedTimer.cancel();
 }
 
 void SessionTransport::cancelTestConnections(ProxyCloseOrigin origin) {
@@ -545,6 +546,10 @@ auto SessionTransport::takeConnectionBrokerTicket(
 }
 
 void SessionTransport::armWaitForConnectedTimer() {
+	if (_state.testConnections.empty()) {
+		_timing.waitForConnectedTimer.cancel();
+		return;
+	}
 	// A proxied connect needs its whole budget (tcp connect with SYN
 	// retransmits plus the FakeTLS handshake) - killing it after
 	// kMinConnectedTimeout only burns a handshake against the DPI and
@@ -1057,6 +1062,9 @@ void SessionTransport::waitReceivedFailed() {
 }
 
 void SessionTransport::waitConnectedFailed() {
+	if (_state.testConnections.empty()) {
+		return;
+	}
 	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(_timing.waitForConnected));
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpConnectTimeout,
@@ -1311,6 +1319,7 @@ void SessionTransport::removeTestConnection(
 		i->mtproxyLease.release();
 		i->mtproxyRecovery = {};
 		_state.testConnections.erase(i);
+		armWaitForConnectedTimer();
 	}
 }
 
