@@ -62,16 +62,46 @@ def test_endpoint_policy_owns_a_separate_four_slot_reducer():
     assert "EvaluateEndpointAdmission(" not in state
 
 
-def test_transfer_requires_exact_current_local_main_proof():
+def test_transfer_uses_exact_proof_or_one_shot_continuation():
     arbiter = function_body(
         read(ARBITER_CPP),
-        "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
+        "auto EndpointAdmissionArbiter::Private::transferAdmissionBasisLocked(")
 
+    assert "DemandTransferContinuationMatches(" in arbiter
+    assert arbiter.index("DemandTransferContinuationMatches(") < arbiter.index(
+        "MtProxy::HasCurrentMainRelayProof(state")
+    assert "DemandTransferContinuationStage::Released" in arbiter
+    assert "TransferAdmissionBasis::ReleasedContinuation" in arbiter
+    assert "TransferAdmissionBasis::MainRelayProof" in arbiter
+    assert "TransferAdmissionBasis::None" in arbiter
     assert "MtProxy::HasCurrentMainRelayProof(state" in arbiter
     assert "ticket.key.runtimeId" in arbiter
     assert "ticket.proxyGeneration" in arbiter
     assert "EndpointMainRelayProof" not in arbiter
     assert "urgentWaiters" not in arbiter
+    source = read(ARBITER_CPP)
+    assert "baseEligibleLocked" not in source
+    assert "mainRelayProven" not in source
+
+
+def test_released_continuation_owns_selection_until_foreground_main_override():
+    assign = function_body(
+        read(ARBITER_CPP),
+        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(")
+
+    released = assign.split("auto releasedSuccessor", 1)[1].split(
+        "auto eligible", 1)[0]
+    assert "DemandTransferContinuationStage::Released" in released
+    assert "ticket->use == MtProxy::EndpointUse::Main" in released
+    assert "ticket->key.runtimeId == _storage.foregroundRuntimeId" in released
+    assert "ticketCurrentLocked(*ticket, state)" in released
+    assert "boundary.at <= inputs.now" in released
+    assert "MtProxy::CancelLiveSlotSuccessor(" in released
+    assert released.index("MtProxy::CancelLiveSlotSuccessor(") < released.index(
+        "releasedSuccessor.reset();")
+    assert "std::remove_if(" in released
+    assert "DemandTransferContinuationMatches(" in released
+    assert "const auto selected = foregroundOverride" in assign
 
 
 def test_physical_slot_releases_only_the_exact_incarnation_and_attempt():
@@ -79,6 +109,9 @@ def test_physical_slot_releases_only_the_exact_incarnation_and_attempt():
     arbiter = read(ARBITER_CPP)
     release = function_body(
         pool_source, "LiveSlotReleaseReduction ReleaseLiveSlot(")
+    authorization = function_body(
+        pool_source, "auto AuthorizeLiveSlotReclaim(")
+    reclaim_action = function_body(arbiter, "void ReclaimAction::run()")
     forwarding = function_body(
         arbiter, "void EndpointAdmissionArbiter::Private::releaseLiveSlot(")
 
@@ -90,13 +123,59 @@ def test_physical_slot_releases_only_the_exact_incarnation_and_attempt():
     assert release.index("slot->phase = LiveSlotPhase::Closing;") < (
         release.index("slot->phase = LiveSlotPhase::Empty;"))
     assert "ResetLearningIfEmpty(result.pool);" in release
+    assert "DemandTransferContinuationStage::AwaitingRelease" in release
+    assert "EndpointReclaimStage::Requested" in authorization
+    assert "EndpointReclaimStage::Authorized" in authorization
+    assert "slot->phase != LiveSlotPhase::Closing" in authorization
+    assert "slot->phase = LiveSlotPhase::Live;" in authorization
+    assert "request.attempt.runtimeId != request.foregroundRuntimeId" in (
+        authorization)
+    assert "ReclaimMatchesContinuation(" in authorization
+    assert "QMutexLocker" not in reclaim_action
+    assert reclaim_action.index("authorizeLiveSlotReclaim(") < (
+        reclaim_action.index("(*callback)(slotKey, purpose);"))
+    assert "callbackReady" in reclaim_action
+    assert "reclaimToken" in reclaim_action
+    assert "std::shared_ptr<Fn<void(" in arbiter
     assert "lastIncarnation" not in release
     assert "MtProxy::ReleaseLiveSlot(" in forwarding
-    assert "_slotBindings.erase(slotKey);" in forwarding
+    assert "if (reduction.slotReleased)" in forwarding
+    assert forwarding.index("if (reduction.slotReleased)") < forwarding.index(
+        "_slotBindings.erase(slotKey);")
+    assert forwarding.count("_slotBindings.erase(slotKey);") == 1
+    assert "reduction.continuationChanged" in forwarding
+    assert "bool slotReleased = false;" in read(LIVE_POOL_H)
+    assert "bool continuationChanged = false;" in read(LIVE_POOL_H)
     assert "_pools.erase" not in arbiter
     assert "markTransportReady" not in arbiter
     assert "kHealthyActiveCap" not in arbiter
     assert "mainLaneReserved" not in arbiter
+
+
+def test_main_replacement_prefers_foreground_then_demand_bootstrap():
+    source = read(ARBITER_CPP)
+    pool_source = read(LIVE_POOL_CPP)
+    header = read(LIVE_POOL_H)
+    candidate = function_body(
+        source,
+        "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(")
+    reducer = function_body(
+        pool_source,
+        "LiveSlotCloseReduction PlanMainReplacement(")
+
+    purposes = function_body(header, "enum class MainReplacementPurpose")
+    assert purposes.index("ForegroundRecovery") < purposes.index(
+        "DemandBootstrap") < purposes.index("BackgroundDuty")
+    assert candidate.index("ForegroundRecovery") < candidate.index(
+        "DemandBootstrap") < candidate.index("BackgroundDuty")
+    assert "OpeningBoundaryForTicket(ticket).at > now" in candidate
+    assert "TransferAdmissionBasis::None" in candidate
+    assert "MainReplacementPurpose::ForegroundRecovery" in reducer
+    assert "MainReplacementPurpose::BackgroundDuty" in reducer
+    assert "request.facts.admissibleTransferWaiting" in reducer
+    assert "request.facts.transferActive" in reducer
+    assert "owner->attempt.runtimeId" in pool_source
+    assert "request.successor.key.runtimeId" in pool_source
 
 
 def test_opening_pressure_remains_health_owned_but_not_an_admission_gate():
@@ -158,6 +237,7 @@ def test_arbiter_prioritizes_and_fairly_ages_endpoint_requests():
     for name in (
             "ForegroundMain",
             "ForegroundTransfer",
+            "DemandedTransfer",
             "UrgentMain",
             "OrdinaryMain",
             "Auxiliary",
@@ -165,19 +245,26 @@ def test_arbiter_prioritizes_and_fairly_ages_endpoint_requests():
             "ReclaimedMainResume"):
         assert name in source
     assert source.index("ForegroundMain,") < source.index("ForegroundTransfer,")
-    assert source.index("ForegroundTransfer,") < source.index("UrgentMain,")
+    assert source.index("ForegroundTransfer,") < source.index(
+        "DemandedTransfer,")
+    assert source.index("DemandedTransfer,") < source.index("UrgentMain,")
     assert source.index("UrgentMain,") < source.index("Auxiliary,")
     assert source.index("Background,") < source.index("ReclaimedMainResume,")
-    compact_priority = compact(priority)
+    foreground = priority.index(
+        "ticket.use == MtProxy::EndpointUse::Main && foreground")
     resume = priority.index(
         "ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume")
     aging = priority.index("const auto age =")
+    assert foreground < resume < aging
+    assert priority.index("return PriorityClass::ForegroundMain;") < (
+        priority.index("return PriorityClass::ReclaimedMainResume;"))
     assert resume < aging
     assert "return PriorityClass::ReclaimedMainResume;" in priority
     assert "ticket.use == MtProxy::EndpointUse::Main" in priority
-    assert "result = foreground ? PriorityClass::ForegroundMain" in compact_priority
-    assert "&& IsTransfer(ticket.use) && hasMainProof" in compact_priority
-    assert "result = PriorityClass::ForegroundTransfer;" in priority
+    assert "IsTransfer(ticket.use)" in priority
+    assert "transferAdmissionBasis" in priority
+    assert "PriorityClass::ForegroundTransfer" in priority
+    assert "PriorityClass::DemandedTransfer" in priority
     assert "ownsMainRecoveryLocked" not in priority
     assert "PriorityClass::OrdinaryMain" in priority
     assert "PriorityClass::UrgentMain" in priority
@@ -192,11 +279,6 @@ def test_arbiter_prioritizes_and_fairly_ages_endpoint_requests():
     assert "other->sequence < ticket->sequence" in select
     assert "runtimes.upper_bound(last)" in select
     assert "ticket->enqueuedAt < result->enqueuedAt" in select
-
-
-def compact(text):
-    return " ".join(text.split())
-
 
 def function_body(text: str, signature: str) -> str:
     start = text.index(signature)
@@ -215,8 +297,10 @@ def function_body(text: str, signature: str) -> str:
 
 if __name__ == "__main__":
     test_endpoint_policy_owns_a_separate_four_slot_reducer()
-    test_transfer_requires_exact_current_local_main_proof()
+    test_transfer_uses_exact_proof_or_one_shot_continuation()
+    test_released_continuation_owns_selection_until_foreground_main_override()
     test_physical_slot_releases_only_the_exact_incarnation_and_attempt()
+    test_main_replacement_prefers_foreground_then_demand_bootstrap()
     test_opening_pressure_remains_health_owned_but_not_an_admission_gate()
     test_route_failures_remain_local_until_routes_are_exhausted()
     test_arbiter_prioritizes_and_fairly_ages_endpoint_requests()

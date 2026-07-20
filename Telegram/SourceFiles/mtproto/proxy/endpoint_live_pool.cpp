@@ -88,6 +88,92 @@ constexpr auto kBackgroundMainLiveQuantum = crl::time(60 * 1000);
 	return use == EndpointUse::Media || use == EndpointUse::Upload;
 }
 
+[[nodiscard]] bool ValidRuntimeGeneration(
+		const RuntimeGenerationKey &key) {
+	return key.runtimeId && key.proxyGeneration;
+}
+
+[[nodiscard]] bool ContinuationIdentityValid(
+		const DemandTransferContinuation &continuation) {
+	return ValidSlotKey(continuation.sourceKey)
+		&& ValidTicketOwner(continuation.successor)
+		&& ValidRuntimeGeneration(continuation.runtimeGeneration)
+		&& IsTransfer(continuation.use)
+		&& continuation.successor.key.runtimeId
+			== continuation.runtimeGeneration.runtimeId
+		&& continuation.sourceAttempt.runtimeId
+			== continuation.runtimeGeneration.runtimeId
+		&& continuation.sourceAttempt.proxyGeneration
+			== continuation.runtimeGeneration.proxyGeneration
+		&& continuation.sourceAttempt.use == EndpointUse::Main
+		&& continuation.sourceAttempt.attemptId;
+}
+
+[[nodiscard]] bool ContinuationSuccessorMatches(
+		const DemandTransferContinuation &continuation,
+		const QString &endpointKey,
+		const LiveSlotTicketOwner &successor,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		DemandTransferContinuationStage stage) {
+	return ContinuationIdentityValid(continuation)
+		&& continuation.sourceKey.endpointKey == endpointKey
+		&& continuation.successor == successor
+		&& continuation.runtimeGeneration == runtimeGeneration
+		&& continuation.use == use
+		&& continuation.stage == stage;
+}
+
+[[nodiscard]] bool ContinuationSourceMatches(
+		const DemandTransferContinuation &continuation,
+		const LiveSlotKey &key,
+		const ProxyConnectionAttempt &attempt) {
+	return continuation.sourceKey == key
+		&& continuation.sourceAttempt == attempt;
+}
+
+[[nodiscard]] bool ReclaimMatchesContinuation(
+		const EndpointReclaim &reclaim,
+		const DemandTransferContinuation &continuation) {
+	return ContinuationIdentityValid(continuation)
+		&& reclaim.key == continuation.sourceKey
+		&& reclaim.incumbent == continuation.sourceAttempt
+		&& reclaim.successor
+		&& *reclaim.successor == continuation.successor;
+}
+
+[[nodiscard]] bool TransferAdmissionMatches(
+		const EndpointLivePool &pool,
+		const QString &endpointKey,
+		const LiveSlotTicketOwner &owner,
+		RuntimeGenerationKey runtimeGeneration,
+		EndpointUse use,
+		TransferAdmissionBasis basis) {
+	if (!IsTransfer(use)) {
+		return basis == TransferAdmissionBasis::None;
+	}
+	if (!ValidRuntimeGeneration(runtimeGeneration)
+		|| runtimeGeneration.runtimeId != owner.key.runtimeId) {
+		return false;
+	}
+	switch (basis) {
+	case TransferAdmissionBasis::None:
+		return false;
+	case TransferAdmissionBasis::MainRelayProof:
+		return true;
+	case TransferAdmissionBasis::ReleasedContinuation:
+		return pool.demandTransferContinuation
+			&& ContinuationSuccessorMatches(
+				*pool.demandTransferContinuation,
+				endpointKey,
+				owner,
+				runtimeGeneration,
+				use,
+				DemandTransferContinuationStage::Released);
+	}
+	return false;
+}
+
 [[nodiscard]] bool IsCapacityPressureTerminal(FailureReason reason) {
 	switch (reason) {
 	case FailureReason::TcpConnectTimeout:
@@ -178,7 +264,7 @@ constexpr auto kBackgroundMainLiveQuantum = crl::time(60 * 1000);
 }
 
 void ResetLearningIfEmpty(EndpointLivePool &pool) {
-	if (!AllSlotsEmpty(pool)) {
+	if (!AllSlotsEmpty(pool) || pool.demandTransferContinuation) {
 		return;
 	}
 	pool.provenLowerBound = 0;
@@ -195,6 +281,13 @@ void ResetLearningIfEmpty(EndpointLivePool &pool) {
 		&& TicketOwnerMatches(*pool.reclaim->successor, owner);
 }
 
+[[nodiscard]] bool ContinuationSuccessorMatches(
+		const EndpointLivePool &pool,
+		const LiveSlotTicketOwner &owner) {
+	return pool.demandTransferContinuation
+		&& pool.demandTransferContinuation->successor == owner;
+}
+
 [[nodiscard]] LivePoolWaitReason ReservationWaitReason(
 		const EndpointLivePool &pool,
 		const LiveSlotReserveRequest &request) {
@@ -202,6 +295,15 @@ void ResetLearningIfEmpty(EndpointLivePool &pool) {
 		return ReclaimSuccessorMatches(pool, request.owner)
 			? LivePoolWaitReason::Closing
 			: LivePoolWaitReason::Slot;
+	}
+	if (pool.demandTransferContinuation
+		&& !ContinuationSuccessorMatches(pool, request.owner)) {
+		return LivePoolWaitReason::Slot;
+	}
+	if (pool.demandTransferContinuation
+		&& pool.demandTransferContinuation->stage
+			!= DemandTransferContinuationStage::Released) {
+		return LivePoolWaitReason::Closing;
 	}
 	if (pool.opening || !pool.openings.pending.empty()) {
 		return LivePoolWaitReason::Slot;
@@ -303,11 +405,19 @@ void ClearMatchingProbe(
 [[nodiscard]] bool CancelSuccessorInPlace(
 		EndpointLivePool &pool,
 		const LiveSlotTicketOwner &owner) {
-	if (!ReclaimSuccessorMatches(pool, owner)) {
-		return false;
+	auto applied = false;
+	if (ReclaimSuccessorMatches(pool, owner)) {
+		pool.reclaim->successor.reset();
+		applied = true;
 	}
-	pool.reclaim->successor.reset();
-	return true;
+	if (ContinuationSuccessorMatches(pool, owner)) {
+		pool.demandTransferContinuation.reset();
+		applied = true;
+	}
+	if (applied) {
+		ResetLearningIfEmpty(pool);
+	}
+	return applied;
 }
 
 [[nodiscard]] LiveSlotCloseReduction BeginClose(
@@ -324,7 +434,9 @@ void ClearMatchingProbe(
 	if (!owner || !AttemptOwnerMatches(*owner, request.attempt)) {
 		return result;
 	}
-	if (request.resumePurpose && result.pool.reclaim) {
+	if (request.resumePurpose
+		&& (result.pool.reclaim
+			|| result.pool.demandTransferContinuation)) {
 		result.waitReason = LivePoolWaitReason::Closing;
 		return result;
 	}
@@ -341,6 +453,8 @@ void ClearMatchingProbe(
 			.key = request.key,
 			.incumbent = request.attempt,
 			.successor = request.successor,
+			.stage = EndpointReclaimStage::Requested,
+			.continuationRequired = false,
 		};
 	}
 	result.close = LivePoolCloseAction{
@@ -352,41 +466,72 @@ void ClearMatchingProbe(
 	return result;
 }
 
-template <typename Predicate>
-[[nodiscard]] int SelectVictim(
+[[nodiscard]] bool HasExactMainRelayAttempt(
+		const DemandTransferReservationRequest &request,
+		const ProxyConnectionAttempt &attempt) {
+	return attempt.use == EndpointUse::Main
+		&& attempt.runtimeId == request.runtimeGeneration.runtimeId
+		&& attempt.proxyGeneration
+			== request.runtimeGeneration.proxyGeneration
+		&& std::find(
+			begin(request.mainRelayAttempts),
+			end(request.mainRelayAttempts),
+			attempt) != end(request.mainRelayAttempts);
+}
+
+[[nodiscard]] int SelectDemandTransferMainVictim(
 		const EndpointLivePool &pool,
-		Predicate predicate) {
+		const DemandTransferReservationRequest &request,
+		bool ownRuntime) {
 	for (auto index = 0; index != int(pool.slots.size()); ++index) {
 		const auto &slot = pool.slots[index];
-		if (slot.phase != LiveSlotPhase::Opening
-			&& slot.phase != LiveSlotPhase::Live) {
+		const auto owner = std::get_if<LiveSlotAttemptOwner>(&slot.owner);
+		if (slot.phase != LiveSlotPhase::Live
+			|| !owner
+			|| owner->use != EndpointUse::Main
+			|| owner->attempt.runtimeId
+				== request.facts.foregroundRuntimeId
+			|| (owner->attempt.runtimeId
+					== request.successor.key.runtimeId) != ownRuntime
+			|| (ownRuntime
+				&& !HasExactMainRelayAttempt(request, owner->attempt))) {
 			continue;
 		}
-		const auto owner = std::get_if<LiveSlotAttemptOwner>(&slot.owner);
-		if (owner && predicate(*owner)) {
-			return index;
-		}
+		return index;
 	}
 	return -1;
 }
 
-[[nodiscard]] int SelectForegroundTransferVictim(
+[[nodiscard]] int SelectMainReplacementVictim(
 		const EndpointLivePool &pool,
-		ProxyRuntimeId foregroundRuntimeId) {
-	const auto transfer = SelectVictim(
-		pool,
-		[&](const LiveSlotAttemptOwner &owner) {
-			return IsTransfer(owner.use)
-				&& owner.attempt.runtimeId != foregroundRuntimeId;
-		});
-	return (transfer >= 0)
-		? transfer
-		: SelectVictim(
-			pool,
-			[&](const LiveSlotAttemptOwner &owner) {
-				return owner.use == EndpointUse::Main
-					&& owner.attempt.runtimeId != foregroundRuntimeId;
-			});
+		const MainReplacementRequest &request) {
+	auto result = -1;
+	for (auto index = 0; index != int(pool.slots.size()); ++index) {
+		const auto &slot = pool.slots[index];
+		const auto owner = std::get_if<LiveSlotAttemptOwner>(&slot.owner);
+		if (slot.phase != LiveSlotPhase::Live
+			|| !owner
+			|| owner->use != EndpointUse::Main
+			|| owner->attempt.runtimeId
+				== request.facts.foregroundRuntimeId
+			|| owner->attempt.runtimeId
+				== request.successor.key.runtimeId
+			|| (request.purpose == MainReplacementPurpose::BackgroundDuty
+				&& owner->liveSince + kBackgroundMainLiveQuantum
+					> request.facts.now)) {
+			continue;
+		}
+		if (result < 0) {
+			result = index;
+			continue;
+		}
+		const auto &selected = std::get<LiveSlotAttemptOwner>(
+			pool.slots[result].owner);
+		if (owner->liveSince < selected.liveSince) {
+			result = index;
+		}
+	}
+	return result;
 }
 
 template <typename Predicate>
@@ -427,6 +572,12 @@ void ClearMatchingClosingReclaim(
 	if (!pool.reclaim || !matches(pool.reclaim->incumbent)) {
 		return;
 	}
+	if (pool.demandTransferContinuation
+		&& ReclaimMatchesContinuation(
+			*pool.reclaim,
+			*pool.demandTransferContinuation)) {
+		pool.demandTransferContinuation.reset();
+	}
 	pool.reclaim.reset();
 	applied = true;
 }
@@ -437,7 +588,15 @@ LiveSlotReserveReduction ReserveLiveSlot(
 		const EndpointLivePool &pool,
 		const LiveSlotReserveRequest &request) {
 	auto result = LiveSlotReserveReduction{ .pool = pool };
-	if (request.endpointKey.isEmpty() || !ValidTicketOwner(request.owner)) {
+	if (request.endpointKey.isEmpty()
+		|| !ValidTicketOwner(request.owner)
+		|| !TransferAdmissionMatches(
+			result.pool,
+			request.endpointKey,
+			request.owner,
+			request.runtimeGeneration,
+			request.use,
+			request.transferAdmissionBasis)) {
 		return result;
 	}
 	result.waitReason = ReservationWaitReason(result.pool, request);
@@ -519,11 +678,18 @@ LiveSlotCancelReduction CancelLiveSlotReservation(
 		const EndpointLivePool &pool,
 		const LiveSlotReservationCancelRequest &request) {
 	auto result = LiveSlotCancelReduction{ .pool = pool };
-	result.applied = CancelReservationInPlace(
+	const auto reservation = CancelReservationInPlace(
 		result.pool,
 		request.key,
 		request.owner,
 		request.reservationId);
+	const auto continuation = reservation
+		&& ContinuationSuccessorMatches(result.pool, request.owner);
+	if (continuation) {
+		result.pool.demandTransferContinuation.reset();
+		ResetLearningIfEmpty(result.pool);
+	}
+	result.applied = reservation || continuation;
 	return result;
 }
 
@@ -554,6 +720,18 @@ LiveSlotCommitReduction CommitLiveSlotOpening(
 		|| !TicketOwnerMatches(*owner, request.owner)
 		|| !AttemptBelongsToTicket(request.attempt, request.owner)
 		|| request.use != request.attempt.use
+		|| (IsTransfer(request.use)
+			&& (request.attempt.runtimeId
+					!= request.runtimeGeneration.runtimeId
+				|| request.attempt.proxyGeneration
+					!= request.runtimeGeneration.proxyGeneration))
+		|| !TransferAdmissionMatches(
+			result.pool,
+			request.key.endpointKey,
+			request.owner,
+			request.runtimeGeneration,
+			request.use,
+			request.transferAdmissionBasis)
 		|| !request.reservationId) {
 		return result;
 	}
@@ -568,7 +746,10 @@ LiveSlotCommitReduction CommitLiveSlotOpening(
 		result.pool,
 		request.key.endpointKey);
 	const auto target = result.pool.provenLowerBound + 1;
-	const auto expansion = result.pool.provenLowerBound > 0
+	const auto continuationAdmission = request.transferAdmissionBasis
+		== TransferAdmissionBasis::ReleasedContinuation;
+	const auto expansion = !continuationAdmission
+		&& result.pool.provenLowerBound > 0
 		&& target <= kEndpointLiveSlotCount
 		&& occupiedBefore == result.pool.provenLowerBound
 		&& int(baseline.size()) == result.pool.provenLowerBound
@@ -583,6 +764,9 @@ LiveSlotCommitReduction CommitLiveSlotOpening(
 		.liveSince = 0,
 	};
 	result.pool.opening = request.attempt;
+	if (continuationAdmission) {
+		result.pool.demandTransferContinuation.reset();
+	}
 	if (expansion) {
 		result.pool.capacityProbe = CapacityProbe{
 			.key = request.key,
@@ -651,11 +835,27 @@ LiveSlotTerminalReduction MarkLiveSlotCapacityTerminal(
 		return result;
 	}
 	auto slot = FindSlot(result.pool, request.key);
-	const auto opening = result.pool.opening
-		? std::get_if<ProxyConnectionAttempt>(&*result.pool.opening)
-		: nullptr;
 	const auto owner = slot
 		? std::get_if<LiveSlotAttemptOwner>(&slot->owner)
+		: nullptr;
+	if (slot
+		&& slot->phase == LiveSlotPhase::Closing
+		&& owner
+		&& AttemptOwnerMatches(*owner, request.attempt)
+		&& result.pool.demandTransferContinuation
+		&& result.pool.demandTransferContinuation->stage
+			!= DemandTransferContinuationStage::Released
+		&& ContinuationSourceMatches(
+			*result.pool.demandTransferContinuation,
+			request.key,
+			request.attempt)) {
+		result.pool.demandTransferContinuation.reset();
+		ResetLearningIfEmpty(result.pool);
+		result.applied = true;
+		return result;
+	}
+	const auto opening = result.pool.opening
+		? std::get_if<ProxyConnectionAttempt>(&*result.pool.opening)
 		: nullptr;
 	if (!slot
 		|| slot->phase != LiveSlotPhase::Opening
@@ -694,19 +894,82 @@ LiveSlotCloseReduction BeginLiveSlotClose(
 	return BeginClose(pool, request);
 }
 
-auto PlanForegroundTransferReservation(
+auto AuthorizeLiveSlotReclaim(
 		const EndpointLivePool &pool,
-		const ForegroundTransferReservationRequest &request)
--> ForegroundTransferReservationReduction {
-	auto result = ForegroundTransferReservationReduction{ .pool = pool };
+		const LiveSlotReclaimAuthorizationRequest &request)
+-> LiveSlotReclaimAuthorizationReduction {
+	auto result = LiveSlotReclaimAuthorizationReduction{
+		.pool = pool,
+	};
+	const auto slot = FindSlot(result.pool, request.key);
+	const auto owner = slot
+		? std::get_if<LiveSlotAttemptOwner>(&slot->owner)
+		: nullptr;
+	const auto reclaim = result.pool.reclaim
+		? &*result.pool.reclaim
+		: nullptr;
+	if (!slot
+		|| slot->phase != LiveSlotPhase::Closing
+		|| !owner
+		|| !AttemptOwnerMatches(*owner, request.attempt)
+		|| !reclaim
+		|| reclaim->stage != EndpointReclaimStage::Requested
+		|| reclaim->key != request.key
+		|| reclaim->incumbent != request.attempt) {
+		return result;
+	}
+	const auto continuation = result.pool.demandTransferContinuation
+		? &*result.pool.demandTransferContinuation
+		: nullptr;
+	const auto continuationMatches = continuation
+		&& continuation->stage
+			== DemandTransferContinuationStage::Requested
+		&& ReclaimMatchesContinuation(*reclaim, *continuation);
+	const auto authorized = request.callbackReady
+		&& request.attempt.runtimeId != request.foregroundRuntimeId
+		&& reclaim->successor
+		&& (!reclaim->continuationRequired || continuationMatches)
+		&& (!continuation || continuationMatches);
+	if (authorized) {
+		result.pool.reclaim->stage = EndpointReclaimStage::Authorized;
+		if (continuationMatches) {
+			result.pool.demandTransferContinuation->stage
+				= DemandTransferContinuationStage::AwaitingRelease;
+		}
+		result.authorized = true;
+	} else {
+		slot->phase = LiveSlotPhase::Live;
+		if (continuationMatches
+			|| (continuation
+				&& ContinuationSourceMatches(
+					*continuation,
+					request.key,
+					request.attempt))) {
+			result.pool.demandTransferContinuation.reset();
+		}
+		result.pool.reclaim.reset();
+		ResetLearningIfEmpty(result.pool);
+	}
+	result.applied = true;
+	return result;
+}
+
+auto PlanDemandTransferReservation(
+		const EndpointLivePool &pool,
+		const DemandTransferReservationRequest &request)
+-> DemandTransferReservationReduction {
+	auto result = DemandTransferReservationReduction{ .pool = pool };
 	if (request.endpointKey.isEmpty()
 		|| !ValidTicketOwner(request.successor)
-		|| !request.facts.foregroundRuntimeId
-		|| request.successor.key.runtimeId
-			!= request.facts.foregroundRuntimeId
 		|| !IsTransfer(request.use)
-		|| !request.mainRelayProven
-		|| !request.facts.foregroundTransferWaiting) {
+		|| !request.facts.admissibleTransferWaiting
+		|| !TransferAdmissionMatches(
+			result.pool,
+			request.endpointKey,
+			request.successor,
+			request.runtimeGeneration,
+			request.use,
+			request.transferAdmissionBasis)) {
 		return result;
 	}
 	const auto reservationWait = ReservationWaitReason(
@@ -715,8 +978,8 @@ auto PlanForegroundTransferReservation(
 			.endpointKey = request.endpointKey,
 			.owner = request.successor,
 			.use = request.use,
-			.foreground = true,
-			.mainRelayProven = request.mainRelayProven,
+			.runtimeGeneration = request.runtimeGeneration,
+			.transferAdmissionBasis = request.transferAdmissionBasis,
 			.now = request.facts.now,
 		});
 	result.waitReason = reservationWait;
@@ -726,6 +989,18 @@ auto PlanForegroundTransferReservation(
 	}
 	if (result.pool.opening || !result.pool.openings.pending.empty()) {
 		result.waitReason = LivePoolWaitReason::Slot;
+		return result;
+	}
+	if (request.transferAdmissionBasis
+			== TransferAdmissionBasis::ReleasedContinuation) {
+		if (reservationWait == LivePoolWaitReason::None) {
+			result.action = DemandTransferReservationAction::Reserve;
+		}
+		return result;
+	}
+	if (request.transferAdmissionBasis
+			!= TransferAdmissionBasis::MainRelayProof
+		|| result.pool.demandTransferContinuation) {
 		return result;
 	}
 	const auto occupied = NonemptySlotCount(result.pool);
@@ -744,7 +1019,7 @@ auto PlanForegroundTransferReservation(
 		&& int(baseline.size()) == proven;
 	if (reservationWait == LivePoolWaitReason::None
 		&& (bootstrap || replenishment)) {
-		result.action = ForegroundTransferReservationAction::Reserve;
+		result.action = DemandTransferReservationAction::Reserve;
 		return result;
 	}
 	if (reservationWait == LivePoolWaitReason::None && !stableFrontier) {
@@ -756,12 +1031,21 @@ auto PlanForegroundTransferReservation(
 		&& reservationWait != LivePoolWaitReason::Capacity) {
 		return result;
 	}
-	const auto victim = SelectForegroundTransferVictim(
+	auto ownRuntime = false;
+	auto victim = SelectDemandTransferMainVictim(
 		result.pool,
-		request.facts.foregroundRuntimeId);
+		request,
+		false);
+	if (victim < 0) {
+		victim = SelectDemandTransferMainVictim(
+			result.pool,
+			request,
+			true);
+		ownRuntime = (victim >= 0);
+	}
 	if (victim < 0) {
 		if (reservationWait == LivePoolWaitReason::None) {
-			result.action = ForegroundTransferReservationAction::Reserve;
+			result.action = DemandTransferReservationAction::Reserve;
 		}
 		return result;
 	}
@@ -773,9 +1057,7 @@ auto PlanForegroundTransferReservation(
 			.key = SlotKey(request.endpointKey, victim, slot),
 			.attempt = owner.attempt,
 			.successor = request.successor,
-			.resumePurpose = IsTransfer(owner.use)
-				? AdmissionPurpose::Ordinary
-				: AdmissionPurpose::ReclaimedMainResume,
+			.resumePurpose = AdmissionPurpose::ReclaimedMainResume,
 		});
 	if (!close.applied || !close.close) {
 		result.waitReason = (reservationWait == LivePoolWaitReason::None)
@@ -784,51 +1066,68 @@ auto PlanForegroundTransferReservation(
 		return result;
 	}
 	result.pool = close.pool;
-	result.action = ForegroundTransferReservationAction::Reclaim;
+	if (ownRuntime) {
+		result.pool.reclaim->continuationRequired = true;
+		result.pool.demandTransferContinuation
+			= DemandTransferContinuation{
+				.sourceKey = close.close->key,
+				.sourceAttempt = close.close->attempt,
+				.successor = request.successor,
+				.runtimeGeneration = request.runtimeGeneration,
+				.use = request.use,
+				.stage = DemandTransferContinuationStage::Requested,
+			};
+	}
+	result.action = DemandTransferReservationAction::Reclaim;
 	result.close = close.close;
 	return result;
 }
 
-LiveSlotCloseReduction SelectBackgroundMainRotation(
+LiveSlotCloseReduction PlanMainReplacement(
 		const EndpointLivePool &pool,
-		const BackgroundMainRotationRequest &request) {
+		const MainReplacementRequest &request) {
 	auto result = LiveSlotCloseReduction{ .pool = pool };
 	if (request.endpointKey.isEmpty()
 		|| !ValidTicketOwner(request.successor)
-		|| request.successor.key.runtimeId
-			== request.facts.foregroundRuntimeId
-		|| request.facts.foregroundTransferWaiting
-		|| request.facts.foregroundTransferActive
+		|| (request.purpose == MainReplacementPurpose::ForegroundRecovery
+			&& request.successor.key.runtimeId
+				!= request.facts.foregroundRuntimeId)
+		|| (request.purpose != MainReplacementPurpose::ForegroundRecovery
+			&& request.successor.key.runtimeId
+				== request.facts.foregroundRuntimeId)
+		|| (request.purpose == MainReplacementPurpose::BackgroundDuty
+			&& (request.facts.admissibleTransferWaiting
+				|| request.facts.transferActive))
 		|| result.pool.opening
 		|| result.pool.reclaim
+		|| result.pool.demandTransferContinuation
 		|| HasClosingSlot(result.pool)) {
 		return result;
 	}
-	auto victim = -1;
-	for (auto index = 0; index != int(result.pool.slots.size()); ++index) {
-		const auto &slot = result.pool.slots[index];
-		const auto owner = std::get_if<LiveSlotAttemptOwner>(&slot.owner);
-		if (slot.phase != LiveSlotPhase::Live
-			|| !owner
-			|| owner->use != EndpointUse::Main
-			|| owner->attempt.runtimeId
-				== request.facts.foregroundRuntimeId
-			|| owner->attempt.runtimeId
-				== request.successor.key.runtimeId
-			|| owner->liveSince + kBackgroundMainLiveQuantum
-				> request.facts.now) {
-			continue;
-		}
-		if (victim < 0) {
-			victim = index;
-			continue;
-		}
-		const auto &selected = std::get<LiveSlotAttemptOwner>(
-			result.pool.slots[victim].owner);
-		if (owner->liveSince < selected.liveSince) {
-			victim = index;
-		}
+	const auto wait = ReservationWaitReason(
+		result.pool,
+		{
+			.endpointKey = request.endpointKey,
+			.owner = request.successor,
+			.use = EndpointUse::Main,
+			.now = request.facts.now,
+		});
+	const auto occupied = NonemptySlotCount(result.pool);
+	const auto proven = std::clamp(
+		result.pool.provenLowerBound,
+		0,
+		kEndpointLiveSlotCount);
+	const auto baseline = CompleteLiveBaseline(
+		result.pool,
+		request.endpointKey);
+	if ((wait != LivePoolWaitReason::Slot
+			&& wait != LivePoolWaitReason::Capacity)
+		|| !proven
+		|| occupied != proven
+		|| int(baseline.size()) != proven) {
+		return result;
 	}
+	const auto victim = SelectMainReplacementVictim(result.pool, request);
 	if (victim < 0) {
 		return result;
 	}
@@ -865,6 +1164,16 @@ LiveSlotsCloseReduction CloseRuntimeLiveSlots(
 		&& result.pool.reclaim->successor->key.runtimeId
 			== request.runtimeId) {
 		result.pool.reclaim->successor.reset();
+		result.applied = true;
+	}
+	if (result.pool.demandTransferContinuation
+		&& (result.pool.demandTransferContinuation
+				->runtimeGeneration.runtimeId == request.runtimeId
+			|| result.pool.demandTransferContinuation
+				->sourceAttempt.runtimeId == request.runtimeId
+			|| result.pool.demandTransferContinuation
+				->successor.key.runtimeId == request.runtimeId)) {
+		result.pool.demandTransferContinuation.reset();
 		result.applied = true;
 	}
 	const auto closed = CloseMatchingSlots(
@@ -906,6 +1215,18 @@ LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(
 			request.endpointKey,
 			owner) || result.applied;
 	}
+	if (result.pool.demandTransferContinuation) {
+		const auto &continuation = *result.pool.demandTransferContinuation;
+		if ((continuation.runtimeGeneration.runtimeId == request.runtimeId
+				&& continuation.runtimeGeneration.proxyGeneration
+					< request.proxyGeneration)
+			|| (continuation.sourceAttempt.runtimeId == request.runtimeId
+				&& continuation.sourceAttempt.proxyGeneration
+					< request.proxyGeneration)) {
+			result.pool.demandTransferContinuation.reset();
+			result.applied = true;
+		}
+	}
 	const auto matches = [&](const ProxyConnectionAttempt &attempt) {
 		return attempt.runtimeId == request.runtimeId
 			&& attempt.proxyGeneration < request.proxyGeneration;
@@ -940,16 +1261,50 @@ LiveSlotReleaseReduction ReleaseLiveSlot(
 	if (!owner || !AttemptOwnerMatches(*owner, request.attempt)) {
 		return result;
 	}
+	const auto reclaimMatches = result.pool.reclaim
+		&& result.pool.reclaim->key == request.key
+		&& result.pool.reclaim->incumbent == request.attempt;
+	const auto authorizedReclaim = reclaimMatches
+		&& result.pool.reclaim->stage == EndpointReclaimStage::Authorized;
+	const auto continuationSourceMatches
+		= result.pool.demandTransferContinuation
+		&& result.pool.demandTransferContinuation->stage
+			!= DemandTransferContinuationStage::Released
+		&& ContinuationSourceMatches(
+			*result.pool.demandTransferContinuation,
+			request.key,
+			request.attempt);
+	const auto continuationReclaimMatches = authorizedReclaim
+		&& continuationSourceMatches
+		&& result.pool.demandTransferContinuation->stage
+			== DemandTransferContinuationStage::AwaitingRelease
+		&& ReclaimMatchesContinuation(
+			*result.pool.reclaim,
+			*result.pool.demandTransferContinuation);
 	if (result.pool.opening
 		&& OpeningOwnerMatches(*result.pool.opening, request.attempt)) {
 		result.pool.opening.reset();
 	}
 	ClearMatchingProbe(result.pool, request.key, request.attempt);
-	if (result.pool.reclaim
-		&& result.pool.reclaim->key == request.key
-		&& result.pool.reclaim->incumbent == request.attempt) {
-		result.successor = result.pool.reclaim->successor;
+	if (reclaimMatches) {
+		if (continuationReclaimMatches
+			&& result.pool.reclaim->continuationRequired) {
+			result.pool.demandTransferContinuation->stage
+				= DemandTransferContinuationStage::Released;
+			result.successor = result.pool.reclaim->successor;
+			result.continuationChanged = true;
+		} else if (continuationSourceMatches) {
+			result.pool.demandTransferContinuation.reset();
+			result.continuationChanged = true;
+		} else if (authorizedReclaim
+			&& !result.pool.reclaim->continuationRequired
+			&& !result.pool.demandTransferContinuation) {
+			result.successor = result.pool.reclaim->successor;
+		}
 		result.pool.reclaim.reset();
+	} else if (continuationSourceMatches) {
+		result.pool.demandTransferContinuation.reset();
+		result.continuationChanged = true;
 	}
 	if (slot->phase != LiveSlotPhase::Closing) {
 		slot->phase = LiveSlotPhase::Closing;
@@ -957,17 +1312,17 @@ LiveSlotReleaseReduction ReleaseLiveSlot(
 	slot->phase = LiveSlotPhase::Empty;
 	slot->owner = std::monostate();
 	ResetLearningIfEmpty(result.pool);
-	result.applied = true;
+	result.slotReleased = true;
 	return result;
 }
 
 std::optional<crl::time> NextLivePoolWakeAt(
 		const EndpointLivePool &pool,
 		const LivePoolSelectionFacts &facts,
-		bool backgroundMainWaiting) {
-	if (!backgroundMainWaiting
-		|| facts.foregroundTransferWaiting
-		|| facts.foregroundTransferActive
+		bool backgroundDutyWaiting) {
+	if (!backgroundDutyWaiting
+		|| facts.admissibleTransferWaiting
+		|| facts.transferActive
 		|| pool.opening
 		|| pool.reclaim
 		|| HasClosingSlot(pool)) {

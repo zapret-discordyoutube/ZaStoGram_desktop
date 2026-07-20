@@ -28,6 +28,12 @@ enum class AdmissionPurpose {
 	ReclaimedMainResume,
 };
 
+enum class TransferAdmissionBasis {
+	None,
+	MainRelayProof,
+	ReleasedContinuation,
+};
+
 struct LiveSlotKey {
 	QString endpointKey;
 	int index = -1;
@@ -96,12 +102,37 @@ struct CapacityProbe {
 	bool operator==(const CapacityProbe &other) const = default;
 };
 
+enum class EndpointReclaimStage {
+	Requested,
+	Authorized,
+};
+
 struct EndpointReclaim {
 	LiveSlotKey key;
 	ProxyConnectionAttempt incumbent;
 	std::optional<LiveSlotTicketOwner> successor;
+	EndpointReclaimStage stage = EndpointReclaimStage::Requested;
+	bool continuationRequired = false;
 
 	bool operator==(const EndpointReclaim &other) const = default;
+};
+
+enum class DemandTransferContinuationStage {
+	Requested,
+	AwaitingRelease,
+	Released,
+};
+
+struct DemandTransferContinuation {
+	LiveSlotKey sourceKey;
+	ProxyConnectionAttempt sourceAttempt;
+	LiveSlotTicketOwner successor;
+	RuntimeGenerationKey runtimeGeneration;
+	EndpointUse use = EndpointUse::Main;
+	DemandTransferContinuationStage stage
+		= DemandTransferContinuationStage::Requested;
+
+	bool operator==(const DemandTransferContinuation &other) const = default;
 };
 
 struct EndpointLivePool {
@@ -109,6 +140,7 @@ struct EndpointLivePool {
 	std::optional<EndpointOpeningOwner> opening;
 	std::optional<CapacityProbe> capacityProbe;
 	std::optional<EndpointReclaim> reclaim;
+	std::optional<DemandTransferContinuation> demandTransferContinuation;
 	int provenLowerBound = 0;
 	std::optional<int> learnedLimit;
 	uint64 lastIncarnation = 0;
@@ -126,8 +158,8 @@ enum class LivePoolWaitReason {
 
 struct LivePoolSelectionFacts {
 	ProxyRuntimeId foregroundRuntimeId = 0;
-	bool foregroundTransferWaiting = false;
-	bool foregroundTransferActive = false;
+	bool admissibleTransferWaiting = false;
+	bool transferActive = false;
 	crl::time now = 0;
 };
 
@@ -136,8 +168,9 @@ struct LiveSlotReserveRequest {
 	LiveSlotTicketOwner owner;
 	EndpointUse use = EndpointUse::Main;
 	AdmissionPurpose purpose = AdmissionPurpose::Ordinary;
-	bool foreground = false;
-	bool mainRelayProven = false;
+	RuntimeGenerationKey runtimeGeneration;
+	TransferAdmissionBasis transferAdmissionBasis
+		= TransferAdmissionBasis::None;
 	crl::time now = 0;
 	crl::time earliestOpenAt = 0;
 	crl::time spacing = 0;
@@ -169,6 +202,9 @@ struct LiveSlotCommitRequest {
 	LiveSlotTicketOwner owner;
 	ProxyConnectionAttempt attempt;
 	EndpointUse use = EndpointUse::Main;
+	RuntimeGenerationKey runtimeGeneration;
+	TransferAdmissionBasis transferAdmissionBasis
+		= TransferAdmissionBasis::None;
 	crl::time now = 0;
 	uint64 reservationId = 0;
 };
@@ -198,24 +234,41 @@ struct LiveSlotReleaseRequest {
 	ProxyConnectionAttempt attempt;
 };
 
-struct ForegroundTransferReservationRequest {
+struct DemandTransferReservationRequest {
 	QString endpointKey;
 	LiveSlotTicketOwner successor;
+	RuntimeGenerationKey runtimeGeneration;
 	EndpointUse use = EndpointUse::Main;
-	bool mainRelayProven = false;
+	TransferAdmissionBasis transferAdmissionBasis
+		= TransferAdmissionBasis::None;
+	std::vector<ProxyConnectionAttempt> mainRelayAttempts;
 	LivePoolSelectionFacts facts;
 };
 
-enum class ForegroundTransferReservationAction {
+enum class DemandTransferReservationAction {
 	Reserve,
 	Reclaim,
 	Wait,
 };
 
-struct BackgroundMainRotationRequest {
+enum class MainReplacementPurpose {
+	ForegroundRecovery,
+	DemandBootstrap,
+	BackgroundDuty,
+};
+
+struct MainReplacementRequest {
 	QString endpointKey;
 	LiveSlotTicketOwner successor;
+	MainReplacementPurpose purpose = MainReplacementPurpose::BackgroundDuty;
 	LivePoolSelectionFacts facts;
+};
+
+struct LiveSlotReclaimAuthorizationRequest {
+	LiveSlotKey key;
+	ProxyConnectionAttempt attempt;
+	ProxyRuntimeId foregroundRuntimeId = 0;
+	bool callbackReady = false;
 };
 
 struct LiveSlotsRuntimeCloseRequest {
@@ -279,10 +332,10 @@ struct LiveSlotCloseReduction {
 	bool applied = false;
 };
 
-struct ForegroundTransferReservationReduction {
+struct DemandTransferReservationReduction {
 	EndpointLivePool pool;
-	ForegroundTransferReservationAction action
-		= ForegroundTransferReservationAction::Wait;
+	DemandTransferReservationAction action
+		= DemandTransferReservationAction::Wait;
 	std::optional<LivePoolCloseAction> close;
 	LivePoolWaitReason waitReason = LivePoolWaitReason::Slot;
 };
@@ -296,7 +349,14 @@ struct LiveSlotsCloseReduction {
 struct LiveSlotReleaseReduction {
 	EndpointLivePool pool;
 	std::optional<LiveSlotTicketOwner> successor;
+	bool slotReleased = false;
+	bool continuationChanged = false;
+};
+
+struct LiveSlotReclaimAuthorizationReduction {
+	EndpointLivePool pool;
 	bool applied = false;
+	bool authorized = false;
 };
 
 [[nodiscard]] LiveSlotReserveReduction ReserveLiveSlot(
@@ -323,13 +383,17 @@ struct LiveSlotReleaseReduction {
 [[nodiscard]] LiveSlotCloseReduction BeginLiveSlotClose(
 	const EndpointLivePool &pool,
 	const LiveSlotCloseRequest &request);
-[[nodiscard]] auto PlanForegroundTransferReservation(
+[[nodiscard]] auto AuthorizeLiveSlotReclaim(
 	const EndpointLivePool &pool,
-	const ForegroundTransferReservationRequest &request)
--> ForegroundTransferReservationReduction;
-[[nodiscard]] LiveSlotCloseReduction SelectBackgroundMainRotation(
+	const LiveSlotReclaimAuthorizationRequest &request)
+-> LiveSlotReclaimAuthorizationReduction;
+[[nodiscard]] auto PlanDemandTransferReservation(
 	const EndpointLivePool &pool,
-	const BackgroundMainRotationRequest &request);
+	const DemandTransferReservationRequest &request)
+-> DemandTransferReservationReduction;
+[[nodiscard]] LiveSlotCloseReduction PlanMainReplacement(
+	const EndpointLivePool &pool,
+	const MainReplacementRequest &request);
 [[nodiscard]] LiveSlotsCloseReduction CloseRuntimeLiveSlots(
 	const EndpointLivePool &pool,
 	const LiveSlotsRuntimeCloseRequest &request);
@@ -342,6 +406,6 @@ struct LiveSlotReleaseReduction {
 [[nodiscard]] std::optional<crl::time> NextLivePoolWakeAt(
 	const EndpointLivePool &pool,
 	const LivePoolSelectionFacts &facts,
-	bool backgroundMainWaiting);
+	bool backgroundDutyWaiting);
 
 } // namespace MTP::details::MtProxy

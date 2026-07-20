@@ -70,6 +70,17 @@ RECLAIM_ACTION = "reclaim"
 WAIT_ACTION = "wait"
 ORDINARY = "ordinary"
 RECLAIMED_MAIN_RESUME = "reclaimed_main_resume"
+NO_TRANSFER_ADMISSION = "none"
+MAIN_RELAY_PROOF = "main_relay_proof"
+RELEASED_CONTINUATION = "released_continuation"
+CONTINUATION_REQUESTED = "requested"
+AWAITING_RELEASE = "awaiting_release"
+CONTINUATION_RELEASED = "released"
+RECLAIM_REQUESTED = "requested"
+RECLAIM_AUTHORIZED = "authorized"
+FOREGROUND_RECOVERY = "foreground_recovery"
+DEMAND_BOOTSTRAP = "demand_bootstrap"
+BACKGROUND_DUTY = "background_duty"
 MAIN = "main"
 MEDIA = "media"
 UPLOAD = "upload"
@@ -222,6 +233,26 @@ class LiveReclaim:
     key: LiveSlotKey
     incumbent: RelayProofIdentity
     successor: LiveTicket | None
+    stage: str = RECLAIM_REQUESTED
+    continuation_required: bool = False
+
+
+@dataclass
+class DemandTransferContinuation:
+    source_key: LiveSlotKey
+    source_attempt: RelayProofIdentity
+    successor: LiveTicket
+    runtime_id: int
+    proxy_generation: int
+    use: str
+    stage: str = CONTINUATION_REQUESTED
+
+
+@dataclass(frozen=True)
+class LiveReleaseResult:
+    slot_released: bool = False
+    successor: LiveTicket | None = None
+    continuation_changed: bool = False
 
 
 @dataclass
@@ -233,6 +264,7 @@ class LivePool:
     opening_attempt: RelayProofIdentity | None = None
     probe: CapacityProbe | None = None
     reclaim: LiveReclaim | None = None
+    demand_transfer_continuation: DemandTransferContinuation | None = None
     proven_lower_bound: int = 0
     learned_limit: int | None = None
     last_incarnation: int = 0
@@ -266,12 +298,49 @@ def complete_live_baseline(pool, endpoint):
 
 
 def reset_learning_if_empty(pool):
-    if any(slot.phase != EMPTY for slot in pool.slots):
+    if (
+        any(slot.phase != EMPTY for slot in pool.slots)
+        or pool.demand_transfer_continuation is not None
+    ):
         return
     pool.proven_lower_bound = 0
     pool.learned_limit = None
     pool.probe = None
     pool.reclaim = None
+
+
+def continuation_matches(
+        pool,
+        endpoint,
+        ticket,
+        use,
+        stage=CONTINUATION_RELEASED):
+    continuation = pool.demand_transfer_continuation
+    return (
+        continuation is not None
+        and continuation.stage == stage
+        and continuation.source_key.endpoint == endpoint
+        and continuation.source_key.incarnation > 0
+        and continuation.successor == ticket
+        and continuation.runtime_id == ticket.runtime_id
+        and continuation.proxy_generation == ticket.proxy_generation
+        and continuation.use == use
+        and use in {MEDIA, UPLOAD}
+        and continuation.source_attempt.runtime_id == ticket.runtime_id
+        and continuation.source_attempt.proxy_generation
+        == ticket.proxy_generation
+        and continuation.source_attempt.attempt_id != 0
+    )
+
+
+def transfer_admission_matches(pool, endpoint, ticket, use, basis):
+    if use not in {MEDIA, UPLOAD}:
+        return basis == NO_TRANSFER_ADMISSION
+    if basis == MAIN_RELAY_PROOF:
+        return True
+    if basis == RELEASED_CONTINUATION:
+        return continuation_matches(pool, endpoint, ticket, use)
+    return False
 
 
 def pool_wait_reason(pool, endpoint, ticket):
@@ -281,6 +350,11 @@ def pool_wait_reason(pool, endpoint, ticket):
             if pool.reclaim.successor == ticket
             else SLOT_WAIT
         )
+    continuation = pool.demand_transfer_continuation
+    if continuation and continuation.successor != ticket:
+        return SLOT_WAIT
+    if continuation and continuation.stage != CONTINUATION_RELEASED:
+        return CLOSING_WAIT
     if pool.opening_ticket or pool.opening_attempt:
         return SLOT_WAIT
     empty = next((
@@ -306,7 +380,19 @@ def pool_wait_reason(pool, endpoint, ticket):
     )
 
 
-def reserve_live_slot(pool, endpoint, ticket):
+def reserve_live_slot(
+        pool,
+        endpoint,
+        ticket,
+        use=MAIN,
+        admission_basis=NO_TRANSFER_ADMISSION):
+    if not transfer_admission_matches(
+            pool,
+            endpoint,
+            ticket,
+            use,
+            admission_basis):
+        return None, SLOT_WAIT
     wait = pool_wait_reason(pool, endpoint, ticket)
     if wait != NONE:
         return None, wait
@@ -321,13 +407,19 @@ def reserve_live_slot(pool, endpoint, ticket):
     slot.incarnation = pool.last_incarnation
     slot.ticket = ticket
     slot.attempt = None
-    slot.use = MAIN
+    slot.use = use
     slot.live_since = 0
     pool.opening_ticket = ticket
     return slot_key(endpoint, index, slot), NONE
 
 
-def commit_live_slot(pool, key, ticket, attempt, use=MAIN):
+def commit_live_slot(
+        pool,
+        key,
+        ticket,
+        attempt,
+        use=MAIN,
+        admission_basis=NO_TRANSFER_ADMISSION):
     slot = find_live_slot(pool, key)
     if (
         slot is None
@@ -336,12 +428,21 @@ def commit_live_slot(pool, key, ticket, attempt, use=MAIN):
         or pool.opening_ticket != ticket
         or attempt.runtime_id != ticket.runtime_id
         or attempt.proxy_generation != ticket.proxy_generation
+        or not transfer_admission_matches(
+            pool,
+            key.endpoint,
+            ticket,
+            use,
+            admission_basis)
     ):
         return False
     occupied_before = nonempty_slot_count(pool) - 1
     baseline = complete_live_baseline(pool, key.endpoint)
     target = pool.proven_lower_bound + 1
+    continuation_admission = admission_basis == RELEASED_CONTINUATION
     expansion = (
+        not continuation_admission
+        and
         pool.proven_lower_bound > 0
         and target <= LIVE_SLOT_COUNT
         and occupied_before == pool.proven_lower_bound
@@ -358,6 +459,8 @@ def commit_live_slot(pool, key, ticket, attempt, use=MAIN):
     slot.use = use
     pool.opening_ticket = None
     pool.opening_attempt = attempt
+    if continuation_admission:
+        pool.demand_transfer_continuation = None
     if expansion:
         pool.probe = CapacityProbe(key, attempt, target, baseline)
     return True
@@ -408,6 +511,19 @@ def mark_live_slot_capacity_terminal(
     if not final_endpoint_terminal or reason not in CAPACITY_PRESSURE_REASONS:
         return False
     slot = find_live_slot(pool, key)
+    continuation = pool.demand_transfer_continuation
+    if (
+        slot is not None
+        and slot.phase == CLOSING
+        and slot.attempt == attempt
+        and continuation is not None
+        and continuation.stage != CONTINUATION_RELEASED
+        and continuation.source_key == key
+        and continuation.source_attempt == attempt
+    ):
+        pool.demand_transfer_continuation = None
+        reset_learning_if_empty(pool)
+        return True
     if (
         slot is None
         or slot.phase != OPENING
@@ -463,43 +579,46 @@ def begin_live_slot_close(
     return (key, attempt, resume_purpose)
 
 
-def select_foreground_transfer_victim(
+def select_demand_transfer_main_victim(
         pool,
-        foreground_runtime_id):
-    candidates = [
+        successor,
+        foreground_runtime_id,
+        main_relay_attempts,
+        own_runtime):
+    return next((
         (index, slot)
         for index, slot in enumerate(pool.slots)
-        if slot.phase in {OPENING, LIVE} and slot.attempt is not None
-    ]
-    victim = next((
-        item for item in candidates
-        if item[1].use in {MEDIA, UPLOAD}
-        and item[1].attempt.runtime_id != foreground_runtime_id
+        if slot.phase == LIVE
+        and slot.attempt is not None
+        and slot.use == MAIN
+        and slot.attempt.runtime_id != foreground_runtime_id
+        and (slot.attempt.runtime_id == successor.runtime_id) == own_runtime
+        and (
+            not own_runtime
+            or slot.attempt in main_relay_attempts
+        )
     ), None)
-    if victim is None:
-        victim = next((
-            item for item in candidates
-            if item[1].use == MAIN
-            and item[1].attempt.runtime_id != foreground_runtime_id
-        ), None)
-    return victim
 
 
-def plan_foreground_transfer_reservation(
+def plan_demand_transfer_reservation(
         pool,
         endpoint,
         successor,
         use,
         foreground_runtime_id,
-        main_relay_proven,
-        foreground_transfer_waiting):
+        admission_basis,
+        main_relay_attempts,
+        admissible_transfer_waiting):
     if (
         not endpoint
-        or not foreground_runtime_id
-        or successor.runtime_id != foreground_runtime_id
         or use not in {MEDIA, UPLOAD}
-        or not main_relay_proven
-        or not foreground_transfer_waiting
+        or not admissible_transfer_waiting
+        or not transfer_admission_matches(
+            pool,
+            endpoint,
+            successor,
+            use,
+            admission_basis)
     ):
         return WAIT_ACTION, None, SLOT_WAIT
     reservation_wait = pool_wait_reason(pool, endpoint, successor)
@@ -507,6 +626,17 @@ def plan_foreground_transfer_reservation(
         return WAIT_ACTION, None, CLOSING_WAIT
     if pool.opening_ticket or pool.opening_attempt:
         return WAIT_ACTION, None, SLOT_WAIT
+    if admission_basis == RELEASED_CONTINUATION:
+        return (
+            RESERVE_ACTION if reservation_wait == NONE else WAIT_ACTION,
+            None,
+            reservation_wait,
+        )
+    if (
+        admission_basis != MAIN_RELAY_PROOF
+        or pool.demand_transfer_continuation is not None
+    ):
+        return WAIT_ACTION, None, reservation_wait
     occupied = nonempty_slot_count(pool)
     proven = max(0, min(pool.proven_lower_bound, LIVE_SLOT_COUNT))
     bootstrap = not proven and not occupied
@@ -524,9 +654,21 @@ def plan_foreground_transfer_reservation(
         return WAIT_ACTION, None, SLOT_WAIT
     if reservation_wait not in {NONE, SLOT_WAIT, CAPACITY_WAIT}:
         return WAIT_ACTION, None, reservation_wait
-    victim = select_foreground_transfer_victim(
+    victim = select_demand_transfer_main_victim(
         pool,
-        foreground_runtime_id)
+        successor,
+        foreground_runtime_id,
+        main_relay_attempts,
+        own_runtime=False)
+    own_runtime = False
+    if victim is None:
+        victim = select_demand_transfer_main_victim(
+            pool,
+            successor,
+            foreground_runtime_id,
+            main_relay_attempts,
+            own_runtime=True)
+        own_runtime = victim is not None
     if victim is None:
         return (
             RESERVE_ACTION if reservation_wait == NONE else WAIT_ACTION,
@@ -534,28 +676,97 @@ def plan_foreground_transfer_reservation(
             reservation_wait,
         )
     index, slot = victim
-    purpose = (
-        ORDINARY
-        if slot.use in {MEDIA, UPLOAD}
-        else RECLAIMED_MAIN_RESUME
-    )
     close = begin_live_slot_close(
         pool,
         slot_key(endpoint, index, slot),
         slot.attempt,
         successor,
-        purpose)
+        RECLAIMED_MAIN_RESUME)
     if close is None:
         wait = SLOT_WAIT if reservation_wait == NONE else reservation_wait
         return WAIT_ACTION, None, wait
+    if own_runtime:
+        pool.reclaim.continuation_required = True
+        pool.demand_transfer_continuation = DemandTransferContinuation(
+            source_key=close[0],
+            source_attempt=close[1],
+            successor=successor,
+            runtime_id=successor.runtime_id,
+            proxy_generation=successor.proxy_generation,
+            use=use)
     return RECLAIM_ACTION, close, reservation_wait
 
 
 def cancel_live_slot_successor(pool, ticket):
-    if pool.reclaim is None or pool.reclaim.successor != ticket:
-        return False
-    pool.reclaim.successor = None
-    return True
+    applied = False
+    if pool.reclaim is not None and pool.reclaim.successor == ticket:
+        pool.reclaim.successor = None
+        applied = True
+    if (
+        pool.demand_transfer_continuation is not None
+        and pool.demand_transfer_continuation.successor == ticket
+    ):
+        pool.demand_transfer_continuation = None
+        applied = True
+    if applied:
+        reset_learning_if_empty(pool)
+    return applied
+
+
+def authorize_live_slot_reclaim(
+        pool,
+        key,
+        attempt,
+        foreground_runtime_id,
+        callback_ready=True):
+    continuation = pool.demand_transfer_continuation
+    slot = find_live_slot(pool, key)
+    reclaim = pool.reclaim
+    if (
+        slot is None
+        or slot.phase != CLOSING
+        or slot.attempt != attempt
+        or reclaim is None
+        or reclaim.stage != RECLAIM_REQUESTED
+        or reclaim.key != key
+        or reclaim.incumbent != attempt
+    ):
+        return False, False
+    continuation_matches = (
+        continuation is not None
+        and continuation.stage == CONTINUATION_REQUESTED
+        and continuation.source_key == key
+        and continuation.source_attempt == attempt
+        and reclaim.successor == continuation.successor
+    )
+    authorized = (
+        callback_ready
+        and attempt.runtime_id != foreground_runtime_id
+        and reclaim.successor is not None
+        and (
+            not reclaim.continuation_required
+            or continuation_matches
+        )
+        and (continuation is None or continuation_matches)
+    )
+    if authorized:
+        reclaim.stage = RECLAIM_AUTHORIZED
+        if continuation_matches:
+            continuation.stage = AWAITING_RELEASE
+    else:
+        slot.phase = LIVE
+        if (
+            continuation_matches
+            or (
+                continuation is not None
+                and continuation.source_key == key
+                and continuation.source_attempt == attempt
+            )
+        ):
+            pool.demand_transfer_continuation = None
+        pool.reclaim = None
+        reset_learning_if_empty(pool)
+    return True, authorized
 
 
 def release_live_slot(pool, key, attempt):
@@ -565,7 +776,7 @@ def release_live_slot(pool, key, attempt):
         or slot.phase not in {OPENING, LIVE, CLOSING}
         or slot.attempt != attempt
     ):
-        return False, None
+        return LiveReleaseResult()
     if pool.opening_attempt == attempt:
         pool.opening_attempt = None
     if (
@@ -575,13 +786,50 @@ def release_live_slot(pool, key, attempt):
     ):
         pool.probe = None
     successor = None
-    if (
+    continuation_changed = False
+    reclaim_matches = (
         pool.reclaim is not None
         and pool.reclaim.key == key
         and pool.reclaim.incumbent == attempt
-    ):
-        successor = pool.reclaim.successor
+    )
+    authorized_reclaim = (
+        reclaim_matches
+        and pool.reclaim.stage == RECLAIM_AUTHORIZED
+    )
+    continuation = pool.demand_transfer_continuation
+    continuation_source_matches = (
+        continuation is not None
+        and continuation.stage != CONTINUATION_RELEASED
+        and continuation.source_key == key
+        and continuation.source_attempt == attempt
+    )
+    continuation_reclaim_matches = (
+        authorized_reclaim
+        and continuation_source_matches
+        and continuation.stage == AWAITING_RELEASE
+        and pool.reclaim.successor == continuation.successor
+    )
+    if reclaim_matches:
+        if (
+            continuation_reclaim_matches
+            and pool.reclaim.continuation_required
+        ):
+            continuation.stage = CONTINUATION_RELEASED
+            successor = pool.reclaim.successor
+            continuation_changed = True
+        elif continuation_source_matches:
+            pool.demand_transfer_continuation = None
+            continuation_changed = True
+        elif (
+            authorized_reclaim
+            and not pool.reclaim.continuation_required
+            and continuation is None
+        ):
+            successor = pool.reclaim.successor
         pool.reclaim = None
+    elif continuation_source_matches:
+        pool.demand_transfer_continuation = None
+        continuation_changed = True
     slot.phase = CLOSING
     slot.phase = EMPTY
     slot.ticket = None
@@ -589,7 +837,7 @@ def release_live_slot(pool, key, attempt):
     slot.use = MAIN
     slot.live_since = 0
     reset_learning_if_empty(pool)
-    return True, successor
+    return LiveReleaseResult(True, successor, continuation_changed)
 
 
 def close_slots_before_generation(
@@ -608,6 +856,11 @@ def close_slots_before_generation(
         pool.opening_ticket = None
     if pool.reclaim and pool.reclaim.successor in cancelled_tickets:
         pool.reclaim.successor = None
+    if (
+        pool.demand_transfer_continuation
+        and pool.demand_transfer_continuation.successor in cancelled_tickets
+    ):
+        pool.demand_transfer_continuation = None
     actions = []
     for index, slot in enumerate(pool.slots):
         if (
@@ -627,6 +880,13 @@ def close_slots_before_generation(
         and pool.reclaim.incumbent.proxy_generation < proxy_generation
     ):
         pool.reclaim = None
+    if pool.demand_transfer_continuation:
+        continuation = pool.demand_transfer_continuation
+        if (
+            continuation.runtime_id == runtime_id
+            and continuation.proxy_generation < proxy_generation
+        ):
+            pool.demand_transfer_continuation = None
     reset_learning_if_empty(pool)
     return actions
 
@@ -647,22 +907,43 @@ def close_runtime_live_slots(pool, endpoint, runtime_id):
         cancelled)
 
 
-def select_background_main_rotation(
+def plan_main_replacement(
         pool,
         endpoint,
         successor,
         foreground_runtime_id,
         now,
-        foreground_transfer_waiting=False,
-        foreground_transfer_active=False):
+        purpose,
+        admissible_transfer_waiting=False,
+        transfer_active=False):
     if (
-        successor.runtime_id == foreground_runtime_id
-        or foreground_transfer_waiting
-        or foreground_transfer_active
+        (
+            purpose == FOREGROUND_RECOVERY
+            and successor.runtime_id != foreground_runtime_id
+        )
+        or (
+            purpose != FOREGROUND_RECOVERY
+            and successor.runtime_id == foreground_runtime_id
+        )
+        or (
+            purpose == BACKGROUND_DUTY
+            and (admissible_transfer_waiting or transfer_active)
+        )
         or pool.opening_ticket
         or pool.opening_attempt
         or pool.reclaim
+        or pool.demand_transfer_continuation
         or any(slot.phase == CLOSING for slot in pool.slots)
+    ):
+        return None
+    wait = pool_wait_reason(pool, endpoint, successor)
+    baseline = complete_live_baseline(pool, endpoint)
+    occupied = nonempty_slot_count(pool)
+    if (
+        wait not in {SLOT_WAIT, CAPACITY_WAIT}
+        or pool.proven_lower_bound <= 0
+        or occupied != pool.proven_lower_bound
+        or len(baseline) != pool.proven_lower_bound
     ):
         return None
     candidates = [
@@ -673,7 +954,10 @@ def select_background_main_rotation(
         and slot.use == MAIN
         and slot.attempt.runtime_id != foreground_runtime_id
         and slot.attempt.runtime_id != successor.runtime_id
-        and slot.live_since + 60000 <= now
+        and (
+            purpose != BACKGROUND_DUTY
+            or slot.live_since + 60000 <= now
+        )
     ]
     if not candidates:
         return None
@@ -682,18 +966,60 @@ def select_background_main_rotation(
         pool,
         slot_key(endpoint, index, slot),
         slot.attempt,
+        successor,
         resume_purpose=RECLAIMED_MAIN_RESUME)
 
 
-def admission_priority(ticket, use, foreground, has_main_proof, age):
+def admission_priority(
+        ticket,
+        use,
+        foreground,
+        admission_basis,
+        age):
+    if use == MAIN and foreground:
+        return 0
     if ticket.purpose == RECLAIMED_MAIN_RESUME:
-        return 8
+        return 9
     if use == MAIN:
-        return 0 if foreground else (3 if has_main_proof else 2)
-    if foreground and use in {MEDIA, UPLOAD} and has_main_proof:
-        return 1
-    base = 4 if use == "maintenance" else 7
-    return max(3, base - age // 15000)
+        return 4 if admission_basis == MAIN_RELAY_PROOF else 3
+    if (
+        use in {MEDIA, UPLOAD}
+        and admission_basis != NO_TRANSFER_ADMISSION
+    ):
+        return 1 if foreground else 2
+    base = 5 if use == "maintenance" else 8
+    return max(4, base - age // 15000)
+
+
+def select_with_released_continuation(
+        pool,
+        candidates,
+        foreground_runtime_id):
+    continuation = pool.demand_transfer_continuation
+    if (
+        continuation is None
+        or continuation.stage != CONTINUATION_RELEASED
+    ):
+        return None
+    foreground_main = next((
+        ticket
+        for ticket, use, current, due in candidates
+        if use == MAIN
+        and ticket.runtime_id == foreground_runtime_id
+        and current
+        and due
+    ), None)
+    if foreground_main is not None:
+        assert cancel_live_slot_successor(pool, continuation.successor)
+        return foreground_main
+    return next((
+        ticket
+        for ticket, use, current, due in candidates
+        if ticket == continuation.successor
+        and use == continuation.use
+        and current
+        and due
+    ), None)
 
 
 def read(path):
@@ -1284,11 +1610,27 @@ def open_pool_attempt(
         attempt_id,
         use=MAIN,
         endpoint=ABC_ENDPOINT):
-    key, wait = reserve_live_slot(pool, endpoint, ticket)
+    admission_basis = (
+        MAIN_RELAY_PROOF
+        if use in {MEDIA, UPLOAD}
+        else NO_TRANSFER_ADMISSION
+    )
+    key, wait = reserve_live_slot(
+        pool,
+        endpoint,
+        ticket,
+        use,
+        admission_basis)
     assert wait == NONE
     assert key is not None
     attempt = live_attempt(ticket, attempt_id)
-    assert commit_live_slot(pool, key, ticket, attempt, use)
+    assert commit_live_slot(
+        pool,
+        key,
+        ticket,
+        attempt,
+        use,
+        admission_basis)
     return key, attempt
 
 
@@ -1475,9 +1817,10 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
         probe_attempt,
         TCP_TIMEOUT,
         True)
-    assert release_live_slot(pool, probe_key, probe_attempt) == (True, None)
+    assert release_live_slot(pool, probe_key, probe_attempt) == (
+        LiveReleaseResult(slot_released=True))
     assert pool.learned_limit == 1
-    successor = live_ticket(3, 30)
+    successor = live_ticket(3, 10)
     assert reserve_live_slot(pool, ABC_ENDPOINT, successor) == (
         None,
         CAPACITY_WAIT)
@@ -1487,14 +1830,15 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
         for index, slot in enumerate(pool.slots)
         if slot.phase == LIVE)
     incumbent = pool.slots[incumbent_key.index].attempt
-    decision, action, wait = plan_foreground_transfer_reservation(
+    decision, action, wait = plan_demand_transfer_reservation(
         pool,
         ABC_ENDPOINT,
         successor,
         MEDIA,
-        foreground_runtime_id=successor.runtime_id,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
+        foreground_runtime_id=99,
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(incumbent,),
+        admissible_transfer_waiting=True)
     assert decision == RECLAIM_ACTION
     assert wait == CAPACITY_WAIT
     assert action == (
@@ -1504,26 +1848,42 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
     assert pool.reclaim == LiveReclaim(
         incumbent_key,
         incumbent,
-        successor)
-    assert reserve_live_slot(pool, ABC_ENDPOINT, successor) == (
+        successor,
+        continuation_required=True)
+    assert pool.demand_transfer_continuation == DemandTransferContinuation(
+        source_key=incumbent_key,
+        source_attempt=incumbent,
+        successor=successor,
+        runtime_id=successor.runtime_id,
+        proxy_generation=successor.proxy_generation,
+        use=MEDIA)
+    assert reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        MAIN_RELAY_PROOF) == (
         None,
         CLOSING_WAIT)
     second_decision, second_action, second_wait = (
-        plan_foreground_transfer_reservation(
+        plan_demand_transfer_reservation(
             pool,
             ABC_ENDPOINT,
-            live_ticket(4, 30),
+            live_ticket(4, 10),
             MEDIA,
-            foreground_runtime_id=30,
-            main_relay_proven=True,
-            foreground_transfer_waiting=True))
+            foreground_runtime_id=99,
+            admission_basis=MAIN_RELAY_PROOF,
+            main_relay_attempts=(incumbent,),
+            admissible_transfer_waiting=True))
     assert second_decision == WAIT_ACTION
     assert second_action is None
     assert second_wait == CLOSING_WAIT
     assert cancel_live_slot_successor(pool, successor)
     assert pool.reclaim.successor is None
+    assert pool.demand_transfer_continuation is None
     assert pool.slots[incumbent_key.index].phase == CLOSING
-    assert release_live_slot(pool, incumbent_key, incumbent) == (True, None)
+    assert release_live_slot(pool, incumbent_key, incumbent) == (
+        LiveReleaseResult(slot_released=True))
     assert pool.proven_lower_bound == 0
     assert pool.learned_limit is None
     old_incarnation = incumbent_key.incarnation
@@ -1540,97 +1900,323 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
     assert release_live_slot(
         pinned_pool,
         probe_key,
-        probe_attempt) == (True, None)
+        probe_attempt) == LiveReleaseResult(slot_released=True)
     incumbent_key = next(
         slot_key(ABC_ENDPOINT, index, slot)
         for index, slot in enumerate(pinned_pool.slots)
         if slot.phase == LIVE)
     incumbent = pinned_pool.slots[incumbent_key.index].attempt
-    successor = live_ticket(6, 60)
-    decision, action, _ = plan_foreground_transfer_reservation(
+    successor = live_ticket(6, 10)
+    decision, action, _ = plan_demand_transfer_reservation(
         pinned_pool,
         ABC_ENDPOINT,
         successor,
         MEDIA,
-        foreground_runtime_id=60,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
+        foreground_runtime_id=99,
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(incumbent,),
+        admissible_transfer_waiting=True)
     assert decision == RECLAIM_ACTION
     assert action is not None
+    assert pinned_pool.demand_transfer_continuation.stage == (
+        CONTINUATION_REQUESTED)
+    assert authorize_live_slot_reclaim(
+        pinned_pool,
+        incumbent_key,
+        incumbent,
+        foreground_runtime_id=99) == (True, True)
+    assert pinned_pool.demand_transfer_continuation.stage == AWAITING_RELEASE
     assert release_live_slot(
         pinned_pool,
         incumbent_key,
-        incumbent) == (True, successor)
+        incumbent) == LiveReleaseResult(
+            slot_released=True,
+            successor=successor,
+            continuation_changed=True)
+    assert pinned_pool.demand_transfer_continuation.stage == (
+        CONTINUATION_RELEASED)
+    successor_key, successor_wait = reserve_live_slot(
+        pinned_pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        RELEASED_CONTINUATION)
+    assert successor_wait == NONE
+    successor_attempt = live_attempt(successor, 600)
+    assert commit_live_slot(
+        pinned_pool,
+        successor_key,
+        successor,
+        successor_attempt,
+        MEDIA,
+        RELEASED_CONTINUATION)
+    assert pinned_pool.demand_transfer_continuation is None
+    assert pinned_pool.probe is None
+
+
+def test_demand_owned_continuation_survives_exact_main_proof_retirement():
+    pool = LivePool()
+    foreground_key, foreground_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(1, 1),
+        101,
+        MAIN)
+    demand_main_key, demand_main_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(2, 2),
+        102,
+        MAIN)
+    pool.learned_limit = 2
+    successor = live_ticket(3, 2)
+
+    decision, close, wait = plan_demand_transfer_reservation(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        foreground_runtime_id=1,
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(demand_main_attempt,),
+        admissible_transfer_waiting=True)
+    assert decision == RECLAIM_ACTION
+    assert wait == CAPACITY_WAIT
+    assert close == (
+        demand_main_key,
+        demand_main_attempt,
+        RECLAIMED_MAIN_RESUME)
+    assert pool.slots[foreground_key.index].phase == LIVE
+    assert pool.slots[foreground_key.index].attempt == foreground_attempt
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_REQUESTED
+
+    terminal_pool = deepcopy(pool)
+    assert mark_live_slot_capacity_terminal(
+        terminal_pool,
+        demand_main_key,
+        demand_main_attempt,
+        TCP_TIMEOUT,
+        True)
+    assert terminal_pool.demand_transfer_continuation is None
+    assert terminal_pool.slots[demand_main_key.index].phase == CLOSING
+
+    generation_pool = deepcopy(pool)
+    assert close_slots_before_generation(
+        generation_pool,
+        ABC_ENDPOINT,
+        runtime_id=2,
+        proxy_generation=2) == []
+    assert generation_pool.demand_transfer_continuation is None
+    assert generation_pool.slots[demand_main_key.index].phase == CLOSING
+
+    missing_pool = deepcopy(pool)
+    assert authorize_live_slot_reclaim(
+        missing_pool,
+        demand_main_key,
+        demand_main_attempt,
+        foreground_runtime_id=1,
+        callback_ready=False) == (True, False)
+    assert missing_pool.demand_transfer_continuation is None
+    assert missing_pool.slots[demand_main_key.index].phase == LIVE
+    assert missing_pool.reclaim is None
+
+    unacknowledged_pool = deepcopy(pool)
+    assert release_live_slot(
+        unacknowledged_pool,
+        demand_main_key,
+        demand_main_attempt) == LiveReleaseResult(
+            slot_released=True,
+            continuation_changed=True)
+    assert unacknowledged_pool.demand_transfer_continuation is None
+
+    assert reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        NO_TRANSFER_ADMISSION) == (None, SLOT_WAIT)
+    assert release_live_slot(
+        pool,
+        replace(demand_main_key, incarnation=demand_main_key.incarnation + 1),
+        demand_main_attempt) == LiveReleaseResult()
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_REQUESTED
+    assert authorize_live_slot_reclaim(
+        pool,
+        replace(demand_main_key, incarnation=demand_main_key.incarnation + 1),
+        demand_main_attempt,
+        foreground_runtime_id=1) == (False, False)
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_REQUESTED
+    assert authorize_live_slot_reclaim(
+        pool,
+        demand_main_key,
+        demand_main_attempt,
+        foreground_runtime_id=1) == (True, True)
+    assert pool.demand_transfer_continuation.stage == AWAITING_RELEASE
+    assert authorize_live_slot_reclaim(
+        pool,
+        demand_main_key,
+        demand_main_attempt,
+        foreground_runtime_id=1) == (False, False)
+    assert pool.demand_transfer_continuation.stage == AWAITING_RELEASE
+
+    release = release_live_slot(
+        pool,
+        demand_main_key,
+        demand_main_attempt)
+    assert release == LiveReleaseResult(
+        slot_released=True,
+        successor=successor,
+        continuation_changed=True)
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_RELEASED
+    assert authorize_live_slot_reclaim(
+        pool,
+        demand_main_key,
+        demand_main_attempt,
+        foreground_runtime_id=1) == (False, False)
+    assert release_live_slot(
+        pool,
+        demand_main_key,
+        demand_main_attempt) == LiveReleaseResult()
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_RELEASED
+
+    for stale, use in (
+            (replace(successor, revision=successor.revision + 1), MEDIA),
+            (replace(successor, proxy_generation=2), MEDIA),
+            (replace(successor, runtime_id=3), MEDIA),
+            (successor, UPLOAD)):
+        assert reserve_live_slot(
+            pool,
+            ABC_ENDPOINT,
+            stale,
+            use,
+            RELEASED_CONTINUATION) == (None, SLOT_WAIT)
+        assert pool.demand_transfer_continuation.stage == (
+            CONTINUATION_RELEASED)
+
+    key, wait = reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        RELEASED_CONTINUATION)
+    assert wait == NONE
+    attempt = live_attempt(successor, 103)
+    assert not commit_live_slot(
+        pool,
+        key,
+        replace(successor, revision=successor.revision + 1),
+        attempt,
+        MEDIA,
+        RELEASED_CONTINUATION)
+    assert pool.demand_transfer_continuation.stage == CONTINUATION_RELEASED
+    assert commit_live_slot(
+        pool,
+        key,
+        successor,
+        attempt,
+        MEDIA,
+        RELEASED_CONTINUATION)
+    assert pool.demand_transfer_continuation is None
+    assert pool.probe is None
 
 
 def test_reclaim_victim_order_and_foreground_main_protection():
     trace_pool = LivePool()
-    trace11 = live_ticket(11, 1)
-    trace11_key, trace11_attempt = add_live_pool_attempt(
+    foreground_key, foreground_attempt = add_live_pool_attempt(
         trace_pool,
-        trace11,
+        live_ticket(11, 1),
         11,
         MAIN)
-    add_live_pool_attempt(
+    demand_main_key, demand_main_attempt = add_live_pool_attempt(
         trace_pool,
         live_ticket(12, 2),
         12,
         MAIN)
-    add_live_pool_attempt(
+    foreign_key, foreign_attempt = add_live_pool_attempt(
         trace_pool,
-        live_ticket(17, 2),
+        live_ticket(17, 3),
         17,
+        MAIN)
+    transfer_key, transfer_attempt = add_live_pool_attempt(
+        trace_pool,
+        live_ticket(18, 4),
+        18,
         MEDIA)
-    assert trace_pool.proven_lower_bound == 3
+    assert trace_pool.proven_lower_bound == 4
     assert trace_pool.probe is None
     assert trace_pool.opening_ticket is None
     assert trace_pool.opening_attempt is None
-    trace18 = live_ticket(18, 2)
-    decision, action, wait = plan_foreground_transfer_reservation(
+    successor = live_ticket(19, 2)
+    decision, action, wait = plan_demand_transfer_reservation(
         trace_pool,
         ABC_ENDPOINT,
-        trace18,
+        successor,
         MEDIA,
-        foreground_runtime_id=2,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
+        foreground_runtime_id=1,
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(demand_main_attempt,),
+        admissible_transfer_waiting=True)
     assert decision == RECLAIM_ACTION
-    assert wait == NONE
+    assert wait == SLOT_WAIT
     assert action == (
-        trace11_key,
-        trace11_attempt,
+        foreign_key,
+        foreign_attempt,
         RECLAIMED_MAIN_RESUME)
-    assert trace_pool.slots[trace11_key.index].phase == CLOSING
+    assert trace_pool.slots[foreign_key.index].phase == CLOSING
     assert trace_pool.reclaim == LiveReclaim(
-        trace11_key,
-        trace11_attempt,
-        trace18)
+        foreign_key,
+        foreign_attempt,
+        successor)
+    assert trace_pool.demand_transfer_continuation is None
+    assert trace_pool.slots[foreground_key.index].phase == LIVE
+    assert trace_pool.slots[foreground_key.index].attempt == foreground_attempt
+    assert trace_pool.slots[demand_main_key.index].phase == LIVE
+    assert trace_pool.slots[transfer_key.index].phase == LIVE
+    assert trace_pool.slots[transfer_key.index].attempt == transfer_attempt
     assert trace_pool.opening_ticket is None
     assert trace_pool.opening_attempt is None
     assert trace_pool.probe is None
-    stale_revision = replace(trace18, revision=trace18.revision + 1)
+    stale_revision = replace(successor, revision=successor.revision + 1)
     assert not cancel_live_slot_successor(trace_pool, stale_revision)
-    assert trace_pool.reclaim.successor == trace18
-    assert trace_pool.slots[trace11_key.index].phase == CLOSING
-    assert reserve_live_slot(trace_pool, ABC_ENDPOINT, trace18) == (
+    assert trace_pool.reclaim.successor == successor
+    assert trace_pool.slots[foreign_key.index].phase == CLOSING
+    assert reserve_live_slot(
+        trace_pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        MAIN_RELAY_PROOF) == (
         None,
         CLOSING_WAIT)
+    preauthorization = deepcopy(trace_pool)
+    assert release_live_slot(
+        preauthorization,
+        foreign_key,
+        foreign_attempt) == LiveReleaseResult(slot_released=True)
+    assert authorize_live_slot_reclaim(
+        trace_pool,
+        foreign_key,
+        foreign_attempt,
+        foreground_runtime_id=1) == (True, True)
     assert release_live_slot(
         trace_pool,
-        trace11_key,
-        trace11_attempt) == (True, trace18)
-    trace18_key, trace18_wait = reserve_live_slot(
+        foreign_key,
+        foreign_attempt) == LiveReleaseResult(
+            slot_released=True,
+            successor=successor)
+    successor_key, successor_wait = reserve_live_slot(
         trace_pool,
         ABC_ENDPOINT,
-        trace18)
-    assert trace18_wait == NONE
-    trace18_attempt = live_attempt(trace18, 18)
+        successor,
+        MEDIA,
+        MAIN_RELAY_PROOF)
+    assert successor_wait == NONE
+    successor_attempt = live_attempt(successor, 19)
     assert commit_live_slot(
         trace_pool,
-        trace18_key,
-        trace18,
-        trace18_attempt,
-        MEDIA)
+        successor_key,
+        successor,
+        successor_attempt,
+        MEDIA,
+        MAIN_RELAY_PROOF)
     assert trace_pool.probe is None
 
     expansion_pool = LivePool()
@@ -1641,21 +2227,24 @@ def test_reclaim_victim_order_and_foreground_main_protection():
             ticket_id,
             use)
     trace28 = live_ticket(28, 2)
-    decision, action, wait = plan_foreground_transfer_reservation(
+    decision, action, wait = plan_demand_transfer_reservation(
         expansion_pool,
         ABC_ENDPOINT,
         trace28,
         MEDIA,
         foreground_runtime_id=2,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(),
+        admissible_transfer_waiting=True)
     assert decision == RESERVE_ACTION
     assert action is None
     assert wait == NONE
     trace28_key, trace28_wait = reserve_live_slot(
         expansion_pool,
         ABC_ENDPOINT,
-        trace28)
+        trace28,
+        MEDIA,
+        MAIN_RELAY_PROOF)
     assert trace28_wait == NONE
     trace28_attempt = live_attempt(trace28, 28)
     assert commit_live_slot(
@@ -1663,38 +2252,13 @@ def test_reclaim_victim_order_and_foreground_main_protection():
         trace28_key,
         trace28,
         trace28_attempt,
-        MEDIA)
+        MEDIA,
+        MAIN_RELAY_PROOF)
     assert expansion_pool.probe == CapacityProbe(
         trace28_key,
         trace28_attempt,
         4,
         complete_live_baseline(expansion_pool, ABC_ENDPOINT))
-
-    pool = LivePool()
-    main_key, main_attempt = add_live_pool_attempt(
-        pool,
-        live_ticket(1, 10),
-        101,
-        MAIN)
-    transfer_key, transfer_attempt = add_live_pool_attempt(
-        pool,
-        live_ticket(2, 20),
-        102,
-        MEDIA)
-    pool.learned_limit = 2
-    successor = live_ticket(3, 30)
-    decision, action, wait = plan_foreground_transfer_reservation(
-        pool,
-        ABC_ENDPOINT,
-        successor,
-        MEDIA,
-        foreground_runtime_id=30,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
-    assert decision == RECLAIM_ACTION
-    assert wait == CAPACITY_WAIT
-    assert action == (transfer_key, transfer_attempt, ORDINARY)
-    assert pool.slots[main_key.index].phase == LIVE
 
     protected = LivePool()
     key, attempt = add_live_pool_attempt(
@@ -1703,14 +2267,15 @@ def test_reclaim_victim_order_and_foreground_main_protection():
         104,
         MAIN)
     protected.learned_limit = 1
-    decision, action, wait = plan_foreground_transfer_reservation(
+    decision, action, wait = plan_demand_transfer_reservation(
         protected,
         ABC_ENDPOINT,
         live_ticket(5, 40),
         MEDIA,
         foreground_runtime_id=40,
-        main_relay_proven=True,
-        foreground_transfer_waiting=True)
+        admission_basis=MAIN_RELAY_PROOF,
+        main_relay_attempts=(attempt,),
+        admissible_transfer_waiting=True)
     assert decision == WAIT_ACTION
     assert action is None
     assert wait == CAPACITY_WAIT
@@ -1752,12 +2317,15 @@ def test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe():
     assert release_live_slot(
         pool,
         replace(old_key, incarnation=old_key.incarnation + 1),
-        old_attempt) == (False, None)
+        old_attempt) == LiveReleaseResult()
     assert release_live_slot(
         pool,
         old_key,
-        replace(old_attempt, attempt_id=999)) == (False, None)
-    assert release_live_slot(pool, old_key, old_attempt) == (True, None)
+        replace(old_attempt, attempt_id=999)) == LiveReleaseResult()
+    assert release_live_slot(
+        pool,
+        old_key,
+        old_attempt) == LiveReleaseResult(slot_released=True)
     assert pool.proven_lower_bound == 2
     assert pool.learned_limit == 2
     assert pool.last_incarnation == last_incarnation
@@ -1771,13 +2339,13 @@ def test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe():
     assert release_live_slot(
         pool,
         survivor_key,
-        survivor_attempt) == (True, None)
+        survivor_attempt) == LiveReleaseResult(slot_released=True)
     assert pool.proven_lower_bound == 0
     assert pool.learned_limit is None
     assert pool.last_incarnation == last_incarnation
 
 
-def test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only():
+def test_reclaimed_resume_tracks_current_foreground_and_background_priority():
     resumed = live_ticket(
         1,
         10,
@@ -1787,15 +2355,40 @@ def test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only():
             resumed,
             MAIN,
             foreground=True,
-            has_main_proof=False,
-            age=age) == 8
+            admission_basis=NO_TRANSFER_ADMISSION,
+            age=age) == 0
+        assert admission_priority(
+            resumed,
+            MAIN,
+            foreground=False,
+            admission_basis=NO_TRANSFER_ADMISSION,
+            age=age) == 9
     ordinary = live_ticket(2, 20)
     assert admission_priority(
         ordinary,
         MAIN,
         foreground=False,
-        has_main_proof=True,
-        age=0) < 8
+        admission_basis=MAIN_RELAY_PROOF,
+        age=0) < 9
+    demanded = live_ticket(10, 20)
+    assert admission_priority(
+        demanded,
+        MEDIA,
+        foreground=False,
+        admission_basis=MAIN_RELAY_PROOF,
+        age=0) == 2
+    assert admission_priority(
+        demanded,
+        MEDIA,
+        foreground=True,
+        admission_basis=MAIN_RELAY_PROOF,
+        age=0) == 1
+    assert admission_priority(
+        ordinary,
+        MAIN,
+        foreground=False,
+        admission_basis=NO_TRANSFER_ADMISSION,
+        age=0) == 3
 
     pool = LivePool()
     oldest_key, oldest_attempt = add_live_pool_attempt(
@@ -1810,13 +2403,15 @@ def test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only():
         104,
         MAIN,
         now=100)
+    pool.learned_limit = 2
     successor = live_ticket(5, 50)
-    action = select_background_main_rotation(
+    action = plan_main_replacement(
         pool,
         ABC_ENDPOINT,
         successor,
         foreground_runtime_id=99,
-        now=60100)
+        now=60100,
+        purpose=BACKGROUND_DUTY)
     assert action == (
         oldest_key,
         oldest_attempt,
@@ -1830,27 +2425,123 @@ def test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only():
         106,
         MAIN,
         now=0)
-    assert select_background_main_rotation(
+    blocked.learned_limit = 1
+    assert plan_main_replacement(
         blocked,
         ABC_ENDPOINT,
         live_ticket(7, 70),
         foreground_runtime_id=99,
         now=60000,
-        foreground_transfer_waiting=True) is None
+        purpose=BACKGROUND_DUTY,
+        admissible_transfer_waiting=True) is None
+
+    bootstrap = deepcopy(blocked)
+    action = plan_main_replacement(
+        bootstrap,
+        ABC_ENDPOINT,
+        live_ticket(8, 70),
+        foreground_runtime_id=99,
+        now=1,
+        purpose=DEMAND_BOOTSTRAP,
+        admissible_transfer_waiting=False)
+    assert action is not None
+    assert bootstrap.reclaim.stage == RECLAIM_REQUESTED
+    bootstrap_key, bootstrap_attempt, _ = action
+    assert authorize_live_slot_reclaim(
+        bootstrap,
+        bootstrap_key,
+        bootstrap_attempt,
+        foreground_runtime_id=99) == (True, True)
+    assert bootstrap.reclaim.stage == RECLAIM_AUTHORIZED
+    assert release_live_slot(
+        bootstrap,
+        bootstrap_key,
+        bootstrap_attempt).successor == live_ticket(8, 70)
+
+    foreground = deepcopy(blocked)
+    action = plan_main_replacement(
+        foreground,
+        ABC_ENDPOINT,
+        live_ticket(9, 99),
+        foreground_runtime_id=99,
+        now=1,
+        purpose=FOREGROUND_RECOVERY)
+    assert action is not None
+    assert foreground.reclaim.stage == RECLAIM_REQUESTED
+    victim_key, victim_attempt, _ = action
+    assert authorize_live_slot_reclaim(
+        foreground,
+        victim_key,
+        victim_attempt,
+        foreground_runtime_id=victim_attempt.runtime_id) == (True, False)
+    assert foreground.slots[victim_key.index].phase == LIVE
+    assert foreground.reclaim is None
 
     transfer_only = LivePool()
     add_live_pool_attempt(
         transfer_only,
-        live_ticket(8, 80),
+        live_ticket(10, 80),
         108,
         MEDIA,
         now=0)
-    assert select_background_main_rotation(
+    assert plan_main_replacement(
         transfer_only,
         ABC_ENDPOINT,
-        live_ticket(9, 90),
+        live_ticket(11, 90),
         foreground_runtime_id=99,
-        now=60000) is None
+        now=60000,
+        purpose=BACKGROUND_DUTY) is None
+
+
+def test_released_continuation_is_exclusive_except_due_foreground_main():
+    source_ticket = live_ticket(1, 2)
+    source_attempt = live_attempt(source_ticket, 101)
+    successor = live_ticket(2, 2)
+    pool = LivePool()
+    pool.demand_transfer_continuation = DemandTransferContinuation(
+        source_key=LiveSlotKey(ABC_ENDPOINT, 0, 1),
+        source_attempt=source_attempt,
+        successor=successor,
+        runtime_id=successor.runtime_id,
+        proxy_generation=successor.proxy_generation,
+        use=MEDIA,
+        stage=CONTINUATION_RELEASED)
+    foreground_transfer = live_ticket(3, 1)
+    urgent_background_main = live_ticket(4, 3)
+    maintenance = live_ticket(5, 4)
+    masked = (
+        (foreground_transfer, MEDIA, True, True),
+        (urgent_background_main, MAIN, True, True),
+        (maintenance, "maintenance", True, True),
+        (successor, MEDIA, True, True),
+    )
+    assert select_with_released_continuation(pool, masked, 1) == successor
+    assert pool.demand_transfer_continuation is not None
+
+    future_foreground = live_ticket(6, 1)
+    with_future = ((future_foreground, MAIN, True, False),) + masked
+    assert select_with_released_continuation(pool, with_future, 1) == successor
+    assert pool.demand_transfer_continuation is not None
+
+    stale_foreground = live_ticket(7, 1)
+    with_stale = ((stale_foreground, MAIN, False, True),) + masked
+    assert select_with_released_continuation(pool, with_stale, 1) == successor
+    assert pool.demand_transfer_continuation is not None
+
+    due_foreground = live_ticket(
+        8,
+        1,
+        purpose=RECLAIMED_MAIN_RESUME)
+    with_due = ((due_foreground, MAIN, True, True),) + masked
+    assert select_with_released_continuation(pool, with_due, 1) == (
+        due_foreground)
+    assert pool.demand_transfer_continuation is None
+    assert not transfer_admission_matches(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        MEDIA,
+        RELEASED_CONTINUATION)
 
 
 def test_reducer_no_appdata_relay_success_sibling_failure():
@@ -2023,7 +2714,10 @@ def test_canonical_endpoint_abc_lifecycle():
         a_attempt,
         NO_SERVERHELLO,
         True)
-    assert release_live_slot(pool, a_key, a_attempt) == (True, None)
+    assert release_live_slot(
+        pool,
+        a_key,
+        a_attempt) == LiveReleaseResult(slot_released=True)
     b_key, wait = reserve_live_slot(
         pool,
         ABC_ENDPOINT,
@@ -2589,14 +3283,34 @@ def test_source_seams_match_truth_table_contract():
     assert "std::optional<EndpointOpeningOwner> opening;" in live_pool_header
     assert "std::optional<CapacityProbe> capacityProbe;" in live_pool_header
     assert "std::optional<EndpointReclaim> reclaim;" in live_pool_header
-    assert "struct ForegroundTransferReservationRequest" in live_pool_header
-    assert "enum class ForegroundTransferReservationAction" in live_pool_header
-    assert "struct ForegroundTransferReservationReduction" in live_pool_header
-    assert "PlanForegroundTransferReservation(" in live_pool_header
-    assert "PlanForegroundTransferReservation(" in live_pool
-    assert "ForegroundTransferReclaimRequest" not in live_pool_header
-    assert "SelectForegroundTransferReclaim" not in live_pool_header
-    assert "SelectForegroundTransferReclaim" not in live_pool
+    reclaim_stage = live_pool_header.split(
+        "enum class EndpointReclaimStage", 1)[1].split("};", 1)[0]
+    assert reclaim_stage.index("Requested") < reclaim_stage.index("Authorized")
+    replacement_purpose = live_pool_header.split(
+        "enum class MainReplacementPurpose", 1)[1].split("};", 1)[0]
+    assert replacement_purpose.index("ForegroundRecovery") < (
+        replacement_purpose.index("DemandBootstrap")) < (
+        replacement_purpose.index("BackgroundDuty"))
+    assert "enum class TransferAdmissionBasis" in live_pool_header
+    for basis in ("None", "MainRelayProof", "ReleasedContinuation"):
+        assert basis in live_pool_header.split(
+            "enum class TransferAdmissionBasis", 1)[1].split("};", 1)[0]
+    assert "enum class DemandTransferContinuationStage" in live_pool_header
+    for stage in ("Requested", "AwaitingRelease", "Released"):
+        assert stage in live_pool_header.split(
+            "enum class DemandTransferContinuationStage", 1)[1].split(
+                "};", 1)[0]
+    assert "struct DemandTransferContinuation" in live_pool_header
+    assert "std::optional<DemandTransferContinuation>" in live_pool_header
+    assert "struct DemandTransferReservationRequest" in live_pool_header
+    assert "enum class DemandTransferReservationAction" in live_pool_header
+    assert "struct DemandTransferReservationReduction" in live_pool_header
+    assert "PlanDemandTransferReservation(" in live_pool_header
+    assert "PlanDemandTransferReservation(" in live_pool
+    old_planner = "PlanForeground" + "TransferReservation"
+    assert old_planner not in live_pool_header
+    assert old_planner not in live_pool
+    assert "mainRelayProven" not in live_pool_header
     assert "CapacitySaturated" not in live_pool
     assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
     assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
@@ -2611,11 +3325,20 @@ def test_source_seams_match_truth_table_contract():
     assert "MtProxy::MarkLiveSlotRelayReady(" in arbiter
     assert "MtProxy::MarkLiveSlotCapacityTerminal(" in arbiter
     assert "MtProxy::ReleaseLiveSlot(" in arbiter
+    assert "mainRelayProven" not in arbiter
+    assert "baseEligibleLocked" not in arbiter
     assert "OpeningRetryBoundaryFor(state)" not in arbiter
     assert "openingPressure" not in arbiter
     assert "slot->phase = LiveSlotPhase::Closing;" in live_pool
     assert "slot->phase = LiveSlotPhase::Empty;" in live_pool
     assert "AttemptOwnerMatches(*owner, request.attempt)" in live_pool
+    assert "result.slotReleased = true;" in live_pool
+    assert "result.continuationChanged = true;" in live_pool
+    assert "DemandTransferContinuationStage::Requested" in live_pool
+    assert "DemandTransferContinuationStage::AwaitingRelease" in live_pool
+    assert "DemandTransferContinuationStage::Released" in live_pool
+    assert "TransferAdmissionBasis::ReleasedContinuation" in live_pool
+    assert "result.pool.demandTransferContinuation.reset();" in live_pool
     assert "request.finalEndpointTerminal" in live_pool
     for reason in (
             "TcpConnectTimeout",
@@ -2657,18 +3380,45 @@ def test_source_seams_match_truth_table_contract():
         1)[1].split(
             "void EndpointAdmissionArbiter::Private::grantDueLocked(",
             1)[0]
-    assert assign.count("PlanForegroundTransferReservation(") == 1
-    assert assign.index("PlanForegroundTransferReservation(") < (
+    assert assign.count("PlanDemandTransferReservation(") == 1
+    assert assign.index("PlanDemandTransferReservation(") < (
         assign.index("reserveTicketLocked("))
+    assert "if (IsTransfer(selected->use))" in assign
+    assert "selected->key.runtimeId == _storage.foregroundRuntimeId" not in (
+        assign)
+    released_selection = assign.split(
+        "auto releasedSuccessor", 1)[1].split(
+            "auto selectedWait", 1)[0]
+    assert "DemandTransferContinuationStage::Released" in released_selection
+    assert "ticket->use == MtProxy::EndpointUse::Main" in released_selection
+    assert "ticket->key.runtimeId == _storage.foregroundRuntimeId" in (
+        released_selection)
+    assert "ticketCurrentLocked(*ticket, state)" in released_selection
+    assert "boundary.at <= inputs.now" in released_selection
+    assert "MtProxy::CancelLiveSlotSuccessor(" in released_selection
+    assert released_selection.index("MtProxy::CancelLiveSlotSuccessor(") < (
+        released_selection.index("releasedSuccessor.reset();"))
+    assert "std::remove_if(" in released_selection
+    assert "DemandTransferContinuationMatches(" in released_selection
+    assert "const auto selected = foregroundOverride" in released_selection
     reclaim = assign.split(
-        "case MtProxy::ForegroundTransferReservationAction::Reclaim:",
+        "case MtProxy::DemandTransferReservationAction::Reclaim:",
         1)[1].split(
-            "case MtProxy::ForegroundTransferReservationAction::Wait:",
+            "case MtProxy::DemandTransferReservationAction::Wait:",
             1)[0]
     assert reclaim.index("closeBindingReadyLocked(") < (
         reclaim.index("pool = reduction.pool;"))
     assert reclaim.index("pool = reduction.pool;") < (
         reclaim.index("queueCloseLocked("))
+    reclaim_action = arbiter.split("void ReclaimAction::run()", 1)[1].split(
+        "void Actions::run()", 1)[0]
+    assert "QMutexLocker" not in reclaim_action
+    assert reclaim_action.index("authorizeLiveSlotReclaim(") < (
+        reclaim_action.index("(*callback)(slotKey, purpose);"))
+    assert "callbackReady" in reclaim_action
+    assert "registrationLive->load(" in reclaim_action
+    assert "std::shared_ptr<Fn<void(" in arbiter
+    assert "reclaimToken" in reclaim_action
     for duplicated_policy in (
             "NonemptySlotCount(",
             "CompleteLiveBaseline(",
@@ -2693,6 +3443,151 @@ def test_source_seams_match_truth_table_contract():
             1)[0]
     assert priority.index("AdmissionPurpose::ReclaimedMainResume") < (
         priority.index("const auto age ="))
+    assert priority.index(
+        "ticket.use == MtProxy::EndpointUse::Main && foreground") < (
+        priority.index("AdmissionPurpose::ReclaimedMainResume"))
+    assert priority.index("return PriorityClass::ForegroundMain;") < (
+        priority.index("return PriorityClass::ReclaimedMainResume;"))
+    assert "PriorityClass::DemandedTransfer" in priority
+    assert arbiter.index("ForegroundMain,") < arbiter.index(
+        "ForegroundTransfer,") < arbiter.index("DemandedTransfer,") < (
+        arbiter.index("UrgentMain,"))
+    basis = arbiter.split(
+        "EndpointAdmissionArbiter::Private::transferAdmissionBasisLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::currentMainRelayAttemptsLocked(",
+            1)[0]
+    assert basis.index("DemandTransferContinuationMatches(") < basis.index(
+        "HasCurrentMainRelayProof(state")
+    assert "TransferAdmissionBasis::ReleasedContinuation" in basis
+    assert "TransferAdmissionBasis::MainRelayProof" in basis
+    for function in (
+            "reserveTicketLocked(",
+            "revalidateReservationsLocked(",
+            "assignReservationsLocked(",
+            "grantDueLocked(",
+            "deliverGrant("):
+        body = arbiter.split(
+            f"EndpointAdmissionArbiter::Private::{function}", 1)[1]
+        assert "transferAdmissionBasisLocked(" in body.split(
+            "\n}\n", 1)[0]
+    proof_attempts = arbiter.split(
+        "EndpointAdmissionArbiter::Private::currentMainRelayAttemptsLocked(",
+        1)[1].split(
+            "bool EndpointAdmissionArbiter::Private::successorTicketLocked(",
+            1)[0]
+    for exact in (
+            ".attemptId = attempt.attemptId",
+            "proof->second.ticketKey != attempt.ticketKey",
+            "proof->second.traceId != attempt.traceId",
+            "proof->second.proxyEpoch != attempt.proxyEpoch",
+            "proof->second.successEpoch != attempt.successEpoch"):
+        assert exact in proof_attempts
+    planner = live_pool.split("PlanDemandTransferReservation(", 1)[1].split(
+        "LiveSlotCloseReduction PlanMainReplacement(", 1)[0]
+    assert planner.index("false);") < planner.index("true);")
+    assert "owner->use != EndpointUse::Main" in live_pool
+    assert "owner->attempt.runtimeId" in live_pool
+    assert "request.facts.foregroundRuntimeId" in live_pool
+    assert "HasExactMainRelayAttempt(request, owner->attempt)" in live_pool
+    old_victim = "SelectForeground" + "TransferVictim"
+    assert old_victim not in live_pool
+    release = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::releaseLiveSlot(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::closeRuntimeSlotsLocked(",
+            1)[0]
+    assert "if (reduction.slotReleased)" in release
+    assert release.index("if (reduction.slotReleased)") < release.index(
+        "_slotBindings.erase(slotKey);")
+    assert release.count("_slotBindings.erase(slotKey);") == 1
+    assert "reduction.continuationChanged" in release
+    cancel_successor = live_pool.split(
+        "bool CancelSuccessorInPlace(", 1)[1].split(
+            "LiveSlotCloseReduction BeginClose(", 1)[0]
+    assert "ContinuationSuccessorMatches(pool, owner)" in cancel_successor
+    assert "pool.demandTransferContinuation.reset();" in cancel_successor
+    assert "slot.phase = LiveSlotPhase::Empty" not in cancel_successor
+    reserve_reducer = live_pool.split(
+        "LiveSlotReserveReduction ReserveLiveSlot(", 1)[1].split(
+            "LiveSlotCancelReduction CancelLiveSlotReservation(", 1)[0]
+    commit_reducer = live_pool.split(
+        "LiveSlotCommitReduction CommitLiveSlotOpening(", 1)[1].split(
+            "LiveSlotReadyReduction MarkLiveSlotRelayReady(", 1)[0]
+    assert "TransferAdmissionMatches(" in reserve_reducer
+    assert "TransferAdmissionMatches(" in commit_reducer
+    assert "TransferAdmissionBasis::ReleasedContinuation" in commit_reducer
+    assert "result.pool.demandTransferContinuation.reset();" in (
+        commit_reducer)
+    authorization = live_pool.split(
+        "auto AuthorizeLiveSlotReclaim(", 1)[1].split(
+            "auto PlanDemandTransferReservation(", 1)[0]
+    assert "EndpointReclaimStage::Requested" in authorization
+    assert "EndpointReclaimStage::Authorized" in authorization
+    assert "slot->phase != LiveSlotPhase::Closing" in authorization
+    assert "AttemptOwnerMatches(*owner, request.attempt)" in authorization
+    assert "request.attempt.runtimeId != request.foregroundRuntimeId" in (
+        authorization)
+    assert "slot->phase = LiveSlotPhase::Live;" in authorization
+    assert "result.pool.reclaim.reset();" in authorization
+    assert "ReclaimMatchesContinuation(" in authorization
+    assert "DemandTransferContinuationStage::AwaitingRelease" in (
+        authorization)
+    release_reducer = live_pool.split(
+        "LiveSlotReleaseReduction ReleaseLiveSlot(", 1)[1].split(
+            "std::optional<crl::time> NextLivePoolWakeAt(", 1)[0]
+    acknowledged_release = release_reducer.split(
+        "const auto continuationReclaimMatches", 1)[1].split(
+            "if (result.pool.opening", 1)[0]
+    assert "DemandTransferContinuationStage::AwaitingRelease" in (
+        acknowledged_release)
+    release_transition = release_reducer.split(
+        "if (continuationReclaimMatches", 1)[1].split("} else if", 1)[0]
+    assert "DemandTransferContinuationStage::Released" in release_transition
+    ticket_cleanup = arbiter.split(
+        "EndpointAdmissionArbiter::Private::clearTicketPoolOwnershipLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::cancelTicketLocked(",
+            1)[0]
+    assert "MtProxy::CancelLiveSlotSuccessor(" in ticket_cleanup
+    runtime_cleanup = live_pool.split(
+        "LiveSlotsCloseReduction CloseRuntimeLiveSlots(", 1)[1].split(
+            "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(",
+            1)[0]
+    generation_cleanup = live_pool.split(
+        "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(",
+        1)[1].split(
+            "LiveSlotReleaseReduction ReleaseLiveSlot(", 1)[0]
+    assert "demandTransferContinuation.reset();" in runtime_cleanup
+    assert "demandTransferContinuation.reset();" in generation_cleanup
+    facts = arbiter.split(
+        "EndpointAdmissionArbiter::Private::selectionFactsLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(",
+            1)[0]
+    assert "ticket.key.runtimeId == result.foregroundRuntimeId" not in facts
+    assert "transferAdmissionBasisLocked(" in facts
+    assert "result.admissibleTransferWaiting = true;" in facts
+    assert "result.transferActive = true;" in facts
+    main_replacement = arbiter.split(
+        "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::invalidateTicketLocked(",
+            1)[0]
+    assert main_replacement.index("ForegroundRecovery") < (
+        main_replacement.index("DemandBootstrap")) < (
+        main_replacement.index("BackgroundDuty"))
+    assert "OpeningBoundaryForTicket(ticket).at > now" in main_replacement
+    assert "TransferAdmissionBasis::None" in main_replacement
+    main_reducer = live_pool.split(
+        "LiveSlotCloseReduction PlanMainReplacement(", 1)[1].split(
+            "LiveSlotsCloseReduction CloseRuntimeLiveSlots(", 1)[0]
+    assert "MainReplacementPurpose::ForegroundRecovery" in main_reducer
+    assert "MainReplacementPurpose::BackgroundDuty" in main_reducer
+    assert "request.facts.admissibleTransferWaiting" in main_reducer
+    assert "request.facts.transferActive" in main_reducer
+    for health_owner in (health_header, health_state):
+        assert "DemandTransferContinuation" not in health_owner
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "view.mainProof.strength" in session_adapter
 
@@ -2727,9 +3622,11 @@ def run_all_truth_tables():
     test_live_pool_bootstrap_and_sequential_expansion()
     test_capacity_learning_accepts_only_exact_stable_frontier_evidence()
     test_learned_cap_and_reclaim_are_serialized_until_exact_release()
+    test_demand_owned_continuation_survives_exact_main_proof_retirement()
     test_reclaim_victim_order_and_foreground_main_protection()
     test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe()
-    test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only()
+    test_reclaimed_resume_tracks_current_foreground_and_background_priority()
+    test_released_continuation_is_exclusive_except_due_foreground_main()
     test_reducer_no_appdata_relay_success_sibling_failure()
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()

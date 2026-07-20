@@ -90,6 +90,7 @@ def test_arbiter_owns_reducer_state_and_exact_physical_bindings():
     for priority in (
         "ForegroundMain",
         "ForegroundTransfer",
+        "DemandedTransfer",
         "UrgentMain",
         "OrdinaryMain",
         "Maintenance",
@@ -107,7 +108,9 @@ def test_arbiter_owns_reducer_state_and_exact_physical_bindings():
     assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
         source)
     assert "QPointer<QObject> owner;" in binding
-    assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in binding
+    assert "std::shared_ptr<Fn<void(" in binding
+    assert "std::optional<MtProxy::AdmissionPurpose>)>> reclaim;" in binding
+    assert "uint64 reclaimToken = 0;" in binding
     assert "PhysicalSlotBinding" not in pool_header
     assert "QPointer" not in pool_header
     assert "Fn<" not in pool_header
@@ -179,7 +182,8 @@ def test_session_pending_tickets_have_one_hard_deadline():
     assert "ticket.scheduledOpenAt" in wake
     assert "ticket.reevaluateAt" in wake
     assert "MtProxy::NextLivePoolWakeAt(" in wake
-    assert "backgroundMainWaitingLocked(" in wake
+    assert "mainReplacementCandidateLocked(" in wake
+    assert "MtProxy::MainReplacementPurpose::BackgroundDuty" in wake
 
 
 def test_proxy_check_uses_the_shared_broker():

@@ -136,6 +136,11 @@ public:
 		const ProxyConnectionAttempt &attempt,
 		MtProxy::FailureReason reason,
 		bool finalEndpointTerminal);
+	[[nodiscard]] bool authorizeLiveSlotReclaim(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt,
+		uint64 reclaimToken,
+		bool callbackReady);
 	void releaseLiveSlot(
 		const MtProxy::LiveSlotKey &slotKey,
 		const ProxyConnectionAttempt &attempt);
