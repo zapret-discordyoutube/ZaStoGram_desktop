@@ -73,11 +73,31 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportAttemptCancelled(" in port_header
     assert "virtual void transportReady() = 0;" in port_header
     assert "void transportReady();" in port_header
+    assert "virtual void capacityTerminal(" in port_header
+    assert "void capacityTerminal(" in port_header
+    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in port_header
+    assert "MtProxy::LiveSlotKey slotKey() const;" in port_header
     assert "struct SessionProxyStart" in port_header
     assert "struct SessionProxyRequest" in port_header
-    assert "LiveSlot" not in port_header
-    assert "slotKey" not in port_header
-    assert "reclaim" not in port_header
+    lease = port_header.split("class SessionProxyLease final", 1)[1].split(
+        "struct SessionProxyAttempt", 1)[0]
+    start = port_header.split("struct SessionProxyStart", 1)[1].split(
+        "struct SessionProxyRequest", 1)[0]
+    request = port_header.split("struct SessionProxyRequest", 1)[1].split(
+        "class SessionProxyTicket", 1)[0]
+    assert "SessionProxyLease(const SessionProxyLease &other) = delete;" in lease
+    assert "MtProxy::LiveSlotKey slotKey() const" in lease
+    assert "LiveSlotKey" not in start
+    assert "slotKey" not in start
+    assert "MtProxy::AdmissionPurpose purpose" in request
+    assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in request
+    assert "LiveSlotKey" in request
+    receive_timeout = port_header.split("reportReceiveTimeout(", 1)[1].split(
+        ") = 0;", 1)[0]
+    connect_timeout = port_header.split("reportConnectTimeout(", 1)[1].split(
+        ") = 0;", 1)[0]
+    assert "SessionProxyLease *lease" in receive_timeout
+    assert "SessionProxyLease *lease" in connect_timeout
     assert "logEvent(" in port_header
     assert "releaseAdmissionForRelayCandidate" not in port_header
     assert "retireMtproxyRelayProof" not in port_header
@@ -108,10 +128,19 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     connection_error = function_body(
         adapter_cpp,
         "void ProductionSessionProxyPort::reportConnectionError(")
+    receive_timeout = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::reportReceiveTimeout(")
+    connect_timeout = function_body(
+        adapter_cpp,
+        "void ProductionSessionProxyPort::reportConnectTimeout(")
     generation_cancel = function_body(
         adapter_cpp,
         "void ProductionSessionProxyPort::cancelByProxyGeneration(")
     ready = function_body(adapter_cpp, "void transportReady() override")
+    terminal = function_body(adapter_cpp, "void capacityTerminal(")
+    slot_key = function_body(
+        adapter_cpp, "MtProxy::LiveSlotKey slotKey() const override")
     broker_request = function_body(
         adapter_cpp, "ConnectionRequest ToBrokerRequest(")
 
@@ -132,11 +161,15 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     assert "WriteProxyDiagnosticsLine(" in adapter_cpp
     assert "_lease.transportReady();" in ready
     assert "_lease.release();" not in ready
+    assert "_lease.capacityTerminal(reason, finalEndpointTerminal);" in terminal
+    assert "_lease.slotKey();" in slot_key
     assert ".lease = SessionProxyLease(" in broker_request
     assert "std::move(value.lease)" in broker_request
-    assert ".reclaim =" not in broker_request
+    assert ".purpose = request.purpose" in broker_request
+    assert ".reclaim = std::move(request.reclaim)" in broker_request
     assert ".slotKey =" not in broker_request
-    assert "LiveSlot" not in adapter_cpp
+    assert "start.slotKey" not in broker_request
+    assert "value.slotKey" not in broker_request
 
     for field in (
             ".endpoint = attempt.endpoint",
@@ -160,6 +193,11 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     retirement = connection_error.index("retireMtproxyRelayProof(")
     liveness = connection_error.index("ReportProxyLiveness(")
     assert healthy < retirement < liveness
+    for body in (connection_error, receive_timeout, connect_timeout):
+        assert "IsSessionCapacityTerminal(" in body
+        assert body.index("ReportConnectionFailure(") < body.index(
+            "lease->capacityTerminal(")
+        assert "true" in body.split("lease->capacityTerminal(", 1)[1]
 
     assert "proxyServices().broker().cancelByProxyGeneration(" in (
         generation_cancel)

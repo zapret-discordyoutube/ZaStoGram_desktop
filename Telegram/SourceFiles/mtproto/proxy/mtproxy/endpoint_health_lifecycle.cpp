@@ -517,9 +517,13 @@ EndpointAttemptLease::EndpointAttemptLease(
 : _context(std::move(other._context))
 , _key(std::move(other._key))
 , _attempt(base::take(other._attempt))
+, _slotKey(base::take(other._slotKey))
 , _startedAt(base::take(other._startedAt))
 , _active(base::take(other._active))
-, _openingPermitHeld(base::take(other._openingPermitHeld)) {
+, _slotArmed(base::take(other._slotArmed))
+, _relayReadyReported(base::take(other._relayReadyReported))
+, _capacityTerminalReported(base::take(
+	other._capacityTerminalReported)) {
 }
 
 EndpointAttemptLease &EndpointAttemptLease::operator=(
@@ -529,9 +533,13 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		_context = std::move(other._context);
 		_key = std::move(other._key);
 		_attempt = base::take(other._attempt);
+		_slotKey = base::take(other._slotKey);
 		_startedAt = base::take(other._startedAt);
 		_active = base::take(other._active);
-		_openingPermitHeld = base::take(other._openingPermitHeld);
+		_slotArmed = base::take(other._slotArmed);
+		_relayReadyReported = base::take(other._relayReadyReported);
+		_capacityTerminalReported = base::take(
+			other._capacityTerminalReported);
 	}
 	return *this;
 }
@@ -540,32 +548,66 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
-void EndpointAttemptLease::armOpeningPermit(
+void EndpointAttemptLease::armLiveSlot(
+		LiveSlotKey slotKey,
 		const ProxyConnectionAttempt &attempt) {
 	if (!_active
-		|| _openingPermitHeld
+		|| _slotArmed
+		|| slotKey.endpointKey != _key
+		|| slotKey.index < 0
+		|| slotKey.index >= kEndpointLiveSlotCount
+		|| !slotKey.incarnation
 		|| !(attempt == _attempt)) {
 		return;
 	}
-	_openingPermitHeld = true;
+	_slotKey = std::move(slotKey);
+	_slotArmed = true;
 }
 
 void EndpointAttemptLease::abandon() {
+	Expects(!_slotArmed);
 	_context.reset();
 	_key.clear();
 	_attempt = {};
+	_slotKey = {};
 	_startedAt = 0;
 	_active = false;
-	_openingPermitHeld = false;
+	_slotArmed = false;
+	_relayReadyReported = false;
+	_capacityTerminalReported = false;
 }
 
 void EndpointAttemptLease::transportReady() {
-	if (!_active || !base::take(_openingPermitHeld) || !_context) {
+	if (!_active
+		|| !_slotArmed
+		|| _relayReadyReported
+		|| _capacityTerminalReported
+		|| !_context) {
 		return;
 	}
-	_context->endpointAdmissionArbiter().releaseOpeningPermit(
-		_key,
+	_relayReadyReported = true;
+	_context->endpointAdmissionArbiter().markRelayReady(
+		_slotKey,
 		_attempt);
+}
+
+void EndpointAttemptLease::capacityTerminal(
+		FailureReason reason,
+		bool finalEndpointTerminal) {
+	if (!_active
+		|| !_slotArmed
+		|| _relayReadyReported
+		|| _capacityTerminalReported
+		|| !finalEndpointTerminal
+		|| !_context) {
+		return;
+	}
+	_capacityTerminalReported = true;
+	_context->endpointAdmissionArbiter().markCapacityTerminal(
+		_slotKey,
+		_attempt,
+		reason,
+		finalEndpointTerminal);
 }
 
 void EndpointAttemptLease::release() {
@@ -575,9 +617,9 @@ void EndpointAttemptLease::release() {
 	_active = false;
 	if (_context) {
 		_context->cancelEndpointAttempt(_key, _attempt);
-		if (base::take(_openingPermitHeld)) {
-			_context->endpointAdmissionArbiter().releaseOpeningPermit(
-				_key,
+		if (base::take(_slotArmed)) {
+			_context->endpointAdmissionArbiter().releaseLiveSlot(
+				_slotKey,
 				_attempt);
 		}
 	}
@@ -585,6 +627,10 @@ void EndpointAttemptLease::release() {
 
 bool EndpointAttemptLease::active() const {
 	return _active;
+}
+
+LiveSlotKey EndpointAttemptLease::slotKey() const {
+	return _slotArmed ? _slotKey : LiveSlotKey();
 }
 
 ProxyRuntimeId EndpointAttemptLease::runtimeId() const {

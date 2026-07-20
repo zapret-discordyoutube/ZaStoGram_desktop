@@ -12,6 +12,10 @@ ABSTRACT_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_abs
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
 CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
+CHECK_H = PROXY_DIR / "check.h"
+CHECK_CPP = PROXY_DIR / "check.cpp"
+SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
+ENDPOINT_LIVE_POOL_CPP = PROXY_DIR / "endpoint_live_pool.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
@@ -139,8 +143,36 @@ def test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress():
         broker, "ConnectionBrokerDecision DecisionFromUpdate(")
     event = function_body(broker, "void ReportAdmissionEvent(")
 
-    for priority in ("UrgentMain", "OrdinaryMain", "ProxyCheck", "Background"):
+    for priority in (
+        "UrgentMain",
+        "OrdinaryMain",
+        "ProxyCheck",
+        "Background",
+        "ReclaimedMainResume",
+    ):
         assert priority in arbiter
+    priorities = arbiter.split("enum class PriorityClass {", 1)[1].split(
+        "};", 1)[0]
+    assert priorities.index("Background") < priorities.index(
+        "ReclaimedMainResume") < priorities.index("Count")
+    priority_for = function_body(
+        arbiter,
+        "PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(")
+    assert priority_for.index(
+        "ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume"
+    ) < priority_for.index("auto result = PriorityClass::Background;")
+    resume_branch = priority_for.split(
+        "ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume",
+        1,
+    )[1].split("auto result = PriorityClass::Background;", 1)[0]
+    assert "return PriorityClass::ReclaimedMainResume;" in resume_branch
+    assert "kAgingStep" not in resume_branch
+    owns_recovery = function_body(
+        arbiter,
+        "bool EndpointAdmissionArbiter::Private::ownsMainRecoveryLocked(")
+    assert "AdmissionPurpose::ReclaimedMainResume" in owns_recovery
+    assert owns_recovery.index("AdmissionPurpose::ReclaimedMainResume") < (
+        owns_recovery.index("ComposeMainRecoveryViewLocked("))
     assert "kAgingStep = crl::time(15 * 1000)" in arbiter
     assert "runtimes.upper_bound(last)" in arbiter
     assert "other->sequence < ticket->sequence" in arbiter
@@ -357,6 +389,56 @@ def test_stealth_option_changes_restart_proxy_connections():
     assert "Core::App().restartProxyConnections();" in box
 
 
+def test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable():
+    pool = read(ENDPOINT_LIVE_POOL_CPP)
+    adapter = read(SESSION_PROXY_ADAPTER_CPP)
+    check_header = read(CHECK_H)
+    check = read(CHECK_CPP)
+    cleanup = function_body(pool, "LiveSlotsCloseReduction CloseRuntimeLiveSlots(")
+    generations = function_body(
+        pool, "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(")
+    close_matching = pool.split(
+        "LiveSlotsCloseReduction CloseMatchingSlots(", 1)[1].split(
+            "void ClearMatchingClosingReclaim(", 1)[0]
+
+    assert "CloseMatchingSlots(" in cleanup
+    assert "CloseMatchingSlots(" in generations
+    assert ".resumePurpose = std::nullopt" in close_matching
+    assert "AdmissionPurpose::ReclaimedMainResume" not in cleanup
+    assert "AdmissionPurpose::ReclaimedMainResume" not in generations
+
+    start_proxy_check = check_header.split("void StartProxyCheck(", 1)[1].split(
+        ");", 1)[0]
+    for parameter in (
+        "RuntimeEnvironment*",
+        "const ProxyData &proxy",
+        "bool tryIPv6",
+        "const ProxyStealthOptions &stealth",
+        "ProxyCheckConnection &v4",
+        "ProxyCheckConnection &v6",
+        "AbstractConnection *raw, int ping",
+        "AbstractConnection *raw",
+        "ProxyCheckStatus status",
+    ):
+        assert parameter in compact(start_proxy_check)
+    assert "AdmissionPurpose" not in start_proxy_check
+    assert "LiveSlotKey" not in start_proxy_check
+
+    for message in (
+        'u"relay_ready_first_mtproto_payload"_q',
+        'u"proxy_attempt_failed"_q',
+        'u"connected_without_mtproto_payload"_q',
+        'u"proxy_connect_timeout"_q',
+    ):
+        assert message in adapter
+    for message in (
+        'u"proxy_check_failed"_q',
+        'u"proxy_check_relay_ready"_q',
+        'u"proxy check succeeded"_q',
+    ):
+        assert message in check
+
+
 if __name__ == "__main__":
     test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan()
     test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
@@ -370,3 +452,4 @@ if __name__ == "__main__":
     test_resolving_connection_forwards_timeout_to_route_attempts()
     test_proxied_connects_get_their_full_time_budget()
     test_stealth_option_changes_restart_proxy_connections()
+    test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable()

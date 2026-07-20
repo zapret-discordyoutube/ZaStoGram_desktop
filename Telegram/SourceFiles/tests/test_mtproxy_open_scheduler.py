@@ -9,6 +9,8 @@ SCHEDULER_H = MTPROXY_DIR / "open_scheduler.h"
 SCHEDULER_CPP = MTPROXY_DIR / "open_scheduler.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
 ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
+LIVE_POOL_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.h"
+LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
@@ -28,6 +30,8 @@ def test_open_scheduler_and_arbiter_are_registered():
         "mtproxy/open_scheduler.h",
         "endpoint_admission_arbiter.cpp",
         "endpoint_admission_arbiter.h",
+        "endpoint_live_pool.cpp",
+        "endpoint_live_pool.h",
     ):
         assert f"mtproto/proxy/{name}" in cmake
 
@@ -67,12 +71,15 @@ def test_scheduler_uses_pattern_spacing_without_adaptive_feedback():
     assert "NoteConnectSuccess" not in source
 
 
-def test_arbiter_reserves_and_hands_off_one_exact_opening_permit():
+def test_pool_reserves_one_opening_and_holds_it_through_relay():
     header = read(ARBITER_H)
     source = read(ARBITER_CPP)
+    pool_header = read(LIVE_POOL_H)
+    pool_source = read(LIVE_POOL_CPP)
     reserve = function_body(
-        source,
-        "bool EndpointAdmissionArbiter::Private::reserveTicketLocked(")
+        pool_source, "LiveSlotReserveReduction ReserveLiveSlot(")
+    wait = function_body(
+        pool_source, "LivePoolWaitReason ReservationWaitReason(")
     boundary = function_body(
         source, "TicketOpeningBoundary OpeningBoundaryForTicket(")
     revalidate = function_body(
@@ -80,54 +87,58 @@ def test_arbiter_reserves_and_hands_off_one_exact_opening_permit():
         "void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(")
     grant = function_body(
         source, "void EndpointAdmissionArbiter::Private::deliverGrant(")
+    commit = function_body(
+        pool_source, "LiveSlotCommitReduction CommitLiveSlotOpening(")
+    pool_reflow = function_body(
+        pool_source, "LiveSlotReflowReduction ReflowLiveSlotReservation(")
+    relay = function_body(
+        pool_source, "LiveSlotRelayReadyReduction MarkLiveSlotRelayReady(")
     release = function_body(
-        source,
-        "void EndpointAdmissionArbiter::Private::releaseOpeningPermit(")
+        pool_source, "LiveSlotReleaseReduction ReleaseLiveSlot(")
     lifecycle = read(HEALTH_LIFECYCLE_CPP)
     ready = function_body(lifecycle, "void EndpointAttemptLease::transportReady()")
     terminal = function_body(lifecycle, "void EndpointAttemptLease::release()")
     session = read_session_private_sources()
-    session_ready = function_body(
-        session, "void SessionTransport::onHandshakeProgress(")
     check_ready = block_after(
         read(CHECK_CPP), "&Connection::handshakeProgress")
 
     assert "kMinimumOpenSpacing = crl::time(500)" in read(SCHEDULER_CPP)
     assert "kOpenSpacingJitter = crl::time(125)" in source
-    assert "struct EndpointOpeningPermit" in header
-    assert "std::holds_alternative<std::monostate>(permit.owner)" in reserve
-    assert "OpeningRetryBoundaryFor(state)" in boundary
-    assert "std::max(ticket.notBeforeAt, pressure.retryUntil)" in boundary
-    assert "const auto boundary = OpeningBoundaryForTicket(ticket, state);" in reserve
-    assert "if (boundary.at > inputs.now)" in reserve
-    assert reserve.index("if (boundary.at > inputs.now)") < reserve.index(
-        "MtProxy::ReserveOpenSlot(")
-    assert "MtProxy::ReserveOpenSlot(" in reserve
-    assert "permit.owner = MtProxy::OpeningPermitTicketOwner{" in reserve
-    assert "MtProxy::ReflowOpenSlots(" in revalidate
-    assert "|| boundary.at > inputs.now" in revalidate
-    assert "MtProxy::CommitOpenSlot(" in grant
+    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in pool_header
+    assert "std::optional<EndpointOpeningOwner> opening;" in pool_header
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in source
+    assert "if (pool.opening || !pool.openings.pending.empty())" in wait
+    assert "return LivePoolWaitReason::Slot;" in wait
+    assert ".at = ticket.notBeforeAt" in boundary
+    assert "OpeningRetryBoundaryFor" not in boundary
+    assert "ReserveOpenSlot(" in reserve
+    assert "LiveSlotPhase::Reserved" in reserve
+    assert "result.pool.opening = request.owner;" in reserve
+    assert "MtProxy::ReflowLiveSlotReservation(" in revalidate
+    assert "ReflowOpenSlots(" in pool_reflow
+    assert "MtProxy::CommitLiveSlotOpening(" in grant
+    assert "CommitOpenSlot(" in commit
+    assert "slot->phase = LiveSlotPhase::Opening;" in commit
+    assert "result.pool.opening = request.attempt;" in commit
     assert "EndpointHealth::BeginScheduledAttemptLocked(" in grant
     assert "ProxySchedulerLifecycle::HandedOff" in grant
-    assert "permit->second.owner = attempt;" in grant
-    assert "admission->lease.armOpeningPermit(attempt);" in grant
-    assert grant.index("permit->second.owner = attempt;") < grant.index(
-        "ticket.lifecycle = ProxySchedulerLifecycle::HandedOff;")
-    assert grant.index("admission->lease.armOpeningPermit(attempt);") < grant.index(
+    assert "admission->lease.armLiveSlot(slotKey, attempt);" in grant
+    assert grant.index("MtProxy::CommitLiveSlotOpening(") < grant.index(
+        "admission->lease.armLiveSlot(slotKey, attempt);")
+    assert grant.index("admission->lease.armLiveSlot(slotKey, attempt);") < grant.index(
         "actions.grants.push_back({")
-    assert "const auto owner = std::get_if<ProxyConnectionAttempt>" in release
-    assert "!owner || !AttemptOwnerMatches(*owner, attempt)" in release
-    assert "permit->second.owner = std::monostate();" in release
-    assert "base::take(_openingPermitHeld)" in ready
-    assert "releaseOpeningPermit(" in ready
-    assert "HandshakePhase::ServerHelloOk" in session_ready
-    assert "mtproxyLease.transportReady();" in session_ready
-    assert "phase >= details::HandshakePhase::ServerHelloOk" in check_ready
-    assert "state->mtproxyLease.transportReady();" in check_ready
+    assert "slot->phase != LiveSlotPhase::Opening" in relay
+    assert "slot->phase = LiveSlotPhase::Live;" in relay
+    assert "result.pool.opening.reset();" in relay
+    assert "_context->endpointAdmissionArbiter().markRelayReady(" in ready
+    assert "releaseLiveSlot(" not in ready
+    assert "mtproxyLease.transportReady();" not in session
+    assert "state->mtproxyLease.transportReady();" not in check_ready
     assert terminal.index("cancelEndpointAttempt(") < terminal.index(
-        "releaseOpeningPermit(")
-    assert "LiveSlot" not in header
-    assert "LiveSlot" not in source
+        "releaseLiveSlot(")
+    assert "AttemptOwnerMatches(*owner, request.attempt)" in release
+    assert "slot->phase = LiveSlotPhase::Empty;" in release
+    assert "EndpointOpeningPermit" not in header
     for deleted in (
         "applyOpeningEventLocked",
         "PressureFailure",
@@ -145,14 +156,13 @@ def test_cancelled_ticket_releases_reservation_and_redistributes():
         "void EndpointAdmissionArbiter::Private::cancelTicketLocked(")
     clear_reservation = function_body(
         source,
-        "void EndpointAdmissionArbiter::Private::clearTicketReservationLocked(")
+        "void EndpointAdmissionArbiter::Private::clearTicketPoolOwnershipLocked(")
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancel(")
 
-    assert "clearTicketReservationLocked(ticket);" in cancel_ticket
-    assert "MtProxy::CancelOpenSlot(" in clear_reservation
-    assert "TicketOwnerMatches(*owner, ticket)" in clear_reservation
-    assert "current.owner = std::monostate();" in clear_reservation
+    assert "clearTicketPoolOwnershipLocked(ticket);" in cancel_ticket
+    assert "MtProxy::CancelLiveSlotReservation(" in clear_reservation
+    assert "MtProxy::CancelLiveSlotSuccessor(" in clear_reservation
     assert "actions.removed.push_back(takeTicketLocked(key));" in cancel_ticket
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
     assert "updateWakeLocked(inputs, actions);" in cancel
@@ -228,7 +238,7 @@ if __name__ == "__main__":
     test_open_scheduler_and_arbiter_are_registered()
     test_scheduler_exposes_only_pure_reservation_reducers()
     test_scheduler_uses_pattern_spacing_without_adaptive_feedback()
-    test_arbiter_reserves_and_hands_off_one_exact_opening_permit()
+    test_pool_reserves_one_opening_and_holds_it_through_relay()
     test_cancelled_ticket_releases_reservation_and_redistributes()
     test_connection_broker_is_not_a_second_scheduler()
     test_live_and_probe_connections_enter_through_the_same_broker()

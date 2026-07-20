@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
+#include "mtproto/proxy/endpoint_live_pool.h"
 #include "mtproto/runtime/connection_status_types.h"
 
 #include <compare>
@@ -26,8 +27,6 @@ class EndpointAdmissionArbiter;
 namespace MTP::details::MtProxy {
 
 struct EndpointContextStorage;
-
-using EndpointUse = ProxyConnectionUse;
 
 struct MainRecoveryTokenAccess;
 
@@ -150,8 +149,12 @@ public:
 	~EndpointAttemptLease();
 
 	void transportReady();
+	void capacityTerminal(
+		FailureReason reason,
+		bool finalEndpointTerminal);
 	void release();
 	[[nodiscard]] bool active() const;
+	[[nodiscard]] LiveSlotKey slotKey() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;
@@ -169,15 +172,20 @@ private:
 		QString key,
 		ProxyConnectionAttempt attempt,
 		crl::time startedAt);
-	void armOpeningPermit(const ProxyConnectionAttempt &attempt);
+	void armLiveSlot(
+		LiveSlotKey slotKey,
+		const ProxyConnectionAttempt &attempt);
 	void abandon();
 
 	std::shared_ptr<ProxyEndpointContext> _context;
 	QString _key;
 	ProxyConnectionAttempt _attempt;
+	LiveSlotKey _slotKey;
 	crl::time _startedAt = 0;
 	bool _active = false;
-	bool _openingPermitHeld = false;
+	bool _slotArmed = false;
+	bool _relayReadyReported = false;
+	bool _capacityTerminalReported = false;
 
 };
 

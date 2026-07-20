@@ -13,6 +13,7 @@ ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 ENDPOINT_ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
+ENDPOINT_LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 CLIENT_HELLO_RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
 CLIENT_HELLO_FRAGMENTATION_CPP = MTPROXY_DIR / "client_hello_fragmentation.cpp"
@@ -41,6 +42,7 @@ def test_legacy_mtproxy_policy_module_is_removed():
     endpoint_policy = ENDPOINT_HEALTH_POLICY_CPP.read_text(encoding="utf-8")
     broker = CONNECTION_BROKER_CPP.read_text(encoding="utf-8")
     arbiter = ENDPOINT_ARBITER_CPP.read_text(encoding="utf-8")
+    live_pool = ENDPOINT_LIVE_POOL_CPP.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
 
     assert not POLICY_H.exists()
@@ -58,9 +60,15 @@ def test_legacy_mtproxy_policy_module_is_removed():
     assert "CooldownMsForEndpoint(" not in session
     assert "MtProxy::ConnectionSpacing(" not in session
     assert "ReserveOpenSlot" not in broker
-    assert "MtProxy::ReserveOpenSlot(" in arbiter
-    assert "MtProxy::ReflowOpenSlots(" in arbiter
-    assert "MtProxy::CommitOpenSlot(" in arbiter
+    assert "ReserveOpenSlot(" in live_pool
+    assert "ReflowOpenSlots(" in live_pool
+    assert "CommitOpenSlot(" in live_pool
+    assert "MtProxy::ReserveLiveSlot(" in arbiter
+    assert "MtProxy::ReflowLiveSlotReservation(" in arbiter
+    assert "MtProxy::CommitLiveSlotOpening(" in arbiter
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
+    assert "mtproto/proxy/endpoint_live_pool.cpp" in cmake
+    assert "mtproto/proxy/endpoint_live_pool.h" in cmake
     assert "adaptiveSpacing" not in arbiter
     assert "NoteConnectTimeout" not in arbiter
     assert "NoteConnectSuccess" not in arbiter

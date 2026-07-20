@@ -56,6 +56,20 @@ namespace {
 		: ProxyFailureAttribution::Unclear;
 }
 
+[[nodiscard]] bool IsSessionCapacityTerminal(
+		MtProxy::FailureReason reason) {
+	switch (reason) {
+	case MtProxy::FailureReason::TcpConnectTimeout:
+	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
+	case MtProxy::FailureReason::ServerHelloOkNoAppData:
+	case MtProxy::FailureReason::ServerHelloOkNoMtprotoData:
+	case MtProxy::FailureReason::ConnectedNoMtprotoData:
+		return true;
+	default:
+		return false;
+	}
+}
+
 class EndpointSessionProxyLease final : public SessionProxyLease::Impl {
 public:
 	explicit EndpointSessionProxyLease(
@@ -71,8 +85,18 @@ public:
 		_lease.transportReady();
 	}
 
+	void capacityTerminal(
+			MtProxy::FailureReason reason,
+			bool finalEndpointTerminal) override {
+		_lease.capacityTerminal(reason, finalEndpointTerminal);
+	}
+
 	bool active() const override {
 		return _lease.active();
+	}
+
+	MtProxy::LiveSlotKey slotKey() const override {
+		return _lease.slotKey();
 	}
 
 	uint64 attemptId() const override {
@@ -136,8 +160,10 @@ private:
 				: MtProxy::MainRecoveryToken(),
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
+		.purpose = request.purpose,
 		.notBefore = request.notBefore,
 		.context = std::move(request.context),
+		.reclaim = std::move(request.reclaim),
 		.start = [start = std::move(request.start)](
 				ConnectionStart value) mutable {
 			if (!start) {
@@ -430,11 +456,13 @@ public:
 		const ProxyData &proxy,
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease,
 		bool receivedBefore,
 		int silentStrikes,
 		MtProxy::MainRecoveryToken &recoveryToken) override;
 	void reportConnectTimeout(
-		const SessionProxyAttempt &attempt) override;
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) override;
 	void reportAttemptCancelled(
 		const SessionProxyAttempt &attempt,
 		ProxyCloseOrigin origin) override;
@@ -530,6 +558,9 @@ void ProductionSessionProxyPort::reportFirstMtprotoPayload(
 	const auto runtime = not_null{ attempt.runtime };
 	runtime->proxyServices().control().reportMtproxySuccess(
 		SuccessReport(attempt, lease, SessionProxySuccessScope::Relay));
+	if (lease) {
+		lease->transportReady();
+	}
 	ReportClaimedAttemptSummary(
 		runtime,
 		AttemptReport(
@@ -580,6 +611,9 @@ void ProductionSessionProxyPort::reportConnectionError(
 		return;
 	}
 	ReportConnectionFailure(attempt, reason, failure, lease);
+	if (lease && IsSessionCapacityTerminal(reason)) {
+		lease->capacityTerminal(reason, true);
+	}
 	ReportClaimedAttemptSummary(
 		runtime,
 		AttemptReport(
@@ -596,6 +630,7 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 		const ProxyData &proxy,
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease,
 		bool receivedBefore,
 		int silentStrikes,
 		MtProxy::MainRecoveryToken &recoveryToken) {
@@ -649,10 +684,15 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 	if (failure.attribution == ProxyFailureAttribution::None) {
 		failure.attribution = ProxyFailureAttribution::Unclear;
 	}
+	const auto failureReason = MtProxy::FromProxyMtproxyTerminalReason(reason);
 	ReportConnectionFailure(
 		attempt,
-		MtProxy::FromProxyMtproxyTerminalReason(reason),
-		failure);
+		failureReason,
+		failure,
+		lease);
+	if (lease && IsSessionCapacityTerminal(failureReason)) {
+		lease->capacityTerminal(failureReason, true);
+	}
 	auto terminal = AttemptReport(
 		attempt,
 		ProxyConnectionError::Timeout,
@@ -665,7 +705,8 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 }
 
 void ProductionSessionProxyPort::reportConnectTimeout(
-		const SessionProxyAttempt &attempt) {
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) {
 	if (EmptySessionProxyAttempt(attempt)) {
 		return;
 	}
@@ -683,7 +724,10 @@ void ProductionSessionProxyPort::reportConnectTimeout(
 		failure.closeOrigin = ProxyCloseOrigin::LocalTimeout;
 		failure.attribution = ProxyFailureAttribution::Unclear;
 	}
-	ReportConnectionFailure(attempt, reason, failure);
+	ReportConnectionFailure(attempt, reason, failure, lease);
+	if (lease && IsSessionCapacityTerminal(reason)) {
+		lease->capacityTerminal(reason, true);
+	}
 	ReportClaimedAttemptSummary(
 		not_null{ attempt.runtime },
 		AttemptReport(

@@ -15,6 +15,7 @@ SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
+LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
@@ -133,7 +134,11 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     switch_body = function_body(source, "void SessionTransport::migrateProxy(")
     release_body = function_body(source, "void SessionTransport::releaseProxyMigration(")
     append_body = function_body(source, "bool SessionTransport::appendTestConnection(")
-    connect_body = function_body(source, "void SessionTransport::connectToServer(")
+    connect_body = function_body(
+        source,
+        "void SessionTransport::connectToServer(\n"
+        "\t\tbool afterConfig,\n"
+        "\t\tMtProxy::AdmissionPurpose purpose)")
     received_body = function_body(source, "void SessionMessageHandler::handleReceived()")
     payload_body = function_body(source, "void SessionTransport::noteMtprotoPayloadReceived()")
     disconnected_body = function_body(source, "void SessionTransport::onDisconnected(")
@@ -220,6 +225,14 @@ def test_broker_cancels_old_proxy_generation_tickets():
     generation_cancel = function_body(
         arbiter,
         "void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(")
+    pool_cleanup = function_body(
+        read(LIVE_POOL_CPP),
+        "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(")
+    close_matching = function_body(
+        read(LIVE_POOL_CPP), "LiveSlotsCloseReduction CloseMatchingSlots(")
+    lease_release = function_body(
+        read(ENDPOINT_HEALTH_LIFECYCLE_CPP),
+        "void EndpointAttemptLease::release()")
 
     assert "uint64 proxyGeneration = 0;" in header
     assert "void cancelByProxyGeneration(" in header
@@ -229,11 +242,17 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert "postGenerationCancelledStatusLocked(" in generation_cancel
     assert "cancelTicketLocked(key, 0, actions);" in generation_cancel
     assert "MtProxy::ApplyRuntimeProxyGeneration(" in generation_cancel
-    assert "releaseMatchingPermitsLocked(" in generation_cancel
-    assert "attempt.proxyGeneration < proxyGeneration" in generation_cancel
+    assert "closeSlotsBeforeGenerationLocked(" in generation_cancel
+    assert "attempt.proxyGeneration < request.proxyGeneration" in pool_cleanup
     assert generation_cancel.index(
         "MtProxy::ApplyRuntimeProxyGeneration("
-    ) < generation_cancel.index("releaseMatchingPermitsLocked(")
+    ) < generation_cancel.index("closeSlotsBeforeGenerationLocked(")
+    assert "slot.phase = LiveSlotPhase::Closing;" in close_matching
+    assert ".resumePurpose = std::nullopt" in close_matching
+    assert "ReleaseLiveSlot(" not in pool_cleanup
+    assert "endpointAdmissionArbiter().releaseLiveSlot(" in lease_release
+    assert lease_release.index("cancelEndpointAttempt(") < lease_release.index(
+        "releaseLiveSlot(")
     assert "ProxySchedulerLifecycle::Cancelled" in arbiter
     assert ".proxyGeneration = grant.proxyGeneration" in source
 

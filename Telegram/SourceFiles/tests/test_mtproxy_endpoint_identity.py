@@ -12,6 +12,9 @@ ENDPOINT_HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
+ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
+LIVE_POOL_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.h"
+LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 CONNECTION_STATUS_TYPES_H = (
     SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h")
 RUNTIME_PROXY_ENDPOINT_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h"
@@ -73,19 +76,33 @@ def test_endpoint_identity_is_split_into_canonical_and_route():
         identity_header)
     assert "QString RouteKey(const RouteEndpoint &route)" in identity_header
     assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
-    arbiter = read(ARBITER_H)
-    ticket_owner = function_body(arbiter, "struct OpeningPermitTicketOwner")
-    permit = function_body(arbiter, "struct EndpointOpeningPermit")
+    arbiter_header = read(ARBITER_H)
+    arbiter = read(ARBITER_CPP)
+    pool_header = read(LIVE_POOL_H)
+    pool_source = read(LIVE_POOL_CPP)
+    ticket_owner = function_body(pool_header, "struct LiveSlotTicketOwner")
+    slot_key = function_body(pool_header, "struct LiveSlotKey")
+    pool = function_body(pool_header, "struct EndpointLivePool")
+    reclaim = function_body(pool_header, "struct EndpointReclaim")
     attempt = function_body(
         read(CONNECTION_STATUS_TYPES_H), "struct ProxyConnectionAttempt")
     assert "AdmissionTicketKey key;" in ticket_owner
     assert "uint64 revision = 0;" in ticket_owner
-    assert "EndpointOpeningPermitOwner owner;" in permit
-    assert "OpenSlotSchedule openings;" in permit
-    assert "using EndpointOpeningPermitOwner = std::variant<" in arbiter
-    assert "ProxyConnectionAttempt>" in arbiter
-    assert "LiveSlot" not in arbiter
-    assert "reclaim" not in arbiter
+    assert "QString endpointKey;" in slot_key
+    assert "int index = -1;" in slot_key
+    assert "uint64 incarnation = 0;" in slot_key
+    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount> slots;" in pool
+    assert "uint64 lastIncarnation = 0;" in pool
+    assert "LiveSlotKey key;" in reclaim
+    assert "ProxyConnectionAttempt incumbent;" in reclaim
+    assert "ticket->endpointKey = MtProxy::EndpointKey(request.endpoint);" in (
+        arbiter)
+    assert "_pools[endpointKey]" in arbiter
+    assert "result.pool.lastIncarnation = NextIncarnation(" in pool_source
+    assert "slot.incarnation == key.incarnation" in pool_source
+    assert "lastIncarnation" not in function_body(
+        pool_source, "LiveSlotReleaseReduction ReleaseLiveSlot(")
+    assert '#include "mtproto/proxy/endpoint_live_pool.h"' in arbiter_header
     for field in (
         "runtimeId",
         "traceId",
@@ -125,6 +142,11 @@ def test_endpoint_id_from_proxy_preserves_host_identity_and_route_identity():
     assert "route.resolvedFromHost" in route_key
     assert "route.transport" in route_key
     assert "route.addressFamily" in route_key
+    arbiter = read(ARBITER_CPP)
+    assert "ticket->endpointKey = MtProxy::EndpointKey(request.endpoint);" in (
+        arbiter)
+    assert "RouteKey(" not in function_body(
+        arbiter, "EndpointAdmissionEnqueueResult EndpointAdmissionArbiter::Private::enqueue(")
     assert "EndpointId EndpointIdFromProxy(" not in health
     assert "QString EndpointKey(const CanonicalProxyEndpoint &endpoint)" not in (
         health)

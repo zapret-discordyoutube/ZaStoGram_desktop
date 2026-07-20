@@ -160,24 +160,29 @@ private:
 	};
 
 	[[nodiscard]] SessionProxyEndpointUse classifyEndpointUse() const;
+	void connectToServer(
+		bool afterConfig,
+		MtProxy::AdmissionPurpose purpose);
 	[[nodiscard]] bool appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		MtProxy::AdmissionPurpose purpose);
 	void connectingTimedOut();
 	void handleError(int errorCode);
 	void onError(
 		not_null<AbstractConnection*> connection,
 		qint32 errorCode);
-	void onHandshakeProgress(
-		not_null<AbstractConnection*> connection);
 	void onConnected(not_null<AbstractConnection*> connection);
 	void onDisconnected(not_null<AbstractConnection*> connection);
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
 	[[nodiscard]] bool hasTransferDemand() const;
+	void reclaimMtproxySlot(
+		MtProxy::LiveSlotKey key,
+		std::optional<MtProxy::AdmissionPurpose> resumePurpose);
 	void resetEndpointAdmissionWait();
 	void cancelMainRecoveryBackoff();
 	void clearConnectionBrokerTickets();

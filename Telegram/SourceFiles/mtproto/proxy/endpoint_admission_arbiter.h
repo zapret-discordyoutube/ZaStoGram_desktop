@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
-#include "mtproto/proxy/mtproxy/open_scheduler.h"
+#include "mtproto/proxy/endpoint_live_pool.h"
 
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
@@ -17,7 +17,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <atomic>
 #include <memory>
 #include <optional>
-#include <variant>
 
 namespace MTP {
 
@@ -33,24 +32,9 @@ struct EndpointContextStorage;
 enum class EndpointAdmissionWaitReason {
 	None,
 	Slot,
+	Capacity,
+	Closing,
 	HealthOrNotBefore,
-};
-
-struct OpeningPermitTicketOwner {
-	AdmissionTicketKey key;
-	uint64 revision = 0;
-
-	bool operator==(const OpeningPermitTicketOwner &other) const = default;
-};
-
-using EndpointOpeningPermitOwner = std::variant<
-	std::monostate,
-	OpeningPermitTicketOwner,
-	ProxyConnectionAttempt>;
-
-struct EndpointOpeningPermit {
-	EndpointOpeningPermitOwner owner;
-	OpenSlotSchedule openings;
 };
 
 } // namespace MTP::details::MtProxy
@@ -101,10 +85,14 @@ struct EndpointAdmissionRequest final {
 	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	MtProxy::AdmissionPurpose purpose = MtProxy::AdmissionPurpose::Ordinary;
 	crl::time notBefore = 0;
 	ProxyTraceId traceId = 0;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
+	Fn<void(
+		MtProxy::LiveSlotKey,
+		std::optional<MtProxy::AdmissionPurpose>)> reclaim;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
 	crl::time waitStartedAt = 0;
@@ -140,8 +128,16 @@ public:
 		uint64 proxyGeneration);
 	void drainEndpoint(const QString &endpointKey);
 	void reevaluate(AdmissionTicketKey key, uint64 revision);
-	void releaseOpeningPermit(
-		const QString &endpointKey,
+	void markRelayReady(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt);
+	void markCapacityTerminal(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt,
+		MtProxy::FailureReason reason,
+		bool finalEndpointTerminal);
+	void releaseLiveSlot(
+		const MtProxy::LiveSlotKey &slotKey,
 		const ProxyConnectionAttempt &attempt);
 	void composeEndpointViewLocked(
 		const MtProxy::EndpointId &endpoint,

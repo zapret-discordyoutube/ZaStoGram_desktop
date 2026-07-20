@@ -17,6 +17,8 @@ ENDPOINT_HEALTH_CAPABILITIES_CPP = (
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp"
 ENDPOINT_HEALTH_STATE_H = PROXY_DIR / "mtproxy" / "endpoint_health_state.h"
+ENDPOINT_LIVE_POOL_H = PROXY_DIR / "endpoint_live_pool.h"
+ENDPOINT_LIVE_POOL_CPP = PROXY_DIR / "endpoint_live_pool.cpp"
 PROXY_ENDPOINT_CONTEXT_CPP = PROXY_DIR / "proxy_endpoint_context.cpp"
 SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 SESSION_PROXY_PORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "proxy_port.h"
@@ -50,6 +52,33 @@ TERMINAL_ATTEMPT = "TerminalAttempt"
 ATTEMPT_HARD_TTL = 120000
 OPENING_PRESSURE_COOLDOWN = 15000
 ABC_ENDPOINT = "151.247.209.166.sslip.io:45632"
+TCP_TIMEOUT = "tcp_connect_timeout"
+CONNECTED_NO_MTPROTO = "connected_no_mtproto_data"
+DNS_FAILED = "dns_failed"
+CANCELLED = "cancelled"
+REMOTE_CLOSED = "remote_closed"
+EMPTY = "empty"
+RESERVED = "reserved"
+OPENING = "opening"
+LIVE = "live"
+CLOSING = "closing"
+SLOT_WAIT = "slot"
+CAPACITY_WAIT = "capacity"
+CLOSING_WAIT = "closing"
+ORDINARY = "ordinary"
+RECLAIMED_MAIN_RESUME = "reclaimed_main_resume"
+MAIN = "main"
+MEDIA = "media"
+UPLOAD = "upload"
+PROXY_CHECK = "proxy_check"
+LIVE_SLOT_COUNT = 4
+CAPACITY_PRESSURE_REASONS = {
+    TCP_TIMEOUT,
+    NO_SERVERHELLO,
+    NO_APPDATA,
+    NO_MTPROTO,
+    CONNECTED_NO_MTPROTO,
+}
 
 
 @dataclass(frozen=True)
@@ -111,7 +140,6 @@ class RelayReport:
 class EndpointState:
     generations: dict = field(default_factory=dict)
     attempt_starts: dict = field(default_factory=dict)
-    opening_permit: RelayProofIdentity | None = None
     opening_pressure_reason: str = NONE
     opening_pressure_retry_until: int = 0
     proxy_epoch: int = 1
@@ -150,6 +178,489 @@ class BrokerRequest:
     admission_lease_active: bool = False
     admission_in_progress: bool = False
     start_scheduled: bool = False
+
+
+@dataclass(frozen=True, order=True)
+class LiveSlotKey:
+    endpoint: str
+    index: int
+    incarnation: int
+
+
+@dataclass(frozen=True)
+class LiveTicket:
+    runtime_id: int
+    ticket_id: int
+    revision: int
+    proxy_generation: int = 1
+    purpose: str = ORDINARY
+
+
+@dataclass
+class LiveSlot:
+    phase: str = EMPTY
+    incarnation: int = 0
+    ticket: LiveTicket | None = None
+    attempt: RelayProofIdentity | None = None
+    use: str = MAIN
+    live_since: int = 0
+
+
+@dataclass(frozen=True)
+class CapacityProbe:
+    key: LiveSlotKey
+    attempt: RelayProofIdentity
+    target: int
+    baseline: tuple[LiveSlotKey, ...]
+
+
+@dataclass
+class LiveReclaim:
+    key: LiveSlotKey
+    incumbent: RelayProofIdentity
+    successor: LiveTicket | None
+
+
+@dataclass
+class LivePool:
+    slots: list[LiveSlot] = field(default_factory=lambda: [
+        LiveSlot() for _ in range(LIVE_SLOT_COUNT)
+    ])
+    opening_ticket: LiveTicket | None = None
+    opening_attempt: RelayProofIdentity | None = None
+    probe: CapacityProbe | None = None
+    reclaim: LiveReclaim | None = None
+    proven_lower_bound: int = 0
+    learned_limit: int | None = None
+    last_incarnation: int = 0
+
+
+def slot_key(endpoint, index, slot):
+    return LiveSlotKey(endpoint, index, slot.incarnation)
+
+
+def find_live_slot(pool, key):
+    if (
+        not key.endpoint
+        or key.index < 0
+        or key.index >= LIVE_SLOT_COUNT
+    ):
+        return None
+    slot = pool.slots[key.index]
+    return slot if slot.incarnation == key.incarnation else None
+
+
+def nonempty_slot_count(pool):
+    return sum(slot.phase != EMPTY for slot in pool.slots)
+
+
+def complete_live_baseline(pool, endpoint):
+    return tuple(sorted(
+        slot_key(endpoint, index, slot)
+        for index, slot in enumerate(pool.slots)
+        if slot.phase == LIVE and slot.attempt is not None
+    ))
+
+
+def reset_learning_if_empty(pool):
+    if any(slot.phase != EMPTY for slot in pool.slots):
+        return
+    pool.proven_lower_bound = 0
+    pool.learned_limit = None
+    pool.probe = None
+    pool.reclaim = None
+
+
+def pool_wait_reason(pool, endpoint, ticket):
+    if pool.reclaim:
+        return (
+            CLOSING_WAIT
+            if pool.reclaim.successor == ticket
+            else SLOT_WAIT
+        )
+    if pool.opening_ticket or pool.opening_attempt:
+        return SLOT_WAIT
+    empty = next((
+        index
+        for index, slot in enumerate(pool.slots)
+        if slot.phase == EMPTY
+    ), None)
+    if empty is None:
+        return SLOT_WAIT
+    occupied = nonempty_slot_count(pool)
+    proven = max(0, min(pool.proven_lower_bound, LIVE_SLOT_COUNT))
+    if occupied < proven or (not proven and not occupied):
+        return NONE
+    if pool.learned_limit is not None and occupied >= pool.learned_limit:
+        return CAPACITY_WAIT
+    if pool.probe or proven >= LIVE_SLOT_COUNT:
+        return CAPACITY_WAIT
+    baseline = complete_live_baseline(pool, endpoint)
+    return (
+        NONE
+        if occupied == proven and len(baseline) == proven
+        else CAPACITY_WAIT
+    )
+
+
+def reserve_live_slot(pool, endpoint, ticket):
+    wait = pool_wait_reason(pool, endpoint, ticket)
+    if wait != NONE:
+        return None, wait
+    index = next(
+        index
+        for index, slot in enumerate(pool.slots)
+        if slot.phase == EMPTY
+    )
+    pool.last_incarnation += 1
+    slot = pool.slots[index]
+    slot.phase = RESERVED
+    slot.incarnation = pool.last_incarnation
+    slot.ticket = ticket
+    slot.attempt = None
+    slot.use = MAIN
+    slot.live_since = 0
+    pool.opening_ticket = ticket
+    return slot_key(endpoint, index, slot), NONE
+
+
+def commit_live_slot(pool, key, ticket, attempt, use=MAIN):
+    slot = find_live_slot(pool, key)
+    if (
+        slot is None
+        or slot.phase != RESERVED
+        or slot.ticket != ticket
+        or pool.opening_ticket != ticket
+        or attempt.runtime_id != ticket.runtime_id
+        or attempt.proxy_generation != ticket.proxy_generation
+    ):
+        return False
+    occupied_before = nonempty_slot_count(pool) - 1
+    baseline = complete_live_baseline(pool, key.endpoint)
+    target = pool.proven_lower_bound + 1
+    expansion = (
+        pool.proven_lower_bound > 0
+        and target <= LIVE_SLOT_COUNT
+        and occupied_before == pool.proven_lower_bound
+        and len(baseline) == pool.proven_lower_bound
+        and pool.probe is None
+        and (
+            pool.learned_limit is None
+            or target <= pool.learned_limit
+        )
+    )
+    slot.phase = OPENING
+    slot.ticket = None
+    slot.attempt = attempt
+    slot.use = use
+    pool.opening_ticket = None
+    pool.opening_attempt = attempt
+    if expansion:
+        pool.probe = CapacityProbe(key, attempt, target, baseline)
+    return True
+
+
+def mark_live_slot_relay_ready(pool, key, attempt, now):
+    slot = find_live_slot(pool, key)
+    if (
+        slot is None
+        or slot.phase != OPENING
+        or slot.attempt != attempt
+        or pool.opening_attempt != attempt
+    ):
+        return False
+    probe_matches = (
+        pool.probe is not None
+        and pool.probe.key == key
+        and pool.probe.attempt == attempt
+    )
+    stable_probe = (
+        probe_matches
+        and pool.probe.target == pool.proven_lower_bound + 1
+        and pool.probe.baseline
+        == complete_live_baseline(pool, key.endpoint)
+    )
+    bootstrap = (
+        pool.proven_lower_bound == 0
+        and not complete_live_baseline(pool, key.endpoint)
+    )
+    slot.phase = LIVE
+    slot.live_since = now
+    pool.opening_attempt = None
+    if stable_probe:
+        pool.proven_lower_bound = pool.probe.target
+    elif bootstrap:
+        pool.proven_lower_bound = 1
+    if probe_matches:
+        pool.probe = None
+    return True
+
+
+def mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        reason,
+        final_endpoint_terminal):
+    if not final_endpoint_terminal or reason not in CAPACITY_PRESSURE_REASONS:
+        return False
+    slot = find_live_slot(pool, key)
+    if (
+        slot is None
+        or slot.phase != OPENING
+        or slot.attempt != attempt
+        or pool.opening_attempt != attempt
+    ):
+        return False
+    probe_matches = (
+        pool.probe is not None
+        and pool.probe.key == key
+        and pool.probe.attempt == attempt
+    )
+    stable_probe = (
+        probe_matches
+        and pool.probe.target == pool.proven_lower_bound + 1
+        and len(pool.probe.baseline) == pool.proven_lower_bound
+        and bool(pool.probe.baseline)
+        and pool.probe.baseline
+        == complete_live_baseline(pool, key.endpoint)
+    )
+    if stable_probe:
+        pool.learned_limit = len(pool.probe.baseline)
+    if probe_matches:
+        pool.probe = None
+    slot.phase = CLOSING
+    return True
+
+
+def begin_live_slot_close(
+        pool,
+        key,
+        attempt,
+        successor=None,
+        resume_purpose=None):
+    slot = find_live_slot(pool, key)
+    if (
+        slot is None
+        or slot.phase not in {OPENING, LIVE}
+        or slot.attempt != attempt
+        or (resume_purpose is not None and pool.reclaim is not None)
+        or (successor is not None and resume_purpose is None)
+    ):
+        return None
+    slot.phase = CLOSING
+    if (
+        pool.probe is not None
+        and pool.probe.key == key
+        and pool.probe.attempt == attempt
+    ):
+        pool.probe = None
+    if resume_purpose is not None:
+        pool.reclaim = LiveReclaim(key, attempt, successor)
+    return (key, attempt, resume_purpose)
+
+
+def capacity_saturated(pool, endpoint):
+    if all(slot.phase != EMPTY for slot in pool.slots):
+        return True
+    occupied = nonempty_slot_count(pool)
+    proven = max(0, min(pool.proven_lower_bound, LIVE_SLOT_COUNT))
+    if occupied < proven or (not proven and not occupied):
+        return False
+    if pool.learned_limit is not None and occupied >= pool.learned_limit:
+        return True
+    if proven >= LIVE_SLOT_COUNT:
+        return True
+    baseline = complete_live_baseline(pool, endpoint)
+    return occupied != proven or len(baseline) != proven
+
+
+def select_foreground_transfer_reclaim(
+        pool,
+        endpoint,
+        successor,
+        foreground_runtime_id):
+    if pool.reclaim or any(slot.phase == CLOSING for slot in pool.slots):
+        return None, CLOSING_WAIT
+    if pool.opening_ticket or pool.opening_attempt:
+        return None, SLOT_WAIT
+    if not capacity_saturated(pool, endpoint):
+        return None, SLOT_WAIT
+    candidates = [
+        (index, slot)
+        for index, slot in enumerate(pool.slots)
+        if slot.phase in {OPENING, LIVE} and slot.attempt is not None
+    ]
+    victim = next((
+        item for item in candidates
+        if item[1].use in {MEDIA, UPLOAD}
+        and item[1].attempt.runtime_id != foreground_runtime_id
+    ), None)
+    if victim is None:
+        victim = next((
+            item for item in candidates
+            if item[1].use == MAIN
+            and item[1].attempt.runtime_id != foreground_runtime_id
+        ), None)
+    if victim is None:
+        return None, CAPACITY_WAIT
+    index, slot = victim
+    purpose = (
+        ORDINARY
+        if slot.use in {MEDIA, UPLOAD}
+        else RECLAIMED_MAIN_RESUME
+    )
+    return begin_live_slot_close(
+        pool,
+        slot_key(endpoint, index, slot),
+        slot.attempt,
+        successor,
+        purpose), CLOSING_WAIT
+
+
+def cancel_live_slot_successor(pool, ticket):
+    if pool.reclaim is None or pool.reclaim.successor != ticket:
+        return False
+    pool.reclaim.successor = None
+    return True
+
+
+def release_live_slot(pool, key, attempt):
+    slot = find_live_slot(pool, key)
+    if (
+        slot is None
+        or slot.phase not in {OPENING, LIVE, CLOSING}
+        or slot.attempt != attempt
+    ):
+        return False, None
+    if pool.opening_attempt == attempt:
+        pool.opening_attempt = None
+    if (
+        pool.probe is not None
+        and pool.probe.key == key
+        and pool.probe.attempt == attempt
+    ):
+        pool.probe = None
+    successor = None
+    if (
+        pool.reclaim is not None
+        and pool.reclaim.key == key
+        and pool.reclaim.incumbent == attempt
+    ):
+        successor = pool.reclaim.successor
+        pool.reclaim = None
+    slot.phase = CLOSING
+    slot.phase = EMPTY
+    slot.ticket = None
+    slot.attempt = None
+    slot.use = MAIN
+    slot.live_since = 0
+    reset_learning_if_empty(pool)
+    return True, successor
+
+
+def close_slots_before_generation(
+        pool,
+        endpoint,
+        runtime_id,
+        proxy_generation,
+        cancelled_tickets=()):
+    if pool.opening_ticket in cancelled_tickets:
+        slot = next(
+            slot for slot in pool.slots
+            if slot.phase == RESERVED and slot.ticket == pool.opening_ticket
+        )
+        slot.phase = EMPTY
+        slot.ticket = None
+        pool.opening_ticket = None
+    if pool.reclaim and pool.reclaim.successor in cancelled_tickets:
+        pool.reclaim.successor = None
+    actions = []
+    for index, slot in enumerate(pool.slots):
+        if (
+            slot.phase in {OPENING, LIVE}
+            and slot.attempt is not None
+            and slot.attempt.runtime_id == runtime_id
+            and slot.attempt.proxy_generation < proxy_generation
+        ):
+            key = slot_key(endpoint, index, slot)
+            slot.phase = CLOSING
+            if pool.probe and pool.probe.key == key:
+                pool.probe = None
+            actions.append((key, slot.attempt, None))
+    if (
+        pool.reclaim
+        and pool.reclaim.incumbent.runtime_id == runtime_id
+        and pool.reclaim.incumbent.proxy_generation < proxy_generation
+    ):
+        pool.reclaim = None
+    reset_learning_if_empty(pool)
+    return actions
+
+
+def close_runtime_live_slots(pool, endpoint, runtime_id):
+    cancelled = tuple(
+        slot.ticket
+        for slot in pool.slots
+        if slot.phase == RESERVED
+        and slot.ticket is not None
+        and slot.ticket.runtime_id == runtime_id
+    )
+    return close_slots_before_generation(
+        pool,
+        endpoint,
+        runtime_id,
+        2 ** 63,
+        cancelled)
+
+
+def select_background_main_rotation(
+        pool,
+        endpoint,
+        successor,
+        foreground_runtime_id,
+        now,
+        foreground_transfer_waiting=False,
+        foreground_transfer_active=False):
+    if (
+        successor.runtime_id == foreground_runtime_id
+        or foreground_transfer_waiting
+        or foreground_transfer_active
+        or pool.opening_ticket
+        or pool.opening_attempt
+        or pool.reclaim
+        or any(slot.phase == CLOSING for slot in pool.slots)
+    ):
+        return None
+    candidates = [
+        (index, slot)
+        for index, slot in enumerate(pool.slots)
+        if slot.phase == LIVE
+        and slot.attempt is not None
+        and slot.use == MAIN
+        and slot.attempt.runtime_id != foreground_runtime_id
+        and slot.attempt.runtime_id != successor.runtime_id
+        and slot.live_since + 60000 <= now
+    ]
+    if not candidates:
+        return None
+    index, slot = min(candidates, key=lambda item: item[1].live_since)
+    return begin_live_slot_close(
+        pool,
+        slot_key(endpoint, index, slot),
+        slot.attempt,
+        resume_purpose=RECLAIMED_MAIN_RESUME)
+
+
+def admission_priority(ticket, use, foreground, has_main_proof, age):
+    if ticket.purpose == RECLAIMED_MAIN_RESUME:
+        return 8
+    if use == MAIN:
+        return 0 if foreground else (3 if has_main_proof else 2)
+    if foreground and use in {MEDIA, UPLOAD} and has_main_proof:
+        return 1
+    base = 4 if use == "maintenance" else 7
+    return max(3, base - age // 15000)
 
 
 def read(path):
@@ -326,13 +837,6 @@ def has_relay_proof(state, identity):
     return identity in state.relay_proofs
 
 
-def release_opening_permit(state, identity):
-    if state.opening_permit != identity:
-        return False
-    state.opening_permit = None
-    return True
-
-
 def synchronize_relay_proof_aggregate(state):
     state.relay_proofs = {
         identity: proof
@@ -369,12 +873,6 @@ def apply_runtime_proxy_generation(state, runtime_id, proxy_generation):
             and admission.proxy_generation < proxy_generation
         )
     }
-    if (
-        state.opening_permit is not None
-        and state.opening_permit.runtime_id == runtime_id
-        and state.opening_permit.proxy_generation < proxy_generation
-    ):
-        state.opening_permit = None
     state.relay_proofs = {
         identity: proof
         for identity, proof in state.relay_proofs.items()
@@ -392,11 +890,6 @@ def prune_expired_endpoint_state(state, now):
         for attempt_id, admission in state.attempt_starts.items()
         if now - admission.started_at <= ATTEMPT_HARD_TTL
     }
-    if (
-        state.opening_permit is not None
-        and not has_endpoint_attempt(state, state.opening_permit)
-    ):
-        state.opening_permit = None
 
 
 def seed_admission(store, report):
@@ -409,28 +902,6 @@ def seed_admission(store, report):
         runtime_id=report.runtime_id,
         proxy_generation=report.proxy_generation,
         started_at=report.started_at)
-
-
-def admit_opening(store, report, now):
-    state = store.state(report.endpoint)
-    prune_expired_endpoint_state(state, now)
-    if runtime_proxy_generation_is_stale(
-            state,
-            report.runtime_id,
-            report.proxy_generation):
-        return False
-    apply_runtime_proxy_generation(
-        state,
-        report.runtime_id,
-        report.proxy_generation)
-    if (
-        state.opening_permit is not None
-        or state.opening_pressure_retry_until > now
-    ):
-        return False
-    seed_admission(store, report)
-    state.opening_permit = relay_proof_identity(report)
-    return True
 
 
 def promote_relay_proof(state, identity, proof):
@@ -616,7 +1087,6 @@ def report_failure(store, report, reason, now):
             if retry_until > state.opening_pressure_retry_until:
                 state.opening_pressure_reason = reason
                 state.opening_pressure_retry_until = retry_until
-        release_opening_permit(state, identity)
     if state.relay_proven:
         return (
             RETIRED_WITH_SURVIVORS
@@ -683,11 +1153,6 @@ def unregister_runtime(store, runtime_id):
             for attempt_id, admission in state.attempt_starts.items()
             if admission.runtime_id != runtime_id
         }
-        if (
-            state.opening_permit is not None
-            and state.opening_permit.runtime_id == runtime_id
-        ):
-            state.opening_permit = None
         state.relay_proofs = {
             identity: proof
             for identity, proof in state.relay_proofs.items()
@@ -758,6 +1223,474 @@ def capability_relay_proven_after_failure(relay_proven, reason, degraded):
 
 def capability_relay_proven_after_age(relay_proven, proven_at, now, ttl):
     return relay_proven and proven_at and now - proven_at <= ttl
+
+
+def live_ticket(
+        ticket_id,
+        runtime_id,
+        proxy_generation=1,
+        purpose=ORDINARY):
+    return LiveTicket(
+        runtime_id=runtime_id,
+        ticket_id=ticket_id,
+        revision=ticket_id + 100,
+        proxy_generation=proxy_generation,
+        purpose=purpose)
+
+
+def live_attempt(ticket, attempt_id):
+    return RelayProofIdentity(
+        runtime_id=ticket.runtime_id,
+        proxy_generation=ticket.proxy_generation,
+        attempt_id=attempt_id)
+
+
+def open_pool_attempt(
+        pool,
+        ticket,
+        attempt_id,
+        use=MAIN,
+        endpoint=ABC_ENDPOINT):
+    key, wait = reserve_live_slot(pool, endpoint, ticket)
+    assert wait == NONE
+    assert key is not None
+    attempt = live_attempt(ticket, attempt_id)
+    assert commit_live_slot(pool, key, ticket, attempt, use)
+    return key, attempt
+
+
+def add_live_pool_attempt(
+        pool,
+        ticket,
+        attempt_id,
+        use=MAIN,
+        now=1000,
+        endpoint=ABC_ENDPOINT):
+    key, attempt = open_pool_attempt(
+        pool,
+        ticket,
+        attempt_id,
+        use,
+        endpoint)
+    assert mark_live_slot_relay_ready(pool, key, attempt, now)
+    return key, attempt
+
+
+def one_live_plus_probe():
+    pool = LivePool()
+    first = live_ticket(1, 10)
+    first_key, first_attempt = add_live_pool_attempt(
+        pool,
+        first,
+        101,
+        now=100)
+    second = live_ticket(2, 20)
+    second_key, second_attempt = open_pool_attempt(
+        pool,
+        second,
+        102)
+    assert pool.probe == CapacityProbe(
+        second_key,
+        second_attempt,
+        2,
+        (first_key,))
+    return pool, first_key, first_attempt, second_key, second_attempt
+
+
+def test_live_pool_bootstrap_and_sequential_expansion():
+    pool = LivePool()
+    live = []
+    for index in range(LIVE_SLOT_COUNT):
+        ticket = live_ticket(index + 1, index + 10)
+        key, attempt = open_pool_attempt(pool, ticket, index + 100)
+        if index == 0:
+            assert pool.probe is None
+        else:
+            assert pool.probe is not None
+            assert pool.probe.target == index + 1
+            assert pool.probe.baseline == tuple(key for key, _ in live)
+        blocked = live_ticket(index + 20, index + 30)
+        assert reserve_live_slot(pool, ABC_ENDPOINT, blocked) == (
+            None,
+            SLOT_WAIT)
+        assert mark_live_slot_relay_ready(
+            pool,
+            key,
+            attempt,
+            1000 + index)
+        assert pool.proven_lower_bound == index + 1
+        assert pool.opening_attempt is None
+        assert pool.probe is None
+        live.append((key, attempt))
+
+    assert len(pool.slots) == LIVE_SLOT_COUNT
+    assert all(slot.phase == LIVE for slot in pool.slots)
+    assert reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        live_ticket(99, 99)) == (None, SLOT_WAIT)
+
+
+def test_capacity_learning_accepts_only_exact_stable_frontier_evidence():
+    for reason in sorted(CAPACITY_PRESSURE_REASONS):
+        pool, _, _, key, attempt = one_live_plus_probe()
+        assert mark_live_slot_capacity_terminal(
+            pool,
+            key,
+            attempt,
+            reason,
+            True)
+        assert pool.slots[key.index].phase == CLOSING
+        assert pool.learned_limit == 1
+        assert pool.opening_attempt == attempt
+
+    pool, _, _, key, attempt = one_live_plus_probe()
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        False)
+    assert pool.learned_limit is None
+    assert pool.slots[key.index].phase == OPENING
+
+    for reason in (DNS_FAILED, CANCELLED, REMOTE_CLOSED, HMAC_MISMATCH):
+        pool, _, _, key, attempt = one_live_plus_probe()
+        assert not mark_live_slot_capacity_terminal(
+            pool,
+            key,
+            attempt,
+            reason,
+            True)
+        assert pool.learned_limit is None
+
+    pool, _, _, key, attempt = one_live_plus_probe()
+    stale_key = replace(key, incarnation=key.incarnation + 1)
+    stale_attempt = replace(attempt, attempt_id=attempt.attempt_id + 1)
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        stale_key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        stale_attempt,
+        TCP_TIMEOUT,
+        True)
+    assert pool.learned_limit is None
+
+    pool, baseline_key, baseline_attempt, key, attempt = one_live_plus_probe()
+    assert begin_live_slot_close(pool, baseline_key, baseline_attempt)
+    assert mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+    assert pool.learned_limit is None
+
+    pool = LivePool()
+    key, attempt = open_pool_attempt(pool, live_ticket(1, 1), 1)
+    assert pool.probe is None
+    assert mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+    assert pool.learned_limit is None
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+
+    pool, _, _, key, attempt = one_live_plus_probe()
+    pool.probe = None
+    assert mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+    assert pool.learned_limit is None
+
+    pool, _, _, key, attempt = one_live_plus_probe()
+    cleanup = close_slots_before_generation(
+        pool,
+        ABC_ENDPOINT,
+        attempt.runtime_id,
+        attempt.proxy_generation + 1)
+    assert cleanup == [(key, attempt, None)]
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        key,
+        attempt,
+        TCP_TIMEOUT,
+        True)
+    assert pool.learned_limit is None
+
+
+def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
+    pool, _, _, probe_key, probe_attempt = one_live_plus_probe()
+    assert mark_live_slot_capacity_terminal(
+        pool,
+        probe_key,
+        probe_attempt,
+        TCP_TIMEOUT,
+        True)
+    assert release_live_slot(pool, probe_key, probe_attempt) == (True, None)
+    assert pool.learned_limit == 1
+    successor = live_ticket(3, 30)
+    assert reserve_live_slot(pool, ABC_ENDPOINT, successor) == (
+        None,
+        CAPACITY_WAIT)
+
+    incumbent_key = next(
+        slot_key(ABC_ENDPOINT, index, slot)
+        for index, slot in enumerate(pool.slots)
+        if slot.phase == LIVE)
+    incumbent = pool.slots[incumbent_key.index].attempt
+    action, wait = select_foreground_transfer_reclaim(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        foreground_runtime_id=successor.runtime_id)
+    assert wait == CLOSING_WAIT
+    assert action == (
+        incumbent_key,
+        incumbent,
+        RECLAIMED_MAIN_RESUME)
+    assert pool.reclaim == LiveReclaim(
+        incumbent_key,
+        incumbent,
+        successor)
+    assert reserve_live_slot(pool, ABC_ENDPOINT, successor) == (
+        None,
+        CLOSING_WAIT)
+    second_action, second_wait = select_foreground_transfer_reclaim(
+        pool,
+        ABC_ENDPOINT,
+        live_ticket(4, 30),
+        foreground_runtime_id=30)
+    assert second_action is None
+    assert second_wait == CLOSING_WAIT
+    assert cancel_live_slot_successor(pool, successor)
+    assert pool.reclaim.successor is None
+    assert pool.slots[incumbent_key.index].phase == CLOSING
+    assert release_live_slot(pool, incumbent_key, incumbent) == (True, None)
+    assert pool.proven_lower_bound == 0
+    assert pool.learned_limit is None
+    old_incarnation = incumbent_key.incarnation
+    new_key, _ = reserve_live_slot(pool, ABC_ENDPOINT, live_ticket(5, 50))
+    assert new_key.incarnation > old_incarnation
+
+    pinned_pool, _, _, probe_key, probe_attempt = one_live_plus_probe()
+    assert mark_live_slot_capacity_terminal(
+        pinned_pool,
+        probe_key,
+        probe_attempt,
+        TCP_TIMEOUT,
+        True)
+    assert release_live_slot(
+        pinned_pool,
+        probe_key,
+        probe_attempt) == (True, None)
+    incumbent_key = next(
+        slot_key(ABC_ENDPOINT, index, slot)
+        for index, slot in enumerate(pinned_pool.slots)
+        if slot.phase == LIVE)
+    incumbent = pinned_pool.slots[incumbent_key.index].attempt
+    successor = live_ticket(6, 60)
+    action, _ = select_foreground_transfer_reclaim(
+        pinned_pool,
+        ABC_ENDPOINT,
+        successor,
+        foreground_runtime_id=60)
+    assert action is not None
+    assert release_live_slot(
+        pinned_pool,
+        incumbent_key,
+        incumbent) == (True, successor)
+
+
+def test_reclaim_victim_order_and_foreground_main_protection():
+    pool = LivePool()
+    main_key, main_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(1, 10),
+        101,
+        MAIN)
+    transfer_key, transfer_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(2, 20),
+        102,
+        MEDIA)
+    pool.learned_limit = 2
+    successor = live_ticket(3, 30)
+    action, wait = select_foreground_transfer_reclaim(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        foreground_runtime_id=30)
+    assert wait == CLOSING_WAIT
+    assert action == (transfer_key, transfer_attempt, ORDINARY)
+    assert pool.slots[main_key.index].phase == LIVE
+
+    protected = LivePool()
+    key, attempt = add_live_pool_attempt(
+        protected,
+        live_ticket(4, 40),
+        104,
+        MAIN)
+    protected.learned_limit = 1
+    action, wait = select_foreground_transfer_reclaim(
+        protected,
+        ABC_ENDPOINT,
+        live_ticket(5, 40),
+        foreground_runtime_id=40)
+    assert action is None
+    assert wait == CAPACITY_WAIT
+    assert protected.slots[key.index].phase == LIVE
+    assert protected.slots[key.index].attempt == attempt
+
+
+def test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe():
+    pool = LivePool()
+    old_key, old_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(1, 10, proxy_generation=1),
+        101,
+        now=100)
+    survivor_key, survivor_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(2, 20, proxy_generation=1),
+        102,
+        now=200)
+    pool.learned_limit = 2
+    last_incarnation = pool.last_incarnation
+    actions = close_slots_before_generation(
+        pool,
+        ABC_ENDPOINT,
+        runtime_id=10,
+        proxy_generation=2)
+    assert actions == [(old_key, old_attempt, None)]
+    assert pool.slots[old_key.index].phase == CLOSING
+    assert pool.slots[survivor_key.index].phase == LIVE
+    assert pool.proven_lower_bound == 2
+    assert pool.learned_limit == 2
+    assert not mark_live_slot_relay_ready(pool, old_key, old_attempt, 300)
+    assert not mark_live_slot_capacity_terminal(
+        pool,
+        old_key,
+        old_attempt,
+        TCP_TIMEOUT,
+        True)
+    assert release_live_slot(
+        pool,
+        replace(old_key, incarnation=old_key.incarnation + 1),
+        old_attempt) == (False, None)
+    assert release_live_slot(
+        pool,
+        old_key,
+        replace(old_attempt, attempt_id=999)) == (False, None)
+    assert release_live_slot(pool, old_key, old_attempt) == (True, None)
+    assert pool.proven_lower_bound == 2
+    assert pool.learned_limit == 2
+    assert pool.last_incarnation == last_incarnation
+
+    runtime_actions = close_runtime_live_slots(
+        pool,
+        ABC_ENDPOINT,
+        survivor_attempt.runtime_id)
+    assert runtime_actions == [(survivor_key, survivor_attempt, None)]
+    assert pool.slots[survivor_key.index].phase == CLOSING
+    assert release_live_slot(
+        pool,
+        survivor_key,
+        survivor_attempt) == (True, None)
+    assert pool.proven_lower_bound == 0
+    assert pool.learned_limit is None
+    assert pool.last_incarnation == last_incarnation
+
+
+def test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only():
+    resumed = live_ticket(
+        1,
+        10,
+        purpose=RECLAIMED_MAIN_RESUME)
+    for age in (0, 15000, 60000, 600000):
+        assert admission_priority(
+            resumed,
+            MAIN,
+            foreground=True,
+            has_main_proof=False,
+            age=age) == 8
+    ordinary = live_ticket(2, 20)
+    assert admission_priority(
+        ordinary,
+        MAIN,
+        foreground=False,
+        has_main_proof=True,
+        age=0) < 8
+
+    pool = LivePool()
+    oldest_key, oldest_attempt = add_live_pool_attempt(
+        pool,
+        live_ticket(3, 30),
+        103,
+        MAIN,
+        now=10)
+    newer_key, _ = add_live_pool_attempt(
+        pool,
+        live_ticket(4, 40),
+        104,
+        MAIN,
+        now=100)
+    successor = live_ticket(5, 50)
+    action = select_background_main_rotation(
+        pool,
+        ABC_ENDPOINT,
+        successor,
+        foreground_runtime_id=99,
+        now=60100)
+    assert action == (
+        oldest_key,
+        oldest_attempt,
+        RECLAIMED_MAIN_RESUME)
+    assert pool.slots[newer_key.index].phase == LIVE
+
+    blocked = LivePool()
+    add_live_pool_attempt(
+        blocked,
+        live_ticket(6, 60),
+        106,
+        MAIN,
+        now=0)
+    assert select_background_main_rotation(
+        blocked,
+        ABC_ENDPOINT,
+        live_ticket(7, 70),
+        foreground_runtime_id=99,
+        now=60000,
+        foreground_transfer_waiting=True) is None
+
+    transfer_only = LivePool()
+    add_live_pool_attempt(
+        transfer_only,
+        live_ticket(8, 80),
+        108,
+        MEDIA,
+        now=0)
+    assert select_background_main_rotation(
+        transfer_only,
+        ABC_ENDPOINT,
+        live_ticket(9, 90),
+        foreground_runtime_id=99,
+        now=60000) is None
 
 
 def test_reducer_no_appdata_relay_success_sibling_failure():
@@ -884,22 +1817,16 @@ def make_relay_report(
         started_at=started_at)
 
 
-def test_opening_permit_release_preserves_exact_promotion_lineage():
+def test_health_promotion_preserves_exact_admission_lineage():
     report = make_relay_report()
     unrelated = replace(report, attempt_id=169)
     store = CanonicalEndpointStore()
-    assert admit_opening(store, report, now=100)
+    seed_admission(store, report)
     state = store.state(report.endpoint)
     identity = relay_proof_identity(report)
 
-    assert state.opening_permit == identity
-    assert release_opening_permit(state, identity)
-    assert state.opening_permit is None
     assert set(state.attempt_starts) == {report.attempt_id}
     assert has_endpoint_attempt(state, identity)
-    assert not release_opening_permit(
-        state,
-        relay_proof_identity(unrelated))
     assert report_relay_success(store, unrelated, now=150) == MISSING_ADMISSION
     assert report_relay_success(store, report, now=200) == INSERTED
     assert not state.attempt_starts
@@ -912,17 +1839,37 @@ def test_canonical_endpoint_abc_lifecycle():
     c = make_relay_report(runtime_id=3, attempt_id=170, started_at=120)
 
     serialized = CanonicalEndpointStore()
-    assert admit_opening(serialized, a, now=90)
-    assert not admit_opening(serialized, b, now=90)
+    seed_admission(serialized, a)
     serialized_state = serialized.state(ABC_ENDPOINT)
-    assert serialized_state.opening_permit == relay_proof_identity(a)
+    pool = LivePool()
+    a_ticket = live_ticket(
+        1,
+        a.runtime_id,
+        proxy_generation=a.proxy_generation)
+    a_key, a_attempt = open_pool_attempt(pool, a_ticket, a.attempt_id)
+    assert reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        live_ticket(2, b.runtime_id, b.proxy_generation)) == (
+            None,
+            SLOT_WAIT)
     assert report_failure(serialized, a, NO_SERVERHELLO, now=100) == (
         TERMINAL_ATTEMPT)
-    assert serialized_state.opening_permit is None
     assert serialized_state.opening_pressure_reason == NO_SERVERHELLO
     assert serialized_state.opening_pressure_retry_until == 15100
-    assert not admit_opening(serialized, b, now=15099)
-    assert admit_opening(serialized, b, now=15100)
+    assert mark_live_slot_capacity_terminal(
+        pool,
+        a_key,
+        a_attempt,
+        NO_SERVERHELLO,
+        True)
+    assert release_live_slot(pool, a_key, a_attempt) == (True, None)
+    b_key, wait = reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        live_ticket(2, b.runtime_id, b.proxy_generation))
+    assert wait == NONE
+    assert b_key is not None
 
     store = CanonicalEndpointStore()
     for report in (a, b, c):
@@ -1207,12 +2154,8 @@ def test_unresolved_attempts_are_removed_by_generation_and_runtime_cleanup():
     expired = make_relay_report(runtime_id=7, attempt_id=174, started_at=0)
     store = CanonicalEndpointStore()
     for report in (a, b, expired):
-        assert admit_opening(store, report, now=120)
-        assert release_opening_permit(
-            store.state(report.endpoint),
-            relay_proof_identity(report))
+        seed_admission(store, report)
     state = store.state(ABC_ENDPOINT)
-    assert state.opening_permit is None
     assert set(state.attempt_starts) == {
         a.attempt_id,
         b.attempt_id,
@@ -1221,12 +2164,10 @@ def test_unresolved_attempts_are_removed_by_generation_and_runtime_cleanup():
 
     apply_proxy_generation(store, runtime_id=2, proxy_generation=37, now=200)
     assert set(state.attempt_starts) == {b.attempt_id, expired.attempt_id}
-    assert state.opening_permit is None
     unregister_runtime(store, runtime_id=5)
     assert set(state.attempt_starts) == {expired.attempt_id}
     prune_expired_endpoint_state(state, ATTEMPT_HARD_TTL + 1)
     assert not state.attempt_starts
-    assert state.opening_permit is None
 
 
 def test_live_proof_survives_ten_minutes_and_state_touches():
@@ -1247,8 +2188,7 @@ def test_live_proof_survives_ten_minutes_and_state_touches():
 
     snapshot = snapshot_endpoint_state(store, ABC_ENDPOINT, late)
     assert set(snapshot.relay_proofs) == identities
-    assert admit_opening(store, touch, now=late)
-    assert release_opening_permit(state, relay_proof_identity(touch))
+    seed_admission(store, touch)
     prune_expired_endpoint_state(state, late + 1)
     assert set(state.relay_proofs) == identities
     assert state.last_relay_success_at == 1100
@@ -1288,7 +2228,6 @@ def test_repeated_success_and_terminal_cycles_return_to_empty():
         state = store.state(ABC_ENDPOINT)
         assert not state.attempt_starts
         assert not state.relay_proofs
-        assert state.opening_permit is None
         assert not state.relay_proven
 
 
@@ -1325,10 +2264,15 @@ def test_generation_zero_is_stale_after_generation_36():
 def test_faketls_appdata_does_not_prove_relay_or_bump_epoch():
     report = make_relay_report(proxy_generation=1)
     store = CanonicalEndpointStore()
-    assert admit_opening(store, report, now=100)
+    seed_admission(store, report)
     state = store.state(report.endpoint)
     identity = relay_proof_identity(report)
-    assert release_opening_permit(state, identity)
+    pool = LivePool()
+    ticket = live_ticket(
+        1,
+        report.runtime_id,
+        proxy_generation=report.proxy_generation)
+    key, attempt = open_pool_attempt(pool, ticket, report.attempt_id)
     assert faketls_appdata_success(store, report, now=200)
     assert not state.relay_proven
     assert not state.relay_proofs
@@ -1338,19 +2282,32 @@ def test_faketls_appdata_does_not_prove_relay_or_bump_epoch():
     assert state.last_success_at == 200
     assert set(state.attempt_starts) == {report.attempt_id}
     assert has_endpoint_attempt(state, identity)
-    assert state.opening_permit is None
+    assert pool.slots[key.index].phase == OPENING
+    assert pool.opening_attempt == attempt
 
     blocked = replace(report, attempt_id=169, started_at=210)
-    assert admit_opening(store, blocked, now=250)
-    assert release_opening_permit(state, relay_proof_identity(blocked))
-    assert set(state.attempt_starts) == {report.attempt_id, blocked.attempt_id}
-    assert state.opening_permit is None
+    blocked_ticket = live_ticket(
+        2,
+        blocked.runtime_id,
+        proxy_generation=blocked.proxy_generation)
+    assert reserve_live_slot(pool, ABC_ENDPOINT, blocked_ticket) == (
+        None,
+        SLOT_WAIT)
+    assert set(state.attempt_starts) == {report.attempt_id}
 
     assert report_relay_success(store, report, now=300) == INSERTED
+    assert mark_live_slot_relay_ready(pool, key, attempt, 300)
+    seed_admission(store, blocked)
+    blocked_key, wait = reserve_live_slot(
+        pool,
+        ABC_ENDPOINT,
+        blocked_ticket)
+    assert wait == NONE
+    assert blocked_key is not None
     assert state.relay_proven
     assert set(state.relay_proofs) == {identity}
     assert set(state.attempt_starts) == {blocked.attempt_id}
-    assert state.opening_permit is None
+    assert pool.opening_ticket == blocked_ticket
     assert state.proxy_epoch == 2
     assert state.success_epoch == 1
     assert state.last_relay_success_at == 300
@@ -1423,6 +2380,8 @@ def test_source_seams_match_truth_table_contract():
     broker = read(BROKER_CPP)
     arbiter_header = read(PROXY_DIR / "endpoint_admission_arbiter.h")
     arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
+    live_pool_header = read(ENDPOINT_LIVE_POOL_H)
+    live_pool = read(ENDPOINT_LIVE_POOL_CPP)
     check = read(CHECK_CPP)
     health_header = read(ENDPOINT_HEALTH_H)
     health = read_endpoint_health_sources()
@@ -1465,24 +2424,37 @@ def test_source_seams_match_truth_table_contract():
     assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
     assert "ProxySchedulerLifecycle::HandedOff" in arbiter
     assert "cancelBeforeGeneration(" in arbiter
-    assert "struct OpeningPermitTicketOwner" in arbiter_header
-    assert "using EndpointOpeningPermitOwner = std::variant<" in arbiter_header
-    assert "OpeningPermitTicketOwner," in arbiter_header
-    assert "ProxyConnectionAttempt>" in arbiter_header
-    assert "struct EndpointOpeningPermit" in arbiter_header
-    assert "EndpointOpeningPermitOwner owner;" in arbiter_header
-    assert "std::map<QString, MtProxy::EndpointOpeningPermit> _permits;" in arbiter
-    assert "LiveSlot" not in arbiter_header
-    assert "LiveSlot" not in arbiter
-    for reason in ("None", "Slot", "HealthOrNotBefore"):
+    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in live_pool_header
+    assert "struct EndpointLivePool" in live_pool_header
+    assert "std::optional<EndpointOpeningOwner> opening;" in live_pool_header
+    assert "std::optional<CapacityProbe> capacityProbe;" in live_pool_header
+    assert "std::optional<EndpointReclaim> reclaim;" in live_pool_header
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
+    assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
+        arbiter)
+    assert "EndpointOpeningPermit" not in arbiter_header
+    assert "_permits" not in arbiter
+    for reason in ("None", "Slot", "Capacity", "Closing", "HealthOrNotBefore"):
         assert f"{reason}," in arbiter_header
-    assert "ClosingSlot" not in arbiter_header
-    assert "MtProxy::CancelOpenSlot(" in arbiter
-    assert "MtProxy::CancelOpenSlotLocked(" not in arbiter
-    assert "OpeningRetryBoundaryFor(state)" in arbiter
-    assert "EndpointAdmissionArbiter::Private::releaseOpeningPermit(" in arbiter
-    assert "permit->second.owner = std::monostate();" in arbiter
-    assert "AttemptOwnerMatches(*owner, attempt)" in arbiter
+    assert "MtProxy::CancelLiveSlotReservation(" in arbiter
+    assert "MtProxy::CancelLiveSlotSuccessor(" in arbiter
+    assert "MtProxy::CommitLiveSlotOpening(" in arbiter
+    assert "MtProxy::MarkLiveSlotRelayReady(" in arbiter
+    assert "MtProxy::MarkLiveSlotCapacityTerminal(" in arbiter
+    assert "MtProxy::ReleaseLiveSlot(" in arbiter
+    assert "OpeningRetryBoundaryFor(state)" not in arbiter
+    assert "openingPressure" not in arbiter
+    assert "slot->phase = LiveSlotPhase::Closing;" in live_pool
+    assert "slot->phase = LiveSlotPhase::Empty;" in live_pool
+    assert "AttemptOwnerMatches(*owner, request.attempt)" in live_pool
+    assert "request.finalEndpointTerminal" in live_pool
+    for reason in (
+            "TcpConnectTimeout",
+            "ClientHelloSentNoServerHello",
+            "ServerHelloOkNoAppData",
+            "ServerHelloOkNoMtprotoData",
+            "ConnectedNoMtprotoData"):
+        assert f"case FailureReason::{reason}:" in live_pool
     assert "struct EndpointOpeningPressure" in health_state
     assert "EndpointOpeningPressure openingPressure;" in health_state
     assert "return state.openingPressure;" in policy
@@ -1496,13 +2468,28 @@ def test_source_seams_match_truth_table_contract():
     assert "endpointAdmissionArbiter().openingEvent(" not in health
     assert "bindLiveSlot" not in broker
     assert "slotKey" not in broker
+    assert "MtProxy::AdmissionPurpose purpose" in read(
+        PROXY_DIR / "connection_broker.h")
+    assert ".reclaim = std::move(request.reclaim)" in broker
     assert "void transportReady() override" in session_adapter
     assert "_lease.transportReady();" in session_adapter
+    assert "void capacityTerminal(" in session_adapter
+    assert "_lease.capacityTerminal(reason, finalEndpointTerminal);" in (
+        session_adapter)
     assert "markTransportReady" not in session_adapter
-    assert "LiveSlot" not in session_adapter
     assert "virtual void transportReady() = 0;" in session_proxy_port
-    assert "slotKey" not in session_proxy_port
-    assert "reclaim" not in session_proxy_port
+    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in (
+        session_proxy_port)
+    assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in (
+        session_proxy_port)
+    assert "AdmissionPurpose::ReclaimedMainResume" in arbiter
+    priority = arbiter.split(
+        "PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(",
+        1)[1].split(
+            "Ticket *EndpointAdmissionArbiter::Private::selectLocked(",
+            1)[0]
+    assert priority.index("AdmissionPurpose::ReclaimedMainResume") < (
+        priority.index("const auto age ="))
     assert "retireMtproxyRelayProof(" in session_adapter
     assert "view.mainProof.strength" in session_adapter
 
@@ -1534,11 +2521,17 @@ def test_source_seams_match_truth_table_contract():
         migration.index("_connectionStatus->setProxyStatus("))
 
 def run_all_truth_tables():
+    test_live_pool_bootstrap_and_sequential_expansion()
+    test_capacity_learning_accepts_only_exact_stable_frontier_evidence()
+    test_learned_cap_and_reclaim_are_serialized_until_exact_release()
+    test_reclaim_victim_order_and_foreground_main_protection()
+    test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe()
+    test_reclaimed_resume_stays_lowest_and_rotation_is_background_main_only()
     test_reducer_no_appdata_relay_success_sibling_failure()
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()
     test_selected_status_success_epoch_shadows_late_failures()
-    test_opening_permit_release_preserves_exact_promotion_lineage()
+    test_health_promotion_preserves_exact_admission_lineage()
     test_canonical_endpoint_abc_lifecycle()
     test_unowned_current_epoch_success_is_rejected()
     test_same_tuple_is_namespaced_by_canonical_endpoint()

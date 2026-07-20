@@ -10,6 +10,7 @@ TLS_SOCKET_RECORDS_CPP = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket_records.cpp")
 CONNECTION_BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
+TRANSPORT_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 ENDPOINT_HEALTH_LIFECYCLE_CPP = (
     SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
@@ -64,17 +65,35 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
         "void EndpointAttemptLease::transportReady()")
     assert "_lease.transportReady();" in lease
     assert "_lease.release();" not in lease
-    assert "base::take(_openingPermitHeld)" in endpoint_lease
-    assert "releaseOpeningPermit(" in endpoint_lease
+    assert "_slotArmed" in endpoint_lease
+    assert "_relayReadyReported" in endpoint_lease
+    assert "_capacityTerminalReported" in endpoint_lease
+    assert "markRelayReady(" in endpoint_lease
+    assert "releaseLiveSlot(" not in endpoint_lease
     append = function_body(
         connection, "bool SessionTransport::appendTestConnection(")
-    handshake = function_body(
-        connection, "void SessionTransport::onHandshakeProgress(")
-    assert "&AbstractConnection::handshakeProgress" in append
-    assert "HandshakePhase::ServerHelloOk" in handshake
-    assert "i->mtproxyLease.transportReady();" in handshake
-    assert "_state.mtproxyLease.transportReady();" in handshake
-    assert connection.count("_state.mtproxyLease.transportReady();") == 3
+    assert "&AbstractConnection::handshakeProgress" not in append
+    assert "SessionTransport::onHandshakeProgress(" not in connection
+    connected = function_body(
+        connection, "void SessionTransport::onConnected(")
+    confirmed = function_body(
+        connection, "void SessionTransport::confirmBestConnection()")
+    assert "transportReady();" not in connected
+    assert "transportReady();" not in confirmed
+    assert "transportReady();" not in connection
+    assert "reportMtproxyConnectionUsable(*i);" in connected
+    assert "reportMtproxyConnectionUsable(*i);" in confirmed
+    first_payload = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportFirstMtprotoPayload(")
+    assert first_payload.index("reportMtproxySuccess(") < first_payload.index(
+        "lease->transportReady();")
+    transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+    note_payload = function_body(
+        transport, "void SessionTransport::noteMtprotoPayloadReceived()")
+    assert "if (firstPayload)" in note_payload
+    assert "reportFirstMtprotoPayload(" in note_payload
+    assert "transportReady();" not in note_payload
     destroy = function_body(
         connection, "void SessionTransport::destroyAllConnections(")
     clear = function_body(
@@ -92,8 +111,21 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
     assert "kTransferDemandGrace = 5 * crl::time(1000)" in connection
     assert "hasTransferDemand()" in grace
     assert "destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);" in grace
-    assert "reclaimMtproxySlot" not in connection
-    assert "LiveSlot" not in connection
+    reclaim = function_body(
+        connection, "void SessionTransport::reclaimMtproxySlot(")
+    candidate = reclaim.split(
+        "if (candidate != end(_state.testConnections)) {", 1)[1].split(
+            "} else if (_state.connection", 1)[0]
+    selected = reclaim.split(
+        "} else if (_state.connection", 1)[1].split("} else {", 1)[0]
+    assert candidate.index("candidate->data.reset();") < candidate.index(
+        "candidate->mtproxyLease.release();")
+    assert selected.index("_state.connection.reset();") < selected.index(
+        "_state.mtproxyLease.release();")
+    assert "connection.mtproxyLease.slotKey()" in reclaim
+    assert "_state.mtproxyLease.slotKey() == key" in reclaim
+    assert "MtProxy::AdmissionPurpose::ReclaimedMainResume" in reclaim
+    assert "connectToServer(false, *resumePurpose);" in reclaim
     classify = function_body(
         connection, "SessionProxyEndpointUse SessionTransport::classifyEndpointUse(")
     assert "SessionProxyEndpointUse::Upload" in classify
@@ -105,18 +137,45 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
         connection, "void SessionTransport::brokerQueueDeadlineFired()")
     assert "_state.endpointAdmissionWaitKey.ticketId" in deadline
     assert "_state.endpointAdmissionWaitRevision" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::Slot" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::ClosingSlot" not in deadline
+    for reason in ("Slot", "Capacity", "Closing"):
+        assert f"MtProxy::EndpointAdmissionWaitReason::{reason}" in deadline
     assert "waiting->reevaluate();" in deadline
     assert deadline.index("waiting->reevaluate();") < deadline.index(
         "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);")
     assert "MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore" in deadline
-    slot_branch = deadline.split(
-        "if (exactWait", 1)[1].split("if (!exactWait", 1)[0]
-    assert "doDisconnect();" not in slot_branch
+    pool_branch = deadline.split(
+        "if (exactWait && poolWait)", 1)[1].split("if (!exactWait", 1)[0]
+    assert "waiting->reevaluate();" in pool_branch
+    assert "callOnce(kBrokerQueueHardDeadline);" in pool_branch
+    assert "doDisconnect();" not in pool_branch
+    assert "resetEndpointAdmissionWait();" not in pool_branch
     assert ".waitStartedAt = _state.endpointAdmissionWaitStartedAt" in connection
     assert "preserveWaitStartedAt" in connection
     assert "_state.endpointAdmissionWaitStartedAt = preserveWaitStartedAt;" in connection
+    connection_error = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportConnectionError(")
+    receive_timeout = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportReceiveTimeout(")
+    connect_timeout = function_body(
+        adapter,
+        "void ProductionSessionProxyPort::reportConnectTimeout(")
+    for terminal in (connection_error, receive_timeout, connect_timeout):
+        assert terminal.index("ReportConnectionFailure(") < terminal.index(
+            "lease->capacityTerminal(")
+        assert "IsSessionCapacityTerminal(" in terminal
+        assert "true" in terminal.split("lease->capacityTerminal(", 1)[1]
+    wait_received = function_body(
+        connection, "void SessionTransport::waitReceivedFailed()")
+    connecting_timeout = function_body(
+        connection, "void SessionTransport::connectingTimedOut()")
+    on_error = function_body(
+        connection, "void SessionTransport::onError(")
+    assert "&_state.mtproxyLease" in wait_received
+    assert "&connection.mtproxyLease" in connecting_timeout
+    assert "&found->mtproxyLease" in on_error
+    assert "&_state.mtproxyLease" in on_error
     assert ".routesExhausted = true," in adapter
     assert ".routesExhausted = true," in CHECK_CPP.read_text(encoding="utf-8")
 

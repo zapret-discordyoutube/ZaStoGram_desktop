@@ -56,7 +56,12 @@ def test_active_session_shortcut_requires_a_live_main_proof():
 def test_queued_and_rejected_admission_have_distinct_probe_outcomes():
     start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
 
-    assert ".reclaim =" not in start
+    assert ".reclaim = [" in start
+    reclaim = function_body(start, ".reclaim = [")
+    assert "state->connection.get() != raw" in reclaim
+    assert "state->mtproxyLease.slotKey() != key" in reclaim
+    assert "ResetProxyCheckState(" in reclaim
+    assert "ProxyCloseOrigin::BrokerCancelled" in reclaim
     assert ".status = [=](details::ConnectionBrokerDecision decision)" in start
     assert "ConnectionBrokerAction::Queued" in start
     assert "ConnectionBrokerAction::StartAfter" in start
@@ -81,18 +86,19 @@ def test_proxy_check_reports_progressive_transport_phases():
     ):
         assert status in phase_map
     assert "const auto phase = raw->handshakePhase();" in start
-    assert "phase >= details::HandshakePhase::ServerHelloOk" in start
-    assert "state->mtproxyLease.transportReady();" in start
     assert "ProxyCheckStatusForHandshake(phase)" in start
-    assert start.index(
-        "state->mtproxyLease.transportReady();",
-        start.index("&Connection::handshakeProgress"),
-    ) < start.index(
-        "ProxyCheckStatusForHandshake(phase)",
-        start.index("&Connection::handshakeProgress"),
-    )
+    handshake = function_body(
+        start, "raw->connect(raw, &Connection::handshakeProgress")
+    assert "transportReady();" not in handshake
     assert "ProxyCheckStatus::FirstMtprotoPayload" in start
     assert ".scope = MtProxy::SuccessScope::Relay" in start
+    connected = function_body(
+        start, "raw->connect(raw, &Connection::connected")
+    assert connected.count("state->mtproxyLease.transportReady();") == 1
+    assert connected.index("ClaimProxyCheckTerminal(") < connected.index(
+        "reportMtproxySuccess({")
+    assert connected.index("reportMtproxySuccess({") < connected.index(
+        "state->mtproxyLease.transportReady();")
 
 
 def test_probe_timeout_starts_after_handoff_and_uses_network_budget():
@@ -143,21 +149,62 @@ def test_probe_terminal_is_telemetry_not_canonical_health():
     assert "EndpointUse::Main" in canonical
 
 
-def test_probe_failure_releases_exact_permit_before_external_callback():
-    start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
+def test_probe_terminal_callbacks_reset_before_exact_lease_release():
+    source = read(CHECK_CPP)
+    start = function_body(source, "void StartProxyCheck(")
     finish = function_body(start, "const auto finishWithFail = [=](")
     terminal = function_body(
         finish, "if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint))")
+    reset = function_body(source, "void ResetProxyCheckState(")
+    connected = function_body(
+        start, "raw->connect(raw, &Connection::connected")
 
     assert "reportMtproxyFailure({" in terminal
-    assert "state->mtproxyLease.release();" not in terminal
-    assert finish.count("state->mtproxyLease.release();") == 1
-    assert finish.index("reportMtproxyFailure({") < finish.index(
+    assert terminal.index("reportMtproxyFailure({") < terminal.index(
+        "state->mtproxyLease.capacityTerminal(reason, true);")
+    assert "ClaimProxyCheckTerminal(runtime, state)" in terminal
+    assert "IsProxyCheckCapacityTerminal(reason)" in terminal
+    assert "state->mtproxyLease.release();" not in finish
+    assert finish.index("fail(raw);") < finish.index(
+        "if (state->connection.get() == raw)")
+    assert finish.index("if (state->connection.get() == raw)") < finish.index(
+        "ResetProxyCheckState(")
+    assert connected.index("done(raw, ping);") < connected.index(
+        "if (state->connection.get() == raw)")
+    assert connected.index("if (state->connection.get() == raw)") < (
+        connected.index("ResetProxyCheckState("))
+    assert reset.index("state->connection.reset();") < reset.index(
         "state->mtproxyLease.release();")
-    assert finish.index("state->mtproxyLease.release();") < finish.index(
-        "ReportProxyEvent(runtime, {")
-    assert finish.index("state->mtproxyLease.release();") < finish.index(
-        "fail(raw);")
+    assert "state->connectionTicket.cancel();" in reset
+    assert "state->handshakeGate.release();" in reset
+
+
+def test_probe_non_capacity_paths_cannot_train_capacity():
+    source = read(CHECK_CPP)
+    capacity = function_body(source, "bool IsProxyCheckCapacityTerminal(")
+    reset = function_body(source, "void ResetProxyCheckState(")
+    start = function_body(source, "void StartProxyCheck(")
+    handshake = function_body(
+        start, "raw->connect(raw, &Connection::handshakeProgress")
+    reclaim = function_body(start, ".reclaim = [")
+
+    for reason in (
+        "TcpConnectTimeout",
+        "ClientHelloSentNoServerHello",
+        "ServerHelloOkNoAppData",
+        "ServerHelloOkNoMtprotoData",
+        "ConnectedNoMtprotoData",
+    ):
+        assert f"MtProxy::FailureReason::{reason}" in capacity
+    for reason in (
+        "DnsFailed",
+        "BrokerCancelled",
+        "RemoteClosed",
+    ):
+        assert f"MtProxy::FailureReason::{reason}" not in capacity
+    assert "capacityTerminal(" not in reset
+    assert "capacityTerminal(" not in reclaim
+    assert "capacityTerminal(" not in handshake
 
 
 def test_connection_box_uses_probe_status_and_composed_view():
@@ -210,5 +257,6 @@ if __name__ == "__main__":
     test_probe_timeout_starts_after_handoff_and_uses_network_budget()
     test_probe_facts_do_not_publish_selected_main_status()
     test_probe_terminal_is_telemetry_not_canonical_health()
-    test_probe_failure_releases_exact_permit_before_external_callback()
+    test_probe_terminal_callbacks_reset_before_exact_lease_release()
+    test_probe_non_capacity_paths_cannot_train_capacity()
     test_connection_box_uses_probe_status_and_composed_view()

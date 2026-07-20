@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QPointer>
 
 #include <memory>
+#include <optional>
 
 namespace MTP {
 
@@ -68,7 +69,11 @@ public:
 
 		virtual void release() = 0;
 		virtual void transportReady() = 0;
+		virtual void capacityTerminal(
+			MtProxy::FailureReason reason,
+			bool finalEndpointTerminal) = 0;
 		[[nodiscard]] virtual bool active() const = 0;
+		[[nodiscard]] virtual MtProxy::LiveSlotKey slotKey() const = 0;
 		[[nodiscard]] virtual uint64 attemptId() const = 0;
 		[[nodiscard]] virtual uint64 proxyGeneration() const = 0;
 		[[nodiscard]] virtual uint64 proxyEpoch() const = 0;
@@ -87,7 +92,11 @@ public:
 
 	void release();
 	void transportReady();
+	void capacityTerminal(
+		MtProxy::FailureReason reason,
+		bool finalEndpointTerminal);
 	[[nodiscard]] bool active() const;
+	[[nodiscard]] MtProxy::LiveSlotKey slotKey() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;
 	[[nodiscard]] uint64 proxyEpoch() const;
@@ -137,9 +146,13 @@ struct SessionProxyRequest {
 	uint64 requestedRecoverySourceProxyGeneration = 0;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	MtProxy::AdmissionPurpose purpose = MtProxy::AdmissionPurpose::Ordinary;
 	crl::time notBefore = 0;
 	RuntimeEnvironment *runtime = nullptr;
 	QPointer<QObject> context;
+	Fn<void(
+		MtProxy::LiveSlotKey,
+		std::optional<MtProxy::AdmissionPurpose>)> reclaim;
 	Fn<void(SessionProxyStart)> start;
 	Fn<void(SessionProxyAdmissionDecision)> status;
 	crl::time waitStartedAt = 0;
@@ -210,11 +223,13 @@ public:
 		const ProxyData &proxy,
 		const QString &dc,
 		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease,
 		bool receivedBefore,
 		int silentStrikes,
 		MtProxy::MainRecoveryToken &recoveryToken) = 0;
 	virtual void reportConnectTimeout(
-		const SessionProxyAttempt &attempt) = 0;
+		const SessionProxyAttempt &attempt,
+		SessionProxyLease *lease) = 0;
 	virtual void reportAttemptCancelled(
 		const SessionProxyAttempt &attempt,
 		ProxyCloseOrigin origin) = 0;

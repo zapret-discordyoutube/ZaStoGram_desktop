@@ -1563,6 +1563,8 @@ PRIVATE
     mtproto/proxy/control_plane.h
     mtproto/proxy/endpoint_admission_arbiter.cpp
     mtproto/proxy/endpoint_admission_arbiter.h
+    mtproto/proxy/endpoint_live_pool.cpp
+    mtproto/proxy/endpoint_live_pool.h
     mtproto/proxy/proxy_services.cpp
     mtproto/proxy/proxy_services.h
     mtproto/proxy/proxy_endpoint_context.cpp

@@ -149,8 +149,6 @@ def test_session_reports_silence_and_recovers_temporary_key():
     can_prove_relay = function_body(
         session, "bool SessionTransport::canProveMtproxyRelay() const")
     connected = function_body(session, "void SessionTransport::onConnected(")
-    handshake = function_body(
-        session, "void SessionTransport::onHandshakeProgress(")
     append = function_body(
         session, "bool SessionTransport::appendTestConnection(")
     confirm = function_body(
@@ -163,30 +161,18 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "_owner->_sessionState.keyId" in can_prove_relay
     assert "_owner->_authState.keyCreator" in can_prove_relay
     assert "getTemporaryKey(" in can_prove_relay
-    assert "&AbstractConnection::handshakeProgress" in append
-    assert "onHandshakeProgress(weak);" in append
+    assert "&AbstractConnection::handshakeProgress" not in append
+    assert "SessionTransport::onHandshakeProgress(" not in session
     assert (
         '#include "mtproto/transport/details/mtproto_abstract_socket.h"'
         in connection)
-    assert "connection->handshakePhase() < HandshakePhase::ServerHelloOk" in handshake
-    assert "i->mtproxyLease.transportReady();" in handshake
-    assert "_state.mtproxyLease.transportReady();" in handshake
-    assert "checkAuthKey(" not in handshake
-    assert "reportFirstMtprotoPayload(" not in handshake
     assert "if (!canProveMtproxyRelay()) {" in connected
-    assert "_state.mtproxyLease.transportReady();" in connected
-    assert connected.index("_state.connection = std::move(i->data);") < connected.index(
-        "_state.mtproxyLease.transportReady();")
-    assert connected.index(
-        "_state.mtproxyLease = std::move(i->mtproxyLease);") < connected.index(
-        "_state.mtproxyLease.transportReady();")
+    assert "transportReady();" not in connected
+    assert "reportMtproxyConnectionUsable(*i);" in connected
     assert "if (!canProveMtproxyRelay()) {" in confirm
-    assert "_state.mtproxyLease.transportReady();" in confirm
-    assert confirm.index("_state.connection = std::move(i->data);") < confirm.index(
-        "_state.mtproxyLease.transportReady();")
-    assert confirm.index(
-        "_state.mtproxyLease = std::move(i->mtproxyLease);") < confirm.index(
-        "_state.mtproxyLease.transportReady();")
+    assert "transportReady();" not in confirm
+    assert "reportMtproxyConnectionUsable(*i);" in confirm
+    assert "transportReady();" not in connection
 
     # A connection that connects (even passing the plaintext fake-pq
     # check) but never delivers an MTProto payload reports relay silence,
@@ -215,6 +201,8 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "SuccessScope::Relay" in first_payload
     assert "control().reportMtproxySuccess(" in first_payload
     assert "SessionProxySuccessScope::Relay" in first_payload
+    assert first_payload.index("reportMtproxySuccess(") < first_payload.index(
+        "lease->transportReady();")
     note_payload = function_body(
         transport,
         "void SessionTransport::noteMtprotoPayloadReceived()")
@@ -231,13 +219,22 @@ def test_full_concurrency_needs_current_main_relay_proof():
     eligible = function_body(
         arbiter,
         "bool EndpointAdmissionArbiter::Private::baseEligibleLocked(")
+    reserve = function_body(
+        arbiter,
+        "auto EndpointAdmissionArbiter::Private::reserveTicketLocked(")
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     failure = function_body(health, "void EndpointHealth::reportFailure(")
 
     assert "MtProxy::HasCurrentMainRelayProof(state" in eligible
     assert "ticket.key.runtimeId" in eligible
     assert "ticket.proxyGeneration" in eligible
+    assert "if (!IsTransfer(ticket.use))" in eligible
+    assert "return MtProxy::HasCurrentMainRelayProof" in eligible
     assert "urgentWaiters" not in eligible
+    assert "baseEligibleLocked(ticket, state)" in reserve
+    assert "MtProxy::HasCurrentMainRelayProof(state" in reserve
+    assert ".mainRelayProven = mainRelayProven" in reserve
+    assert "MtProxy::ReserveLiveSlot(" in reserve
     assert "CurrentMainRelayProof(" in state_source
     assert "proof.use != EndpointUse::Main" in state_source
     assert "SuccessFromStaleAttempt(report, state)" in success

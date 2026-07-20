@@ -44,8 +44,20 @@ void SessionProxyLease::transportReady() {
 	}
 }
 
+void SessionProxyLease::capacityTerminal(
+		MtProxy::FailureReason reason,
+		bool finalEndpointTerminal) {
+	if (_impl) {
+		_impl->capacityTerminal(reason, finalEndpointTerminal);
+	}
+}
+
 bool SessionProxyLease::active() const {
 	return _impl ? _impl->active() : false;
+}
+
+MtProxy::LiveSlotKey SessionProxyLease::slotKey() const {
+	return _impl ? _impl->slotKey() : MtProxy::LiveSlotKey();
 }
 
 uint64 SessionProxyLease::attemptId() const {
