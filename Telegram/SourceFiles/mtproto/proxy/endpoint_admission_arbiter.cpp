@@ -1513,6 +1513,7 @@ void EndpointAdmissionArbiter::Private::queueCloseLocked(
 		Actions &actions) {
 	const auto binding = _slotBindings.find(close.key);
 	if (binding == end(_slotBindings)
+		|| binding->second.runtimeId != close.attempt.runtimeId
 		|| !binding->second.owner
 		|| !binding->second.reclaim) {
 		return;
@@ -1541,9 +1542,17 @@ void EndpointAdmissionArbiter::Private::queueCloseLocked(
 bool EndpointAdmissionArbiter::Private::closeBindingReadyLocked(
 		const MtProxy::LivePoolCloseAction &close) const {
 	const auto binding = _slotBindings.find(close.key);
-	return binding != end(_slotBindings)
-		&& binding->second.owner
-		&& binding->second.reclaim;
+	if (binding == end(_slotBindings)
+		|| binding->second.runtimeId != close.attempt.runtimeId
+		|| !binding->second.owner
+		|| !binding->second.reclaim) {
+		return false;
+	}
+	const auto runtime = _runtimes.find(binding->second.runtimeId);
+	return runtime != end(_runtimes)
+		&& runtime->second
+		&& runtime->second->dispatcher
+		&& runtime->second->singleShot;
 }
 
 void EndpointAdmissionArbiter::Private::closeRuntimeSlotsLocked(
@@ -1663,22 +1672,16 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		schedule->second.fairness);
 	auto selectedWait = MtProxy::LivePoolWaitReason::None;
 	if (selected) {
-		selectedWait = reserveTicketLocked(
-			endpointKey,
-			*selected,
-			state,
-			inputs,
-			actions);
-		if (selectedWait == MtProxy::LivePoolWaitReason::None) {
-			AdvanceFairness(
-				schedule->second.fairness,
-				*selected,
-				priorityForLocked(*selected, state, inputs.now));
-		} else if ((selectedWait == MtProxy::LivePoolWaitReason::Slot
-				|| selectedWait == MtProxy::LivePoolWaitReason::Capacity)
-			&& selected->key.runtimeId == _storage.foregroundRuntimeId
+		auto reserveSelected = true;
+		if (selected->key.runtimeId == _storage.foregroundRuntimeId
 			&& IsTransfer(selected->use)) {
-			const auto reclaim = MtProxy::SelectForegroundTransferReclaim(
+			const auto mainRelayProven
+				= MtProxy::HasCurrentMainRelayProof(state, {
+					.runtimeId = selected->key.runtimeId,
+					.proxyGeneration = selected->proxyGeneration,
+				});
+			const auto reduction
+				= MtProxy::PlanForegroundTransferReservation(
 				pool,
 				{
 					.endpointKey = endpointKey,
@@ -1686,17 +1689,48 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 						.key = selected->key,
 						.revision = selected->revision,
 					},
+					.use = selected->use,
+					.mainRelayProven = mainRelayProven,
 					.facts = selectionFactsLocked(
 						endpointKey,
 						state,
 						inputs.now),
 				});
-			if (reclaim.applied
-				&& reclaim.close
-				&& closeBindingReadyLocked(*reclaim.close)) {
-				pool = reclaim.pool;
-				selectedWait = MtProxy::LivePoolWaitReason::Closing;
-				queueCloseLocked(*reclaim.close, actions);
+			switch (reduction.action) {
+			case MtProxy::ForegroundTransferReservationAction::Reserve:
+				break;
+			case MtProxy::ForegroundTransferReservationAction::Reclaim:
+				reserveSelected = false;
+				if (reduction.close
+					&& closeBindingReadyLocked(*reduction.close)) {
+					pool = reduction.pool;
+					selectedWait = MtProxy::LivePoolWaitReason::Closing;
+					queueCloseLocked(*reduction.close, actions);
+				} else {
+					selectedWait = (reduction.waitReason
+						== MtProxy::LivePoolWaitReason::None)
+						? MtProxy::LivePoolWaitReason::Slot
+						: reduction.waitReason;
+				}
+				break;
+			case MtProxy::ForegroundTransferReservationAction::Wait:
+				reserveSelected = false;
+				selectedWait = reduction.waitReason;
+				break;
+			}
+		}
+		if (reserveSelected) {
+			selectedWait = reserveTicketLocked(
+				endpointKey,
+				*selected,
+				state,
+				inputs,
+				actions);
+			if (selectedWait == MtProxy::LivePoolWaitReason::None) {
+				AdvanceFairness(
+					schedule->second.fairness,
+					*selected,
+					priorityForLocked(*selected, state, inputs.now));
 			}
 		}
 	}

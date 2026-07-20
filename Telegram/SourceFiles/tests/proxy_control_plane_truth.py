@@ -65,6 +65,9 @@ CLOSING = "closing"
 SLOT_WAIT = "slot"
 CAPACITY_WAIT = "capacity"
 CLOSING_WAIT = "closing"
+RESERVE_ACTION = "reserve"
+RECLAIM_ACTION = "reclaim"
+WAIT_ACTION = "wait"
 ORDINARY = "ordinary"
 RECLAIMED_MAIN_RESUME = "reclaimed_main_resume"
 MAIN = "main"
@@ -460,32 +463,9 @@ def begin_live_slot_close(
     return (key, attempt, resume_purpose)
 
 
-def capacity_saturated(pool, endpoint):
-    if all(slot.phase != EMPTY for slot in pool.slots):
-        return True
-    occupied = nonempty_slot_count(pool)
-    proven = max(0, min(pool.proven_lower_bound, LIVE_SLOT_COUNT))
-    if occupied < proven or (not proven and not occupied):
-        return False
-    if pool.learned_limit is not None and occupied >= pool.learned_limit:
-        return True
-    if proven >= LIVE_SLOT_COUNT:
-        return True
-    baseline = complete_live_baseline(pool, endpoint)
-    return occupied != proven or len(baseline) != proven
-
-
-def select_foreground_transfer_reclaim(
+def select_foreground_transfer_victim(
         pool,
-        endpoint,
-        successor,
         foreground_runtime_id):
-    if pool.reclaim or any(slot.phase == CLOSING for slot in pool.slots):
-        return None, CLOSING_WAIT
-    if pool.opening_ticket or pool.opening_attempt:
-        return None, SLOT_WAIT
-    if not capacity_saturated(pool, endpoint):
-        return None, SLOT_WAIT
     candidates = [
         (index, slot)
         for index, slot in enumerate(pool.slots)
@@ -502,20 +482,73 @@ def select_foreground_transfer_reclaim(
             if item[1].use == MAIN
             and item[1].attempt.runtime_id != foreground_runtime_id
         ), None)
+    return victim
+
+
+def plan_foreground_transfer_reservation(
+        pool,
+        endpoint,
+        successor,
+        use,
+        foreground_runtime_id,
+        main_relay_proven,
+        foreground_transfer_waiting):
+    if (
+        not endpoint
+        or not foreground_runtime_id
+        or successor.runtime_id != foreground_runtime_id
+        or use not in {MEDIA, UPLOAD}
+        or not main_relay_proven
+        or not foreground_transfer_waiting
+    ):
+        return WAIT_ACTION, None, SLOT_WAIT
+    reservation_wait = pool_wait_reason(pool, endpoint, successor)
+    if pool.reclaim or any(slot.phase == CLOSING for slot in pool.slots):
+        return WAIT_ACTION, None, CLOSING_WAIT
+    if pool.opening_ticket or pool.opening_attempt:
+        return WAIT_ACTION, None, SLOT_WAIT
+    occupied = nonempty_slot_count(pool)
+    proven = max(0, min(pool.proven_lower_bound, LIVE_SLOT_COUNT))
+    bootstrap = not proven and not occupied
+    replenishment = occupied < proven
+    baseline = complete_live_baseline(pool, endpoint)
+    stable_frontier = (
+        proven > 0
+        and occupied == proven
+        and any(slot.phase == EMPTY for slot in pool.slots)
+        and len(baseline) == proven
+    )
+    if reservation_wait == NONE and (bootstrap or replenishment):
+        return RESERVE_ACTION, None, reservation_wait
+    if reservation_wait == NONE and not stable_frontier:
+        return WAIT_ACTION, None, SLOT_WAIT
+    if reservation_wait not in {NONE, SLOT_WAIT, CAPACITY_WAIT}:
+        return WAIT_ACTION, None, reservation_wait
+    victim = select_foreground_transfer_victim(
+        pool,
+        foreground_runtime_id)
     if victim is None:
-        return None, CAPACITY_WAIT
+        return (
+            RESERVE_ACTION if reservation_wait == NONE else WAIT_ACTION,
+            None,
+            reservation_wait,
+        )
     index, slot = victim
     purpose = (
         ORDINARY
         if slot.use in {MEDIA, UPLOAD}
         else RECLAIMED_MAIN_RESUME
     )
-    return begin_live_slot_close(
+    close = begin_live_slot_close(
         pool,
         slot_key(endpoint, index, slot),
         slot.attempt,
         successor,
-        purpose), CLOSING_WAIT
+        purpose)
+    if close is None:
+        wait = SLOT_WAIT if reservation_wait == NONE else reservation_wait
+        return WAIT_ACTION, None, wait
+    return RECLAIM_ACTION, close, reservation_wait
 
 
 def cancel_live_slot_successor(pool, ticket):
@@ -1454,12 +1487,16 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
         for index, slot in enumerate(pool.slots)
         if slot.phase == LIVE)
     incumbent = pool.slots[incumbent_key.index].attempt
-    action, wait = select_foreground_transfer_reclaim(
+    decision, action, wait = plan_foreground_transfer_reservation(
         pool,
         ABC_ENDPOINT,
         successor,
-        foreground_runtime_id=successor.runtime_id)
-    assert wait == CLOSING_WAIT
+        MEDIA,
+        foreground_runtime_id=successor.runtime_id,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == RECLAIM_ACTION
+    assert wait == CAPACITY_WAIT
     assert action == (
         incumbent_key,
         incumbent,
@@ -1471,11 +1508,16 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
     assert reserve_live_slot(pool, ABC_ENDPOINT, successor) == (
         None,
         CLOSING_WAIT)
-    second_action, second_wait = select_foreground_transfer_reclaim(
-        pool,
-        ABC_ENDPOINT,
-        live_ticket(4, 30),
-        foreground_runtime_id=30)
+    second_decision, second_action, second_wait = (
+        plan_foreground_transfer_reservation(
+            pool,
+            ABC_ENDPOINT,
+            live_ticket(4, 30),
+            MEDIA,
+            foreground_runtime_id=30,
+            main_relay_proven=True,
+            foreground_transfer_waiting=True))
+    assert second_decision == WAIT_ACTION
     assert second_action is None
     assert second_wait == CLOSING_WAIT
     assert cancel_live_slot_successor(pool, successor)
@@ -1505,11 +1547,15 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
         if slot.phase == LIVE)
     incumbent = pinned_pool.slots[incumbent_key.index].attempt
     successor = live_ticket(6, 60)
-    action, _ = select_foreground_transfer_reclaim(
+    decision, action, _ = plan_foreground_transfer_reservation(
         pinned_pool,
         ABC_ENDPOINT,
         successor,
-        foreground_runtime_id=60)
+        MEDIA,
+        foreground_runtime_id=60,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == RECLAIM_ACTION
     assert action is not None
     assert release_live_slot(
         pinned_pool,
@@ -1518,6 +1564,112 @@ def test_learned_cap_and_reclaim_are_serialized_until_exact_release():
 
 
 def test_reclaim_victim_order_and_foreground_main_protection():
+    trace_pool = LivePool()
+    trace11 = live_ticket(11, 1)
+    trace11_key, trace11_attempt = add_live_pool_attempt(
+        trace_pool,
+        trace11,
+        11,
+        MAIN)
+    add_live_pool_attempt(
+        trace_pool,
+        live_ticket(12, 2),
+        12,
+        MAIN)
+    add_live_pool_attempt(
+        trace_pool,
+        live_ticket(17, 2),
+        17,
+        MEDIA)
+    assert trace_pool.proven_lower_bound == 3
+    assert trace_pool.probe is None
+    assert trace_pool.opening_ticket is None
+    assert trace_pool.opening_attempt is None
+    trace18 = live_ticket(18, 2)
+    decision, action, wait = plan_foreground_transfer_reservation(
+        trace_pool,
+        ABC_ENDPOINT,
+        trace18,
+        MEDIA,
+        foreground_runtime_id=2,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == RECLAIM_ACTION
+    assert wait == NONE
+    assert action == (
+        trace11_key,
+        trace11_attempt,
+        RECLAIMED_MAIN_RESUME)
+    assert trace_pool.slots[trace11_key.index].phase == CLOSING
+    assert trace_pool.reclaim == LiveReclaim(
+        trace11_key,
+        trace11_attempt,
+        trace18)
+    assert trace_pool.opening_ticket is None
+    assert trace_pool.opening_attempt is None
+    assert trace_pool.probe is None
+    stale_revision = replace(trace18, revision=trace18.revision + 1)
+    assert not cancel_live_slot_successor(trace_pool, stale_revision)
+    assert trace_pool.reclaim.successor == trace18
+    assert trace_pool.slots[trace11_key.index].phase == CLOSING
+    assert reserve_live_slot(trace_pool, ABC_ENDPOINT, trace18) == (
+        None,
+        CLOSING_WAIT)
+    assert release_live_slot(
+        trace_pool,
+        trace11_key,
+        trace11_attempt) == (True, trace18)
+    trace18_key, trace18_wait = reserve_live_slot(
+        trace_pool,
+        ABC_ENDPOINT,
+        trace18)
+    assert trace18_wait == NONE
+    trace18_attempt = live_attempt(trace18, 18)
+    assert commit_live_slot(
+        trace_pool,
+        trace18_key,
+        trace18,
+        trace18_attempt,
+        MEDIA)
+    assert trace_pool.probe is None
+
+    expansion_pool = LivePool()
+    for ticket_id, use in ((21, MAIN), (22, MEDIA), (23, UPLOAD)):
+        add_live_pool_attempt(
+            expansion_pool,
+            live_ticket(ticket_id, 2),
+            ticket_id,
+            use)
+    trace28 = live_ticket(28, 2)
+    decision, action, wait = plan_foreground_transfer_reservation(
+        expansion_pool,
+        ABC_ENDPOINT,
+        trace28,
+        MEDIA,
+        foreground_runtime_id=2,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == RESERVE_ACTION
+    assert action is None
+    assert wait == NONE
+    trace28_key, trace28_wait = reserve_live_slot(
+        expansion_pool,
+        ABC_ENDPOINT,
+        trace28)
+    assert trace28_wait == NONE
+    trace28_attempt = live_attempt(trace28, 28)
+    assert commit_live_slot(
+        expansion_pool,
+        trace28_key,
+        trace28,
+        trace28_attempt,
+        MEDIA)
+    assert expansion_pool.probe == CapacityProbe(
+        trace28_key,
+        trace28_attempt,
+        4,
+        complete_live_baseline(expansion_pool, ABC_ENDPOINT))
+
     pool = LivePool()
     main_key, main_attempt = add_live_pool_attempt(
         pool,
@@ -1531,12 +1683,16 @@ def test_reclaim_victim_order_and_foreground_main_protection():
         MEDIA)
     pool.learned_limit = 2
     successor = live_ticket(3, 30)
-    action, wait = select_foreground_transfer_reclaim(
+    decision, action, wait = plan_foreground_transfer_reservation(
         pool,
         ABC_ENDPOINT,
         successor,
-        foreground_runtime_id=30)
-    assert wait == CLOSING_WAIT
+        MEDIA,
+        foreground_runtime_id=30,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == RECLAIM_ACTION
+    assert wait == CAPACITY_WAIT
     assert action == (transfer_key, transfer_attempt, ORDINARY)
     assert pool.slots[main_key.index].phase == LIVE
 
@@ -1547,11 +1703,15 @@ def test_reclaim_victim_order_and_foreground_main_protection():
         104,
         MAIN)
     protected.learned_limit = 1
-    action, wait = select_foreground_transfer_reclaim(
+    decision, action, wait = plan_foreground_transfer_reservation(
         protected,
         ABC_ENDPOINT,
         live_ticket(5, 40),
-        foreground_runtime_id=40)
+        MEDIA,
+        foreground_runtime_id=40,
+        main_relay_proven=True,
+        foreground_transfer_waiting=True)
+    assert decision == WAIT_ACTION
     assert action is None
     assert wait == CAPACITY_WAIT
     assert protected.slots[key.index].phase == LIVE
@@ -2429,6 +2589,15 @@ def test_source_seams_match_truth_table_contract():
     assert "std::optional<EndpointOpeningOwner> opening;" in live_pool_header
     assert "std::optional<CapacityProbe> capacityProbe;" in live_pool_header
     assert "std::optional<EndpointReclaim> reclaim;" in live_pool_header
+    assert "struct ForegroundTransferReservationRequest" in live_pool_header
+    assert "enum class ForegroundTransferReservationAction" in live_pool_header
+    assert "struct ForegroundTransferReservationReduction" in live_pool_header
+    assert "PlanForegroundTransferReservation(" in live_pool_header
+    assert "PlanForegroundTransferReservation(" in live_pool
+    assert "ForegroundTransferReclaimRequest" not in live_pool_header
+    assert "SelectForegroundTransferReclaim" not in live_pool_header
+    assert "SelectForegroundTransferReclaim" not in live_pool
+    assert "CapacitySaturated" not in live_pool
     assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
     assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
         arbiter)
@@ -2483,6 +2652,40 @@ def test_source_seams_match_truth_table_contract():
     assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in (
         session_proxy_port)
     assert "AdmissionPurpose::ReclaimedMainResume" in arbiter
+    assign = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::grantDueLocked(",
+            1)[0]
+    assert assign.count("PlanForegroundTransferReservation(") == 1
+    assert assign.index("PlanForegroundTransferReservation(") < (
+        assign.index("reserveTicketLocked("))
+    reclaim = assign.split(
+        "case MtProxy::ForegroundTransferReservationAction::Reclaim:",
+        1)[1].split(
+            "case MtProxy::ForegroundTransferReservationAction::Wait:",
+            1)[0]
+    assert reclaim.index("closeBindingReadyLocked(") < (
+        reclaim.index("pool = reduction.pool;"))
+    assert reclaim.index("pool = reduction.pool;") < (
+        reclaim.index("queueCloseLocked("))
+    for duplicated_policy in (
+            "NonemptySlotCount(",
+            "CompleteLiveBaseline(",
+            "provenLowerBound",
+            "SelectVictim(",
+            "CapacitySaturated("):
+        assert duplicated_policy not in assign
+    close_binding = arbiter.split(
+        "bool EndpointAdmissionArbiter::Private::closeBindingReadyLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::closeRuntimeSlotsLocked(",
+            1)[0]
+    assert "binding->second.runtimeId != close.attempt.runtimeId" in (
+        close_binding)
+    assert "_runtimes.find(binding->second.runtimeId)" in close_binding
+    assert "runtime->second->dispatcher" in close_binding
+    assert "runtime->second->singleShot" in close_binding
     priority = arbiter.split(
         "PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(",
         1)[1].split(

@@ -232,30 +232,6 @@ void ResetLearningIfEmpty(EndpointLivePool &pool) {
 		: LivePoolWaitReason::Capacity;
 }
 
-[[nodiscard]] bool CapacitySaturated(
-		const EndpointLivePool &pool,
-		const QString &endpointKey) {
-	if (FirstEmptySlot(pool) < 0) {
-		return true;
-	}
-	const auto occupied = NonemptySlotCount(pool);
-	const auto proven = std::clamp(
-		pool.provenLowerBound,
-		0,
-		kEndpointLiveSlotCount);
-	if (occupied < proven || (!proven && !occupied)) {
-		return false;
-	}
-	if (pool.learnedLimit && occupied >= *pool.learnedLimit) {
-		return true;
-	}
-	if (proven >= kEndpointLiveSlotCount) {
-		return true;
-	}
-	const auto baseline = CompleteLiveBaseline(pool, endpointKey);
-	return occupied != proven || int(baseline.size()) != proven;
-}
-
 void ClearMatchingProbe(
 		EndpointLivePool &pool,
 		const LiveSlotKey &key,
@@ -392,6 +368,25 @@ template <typename Predicate>
 		}
 	}
 	return -1;
+}
+
+[[nodiscard]] int SelectForegroundTransferVictim(
+		const EndpointLivePool &pool,
+		ProxyRuntimeId foregroundRuntimeId) {
+	const auto transfer = SelectVictim(
+		pool,
+		[&](const LiveSlotAttemptOwner &owner) {
+			return IsTransfer(owner.use)
+				&& owner.attempt.runtimeId != foregroundRuntimeId;
+		});
+	return (transfer >= 0)
+		? transfer
+		: SelectVictim(
+			pool,
+			[&](const LiveSlotAttemptOwner &owner) {
+				return owner.use == EndpointUse::Main
+					&& owner.attempt.runtimeId != foregroundRuntimeId;
+			});
 }
 
 template <typename Predicate>
@@ -699,53 +694,80 @@ LiveSlotCloseReduction BeginLiveSlotClose(
 	return BeginClose(pool, request);
 }
 
-LiveSlotCloseReduction SelectForegroundTransferReclaim(
+auto PlanForegroundTransferReservation(
 		const EndpointLivePool &pool,
-		const ForegroundTransferReclaimRequest &request) {
-	auto result = LiveSlotCloseReduction{ .pool = pool };
+		const ForegroundTransferReservationRequest &request)
+-> ForegroundTransferReservationReduction {
+	auto result = ForegroundTransferReservationReduction{ .pool = pool };
 	if (request.endpointKey.isEmpty()
 		|| !ValidTicketOwner(request.successor)
 		|| !request.facts.foregroundRuntimeId
 		|| request.successor.key.runtimeId
 			!= request.facts.foregroundRuntimeId
+		|| !IsTransfer(request.use)
+		|| !request.mainRelayProven
 		|| !request.facts.foregroundTransferWaiting) {
 		return result;
 	}
+	const auto reservationWait = ReservationWaitReason(
+		result.pool,
+		{
+			.endpointKey = request.endpointKey,
+			.owner = request.successor,
+			.use = request.use,
+			.foreground = true,
+			.mainRelayProven = request.mainRelayProven,
+			.now = request.facts.now,
+		});
+	result.waitReason = reservationWait;
 	if (result.pool.reclaim || HasClosingSlot(result.pool)) {
 		result.waitReason = LivePoolWaitReason::Closing;
 		return result;
 	}
-	if (result.pool.opening) {
+	if (result.pool.opening || !result.pool.openings.pending.empty()) {
 		result.waitReason = LivePoolWaitReason::Slot;
 		return result;
 	}
-	if (!CapacitySaturated(result.pool, request.endpointKey)) {
-		result.waitReason = LivePoolWaitReason::Slot;
-		return result;
-	}
-	const auto transfer = SelectVictim(
+	const auto occupied = NonemptySlotCount(result.pool);
+	const auto proven = std::clamp(
+		result.pool.provenLowerBound,
+		0,
+		kEndpointLiveSlotCount);
+	const auto bootstrap = !proven && !occupied;
+	const auto replenishment = occupied < proven;
+	const auto baseline = CompleteLiveBaseline(
 		result.pool,
-		[&](const LiveSlotAttemptOwner &owner) {
-			return IsTransfer(owner.use)
-				&& owner.attempt.runtimeId
-					!= request.facts.foregroundRuntimeId;
-		});
-	const auto victim = (transfer >= 0)
-		? transfer
-		: SelectVictim(
-			result.pool,
-			[&](const LiveSlotAttemptOwner &owner) {
-				return owner.use == EndpointUse::Main
-					&& owner.attempt.runtimeId
-						!= request.facts.foregroundRuntimeId;
-			});
+		request.endpointKey);
+	const auto stableFrontier = proven > 0
+		&& occupied == proven
+		&& FirstEmptySlot(result.pool) >= 0
+		&& int(baseline.size()) == proven;
+	if (reservationWait == LivePoolWaitReason::None
+		&& (bootstrap || replenishment)) {
+		result.action = ForegroundTransferReservationAction::Reserve;
+		return result;
+	}
+	if (reservationWait == LivePoolWaitReason::None && !stableFrontier) {
+		result.waitReason = LivePoolWaitReason::Slot;
+		return result;
+	}
+	if (reservationWait != LivePoolWaitReason::None
+		&& reservationWait != LivePoolWaitReason::Slot
+		&& reservationWait != LivePoolWaitReason::Capacity) {
+		return result;
+	}
+	const auto victim = SelectForegroundTransferVictim(
+		result.pool,
+		request.facts.foregroundRuntimeId);
 	if (victim < 0) {
-		result.waitReason = LivePoolWaitReason::Capacity;
+		if (reservationWait == LivePoolWaitReason::None) {
+			result.action = ForegroundTransferReservationAction::Reserve;
+		}
 		return result;
 	}
 	const auto &slot = result.pool.slots[victim];
 	const auto &owner = std::get<LiveSlotAttemptOwner>(slot.owner);
-	return BeginClose(
+	const auto close = BeginClose(
 		result.pool,
 		{
 			.key = SlotKey(request.endpointKey, victim, slot),
@@ -755,6 +777,16 @@ LiveSlotCloseReduction SelectForegroundTransferReclaim(
 				? AdmissionPurpose::Ordinary
 				: AdmissionPurpose::ReclaimedMainResume,
 		});
+	if (!close.applied || !close.close) {
+		result.waitReason = (reservationWait == LivePoolWaitReason::None)
+			? LivePoolWaitReason::Slot
+			: reservationWait;
+		return result;
+	}
+	result.pool = close.pool;
+	result.action = ForegroundTransferReservationAction::Reclaim;
+	result.close = close.close;
+	return result;
 }
 
 LiveSlotCloseReduction SelectBackgroundMainRotation(

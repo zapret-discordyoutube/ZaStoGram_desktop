@@ -198,10 +198,18 @@ struct LiveSlotReleaseRequest {
 	ProxyConnectionAttempt attempt;
 };
 
-struct ForegroundTransferReclaimRequest {
+struct ForegroundTransferReservationRequest {
 	QString endpointKey;
 	LiveSlotTicketOwner successor;
+	EndpointUse use = EndpointUse::Main;
+	bool mainRelayProven = false;
 	LivePoolSelectionFacts facts;
+};
+
+enum class ForegroundTransferReservationAction {
+	Reserve,
+	Reclaim,
+	Wait,
 };
 
 struct BackgroundMainRotationRequest {
@@ -271,6 +279,14 @@ struct LiveSlotCloseReduction {
 	bool applied = false;
 };
 
+struct ForegroundTransferReservationReduction {
+	EndpointLivePool pool;
+	ForegroundTransferReservationAction action
+		= ForegroundTransferReservationAction::Wait;
+	std::optional<LivePoolCloseAction> close;
+	LivePoolWaitReason waitReason = LivePoolWaitReason::Slot;
+};
+
 struct LiveSlotsCloseReduction {
 	EndpointLivePool pool;
 	std::vector<LivePoolCloseAction> closes;
@@ -307,9 +323,10 @@ struct LiveSlotReleaseReduction {
 [[nodiscard]] LiveSlotCloseReduction BeginLiveSlotClose(
 	const EndpointLivePool &pool,
 	const LiveSlotCloseRequest &request);
-[[nodiscard]] LiveSlotCloseReduction SelectForegroundTransferReclaim(
+[[nodiscard]] auto PlanForegroundTransferReservation(
 	const EndpointLivePool &pool,
-	const ForegroundTransferReclaimRequest &request);
+	const ForegroundTransferReservationRequest &request)
+-> ForegroundTransferReservationReduction;
 [[nodiscard]] LiveSlotCloseReduction SelectBackgroundMainRotation(
 	const EndpointLivePool &pool,
 	const BackgroundMainRotationRequest &request);
