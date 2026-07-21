@@ -1224,10 +1224,14 @@ auto EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(
 			continue;
 		}
 		auto &ticket = *i->second;
+		const auto foreground = ticket.key.runtimeId
+			== _storage.foregroundRuntimeId;
 		if (ticket.lifecycle != ProxySchedulerLifecycle::Queued
 			|| ticket.use != MtProxy::EndpointUse::Main
 			|| !ticketCurrentLocked(ticket, state)
-			|| OpeningBoundaryForTicket(ticket, state, now).at > now
+			|| ticket.notBeforeAt > now
+			|| (!foreground
+				&& OpeningBoundaryForTicket(ticket, state, now).at > now)
 			|| successorTicketLocked(pool->second, ticket)) {
 			continue;
 		}

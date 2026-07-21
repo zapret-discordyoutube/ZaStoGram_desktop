@@ -206,6 +206,10 @@ void ApplyPostReclaimOpeningHandoff(
 	if (releasedAt < boundary.handoffReleasedAt) {
 		return;
 	}
+	boundary.pressureAttempt = {};
+	boundary.pressureReason = FailureReason::None;
+	boundary.pressureObservedAt = 0;
+	boundary.pressureUntil = 0;
 	boundary.handoffSourceKey = sourceKey;
 	boundary.handoffSourceAttempt = sourceAttempt;
 	boundary.handoffReleasedAt = releasedAt;
