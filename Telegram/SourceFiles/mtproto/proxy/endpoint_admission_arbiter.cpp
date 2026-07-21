@@ -316,7 +316,7 @@ void ReclaimAction::run() {
 	const auto guardedCallback = callback;
 	dispatch->singleShot(
 		0,
-		dispatcher,
+		guardedTarget,
 		[
 			registrationLive,
 			dispatcher,
@@ -889,7 +889,9 @@ PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(
 	const auto transferAdmissionBasis = (pool == end(_pools))
 		? MtProxy::TransferAdmissionBasis::None
 		: transferAdmissionBasisLocked(ticket, state, pool->second);
-	if (ticket.use == MtProxy::EndpointUse::Main && foreground) {
+	const auto foregroundMain
+		= ticket.use == MtProxy::EndpointUse::Main && foreground;
+	if (foregroundMain && !hasMainProof) {
 		return PriorityClass::ForegroundMain;
 	}
 	if (ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume) {
