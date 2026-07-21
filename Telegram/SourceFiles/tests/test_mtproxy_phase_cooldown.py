@@ -258,13 +258,14 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "struct EndpointLivePool" in pool_header
     assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
     assert "EndpointOpeningPermit" not in arbiter_header
-    assert "struct EndpointOpeningPressure" in read(ENDPOINT_HEALTH_STATE_H)
-    assert "OpeningRetryBoundaryFor(state)" not in arbiter
-    assert "openingPressure" not in arbiter
+    assert "struct EndpointPhysicalOpeningBoundary" in read(
+        ENDPOINT_HEALTH_STATE_H)
+    assert "CurrentPhysicalOpeningBoundary(" in arbiter
     boundary = function_body(
         arbiter, "TicketOpeningBoundary OpeningBoundaryForTicket(")
     assert ".at = ticket.notBeforeAt" in boundary
-    assert "pressure" not in boundary
+    assert "CurrentPhysicalOpeningBoundary(" in boundary
+    assert "physical.retryUntil > result.at" in boundary
     pressure_reasons = function_body(
         pool_source, "bool IsCapacityPressureTerminal(")
     for reason in (
@@ -291,12 +292,12 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
         row = pressure_reasons.split(
             f"case FailureReason::{rejected}:", 1)[1]
         assert "return false;" in row
-    pressure = report_failure.split(
-        "if (terminal->finalAttemptTerminal", 1)[1].split(
-            "const auto runtimeGeneration", 1)[0]
-    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
-    assert "FailureReason::ServerHelloOkNoAppData" not in pressure
-    assert "state.openingPressure = {" in pressure
+    assert "physicalOpeningBoundary" not in report_failure
+    capacity_terminal = function_body(
+        arbiter,
+        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(")
+    assert "const auto exactOpening" in capacity_terminal
+    assert "MtProxy::ApplyPhysicalOpeningTerminal(" in capacity_terminal
 
 
 def test_logs_and_proxy_status_use_phase_specific_names():

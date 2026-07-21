@@ -263,22 +263,6 @@ void EndpointHealth::reportFailure(FailureReport report) {
 			if (!terminal) {
 				staleRecipeLevel = state.recipeLevel;
 			} else {
-				if (terminal->finalAttemptTerminal
-					&& report.reason
-						== FailureReason::ClientHelloSentNoServerHello) {
-					const auto terminalAt = report.terminalAt
-						? report.terminalAt
-						: now;
-					const auto retryUntil = terminalAt + CooldownFor(
-						report.reason,
-						state.consecutiveFailures + 1);
-					if (retryUntil > state.openingPressure.retryUntil) {
-						state.openingPressure = {
-							.reason = report.reason,
-							.retryUntil = retryUntil,
-						};
-					}
-				}
 				const auto runtimeGeneration = RuntimeGenerationKey{
 					.runtimeId = report.runtimeId,
 					.proxyGeneration = report.proxyGeneration,

@@ -23,11 +23,32 @@ struct FailureTraits {
 	bool canBeStale = false;
 };
 
+struct EndpointPhysicalOpeningBoundaryView {
+	FailureReason reason = FailureReason::None;
+	crl::time retryUntil = 0;
+};
+
 [[nodiscard]] FailureTraits TraitsFor(FailureReason reason);
 
 [[nodiscard]] bool FailureNeedsCooldown(FailureReason reason);
-[[nodiscard]] EndpointOpeningPressure OpeningRetryBoundaryFor(
-	const EndpointState &state);
+[[nodiscard]] auto CurrentPhysicalOpeningBoundary(
+	const EndpointState &state,
+	crl::time now)
+-> EndpointPhysicalOpeningBoundaryView;
+void ApplyPhysicalOpeningTerminal(
+	EndpointState &state,
+	const ProxyConnectionAttempt &attempt,
+	FailureReason reason,
+	crl::time observedAt);
+void ApplyPostReclaimOpeningHandoff(
+	EndpointState &state,
+	const LiveSlotKey &sourceKey,
+	const ProxyConnectionAttempt &sourceAttempt,
+	crl::time releasedAt);
+void ApplyPhysicalOpeningRelay(
+	EndpointState &state,
+	const ProxyConnectionAttempt &attempt,
+	crl::time relayAt);
 [[nodiscard]] MtProxyAttemptPlan BuildAttemptPlan(
 	const AdmissionRequest &request,
 	int recipeLevel);

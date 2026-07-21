@@ -3347,9 +3347,10 @@ def test_source_seams_match_truth_table_contract():
             "ServerHelloOkNoMtprotoData",
             "ConnectedNoMtprotoData"):
         assert f"case FailureReason::{reason}:" in live_pool
-    assert "struct EndpointOpeningPressure" in health_state
-    assert "EndpointOpeningPressure openingPressure;" in health_state
-    assert "return state.openingPressure;" in policy
+    assert "struct EndpointPhysicalOpeningBoundary" in health_state
+    assert "EndpointPhysicalOpeningBoundary physicalOpeningBoundary;" in (
+        health_state)
+    assert "CurrentPhysicalOpeningBoundary(" in policy
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "control.mtproxyEndpointView(endpoint)" in check
     assert "noteMtproxyRelayFailure(" in capabilities
@@ -3577,7 +3578,8 @@ def test_source_seams_match_truth_table_contract():
     assert main_replacement.index("ForegroundRecovery") < (
         main_replacement.index("DemandBootstrap")) < (
         main_replacement.index("BackgroundDuty"))
-    assert "OpeningBoundaryForTicket(ticket).at > now" in main_replacement
+    assert "OpeningBoundaryForTicket(ticket, state, now).at > now" in (
+        main_replacement)
     assert "TransferAdmissionBasis::None" in main_replacement
     main_reducer = live_pool.split(
         "LiveSlotCloseReduction PlanMainReplacement(", 1)[1].split(
@@ -3601,11 +3603,14 @@ def test_source_seams_match_truth_table_contract():
         "void EndpointHealth::reportSuccess(", 1)[0]
     assert failure.index("RecordTerminalAttemptLocked(") < (
         failure.index("state.lastFailure = report.reason;"))
-    pressure = failure.split(
-        "if (terminal->finalAttemptTerminal", 1)[1].split(
-            "const auto runtimeGeneration", 1)[0]
-    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
-    assert "state.openingPressure = {" in pressure
+    assert "physicalOpeningBoundary" not in failure
+    capacity_terminal = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(",
+        1)[1].split(
+            "bool EndpointAdmissionArbiter::Private::authorizeLiveSlotReclaim(",
+            1)[0]
+    assert "const auto exactOpening" in capacity_terminal
+    assert "MtProxy::ApplyPhysicalOpeningTerminal(" in capacity_terminal
     assert "report.use" in failure
     assert "EndpointUse::Main" in failure
     assert "!HasCurrentMainRelayProof(" in failure

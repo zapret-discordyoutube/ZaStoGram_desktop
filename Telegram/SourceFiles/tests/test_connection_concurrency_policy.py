@@ -54,8 +54,8 @@ def test_endpoint_policy_owns_a_separate_four_slot_reducer():
     assert "LiveSlotPhase::Reserved" in reserve
     assert "result.pool.opening = request.owner;" in reserve
     assert ".at = ticket.notBeforeAt" in boundary
-    assert "OpeningRetryBoundaryFor" not in boundary
-    assert "openingPressure" not in boundary
+    assert "CurrentPhysicalOpeningBoundary(" in boundary
+    assert "physical.retryUntil > result.at" in boundary
     assert "EndpointAdmissionPolicyInput" not in state
     assert "EndpointUseCounts active" not in state
     assert "EndpointUseCounts scheduled" not in state
@@ -168,7 +168,7 @@ def test_main_replacement_prefers_foreground_then_demand_bootstrap():
         "DemandBootstrap") < purposes.index("BackgroundDuty")
     assert candidate.index("ForegroundRecovery") < candidate.index(
         "DemandBootstrap") < candidate.index("BackgroundDuty")
-    assert "OpeningBoundaryForTicket(ticket).at > now" in candidate
+    assert "OpeningBoundaryForTicket(ticket, state, now).at > now" in candidate
     assert "TransferAdmissionBasis::None" in candidate
     assert "MainReplacementPurpose::ForegroundRecovery" in reducer
     assert "MainReplacementPurpose::BackgroundDuty" in reducer
@@ -178,23 +178,25 @@ def test_main_replacement_prefers_foreground_then_demand_bootstrap():
     assert "request.successor.key.runtimeId" in pool_source
 
 
-def test_opening_pressure_remains_health_owned_but_not_an_admission_gate():
+def test_physical_opening_boundary_is_freshly_applied_by_admission():
     health = function_body(
         read(HEALTH_CPP), "void EndpointHealth::reportFailure(")
     arbiter = read(ARBITER_CPP)
 
-    assert "struct EndpointOpeningPressure" in read(STATE_H)
-    assert "OpeningRetryBoundaryFor(" in read(POLICY_CPP)
-    assert "return state.openingPressure;" in read(POLICY_CPP)
+    assert "struct EndpointPhysicalOpeningBoundary" in read(STATE_H)
+    assert "CurrentPhysicalOpeningBoundary(" in read(POLICY_CPP)
+    assert "state.physicalOpeningBoundary" in read(POLICY_CPP)
     assert "terminal->finalAttemptTerminal" in health
-    assert "FailureReason::ClientHelloSentNoServerHello" in health
-    assert "state.openingPressure.retryUntil" in health
-    assert "state.openingPressure = {" in health
-    assert "OpeningRetryBoundaryFor(" not in arbiter
-    assert "openingPressure" not in arbiter
+    assert "physicalOpeningBoundary" not in health
+    assert "ApplyPhysicalOpeningTerminal(" in arbiter
+    assert "ApplyPostReclaimOpeningHandoff(" in arbiter
+    assert "ApplyPhysicalOpeningRelay(" in arbiter
     boundary = function_body(
         arbiter, "TicketOpeningBoundary OpeningBoundaryForTicket(")
     assert ".at = ticket.notBeforeAt" in boundary
+    assert "CurrentPhysicalOpeningBoundary(" in boundary
+    assert "physical.retryUntil > result.at" in boundary
+    assert arbiter.count("OpeningBoundaryForTicket(") >= 8
     assert "report.routesExhausted" in health
     assert "FailureNeedsRecipeEscalation(report.reason)" in health
     assert "state.recipeFailureStreak" in health
@@ -301,6 +303,6 @@ if __name__ == "__main__":
     test_released_continuation_owns_selection_until_foreground_main_override()
     test_physical_slot_releases_only_the_exact_incarnation_and_attempt()
     test_main_replacement_prefers_foreground_then_demand_bootstrap()
-    test_opening_pressure_remains_health_owned_but_not_an_admission_gate()
+    test_physical_opening_boundary_is_freshly_applied_by_admission()
     test_route_failures_remain_local_until_routes_are_exhausted()
     test_arbiter_prioritizes_and_fairly_ages_endpoint_requests()

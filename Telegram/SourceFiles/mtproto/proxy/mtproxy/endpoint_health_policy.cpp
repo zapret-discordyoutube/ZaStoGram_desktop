@@ -148,9 +148,93 @@ FailureTraits TraitsFor(FailureReason reason) {
 	return TraitsFor(reason).needsCooldown;
 }
 
-EndpointOpeningPressure OpeningRetryBoundaryFor(
-		const EndpointState &state) {
-	return state.openingPressure;
+EndpointPhysicalOpeningBoundaryView CurrentPhysicalOpeningBoundary(
+		const EndpointState &state,
+		crl::time now) {
+	auto result = EndpointPhysicalOpeningBoundaryView();
+	const auto &boundary = state.physicalOpeningBoundary;
+	if (boundary.pressureUntil > now) {
+		result = {
+			.reason = boundary.pressureReason,
+			.retryUntil = boundary.pressureUntil,
+		};
+	}
+	if (boundary.handoffUntil > result.retryUntil
+		&& boundary.handoffUntil > now) {
+		result = {
+			.reason = FailureReason::None,
+			.retryUntil = boundary.handoffUntil,
+		};
+	}
+	return result;
+}
+
+void ApplyPhysicalOpeningTerminal(
+		EndpointState &state,
+		const ProxyConnectionAttempt &attempt,
+		FailureReason reason,
+		crl::time observedAt) {
+	if (!attempt.attemptId
+		|| reason == FailureReason::None
+		|| !observedAt) {
+		return;
+	}
+	auto &boundary = state.physicalOpeningBoundary;
+	if (attempt.attemptId <= boundary.pressureAttempt.attemptId) {
+		return;
+	}
+	const auto pressureUntil = observedAt + CooldownFor(reason, 1);
+	if (boundary.pressureUntil > observedAt
+		&& pressureUntil < boundary.pressureUntil) {
+		return;
+	}
+	boundary.pressureAttempt = attempt;
+	boundary.pressureReason = reason;
+	boundary.pressureObservedAt = observedAt;
+	boundary.pressureUntil = pressureUntil;
+}
+
+void ApplyPostReclaimOpeningHandoff(
+		EndpointState &state,
+		const LiveSlotKey &sourceKey,
+		const ProxyConnectionAttempt &sourceAttempt,
+		crl::time releasedAt) {
+	if (!sourceAttempt.attemptId || !releasedAt) {
+		return;
+	}
+	auto &boundary = state.physicalOpeningBoundary;
+	if (releasedAt < boundary.handoffReleasedAt) {
+		return;
+	}
+	boundary.handoffSourceKey = sourceKey;
+	boundary.handoffSourceAttempt = sourceAttempt;
+	boundary.handoffReleasedAt = releasedAt;
+	boundary.handoffUntil = releasedAt
+		+ OpenConnectionSpacing(ProxyConnectionPattern::Off);
+}
+
+void ApplyPhysicalOpeningRelay(
+		EndpointState &state,
+		const ProxyConnectionAttempt &attempt,
+		crl::time relayAt) {
+	if (!attempt.attemptId || !relayAt) {
+		return;
+	}
+	auto &boundary = state.physicalOpeningBoundary;
+	if (boundary.pressureAttempt.attemptId < attempt.attemptId
+		&& boundary.pressureObservedAt <= relayAt) {
+		boundary.pressureAttempt = {};
+		boundary.pressureReason = FailureReason::None;
+		boundary.pressureObservedAt = 0;
+		boundary.pressureUntil = 0;
+	}
+	if (boundary.handoffSourceAttempt.attemptId < attempt.attemptId
+		&& boundary.handoffReleasedAt <= relayAt) {
+		boundary.handoffSourceKey = {};
+		boundary.handoffSourceAttempt = {};
+		boundary.handoffReleasedAt = 0;
+		boundary.handoffUntil = 0;
+	}
 }
 
 [[nodiscard]] bool FailureNeedsRecipeEscalation(FailureReason reason) {
@@ -324,6 +408,19 @@ EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 		EndpointState &state,
 		crl::time now) {
 	auto cleanup = EndpointDeferredCleanup();
+	auto &boundary = state.physicalOpeningBoundary;
+	if (boundary.pressureUntil <= now) {
+		boundary.pressureAttempt = {};
+		boundary.pressureReason = FailureReason::None;
+		boundary.pressureObservedAt = 0;
+		boundary.pressureUntil = 0;
+	}
+	if (boundary.handoffUntil <= now) {
+		boundary.handoffSourceKey = {};
+		boundary.handoffSourceAttempt = {};
+		boundary.handoffReleasedAt = 0;
+		boundary.handoffUntil = 0;
+	}
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (now >= EndpointAttemptHardDeadline(i->second)) {
 			DeferEndpointOwnerDisconnect(

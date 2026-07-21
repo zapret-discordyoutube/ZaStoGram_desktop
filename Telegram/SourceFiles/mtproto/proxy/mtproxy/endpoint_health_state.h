@@ -98,15 +98,21 @@ struct MainRecoveryState {
 	uint64 replacementAttemptId = 0;
 };
 
-struct EndpointOpeningPressure {
-	FailureReason reason = FailureReason::None;
-	crl::time retryUntil = 0;
+struct EndpointPhysicalOpeningBoundary {
+	ProxyConnectionAttempt pressureAttempt;
+	FailureReason pressureReason = FailureReason::None;
+	crl::time pressureObservedAt = 0;
+	crl::time pressureUntil = 0;
+	LiveSlotKey handoffSourceKey;
+	ProxyConnectionAttempt handoffSourceAttempt;
+	crl::time handoffReleasedAt = 0;
+	crl::time handoffUntil = 0;
 };
 
 struct EndpointState {
 	EndpointId endpoint;
 	std::set<QString> routeKeys;
-	EndpointOpeningPressure openingPressure;
+	EndpointPhysicalOpeningBoundary physicalOpeningBoundary;
 	FailureReason lastFailure = FailureReason::None;
 	QString lastDiagnostic;
 	crl::time terminalUntil = 0;

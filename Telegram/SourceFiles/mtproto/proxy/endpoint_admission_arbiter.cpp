@@ -95,11 +95,21 @@ struct TicketOpeningBoundary {
 };
 
 TicketOpeningBoundary OpeningBoundaryForTicket(
-		const Ticket &ticket) {
-	return {
+		const Ticket &ticket,
+		const MtProxy::EndpointState &state,
+		crl::time now) {
+	auto result = TicketOpeningBoundary{
 		.at = ticket.notBeforeAt,
 		.blockedBy = MtProxy::FailureReason::None,
 	};
+	const auto physical = MtProxy::CurrentPhysicalOpeningBoundary(
+		state,
+		now);
+	if (physical.retryUntil > result.at) {
+		result.at = physical.retryUntil;
+		result.blockedBy = physical.reason;
+	}
+	return result;
 }
 
 struct FairnessState {
@@ -1215,7 +1225,7 @@ auto EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(
 		if (ticket.lifecycle != ProxySchedulerLifecycle::Queued
 			|| ticket.use != MtProxy::EndpointUse::Main
 			|| !ticketCurrentLocked(ticket, state)
-			|| OpeningBoundaryForTicket(ticket).at > now
+			|| OpeningBoundaryForTicket(ticket, state, now).at > now
 			|| successorTicketLocked(pool->second, ticket)) {
 			continue;
 		}
@@ -1583,7 +1593,10 @@ auto EndpointAdmissionArbiter::Private::reserveTicketLocked(
 			transferAdmissionBasis)) {
 		return MtProxy::LivePoolWaitReason::Slot;
 	}
-	const auto boundary = OpeningBoundaryForTicket(ticket);
+	const auto boundary = OpeningBoundaryForTicket(
+		ticket,
+		state,
+		inputs.now);
 	if (boundary.at > inputs.now) {
 		return MtProxy::LivePoolWaitReason::Slot;
 	}
@@ -1655,7 +1668,10 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 			continue;
 		}
 		auto &ticket = *i->second;
-		const auto boundary = OpeningBoundaryForTicket(ticket);
+		const auto boundary = OpeningBoundaryForTicket(
+			ticket,
+			state,
+			inputs.now);
 		const auto transferAdmissionBasis = transferAdmissionBasisLocked(
 			ticket,
 			state,
@@ -1664,8 +1680,7 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 			|| !AdmissionBasisAllowsTicket(
 				ticket,
 				transferAdmissionBasis)
-			|| !reservationCurrentLocked(ticket, pool->second)
-			|| boundary.at > inputs.now) {
+			|| !reservationCurrentLocked(ticket, pool->second)) {
 			demoteTicketLocked(ticket, actions);
 			continue;
 		}
@@ -1691,15 +1706,19 @@ void EndpointAdmissionArbiter::Private::revalidateReservationsLocked(
 		const auto previousWaitReason = ticket.waitReason;
 		const auto previousBlockedBy = ticket.blockedBy;
 		const auto previousScheduledOpenAt = ticket.scheduledOpenAt;
+		const auto previousNextOpenAt = ticket.nextOpenAt;
 		ticket.scheduledOpenAt = reflow.reservation->openAt;
 		ticket.nextOpenAt = reflow.reservation->nextOpenAt;
 		ticket.retryAfter = std::max(
 			crl::time(),
 			ticket.scheduledOpenAt - inputs.now);
-		ticket.waitReason = MtProxy::EndpointAdmissionWaitReason::None;
-		ticket.blockedBy = MtProxy::FailureReason::None;
+		ticket.waitReason = (boundary.at > inputs.now)
+			? MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore
+			: MtProxy::EndpointAdmissionWaitReason::None;
+		ticket.blockedBy = boundary.blockedBy;
 		const auto changed = previousScheduledOpenAt
 				!= ticket.scheduledOpenAt
+			|| previousNextOpenAt != ticket.nextOpenAt
 			|| previousWaitReason != ticket.waitReason
 			|| previousBlockedBy != ticket.blockedBy;
 		if (changed) {
@@ -1917,7 +1936,10 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 		auto foregroundCandidates = std::vector<Ticket*>();
 		auto foregroundEligible = std::set<AdmissionTicketKey>();
 		for (const auto ticket : candidates) {
-			const auto boundary = OpeningBoundaryForTicket(*ticket);
+			const auto boundary = OpeningBoundaryForTicket(
+				*ticket,
+				state,
+				inputs.now);
 			if (ticket->use == MtProxy::EndpointUse::Main
 				&& ticket->key.runtimeId == _storage.foregroundRuntimeId
 				&& ticketCurrentLocked(*ticket, state)
@@ -1959,7 +1981,10 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 	}
 	auto eligible = std::set<AdmissionTicketKey>();
 	for (const auto ticket : candidates) {
-		const auto boundary = OpeningBoundaryForTicket(*ticket);
+		const auto boundary = OpeningBoundaryForTicket(
+			*ticket,
+			state,
+			inputs.now);
 		const auto transferAdmissionBasis = transferAdmissionBasisLocked(
 			*ticket,
 			state,
@@ -2057,7 +2082,10 @@ void EndpointAdmissionArbiter::Private::assignReservationsLocked(
 			continue;
 		}
 		auto &ticket = *i->second;
-		const auto boundary = OpeningBoundaryForTicket(ticket);
+		const auto boundary = OpeningBoundaryForTicket(
+			ticket,
+			state,
+			inputs.now);
 		if (boundary.at > inputs.now) {
 			updateQueuedStatusLocked(
 				ticket,
@@ -2153,11 +2181,13 @@ void EndpointAdmissionArbiter::Private::grantDueLocked(
 	for (const auto &key : schedule->second.order) {
 		const auto i = _tickets.find(key);
 		if (i == end(_tickets)
-			|| i->second->lifecycle != ProxySchedulerLifecycle::Scheduled
-			|| i->second->scheduledOpenAt > now) {
+			|| i->second->lifecycle != ProxySchedulerLifecycle::Scheduled) {
 			continue;
 		}
 		auto &ticket = *i->second;
+		if (ticket.scheduledOpenAt > now) {
+			continue;
+		}
 		if (!MtProxy::EndpointEmpty(ticket.endpoint)) {
 			const auto pool = _pools.find(endpointKey);
 			const auto state = _storage.states.find(endpointKey);
@@ -2169,11 +2199,16 @@ void EndpointAdmissionArbiter::Private::grantDueLocked(
 					ticket,
 					state->second,
 					pool->second);
+			const auto boundary = OpeningBoundaryForTicket(
+				ticket,
+				state->second,
+				now);
 			if (!ticketCurrentLocked(ticket, state->second)
 				|| !AdmissionBasisAllowsTicket(
 					ticket,
 					transferAdmissionBasis)
-				|| !reservationCurrentLocked(ticket, pool->second)) {
+				|| !reservationCurrentLocked(ticket, pool->second)
+				|| boundary.at > now) {
 				continue;
 			}
 		}
@@ -2852,6 +2887,13 @@ void EndpointAdmissionArbiter::Private::markRelayReady(
 			return;
 		}
 		pool->second = reduction.pool;
+		const auto state = _storage.states.find(slotKey.endpointKey);
+		if (state != end(_storage.states)) {
+			MtProxy::ApplyPhysicalOpeningRelay(
+				state->second,
+				attempt,
+				inputs.now);
+		}
 		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
 		updateWakeLocked(inputs, actions);
 	}
@@ -2874,8 +2916,50 @@ void EndpointAdmissionArbiter::Private::markCapacityTerminal(
 		if (pool == end(_pools)) {
 			return;
 		}
+		const auto &currentPool = pool->second;
+		const auto slot = (slotKey.index >= 0
+			&& slotKey.index < int(currentPool.slots.size())
+			&& currentPool.slots[slotKey.index].incarnation
+				== slotKey.incarnation)
+			? &currentPool.slots[slotKey.index]
+			: nullptr;
+		const auto opening = currentPool.opening
+			? std::get_if<ProxyConnectionAttempt>(&*currentPool.opening)
+			: nullptr;
+		const auto owner = slot
+			? std::get_if<MtProxy::LiveSlotAttemptOwner>(&slot->owner)
+			: nullptr;
+		const auto exactOpening = slot
+			&& slot->phase == MtProxy::LiveSlotPhase::Opening
+			&& opening
+			&& owner
+			&& *opening == attempt
+			&& owner->attempt == attempt;
+		const auto state = _storage.states.find(slotKey.endpointKey);
+		auto terminalAt = inputs.now;
+		if (exactOpening && state != end(_storage.states)) {
+			const auto terminal = state->second.attemptStarts.find(
+				attempt.attemptId);
+			if (terminal != end(state->second.attemptStarts)) {
+				const auto &attemptState = terminal->second;
+				const auto exact = ProxyConnectionAttempt{
+					.runtimeId = attemptState.runtimeId,
+					.traceId = attemptState.traceId,
+					.ticketId = attemptState.ticketKey.ticketId,
+					.proxyGeneration = attemptState.proxyGeneration,
+					.proxyEpoch = attemptState.proxyEpoch,
+					.successEpoch = attemptState.successEpoch,
+					.attemptId = attempt.attemptId,
+					.use = attemptState.use,
+					.ticketKey = attemptState.ticketKey,
+				};
+				if (exact == attempt && attemptState.terminalAt) {
+					terminalAt = attemptState.terminalAt;
+				}
+			}
+		}
 		const auto reduction = MtProxy::MarkLiveSlotCapacityTerminal(
-			pool->second,
+			currentPool,
 			{
 				.key = slotKey,
 				.attempt = attempt,
@@ -2886,6 +2970,13 @@ void EndpointAdmissionArbiter::Private::markCapacityTerminal(
 			return;
 		}
 		pool->second = reduction.pool;
+		if (exactOpening && state != end(_storage.states)) {
+			MtProxy::ApplyPhysicalOpeningTerminal(
+				state->second,
+				attempt,
+				reason,
+				terminalAt);
+		}
 		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
 		updateWakeLocked(inputs, actions);
 	}
@@ -2959,6 +3050,14 @@ void EndpointAdmissionArbiter::Private::releaseLiveSlot(
 		if (pool == end(_pools)) {
 			return;
 		}
+		auto authorizedReclaim = std::optional<MtProxy::EndpointReclaim>();
+		if (pool->second.reclaim
+			&& pool->second.reclaim->stage
+				== MtProxy::EndpointReclaimStage::Authorized
+			&& pool->second.reclaim->key == slotKey
+			&& pool->second.reclaim->incumbent == attempt) {
+			authorizedReclaim = pool->second.reclaim;
+		}
 		const auto reduction = MtProxy::ReleaseLiveSlot(
 			pool->second,
 			{
@@ -2971,6 +3070,14 @@ void EndpointAdmissionArbiter::Private::releaseLiveSlot(
 		}
 		pool->second = reduction.pool;
 		if (reduction.slotReleased) {
+			const auto state = _storage.states.find(slotKey.endpointKey);
+			if (authorizedReclaim && state != end(_storage.states)) {
+				MtProxy::ApplyPostReclaimOpeningHandoff(
+					state->second,
+					authorizedReclaim->key,
+					authorizedReclaim->incumbent,
+					inputs.now);
+			}
 			_slotBindings.erase(slotKey);
 		}
 		if (reduction.successor) {
@@ -3161,6 +3268,16 @@ void EndpointAdmissionArbiter::Private::deliverGrant(
 			drainEndpointLocked(endpointKey, inputs, actions);
 			updateWakeLocked(inputs, actions);
 		} else if (ticket.scheduledOpenAt > inputs.now) {
+			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
+			++ticket.transition;
+			postStatusLocked(ticket, actions);
+			drainEndpointLocked(endpointKey, inputs, actions);
+			updateWakeLocked(inputs, actions);
+		} else if (!unscoped
+			&& OpeningBoundaryForTicket(
+				ticket,
+				state->second,
+				inputs.now).at > inputs.now) {
 			ticket.lifecycle = ProxySchedulerLifecycle::Scheduled;
 			++ticket.transition;
 			postStatusLocked(ticket, actions);

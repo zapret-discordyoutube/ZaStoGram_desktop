@@ -41,13 +41,18 @@ def test_endpoint_health_declares_typed_view_and_verdict_contracts():
     assert "ProxySchedulerLifecycle schedulerLifecycle" in header
     assert "int recipeLevel" in state
     assert "QString lastDiagnostic" in state
-    assert "struct EndpointOpeningPressure" in state
-    assert "FailureReason reason = FailureReason::None;" in state
-    assert "crl::time retryUntil = 0;" in state
-    assert "EndpointOpeningPressure openingPressure;" in state
-    assert "EndpointOpeningPressure OpeningRetryBoundaryFor(" in read(POLICY_H)
-    reader = function_body(read(POLICY_CPP), "OpeningRetryBoundaryFor(")
-    assert "return state.openingPressure;" in reader
+    assert "struct EndpointPhysicalOpeningBoundary" in state
+    assert "ProxyConnectionAttempt pressureAttempt;" in state
+    assert "FailureReason pressureReason = FailureReason::None;" in state
+    assert "crl::time pressureUntil = 0;" in state
+    assert "LiveSlotKey handoffSourceKey;" in state
+    assert "crl::time handoffUntil = 0;" in state
+    assert "EndpointPhysicalOpeningBoundary physicalOpeningBoundary;" in state
+    assert "CurrentPhysicalOpeningBoundary(" in read(POLICY_H)
+    reader = function_body(read(POLICY_CPP), "CurrentPhysicalOpeningBoundary(")
+    assert "state.physicalOpeningBoundary" in reader
+    assert "boundary.pressureUntil > now" in reader
+    assert "boundary.handoffUntil > result.retryUntil" in reader
     assert "canonicalVerdicts" not in reader
     assert "runtime" not in reader
     assert "Snapshot" not in header
@@ -73,6 +78,9 @@ def test_terminal_outcome_is_recorded_once_per_current_attempt():
     source = read(HEALTH_CPP)
     terminal = function_body(source, "RecordTerminalAttemptLocked(")
     failure = function_body(source, "void EndpointHealth::reportFailure(")
+    capacity_terminal = function_body(
+        read(ARBITER_CPP),
+        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(")
 
     assert "FailureFromStaleAttempt(report, state)" in terminal
     assert "attempt->second.terminalVerdict" in terminal
@@ -83,29 +91,12 @@ def test_terminal_outcome_is_recorded_once_per_current_attempt():
     assert "if (!terminal)" in failure
     assert failure.index("if (!terminal)") < failure.index(
         "state.lastFailure = report.reason;")
-    pressure = failure.split(
-        "if (terminal->finalAttemptTerminal", 1)[1].split(
-            "const auto runtimeGeneration", 1)[0]
-    assert "report.reason" in pressure
-    assert "FailureReason::ClientHelloSentNoServerHello" in pressure
-    assert "report.terminalAt" in pressure
-    assert "CooldownFor(" in pressure
-    assert "state.consecutiveFailures + 1" in pressure
-    assert "retryUntil > state.openingPressure.retryUntil" in pressure
-    assert "state.openingPressure = {" in pressure
-    for excluded in (
-            "DnsFailed",
-            "TcpConnectTimeout",
-            "TcpConnectedNoClientHelloWrite",
-            "TlsAlertAfterClientHello",
-            "ServerHelloHmacMismatch",
-            "ServerHelloOkNoAppData",
-            "ServerHelloOkNoMtprotoData",
-            "ConnectedNoMtprotoData",
-            "MtpReceiveTimeoutAfterData",
-            "AppDataRemoteClosed"):
-        assert f"FailureReason::{excluded}" not in pressure
-    assert source.count("state.openingPressure = {") == 1
+    assert "physicalOpeningBoundary" not in failure
+    assert "const auto exactOpening" in capacity_terminal
+    assert "MtProxy::MarkLiveSlotCapacityTerminal(" in capacity_terminal
+    assert capacity_terminal.index("if (!reduction.applied)") < (
+        capacity_terminal.index("MtProxy::ApplyPhysicalOpeningTerminal("))
+    assert "terminalAt" in capacity_terminal
     assert failure.index("if (!terminal)") < failure.index(
         "if (terminal->finalAttemptTerminal")
 
@@ -142,7 +133,7 @@ def test_relay_success_is_generation_scoped_and_main_proof_is_typed():
     assert "RetireRelayProof(state, identity)" in success
     assert "if (report.use == EndpointUse::Main)" in success
     assert "PruneEndpointOutcomesAfterSuccess(" in success
-    assert "openingPressure" not in success
+    assert "physicalOpeningBoundary" not in success
     assert "result.mainProof = MtProxy::CurrentMainRelayProof(" in context
     assert "runtimeGeneration" in context
 
