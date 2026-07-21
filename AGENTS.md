@@ -8,6 +8,14 @@ Focus exclusively on the application source code. Do not write tests, do not add
 
 Work is primarily focused on `Telegram/SourceFiles/mtproto/` (MTProto protocol layer: auth, sessions, transport, DC config, serialization). Expect most tasks to live there; changes elsewhere in the codebase are secondary and usually only support the mtproto work.
 
+## Agent Collaboration
+
+Work in the primary agent by default. Do not create sub-agents merely to follow a workflow, split implementation phases, review routine changes, or run checks that the primary agent can perform directly.
+
+Use sub-agents only when the user explicitly requests them or when several concrete, independent tasks materially benefit from parallel execution. Do not use skills or workflows that require delegation when delegation is unnecessary for the current task. If a sub-agent is used, keep its scope bounded and explain why it is needed.
+
+The `.agents/` directory is intentionally forbidden from version control. If an upstream merge, rebase, or another tool reintroduces tracked `.agents/` content, remove every such path from Git before completing the integration and preserve the root `/.agents/` ignore rule. If a local tool recreates an untracked copy, keep it ignored and never stage or commit it.
+
 ## Working from Codex on Windows + WSL
 
 This checkout may be opened in Codex Desktop through the Windows UNC path `\\wsl.localhost\{distro}\home\{user}\Telegram\tdesktop`, while the real Linux path is `/home/{user}/Telegram/tdesktop`. Treat it as a WSL/Linux checkout first, not as a native Windows checkout.
@@ -27,7 +35,6 @@ wsl.exe -d {distro} --cd /home/{user}/Telegram/tdesktop -- <command>
 - For WSL/Linux builds, use the Docker build entry point from the repository root: `Telegram/build/docker/centos_env/build_debug.sh`. The Docker daemon must be reachable from WSL; checking `docker info` is fine, but do not start a build unless the user asked for one.
 - Existing build outputs may be Linux binaries, for example `out/Debug/Telegram` as an ELF executable, not `Telegram.exe`. Verify the build tree before assuming which platform produced it.
 - Be careful with text file line endings. In a WSL/Linux checkout, files should remain LF-only unless the file already uses another convention. CRLF finishing applies only to native, non-WSL Windows runs/checkouts. Do not let PowerShell or Windows tools silently rewrite WSL files to CRLF. If a file becomes mixed, normalize it back to the convention appropriate for the current checkout, without adding a UTF-8 BOM.
-- When using the local `task-think` skill from this WSL checkout, keep `.ai/...` artifacts and edited project text files LF-only. Treat the skill's Windows text-normalization phase as not applicable to WSL, except to record that line endings were checked and kept LF/no-BOM. Run CRLF normalization for `task-think` only in a native, non-WSL Windows checkout.
 
 ## Build System Structure
 
