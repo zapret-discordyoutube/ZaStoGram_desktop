@@ -2969,8 +2969,12 @@ void EndpointAdmissionArbiter::Private::markCapacityTerminal(
 		if (!reduction.applied) {
 			return;
 		}
+		const auto capacityLimitLearned = reduction.pool.learnedLimit
+			!= currentPool.learnedLimit;
 		pool->second = reduction.pool;
-		if (exactOpening && state != end(_storage.states)) {
+		if (exactOpening
+			&& !capacityLimitLearned
+			&& state != end(_storage.states)) {
 			MtProxy::ApplyPhysicalOpeningTerminal(
 				state->second,
 				attempt,
