@@ -450,14 +450,21 @@ struct HistoryMessageReplyMarkup
 : RuntimeComponent<HistoryMessageReplyMarkup, HistoryItem> {
 	using Button = HistoryMessageMarkupButton;
 
-	void createForwarded(const HistoryMessageReplyMarkup &original);
-	void updateData(HistoryMessageMarkupData &&markup);
-	void updateSuggestControls(SuggestionActions actions);
+	void createForwarded(
+		not_null<HistoryItem*> item,
+		const HistoryMessageReplyMarkup &original);
+	void updateData(
+		not_null<HistoryItem*> item,
+		HistoryMessageMarkupData &&markup);
+	void updateSuggestControls(
+		not_null<HistoryItem*> item,
+		SuggestionActions actions);
 
 	[[nodiscard]] bool hiddenBy(Data::Media *media) const;
 
 	HistoryMessageMarkupData data;
 	std::unique_ptr<ReplyKeyboard> inlineKeyboard;
+	uint64 markupRevision = 0;
 
 };
 
@@ -486,6 +493,7 @@ public:
 	// Note: it is possible that we will point to the different button
 	// than the one was used when constructing the handler, but not a big deal.
 	const HistoryMessageMarkupButton *getButton() const;
+	[[nodiscard]] bool loading() const;
 
 	const HistoryMessageMarkupButton *getUrlButton() const;
 

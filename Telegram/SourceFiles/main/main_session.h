@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 class ApiWrap;
 
 namespace Api {
+class BotCallbackManager;
 class Updates;
 class SendProgressManager;
 } // namespace Api
@@ -188,6 +189,9 @@ public:
 	[[nodiscard]] Api::SendProgressManager &sendProgressManager() const {
 		return *_sendProgressManager;
 	}
+	[[nodiscard]] Api::BotCallbackManager &botCallbacks() const {
+		return *_botCallbacks;
+	}
 	[[nodiscard]] Storage::DownloadManagerMtproto &downloader() const {
 		return *_downloader;
 	}
@@ -316,6 +320,7 @@ private:
 	// _data depends on _downloader / _uploader.
 	const std::unique_ptr<Data::Session> _data;
 	const not_null<UserData*> _user;
+	const std::unique_ptr<Api::BotCallbackManager> _botCallbacks;
 
 	// _emojiStickersPack depends on _data.
 	const std::unique_ptr<Stickers::EmojiPack> _emojiStickersPack;

@@ -121,6 +121,9 @@ HistoryMessageMarkupButton *HistoryMessageMarkupButton::Get(
 		FullMsgId itemId,
 		int row,
 		int column) {
+	if (row < 0 || column < 0) {
+		return nullptr;
+	}
 	if (const auto item = owner->message(itemId)) {
 		if (const auto markup = item->Get<HistoryMessageReplyMarkup>()) {
 			if (row < markup->data.rows.size()) {

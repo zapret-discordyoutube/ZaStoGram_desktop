@@ -7,10 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "main/main_session.h"
 
-#include "apiwrap.h"
+#include "api/api_bot.h"
 #include "api/api_peer_colors.h"
 #include "api/api_updates.h"
 #include "api/api_user_privacy.h"
+#include "apiwrap.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session_settings.h"
@@ -112,6 +113,7 @@ Session::Session(
 , _storage(std::make_unique<Storage::Facade>())
 , _data(std::make_unique<Data::Session>(this))
 , _user(_data->processUser(user))
+, _botCallbacks(std::make_unique<Api::BotCallbackManager>(this))
 , _emojiStickersPack(std::make_unique<Stickers::EmojiPack>(this))
 , _diceStickersPacks(std::make_unique<Stickers::DicePacks>(this))
 , _giftBoxStickersPacks(std::make_unique<Stickers::GiftBoxPack>(this))
@@ -306,12 +308,14 @@ QByteArray Session::validTmpPassword() const {
 // Can be called only right before ~Session.
 void Session::finishLogout() {
 	unlockTerms();
+	botCallbacks().finishSession();
 	data().clear();
 	data().clearLocalStorage();
 }
 
 Session::~Session() {
 	unlockTerms();
+	botCallbacks().finishSession();
 	data().clear();
 	ClickHandler::clearActive();
 	ClickHandler::unpressed();

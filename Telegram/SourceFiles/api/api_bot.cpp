@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_cloud_password.h"
 #include "api/api_send_progress.h"
 #include "api/api_suggest_post.h"
+#include "base/timer.h"
 #include "boxes/peers/choose_peer_box.h"
 #include "boxes/peers/create_managed_bot_box.h"
 #include "boxes/passcode_box.h"
@@ -49,44 +50,335 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QClipboard>
 
 namespace Api {
+
+class BotCallbackManager::Private final {
+public:
+	explicit Private(not_null<Main::Session*> session);
+
+	[[nodiscard]] uint64 markupUpdated(FullMsgId messageId);
+	[[nodiscard]] uint64 start(
+		BotCallbackButton button,
+		BotCallbackPhase phase);
+	[[nodiscard]] bool requestSent(
+		uint64 operationId,
+		mtpRequestId requestId);
+	[[nodiscard]] bool requestFinished(uint64 operationId);
+	[[nodiscard]] bool beginSending(uint64 operationId);
+	[[nodiscard]] bool buttonLoading(
+		const BotCallbackButton &button) const;
+	[[nodiscard]] bool operationActive(uint64 operationId) const;
+	[[nodiscard]] std::optional<BotCallbackOperation> complete(
+		uint64 operationId);
+	[[nodiscard]] std::optional<BotCallbackOperation> fail(
+		uint64 operationId);
+	void cancel(uint64 operationId);
+	void detachMessage(FullMsgId messageId);
+	void finishSession();
+
+private:
+	static constexpr auto kVisualTimeout = 30 * crl::time(1000);
+
+	void repaint(FullMsgId messageId) const;
+	void repaint(const std::vector<FullMsgId> &messageIds) const;
+	void scheduleTimeout();
+	void timeout();
+
+	const not_null<Main::Session*> _session;
+	BotCallbackState _state;
+	base::Timer _timer;
+	rpl::lifetime _lifetime;
+
+};
+
+BotCallbackManager::Private::Private(not_null<Main::Session*> session)
+: _session(session)
+, _timer([=] { timeout(); }) {
+	_session->data().itemRemoved(
+	) | rpl::on_next([=](not_null<const HistoryItem*> item) {
+		detachMessage(item->fullId());
+	}, _lifetime);
+	_session->data().sessionDataAboutToBeCleared(
+	) | rpl::on_next([=] {
+		finishSession();
+	}, _lifetime);
+}
+
+uint64 BotCallbackManager::Private::markupUpdated(FullMsgId messageId) {
+	const auto result = _state.nextMarkupRevision(messageId);
+	repaint(messageId);
+	scheduleTimeout();
+	return result;
+}
+
+uint64 BotCallbackManager::Private::start(
+		BotCallbackButton button,
+		BotCallbackPhase phase) {
+	const auto messageId = button.messageId;
+	const auto result = _state.start(
+		std::move(button),
+		phase,
+		crl::now() + kVisualTimeout);
+	if (result) {
+		repaint(messageId);
+		scheduleTimeout();
+	}
+	return result;
+}
+
+bool BotCallbackManager::Private::requestSent(
+		uint64 operationId,
+		mtpRequestId requestId) {
+	return _state.requestSent(operationId, requestId);
+}
+
+bool BotCallbackManager::Private::requestFinished(uint64 operationId) {
+	return _state.requestFinished(operationId);
+}
+
+bool BotCallbackManager::Private::beginSending(uint64 operationId) {
+	const auto operation = _state.lookup(operationId);
+	if (!operation) {
+		return false;
+	}
+	const auto messageId = operation->button.messageId;
+	if (!_state.beginSending(
+		operationId,
+		crl::now() + kVisualTimeout)) {
+		return false;
+	}
+	repaint(messageId);
+	scheduleTimeout();
+	return true;
+}
+
+bool BotCallbackManager::Private::buttonLoading(
+		const BotCallbackButton &button) const {
+	return _state.buttonLoading(button);
+}
+
+bool BotCallbackManager::Private::operationActive(
+		uint64 operationId) const {
+	return _state.operationActive(operationId);
+}
+
+std::optional<BotCallbackOperation> BotCallbackManager::Private::complete(
+		uint64 operationId) {
+	const auto result = _state.complete(operationId);
+	if (result) {
+		repaint(result->button.messageId);
+		scheduleTimeout();
+	}
+	return result;
+}
+
+std::optional<BotCallbackOperation> BotCallbackManager::Private::fail(
+		uint64 operationId) {
+	const auto result = _state.fail(operationId);
+	if (result) {
+		repaint(result->button.messageId);
+		scheduleTimeout();
+	}
+	return result;
+}
+
+void BotCallbackManager::Private::cancel(uint64 operationId) {
+	const auto operation = _state.lookup(operationId);
+	if (!operation) {
+		return;
+	}
+	const auto messageId = operation->button.messageId;
+	if (_state.cancel(operationId)) {
+		repaint(messageId);
+		scheduleTimeout();
+	}
+}
+
+void BotCallbackManager::Private::detachMessage(FullMsgId messageId) {
+	if (_state.detachMessage(messageId)) {
+		repaint(messageId);
+		scheduleTimeout();
+	}
+}
+
+void BotCallbackManager::Private::finishSession() {
+	_timer.cancel();
+	repaint(_state.clear());
+}
+
+void BotCallbackManager::Private::repaint(FullMsgId messageId) const {
+	if (const auto item = _session->data().message(messageId)) {
+		item->history()->owner().requestItemRepaint(item);
+	}
+}
+
+void BotCallbackManager::Private::repaint(
+		const std::vector<FullMsgId> &messageIds) const {
+	for (const auto &messageId : messageIds) {
+		repaint(messageId);
+	}
+}
+
+void BotCallbackManager::Private::scheduleTimeout() {
+	_timer.cancel();
+	if (const auto deadline = _state.nextVisualDeadline()) {
+		_timer.callOnce(std::max(crl::time(0), *deadline - crl::now()));
+	}
+}
+
+void BotCallbackManager::Private::timeout() {
+	repaint(_state.timeout(crl::now()));
+	scheduleTimeout();
+}
+
+BotCallbackManager::BotCallbackManager(not_null<Main::Session*> session)
+: _private(std::make_unique<Private>(session)) {
+}
+
+BotCallbackManager::~BotCallbackManager() = default;
+
+uint64 BotCallbackManager::markupUpdated(FullMsgId messageId) {
+	return _private->markupUpdated(messageId);
+}
+
+uint64 BotCallbackManager::start(
+		BotCallbackButton button,
+		BotCallbackPhase phase) {
+	return _private->start(std::move(button), phase);
+}
+
+bool BotCallbackManager::requestSent(
+		uint64 operationId,
+		mtpRequestId requestId) {
+	return _private->requestSent(operationId, requestId);
+}
+
+bool BotCallbackManager::requestFinished(uint64 operationId) {
+	return _private->requestFinished(operationId);
+}
+
+bool BotCallbackManager::beginSending(uint64 operationId) {
+	return _private->beginSending(operationId);
+}
+
+bool BotCallbackManager::buttonLoading(
+		const BotCallbackButton &button) const {
+	return _private->buttonLoading(button);
+}
+
+bool BotCallbackManager::operationActive(uint64 operationId) const {
+	return _private->operationActive(operationId);
+}
+
+std::optional<BotCallbackOperation> BotCallbackManager::complete(
+		uint64 operationId) {
+	return _private->complete(operationId);
+}
+
+std::optional<BotCallbackOperation> BotCallbackManager::fail(
+		uint64 operationId) {
+	return _private->fail(operationId);
+}
+
+void BotCallbackManager::cancel(uint64 operationId) {
+	_private->cancel(operationId);
+}
+
+void BotCallbackManager::detachMessage(FullMsgId messageId) {
+	_private->detachMessage(messageId);
+}
+
+void BotCallbackManager::finishSession() {
+	_private->finishSession();
+}
+
 namespace {
 
-void SendBotCallbackData(
-		not_null<Window::SessionController*> controller,
+[[nodiscard]] std::optional<BotCallbackButtonType> CallbackButtonType(
+		HistoryMessageMarkupButton::Type type) {
+	using Type = HistoryMessageMarkupButton::Type;
+	switch (type) {
+	case Type::Callback:
+		return BotCallbackButtonType::Callback;
+	case Type::CallbackWithPassword:
+		return BotCallbackButtonType::CallbackWithPassword;
+	case Type::Game:
+		return BotCallbackButtonType::Game;
+	default:
+		return std::nullopt;
+	}
+}
+
+[[nodiscard]] std::optional<BotCallbackButton> ResolveCallbackButton(
 		not_null<HistoryItem*> item,
 		int row,
-		int column,
+		int column) {
+	const auto markup = item->Get<HistoryMessageReplyMarkup>();
+	if (!markup) {
+		return std::nullopt;
+	}
+	const auto button = HistoryMessageMarkupButton::Get(
+		&item->history()->owner(),
+		item->fullId(),
+		row,
+		column);
+	if (!button) {
+		return std::nullopt;
+	}
+	const auto type = CallbackButtonType(button->type);
+	if (!type) {
+		return std::nullopt;
+	}
+	return BotCallbackButton{
+		.messageId = item->fullId(),
+		.markupRevision = markup->markupRevision,
+		.row = row,
+		.column = column,
+		.type = *type,
+		.data = button->data,
+	};
+}
+
+[[nodiscard]] bool CallbackButtonMatches(
+		not_null<HistoryItem*> item,
+		const BotCallbackButton &button) {
+	const auto current = ResolveCallbackButton(
+		item,
+		button.row,
+		button.column);
+	return current && *current == button;
+}
+
+using BotCallbackErrorHandler = Fn<bool(const QString &)>;
+
+void SendBotCallbackRequest(
+		not_null<Window::SessionController*> controller,
+		not_null<HistoryItem*> item,
+		BotCallbackButton button,
+		uint64 operationId,
 		std::optional<Core::CloudPasswordResult> password,
 		Fn<void()> done = nullptr,
-		Fn<void(const QString &)> handleError = nullptr) {
+		BotCallbackErrorHandler handleError = nullptr,
+		Fn<bool()> operationCurrent = nullptr) {
+	const auto session = &item->history()->session();
+	const auto callbacks = &session->botCallbacks();
 	if (!item->isRegular() && !item->isEphemeral()) {
+		[[maybe_unused]] const auto failed = callbacks->fail(operationId);
 		return;
 	}
 	const auto history = item->history();
-	const auto session = &history->session();
 	const auto owner = &history->owner();
 	const auto api = &session->api();
 	const auto bot = item->getMessageBot();
-	const auto fullId = item->fullId();
-	const auto getButton = [=] {
-		return HistoryMessageMarkupButton::Get(owner, fullId, row, column);
-	};
-	const auto button = getButton();
-	if (!button || button->requestId) {
-		return;
-	}
-
-	using ButtonType = HistoryMessageMarkupButton::Type;
-	const auto isGame = (button->type == ButtonType::Game);
+	const auto fullId = button.messageId;
+	const auto isGame = (button.type == BotCallbackButtonType::Game);
 
 	auto flags = MTPmessages_GetBotCallbackAnswer::Flags(0);
-	QByteArray sendData;
+	auto sendData = QByteArray();
 	if (isGame) {
 		flags |= MTPmessages_GetBotCallbackAnswer::Flag::f_game;
-	} else if (button->type == ButtonType::Callback
-		|| button->type == ButtonType::CallbackWithPassword) {
+	} else {
 		flags |= MTPmessages_GetBotCallbackAnswer::Flag::f_data;
-		sendData = button->data;
+		sendData = button.data;
 	}
 	const auto withPassword = password.has_value();
 	if (withPassword) {
@@ -96,6 +388,7 @@ void SendBotCallbackData(
 		? session->ephemeralMessages().lookupId(item)
 		: 0;
 	if (item->isEphemeral() && (!ephemeralId || isGame || withPassword)) {
+		[[maybe_unused]] const auto failed = callbacks->fail(operationId);
 		return;
 	}
 	if (ephemeralId) {
@@ -108,6 +401,10 @@ void SendBotCallbackData(
 	const auto show = controller->uiShow();
 	const auto handleDone = [=](
 			const MTPmessages_BotCallbackAnswer &result) {
+		const auto operation = callbacks->complete(operationId);
+		if (!operation) {
+			return;
+		}
 		const auto guard = gsl::finally([&] {
 			if (done) {
 				done();
@@ -117,16 +414,14 @@ void SendBotCallbackData(
 		if (!item) {
 			return;
 		}
-		if (const auto button = getButton()) {
-			button->requestId = 0;
-			owner->requestItemRepaint(item);
-		}
 		const auto &data = result.data();
 		const auto message = data.vmessage()
 			? qs(*data.vmessage())
 			: QString();
 		const auto link = data.vurl() ? qs(*data.vurl()) : QString();
 		const auto showAlert = data.is_alert();
+		const auto closePassword = withPassword
+			&& (!operationCurrent || operationCurrent());
 
 		if (!message.isEmpty()) {
 			if (!show->valid()) {
@@ -134,7 +429,7 @@ void SendBotCallbackData(
 			} else if (showAlert) {
 				show->showBox(Ui::MakeInformBox(message));
 			} else {
-				if (withPassword) {
+				if (closePassword) {
 					show->hideLayer();
 				}
 				show->showToast(message);
@@ -154,27 +449,24 @@ void SendBotCallbackData(
 			session->sendProgressManager().update(
 				history,
 				Api::SendProgressType::PlayGame);
-		} else if (withPassword) {
+		} else if (closePassword) {
 			show->hideLayer();
 		}
 	};
 	const auto handleFail = [=](const MTP::Error &error) {
-		const auto guard = gsl::finally([&] {
-			if (handleError) {
-				handleError(error.type());
-			}
-		});
-		const auto item = owner->message(fullId);
-		if (!item) {
+		const auto current = operationCurrent
+			? operationCurrent()
+			: callbacks->operationActive(operationId);
+		if (handleError
+			&& current
+			&& handleError(error.type())) {
+			[[maybe_unused]] const auto finished
+				= callbacks->requestFinished(operationId);
 			return;
 		}
-		// Show error?
-		if (const auto button = getButton()) {
-			button->requestId = 0;
-			owner->requestItemRepaint(item);
-		}
+		[[maybe_unused]] const auto failed = callbacks->fail(operationId);
 	};
-	button->requestId = ephemeralId
+	const auto requestId = ephemeralId
 		? api->request(MTPephemeral_GetCallbackAnswer(
 			MTP_flags(sendData.isEmpty()
 				? MTPephemeral_GetCallbackAnswer::Flag(0)
@@ -190,6 +482,9 @@ void SendBotCallbackData(
 			MTP_bytes(sendData),
 			password ? password->result : MTP_inputCheckPasswordEmpty()
 		)).done(handleDone).fail(handleFail).send();
+	[[maybe_unused]] const auto requestStored = callbacks->requestSent(
+		operationId,
+		requestId);
 
 	session->changes().messageUpdated(
 		item,
@@ -210,7 +505,26 @@ void SendBotCallbackData(
 		not_null<HistoryItem*> item,
 		int row,
 		int column) {
-	SendBotCallbackData(controller, item, row, column, std::nullopt);
+	if (!item->isRegular() && !item->isEphemeral()) {
+		return;
+	}
+	const auto button = ResolveCallbackButton(item, row, column);
+	if (!button) {
+		return;
+	}
+	const auto callbacks = &item->history()->session().botCallbacks();
+	const auto operationId = callbacks->start(
+		*button,
+		BotCallbackPhase::Sending);
+	if (!operationId) {
+		return;
+	}
+	SendBotCallbackRequest(
+		controller,
+		item,
+		*button,
+		operationId,
+		std::nullopt);
 }
 
 void SendBotCallbackDataWithPassword(
@@ -226,22 +540,37 @@ void SendBotCallbackDataWithPassword(
 	const auto owner = &history->owner();
 	const auto api = &session->api();
 	const auto fullId = item->fullId();
-	const auto getButton = [=] {
-		return HistoryMessageMarkupButton::Get(
-			owner,
-			fullId,
-			row,
-			column);
-	};
-	const auto button = getButton();
-	if (!button || button->requestId) {
+	const auto button = ResolveCallbackButton(item, row, column);
+	if (!button
+		|| button->type != BotCallbackButtonType::CallbackWithPassword) {
 		return;
 	}
+	const auto callbacks = &session->botCallbacks();
+	const auto operationId = callbacks->start(
+		*button,
+		BotCallbackPhase::PreparingPassword);
+	if (!operationId) {
+		return;
+	}
+	struct PasswordState {
+		BotCallbackButton button;
+		uint64 operationId = 0;
+		rpl::lifetime cloudStateLifetime;
+	};
+	const auto state = std::make_shared<PasswordState>();
+	state->button = *button;
+	state->operationId = operationId;
 	api->cloudPassword().reload();
 	const auto weak = base::make_weak(controller);
 	const auto show = controller->uiShow();
-	SendBotCallbackData(controller, item, row, column, {}, {}, [=](
+	SendBotCallbackRequest(controller, item, *button, operationId, {}, {}, [=](
 			const QString &error) {
+		const auto current = owner->message(fullId);
+		if (!current
+			|| !callbacks->operationActive(state->operationId)
+			|| !CallbackButtonMatches(current, state->button)) {
+			return false;
+		}
 		auto box = PrePasswordErrorBox(
 			error,
 			session,
@@ -250,24 +579,21 @@ void SendBotCallbackDataWithPassword(
 				tr::marked));
 		if (box) {
 			show->showBox(std::move(box), Ui::LayerOption::CloseOther);
+			return false;
 		} else {
-			auto lifetime = std::make_shared<rpl::lifetime>();
-			button->requestId = -1;
 			api->cloudPassword().state(
 			) | rpl::take(
 				1
-			) | rpl::on_next([=](const Core::CloudPasswordState &state) mutable {
-				if (lifetime) {
-					base::take(lifetime)->destroy();
-				}
-				if (const auto button = getButton()) {
-					if (button->requestId == -1) {
-						button->requestId = 0;
-					}
-				} else {
+			) | rpl::on_next([=](const Core::CloudPasswordState &cloudState) {
+				state->cloudStateLifetime.destroy();
+				const auto item = owner->message(fullId);
+				if (!item
+					|| !callbacks->operationActive(state->operationId)
+					|| !CallbackButtonMatches(item, state->button)) {
+					callbacks->cancel(state->operationId);
 					return;
 				}
-				auto fields = PasscodeBox::CloudFields::From(state);
+				auto fields = PasscodeBox::CloudFields::From(cloudState);
 				fields.customTitle = tr::lng_bots_password_confirm_title();
 				fields.customDescription
 					= tr::lng_bots_password_confirm_description(tr::now);
@@ -275,33 +601,63 @@ void SendBotCallbackDataWithPassword(
 				fields.customCheckCallback = [=](
 						const Core::CloudPasswordResult &result,
 						base::weak_qptr<PasscodeBox> box) {
-					if (const auto button = getButton()) {
-						if (button->requestId) {
+					const auto item = owner->message(fullId);
+					if (!item || !CallbackButtonMatches(item, state->button)) {
+						callbacks->cancel(state->operationId);
+						return;
+					}
+					auto operationId = state->operationId;
+					if (callbacks->operationActive(operationId)) {
+						if (!callbacks->beginSending(operationId)) {
 							return;
 						}
 					} else {
-						return;
-					}
-					if (const auto item = owner->message(fullId)) {
-						const auto strongController = weak.get();
-						if (!strongController) {
+						operationId = callbacks->start(
+							state->button,
+							BotCallbackPhase::Sending);
+						if (!operationId) {
 							return;
 						}
-						SendBotCallbackData(strongController, item, row, column, result, [=] {
-							if (box) {
+						state->operationId = operationId;
+					}
+					const auto strongController = weak.get();
+					if (!strongController) {
+						callbacks->cancel(operationId);
+						return;
+					}
+					SendBotCallbackRequest(
+						strongController,
+						item,
+						state->button,
+						operationId,
+						result,
+						[=] {
+							if (box
+								&& state->operationId == operationId) {
 								box->closeBox();
 							}
-						}, [=](const QString &error) {
+						},
+						[=](const QString &error) {
 							if (box) {
 								box->handleCustomCheckError(error);
 							}
+							return false;
+						},
+						[=] {
+							return box
+								&& state->operationId == operationId;
 						});
-					}
 				};
 				auto object = Box<PasscodeBox>(session, fields);
+				const auto passwordBox = object.data();
+				passwordBox->boxClosing(
+				) | rpl::on_next([=] {
+					callbacks->cancel(state->operationId);
+				}, passwordBox->lifetime());
 				show->showBox(std::move(object), Ui::LayerOption::CloseOther);
-			}, *lifetime);
+			}, state->cloudStateLifetime);
 		}
+		return true;
 	});
 }
 

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_item.h"
 
+#include "api/api_bot.h"
 #include "api/api_premium.h"
 #include "api/api_sensitive_content.h"
 #include "api/api_transcribes.h"
@@ -497,6 +498,7 @@ HistoryItem::HistoryItem(
 		}
 		_flags |= MessageFlag::HasReplyMarkup;
 		Get<HistoryMessageReplyMarkup>()->updateData(
+			this,
 			UnsupportedMessageMarkup());
 	} else if (checked == MediaCheckResult::Empty) {
 		AddComponents(HistoryServiceData::Bit());
@@ -1261,7 +1263,9 @@ SuggestionActions HistoryItem::computeSuggestionActions(
 void HistoryItem::updateSuggestControls(
 		const HistoryMessageSuggestion *suggest) {
 	if (const auto markup = Get<HistoryMessageReplyMarkup>()) {
-		markup->updateSuggestControls(computeSuggestionActions(suggest));
+		markup->updateSuggestControls(
+			this,
+			computeSuggestionActions(suggest));
 	}
 }
 
@@ -1275,7 +1279,7 @@ void HistoryItem::setReplyMarkup(
 			AddComponents(HistoryMessageReplyMarkup::Bit());
 		}
 		if (const auto markup = Get<HistoryMessageReplyMarkup>()) {
-			markup->updateSuggestControls(actions);
+			markup->updateSuggestControls(this, actions);
 		}
 		history()->owner().requestItemResize(this);
 		history()->session().changes().messageUpdated(
@@ -1286,6 +1290,7 @@ void HistoryItem::setReplyMarkup(
 		if (_flags & MessageFlag::HasReplyMarkup) {
 			_flags &= ~MessageFlag::HasReplyMarkup;
 			if (Has<HistoryMessageReplyMarkup>()) {
+				history()->session().botCallbacks().detachMessage(fullId());
 				RemoveComponents(HistoryMessageReplyMarkup::Bit());
 			}
 			requestUpdate();
@@ -1298,6 +1303,7 @@ void HistoryItem::setReplyMarkup(
 	if (markup.isTrivial()) {
 		bool changed = false;
 		if (Has<HistoryMessageReplyMarkup>()) {
+			history()->session().botCallbacks().detachMessage(fullId());
 			RemoveComponents(HistoryMessageReplyMarkup::Bit());
 			changed = true;
 		}
@@ -1315,7 +1321,9 @@ void HistoryItem::setReplyMarkup(
 		if (!Has<HistoryMessageReplyMarkup>()) {
 			AddComponents(HistoryMessageReplyMarkup::Bit());
 		}
-		Get<HistoryMessageReplyMarkup>()->updateData(std::move(markup));
+		Get<HistoryMessageReplyMarkup>()->updateData(
+			this,
+			std::move(markup));
 		requestUpdate();
 	}
 }
@@ -4045,12 +4053,14 @@ void HistoryItem::applyTTL(TimeId destroyAt) {
 
 void HistoryItem::replaceBuyWithReceiptInMarkup() {
 	if (const auto markup = inlineReplyMarkup()) {
+		auto changed = false;
 		for (auto &row : markup->data.rows) {
 			for (auto &button : row) {
 				if (button.type == HistoryMessageMarkupButton::Type::Buy) {
 					const auto receipt = tr::lng_payments_receipt_button(tr::now);
 					if (button.text != receipt) {
 						button.text = receipt;
+						changed = true;
 						if (markup->inlineKeyboard) {
 							markup->inlineKeyboard = nullptr;
 							_history->owner().requestItemResize(this);
@@ -4058,6 +4068,10 @@ void HistoryItem::replaceBuyWithReceiptInMarkup() {
 					}
 				}
 			}
+		}
+		if (changed) {
+			markup->markupRevision
+				= history()->session().botCallbacks().markupUpdated(fullId());
 		}
 	}
 }
@@ -4805,9 +4819,9 @@ void HistoryItem::createComponents(CreateConfig &&config) {
 	setupForwardedComponent(config);
 	if (const auto markup = Get<HistoryMessageReplyMarkup>()) {
 		if (!config.markup.isTrivial()) {
-			markup->updateData(std::move(config.markup));
+			markup->updateData(this, std::move(config.markup));
 		} else if (config.inlineMarkup) {
-			markup->createForwarded(*config.inlineMarkup);
+			markup->createForwarded(this, *config.inlineMarkup);
 		}
 		if (markup->data.flags & ReplyMarkupFlag::HasSwitchInlineButton) {
 			_flags |= MessageFlag::HasSwitchInlineButton;
@@ -5542,7 +5556,7 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 
 			if (actions != SuggestionActions::None) {
 				const auto markup = Get<HistoryMessageReplyMarkup>();
-				markup->updateSuggestControls(actions);
+				markup->updateSuggestControls(this, actions);
 			}
 		}
 	} else if (type == mtpc_messageActionStarGiftPurchaseOfferDeclined) {
@@ -5576,7 +5590,7 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 		request->expiresAt = expiresAt;
 		if (actions != SuggestionActions::None) {
 			const auto markup = Get<HistoryMessageReplyMarkup>();
-			markup->updateSuggestControls(actions);
+			markup->updateSuggestControls(this, actions);
 		}
 	} else if (type == mtpc_messageActionChangeCommunity) {
 		const auto &data = action.c_messageActionChangeCommunity();

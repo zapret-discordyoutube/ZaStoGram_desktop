@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_item_components.h"
 
+#include "api/api_bot.h"
 #include "api/api_text_entities.h"
 #include "base/qt/qt_key_modifiers.h"
 #include "base/options.h"
@@ -51,7 +52,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_todo_list.h"
 #include "main/main_session.h"
 #include "window/window_session_controller.h"
-#include "api/api_bot.h"
 #include "support/support_helper.h"
 #include "styles/style_boxes.h"
 #include "styles/style_chat.h"
@@ -755,6 +755,39 @@ const HistoryMessageMarkupButton *ReplyMarkupClickHandler::getButton() const {
 	return HistoryMessageMarkupButton::Get(_owner, _itemId, _row, _column);
 }
 
+bool ReplyMarkupClickHandler::loading() const {
+	const auto item = _owner->message(_itemId);
+	const auto markup = item
+		? item->Get<HistoryMessageReplyMarkup>()
+		: nullptr;
+	const auto button = markup ? getButton() : nullptr;
+	if (!button) {
+		return false;
+	}
+	using Type = HistoryMessageMarkupButton::Type;
+	const auto type = [&]() -> std::optional<Api::BotCallbackButtonType> {
+		if (button->type == Type::Callback) {
+			return Api::BotCallbackButtonType::Callback;
+		} else if (button->type == Type::CallbackWithPassword) {
+			return Api::BotCallbackButtonType::CallbackWithPassword;
+		} else if (button->type == Type::Game) {
+			return Api::BotCallbackButtonType::Game;
+		}
+		return std::nullopt;
+	}();
+	if (!type) {
+		return false;
+	}
+	return _owner->session().botCallbacks().buttonLoading({
+		.messageId = _itemId,
+		.markupRevision = markup->markupRevision,
+		.row = _row,
+		.column = _column,
+		.type = *type,
+		.data = button->data,
+	});
+}
+
 auto ReplyMarkupClickHandler::getUrlButton() const
 -> const HistoryMessageMarkupButton* {
 	if (const auto button = getButton()) {
@@ -1263,16 +1296,14 @@ void ReplyKeyboard::Style::paintButton(
 	if (button.type == HistoryMessageMarkupButton::Type::CallbackWithPassword
 		|| button.type == HistoryMessageMarkupButton::Type::Callback
 		|| button.type == HistoryMessageMarkupButton::Type::Game) {
-		if (const auto data = button.link->getButton()) {
-			if (data->requestId) {
-				paintButtonLoading(
-					p,
-					st,
-					rect,
-					button.color,
-					outerWidth,
-					rounding);
-			}
+		if (button.link->loading()) {
+			paintButtonLoading(
+				p,
+				st,
+				rect,
+				button.color,
+				outerWidth,
+				rounding);
 		}
 	}
 
@@ -1307,16 +1338,22 @@ void ReplyKeyboard::Style::paintButton(
 }
 
 void HistoryMessageReplyMarkup::createForwarded(
+		not_null<HistoryItem*> item,
 		const HistoryMessageReplyMarkup &original) {
 	Expects(!inlineKeyboard);
 
 	data.fillForwardedData(original.data);
+	markupRevision = item->history()->session().botCallbacks().markupUpdated(
+		item->fullId());
 }
 
 void HistoryMessageReplyMarkup::updateData(
+		not_null<HistoryItem*> item,
 		HistoryMessageMarkupData &&markup) {
 	data = std::move(markup);
 	inlineKeyboard = nullptr;
+	markupRevision = item->history()->session().botCallbacks().markupUpdated(
+		item->fullId());
 }
 
 bool HistoryMessageReplyMarkup::hiddenBy(Data::Media *media) const {
@@ -1332,7 +1369,9 @@ bool HistoryMessageReplyMarkup::hiddenBy(Data::Media *media) const {
 }
 
 void HistoryMessageReplyMarkup::updateSuggestControls(
+		not_null<HistoryItem*> item,
 		SuggestionActions actions) {
+	const auto previous = data;
 	if (actions == SuggestionActions::AcceptAndDecline
 		|| actions == SuggestionActions::GiftOfferActions
 		|| actions == SuggestionActions::NoForwardsRequest) {
@@ -1453,7 +1492,12 @@ void HistoryMessageReplyMarkup::updateSuggestControls(
 		}
 	}
 
-	inlineKeyboard = nullptr;
+	if (data != previous) {
+		inlineKeyboard = nullptr;
+		markupRevision
+			= item->history()->session().botCallbacks().markupUpdated(
+				item->fullId());
+	}
 }
 
 HistoryMessageLogEntryOriginal::HistoryMessageLogEntryOriginal() = default;

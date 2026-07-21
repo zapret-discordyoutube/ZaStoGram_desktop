@@ -43,6 +43,34 @@ add_dependencies(Telegram test_text)
 
 target_prepare_qrc(test_text)
 
+add_executable(test_bot_callback_state WIN32)
+init_target(test_bot_callback_state "(tests)")
+
+target_include_directories(test_bot_callback_state PRIVATE ${src_loc})
+
+nice_target_sources(test_bot_callback_state ${src_loc}
+PRIVATE
+    api/api_bot_callback_state.cpp
+    api/api_bot_callback_state.h
+    tests/test_bot_callback_state.cpp
+)
+
+target_link_libraries(test_bot_callback_state
+PRIVATE
+    tdesktop::td_scheme
+    desktop-app::lib_base
+    desktop-app::lib_crl
+    desktop-app::lib_ui
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_bot_callback_state
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_dependencies(Telegram test_bot_callback_state)
+
 add_executable(test_mtproxy_client_hello WIN32)
 init_target(test_mtproxy_client_hello "(tests)")
 

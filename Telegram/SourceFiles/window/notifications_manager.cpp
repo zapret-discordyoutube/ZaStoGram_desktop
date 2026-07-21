@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/notifications_manager.h"
 
+#include "api/api_bot.h"
 #include "base/options.h"
 #include "base/platform/base_platform_info.h"
 #include "base/qt/qt_key_modifiers.h"
@@ -1484,54 +1485,50 @@ void Manager::notificationActionActivated(
 	}
 	const auto owner = &history->owner();
 	const auto fullId = item->fullId();
+	const auto markup = item->Get<HistoryMessageReplyMarkup>();
 	const auto button = HistoryMessageMarkupButton::Get(
 		owner,
 		fullId,
 		row,
 		column);
-	if (!button || button->requestId) {
+	if (!markup || !button) {
 		return;
 	}
 	using ButtonType = HistoryMessageMarkupButton::Type;
 	if (button->type != ButtonType::Callback) {
 		return;
 	}
+	const auto callbacks = &session->botCallbacks();
+	const auto operationId = callbacks->start({
+		.messageId = fullId,
+		.markupRevision = markup->markupRevision,
+		.row = row,
+		.column = column,
+		.type = Api::BotCallbackButtonType::Callback,
+		.data = button->data,
+	}, Api::BotCallbackPhase::Sending);
+	if (!operationId) {
+		return;
+	}
 	auto flags = MTPmessages_GetBotCallbackAnswer::Flags(0);
 	flags |= MTPmessages_GetBotCallbackAnswer::Flag::f_data;
 	const auto sendData = button->data;
-	button->requestId = session->api().request(
+	const auto requestId = session->api().request(
 		MTPmessages_GetBotCallbackAnswer(
 			MTP_flags(flags),
 			history->peer->input(),
 			MTP_int(item->id),
 			MTP_bytes(sendData),
 			MTP_inputCheckPasswordEmpty())
-	).done([=](const MTPmessages_BotCallbackAnswer &result) {
-		const auto item = owner->message(fullId);
-		if (!item) {
-			return;
-		}
-		if (const auto button = HistoryMessageMarkupButton::Get(
-				owner,
-				fullId,
-				row,
-				column)) {
-			button->requestId = 0;
-			owner->requestItemRepaint(item);
-		}
-	}).fail([=](const MTP::Error &error) {
-		const auto item = owner->message(fullId);
-		if (!item) {
-			return;
-		}
-		if (const auto button = HistoryMessageMarkupButton::Get(
-				owner,
-				fullId,
-				row,
-				column)) {
-			button->requestId = 0;
-		}
+	).done([=](const MTPmessages_BotCallbackAnswer &) {
+		[[maybe_unused]] const auto operation
+			= callbacks->complete(operationId);
+	}).fail([=](const MTP::Error &) {
+		[[maybe_unused]] const auto operation = callbacks->fail(operationId);
 	}).send();
+	[[maybe_unused]] const auto stored = callbacks->requestSent(
+		operationId,
+		requestId);
 }
 
 void Manager::maybePlaySound(Fn<void()> playSound) {

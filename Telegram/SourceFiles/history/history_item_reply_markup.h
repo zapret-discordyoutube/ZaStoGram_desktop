@@ -110,6 +110,10 @@ struct HistoryMessageMarkupButton {
 	struct Visual {
 		DocumentId iconId = 0;
 		Color color = Color::Normal;
+
+		friend inline bool operator==(
+			const Visual &,
+			const Visual &) = default;
 	};
 
 	HistoryMessageMarkupButton(
@@ -132,7 +136,11 @@ struct HistoryMessageMarkupButton {
 	QByteArray data;
 	int64 buttonId = 0;
 	InlineBots::PeerTypes peerTypes = 0;
-	mutable mtpRequestId requestId = 0;
+	mutable mtpRequestId urlAuthRequestId = 0;
+
+	friend inline bool operator==(
+		const HistoryMessageMarkupButton &,
+		const HistoryMessageMarkupButton &) = default;
 
 };
 
@@ -149,6 +157,10 @@ struct HistoryMessageMarkupData {
 	std::vector<std::vector<Button>> rows;
 	ReplyMarkupFlags flags = ReplyMarkupFlag::IsNull;
 	QString placeholder;
+
+	friend inline bool operator==(
+		const HistoryMessageMarkupData &,
+		const HistoryMessageMarkupData &) = default;
 
 private:
 	void fillRows(const QVector<MTPKeyboardButtonRow> &v);

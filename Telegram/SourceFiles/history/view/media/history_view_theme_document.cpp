@@ -758,7 +758,7 @@ void GiftServiceBox::clearKeyboard() {
 
 	const auto item = _parent->data();
 	if (const auto markup = item->Get<HistoryMessageReplyMarkup>()) {
-		markup->updateSuggestControls(SuggestionActions::None);
+		markup->updateSuggestControls(item, SuggestionActions::None);
 		item->history()->owner().requestItemResize(item);
 	}
 }

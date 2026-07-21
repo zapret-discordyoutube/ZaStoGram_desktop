@@ -229,7 +229,7 @@ void ActivateButton(
 		itemId,
 		row,
 		column);
-	if (button->requestId || !message->isRegular()) {
+	if (button->urlAuthRequestId || !message->isRegular()) {
 		return;
 	}
 	const auto session = &message->history()->session();
@@ -238,7 +238,7 @@ void ActivateButton(
 	const auto url = QString::fromUtf8(button->data);
 
 	using Flag = MTPmessages_RequestUrlAuth::Flag;
-	button->requestId = session->api().request(MTPmessages_RequestUrlAuth(
+	button->urlAuthRequestId = session->api().request(MTPmessages_RequestUrlAuth(
 		MTP_flags(Flag::f_peer | Flag::f_msg_id | Flag::f_button_id),
 		inputPeer,
 		MTP_int(itemId.msg),
@@ -255,7 +255,7 @@ void ActivateButton(
 			return;
 		}
 
-		button->requestId = 0;
+		button->urlAuthRequestId = 0;
 		result.match([&](const MTPDurlAuthResultAccepted &data) {
 			if (const auto url = data.vurl()) {
 				UrlClickHandler::Open(qs(url->v));
@@ -277,7 +277,7 @@ void ActivateButton(
 			return;
 		}
 
-		button->requestId = 0;
+		button->urlAuthRequestId = 0;
 		HiddenUrlClickHandler::Open(url);
 	}).send();
 }
@@ -331,7 +331,7 @@ void RequestButton(
 		itemId,
 		row,
 		column);
-	if (!button || button->requestId || !message->isRegular()) {
+	if (!button || button->urlAuthRequestId || !message->isRegular()) {
 		return;
 	}
 	const auto session = &message->history()->session();
