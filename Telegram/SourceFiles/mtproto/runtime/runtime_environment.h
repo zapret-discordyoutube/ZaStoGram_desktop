@@ -168,7 +168,6 @@ public:
 	[[nodiscard]] const RuntimeProxyResolver &proxyResolver() const;
 	[[nodiscard]] const RuntimeProxyCapabilities &proxyCapabilities() const;
 	[[nodiscard]] const RuntimeAsyncGateway &async() const;
-	[[nodiscard]] bool usesSerializedFileTransport() const;
 	[[nodiscard]] ProxyServices &proxyServices() const;
 	[[nodiscard]] ProxyRuntimeId proxyRuntimeId() const;
 	[[nodiscard]] ProxyEndpointContext &proxyEndpointContext() const;

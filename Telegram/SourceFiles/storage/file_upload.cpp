@@ -193,12 +193,6 @@ Uploader::Uploader(not_null<ApiWrap*> api)
 : _api(api)
 , _nextTimer([=] { maybeSend(); })
 , _stopSessionsTimer([=] { stopSessions(); }) {
-	const auto &proxy = _api->instance().runtimeEnvironment().proxy();
-	if (proxy.watchConnectionTypeChanges) {
-		proxy.watchConnectionTypeChanges([=] {
-			enforceSessionLimit();
-		}, _lifetime);
-	}
 	const auto session = &_api->session();
 	photoReady(
 	) | rpl::on_next([=](UploadedMedia &&data) {
@@ -565,24 +559,9 @@ QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
 	return checked(entry->docFile->read(entry->docPartSize));
 }
 
-int Uploader::sessionLimit() const {
-	return _api->instance().runtimeEnvironment(
-	).usesSerializedFileTransport()
-		? 1
-		: kMaxSessionsCount;
-}
-
-void Uploader::enforceSessionLimit() {
-	const auto limit = sessionLimit();
-	while (int(_sentPerDcIndex.size()) > limit) {
-		removeDcIndex();
-	}
-	maybeSend();
-}
-
 bool Uploader::canAddDcIndex() const {
 	const auto count = int(_sentPerDcIndex.size());
-	return (count < sessionLimit())
+	return (count < kMaxSessionsCount)
 		&& (count == int(_dcIndicesWithFastRequests.size()));
 }
 

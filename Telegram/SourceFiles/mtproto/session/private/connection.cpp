@@ -16,6 +16,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/handshake_gate.h"
+#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
@@ -92,6 +94,9 @@ bool SessionTransport::appendTestConnection(
 		+ (protocolSecret.empty() ? 0 : 1);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = classifyEndpointUse();
+	const auto mtproxyTransfer = mtproxy
+		&& (mtproxyUse == SessionProxyEndpointUse::Media
+			|| mtproxyUse == SessionProxyEndpointUse::Upload);
 	const auto requestedRecovery = (mtproxy
 		&& mtproxyUse == SessionProxyEndpointUse::Main)
 		? _state.mainRecoveryBackoff
@@ -168,11 +173,74 @@ bool SessionTransport::appendTestConnection(
 					.mtproxyAttemptStartedAt = startAttemptStartedAt,
 				});
 		};
-		InvokeQueued(_state.testConnections.back().data, start);
-		armWaitForConnectedTimer();
+		if (mtproxyTransfer) {
+			auto gate = std::make_shared<HandshakeGateLease>(
+				ReserveHandshakeGateForProxy(_owner->_runtime, proxy));
+			const auto delay = gate->delay();
+			const auto pacedStart = [=] {
+				gate->release();
+				start();
+				armWaitForConnectedTimer();
+			};
+			if (delay > 0) {
+				_owner->_runtime->async().singleShot(
+					delay,
+					weak,
+					pacedStart);
+			} else {
+				InvokeQueued(
+					_state.testConnections.back().data,
+					pacedStart);
+			}
+		} else {
+			InvokeQueued(_state.testConnections.back().data, start);
+			armWaitForConnectedTimer();
+		}
+	};
+
+	// File lanes are data plane, not endpoint-control ownership. Putting them
+	// into the shared live pool was meant to flatten FakeTLS/DPI bursts, but a
+	// slow transfer then blocked account handoff and serialized all file I/O.
+	// Their handshakes are soft-paced above while Telegram scales the lanes.
+	const auto appendDirectConnection = [&] {
+		auto directAttempt = ProxyConnectionAttempt();
+		auto directPlan = MtProxyAttemptPlan();
+		auto directStealth = stealth;
+		auto directAttemptStartedAt = crl::time();
+		if (mtproxyTransfer) {
+			const auto directRequest = MtProxy::AdmissionRequest{
+				.use = mtproxyUse,
+				.runtimeId = _owner->_runtime->proxyRuntimeId(),
+				.stealth = stealth,
+				.configuredTlsProfile = stealth.tlsProfile,
+				.proxyGeneration = _state.proxyGeneration,
+			};
+			directPlan = MtProxy::BuildAttemptPlan(directRequest, 0);
+			directStealth = directPlan.stealth;
+			directAttempt = {
+				.runtimeId = directRequest.runtimeId,
+				.proxyGeneration = directRequest.proxyGeneration,
+				.use = mtproxyUse,
+			};
+			directAttemptStartedAt = crl::now();
+		}
+		lock.unlock();
+		appendStartedConnection(
+			MtProxy::EndpointId(),
+			mtproxyUse,
+			SessionProxyLease(),
+			directAttempt,
+			MainRecoveryHandle(),
+			directPlan,
+			directAttemptStartedAt,
+			directStealth);
 	};
 
 	if (mtproxy) {
+		if (mtproxyTransfer) {
+			appendDirectConnection();
+			return true;
+		}
 		if (!_state.endpointAdmissionWaitStartedAt) {
 			_state.endpointAdmissionWaitStartedAt = crl::now();
 		}
@@ -282,16 +350,7 @@ bool SessionTransport::appendTestConnection(
 		return true;
 	}
 
-	lock.unlock();
-	appendStartedConnection(
-		MtProxy::EndpointId(),
-		SessionProxyEndpointUse::Main,
-		SessionProxyLease(),
-		{ .proxyGeneration = _state.proxyGeneration },
-		MainRecoveryHandle(),
-		MtProxyAttemptPlan(),
-		0,
-		stealth);
+	appendDirectConnection();
 	return true;
 }
 

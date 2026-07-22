@@ -122,8 +122,6 @@ private:
 	};
 
 	void maybeSend();
-	[[nodiscard]] int sessionLimit() const;
-	void enforceSessionLimit();
 	[[nodiscard]] bool canAddDcIndex() const;
 	[[nodiscard]] std::optional<uchar> chooseDcIndexForNextRequest(
 		const base::flat_set<uchar> &used);

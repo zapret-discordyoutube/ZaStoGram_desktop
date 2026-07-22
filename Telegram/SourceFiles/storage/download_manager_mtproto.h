@@ -132,8 +132,6 @@ private:
 	void addAcceptedBytes(uint64 laneOrdinal, qint64 bytes);
 
 	void resetGeneration();
-	[[nodiscard]] int sessionLimit() const;
-	void enforceSessionLimit();
 	void sessionTimedOut(MTP::DcId dcId, int index);
 	void removeSession(MTP::DcId dcId);
 
@@ -150,7 +148,6 @@ private:
 
 	base::flat_map<MTP::DcId, Queue> _queues;
 	base::flat_map<MTP::ShiftedDcId, DiagnosticLane> _diagnosticLanes;
-	MTP::DcId _serializedDcCursor = 0;
 	rpl::lifetime _lifetime;
 
 };
