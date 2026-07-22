@@ -26,6 +26,8 @@ class EndpointAdmissionArbiter;
 
 namespace MTP::details::MtProxy {
 
+using EndpointUse = ProxyConnectionUse;
+
 struct EndpointContextStorage;
 
 struct MainRecoveryTokenAccess;
