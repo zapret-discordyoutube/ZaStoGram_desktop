@@ -56,7 +56,7 @@ namespace {
 		: ProxyFailureAttribution::Unclear;
 }
 
-[[nodiscard]] bool IsSessionOpeningTerminal(
+[[nodiscard]] bool IsSessionCapacityTerminal(
 		MtProxy::FailureReason reason) {
 	switch (reason) {
 	case MtProxy::FailureReason::TcpConnectTimeout:
@@ -85,14 +85,18 @@ public:
 		_lease.transportReady();
 	}
 
-	void openingTerminal(
+	void capacityTerminal(
 			MtProxy::FailureReason reason,
 			bool finalEndpointTerminal) override {
-		_lease.openingTerminal(reason, finalEndpointTerminal);
+		_lease.capacityTerminal(reason, finalEndpointTerminal);
 	}
 
 	bool active() const override {
 		return _lease.active();
+	}
+
+	MtProxy::LiveSlotKey slotKey() const override {
+		return _lease.slotKey();
 	}
 
 	uint64 attemptId() const override {
@@ -156,8 +160,10 @@ private:
 				: MtProxy::MainRecoveryToken(),
 		.stealth = request.stealth,
 		.configuredTlsProfile = request.configuredTlsProfile,
+		.purpose = request.purpose,
 		.notBefore = request.notBefore,
 		.context = std::move(request.context),
+		.reclaim = std::move(request.reclaim),
 		.start = [start = std::move(request.start)](
 				ConnectionStart value) mutable {
 			if (!start) {
@@ -605,8 +611,8 @@ void ProductionSessionProxyPort::reportConnectionError(
 		return;
 	}
 	ReportConnectionFailure(attempt, reason, failure, lease);
-	if (lease && IsSessionOpeningTerminal(reason)) {
-		lease->openingTerminal(reason, true);
+	if (lease && IsSessionCapacityTerminal(reason)) {
+		lease->capacityTerminal(reason, true);
 	}
 	ReportClaimedAttemptSummary(
 		runtime,
@@ -684,8 +690,8 @@ void ProductionSessionProxyPort::reportReceiveTimeout(
 		failureReason,
 		failure,
 		lease);
-	if (lease && IsSessionOpeningTerminal(failureReason)) {
-		lease->openingTerminal(failureReason, true);
+	if (lease && IsSessionCapacityTerminal(failureReason)) {
+		lease->capacityTerminal(failureReason, true);
 	}
 	auto terminal = AttemptReport(
 		attempt,
@@ -719,8 +725,8 @@ void ProductionSessionProxyPort::reportConnectTimeout(
 		failure.attribution = ProxyFailureAttribution::Unclear;
 	}
 	ReportConnectionFailure(attempt, reason, failure, lease);
-	if (lease && IsSessionOpeningTerminal(reason)) {
-		lease->openingTerminal(reason, true);
+	if (lease && IsSessionCapacityTerminal(reason)) {
+		lease->capacityTerminal(reason, true);
 	}
 	ReportClaimedAttemptSummary(
 		not_null{ attempt.runtime },

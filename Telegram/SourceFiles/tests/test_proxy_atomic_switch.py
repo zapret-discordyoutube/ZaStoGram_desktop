@@ -15,7 +15,7 @@ SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_
 BROKER_H = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.h"
 BROKER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
-DIAL_GATE_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.cpp"
+LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
 STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
@@ -136,7 +136,9 @@ def test_session_proxy_switch_suspends_old_generation_silently():
     append_body = function_body(source, "bool SessionTransport::appendTestConnection(")
     connect_body = function_body(
         source,
-        "void SessionTransport::connectToServer(bool afterConfig)")
+        "void SessionTransport::connectToServer(\n"
+        "\t\tbool afterConfig,\n"
+        "\t\tMtProxy::AdmissionPurpose purpose)")
     received_body = function_body(source, "void SessionMessageHandler::handleReceived()")
     payload_body = function_body(source, "void SessionTransport::noteMtprotoPayloadReceived()")
     disconnected_body = function_body(source, "void SessionTransport::onDisconnected(")
@@ -224,9 +226,10 @@ def test_broker_cancels_old_proxy_generation_tickets():
         arbiter,
         "void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(")
     pool_cleanup = function_body(
-        read(DIAL_GATE_CPP),
-        "DialSlotsCloseReduction CloseDialSlotsBeforeGeneration(")
-    gate = read(DIAL_GATE_CPP)
+        read(LIVE_POOL_CPP),
+        "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(")
+    close_matching = function_body(
+        read(LIVE_POOL_CPP), "LiveSlotsCloseReduction CloseMatchingSlots(")
     lease_release = function_body(
         read(ENDPOINT_HEALTH_LIFECYCLE_CPP),
         "void EndpointAttemptLease::release()")
@@ -244,14 +247,12 @@ def test_broker_cancels_old_proxy_generation_tickets():
     assert generation_cancel.index(
         "MtProxy::ApplyRuntimeProxyGeneration("
     ) < generation_cancel.index("closeSlotsBeforeGenerationLocked(")
-    assert "CancelKnownReservationInPlace(" in pool_cleanup
-    assert "ReleaseOpeningInPlace(" in pool_cleanup
-    assert "DialSlotPhase::Closing" not in gate
-    assert "resumePurpose" not in gate
-    assert "ReleaseDialSlot(" not in pool_cleanup
-    assert "endpointAdmissionArbiter().releaseDialSlot(" in lease_release
+    assert "slot.phase = LiveSlotPhase::Closing;" in close_matching
+    assert ".resumePurpose = std::nullopt" in close_matching
+    assert "ReleaseLiveSlot(" not in pool_cleanup
+    assert "endpointAdmissionArbiter().releaseLiveSlot(" in lease_release
     assert lease_release.index("cancelEndpointAttempt(") < lease_release.index(
-        "releaseDialSlot(")
+        "releaseLiveSlot(")
     assert "ProxySchedulerLifecycle::Cancelled" in arbiter
     assert ".proxyGeneration = grant.proxyGeneration" in source
 

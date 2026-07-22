@@ -135,7 +135,7 @@ void SetProxyCheckProgress(
 		: ProxyFailureAttribution::Unclear;
 }
 
-[[nodiscard]] bool IsProxyCheckOpeningTerminal(
+[[nodiscard]] bool IsProxyCheckCapacityTerminal(
 		MtProxy::FailureReason reason) {
 	switch (reason) {
 	case MtProxy::FailureReason::TcpConnectTimeout:
@@ -465,8 +465,8 @@ void StartProxyCheck(
 						transportFailure),
 					.terminalAt = crl::now(),
 				});
-				if (IsProxyCheckOpeningTerminal(reason)) {
-					state->mtproxyLease.openingTerminal(reason, true);
+				if (IsProxyCheckCapacityTerminal(reason)) {
+					state->mtproxyLease.capacityTerminal(reason, true);
 				}
 				ReportClaimedProxyCheckSummary(
 					runtime,
@@ -628,6 +628,22 @@ void StartProxyCheck(
 			.configuredTlsProfile = checkStealth.tlsProfile,
 			.notBefore = gateDelay,
 			.context = raw,
+			.reclaim = [
+				weak = std::weak_ptr<ProxyCheckConnection::Data>(state),
+				raw
+			](
+					MtProxy::LiveSlotKey key,
+					std::optional<MtProxy::AdmissionPurpose>) {
+				const auto state = weak.lock();
+				if (!state
+					|| state->connection.get() != raw
+					|| state->mtproxyLease.slotKey() != key) {
+					return;
+				}
+				ResetProxyCheckState(
+					state,
+					ProxyCloseOrigin::BrokerCancelled);
+			},
 			.start = [=, secret = std::move(secret)](
 					details::ConnectionStart start) mutable {
 				if (state->connection.get() != raw) {

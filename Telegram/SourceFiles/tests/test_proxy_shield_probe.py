@@ -56,8 +56,12 @@ def test_active_session_shortcut_requires_a_live_main_proof():
 def test_queued_and_rejected_admission_have_distinct_probe_outcomes():
     start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
 
-    assert ".reclaim = [" not in start
-    assert "slotKey()" not in start
+    assert ".reclaim = [" in start
+    reclaim = function_body(start, ".reclaim = [")
+    assert "state->connection.get() != raw" in reclaim
+    assert "state->mtproxyLease.slotKey() != key" in reclaim
+    assert "ResetProxyCheckState(" in reclaim
+    assert "ProxyCloseOrigin::BrokerCancelled" in reclaim
     assert ".status = [=](details::ConnectionBrokerDecision decision)" in start
     assert "ConnectionBrokerAction::Queued" in start
     assert "ConnectionBrokerAction::StartAfter" in start
@@ -157,9 +161,9 @@ def test_probe_terminal_callbacks_reset_before_exact_lease_release():
 
     assert "reportMtproxyFailure({" in terminal
     assert terminal.index("reportMtproxyFailure({") < terminal.index(
-        "state->mtproxyLease.openingTerminal(reason, true);")
+        "state->mtproxyLease.capacityTerminal(reason, true);")
     assert "ClaimProxyCheckTerminal(runtime, state)" in terminal
-    assert "IsProxyCheckOpeningTerminal(reason)" in terminal
+    assert "IsProxyCheckCapacityTerminal(reason)" in terminal
     assert "state->mtproxyLease.release();" not in finish
     assert finish.index("fail(raw);") < finish.index(
         "if (state->connection.get() == raw)")
@@ -175,13 +179,14 @@ def test_probe_terminal_callbacks_reset_before_exact_lease_release():
     assert "state->handshakeGate.release();" in reset
 
 
-def test_probe_non_opening_paths_cannot_release_the_gate_as_terminal():
+def test_probe_non_capacity_paths_cannot_train_capacity():
     source = read(CHECK_CPP)
-    opening = function_body(source, "bool IsProxyCheckOpeningTerminal(")
+    capacity = function_body(source, "bool IsProxyCheckCapacityTerminal(")
     reset = function_body(source, "void ResetProxyCheckState(")
     start = function_body(source, "void StartProxyCheck(")
     handshake = function_body(
         start, "raw->connect(raw, &Connection::handshakeProgress")
+    reclaim = function_body(start, ".reclaim = [")
 
     for reason in (
         "TcpConnectTimeout",
@@ -190,16 +195,16 @@ def test_probe_non_opening_paths_cannot_release_the_gate_as_terminal():
         "ServerHelloOkNoMtprotoData",
         "ConnectedNoMtprotoData",
     ):
-        assert f"MtProxy::FailureReason::{reason}" in opening
+        assert f"MtProxy::FailureReason::{reason}" in capacity
     for reason in (
         "DnsFailed",
         "BrokerCancelled",
         "RemoteClosed",
     ):
-        assert f"MtProxy::FailureReason::{reason}" not in opening
-    assert "openingTerminal(" not in reset
-    assert "openingTerminal(" not in handshake
-    assert ".reclaim = [" not in start
+        assert f"MtProxy::FailureReason::{reason}" not in capacity
+    assert "capacityTerminal(" not in reset
+    assert "capacityTerminal(" not in reclaim
+    assert "capacityTerminal(" not in handshake
 
 
 def test_connection_box_uses_probe_status_and_composed_view():
@@ -253,5 +258,5 @@ if __name__ == "__main__":
     test_probe_facts_do_not_publish_selected_main_status()
     test_probe_terminal_is_telemetry_not_canonical_health()
     test_probe_terminal_callbacks_reset_before_exact_lease_release()
-    test_probe_non_opening_paths_cannot_release_the_gate_as_terminal()
+    test_probe_non_capacity_paths_cannot_train_capacity()
     test_connection_box_uses_probe_status_and_composed_view()

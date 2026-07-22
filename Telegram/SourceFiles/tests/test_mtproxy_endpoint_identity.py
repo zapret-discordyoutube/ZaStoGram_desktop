@@ -13,8 +13,8 @@ ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
-DIAL_GATE_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.h"
-DIAL_GATE_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.cpp"
+LIVE_POOL_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.h"
+LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
 CONNECTION_STATUS_TYPES_H = (
     SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h")
 RUNTIME_PROXY_ENDPOINT_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_endpoint.h"
@@ -78,30 +78,31 @@ def test_endpoint_identity_is_split_into_canonical_and_route():
     assert "bool EndpointEmpty(const EndpointId &endpoint)" in identity_header
     arbiter_header = read(ARBITER_H)
     arbiter = read(ARBITER_CPP)
-    pool_header = read(DIAL_GATE_H)
-    pool_source = read(DIAL_GATE_CPP)
-    ticket_owner = function_body(pool_header, "struct DialSlotTicketOwner")
-    slot_key = function_body(pool_header, "struct DialSlotKey")
-    pool = function_body(pool_header, "struct EndpointDialGate")
+    pool_header = read(LIVE_POOL_H)
+    pool_source = read(LIVE_POOL_CPP)
+    ticket_owner = function_body(pool_header, "struct LiveSlotTicketOwner")
+    slot_key = function_body(pool_header, "struct LiveSlotKey")
+    pool = function_body(pool_header, "struct EndpointLivePool")
+    reclaim = function_body(pool_header, "struct EndpointReclaim")
     attempt = function_body(
         read(CONNECTION_STATUS_TYPES_H), "struct ProxyConnectionAttempt")
     assert "AdmissionTicketKey key;" in ticket_owner
     assert "uint64 revision = 0;" in ticket_owner
     assert "QString endpointKey;" in slot_key
-    assert "index" not in slot_key
+    assert "int index = -1;" in slot_key
     assert "uint64 incarnation = 0;" in slot_key
-    assert "EndpointDialSlot slot;" in pool
+    assert "std::array<EndpointLiveSlot, kEndpointLiveSlotCount> slots;" in pool
     assert "uint64 lastIncarnation = 0;" in pool
-    assert "OpenSlotSchedule openings;" in pool
-    assert "EndpointReclaim" not in pool_header
+    assert "LiveSlotKey key;" in reclaim
+    assert "ProxyConnectionAttempt incumbent;" in reclaim
     assert "ticket->endpointKey = MtProxy::EndpointKey(request.endpoint);" in (
         arbiter)
-    assert "_dialGates[endpointKey]" in arbiter
-    assert "result.gate.lastIncarnation = NextIncarnation(" in pool_source
+    assert "_pools[endpointKey]" in arbiter
+    assert "result.pool.lastIncarnation = NextIncarnation(" in pool_source
     assert "slot.incarnation == key.incarnation" in pool_source
     assert "lastIncarnation" not in function_body(
-        pool_source, "DialSlotReleaseReduction ReleaseDialSlot(")
-    assert '#include "mtproto/proxy/endpoint_dial_gate.h"' in arbiter_header
+        pool_source, "LiveSlotReleaseReduction ReleaseLiveSlot(")
+    assert '#include "mtproto/proxy/endpoint_live_pool.h"' in arbiter_header
     for field in (
         "runtimeId",
         "traceId",

@@ -9,13 +9,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_health.h"
-#include "mtproto/proxy/endpoint_dial_gate.h"
+#include "mtproto/proxy/endpoint_live_pool.h"
 
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 namespace MTP {
 
@@ -31,6 +32,8 @@ struct EndpointContextStorage;
 enum class EndpointAdmissionWaitReason {
 	None,
 	Slot,
+	Capacity,
+	Closing,
 	HealthOrNotBefore,
 };
 
@@ -82,10 +85,14 @@ struct EndpointAdmissionRequest final {
 	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
+	MtProxy::AdmissionPurpose purpose = MtProxy::AdmissionPurpose::Ordinary;
 	crl::time notBefore = 0;
 	ProxyTraceId traceId = 0;
 	QPointer<QObject> owner;
 	QMetaObject::Connection ownerDestroyed;
+	Fn<void(
+		MtProxy::LiveSlotKey,
+		std::optional<MtProxy::AdmissionPurpose>)> reclaim;
 	Fn<void(EndpointAdmissionUpdate)> status;
 	Fn<void(EndpointAdmissionGrant)> grant;
 	crl::time waitStartedAt = 0;
@@ -122,15 +129,20 @@ public:
 	void drainEndpoint(const QString &endpointKey);
 	void reevaluate(AdmissionTicketKey key, uint64 revision);
 	void markRelayReady(
-		const MtProxy::DialSlotKey &slotKey,
+		const MtProxy::LiveSlotKey &slotKey,
 		const ProxyConnectionAttempt &attempt);
-	void markOpeningTerminal(
-		const MtProxy::DialSlotKey &slotKey,
+	void markCapacityTerminal(
+		const MtProxy::LiveSlotKey &slotKey,
 		const ProxyConnectionAttempt &attempt,
 		MtProxy::FailureReason reason,
 		bool finalEndpointTerminal);
-	void releaseDialSlot(
-		const MtProxy::DialSlotKey &slotKey,
+	[[nodiscard]] bool authorizeLiveSlotReclaim(
+		const MtProxy::LiveSlotKey &slotKey,
+		const ProxyConnectionAttempt &attempt,
+		uint64 reclaimToken,
+		bool callbackReady);
+	void releaseLiveSlot(
+		const MtProxy::LiveSlotKey &slotKey,
 		const ProxyConnectionAttempt &attempt);
 	void composeEndpointViewLocked(
 		const MtProxy::EndpointId &endpoint,

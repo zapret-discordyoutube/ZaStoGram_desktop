@@ -45,14 +45,14 @@ def test_endpoint_health_declares_typed_view_and_verdict_contracts():
     assert "ProxyConnectionAttempt pressureAttempt;" in state
     assert "FailureReason pressureReason = FailureReason::None;" in state
     assert "crl::time pressureUntil = 0;" in state
-    assert "handoffSourceKey" not in state
-    assert "handoffUntil" not in state
+    assert "LiveSlotKey handoffSourceKey;" in state
+    assert "crl::time handoffUntil = 0;" in state
     assert "EndpointPhysicalOpeningBoundary physicalOpeningBoundary;" in state
     assert "CurrentPhysicalOpeningBoundary(" in read(POLICY_H)
     reader = function_body(read(POLICY_CPP), "CurrentPhysicalOpeningBoundary(")
     assert "state.physicalOpeningBoundary" in reader
     assert "boundary.pressureUntil > now" in reader
-    assert "boundary.handoffUntil" not in reader
+    assert "boundary.handoffUntil > result.retryUntil" in reader
     assert "canonicalVerdicts" not in reader
     assert "runtime" not in reader
     assert "Snapshot" not in header
@@ -80,7 +80,7 @@ def test_terminal_outcome_is_recorded_once_per_current_attempt():
     failure = function_body(source, "void EndpointHealth::reportFailure(")
     capacity_terminal = function_body(
         read(ARBITER_CPP),
-        "void EndpointAdmissionArbiter::Private::markOpeningTerminal(")
+        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(")
 
     assert "FailureFromStaleAttempt(report, state)" in terminal
     assert "attempt->second.terminalVerdict" in terminal
@@ -93,7 +93,7 @@ def test_terminal_outcome_is_recorded_once_per_current_attempt():
         "state.lastFailure = report.reason;")
     assert "physicalOpeningBoundary" not in failure
     assert "const auto exactOpening" in capacity_terminal
-    assert "MtProxy::MarkDialSlotOpeningTerminal(" in capacity_terminal
+    assert "MtProxy::MarkLiveSlotCapacityTerminal(" in capacity_terminal
     assert capacity_terminal.index("if (!reduction.applied)") < (
         capacity_terminal.index("MtProxy::ApplyPhysicalOpeningTerminal("))
     assert "terminalAt" in capacity_terminal

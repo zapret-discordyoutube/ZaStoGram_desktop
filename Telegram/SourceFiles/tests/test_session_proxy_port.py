@@ -73,9 +73,10 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     assert "reportAttemptCancelled(" in port_header
     assert "virtual void transportReady() = 0;" in port_header
     assert "void transportReady();" in port_header
-    assert "virtual void openingTerminal(" in port_header
-    assert "void openingTerminal(" in port_header
-    assert "slotKey()" not in port_header
+    assert "virtual void capacityTerminal(" in port_header
+    assert "void capacityTerminal(" in port_header
+    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in port_header
+    assert "MtProxy::LiveSlotKey slotKey() const;" in port_header
     assert "struct SessionProxyStart" in port_header
     assert "struct SessionProxyRequest" in port_header
     lease = port_header.split("class SessionProxyLease final", 1)[1].split(
@@ -85,12 +86,12 @@ def test_session_private_uses_only_proxy_port_for_proxy_globals():
     request = port_header.split("struct SessionProxyRequest", 1)[1].split(
         "class SessionProxyTicket", 1)[0]
     assert "SessionProxyLease(const SessionProxyLease &other) = delete;" in lease
-    assert "DialSlotKey" not in lease
-    assert "DialSlotKey" not in start
+    assert "MtProxy::LiveSlotKey slotKey() const" in lease
+    assert "LiveSlotKey" not in start
     assert "slotKey" not in start
-    assert "AdmissionPurpose" not in request
-    assert "reclaim" not in request
-    assert "DialSlotKey" not in request
+    assert "MtProxy::AdmissionPurpose purpose" in request
+    assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in request
+    assert "LiveSlotKey" in request
     receive_timeout = port_header.split("reportReceiveTimeout(", 1)[1].split(
         ") = 0;", 1)[0]
     connect_timeout = port_header.split("reportConnectTimeout(", 1)[1].split(
@@ -137,7 +138,9 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
         adapter_cpp,
         "void ProductionSessionProxyPort::cancelByProxyGeneration(")
     ready = function_body(adapter_cpp, "void transportReady() override")
-    terminal = function_body(adapter_cpp, "void openingTerminal(")
+    terminal = function_body(adapter_cpp, "void capacityTerminal(")
+    slot_key = function_body(
+        adapter_cpp, "MtProxy::LiveSlotKey slotKey() const override")
     broker_request = function_body(
         adapter_cpp, "ConnectionRequest ToBrokerRequest(")
 
@@ -158,11 +161,12 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     assert "WriteProxyDiagnosticsLine(" in adapter_cpp
     assert "_lease.transportReady();" in ready
     assert "_lease.release();" not in ready
-    assert "_lease.openingTerminal(reason, finalEndpointTerminal);" in terminal
+    assert "_lease.capacityTerminal(reason, finalEndpointTerminal);" in terminal
+    assert "_lease.slotKey();" in slot_key
     assert ".lease = SessionProxyLease(" in broker_request
     assert "std::move(value.lease)" in broker_request
-    assert ".purpose = request.purpose" not in broker_request
-    assert ".reclaim = std::move(request.reclaim)" not in broker_request
+    assert ".purpose = request.purpose" in broker_request
+    assert ".reclaim = std::move(request.reclaim)" in broker_request
     assert ".slotKey =" not in broker_request
     assert "start.slotKey" not in broker_request
     assert "value.slotKey" not in broker_request
@@ -190,10 +194,10 @@ def test_proxy_adapter_is_the_only_session_proxy_global_caller():
     liveness = connection_error.index("ReportProxyLiveness(")
     assert healthy < retirement < liveness
     for body in (connection_error, receive_timeout, connect_timeout):
-        assert "IsSessionOpeningTerminal(" in body
+        assert "IsSessionCapacityTerminal(" in body
         assert body.index("ReportConnectionFailure(") < body.index(
-            "lease->openingTerminal(")
-        assert "true" in body.split("lease->openingTerminal(", 1)[1]
+            "lease->capacityTerminal(")
+        assert "true" in body.split("lease->capacityTerminal(", 1)[1]
 
     assert "proxyServices().broker().cancelByProxyGeneration(" in (
         generation_cancel)

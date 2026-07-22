@@ -17,8 +17,8 @@ ENDPOINT_HEALTH_CAPABILITIES_CPP = (
 ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
 ENDPOINT_HEALTH_POLICY_CPP = PROXY_DIR / "mtproxy" / "endpoint_health_policy.cpp"
 ENDPOINT_HEALTH_STATE_H = PROXY_DIR / "mtproxy" / "endpoint_health_state.h"
-ENDPOINT_DIAL_GATE_H = PROXY_DIR / "endpoint_dial_gate.h"
-ENDPOINT_DIAL_GATE_CPP = PROXY_DIR / "endpoint_dial_gate.cpp"
+ENDPOINT_LIVE_POOL_H = PROXY_DIR / "endpoint_live_pool.h"
+ENDPOINT_LIVE_POOL_CPP = PROXY_DIR / "endpoint_live_pool.cpp"
 PROXY_ENDPOINT_CONTEXT_CPP = PROXY_DIR / "proxy_endpoint_context.cpp"
 SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 SESSION_PROXY_PORT_H = SOURCE_DIR / "mtproto" / "session" / "private" / "proxy_port.h"
@@ -3232,17 +3232,20 @@ def test_capability_cache_relay_proof_ages_out():
 def test_source_seams_match_truth_table_contract():
     control = read(CONTROL_CPP)
     broker = read(BROKER_CPP)
-    check = read(CHECK_CPP)
-    arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
     arbiter_header = read(PROXY_DIR / "endpoint_admission_arbiter.h")
-    dial_gate_header = read(ENDPOINT_DIAL_GATE_H)
-    dial_gate = read(ENDPOINT_DIAL_GATE_CPP)
+    arbiter = read(PROXY_DIR / "endpoint_admission_arbiter.cpp")
+    live_pool_header = read(ENDPOINT_LIVE_POOL_H)
+    live_pool = read(ENDPOINT_LIVE_POOL_CPP)
+    check = read(CHECK_CPP)
     health_header = read(ENDPOINT_HEALTH_H)
     health = read_endpoint_health_sources()
     policy = read(ENDPOINT_HEALTH_POLICY_CPP)
     health_state = read(ENDPOINT_HEALTH_STATE_H)
+    endpoint_context = read(PROXY_ENDPOINT_CONTEXT_CPP)
     session_adapter = read(SESSION_PROXY_ADAPTER_CPP)
     session_proxy_port = read(SESSION_PROXY_PORT_H)
+    instance = read(INSTANCE_CPP)
+    tls_records = read(TLS_SOCKET_RECORDS_CPP)
     capabilities = read(CAPABILITIES_CPP)
 
     assert "ProxyControlPlane::Reduce(current, fact)" in control
@@ -3251,95 +3254,384 @@ def test_source_seams_match_truth_table_contract():
     assert "mtproxyEndpointView(" in control
     assert "view.mainProof.strength" in control
     assert "view.canonicalVerdict" in control
-    assert "EndpointQueue" not in broker
-    assert "endpointAdmissionArbiter().enqueue(" in broker
-    assert "slotKey" not in broker
-    assert "AdmissionPurpose" not in broker
-    assert ".reclaim" not in broker
-
-    assert "struct EndpointDialGate" in dial_gate_header
-    assert "EndpointDialSlot slot;" in dial_gate_header
-    phases = dial_gate_header.split(
-        "enum class DialSlotPhase", 1)[1].split("};", 1)[0]
-    for phase in ("Empty", "Reserved", "Opening"):
-        assert phase in phases
-    for phase in ("Live", "Closing"):
-        assert phase not in phases
-    for removed in (
-            "CapacityProbe",
-            "EndpointReclaim",
-            "DemandTransferContinuation",
-            "TransferAdmissionBasis",
-            "MainReplacementPurpose",
-            "AdmissionPurpose"):
-        assert removed not in dial_gate_header
-        assert removed not in dial_gate
-        assert removed not in arbiter
-    assert "OpenSlotSchedule openings;" in dial_gate_header
-    assert "DialSlotReserveReduction ReserveDialSlot(" in dial_gate
-    assert "DialSlotCommitReduction CommitDialSlotOpening(" in dial_gate
-    assert "DialSlotRelayReadyReduction MarkDialSlotRelayReady(" in dial_gate
-    assert "DialSlotTerminalReduction MarkDialSlotOpeningTerminal(" in dial_gate
-    assert "DialSlotReleaseReduction ReleaseDialSlot(" in dial_gate
-    assert "slot->phase = DialSlotPhase::Opening;" in dial_gate
-    assert "slot->phase = DialSlotPhase::Empty;" in dial_gate
-    assert "AttemptOwnerMatches(*owner, request.attempt)" in dial_gate
-    assert "result.slotReleased = true;" in dial_gate
-
-    assert "std::map<QString, MtProxy::EndpointDialGate> _dialGates;" in arbiter
-    assert "PhysicalSlotBinding" not in arbiter
-    assert "_slotBindings" not in arbiter
-    assert "MtProxy::ReserveDialSlot(" in arbiter
-    assert "MtProxy::CancelDialSlotReservation(" in arbiter
-    assert "MtProxy::CommitDialSlotOpening(" in arbiter
-    assert "MtProxy::MarkDialSlotRelayReady(" in arbiter
-    assert "MtProxy::MarkDialSlotOpeningTerminal(" in arbiter
-    assert "MtProxy::ReleaseDialSlot(" in arbiter
-    for reason in ("None", "Slot", "HealthOrNotBefore"):
-        assert f"{reason}," in arbiter_header
-    for reason in ("Capacity", "Closing"):
-        assert f"{reason}," not in arbiter_header
-    assign = arbiter.split(
-        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(",
-        1)[1].split(
-            "void EndpointAdmissionArbiter::Private::grantDueLocked(",
-            1)[0]
-    assert "const auto selected = selectLocked(" in assign
-    assert "reserveTicketLocked(" in assign
-    assert "reclaim" not in assign.lower()
-
+    assert "FakeTlsAppData," in health_header
+    assert ".scope = MtProxy::SuccessScope::FakeTlsAppData" in tls_records
+    assert "RuntimeGenerationIsCurrent(state, runtimeGeneration)" in policy
+    assert "attempt->second.terminalVerdict.has_value()" in policy
+    assert "SuccessFromStaleAttempt(report, state)" in health
+    assert "FailureFromStaleAttempt(report, state)" in health
     assert "struct EndpointVerdict" in health_header
     assert "struct MainRelayProofView" in health_header
     assert "struct ProxyEndpointView" in health_header
     assert "struct RelayProofIdentity" in health_state
     assert "std::map<RelayProofIdentity, RelayProofState> relayProofs;" in health_state
     assert "std::map<RuntimeGenerationKey, EndpointVerdict> canonicalVerdicts;" in health_state
-    assert "struct EndpointPhysicalOpeningBoundary" in health_state
-    assert "handoffSourceKey" not in health_state
-    assert "handoffUntil" not in health_state
-    assert "CurrentPhysicalOpeningBoundary(" in policy
-    assert "SuccessFromStaleAttempt(report, state)" in health
-    assert "FailureFromStaleAttempt(report, state)" in health
+    assert "RecordCurrentTerminalEvidence" in health_state
     assert "CurrentMainRelayProof" in health_state
     assert "HasCurrentMainRelayProof" in health_state
-
+    assert "RelayProofPromotionResult::Inserted" in health_state
+    assert "RelayProofPromotionResult::AlreadyProven" in health_state
+    assert "RelayProofPromotionResult::MissingAdmission" in health_state
+    assert "state.relayProven = !state.relayProofs.empty();" in health_state
+    assert "EndpointQueue" not in broker
+    assert "endpointAdmissionArbiter().enqueue(" in broker
+    assert "std::map<AdmissionTicketKey, std::unique_ptr<Ticket>> _tickets;" in arbiter
+    assert "ProxySchedulerLifecycle::HandedOff" in arbiter
+    assert "cancelBeforeGeneration(" in arbiter
+    assert "inline constexpr auto kEndpointLiveSlotCount = 4;" in live_pool_header
+    assert "struct EndpointLivePool" in live_pool_header
+    assert "std::optional<EndpointOpeningOwner> opening;" in live_pool_header
+    assert "std::optional<CapacityProbe> capacityProbe;" in live_pool_header
+    assert "std::optional<EndpointReclaim> reclaim;" in live_pool_header
+    reclaim_stage = live_pool_header.split(
+        "enum class EndpointReclaimStage", 1)[1].split("};", 1)[0]
+    assert reclaim_stage.index("Requested") < reclaim_stage.index("Authorized")
+    replacement_purpose = live_pool_header.split(
+        "enum class MainReplacementPurpose", 1)[1].split("};", 1)[0]
+    assert replacement_purpose.index("ForegroundRecovery") < (
+        replacement_purpose.index("DemandBootstrap")) < (
+        replacement_purpose.index("BackgroundDuty"))
+    assert "enum class TransferAdmissionBasis" in live_pool_header
+    for basis in ("None", "MainRelayProof", "ReleasedContinuation"):
+        assert basis in live_pool_header.split(
+            "enum class TransferAdmissionBasis", 1)[1].split("};", 1)[0]
+    assert "enum class DemandTransferContinuationStage" in live_pool_header
+    for stage in ("Requested", "AwaitingRelease", "Released"):
+        assert stage in live_pool_header.split(
+            "enum class DemandTransferContinuationStage", 1)[1].split(
+                "};", 1)[0]
+    assert "struct DemandTransferContinuation" in live_pool_header
+    assert "std::optional<DemandTransferContinuation>" in live_pool_header
+    assert "struct DemandTransferReservationRequest" in live_pool_header
+    assert "enum class DemandTransferReservationAction" in live_pool_header
+    assert "struct DemandTransferReservationReduction" in live_pool_header
+    assert "PlanDemandTransferReservation(" in live_pool_header
+    assert "PlanDemandTransferReservation(" in live_pool
+    old_planner = "PlanForeground" + "TransferReservation"
+    assert old_planner not in live_pool_header
+    assert old_planner not in live_pool
+    assert "mainRelayProven" not in live_pool_header
+    assert "CapacitySaturated" not in live_pool
+    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
+    assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
+        arbiter)
+    assert "EndpointOpeningPermit" not in arbiter_header
+    assert "_permits" not in arbiter
+    for reason in ("None", "Slot", "Capacity", "Closing", "HealthOrNotBefore"):
+        assert f"{reason}," in arbiter_header
+    assert "MtProxy::CancelLiveSlotReservation(" in arbiter
+    assert "MtProxy::CancelLiveSlotSuccessor(" in arbiter
+    assert "MtProxy::CommitLiveSlotOpening(" in arbiter
+    assert "MtProxy::MarkLiveSlotRelayReady(" in arbiter
+    assert "MtProxy::MarkLiveSlotCapacityTerminal(" in arbiter
+    assert "MtProxy::ReleaseLiveSlot(" in arbiter
+    assert "mainRelayProven" not in arbiter
+    assert "baseEligibleLocked" not in arbiter
+    assert "OpeningRetryBoundaryFor(state)" not in arbiter
+    assert "openingPressure" not in arbiter
+    assert "slot->phase = LiveSlotPhase::Closing;" in live_pool
+    assert "slot->phase = LiveSlotPhase::Empty;" in live_pool
+    assert "AttemptOwnerMatches(*owner, request.attempt)" in live_pool
+    assert "result.slotReleased = true;" in live_pool
+    assert "result.continuationChanged = true;" in live_pool
+    assert "DemandTransferContinuationStage::Requested" in live_pool
+    assert "DemandTransferContinuationStage::AwaitingRelease" in live_pool
+    assert "DemandTransferContinuationStage::Released" in live_pool
+    assert "TransferAdmissionBasis::ReleasedContinuation" in live_pool
+    assert "result.pool.demandTransferContinuation.reset();" in live_pool
+    assert "request.finalEndpointTerminal" in live_pool
+    for reason in (
+            "TcpConnectTimeout",
+            "ClientHelloSentNoServerHello",
+            "ServerHelloOkNoAppData",
+            "ServerHelloOkNoMtprotoData",
+            "ConnectedNoMtprotoData"):
+        assert f"case FailureReason::{reason}:" in live_pool
+    assert "struct EndpointPhysicalOpeningBoundary" in health_state
+    assert "EndpointPhysicalOpeningBoundary physicalOpeningBoundary;" in (
+        health_state)
+    assert "CurrentPhysicalOpeningBoundary(" in policy
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in check
     assert "control.mtproxyEndpointView(endpoint)" in check
-    assert "void transportReady() override" in session_adapter
-    assert "_lease.transportReady();" in session_adapter
-    assert "void openingTerminal(" in session_adapter
-    assert "_lease.openingTerminal(reason, finalEndpointTerminal);" in (
-        session_adapter)
-    assert "virtual void transportReady() = 0;" in session_proxy_port
-    assert "virtual void openingTerminal(" in session_proxy_port
-    assert "slotKey()" not in session_proxy_port
-    assert "AdmissionPurpose" not in session_proxy_port
-    assert "reclaim" not in session_proxy_port
     assert "noteMtproxyRelayFailure(" in capabilities
     assert "card.relayProven = false;" in capabilities
+    assert "relayProvenAt" in capabilities
+    assert "void ProxyEndpointContext::transportReady(" not in endpoint_context
+    assert "EndpointOpeningEvent" not in health
+    assert "endpointAdmissionArbiter().openingEvent(" not in health
+    assert "bindLiveSlot" not in broker
+    assert "slotKey" not in broker
+    assert "MtProxy::AdmissionPurpose purpose" in read(
+        PROXY_DIR / "connection_broker.h")
+    assert ".reclaim = std::move(request.reclaim)" in broker
+    assert "void transportReady() override" in session_adapter
+    assert "_lease.transportReady();" in session_adapter
+    assert "void capacityTerminal(" in session_adapter
+    assert "_lease.capacityTerminal(reason, finalEndpointTerminal);" in (
+        session_adapter)
+    assert "markTransportReady" not in session_adapter
+    assert "virtual void transportReady() = 0;" in session_proxy_port
+    assert "virtual MtProxy::LiveSlotKey slotKey() const = 0;" in (
+        session_proxy_port)
+    assert "std::optional<MtProxy::AdmissionPurpose>)> reclaim;" in (
+        session_proxy_port)
+    assert "AdmissionPurpose::ReclaimedMainResume" in arbiter
+    assign = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::assignReservationsLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::grantDueLocked(",
+            1)[0]
+    assert assign.count("PlanDemandTransferReservation(") == 1
+    assert assign.index("PlanDemandTransferReservation(") < (
+        assign.index("reserveTicketLocked("))
+    assert "if (IsTransfer(selected->use))" in assign
+    assert "selected->key.runtimeId == _storage.foregroundRuntimeId" not in (
+        assign)
+    released_selection = assign.split(
+        "auto releasedSuccessor", 1)[1].split(
+            "auto selectedWait", 1)[0]
+    assert "DemandTransferContinuationStage::Released" in released_selection
+    assert "ticket->use == MtProxy::EndpointUse::Main" in released_selection
+    assert "ticket->key.runtimeId == _storage.foregroundRuntimeId" in (
+        released_selection)
+    assert "ticketCurrentLocked(*ticket, state)" in released_selection
+    assert "boundary.at <= inputs.now" in released_selection
+    assert "MtProxy::CancelLiveSlotSuccessor(" in released_selection
+    assert released_selection.index("MtProxy::CancelLiveSlotSuccessor(") < (
+        released_selection.index("releasedSuccessor.reset();"))
+    assert "std::remove_if(" in released_selection
+    assert "DemandTransferContinuationMatches(" in released_selection
+    assert "const auto selected = foregroundOverride" in released_selection
+    reclaim = assign.split(
+        "case MtProxy::DemandTransferReservationAction::Reclaim:",
+        1)[1].split(
+            "case MtProxy::DemandTransferReservationAction::Wait:",
+            1)[0]
+    assert reclaim.index("closeBindingReadyLocked(") < (
+        reclaim.index("pool = reduction.pool;"))
+    assert reclaim.index("pool = reduction.pool;") < (
+        reclaim.index("queueCloseLocked("))
+    reclaim_action = arbiter.split("void ReclaimAction::run()", 1)[1].split(
+        "void Actions::run()", 1)[0]
+    assert "QMutexLocker" not in reclaim_action
+    assert reclaim_action.index("authorizeLiveSlotReclaim(") < (
+        reclaim_action.index("(*callback)(slotKey, purpose);"))
+    assert "callbackReady" in reclaim_action
+    assert "registrationLive->load(" in reclaim_action
+    assert "std::shared_ptr<Fn<void(" in arbiter
+    assert "reclaimToken" in reclaim_action
+    for duplicated_policy in (
+            "NonemptySlotCount(",
+            "CompleteLiveBaseline(",
+            "provenLowerBound",
+            "SelectVictim(",
+            "CapacitySaturated("):
+        assert duplicated_policy not in assign
+    close_binding = arbiter.split(
+        "bool EndpointAdmissionArbiter::Private::closeBindingReadyLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::closeRuntimeSlotsLocked(",
+            1)[0]
+    assert "binding->second.runtimeId != close.attempt.runtimeId" in (
+        close_binding)
+    assert "_runtimes.find(binding->second.runtimeId)" in close_binding
+    assert "runtime->second->dispatcher" in close_binding
+    assert "runtime->second->singleShot" in close_binding
+    priority = arbiter.split(
+        "PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(",
+        1)[1].split(
+            "Ticket *EndpointAdmissionArbiter::Private::selectLocked(",
+            1)[0]
+    assert priority.index("AdmissionPurpose::ReclaimedMainResume") < (
+        priority.index("const auto age ="))
+    assert priority.index(
+        "ticket.use == MtProxy::EndpointUse::Main && foreground") < (
+        priority.index("AdmissionPurpose::ReclaimedMainResume"))
+    assert priority.index("return PriorityClass::ForegroundMain;") < (
+        priority.index("return PriorityClass::ReclaimedMainResume;"))
+    assert "PriorityClass::DemandedTransfer" in priority
+    assert arbiter.index("ForegroundMain,") < arbiter.index(
+        "ForegroundTransfer,") < arbiter.index("DemandedTransfer,") < (
+        arbiter.index("UrgentMain,"))
+    basis = arbiter.split(
+        "EndpointAdmissionArbiter::Private::transferAdmissionBasisLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::currentMainRelayAttemptsLocked(",
+            1)[0]
+    assert basis.index("DemandTransferContinuationMatches(") < basis.index(
+        "HasCurrentMainRelayProof(state")
+    assert "TransferAdmissionBasis::ReleasedContinuation" in basis
+    assert "TransferAdmissionBasis::MainRelayProof" in basis
+    for function in (
+            "reserveTicketLocked(",
+            "revalidateReservationsLocked(",
+            "assignReservationsLocked(",
+            "grantDueLocked(",
+            "deliverGrant("):
+        body = arbiter.split(
+            f"EndpointAdmissionArbiter::Private::{function}", 1)[1]
+        assert "transferAdmissionBasisLocked(" in body.split(
+            "\n}\n", 1)[0]
+    proof_attempts = arbiter.split(
+        "EndpointAdmissionArbiter::Private::currentMainRelayAttemptsLocked(",
+        1)[1].split(
+            "bool EndpointAdmissionArbiter::Private::successorTicketLocked(",
+            1)[0]
+    for exact in (
+            ".attemptId = attempt.attemptId",
+            "proof->second.ticketKey != attempt.ticketKey",
+            "proof->second.traceId != attempt.traceId",
+            "proof->second.proxyEpoch != attempt.proxyEpoch",
+            "proof->second.successEpoch != attempt.successEpoch"):
+        assert exact in proof_attempts
+    planner = live_pool.split("PlanDemandTransferReservation(", 1)[1].split(
+        "LiveSlotCloseReduction PlanMainReplacement(", 1)[0]
+    assert planner.index("false);") < planner.index("true);")
+    assert "owner->use != EndpointUse::Main" in live_pool
+    assert "owner->attempt.runtimeId" in live_pool
+    assert "request.facts.foregroundRuntimeId" in live_pool
+    assert "HasExactMainRelayAttempt(request, owner->attempt)" in live_pool
+    old_victim = "SelectForeground" + "TransferVictim"
+    assert old_victim not in live_pool
+    release = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::releaseLiveSlot(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::closeRuntimeSlotsLocked(",
+            1)[0]
+    assert "if (reduction.slotReleased)" in release
+    assert release.index("if (reduction.slotReleased)") < release.index(
+        "_slotBindings.erase(slotKey);")
+    assert release.count("_slotBindings.erase(slotKey);") == 1
+    assert "reduction.continuationChanged" in release
+    cancel_successor = live_pool.split(
+        "bool CancelSuccessorInPlace(", 1)[1].split(
+            "LiveSlotCloseReduction BeginClose(", 1)[0]
+    assert "ContinuationSuccessorMatches(pool, owner)" in cancel_successor
+    assert "pool.demandTransferContinuation.reset();" in cancel_successor
+    assert "slot.phase = LiveSlotPhase::Empty" not in cancel_successor
+    reserve_reducer = live_pool.split(
+        "LiveSlotReserveReduction ReserveLiveSlot(", 1)[1].split(
+            "LiveSlotCancelReduction CancelLiveSlotReservation(", 1)[0]
+    commit_reducer = live_pool.split(
+        "LiveSlotCommitReduction CommitLiveSlotOpening(", 1)[1].split(
+            "LiveSlotReadyReduction MarkLiveSlotRelayReady(", 1)[0]
+    assert "TransferAdmissionMatches(" in reserve_reducer
+    assert "TransferAdmissionMatches(" in commit_reducer
+    assert "TransferAdmissionBasis::ReleasedContinuation" in commit_reducer
+    assert "result.pool.demandTransferContinuation.reset();" in (
+        commit_reducer)
+    authorization = live_pool.split(
+        "auto AuthorizeLiveSlotReclaim(", 1)[1].split(
+            "auto PlanDemandTransferReservation(", 1)[0]
+    assert "EndpointReclaimStage::Requested" in authorization
+    assert "EndpointReclaimStage::Authorized" in authorization
+    assert "slot->phase != LiveSlotPhase::Closing" in authorization
+    assert "AttemptOwnerMatches(*owner, request.attempt)" in authorization
+    assert "request.attempt.runtimeId != request.foregroundRuntimeId" in (
+        authorization)
+    assert "slot->phase = LiveSlotPhase::Live;" in authorization
+    assert "result.pool.reclaim.reset();" in authorization
+    assert "ReclaimMatchesContinuation(" in authorization
+    assert "DemandTransferContinuationStage::AwaitingRelease" in (
+        authorization)
+    release_reducer = live_pool.split(
+        "LiveSlotReleaseReduction ReleaseLiveSlot(", 1)[1].split(
+            "std::optional<crl::time> NextLivePoolWakeAt(", 1)[0]
+    acknowledged_release = release_reducer.split(
+        "const auto continuationReclaimMatches", 1)[1].split(
+            "if (result.pool.opening", 1)[0]
+    assert "DemandTransferContinuationStage::AwaitingRelease" in (
+        acknowledged_release)
+    release_transition = release_reducer.split(
+        "if (continuationReclaimMatches", 1)[1].split("} else if", 1)[0]
+    assert "DemandTransferContinuationStage::Released" in release_transition
+    ticket_cleanup = arbiter.split(
+        "EndpointAdmissionArbiter::Private::clearTicketPoolOwnershipLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::cancelTicketLocked(",
+            1)[0]
+    assert "MtProxy::CancelLiveSlotSuccessor(" in ticket_cleanup
+    runtime_cleanup = live_pool.split(
+        "LiveSlotsCloseReduction CloseRuntimeLiveSlots(", 1)[1].split(
+            "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(",
+            1)[0]
+    generation_cleanup = live_pool.split(
+        "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(",
+        1)[1].split(
+            "LiveSlotReleaseReduction ReleaseLiveSlot(", 1)[0]
+    assert "demandTransferContinuation.reset();" in runtime_cleanup
+    assert "demandTransferContinuation.reset();" in generation_cleanup
+    facts = arbiter.split(
+        "EndpointAdmissionArbiter::Private::selectionFactsLocked(",
+        1)[1].split(
+            "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(",
+            1)[0]
+    assert "ticket.key.runtimeId == result.foregroundRuntimeId" not in facts
+    assert "transferAdmissionBasisLocked(" in facts
+    assert "result.admissibleTransferWaiting = true;" in facts
+    assert "result.transferActive = true;" in facts
+    main_replacement = arbiter.split(
+        "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(",
+        1)[1].split(
+            "void EndpointAdmissionArbiter::Private::invalidateTicketLocked(",
+            1)[0]
+    assert main_replacement.index("ForegroundRecovery") < (
+        main_replacement.index("DemandBootstrap")) < (
+        main_replacement.index("BackgroundDuty"))
+    assert "OpeningBoundaryForTicket(ticket, state, now).at > now" in (
+        main_replacement)
+    assert "TransferAdmissionBasis::None" in main_replacement
+    main_reducer = live_pool.split(
+        "LiveSlotCloseReduction PlanMainReplacement(", 1)[1].split(
+            "LiveSlotsCloseReduction CloseRuntimeLiveSlots(", 1)[0]
+    assert "MainReplacementPurpose::ForegroundRecovery" in main_reducer
+    assert "MainReplacementPurpose::BackgroundDuty" in main_reducer
+    assert "request.facts.admissibleTransferWaiting" in main_reducer
+    assert "request.facts.transferActive" in main_reducer
+    for health_owner in (health_header, health_state):
+        assert "DemandTransferContinuation" not in health_owner
+    assert "retireMtproxyRelayProof(" in session_adapter
+    assert "view.mainProof.strength" in session_adapter
 
+    success = health.split("void EndpointHealth::reportSuccess(", 1)[1]
+    assert success.index("SuccessFromStaleAttempt(report, state)") < (
+        success.index("PromoteRelayProof("))
+    assert "if (report.use == EndpointUse::Main)" in success
+    assert "PruneEndpointOutcomesAfterSuccess(" in success
+
+    failure = health.split("void EndpointHealth::reportFailure(", 1)[1].split(
+        "void EndpointHealth::reportSuccess(", 1)[0]
+    assert failure.index("RecordTerminalAttemptLocked(") < (
+        failure.index("state.lastFailure = report.reason;"))
+    assert "physicalOpeningBoundary" not in failure
+    capacity_terminal = arbiter.split(
+        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(",
+        1)[1].split(
+            "bool EndpointAdmissionArbiter::Private::authorizeLiveSlotReclaim(",
+            1)[0]
+    assert "const auto exactOpening" in capacity_terminal
+    assert "MtProxy::ApplyPhysicalOpeningTerminal(" in capacity_terminal
+    assert "report.use" in failure
+    assert "EndpointUse::Main" in failure
+    assert "!HasCurrentMainRelayProof(" in failure
+    assert "SetCurrentCanonicalVerdict(" in failure
+
+    migration = instance.split(
+        "void Instance::Private::migrateProxy(bool manual)", 1)[1]
+    assert migration.index("++_proxyGeneration;") < (
+        migration.index("applyMtproxyProxyGeneration("))
+    assert migration.index("applyMtproxyProxyGeneration(") < (
+        migration.index("_connectionStatus->setProxyStatus("))
 
 def run_all_truth_tables():
+    test_live_pool_bootstrap_and_sequential_expansion()
+    test_capacity_learning_accepts_only_exact_stable_frontier_evidence()
+    test_learned_cap_and_reclaim_are_serialized_until_exact_release()
+    test_demand_owned_continuation_survives_exact_main_proof_retirement()
+    test_reclaim_victim_order_and_foreground_main_protection()
+    test_cleanup_is_no_resume_closing_and_late_events_are_incarnation_safe()
+    test_reclaimed_resume_tracks_current_foreground_and_background_priority()
+    test_released_continuation_is_exclusive_except_due_foreground_main()
     test_reducer_no_appdata_relay_success_sibling_failure()
     test_old_generation_and_probe_facts_are_shadowed()
     test_older_progress_fact_cannot_repaint_connected_status()

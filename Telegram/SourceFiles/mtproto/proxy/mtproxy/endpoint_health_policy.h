@@ -40,6 +40,11 @@ void ApplyPhysicalOpeningTerminal(
 	const ProxyConnectionAttempt &attempt,
 	FailureReason reason,
 	crl::time observedAt);
+void ApplyPostReclaimOpeningHandoff(
+	EndpointState &state,
+	const LiveSlotKey &sourceKey,
+	const ProxyConnectionAttempt &sourceAttempt,
+	crl::time releasedAt);
 void ApplyPhysicalOpeningRelay(
 	EndpointState &state,
 	const ProxyConnectionAttempt &attempt,

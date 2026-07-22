@@ -103,6 +103,10 @@ struct EndpointPhysicalOpeningBoundary {
 	FailureReason pressureReason = FailureReason::None;
 	crl::time pressureObservedAt = 0;
 	crl::time pressureUntil = 0;
+	LiveSlotKey handoffSourceKey;
+	ProxyConnectionAttempt handoffSourceAttempt;
+	crl::time handoffReleasedAt = 0;
+	crl::time handoffUntil = 0;
 };
 
 struct EndpointState {
