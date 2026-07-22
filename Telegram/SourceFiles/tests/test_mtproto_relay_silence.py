@@ -17,8 +17,8 @@ TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 STATUS_H = SOURCE_DIR / "mtproto" / "proxy" / "status.h"
 STATUS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "status.cpp"
-LIVE_POOL_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.h"
-LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
+DIAL_GATE_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.h"
+DIAL_GATE_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.cpp"
 DIAGNOSTICS_CPP = SOURCE_DIR / "mtproto" / "proxy" / "diagnostics.cpp"
 PROXY_ADAPTER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "session_proxy_adapter.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
@@ -213,16 +213,13 @@ def test_session_reports_silence_and_recovers_temporary_key():
         "reportFirstMtprotoPayload(")
 
 
-def test_full_concurrency_uses_typed_transfer_admission():
+def test_dial_gate_is_independent_from_transfer_proof_state():
     state_source = read(ENDPOINT_HEALTH_STATE_H)
     health = read(ENDPOINT_HEALTH_CPP)
-    live_pool_header = read(LIVE_POOL_H)
-    live_pool = read(LIVE_POOL_CPP)
+    dial_gate_header = read(DIAL_GATE_H)
+    dial_gate = read(DIAL_GATE_CPP)
     arbiter = read(SOURCE_DIR / "mtproto" / "proxy" /
         "endpoint_admission_arbiter.cpp")
-    eligible = function_body(
-        arbiter,
-        "auto EndpointAdmissionArbiter::Private::transferAdmissionBasisLocked(")
     reserve = function_body(
         arbiter,
         "auto EndpointAdmissionArbiter::Private::reserveTicketLocked(")
@@ -232,51 +229,22 @@ def test_full_concurrency_uses_typed_transfer_admission():
     success = function_body(health, "void EndpointHealth::reportSuccess(")
     failure = function_body(health, "void EndpointHealth::reportFailure(")
 
-    continuation = eligible.index("DemandTransferContinuationMatches(")
-    proof = eligible.index("MtProxy::HasCurrentMainRelayProof(state")
-    assert continuation < proof
-    assert "DemandTransferContinuationStage::Released" in eligible
-    assert "TransferAdmissionBasis::ReleasedContinuation" in eligible
-    assert "TransferAdmissionBasis::MainRelayProof" in eligible
-    assert "TransferAdmissionBasis::None" in eligible
-    stages = live_pool_header.split(
-        "enum class DemandTransferContinuationStage", 1)[1].split("};", 1)[0]
-    assert stages.index("Requested") < stages.index("AwaitingRelease") < (
-        stages.index("Released"))
-    authorization = function_body(
-        live_pool,
-        "auto AuthorizeLiveSlotReclaim(")
-    assert "EndpointReclaimStage::Requested" in authorization
-    assert "EndpointReclaimStage::Authorized" in authorization
-    assert "DemandTransferContinuationStage::AwaitingRelease" in authorization
-    assert "request.attempt.runtimeId != request.foregroundRuntimeId" in (
-        authorization)
-    assert "slot->phase = LiveSlotPhase::Live;" in authorization
-    assert "ticket.key.runtimeId" in eligible
-    assert "ticket.proxyGeneration" in eligible
-    assert "if (!IsTransfer(ticket.use))" in eligible
-    assert "urgentWaiters" not in eligible
+    assert "EndpointDialSlot slot;" in dial_gate_header
+    assert "EndpointUse" not in dial_gate_header
+    assert "RuntimeGenerationKey" not in dial_gate_header
+    assert "TransferAdmissionBasis" not in dial_gate_header
+    assert "DemandTransferContinuation" not in dial_gate_header
+    assert "EndpointReclaim" not in dial_gate_header
+    assert "AuthorizeLiveSlotReclaim" not in dial_gate
     assert "baseEligibleLocked" not in arbiter
     assert "mainRelayProven" not in arbiter
-    assert "transferAdmissionBasisLocked(" in reserve
-    assert "AdmissionBasisAllowsTicket(" in reserve
-    assert ".transferAdmissionBasis = transferAdmissionBasis" in reserve
-    assert "MtProxy::ReserveLiveSlot(" in reserve
-    released = assign.split("auto releasedSuccessor", 1)[1].split(
-        "auto eligible", 1)[0]
-    assert "DemandTransferContinuationStage::Released" in released
-    assert "ticketCurrentLocked(*ticket, state)" in released
-    assert "boundary.at <= inputs.now" in released
-    assert "MtProxy::CancelLiveSlotSuccessor(" in released
-    assert "std::remove_if(" in released
-    assert "DemandTransferContinuationMatches(" in released
-    assert "const auto selected = foregroundOverride" in assign
-    candidate = function_body(
-        arbiter,
-        "EndpointAdmissionArbiter::Private::mainReplacementCandidateLocked(")
-    assert candidate.index("ForegroundRecovery") < candidate.index(
-        "DemandBootstrap") < candidate.index("BackgroundDuty")
-    assert "TransferAdmissionBasis::None" in candidate
+    assert "transferAdmissionBasisLocked(" not in arbiter
+    assert "AdmissionBasisAllowsTicket(" not in arbiter
+    assert "MtProxy::ReserveDialSlot(" in reserve
+    assert "const auto selected = selectLocked(" in assign
+    assert "reserveTicketLocked(" in assign
+    assert "releasedSuccessor" not in assign
+    assert "mainReplacementCandidateLocked" not in arbiter
     assert "CurrentMainRelayProof(" in state_source
     assert "proof.use != EndpointUse::Main" in state_source
     assert "SuccessFromStaleAttempt(report, state)" in success
@@ -348,5 +316,5 @@ if __name__ == "__main__":
     test_failure_reports_collapse_echoes_within_active_cooldown()
     test_handshake_success_does_not_clear_relay_silence_cooldown()
     test_session_reports_silence_and_recovers_temporary_key()
-    test_full_concurrency_uses_typed_transfer_admission()
+    test_dial_gate_is_independent_from_transfer_proof_state()
     test_established_idle_close_is_not_a_health_failure()

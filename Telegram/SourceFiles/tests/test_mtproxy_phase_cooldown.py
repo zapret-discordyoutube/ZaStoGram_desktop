@@ -22,8 +22,8 @@ SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 ARBITER_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.h"
 ARBITER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_admission_arbiter.cpp"
-LIVE_POOL_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.h"
-LIVE_POOL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_live_pool.cpp"
+DIAL_GATE_H = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.h"
+DIAL_GATE_CPP = SOURCE_DIR / "mtproto" / "proxy" / "endpoint_dial_gate.cpp"
 PROXY_ENDPOINT_H = RUNTIME_DIR / "proxy_endpoint.h"
 CONNECTION_STATUS_TYPES_H = RUNTIME_DIR / "connection_status_types.h"
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
@@ -243,8 +243,8 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "activeCap" not in policy_source
     arbiter_header = read(ARBITER_H)
     arbiter = read(ARBITER_CPP)
-    pool_header = read(LIVE_POOL_H)
-    pool_source = read(LIVE_POOL_CPP)
+    pool_header = read(DIAL_GATE_H)
+    pool_source = read(DIAL_GATE_CPP)
     for deleted in (
         "EndpointOpenGateStage",
         "kEndpointOpeningPermitCount",
@@ -254,9 +254,9 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     ):
         assert deleted not in arbiter_header
         assert deleted not in arbiter
-    assert '#include "mtproto/proxy/endpoint_live_pool.h"' in arbiter_header
-    assert "struct EndpointLivePool" in pool_header
-    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
+    assert '#include "mtproto/proxy/endpoint_dial_gate.h"' in arbiter_header
+    assert "struct EndpointDialGate" in pool_header
+    assert "std::map<QString, MtProxy::EndpointDialGate> _dialGates;" in arbiter
     assert "EndpointOpeningPermit" not in arbiter_header
     assert "struct EndpointPhysicalOpeningBoundary" in read(
         ENDPOINT_HEALTH_STATE_H)
@@ -267,19 +267,19 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
     assert "CurrentPhysicalOpeningBoundary(" in boundary
     assert "physical.retryUntil > result.at" in boundary
     pressure_reasons = function_body(
-        pool_source, "bool IsCapacityPressureTerminal(")
+        read(PROXY_ADAPTER_CPP), "bool IsSessionOpeningTerminal(")
     for reason in (
             "TcpConnectTimeout",
             "ClientHelloSentNoServerHello",
             "ServerHelloOkNoAppData",
             "ServerHelloOkNoMtprotoData",
             "ConnectedNoMtprotoData"):
-        assert f"case FailureReason::{reason}:" in pressure_reasons
+        assert f"case MtProxy::FailureReason::{reason}:" in pressure_reasons
     terminal = function_body(
         pool_source,
-        "LiveSlotTerminalReduction MarkLiveSlotCapacityTerminal(")
+        "DialSlotTerminalReduction MarkDialSlotOpeningTerminal(")
     assert "!request.finalEndpointTerminal" in terminal
-    assert "!IsCapacityPressureTerminal(request.reason)" in terminal
+    assert "request.reason" not in terminal
     for rejected in (
             "DnsFailed",
             "TcpConnectedNoClientHelloWrite",
@@ -289,13 +289,11 @@ def test_serverhello_ok_no_appdata_keeps_recipe_and_profile():
             "MtpReceiveTimeoutAfterData",
             "Network",
             "ProxyProtocolBadResponse"):
-        row = pressure_reasons.split(
-            f"case FailureReason::{rejected}:", 1)[1]
-        assert "return false;" in row
+        assert f"case MtProxy::FailureReason::{rejected}:" not in pressure_reasons
     assert "physicalOpeningBoundary" not in report_failure
     capacity_terminal = function_body(
         arbiter,
-        "void EndpointAdmissionArbiter::Private::markCapacityTerminal(")
+        "void EndpointAdmissionArbiter::Private::markOpeningTerminal(")
     assert "const auto exactOpening" in capacity_terminal
     assert "MtProxy::ApplyPhysicalOpeningTerminal(" in capacity_terminal
 
@@ -369,9 +367,9 @@ def test_proxy_check_and_session_timeout_use_phase_reasons():
     assert "&connection.mtproxyLease" in timeout_body
     assert "MtProxy::FailureReason::TcpConnectTimeout" in report_timeout
     assert "ClaimAttemptTerminal(attempt)" in report_timeout
-    assert "lease->capacityTerminal(reason, true);" in report_timeout
+    assert "lease->openingTerminal(reason, true);" in report_timeout
     assert report_timeout.index("ReportConnectionFailure(") < (
-        report_timeout.index("lease->capacityTerminal(reason, true);"))
+        report_timeout.index("lease->openingTerminal(reason, true);"))
     assert "MtProxy::FailureReason::TcpConnectTimeout" in check_reason
     assert "MtProxy::FailureReason::DnsFailed" in check_reason
     assert "MtProxy::FailureReason::AppDataRemoteClosed" in check_reason

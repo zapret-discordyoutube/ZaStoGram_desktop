@@ -9,8 +9,8 @@ CONTEXT_CPP = PROXY_DIR / "proxy_endpoint_context.cpp"
 STORAGE_H = PROXY_DIR / "proxy_endpoint_context_p.h"
 ARBITER_H = PROXY_DIR / "endpoint_admission_arbiter.h"
 ARBITER_CPP = PROXY_DIR / "endpoint_admission_arbiter.cpp"
-LIVE_POOL_H = PROXY_DIR / "endpoint_live_pool.h"
-LIVE_POOL_CPP = PROXY_DIR / "endpoint_live_pool.cpp"
+DIAL_GATE_H = PROXY_DIR / "endpoint_dial_gate.h"
+DIAL_GATE_CPP = PROXY_DIR / "endpoint_dial_gate.cpp"
 HEALTH_H = MTPROXY_DIR / "endpoint_health.h"
 HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 HEALTH_LIFECYCLE_CPP = MTPROXY_DIR / "endpoint_health_lifecycle.cpp"
@@ -50,13 +50,13 @@ def test_shared_context_owns_storage_and_one_admission_arbiter():
     assert "openStates" not in storage
     arbiter_header = read(ARBITER_H)
     arbiter = read(ARBITER_CPP)
-    pool_header = read(LIVE_POOL_H)
-    assert '#include "mtproto/proxy/endpoint_live_pool.h"' in arbiter_header
-    assert "struct EndpointLivePool" in pool_header
-    assert "std::map<QString, MtProxy::EndpointLivePool> _pools;" in arbiter
-    assert "std::map<MtProxy::LiveSlotKey, PhysicalSlotBinding> _slotBindings;" in (
-        arbiter)
-    assert "EndpointLivePool" not in storage
+    pool_header = read(DIAL_GATE_H)
+    assert '#include "mtproto/proxy/endpoint_dial_gate.h"' in arbiter_header
+    assert "struct EndpointDialGate" in pool_header
+    assert "std::map<QString, MtProxy::EndpointDialGate> _dialGates;" in arbiter
+    assert "PhysicalSlotBinding" not in arbiter
+    assert "_slotBindings" not in arbiter
+    assert "EndpointDialGate" not in storage
     assert "LiveSlot" not in storage
     assert "EndpointOpeningPermit" not in arbiter_header
     assert "std::set<ProxyRuntimeId> runtimes;" in storage
@@ -70,9 +70,8 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
         read(ARBITER_CPP),
         "void EndpointAdmissionArbiter::Private::unregisterRuntime(")
     close_slots = function_body(
-        read(LIVE_POOL_CPP), "LiveSlotsCloseReduction CloseRuntimeLiveSlots(")
-    close_matching = function_body(
-        read(LIVE_POOL_CPP), "LiveSlotsCloseReduction CloseMatchingSlots(")
+        read(DIAL_GATE_CPP), "DialSlotsCloseReduction CloseRuntimeDialSlots(")
+    gate = read(DIAL_GATE_CPP)
 
     assert "_arbiter->unregisterRuntime(runtimeId);" in context
     assert "_storage.runtimes.erase(runtimeId);" in arbiter
@@ -84,10 +83,11 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
     assert "MtProxy::RemoveRelayProofsForRuntime(state, runtimeId);" in arbiter
     assert arbiter.index("MtProxy::RemoveRelayProofsForRuntime") < arbiter.index(
         "closeRuntimeSlotsLocked(runtimeId, affected, actions);")
-    assert "CloseMatchingSlots(" in close_slots
-    assert "slot.phase = LiveSlotPhase::Closing;" in close_matching
-    assert ".resumePurpose = std::nullopt" in close_matching
-    assert "ReleaseLiveSlot(" not in close_slots
+    assert "CancelKnownReservationInPlace(" in close_slots
+    assert "ReleaseOpeningInPlace(" in close_slots
+    assert "slot.phase = DialSlotPhase::Empty;" in gate
+    assert "DialSlotPhase::Closing" not in gate
+    assert "ReleaseDialSlot(" not in close_slots
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in arbiter
     assert arbiter.rindex("actions.run();") > arbiter.rindex(
         "updateWakeLocked(inputs, actions);")
@@ -95,14 +95,14 @@ def test_runtime_unregister_cancels_tickets_and_prunes_generation_state():
 
 def test_runtime_cancel_closes_exact_physical_slots_without_reuse():
     source = read(ARBITER_CPP)
-    pool = read(LIVE_POOL_CPP)
+    pool = read(DIAL_GATE_CPP)
     retire = function_body(
         source,
         "void EndpointAdmissionArbiter::Private::retireOpeningAttemptLocked(")
     cancel = function_body(
         source, "void EndpointAdmissionArbiter::Private::cancelRuntime(")
     close = function_body(
-        pool, "LiveSlotsCloseReduction CloseRuntimeLiveSlots(")
+        pool, "DialSlotsCloseReduction CloseRuntimeDialSlots(")
 
     assert "attemptStarts.find(owner.attemptId)" in retire
     assert "if (owner != exact)" in retire
@@ -112,16 +112,17 @@ def test_runtime_cancel_closes_exact_physical_slots_without_reuse():
     assert "activeTraces.erase" not in retire
     assert "liveLanes" not in retire
     assert "std::get_if<" in cancel
-    assert "MtProxy::LiveSlotAttemptOwner" in cancel
-    assert "slot.phase == MtProxy::LiveSlotPhase::Opening" in cancel
-    assert "slot.phase == MtProxy::LiveSlotPhase::Live" in cancel
+    assert "MtProxy::DialSlotAttemptOwner" in cancel
+    assert "slot.phase == MtProxy::DialSlotPhase::Opening" in cancel
+    assert "MtProxy::DialSlotPhase::Live" not in cancel
     assert "retireOpeningAttemptLocked(" in cancel
     assert "closeRuntimeSlotsLocked(runtimeId, affected, actions);" in cancel
-    assert "ReleaseLiveSlot(" not in cancel
-    assert "CloseMatchingSlots(" in close
-    assert ".resumePurpose = std::nullopt" in pool
+    assert "ReleaseDialSlot(" not in cancel
+    assert "CancelKnownReservationInPlace(" in close
+    assert "ReleaseOpeningInPlace(" in close
+    assert "resumePurpose" not in pool
     assert "lastIncarnation" not in close
-    assert source.count("_pools.erase") == 0
+    assert source.count("_dialGates.erase") == 0
 
 
 def test_ticket_callbacks_are_invalidated_and_delivered_after_unlock():
@@ -162,22 +163,22 @@ def test_moved_lease_separates_health_retirement_from_exact_slot_release():
     assert "QMutexLocker lock(&_storage->mutex);" in cancel
     assert "AttemptIdentity(owner.attemptId, attemptState) == owner" in cancel
     assert "_context->cancelEndpointAttempt(_key, _attempt);" in release
-    assert "endpointAdmissionArbiter().releaseLiveSlot(" in release
+    assert "endpointAdmissionArbiter().releaseDialSlot(" in release
     assert release.index("cancelEndpointAttempt(") < release.index(
-        "releaseLiveSlot(")
-    assert "_slotArmed" in ready
+        "releaseDialSlot(")
+    assert "_dialSlotArmed" in ready
     assert "cancelEndpointAttempt(" not in ready
     assert "endpointAdmissionArbiter().markRelayReady(" in ready
-    assert ", _slotKey(base::take(other._slotKey))" in lifecycle
-    assert ", _slotArmed(base::take(other._slotArmed))" in lifecycle
-    assert "_slotKey = base::take(other._slotKey);" in lifecycle
-    assert "_slotArmed = base::take(other._slotArmed);" in lifecycle
-    assert "MtProxy::CommitLiveSlotOpening(" in grant
-    assert "admission->lease.armLiveSlot(slotKey, attempt);" in grant
-    assert grant.index("admission->lease.armLiveSlot(slotKey, attempt);") < grant.index(
+    assert ", _dialSlotKey(base::take(other._dialSlotKey))" in lifecycle
+    assert ", _dialSlotArmed(base::take(other._dialSlotArmed))" in lifecycle
+    assert "_dialSlotKey = base::take(other._dialSlotKey);" in lifecycle
+    assert "_dialSlotArmed = base::take(other._dialSlotArmed);" in lifecycle
+    assert "MtProxy::CommitDialSlotOpening(" in grant
+    assert "admission->lease.armDialSlot(slotKey, attempt);" in grant
+    assert grant.index("admission->lease.armDialSlot(slotKey, attempt);") < grant.index(
         "actions.grants.push_back({")
-    assert "LiveSlotKey _slotKey;" in health_header
-    assert "bool _slotArmed = false;" in health_header
+    assert "DialSlotKey _dialSlotKey;" in health_header
+    assert "bool _dialSlotArmed = false;" in health_header
     assert "SynchronizeEndpointAdmissionAggregate" not in context
     assert "EndpointOpeningEvent" not in lifecycle
 
@@ -206,8 +207,8 @@ def test_generation_change_cancels_only_older_tickets():
         source,
         "void EndpointAdmissionArbiter::Private::cancelBeforeGeneration(")
     reducer = function_body(
-        read(LIVE_POOL_CPP),
-        "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(")
+        read(DIAL_GATE_CPP),
+        "DialSlotsCloseReduction CloseDialSlotsBeforeGeneration(")
 
     assert "MtProxy::ApplyRuntimeProxyGeneration(" in cancel
     assert "ticket->proxyGeneration < proxyGeneration" in cancel
@@ -218,9 +219,10 @@ def test_generation_change_cancels_only_older_tickets():
     assert cancel.index("MtProxy::ApplyRuntimeProxyGeneration(") < cancel.index(
         "closeSlotsBeforeGenerationLocked(")
     assert "attempt.proxyGeneration < request.proxyGeneration" in reducer
-    assert "CloseMatchingSlots(" in reducer
-    assert "ReleaseLiveSlot(" not in reducer
-    assert ".resumePurpose = std::nullopt" in read(LIVE_POOL_CPP)
+    assert "CancelKnownReservationInPlace(" in reducer
+    assert "ReleaseOpeningInPlace(" in reducer
+    assert "ReleaseDialSlot(" not in reducer
+    assert "resumePurpose" not in read(DIAL_GATE_CPP)
     assert "drainEndpointLocked(endpointKey, inputs, actions);" in cancel
     assert cancel.rindex("actions.run();") > cancel.rindex(
         "updateWakeLocked(inputs, actions);")

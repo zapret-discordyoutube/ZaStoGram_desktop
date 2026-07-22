@@ -15,7 +15,7 @@ CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 CHECK_H = PROXY_DIR / "check.h"
 CHECK_CPP = PROXY_DIR / "check.cpp"
 SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
-ENDPOINT_LIVE_POOL_CPP = PROXY_DIR / "endpoint_live_pool.cpp"
+ENDPOINT_DIAL_GATE_CPP = PROXY_DIR / "endpoint_dial_gate.cpp"
 ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 ENDPOINT_HEALTH_STATE_H = MTPROXY_DIR / "endpoint_health_state.h"
 ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
@@ -148,31 +148,20 @@ def test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress():
         "OrdinaryMain",
         "ProxyCheck",
         "Background",
-        "ReclaimedMainResume",
     ):
         assert priority in arbiter
     priorities = arbiter.split("enum class PriorityClass {", 1)[1].split(
         "};", 1)[0]
-    assert priorities.index("Background") < priorities.index(
-        "ReclaimedMainResume") < priorities.index("Count")
+    assert priorities.index("Background") < priorities.index("Count")
     priority_for = function_body(
         arbiter,
         "PriorityClass EndpointAdmissionArbiter::Private::priorityForLocked(")
-    assert priority_for.index(
-        "ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume"
-    ) < priority_for.index("auto result = PriorityClass::Background;")
-    resume_branch = priority_for.split(
-        "ticket.purpose == MtProxy::AdmissionPurpose::ReclaimedMainResume",
-        1,
-    )[1].split("auto result = PriorityClass::Background;", 1)[0]
-    assert "return PriorityClass::ReclaimedMainResume;" in resume_branch
-    assert "kAgingStep" not in resume_branch
+    assert "AdmissionPurpose" not in priority_for
     owns_recovery = function_body(
         arbiter,
         "bool EndpointAdmissionArbiter::Private::ownsMainRecoveryLocked(")
-    assert "AdmissionPurpose::ReclaimedMainResume" in owns_recovery
-    assert owns_recovery.index("AdmissionPurpose::ReclaimedMainResume") < (
-        owns_recovery.index("ComposeMainRecoveryViewLocked("))
+    assert "AdmissionPurpose" not in owns_recovery
+    assert "ComposeMainRecoveryViewLocked(" in owns_recovery
     assert "kAgingStep = crl::time(15 * 1000)" in arbiter
     assert "runtimes.upper_bound(last)" in arbiter
     assert "other->sequence < ticket->sequence" in arbiter
@@ -389,23 +378,21 @@ def test_stealth_option_changes_restart_proxy_connections():
     assert "Core::App().restartProxyConnections();" in box
 
 
-def test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable():
-    pool = read(ENDPOINT_LIVE_POOL_CPP)
+def test_dial_gate_cleanup_keeps_public_surfaces_stable():
+    gate = read(ENDPOINT_DIAL_GATE_CPP)
     adapter = read(SESSION_PROXY_ADAPTER_CPP)
     check_header = read(CHECK_H)
     check = read(CHECK_CPP)
-    cleanup = function_body(pool, "LiveSlotsCloseReduction CloseRuntimeLiveSlots(")
+    cleanup = function_body(gate, "DialSlotsCloseReduction CloseRuntimeDialSlots(")
     generations = function_body(
-        pool, "LiveSlotsCloseReduction CloseLiveSlotsBeforeGeneration(")
-    close_matching = pool.split(
-        "LiveSlotsCloseReduction CloseMatchingSlots(", 1)[1].split(
-            "void ClearMatchingClosingReclaim(", 1)[0]
+        gate, "DialSlotsCloseReduction CloseDialSlotsBeforeGeneration(")
 
-    assert "CloseMatchingSlots(" in cleanup
-    assert "CloseMatchingSlots(" in generations
-    assert ".resumePurpose = std::nullopt" in close_matching
-    assert "AdmissionPurpose::ReclaimedMainResume" not in cleanup
-    assert "AdmissionPurpose::ReclaimedMainResume" not in generations
+    assert "CancelKnownReservationInPlace(" in cleanup
+    assert "ReleaseOpeningInPlace(" in cleanup
+    assert "CancelKnownReservationInPlace(" in generations
+    assert "ReleaseOpeningInPlace(" in generations
+    assert "AdmissionPurpose" not in gate
+    assert "reclaim" not in gate.lower()
 
     start_proxy_check = check_header.split("void StartProxyCheck(", 1)[1].split(
         ");", 1)[0]
@@ -422,7 +409,7 @@ def test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable():
     ):
         assert parameter in compact(start_proxy_check)
     assert "AdmissionPurpose" not in start_proxy_check
-    assert "LiveSlotKey" not in start_proxy_check
+    assert "DialSlotKey" not in start_proxy_check
 
     for message in (
         'u"relay_ready_first_mtproto_payload"_q',
@@ -452,4 +439,4 @@ if __name__ == "__main__":
     test_resolving_connection_forwards_timeout_to_route_attempts()
     test_proxied_connects_get_their_full_time_budget()
     test_stealth_option_changes_restart_proxy_connections()
-    test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable()
+    test_dial_gate_cleanup_keeps_public_surfaces_stable()
