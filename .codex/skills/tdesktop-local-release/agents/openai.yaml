@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local ZaStoGram Release"
+  short_description: "Build a local Release without waiting for CI"
+  default_prompt: "Use $tdesktop-local-release to build a local ZaStoGram Release package now."

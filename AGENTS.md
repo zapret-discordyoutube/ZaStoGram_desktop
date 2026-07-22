@@ -56,6 +56,8 @@ Dependencies are located relative to the repository: `../Libraries`, `../win64/L
 
 Do not run a compile/build step unless the user's latest request explicitly asks for compilation or a build. This applies even when an earlier plan or generic test checklist mentions building. For ordinary implementation work, prefer targeted fast checks such as focused scripts, static guards, `git diff --check`, line-ending checks, and source inspection. If build verification is useful but was not explicitly requested, report what was checked and note that compilation was skipped by repository instruction.
 
+The delivery workflow is the explicit exception: after completing user-requested product-source changes, follow `.codex/skills/tdesktop-local-release/SKILL.md` unless the user opts out of a local build or package. That workflow authorizes a local Release build and package without waiting for GitHub Actions.
+
 ### Test Account Policy
 
 A prepared Telegram test account is optional and its absence must never block implementation work. In particular, do not require `out/Debug/test_TelegramForcePortable` or another authenticated portable-data directory before editing code. When no test account is available, skip in-app account testing, run the strongest applicable static and scenario checks instead, and report the remaining runtime-verification limitation. Do not create, copy, or authenticate a test account unless the user explicitly asks for that.
@@ -162,6 +164,8 @@ Retrying builds wastes time and context. The ONLY fix is for the user to close t
 ## Delivery
 
 After completing requested code changes and the strongest available checks, commit and push the intended changes immediately unless the user asks not to. Push the current working branch and do not create a pull request unless the user explicitly requests one.
+
+For product-source deliveries, use `.codex/skills/tdesktop-local-release/SKILL.md`: push first so the remote workflow starts, then build and package the same revision locally. Do not wait for GitHub Actions. A local package is an unsigned development release; version bumps, tags, public GitHub Releases, and signed auto-updates still require an explicit production-release request.
 
 ## Local Storage Serialization
 
