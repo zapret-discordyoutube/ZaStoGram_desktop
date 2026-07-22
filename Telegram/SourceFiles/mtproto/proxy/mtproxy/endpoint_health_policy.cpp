@@ -175,6 +175,7 @@ void ApplyPhysicalOpeningTerminal(
 		FailureReason reason,
 		crl::time observedAt) {
 	if (!attempt.attemptId
+		|| attempt.use != EndpointUse::Main
 		|| reason == FailureReason::None
 		|| !observedAt) {
 		return;

@@ -739,12 +739,22 @@ void TcpConnection::timedOut() {
 	if (_socket) {
 		_socket->timedOut();
 	}
+	_timeoutFailure = _socket
+		? _socket->proxyTransportFailure()
+		: ProxyTransportFailure();
+	if (_proxy.type == ProxyData::Type::Mtproto
+		&& _timeoutFailure.reason == ProxyMtproxyTerminalReason::None) {
+		_timeoutFailure.reason = (_socket && _socket->isConnected())
+			? ProxyMtproxyTerminalReason::ConnectedNoMtprotoData
+			: ProxyMtproxyTerminalReason::TcpConnectTimeout;
+		_timeoutFailure.error = ProxyConnectionError::Timeout;
+		_timeoutFailure.closeOrigin = ProxyCloseOrigin::LocalTimeout;
+		_timeoutFailure.attribution = ProxyFailureAttribution::Unclear;
+	}
 	ReportProxyEvent(_runtime, {
 		.phase = ProxyDiagnosticsPhase::Failed,
 		.error = ProxyConnectionError::Timeout,
-		.mtproxyReason = _socket
-			? _socket->mtproxyTerminalReason()
-			: ProxyMtproxyTerminalReason::None,
+		.mtproxyReason = _timeoutFailure.reason,
 		.attempt = _mtproxyAttempt,
 		.terminalUntil = _socket
 			? _socket->mtproxyTerminalUntil()
@@ -763,7 +773,13 @@ void TcpConnection::markProxyMtprotoPayloadReceived() {
 }
 
 HandshakePhase TcpConnection::handshakePhase() const {
-	return _socket ? _socket->handshakePhase() : HandshakePhase::None;
+	if (!_socket) {
+		return HandshakePhase::None;
+	}
+	const auto phase = _socket->handshakePhase();
+	return (phase != HandshakePhase::None || !_socket->isConnected())
+		? phase
+		: HandshakePhase::TcpConnected;
 }
 
 ProxyConnectionAttempt TcpConnection::proxyConnectionAttempt() const {
@@ -771,7 +787,11 @@ ProxyConnectionAttempt TcpConnection::proxyConnectionAttempt() const {
 }
 
 ProxyTransportFailure TcpConnection::proxyTransportFailure() const {
-	return _socket ? _socket->proxyTransportFailure() : ProxyTransportFailure();
+	return (_timeoutFailure.reason != ProxyMtproxyTerminalReason::None)
+		? _timeoutFailure
+		: _socket
+		? _socket->proxyTransportFailure()
+		: ProxyTransportFailure();
 }
 
 bool TcpConnection::isConnected() const {

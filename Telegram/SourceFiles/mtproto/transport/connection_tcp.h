@@ -78,6 +78,7 @@ private:
 	const ProxyStealthOptions _stealth;
 	ProxyConnectionAttempt _mtproxyAttempt;
 	MtProxyAttemptPlan _mtproxyPlan;
+	ProxyTransportFailure _timeoutFailure;
 	crl::time _mtproxyAttemptStartedAt = 0;
 	std::unique_ptr<AbstractSocket> _socket;
 	bool _connectionStarted = false;

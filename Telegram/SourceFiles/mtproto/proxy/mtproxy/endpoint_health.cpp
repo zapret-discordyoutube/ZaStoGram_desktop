@@ -282,6 +282,9 @@ void EndpointHealth::reportFailure(FailureReport report) {
 				const auto endpointMainProof = EndpointMainRelayProof(state);
 				const auto endpointHasMainProof = endpointMainProof.strength
 					!= MainRelayProofStrength::None;
+				const auto sharedHealthEvidence = report.use
+						== EndpointUse::Main
+					|| report.use == EndpointUse::ProxyCheck;
 				if ((report.use == EndpointUse::ProxyCheck
 						|| (report.use == EndpointUse::Main
 							&& !endpointHasMainProof))
@@ -300,20 +303,23 @@ void EndpointHealth::reportFailure(FailureReport report) {
 						.diagnostic = diagnostic,
 					};
 				}
-				NoteRouteFailure(
-					storage,
-					state,
-					report.endpoint.route,
-					report.reason);
+				if (sharedHealthEvidence) {
+					NoteRouteFailure(
+						storage,
+						state,
+						report.endpoint.route,
+						report.reason);
+				}
 				const auto routeOnly = FailureIsRouteOnly(report.reason)
 					&& !report.routesExhausted;
-				if (routeOnly) {
+				if (routeOnly && sharedHealthEvidence) {
 					shouldDrain = true;
 				}
 				const auto alternateRoute = !routeKey.isEmpty()
 					&& HasHealthyRoute(storage, state)
 					&& !report.routesExhausted;
-				if (terminal->finalAttemptTerminal) {
+				if (terminal->finalAttemptTerminal
+					&& sharedHealthEvidence) {
 					if (!FailureNeedsRecipeEscalation(report.reason)) {
 						state.recipeFailureStreak = 0;
 					} else {
