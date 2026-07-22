@@ -259,12 +259,10 @@ ConnectionTicket ConnectionBroker::request(ConnectionRequest request) {
 			.requestedRecoveryToken = request.requestedRecoveryToken,
 			.stealth = request.stealth,
 			.configuredTlsProfile = request.configuredTlsProfile,
-			.purpose = request.purpose,
 			.notBefore = request.notBefore,
 			.traceId = traceId,
 			.owner = request.context,
 			.ownerDestroyed = ownerDestroyed,
-			.reclaim = std::move(request.reclaim),
 			.status = [
 				runtime,
 				diagnostics,

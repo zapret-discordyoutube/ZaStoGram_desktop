@@ -159,13 +159,6 @@ EndpointPhysicalOpeningBoundaryView CurrentPhysicalOpeningBoundary(
 			.retryUntil = boundary.pressureUntil,
 		};
 	}
-	if (boundary.handoffUntil > result.retryUntil
-		&& boundary.handoffUntil > now) {
-		result = {
-			.reason = FailureReason::None,
-			.retryUntil = boundary.handoffUntil,
-		};
-	}
 	return result;
 }
 
@@ -194,29 +187,6 @@ void ApplyPhysicalOpeningTerminal(
 	boundary.pressureUntil = pressureUntil;
 }
 
-void ApplyPostReclaimOpeningHandoff(
-		EndpointState &state,
-		const LiveSlotKey &sourceKey,
-		const ProxyConnectionAttempt &sourceAttempt,
-		crl::time releasedAt) {
-	if (!sourceAttempt.attemptId || !releasedAt) {
-		return;
-	}
-	auto &boundary = state.physicalOpeningBoundary;
-	if (releasedAt < boundary.handoffReleasedAt) {
-		return;
-	}
-	boundary.pressureAttempt = {};
-	boundary.pressureReason = FailureReason::None;
-	boundary.pressureObservedAt = 0;
-	boundary.pressureUntil = 0;
-	boundary.handoffSourceKey = sourceKey;
-	boundary.handoffSourceAttempt = sourceAttempt;
-	boundary.handoffReleasedAt = releasedAt;
-	boundary.handoffUntil = releasedAt
-		+ OpenConnectionSpacing(ProxyConnectionPattern::Off);
-}
-
 void ApplyPhysicalOpeningRelay(
 		EndpointState &state,
 		const ProxyConnectionAttempt &attempt,
@@ -231,13 +201,6 @@ void ApplyPhysicalOpeningRelay(
 		boundary.pressureReason = FailureReason::None;
 		boundary.pressureObservedAt = 0;
 		boundary.pressureUntil = 0;
-	}
-	if (boundary.handoffSourceAttempt.attemptId < attempt.attemptId
-		&& boundary.handoffReleasedAt <= relayAt) {
-		boundary.handoffSourceKey = {};
-		boundary.handoffSourceAttempt = {};
-		boundary.handoffReleasedAt = 0;
-		boundary.handoffUntil = 0;
 	}
 }
 
@@ -418,12 +381,6 @@ EndpointDeferredCleanup PruneExpiredEndpointStateDeferred(
 		boundary.pressureReason = FailureReason::None;
 		boundary.pressureObservedAt = 0;
 		boundary.pressureUntil = 0;
-	}
-	if (boundary.handoffUntil <= now) {
-		boundary.handoffSourceKey = {};
-		boundary.handoffSourceAttempt = {};
-		boundary.handoffReleasedAt = 0;
-		boundary.handoffUntil = 0;
 	}
 	for (auto i = begin(state.attemptStarts); i != end(state.attemptStarts);) {
 		if (now >= EndpointAttemptHardDeadline(i->second)) {

@@ -517,13 +517,13 @@ EndpointAttemptLease::EndpointAttemptLease(
 : _context(std::move(other._context))
 , _key(std::move(other._key))
 , _attempt(base::take(other._attempt))
-, _slotKey(base::take(other._slotKey))
+, _dialSlotKey(base::take(other._dialSlotKey))
 , _startedAt(base::take(other._startedAt))
 , _active(base::take(other._active))
-, _slotArmed(base::take(other._slotArmed))
+, _dialSlotArmed(base::take(other._dialSlotArmed))
 , _relayReadyReported(base::take(other._relayReadyReported))
-, _capacityTerminalReported(base::take(
-	other._capacityTerminalReported)) {
+, _openingTerminalReported(base::take(
+	other._openingTerminalReported)) {
 }
 
 EndpointAttemptLease &EndpointAttemptLease::operator=(
@@ -533,13 +533,13 @@ EndpointAttemptLease &EndpointAttemptLease::operator=(
 		_context = std::move(other._context);
 		_key = std::move(other._key);
 		_attempt = base::take(other._attempt);
-		_slotKey = base::take(other._slotKey);
+		_dialSlotKey = base::take(other._dialSlotKey);
 		_startedAt = base::take(other._startedAt);
 		_active = base::take(other._active);
-		_slotArmed = base::take(other._slotArmed);
+		_dialSlotArmed = base::take(other._dialSlotArmed);
 		_relayReadyReported = base::take(other._relayReadyReported);
-		_capacityTerminalReported = base::take(
-			other._capacityTerminalReported);
+		_openingTerminalReported = base::take(
+			other._openingTerminalReported);
 	}
 	return *this;
 }
@@ -548,63 +548,61 @@ EndpointAttemptLease::~EndpointAttemptLease() {
 	release();
 }
 
-void EndpointAttemptLease::armLiveSlot(
-		LiveSlotKey slotKey,
+void EndpointAttemptLease::armDialSlot(
+		DialSlotKey slotKey,
 		const ProxyConnectionAttempt &attempt) {
 	if (!_active
-		|| _slotArmed
+		|| _dialSlotArmed
 		|| slotKey.endpointKey != _key
-		|| slotKey.index < 0
-		|| slotKey.index >= kEndpointLiveSlotCount
 		|| !slotKey.incarnation
 		|| !(attempt == _attempt)) {
 		return;
 	}
-	_slotKey = std::move(slotKey);
-	_slotArmed = true;
+	_dialSlotKey = std::move(slotKey);
+	_dialSlotArmed = true;
 }
 
 void EndpointAttemptLease::abandon() {
-	Expects(!_slotArmed);
+	Expects(!_dialSlotArmed);
 	_context.reset();
 	_key.clear();
 	_attempt = {};
-	_slotKey = {};
+	_dialSlotKey = {};
 	_startedAt = 0;
 	_active = false;
-	_slotArmed = false;
+	_dialSlotArmed = false;
 	_relayReadyReported = false;
-	_capacityTerminalReported = false;
+	_openingTerminalReported = false;
 }
 
 void EndpointAttemptLease::transportReady() {
 	if (!_active
-		|| !_slotArmed
+		|| !_dialSlotArmed
 		|| _relayReadyReported
-		|| _capacityTerminalReported
+		|| _openingTerminalReported
 		|| !_context) {
 		return;
 	}
 	_relayReadyReported = true;
 	_context->endpointAdmissionArbiter().markRelayReady(
-		_slotKey,
+		_dialSlotKey,
 		_attempt);
 }
 
-void EndpointAttemptLease::capacityTerminal(
+void EndpointAttemptLease::openingTerminal(
 		FailureReason reason,
 		bool finalEndpointTerminal) {
 	if (!_active
-		|| !_slotArmed
+		|| !_dialSlotArmed
 		|| _relayReadyReported
-		|| _capacityTerminalReported
+		|| _openingTerminalReported
 		|| !finalEndpointTerminal
 		|| !_context) {
 		return;
 	}
-	_capacityTerminalReported = true;
-	_context->endpointAdmissionArbiter().markCapacityTerminal(
-		_slotKey,
+	_openingTerminalReported = true;
+	_context->endpointAdmissionArbiter().markOpeningTerminal(
+		_dialSlotKey,
 		_attempt,
 		reason,
 		finalEndpointTerminal);
@@ -617,9 +615,9 @@ void EndpointAttemptLease::release() {
 	_active = false;
 	if (_context) {
 		_context->cancelEndpointAttempt(_key, _attempt);
-		if (base::take(_slotArmed)) {
-			_context->endpointAdmissionArbiter().releaseLiveSlot(
-				_slotKey,
+		if (base::take(_dialSlotArmed)) {
+			_context->endpointAdmissionArbiter().releaseDialSlot(
+				_dialSlotKey,
 				_attempt);
 		}
 	}
@@ -627,10 +625,6 @@ void EndpointAttemptLease::release() {
 
 bool EndpointAttemptLease::active() const {
 	return _active;
-}
-
-LiveSlotKey EndpointAttemptLease::slotKey() const {
-	return _slotArmed ? _slotKey : LiveSlotKey();
 }
 
 ProxyRuntimeId EndpointAttemptLease::runtimeId() const {

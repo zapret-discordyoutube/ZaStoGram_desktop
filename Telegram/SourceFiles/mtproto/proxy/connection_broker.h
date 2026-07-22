@@ -16,7 +16,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <atomic>
 #include <memory>
-#include <optional>
 
 namespace MTP {
 
@@ -68,12 +67,8 @@ struct ConnectionRequest {
 	MtProxy::MainRecoveryToken requestedRecoveryToken;
 	ProxyStealthOptions stealth;
 	ProxyTlsProfile configuredTlsProfile = ProxyTlsProfile::Auto;
-	MtProxy::AdmissionPurpose purpose = MtProxy::AdmissionPurpose::Ordinary;
 	crl::time notBefore = 0;
 	QPointer<QObject> context;
-	Fn<void(
-		MtProxy::LiveSlotKey,
-		std::optional<MtProxy::AdmissionPurpose>)> reclaim;
 	Fn<void(ConnectionStart)> start;
 	Fn<void(ConnectionBrokerDecision)> status;
 	crl::time waitStartedAt = 0;

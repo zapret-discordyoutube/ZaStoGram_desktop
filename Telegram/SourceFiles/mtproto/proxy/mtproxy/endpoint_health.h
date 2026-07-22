@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
-#include "mtproto/proxy/endpoint_live_pool.h"
+#include "mtproto/proxy/endpoint_dial_gate.h"
 #include "mtproto/runtime/connection_status_types.h"
 
 #include <compare>
@@ -149,12 +149,11 @@ public:
 	~EndpointAttemptLease();
 
 	void transportReady();
-	void capacityTerminal(
+	void openingTerminal(
 		FailureReason reason,
 		bool finalEndpointTerminal);
 	void release();
 	[[nodiscard]] bool active() const;
-	[[nodiscard]] LiveSlotKey slotKey() const;
 	[[nodiscard]] ProxyRuntimeId runtimeId() const;
 	[[nodiscard]] uint64 attemptId() const;
 	[[nodiscard]] uint64 proxyGeneration() const;
@@ -172,20 +171,20 @@ private:
 		QString key,
 		ProxyConnectionAttempt attempt,
 		crl::time startedAt);
-	void armLiveSlot(
-		LiveSlotKey slotKey,
+	void armDialSlot(
+		DialSlotKey slotKey,
 		const ProxyConnectionAttempt &attempt);
 	void abandon();
 
 	std::shared_ptr<ProxyEndpointContext> _context;
 	QString _key;
 	ProxyConnectionAttempt _attempt;
-	LiveSlotKey _slotKey;
+	DialSlotKey _dialSlotKey;
 	crl::time _startedAt = 0;
 	bool _active = false;
-	bool _slotArmed = false;
+	bool _dialSlotArmed = false;
 	bool _relayReadyReported = false;
-	bool _capacityTerminalReported = false;
+	bool _openingTerminalReported = false;
 
 };
 
