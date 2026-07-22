@@ -13,6 +13,7 @@ namespace MTP::details::MtProxy {
 namespace {
 
 constexpr auto kBackgroundMainLiveQuantum = crl::time(60 * 1000);
+constexpr auto kEndpointConcurrentLiveLimit = 2;
 
 [[nodiscard]] bool ValidTicketOwner(const LiveSlotTicketOwner &owner) {
 	return owner.key.runtimeId && owner.key.ticketId && owner.revision;
@@ -325,7 +326,7 @@ void ResetLearningIfEmpty(EndpointLivePool &pool) {
 	if (pool.learnedLimit && occupied >= *pool.learnedLimit) {
 		return LivePoolWaitReason::Capacity;
 	}
-	if (pool.capacityProbe || proven >= kEndpointLiveSlotCount) {
+	if (pool.capacityProbe || proven >= kEndpointConcurrentLiveLimit) {
 		return LivePoolWaitReason::Capacity;
 	}
 	const auto baseline = CompleteLiveBaseline(pool, request.endpointKey);
@@ -750,7 +751,7 @@ LiveSlotCommitReduction CommitLiveSlotOpening(
 		== TransferAdmissionBasis::ReleasedContinuation;
 	const auto expansion = !continuationAdmission
 		&& result.pool.provenLowerBound > 0
-		&& target <= kEndpointLiveSlotCount
+		&& target <= kEndpointConcurrentLiveLimit
 		&& occupiedBefore == result.pool.provenLowerBound
 		&& int(baseline.size()) == result.pool.provenLowerBound
 		&& !result.pool.capacityProbe
