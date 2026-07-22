@@ -2900,6 +2900,20 @@ void EndpointAdmissionArbiter::Private::markRelayReady(
 				attempt,
 				inputs.now);
 		}
+		// The slot protects only the expensive path from TCP/FakeTLS start
+		// through the first real MTProto response. Keeping it for the full
+		// connection lifetime was intended to suppress DPI bursts, but it
+		// capped healthy file lanes and forced account sessions to evict one
+		// another. Proven connections therefore leave admission immediately.
+		const auto released = MtProxy::ReleaseLiveSlot(
+			pool->second,
+			{
+				.key = slotKey,
+				.attempt = attempt,
+			});
+		Assert(released.slotReleased);
+		pool->second = released.pool;
+		_slotBindings.erase(slotKey);
 		drainEndpointLocked(slotKey.endpointKey, inputs, actions);
 		updateWakeLocked(inputs, actions);
 	}
