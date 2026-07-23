@@ -92,6 +92,9 @@ bool SessionTransport::appendTestConnection(
 		+ (protocolSecret.empty() ? 0 : 1);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = classifyEndpointUse();
+	const auto mtproxyTransfer = mtproxy
+		&& (mtproxyUse == SessionProxyEndpointUse::Media
+			|| mtproxyUse == SessionProxyEndpointUse::Upload);
 	const auto requestedRecovery = (mtproxy
 		&& mtproxyUse == SessionProxyEndpointUse::Main)
 		? _state.mainRecoveryBackoff
@@ -171,6 +174,29 @@ bool SessionTransport::appendTestConnection(
 		InvokeQueued(_state.testConnections.back().data, start);
 		armWaitForConnectedTimer();
 	};
+
+	// Media and upload sessions are Telegram's parallel data plane. Routing
+	// them through the shared admission queue was intended to suppress DPI
+	// handshake bursts, but a single slow or dead proxy handshake then blocked
+	// every file lane behind it. Keep admission for control-plane sessions and
+	// let independent transfer lanes connect and recover independently.
+	if (mtproxyTransfer) {
+		lock.unlock();
+		appendStartedConnection(
+			MtProxy::EndpointId(),
+			mtproxyUse,
+			SessionProxyLease(),
+			{
+				.runtimeId = _owner->_runtime->proxyRuntimeId(),
+				.proxyGeneration = _state.proxyGeneration,
+				.use = mtproxyUse,
+			},
+			MainRecoveryHandle(),
+			MtProxyAttemptPlan(),
+			crl::now(),
+			stealth);
+		return true;
+	}
 
 	if (mtproxy) {
 		if (!_state.endpointAdmissionWaitStartedAt) {
