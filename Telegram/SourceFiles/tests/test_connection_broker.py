@@ -145,45 +145,24 @@ def test_arbiter_owns_reducer_state_and_exact_physical_bindings():
     assert deliver.rindex("actions.run();") > deliver.rindex("}")
 
 
-def test_session_pending_tickets_have_one_hard_deadline():
+def test_session_data_plane_does_not_enter_the_shared_broker():
     header = read(SESSION_TRANSPORT_H)
     source = read_session_private_sources()
+    append = function_body(
+        source, "bool SessionTransport::appendTestConnection(")
     connect = function_body(
-        source,
-        "void SessionTransport::connectToServer(\n"
-        "\t\tbool afterConfig,\n"
-        "\t\tMtProxy::AdmissionPurpose purpose)")
-    destroy = function_body(
-        source,
-        "void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin)")
-    deadline = function_body(
-        source, "void SessionTransport::brokerQueueDeadlineFired()")
+        source, "void SessionTransport::connectToServer(bool afterConfig)")
 
-    assert "std::vector<SessionProxyTicket> brokerTickets;" in header
-    assert "RuntimeTimer brokerQueueDeadlineTimer;" in header
-    assert "kBrokerQueueHardDeadline = 90 * crl::time(1000)" in source
-    assert "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);" in connect
-    assert "_timing.brokerQueueDeadlineTimer.cancel();" in destroy
-    assert "MtProxy::EndpointAdmissionWaitReason::Slot" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::Capacity" in deadline
-    assert "MtProxy::EndpointAdmissionWaitReason::Closing" in deadline
-    assert "waiting->reevaluate();" in deadline
-    assert deadline.index("waiting->reevaluate();") < deadline.index(
-        "_timing.brokerQueueDeadlineTimer.callOnce(kBrokerQueueHardDeadline);")
-    slot_branch = deadline.split("if (exactWait", 1)[1].split(
-        "if (!exactWait", 1)[0]
-    assert "doDisconnect();" not in slot_branch
-    assert "MtProxy::EndpointAdmissionWaitReason::HealthOrNotBefore" in deadline
-    assert "doDisconnect();" in deadline
-    assert "kProxyReconnectMinTimeout" in deadline
-    arbiter = read(ARBITER_CPP)
-    wake = function_body(
-        arbiter, "void EndpointAdmissionArbiter::Private::updateWakeLocked(")
-    assert "ticket.scheduledOpenAt" in wake
-    assert "ticket.reevaluateAt" in wake
-    assert "MtProxy::NextLivePoolWakeAt(" in wake
-    assert "mainReplacementCandidateLocked(" in wake
-    assert "MtProxy::MainReplacementPurpose::BackgroundDuty" in wake
+    assert "SessionProxyTicket" not in header
+    assert "brokerQueueDeadlineTimer" not in header
+    assert "kBrokerQueueHardDeadline" not in source
+    assert "_owner->_proxyPort->requestConnection({" not in append
+    assert "MtProxy::AdmissionPurpose" not in append
+    assert "ReserveHandshakeGateForProxy" not in append
+    assert "_owner->_connectionFactory->create(" in append
+    assert "weak->connectToServer(" in append
+    assert "head-of-line blocking" in append
+    assert "appendTestConnection(" in connect
 
 
 def test_proxy_check_uses_the_shared_broker():
@@ -277,6 +256,6 @@ if __name__ == "__main__":
     test_connection_broker_is_a_facade_over_the_shared_arbiter()
     test_ticket_cancellation_uses_runtime_and_ticket_identity()
     test_arbiter_owns_reducer_state_and_exact_physical_bindings()
-    test_session_pending_tickets_have_one_hard_deadline()
+    test_session_data_plane_does_not_enter_the_shared_broker()
     test_proxy_check_uses_the_shared_broker()
     test_proxy_check_connection_request_designators_match_struct_order()

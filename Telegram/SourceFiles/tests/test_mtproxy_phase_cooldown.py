@@ -355,7 +355,7 @@ def test_logs_and_proxy_status_use_phase_specific_names():
         assert f'"{key}' in lang
 
 
-def test_proxy_check_and_session_timeout_use_phase_reasons():
+def test_proxy_check_timeout_uses_phase_reasons_without_session_admission():
     session = read_session_private_sources()
     check = read(CHECK_CPP)
     adapter = read(PROXY_ADAPTER_CPP)
@@ -364,9 +364,10 @@ def test_proxy_check_and_session_timeout_use_phase_reasons():
         adapter, "void ProductionSessionProxyPort::reportConnectTimeout(")
     check_reason = function_body(check, "MtProxy::FailureReason ProxyCheckFailureReason(")
 
-    assert "reportConnectTimeout(" in timeout_body
-    assert "proxyAttempt(connection)" in timeout_body
-    assert "&connection.mtproxyLease" in timeout_body
+    assert "connection.data->timedOut();" in timeout_body
+    assert "reportConnectTimeout(" not in timeout_body
+    assert "proxyAttempt(connection)" not in timeout_body
+    assert "mtproxyLease" not in timeout_body
     assert "MtProxy::FailureReason::TcpConnectTimeout" in report_timeout
     assert "ClaimAttemptTerminal(attempt)" in report_timeout
     assert "lease->capacityTerminal(reason, true);" in report_timeout
@@ -385,4 +386,4 @@ if __name__ == "__main__":
     test_phase_cooldown_and_recipe_policy_is_reason_based()
     test_serverhello_ok_no_appdata_keeps_recipe_and_profile()
     test_logs_and_proxy_status_use_phase_specific_names()
-    test_proxy_check_and_session_timeout_use_phase_reasons()
+    test_proxy_check_timeout_uses_phase_reasons_without_session_admission()

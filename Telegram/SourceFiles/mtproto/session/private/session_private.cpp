@@ -48,8 +48,6 @@ SessionPrivate::SessionPrivate(
 		ShiftedDcId shiftedDcId,
 		SessionRole role,
 		uint64 proxyGeneration,
-		bool proxyMigrationScout,
-		bool proxyMigrationSuspended,
 		not_null<SessionProxyPort*> proxyPort,
 		not_null<SessionConnectionFactory*> connectionFactory,
 		not_null<SessionAuthKeyFactory*> authKeyFactory)
@@ -69,9 +67,7 @@ SessionPrivate::SessionPrivate(
 	this,
 	_runtime,
 	thread,
-	proxyGeneration,
-	proxyMigrationScout,
-	proxyMigrationSuspended)
+	proxyGeneration)
 , _messageHandler(this)
 , _sessionState(std::move(data)) {
 	Expects(_shiftedDcId != 0);
@@ -107,12 +103,8 @@ void SessionPrivate::restartNow() {
 	_transport.restartNow();
 }
 
-void SessionPrivate::migrateProxy(uint64 generation, bool scout) {
-	_transport.migrateProxy(generation, scout);
-}
-
-void SessionPrivate::releaseProxyMigration(uint64 generation) {
-	_transport.releaseProxyMigration(generation);
+void SessionPrivate::migrateProxy(uint64 generation) {
+	_transport.migrateProxy(generation);
 }
 
 void SessionPrivate::onSentSome(uint64 size) {

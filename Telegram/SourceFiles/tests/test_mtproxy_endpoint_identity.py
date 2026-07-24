@@ -180,9 +180,9 @@ def test_consumers_treat_endpoint_empty_as_canonical_empty():
 
     assert "MtProxy::EndpointEmpty(request.endpoint)" in broker
     assert "MtProxy::EndpointEmpty(state->mtproxyEndpoint)" in check
-    assert "EmptySessionProxyEndpoint(connection.mtproxyEndpoint)" in session
-    assert "EmptySessionProxyEndpoint(found->mtproxyEndpoint)" in session
-    assert "EmptySessionProxyEndpoint(_state.mtproxyEndpoint)" in session
+    assert "mtproxyEndpoint" not in session
+    assert "EmptySessionProxyEndpoint(connection.mtproxyEndpoint)" not in session
+    assert "EmptySessionProxyEndpoint(_state.mtproxyEndpoint)" not in session
     proxy_port = read(SESSION_PROXY_PORT_CPP)
     assert "endpoint.canonical.type == ProxyData::Type::None" in proxy_port
     assert "_endpointId.route = MtProxy::RouteEndpointFromAddress(" in tls

@@ -78,23 +78,21 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
     assert "fragmentationAllowed" not in mtproxy_branch
 
 
-def test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session():
+def test_session_dials_selected_mtproxy_without_admission():
     session = read_session_private_sources()
     adapter = (PROXY_DIR / "session_proxy_adapter.cpp").read_text(
         encoding="utf-8")
     append = function_body(session, "bool SessionTransport::appendTestConnection(")
     broker_request = function_body(adapter, "ConnectionRequest ToBrokerRequest(")
-    mtproxy_part = append.split("if (mtproxy) {", 1)[1]
 
     assert "MtProxy::EndpointIdFromProxy(" not in append
     assert "MtProxy::EndpointIdFromProxy(" in broker_request
-    assert ".address = ip" in mtproxy_part
-    assert ".port = port" in mtproxy_part
     assert ".endpoint = std::move(endpoint)" in broker_request
-    assert ".proxy = proxy" in mtproxy_part
-    assert ".stealth = stealth" in mtproxy_part
-    assert ".start = [=](SessionProxyStart start)" in mtproxy_part
-    assert "appendStartedConnection(" in mtproxy_part
+    assert "_owner->_proxyPort->requestConnection({" not in append
+    assert "_owner->_connectionFactory->create(" in append
+    assert "weak->connectToServer(" in append
+    assert "protocolForFiles" in append
+    assert "ReserveHandshakeGateForProxy" not in append
     assert "EndpointHealth::Instance().admit(" not in append
     assert "setState(-int(" not in append
     assert "mtproxy admission delayed" not in append
@@ -441,7 +439,7 @@ def test_pool_integration_keeps_cleanup_internal_and_public_surfaces_stable():
 
 if __name__ == "__main__":
     test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan()
-    test_canonical_endpoint_is_built_before_broker_and_not_admitted_in_session()
+    test_session_dials_selected_mtproxy_without_admission()
     test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded()
     test_arbiter_queues_by_priority_and_broker_logs_non_failure_progress()
     test_route_failure_stays_local_until_main_canonical_exhaustion()

@@ -51,7 +51,7 @@ def test_gate_lease_api_and_constants():
     assert "_active = false" in source
 
 
-def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
+def test_session_private_bypasses_shared_policy_for_live_mtproxy_attempts():
     header = SESSION_H.read_text(encoding="utf-8")
     transport_header = TRANSPORT_H.read_text(encoding="utf-8")
     proxy_port_header = PROXY_PORT_H.read_text(encoding="utf-8")
@@ -61,25 +61,23 @@ def test_session_private_uses_endpoint_health_for_live_mtproxy_attempts():
     assert '#include "mtproto/session/private/proxy_port.h"' in header
     assert "not_null<SessionProxyPort*> _proxyPort;" in header
     assert "class SessionProxyLease final" in proxy_port_header
-    assert "SessionProxyLease mtproxyLease;" in transport_header
-    assert "MtProxy::EndpointAttemptLease mtproxyLease;" not in transport_header
-    assert "std::vector<SessionProxyTicket> brokerTickets;" in transport_header
-    assert "ReserveHandshakeGateForProxy(_sessionState.options->proxy)" not in source
+    assert "SessionProxyLease" not in transport_header
+    assert "SessionProxyTicket" not in transport_header
+    assert "ReserveHandshakeGateForProxy" not in source
     assert "EndpointHealth::Instance().admit(" not in source
-    assert "_proxyPort->requestConnection({" in source
+    assert "_proxyPort->requestConnection({" not in source
     assert "proxyServices().broker().request(" in adapter
-    assert "std::move(start.lease)" in source
+    assert "weak->connectToServer(" in source
 
 
-def test_remove_connection_releases_before_erasing():
+def test_remove_connection_has_no_admission_lease():
     source = read_session_private_sources()
     body = body_after(
         source,
         "void SessionTransport::removeTestConnection")
 
-    assert "i->mtproxyLease.release();" in body
-    assert body.index("i->mtproxyLease.release();") < body.index(
-        "_state.testConnections.erase(")
+    assert "mtproxyLease" not in body
+    assert "_state.testConnections.erase(" in body
 
 
 def test_proxy_check_connection_holds_gate_lease():
@@ -180,8 +178,8 @@ def body_after(text: str, signature: str) -> str:
 if __name__ == "__main__":
     test_gate_module_is_registered()
     test_gate_lease_api_and_constants()
-    test_session_private_uses_endpoint_health_for_live_mtproxy_attempts()
-    test_remove_connection_releases_before_erasing()
+    test_session_private_bypasses_shared_policy_for_live_mtproxy_attempts()
+    test_remove_connection_has_no_admission_lease()
     test_proxy_check_connection_holds_gate_lease()
     test_proxy_check_connection_raii_releases_gate()
     test_proxy_check_starts_are_soft_gated()

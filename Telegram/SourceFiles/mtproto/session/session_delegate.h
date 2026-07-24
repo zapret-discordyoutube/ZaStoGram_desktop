@@ -54,7 +54,6 @@ public:
 	virtual void restartedByTimeout(ShiftedDcId shiftedDcId) = 0;
 	virtual void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId) = 0;
 	virtual void keyDestroyedOnServer(ShiftedDcId shiftedDcId, uint64 keyId) = 0;
-	virtual void proxyMigrationSucceeded(uint64 generation) = 0;
 
 };
 

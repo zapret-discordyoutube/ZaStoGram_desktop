@@ -182,15 +182,18 @@ def test_connection_broker_is_not_a_second_scheduler():
     assert "endpointAdmissionArbiter().cancel(" in source
 
 
-def test_live_and_probe_connections_enter_through_the_same_broker():
+def test_only_explicit_proxy_checks_enter_the_shared_broker():
     session = read_session_private_sources()
     append = function_body(session, "bool SessionTransport::appendTestConnection(")
     check = read(CHECK_CPP)
     start = function_body(check, "void StartProxyCheck(")
 
-    assert "_owner->_proxyPort->requestConnection({" in append
+    assert "_owner->_proxyPort->requestConnection({" not in append
     assert "runtime->proxyServices().broker().request({" in start
     assert "MtProxy::EndpointUse::ProxyCheck" in start
+    assert "_owner->_connectionFactory->create(" in append
+    assert "weak->connectToServer(" in append
+    assert "ReserveHandshakeGateForProxy" not in append
     assert "ReserveOpenSlot" not in append
     assert "ReserveOpenSlot" not in start
 
@@ -241,5 +244,5 @@ if __name__ == "__main__":
     test_pool_reserves_one_opening_and_holds_it_through_relay()
     test_cancelled_ticket_releases_reservation_and_redistributes()
     test_connection_broker_is_not_a_second_scheduler()
-    test_live_and_probe_connections_enter_through_the_same_broker()
+    test_only_explicit_proxy_checks_enter_the_shared_broker()
     test_broker_cancellation_is_runtime_and_generation_scoped()

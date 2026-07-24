@@ -104,7 +104,7 @@ def test_immutable_admission_profile_is_used_for_client_hello():
     assert "const auto profile = effectiveTlsProfile();" in send_body
 
 
-def test_mtproxy_admission_delays_are_logged_as_queued_status():
+def test_mtproxy_admission_is_confined_to_explicit_proxy_checks():
     source = read_session_private_sources()
     broker = (SOURCE_DIR / "mtproto" / "proxy" / "connection_broker.cpp").read_text(
         encoding="utf-8")
@@ -112,11 +112,11 @@ def test_mtproxy_admission_delays_are_logged_as_queued_status():
         source,
         "bool SessionTransport::appendTestConnection(")
 
-    assert "_owner->_proxyPort->requestConnection({" in append_body
-    assert ".status = [=](SessionProxyAdmissionDecision decision)" in append_body
-    assert "_state.endpointAdmissionWaitKey = decision.key;" in append_body
-    assert "_state.endpointAdmissionWaitRevision = decision.revision;" in append_body
-    assert "_state.endpointAdmissionWaitReason = decision.waitReason;" in append_body
+    assert "_owner->_proxyPort->requestConnection({" not in append_body
+    assert "SessionProxyAdmissionDecision" not in append_body
+    assert "ReserveHandshakeGateForProxy" not in append_body
+    assert "_owner->_connectionFactory->create(" in append_body
+    assert "weak->connectToServer(" in append_body
     decision = function_body(
         broker,
         "ConnectionBrokerDecision DecisionFromUpdate(")
@@ -177,5 +177,5 @@ if __name__ == "__main__":
     test_adaptive_recipe_ladder_keeps_experimental_flags_manual()
     test_post_handshake_failure_does_not_rotate_client_hello_profile()
     test_immutable_admission_profile_is_used_for_client_hello()
-    test_mtproxy_admission_delays_are_logged_as_queued_status()
+    test_mtproxy_admission_is_confined_to_explicit_proxy_checks()
     test_adaptive_recipe_ignores_non_recipe_diagnostic_with_stale_level()

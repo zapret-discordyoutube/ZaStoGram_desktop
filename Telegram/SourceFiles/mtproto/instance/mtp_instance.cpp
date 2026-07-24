@@ -321,7 +321,6 @@ public:
 	void restart();
 	void restart(ShiftedDcId shiftedDcId);
 	void migrateProxy(bool manual);
-	void proxyMigrationSucceeded(uint64 generation);
 	[[nodiscard]] int32 dcstate(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] QString dctransport(ShiftedDcId shiftedDcId = 0);
 	[[nodiscard]] ConnectionStatus &connectionStatus() const;
@@ -501,7 +500,6 @@ private:
 	base::Timer _checkDelayedTimer;
 
 	uint64 _proxyGeneration = 1;
-	bool _proxyMigrationActive = false;
 
 	rpl::lifetime _lifetime;
 
@@ -875,7 +873,6 @@ void Instance::Private::migrateProxy(bool manual) {
 		_runtime->proxyServices().control().noteMtproxyEndpointSelected(
 			details::MtProxy::EndpointIdFromProxy(selected, {}));
 	}
-	_proxyMigrationActive = true;
 	_connectionStatus->setProxyStatus({
 		.attempt = { .proxyGeneration = _proxyGeneration },
 		.proxy = selected,
@@ -883,19 +880,7 @@ void Instance::Private::migrateProxy(bool manual) {
 	_runtime->proxyServices().broker().cancelByProxyGeneration(
 		_proxyGeneration);
 	for (const auto &[shiftedDcId, session] : _sessions) {
-		session->migrateProxy(
-			_proxyGeneration,
-			session.get() == _mainSession);
-	}
-}
-
-void Instance::Private::proxyMigrationSucceeded(uint64 generation) {
-	if (!_proxyMigrationActive || generation != _proxyGeneration) {
-		return;
-	}
-	_proxyMigrationActive = false;
-	for (const auto &[shiftedDcId, session] : _sessions) {
-		session->releaseProxyMigration(generation);
+		session->migrateProxy(_proxyGeneration);
 	}
 }
 
@@ -1819,10 +1804,6 @@ not_null<Session*> Instance::Private::startSession(
 
 	const auto dc = getDcById(shiftedDcId);
 	const auto thread = getThreadForDc(shiftedDcId);
-	const auto proxyMigrationScout = _proxyMigrationActive
-		&& (shiftedDcId == mainDcId());
-	const auto proxyMigrationSuspended = _proxyMigrationActive
-		&& !proxyMigrationScout;
 	const auto result = _sessions.emplace(
 		shiftedDcId,
 		std::make_unique<Session>(
@@ -1832,9 +1813,7 @@ not_null<Session*> Instance::Private::startSession(
 			shiftedDcId,
 			dc,
 			role,
-			_proxyGeneration,
-			proxyMigrationScout,
-			proxyMigrationSuspended)
+			_proxyGeneration)
 	).first->second.get();
 	if (isKeysDestroyer()) {
 		scheduleKeyDestroy(shiftedDcId);

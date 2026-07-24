@@ -64,17 +64,17 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     assert "void migrateProxy(bool manual = true);" in instance_h
     assert "void Instance::Private::migrateProxy(bool manual)" in instance
     assert "void Instance::migrateProxy(bool manual)" in instance
-    assert "void migrateProxy(uint64 generation, bool scout);" in session_h
+    assert "void migrateProxy(uint64 generation);" in session_h
     assert "void Session::migrateProxy(" in session
     migrate = function_body(instance, "void Instance::Private::migrateProxy(bool manual)")
     assert "_mtp->migrateProxy(change.manual);" in watcher
     assert "_mtp->restart();" not in watcher
     assert "_mtp->reInitConnection(_mtp->mainDcId());" not in watcher
     assert "++_proxyGeneration;" in migrate
-    assert "_proxyMigrationActive = true;" in migrate
+    assert "_proxyMigrationActive" not in instance
     assert "_runtime->proxyServices().broker().cancelByProxyGeneration(" in migrate
     assert "session->migrateProxy(" in migrate
-    assert "session.get() == _mainSession" in migrate
+    assert "session.get() == _mainSession" not in migrate
     assert "session->restart();" not in migrate
     generation_cleanup = migrate.index(
         "_runtime->proxyServices().control().applyMtproxyProxyGeneration(")
@@ -105,11 +105,8 @@ def test_proxy_switch_uses_atomic_migration_not_global_restart():
     assert "i->first.runtimeId == runtimeId" in runtime_generation
     assert "i->first.proxyGeneration < proxyGeneration" in runtime_generation
     assert "SynchronizeRelayProofAggregate(state);" in runtime_generation
-    succeeded = function_body(
-        instance,
-        "void Instance::Private::proxyMigrationSucceeded(")
-    assert "session->releaseProxyMigration(generation);" in succeeded
-    assert "session.get() != _mainSession" not in succeeded
+    assert "proxyMigrationSucceeded(" not in instance
+    assert "releaseProxyMigration(" not in session
 
 
 def test_reapplying_selected_proxy_keeps_live_connections():
@@ -128,47 +125,39 @@ def test_reapplying_selected_proxy_keeps_live_connections():
         explicit_restart)
 
 
-def test_session_proxy_switch_suspends_old_generation_silently():
+def test_session_proxy_switch_reconnects_every_lane_immediately():
     header = read(SESSION_TRANSPORT_H)
     source = read_session_private_sources()
     switch_body = function_body(source, "void SessionTransport::migrateProxy(")
-    release_body = function_body(source, "void SessionTransport::releaseProxyMigration(")
     append_body = function_body(source, "bool SessionTransport::appendTestConnection(")
     connect_body = function_body(
-        source,
-        "void SessionTransport::connectToServer(\n"
-        "\t\tbool afterConfig,\n"
-        "\t\tMtProxy::AdmissionPurpose purpose)")
+        source, "void SessionTransport::connectToServer(bool afterConfig)")
     received_body = function_body(source, "void SessionMessageHandler::handleReceived()")
     payload_body = function_body(source, "void SessionTransport::noteMtprotoPayloadReceived()")
     disconnected_body = function_body(source, "void SessionTransport::onDisconnected(")
     error_body = function_body(source, "void SessionTransport::onError(")
 
-    assert "void migrateProxy(uint64 generation, bool scout);" in header
-    assert "void releaseProxyMigration(uint64 generation);" in header
+    assert "void migrateProxy(uint64 generation);" in header
+    assert "releaseProxyMigration" not in header
     assert "uint64 proxyGeneration = 0;" in header
-    assert "bool proxyMigrationSuspended = false;" in header
-    assert "bool proxyMigrationScout = false;" in header
+    assert "proxyMigrationSuspended" not in header
+    assert "proxyMigrationScout" not in header
     assert "destroyAllConnections(ProxyCloseOrigin::ProxySwitch);" in switch_body
     assert "_timing.retryTimer.cancel();" in switch_body
-    assert "suspended_by_proxy_switch" in switch_body
-    assert "if (!scout) {" in switch_body
+    assert "proxy_route_changed" in switch_body
+    assert "suspended_by_proxy_switch" not in switch_body
     assert "connectToServer();" in switch_body
     assert "ProxyControlPlane::ReportMtproxyFailure" not in switch_body
     assert "restart();" not in switch_body
     assert "setState(-_timing.retryTimeout)" not in switch_body
-    assert "if (_state.proxyMigrationSuspended) {" in connect_body
-    assert "_state.proxyMigrationScout" in append_body
-    assert "_state.brokerTickets.empty()" in append_body
+    assert "proxyMigrationSuspended" not in connect_body
+    assert "_owner->_proxyPort->requestConnection({" not in append_body
+    assert "ReserveHandshakeGateForProxy" not in append_body
     assert ".proxyGeneration = _state.proxyGeneration" in append_body
     assert "_owner->_transport.noteMtprotoPayloadReceived();" in received_body
     assert "_owner->_transport._state" not in received_body
-    assert "_state.proxyMigrationScout = false;" in payload_body
-    assert "const auto generation = _state.proxyGeneration;" in payload_body
-    assert "InvokeQueued(_owner->_instance, [" in payload_body
-    assert "delegate->proxyMigrationSucceeded(generation);" in payload_body
-    assert "_state.proxyMigrationSuspended = false;" in release_body
-    assert "connectToServer();" in release_body
+    assert "proxyMigrationScout" not in payload_body
+    assert "proxyMigrationSucceeded" not in payload_body
     assert "found == end(_state.testConnections)" in disconnected_body
     assert "_state.connection.get() != connection.get()" in disconnected_body
     assert disconnected_body.index("_state.connection.get() != connection.get()") < (
@@ -195,25 +184,17 @@ def test_new_sessions_inherit_current_proxy_generation():
         "SessionTransport::SessionTransport(")
 
     assert "uint64 proxyGeneration" in session_header
-    assert "bool proxyMigrationScout" in session_header
-    assert "bool proxyMigrationSuspended" in session_header
-    assert "_proxyGeneration," in start
-    assert "_proxyMigrationScout," in start
-    assert "_proxyMigrationSuspended" in start
+    assert "proxyMigrationScout" not in session_header
+    assert "proxyMigrationSuspended" not in session_header
+    assert "_proxyGeneration);" in start
     assert "proxyGeneration" in private
-    assert "proxyMigrationScout" in private
-    assert "proxyMigrationSuspended" in private
+    assert "proxyMigrationScout" not in private
+    assert "proxyMigrationSuspended" not in private
     assert "uint64 proxyGeneration" in transport_header
     assert "_state.proxyGeneration = proxyGeneration;" in transport_constructor
-    assert "_state.proxyMigrationScout = proxyMigrationScout;" in (
-        transport_constructor)
-    assert "_state.proxyMigrationSuspended = proxyMigrationSuspended;" in (
-        transport_constructor)
-    assert "_proxyGeneration," in start_session
-    assert "proxyMigrationScout," in start_session
-    assert "proxyMigrationSuspended" in start_session
+    assert "_proxyGeneration)" in start_session
     assert "&& !_mainSession" not in start_session
-    assert "shiftedDcId == mainDcId()" in start_session
+    assert "shiftedDcId == mainDcId()" not in start_session
     assert "result->migrateProxy(" not in start_session
 
 
@@ -310,7 +291,7 @@ if __name__ == "__main__":
     test_manual_selection_uses_normal_generation_migration_without_scout()
     test_proxy_switch_uses_atomic_migration_not_global_restart()
     test_reapplying_selected_proxy_keeps_live_connections()
-    test_session_proxy_switch_suspends_old_generation_silently()
+    test_session_proxy_switch_reconnects_every_lane_immediately()
     test_new_sessions_inherit_current_proxy_generation()
     test_broker_cancels_old_proxy_generation_tickets()
     test_status_reducer_shadows_old_proxy_generation_facts()

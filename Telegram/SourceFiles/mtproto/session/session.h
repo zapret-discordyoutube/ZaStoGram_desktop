@@ -169,9 +169,7 @@ public:
 		ShiftedDcId shiftedDcId,
 		not_null<Dcenter*> dc,
 		SessionRole role,
-		uint64 proxyGeneration,
-		bool proxyMigrationScout,
-		bool proxyMigrationSuspended);
+		uint64 proxyGeneration);
 	~Session();
 
 	void start();
@@ -179,8 +177,7 @@ public:
 	void setConnectionNotInited();
 
 	void restart();
-	void migrateProxy(uint64 generation, bool scout);
-	void releaseProxyMigration(uint64 generation);
+	void migrateProxy(uint64 generation);
 	void refreshOptions();
 	void stop();
 	void kill();
@@ -240,8 +237,6 @@ private:
 
 	SessionPrivate *_private = nullptr;
 
-	bool _proxyMigrationScout = false;
-	bool _proxyMigrationSuspended = false;
 	bool _killed = false;
 	bool _needToReceive = false;
 

@@ -32,9 +32,6 @@ SessionTransport::TimingState::TimingState(
 , waitForBetterTimer(runtime->async().makeTimer(
 	thread,
 	[=] { owner->waitBetterFailed(); }))
-, brokerQueueDeadlineTimer(runtime->async().makeTimer(
-	thread,
-	[=] { owner->brokerQueueDeadlineFired(); }))
 , waitForReceived(kMinReceiveTimeout)
 , waitForConnected(kMinConnectedTimeout)
 , pingSender(runtime->async().makeTimer(
@@ -52,20 +49,14 @@ SessionTransport::SessionTransport(
 		not_null<SessionPrivate*> owner,
 		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
-		uint64 proxyGeneration,
-		bool proxyMigrationScout,
-		bool proxyMigrationSuspended)
+		uint64 proxyGeneration)
 : _owner(owner)
 , _timing(runtime, this, thread) {
 	_state.proxyGeneration = proxyGeneration;
-	_state.proxyMigrationScout = proxyMigrationScout;
-	_state.proxyMigrationSuspended = proxyMigrationSuspended;
 	_state.mtproxyAttempt = { .proxyGeneration = proxyGeneration };
 }
 
-SessionTransport::~SessionTransport() {
-	cancelMainRecoveryBackoff();
-}
+SessionTransport::~SessionTransport() = default;
 
 void SessionTransport::start() {
 	connectToServer();
@@ -197,16 +188,6 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 	if (firstPayload) {
 		_state.mtprotoDataReceived = true;
 		_state.mtprotoSilentTimeouts = 0;
-		if (_state.proxyMigrationScout) {
-			_state.proxyMigrationScout = false;
-			const auto generation = _state.proxyGeneration;
-			InvokeQueued(_owner->_instance, [
-				delegate = _owner->_delegate,
-				generation
-			] {
-				delegate->proxyMigrationSucceeded(generation);
-			});
-		}
 		_owner->logMtprotoEvent(
 			ProxyDiagnosticsPhase::MtpFirstDataReceived,
 			ProxyDiagnosticsSeverity::Info,
@@ -215,34 +196,7 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 	if (_state.connection) {
 		_state.connection->markProxyMtprotoPayloadReceived();
 	}
-	if (firstPayload) {
-		_owner->_proxyPort->reportFirstMtprotoPayload(
-			currentProxyAttempt(),
-			&_state.mtproxyLease);
-		_state.mtproxyRecovery = {};
-	} else {
-		_owner->_proxyPort->reportConnected(
-			currentProxyAttempt(),
-			&_state.mtproxyLease,
-			SessionProxySuccessScope::Relay);
-	}
 	_state.startedConnectingAt = crl::time(0);
-}
-
-SessionProxyAttempt SessionTransport::proxyAttempt(
-		const TestConnection &connection) const {
-	const auto attempt = connection.data
-		? connection.data->proxyConnectionAttempt()
-		: connection.mtproxyAttempt;
-	return {
-		.runtime = _owner->_runtime,
-		.endpoint = connection.mtproxyEndpoint,
-		.use = connection.mtproxyUse,
-		.attempt = attempt,
-		.plan = connection.mtproxyPlan,
-		.transport = connection.data->proxyTransportFailure(),
-		.attemptStartedAt = connection.mtproxyAttemptStartedAt,
-	};
 }
 
 SessionProxyAttempt SessionTransport::currentProxyAttempt() const {
@@ -251,10 +205,8 @@ SessionProxyAttempt SessionTransport::currentProxyAttempt() const {
 		: _state.mtproxyAttempt;
 	return {
 		.runtime = _owner->_runtime,
-		.endpoint = _state.mtproxyEndpoint,
 		.use = _state.mtproxyUse,
 		.attempt = attempt,
-		.plan = _state.mtproxyPlan,
 		.transport = _state.connection
 			? _state.connection->proxyTransportFailure()
 			: ProxyTransportFailure(),

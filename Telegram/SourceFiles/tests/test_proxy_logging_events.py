@@ -109,10 +109,10 @@ def test_admission_queue_and_start_are_logged_not_failed():
     assert "request.instance" not in broker
 
     append_body = function_body(session, "bool SessionTransport::appendTestConnection(")
-    status_body = append_body.split(".status = [=](SessionProxyAdmissionDecision")[1]
-    assert "ProxyDiagnosticsPhase::Connecting" not in status_body
-    assert "mtproxy admission queued" not in status_body
-    assert "ProxyDiagnosticsPhase::Failed" not in status_body
+    assert "_owner->_proxyPort->requestConnection({" not in append_body
+    assert "SessionProxyAdmissionDecision" not in append_body
+    assert "mtproxy admission queued" not in append_body
+    assert "_owner->_connectionFactory->create(" in append_body
 
 
 def test_route_canonical_recipe_and_fallback_events_are_emitted():

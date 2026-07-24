@@ -255,9 +255,7 @@ Session::Session(
 		ShiftedDcId shiftedDcId,
 		not_null<Dcenter*> dc,
 		SessionRole role,
-		uint64 proxyGeneration,
-		bool proxyMigrationScout,
-		bool proxyMigrationSuspended)
+		uint64 proxyGeneration)
 : _instance(instance)
 , _delegate(delegate)
 , _shiftedDcId(shiftedDcId)
@@ -266,8 +264,6 @@ Session::Session(
 , _data(std::make_shared<SessionData>(this))
 , _thread(thread)
 , _proxyGeneration(proxyGeneration)
-, _proxyMigrationScout(proxyMigrationScout)
-, _proxyMigrationSuspended(proxyMigrationSuspended)
 , _sender([=] { needToResumeAndSend(); }) {
 	refreshOptions();
 	watchDcKeyChanges();
@@ -330,9 +326,7 @@ void Session::start() {
 		_data,
 		_shiftedDcId,
 		_role,
-		_proxyGeneration,
-		_proxyMigrationScout,
-		_proxyMigrationSuspended);
+		_proxyGeneration);
 }
 
 void Session::restart() {
@@ -348,36 +342,16 @@ void Session::restart() {
 	}
 }
 
-void Session::migrateProxy(uint64 generation, bool scout) {
+void Session::migrateProxy(uint64 generation) {
 	if (_killed) {
 		DEBUG_LOG(("Session Error: can't migrate proxy in a killed session"));
 		return;
 	}
 	refreshOptions();
-	if (scout) {
-		setConnectionNotInited();
-	}
 	_proxyGeneration = generation;
-	_proxyMigrationScout = scout;
-	_proxyMigrationSuspended = !scout;
 	if (const auto captured = _private) {
 		InvokeQueued(captured, [=] {
-			captured->migrateProxy(generation, scout);
-		});
-	}
-}
-
-void Session::releaseProxyMigration(uint64 generation) {
-	if (_killed) {
-		return;
-	}
-	if (_proxyGeneration == generation) {
-		_proxyMigrationScout = false;
-		_proxyMigrationSuspended = false;
-	}
-	if (const auto captured = _private) {
-		InvokeQueued(captured, [=] {
-			captured->releaseProxyMigration(generation);
+			captured->migrateProxy(generation);
 		});
 	}
 }

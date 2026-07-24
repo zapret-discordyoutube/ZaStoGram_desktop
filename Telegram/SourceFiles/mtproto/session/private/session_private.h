@@ -42,8 +42,6 @@ public:
 		ShiftedDcId shiftedDcId,
 		SessionRole role,
 		uint64 proxyGeneration = 0,
-		bool proxyMigrationScout = false,
-		bool proxyMigrationSuspended = false,
 		not_null<SessionProxyPort*> proxyPort = &DefaultSessionProxyPort(),
 		not_null<SessionConnectionFactory*> connectionFactory
 			= &DefaultSessionConnectionFactory(),
@@ -60,8 +58,7 @@ public:
 
 	void updateAuthKey();
 	void restartNow();
-	void migrateProxy(uint64 generation, bool scout);
-	void releaseProxyMigration(uint64 generation);
+	void migrateProxy(uint64 generation);
 	void sendPingForce();
 	void tryToSend();
 

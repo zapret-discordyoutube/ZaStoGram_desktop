@@ -148,8 +148,6 @@ def test_session_reports_silence_and_recovers_temporary_key():
         session, "void SessionTransport::waitReceivedFailed(")
     destroy_all = function_body(
         session, "void SessionTransport::destroyAllConnections(")
-    can_prove_relay = function_body(
-        session, "bool SessionTransport::canProveMtproxyRelay() const")
     connected = function_body(session, "void SessionTransport::onConnected(")
     append = function_body(
         session, "bool SessionTransport::appendTestConnection(")
@@ -160,20 +158,16 @@ def test_session_reports_silence_and_recovers_temporary_key():
     assert "bool mtprotoDataReceived = false;" in header
     assert "int mtprotoSilentTimeouts = 0;" in header
     assert "_state.mtprotoDataReceived = false;" in destroy_all
-    assert "_owner->_sessionState.keyId" in can_prove_relay
-    assert "_owner->_authState.keyCreator" in can_prove_relay
-    assert "getTemporaryKey(" in can_prove_relay
+    assert "canProveMtproxyRelay" not in session
     assert "&AbstractConnection::handshakeProgress" not in append
     assert "SessionTransport::onHandshakeProgress(" not in session
     assert (
         '#include "mtproto/transport/details/mtproto_abstract_socket.h"'
         in connection)
-    assert "if (!canProveMtproxyRelay()) {" in connected
     assert "transportReady();" not in connected
-    assert "reportMtproxyConnectionUsable(*i);" in connected
-    assert "if (!canProveMtproxyRelay()) {" in confirm
+    assert "reportMtproxyConnectionUsable" not in connected
     assert "transportReady();" not in confirm
-    assert "reportMtproxyConnectionUsable(*i);" in confirm
+    assert "reportMtproxyConnectionUsable" not in confirm
     assert "transportReady();" not in connection
 
     # A connection that connects (even passing the plaintext fake-pq
@@ -193,24 +187,17 @@ def test_session_reports_silence_and_recovers_temporary_key():
         in report_timeout)
     assert "return _owner->destroyTemporaryKey();" in wait_received
 
-    # Only a handled MTProto message counts as relay proof; it resets the
-    # silence counter and reports relay-scope success.
+    # Only a handled MTProto message resets the per-session silence counter.
+    # Ordinary sessions do not feed endpoint health, because that would bring
+    # the shared cooldown and admission policy back into the data plane.
     transport = read(
         SOURCE_DIR / "mtproto" / "session" / "private" / "transport.cpp")
-    first_payload = function_body(
-        adapter,
-        "void ProductionSessionProxyPort::reportFirstMtprotoPayload(")
-    assert "SuccessScope::Relay" in first_payload
-    assert "control().reportMtproxySuccess(" in first_payload
-    assert "SessionProxySuccessScope::Relay" in first_payload
-    assert first_payload.index("reportMtproxySuccess(") < first_payload.index(
-        "lease->transportReady();")
     note_payload = function_body(
         transport,
         "void SessionTransport::noteMtprotoPayloadReceived()")
-    assert "&_state.mtproxyLease" in note_payload
-    assert transport.index("_timing.retryTimeout = 1;") < transport.index(
-        "reportFirstMtprotoPayload(")
+    assert "_state.mtprotoSilentTimeouts = 0;" in note_payload
+    assert "_proxyPort" not in note_payload
+    assert "markProxyMtprotoPayloadReceived();" in note_payload
 
 
 def test_full_concurrency_uses_typed_transfer_admission():
@@ -318,12 +305,10 @@ def test_established_idle_close_is_not_a_health_failure():
     assert finish_terminal.index("benignIdleClose") < finish_terminal.index(
         "clearSyntheticPskOnFailure(reason)")
     assert "destroyAllConnections();" in disconnected
-    assert "reportAttemptCancelled(" in destroy
-    assert "currentProxyAttempt()" in destroy
-    assert destroy.index("_state.connection.reset();") < destroy.index(
-        "_state.mtproxyLease.release();")
-    assert on_error.index("reportConnectionError(") < on_error.index(
-        "removeTestConnection(connection);")
+    assert "reportAttemptCancelled(" not in destroy
+    assert "mtproxyLease" not in destroy
+    assert "reportConnectionError(" not in on_error
+    assert "removeTestConnection(connection);" in on_error
     assert "ReportConnectionFailure(attempt, reason, failure, lease);" in (
         connection_error)
     assert "openingPressure" not in cancelled

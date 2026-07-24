@@ -22,17 +22,14 @@ public:
 		not_null<SessionPrivate*> owner,
 		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
-		uint64 proxyGeneration,
-		bool proxyMigrationScout,
-		bool proxyMigrationSuspended);
+		uint64 proxyGeneration);
 	~SessionTransport();
 
 	void start();
 	void connectToServer(bool afterConfig = false);
 	void requestCDNConfig();
 	void restartNow();
-	void migrateProxy(uint64 generation, bool scout);
-	void releaseProxyMigration(uint64 generation);
+	void migrateProxy(uint64 generation);
 	void restart();
 	void doDisconnect();
 	void destroyAllConnections(
@@ -42,7 +39,6 @@ public:
 	void startContainerCleanup();
 	void retryByTimer();
 	void waitConnectedFailed();
-	void brokerQueueDeadlineFired();
 	void waitReceivedFailed();
 	void waitBetterFailed();
 	void markConnectionOld();
@@ -82,55 +78,24 @@ public:
 	[[nodiscard]] SessionProxyAttempt currentProxyAttempt() const;
 
 private:
-	struct MainRecoveryHandle {
-		MtProxy::MainRecoveryToken token;
-		MtProxy::EndpointId sourceEndpoint;
-		uint64 sourceProxyGeneration = 0;
-
-		[[nodiscard]] explicit operator bool() const {
-			return token
-				&& sourceProxyGeneration
-				&& !EmptySessionProxyEndpoint(sourceEndpoint);
-		}
-
-		bool operator==(const MainRecoveryHandle &other) const = default;
-	};
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
-		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
-		MainRecoveryHandle mtproxyRecovery;
-		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
-		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 	};
 	struct ConnectionState {
 		ConnectionPointer connection;
-		MtProxy::EndpointId mtproxyEndpoint;
 		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
-		MainRecoveryHandle mtproxyRecovery;
-		SessionProxyLease mtproxyLease;
 		ProxyConnectionAttempt mtproxyAttempt;
-		MainRecoveryHandle mainRecoveryBackoff;
-		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
-		bool proxyMigrationSuspended = false;
-		bool proxyMigrationScout = false;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
 		std::vector<TestConnection> testConnections;
-		std::vector<SessionProxyTicket> brokerTickets;
 		crl::time startedConnectingAt = 0;
-		crl::time endpointAdmissionWaitStartedAt = 0;
-		bool endpointAdmissionWaitReplacementPending = false;
-		AdmissionTicketKey endpointAdmissionWaitKey;
-		uint64 endpointAdmissionWaitRevision = 0;
-		MtProxy::EndpointAdmissionWaitReason endpointAdmissionWaitReason
-			= MtProxy::EndpointAdmissionWaitReason::None;
 	};
 	struct TimingState {
 		TimingState(
@@ -146,7 +111,6 @@ private:
 		RuntimeTimer waitForConnectedTimer;
 		RuntimeTimer waitForReceivedTimer;
 		RuntimeTimer waitForBetterTimer;
-		RuntimeTimer brokerQueueDeadlineTimer;
 		crl::time waitForReceived = 0;
 		crl::time waitForConnected = 0;
 		crl::time firstSentAt = -1;
@@ -156,16 +120,12 @@ private:
 	};
 
 	[[nodiscard]] SessionProxyEndpointUse classifyEndpointUse() const;
-	void connectToServer(
-		bool afterConfig,
-		MtProxy::AdmissionPurpose purpose);
 	[[nodiscard]] bool appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
-		bool protocolForFiles,
-		MtProxy::AdmissionPurpose purpose);
+		bool protocolForFiles);
 	void connectingTimedOut();
 	void handleError(int errorCode);
 	void onError(
@@ -173,22 +133,8 @@ private:
 		qint32 errorCode);
 	void onConnected(not_null<AbstractConnection*> connection);
 	void onDisconnected(not_null<AbstractConnection*> connection);
-	void reportMtproxyConnectionUsable(const TestConnection &connection);
-	[[nodiscard]] bool canProveMtproxyRelay() const;
-	void reclaimMtproxySlot(
-		MtProxy::LiveSlotKey key,
-		std::optional<MtProxy::AdmissionPurpose> resumePurpose);
-	void resetEndpointAdmissionWait();
-	void cancelMainRecoveryBackoff();
-	void clearConnectionBrokerTickets();
 	void clearTestConnections();
-	void cancelTestConnections(ProxyCloseOrigin origin);
-	[[nodiscard]] auto takeConnectionBrokerTicket(
-		SessionProxyTicketId id)
-	-> std::optional<MtProxy::MainRecoveryToken>;
 	void armWaitForConnectedTimer();
-	[[nodiscard]] SessionProxyAttempt proxyAttempt(
-		const TestConnection &connection) const;
 
 	const not_null<SessionPrivate*> _owner;
 	ConnectionState _state;
