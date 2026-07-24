@@ -106,11 +106,9 @@ def test_session_keeps_mtproxy_attempt_lease_until_terminal_outcome():
         "connection.mtproxyLease.release();")
     assert remove.index("i->data.reset();") < remove.index(
         "i->mtproxyLease.release();")
-    grace = function_body(
-        connection, "void SessionTransport::transferDemandGraceFired()")
-    assert "kTransferDemandGrace = 5 * crl::time(1000)" in connection
-    assert "hasTransferDemand()" in grace
-    assert "destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);" in grace
+    assert "transferDemandGraceFired" not in connection
+    assert "kTransferDemandGrace" not in connection
+    assert "hasTransferDemand()" not in connection
     reclaim = function_body(
         connection, "void SessionTransport::reclaimMtproxySlot(")
     candidate = reclaim.split(

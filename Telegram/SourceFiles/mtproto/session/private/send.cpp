@@ -415,7 +415,6 @@ mtpMsgId SessionPrivate::placeToContainer(
 void SessionPrivate::tryToSend() {
 	DEBUG_LOG(("MTP Info: tryToSend for dc %1.").arg(_shiftedDcId));
 	if (!_transport.connection()) {
-		_transport.reevaluateTransferDemand();
 		DEBUG_LOG(("MTP Info: not yet connected in dc %1.").arg(_shiftedDcId));
 		return;
 	} else if (!_sessionState.keyId) {

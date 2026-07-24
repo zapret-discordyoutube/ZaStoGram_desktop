@@ -33,7 +33,6 @@ public:
 	void restartNow();
 	void migrateProxy(uint64 generation, bool scout);
 	void releaseProxyMigration(uint64 generation);
-	void reevaluateTransferDemand();
 	void restart();
 	void doDisconnect();
 	void destroyAllConnections(
@@ -44,7 +43,6 @@ public:
 	void retryByTimer();
 	void waitConnectedFailed();
 	void brokerQueueDeadlineFired();
-	void transferDemandGraceFired();
 	void waitReceivedFailed();
 	void waitBetterFailed();
 	void markConnectionOld();
@@ -122,7 +120,6 @@ private:
 		uint64 proxyGeneration = 0;
 		bool proxyMigrationSuspended = false;
 		bool proxyMigrationScout = false;
-		bool mtproxyTransferDemandDormant = false;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
 		std::vector<TestConnection> testConnections;
@@ -150,7 +147,6 @@ private:
 		RuntimeTimer waitForReceivedTimer;
 		RuntimeTimer waitForBetterTimer;
 		RuntimeTimer brokerQueueDeadlineTimer;
-		RuntimeTimer transferDemandGraceTimer;
 		crl::time waitForReceived = 0;
 		crl::time waitForConnected = 0;
 		crl::time firstSentAt = -1;
@@ -179,7 +175,6 @@ private:
 	void onDisconnected(not_null<AbstractConnection*> connection);
 	void reportMtproxyConnectionUsable(const TestConnection &connection);
 	[[nodiscard]] bool canProveMtproxyRelay() const;
-	[[nodiscard]] bool hasTransferDemand() const;
 	void reclaimMtproxySlot(
 		MtProxy::LiveSlotKey key,
 		std::optional<MtProxy::AdmissionPurpose> resumePurpose);

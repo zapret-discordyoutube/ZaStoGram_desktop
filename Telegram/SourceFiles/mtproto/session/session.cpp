@@ -519,11 +519,6 @@ void Session::cancel(mtpRequestId requestId, mtpMsgId msgId) {
 	if (msgId) {
 		_data->removeSent(msgId);
 	}
-	if (const auto captured = _private) {
-		InvokeQueued(captured, [=] {
-			captured->reevaluateTransferDemand();
-		});
-	}
 }
 
 void Session::ping() {

@@ -35,9 +35,6 @@ SessionTransport::TimingState::TimingState(
 , brokerQueueDeadlineTimer(runtime->async().makeTimer(
 	thread,
 	[=] { owner->brokerQueueDeadlineFired(); }))
-, transferDemandGraceTimer(runtime->async().makeTimer(
-	thread,
-	[=] { owner->transferDemandGraceFired(); }))
 , waitForReceived(kMinReceiveTimeout)
 , waitForConnected(kMinConnectedTimeout)
 , pingSender(runtime->async().makeTimer(

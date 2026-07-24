@@ -1095,7 +1095,6 @@ void SessionMessageHandler::requestsAcked(const QVector<MTPlong> &ids, bool byRe
 	if (toAckMore.size()) {
 		requestsAcked(toAckMore);
 	}
-	_owner->reevaluateTransferDemand();
 }
 
 void SessionMessageHandler::handleMsgsStates(const QVector<MTPlong> &ids, const QByteArray &states) {

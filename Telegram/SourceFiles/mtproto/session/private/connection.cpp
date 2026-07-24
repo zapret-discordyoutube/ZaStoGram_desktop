@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/handshake_gate.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
@@ -49,7 +50,6 @@ constexpr auto kWaitForProxyTimeout = 2000;
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
 constexpr auto kBrokerQueueHardDeadline = 90 * crl::time(1000);
-constexpr auto kTransferDemandGrace = 5 * crl::time(1000);
 constexpr auto kSilentTimeoutsToAssumeKeyDestroyed = 2;
 
 base::options::toggle OptionPreferIPv6({
@@ -171,15 +171,36 @@ bool SessionTransport::appendTestConnection(
 					.mtproxyAttemptStartedAt = startAttemptStartedAt,
 				});
 		};
-		InvokeQueued(_state.testConnections.back().data, start);
-		armWaitForConnectedTimer();
+		if (mtproxyTransfer) {
+			auto gate = std::make_shared<HandshakeGateLease>(
+				ReserveHandshakeGateForProxy(_owner->_runtime, proxy));
+			const auto delay = gate->delay();
+			const auto pacedStart = [=] {
+				gate->release();
+				start();
+				armWaitForConnectedTimer();
+			};
+			if (delay > 0) {
+				_owner->_runtime->async().singleShot(
+					delay,
+					weak,
+					pacedStart);
+			} else {
+				InvokeQueued(
+					_state.testConnections.back().data,
+					pacedStart);
+			}
+		} else {
+			InvokeQueued(_state.testConnections.back().data, start);
+			armWaitForConnectedTimer();
+		}
 	};
 
-	// Media and upload sessions are Telegram's parallel data plane. Routing
-	// them through the shared admission queue was intended to suppress DPI
-	// handshake bursts, but a single slow or dead proxy handshake then blocked
-	// every file lane behind it. Keep admission for control-plane sessions and
-	// let independent transfer lanes connect and recover independently.
+	// Media and upload are persistent parallel data-plane lanes. Shared
+	// admission and five-second demand teardown were intended to hide DPI
+	// handshake bursts, but instead serialized transfers and made every file
+	// start from a cold connection. The dial-only gate above spreads a mass
+	// reconnect; after dialing there is no custom cap, cooldown, or idle close.
 	if (mtproxyTransfer) {
 		lock.unlock();
 		appendStartedConnection(
@@ -327,7 +348,6 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin origin) {
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
-	_timing.transferDemandGraceTimer.cancel();
 	resetEndpointAdmissionWait();
 	clearConnectionBrokerTickets();
 	cancelTestConnections(origin);
@@ -371,27 +391,6 @@ bool SessionTransport::canProveMtproxyRelay() const {
 		? bool(_owner->_sessionState.data->getPersistentKey())
 		: bool(_owner->_sessionState.data->getTemporaryKey(
 			TemporaryKeyTypeByDcType(_owner->_currentDcType)));
-}
-
-bool SessionTransport::hasTransferDemand() const {
-	const auto data = _owner->_sessionState.data;
-	{
-		QReadLocker lock(data->toSendMutex());
-		if (ranges::any_of(data->toSendMap(), [](const auto &entry) {
-			return entry.second->requestId != 0;
-		})) {
-			return true;
-		}
-	}
-	{
-		QReadLocker lock(data->haveSentMutex());
-		if (ranges::any_of(data->haveSentMap(), [](const auto &entry) {
-			return entry.second->requestId != 0;
-		})) {
-			return true;
-		}
-	}
-	return false;
 }
 
 void SessionTransport::reclaimMtproxySlot(
@@ -469,22 +468,10 @@ void SessionTransport::reclaimMtproxySlot(
 			!= _state.proxyGeneration) {
 		return;
 	}
-	const auto use = classifyEndpointUse();
-	const auto transfer = (use == SessionProxyEndpointUse::Media
-		|| use == SessionProxyEndpointUse::Upload);
-	if (*resumePurpose == MtProxy::AdmissionPurpose::ReclaimedMainResume) {
-		if (use != SessionProxyEndpointUse::Main) {
-			return;
-		}
-	} else if (!transfer) {
+	if (*resumePurpose != MtProxy::AdmissionPurpose::ReclaimedMainResume
+		|| classifyEndpointUse() != SessionProxyEndpointUse::Main) {
 		return;
 	}
-	if (transfer && !hasTransferDemand()) {
-		_timing.transferDemandGraceTimer.cancel();
-		_state.mtproxyTransferDemandDormant = true;
-		return;
-	}
-	_state.mtproxyTransferDemandDormant = false;
 	InvokeQueued(_owner, [=] {
 		connectToServer(false, *resumePurpose);
 	});
@@ -594,9 +581,6 @@ void SessionTransport::armWaitForConnectedTimer() {
 }
 
 void SessionTransport::retryByTimer() {
-	if (_state.mtproxyTransferDemandDormant) {
-		return;
-	}
 	const auto proxied = _owner->_sessionState.options
 		&& (_owner->_sessionState.options->proxy.type != ProxyData::Type::None);
 	const auto maxTimeout = proxied ? kProxyReconnectMaxTimeout : 64000;
@@ -616,75 +600,20 @@ void SessionTransport::restartNow() {
 	restart();
 }
 
-void SessionTransport::reevaluateTransferDemand() {
-	const auto use = classifyEndpointUse();
-	const auto transfer = (use == SessionProxyEndpointUse::Media
-		|| use == SessionProxyEndpointUse::Upload);
-	const auto mtproxy = _owner->_sessionState.data->options().proxy.type
-		== ProxyData::Type::Mtproto;
-	if (!transfer || !mtproxy) {
-		_timing.transferDemandGraceTimer.cancel();
-		return;
-	}
-	const auto demanded = hasTransferDemand();
-	if (!demanded) {
-		if (!_state.connection
-			&& _state.testConnections.empty()
-			&& _state.brokerTickets.empty()) {
-			_state.mtproxyTransferDemandDormant = true;
-			resetEndpointAdmissionWait();
-			return;
-		}
-		if (!_timing.transferDemandGraceTimer.isActive()) {
-			_timing.transferDemandGraceTimer.callOnce(kTransferDemandGrace);
-		}
-		return;
-	}
-	_timing.transferDemandGraceTimer.cancel();
-	if (!_state.mtproxyTransferDemandDormant) {
-		return;
-	}
-	resetEndpointAdmissionWait();
-	_state.mtproxyTransferDemandDormant = false;
-	if (!_timing.retryTimer.isActive()) {
-		connectToServer();
-	}
-}
-
-void SessionTransport::transferDemandGraceFired() {
-	const auto use = classifyEndpointUse();
-	const auto transfer = (use == SessionProxyEndpointUse::Media
-		|| use == SessionProxyEndpointUse::Upload);
-	const auto mtproxy = _owner->_sessionState.options
-		&& _owner->_sessionState.options->proxy.type
-			== ProxyData::Type::Mtproto;
-	if (!transfer || !mtproxy || hasTransferDemand()) {
-		return;
-	}
-	destroyAllConnections(ProxyCloseOrigin::BrokerCancelled);
-	_state.mtproxyTransferDemandDormant = true;
-	_owner->setState(DisconnectedState);
-}
-
-void SessionPrivate::reevaluateTransferDemand() {
-	_transport.reevaluateTransferDemand();
-}
-
 void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	cancelMainRecoveryBackoff();
 	resetEndpointAdmissionWait();
 	_state.proxyGeneration = generation;
 	_state.proxyMigrationScout = scout;
 	_state.proxyMigrationSuspended = !scout;
-	_state.mtproxyTransferDemandDormant = false;
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
 	_owner->_sessionState.options = std::make_unique<SessionOptions>(_owner->_sessionState.data->options());
 	_timing.retryTimer.cancel();
+	_timing.retryTimeout = 1;
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 	_timing.waitForBetterTimer.cancel();
 	_timing.brokerQueueDeadlineTimer.cancel();
-	_timing.transferDemandGraceTimer.cancel();
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpRestart,
 		ProxyDiagnosticsSeverity::Info,
@@ -697,7 +626,6 @@ void SessionTransport::migrateProxy(uint64 generation, bool scout) {
 	if (!scout) {
 		return;
 	}
-	reevaluateTransferDemand();
 	connectToServer();
 }
 
@@ -712,19 +640,6 @@ void SessionTransport::releaseProxyMigration(uint64 generation) {
 		return;
 	}
 	_state.mtproxyAttempt = { .proxyGeneration = generation };
-	_state.mtproxyTransferDemandDormant = false;
-	const auto use = classifyEndpointUse();
-	const auto mtproxyTransfer = _owner->_sessionState.options
-		&& _owner->_sessionState.options->proxy.type
-			== ProxyData::Type::Mtproto
-		&& (use == SessionProxyEndpointUse::Media
-			|| use == SessionProxyEndpointUse::Upload);
-	if (mtproxyTransfer && !hasTransferDemand()) {
-		resetEndpointAdmissionWait();
-		_state.mtproxyTransferDemandDormant = true;
-		return;
-	}
-	reevaluateTransferDemand();
 	connectToServer();
 }
 
@@ -738,13 +653,6 @@ void SessionTransport::connectToServer(
 		bool afterConfig,
 		MtProxy::AdmissionPurpose purpose) {
 	if (_state.proxyMigrationSuspended) {
-		return;
-	}
-	if (_state.mtproxyTransferDemandDormant) {
-		return;
-	}
-	reevaluateTransferDemand();
-	if (_state.mtproxyTransferDemandDormant) {
 		return;
 	}
 	if (afterConfig
@@ -801,10 +709,7 @@ void SessionTransport::connectToServer(
 		: MTP::ConnectionNotice::None);
 	if (_owner->_sessionState.options->proxy.type == ProxyData::Type::Mtproto) {
 		const auto use = classifyEndpointUse();
-		const auto transferDemand = (use == SessionProxyEndpointUse::Media
-				|| use == SessionProxyEndpointUse::Upload)
-			&& hasTransferDemand();
-		if (use == SessionProxyEndpointUse::Main || transferDemand) {
+		if (use == SessionProxyEndpointUse::Main) {
 			_state.endpointAdmissionWaitStartedAt
 				= replacementWaitStartedAt;
 		}
@@ -914,12 +819,6 @@ void SessionTransport::connectToServer(
 
 void SessionTransport::restart() {
 	DEBUG_LOG(("MTP Info: restarting Connection"));
-	if (_state.mtproxyTransferDemandDormant) {
-		_timing.retryTimer.cancel();
-		_owner->setState(DisconnectedState);
-		return;
-	}
-
 	_timing.waitForReceivedTimer.cancel();
 	_timing.waitForConnectedTimer.cancel();
 
@@ -1162,18 +1061,13 @@ void SessionTransport::brokerQueueDeadlineFired() {
 			.arg(kBrokerQueueHardDeadline));
 
 	const auto use = classifyEndpointUse();
-	const auto requiredDemand = (use == SessionProxyEndpointUse::Main)
-		|| ((use == SessionProxyEndpointUse::Media
-				|| use == SessionProxyEndpointUse::Upload)
-			&& hasTransferDemand());
 	const auto preserveWaitStartedAt = (_state.proxyGeneration
 			&& _state.endpointAdmissionWaitStartedAt
 			&& _owner->_sessionState.options
 			&& _owner->_sessionState.options->proxy.type
 				== ProxyData::Type::Mtproto
 			&& !_state.proxyMigrationSuspended
-			&& !_state.mtproxyTransferDemandDormant
-			&& requiredDemand)
+			&& use == SessionProxyEndpointUse::Main)
 		? _state.endpointAdmissionWaitStartedAt
 		: crl::time();
 	doDisconnect();

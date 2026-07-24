@@ -64,7 +64,6 @@ public:
 	void releaseProxyMigration(uint64 generation);
 	void sendPingForce();
 	void tryToSend();
-	void reevaluateTransferDemand();
 
 private:
 	friend class SessionTransport;
