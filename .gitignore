@@ -69,6 +69,7 @@ settings.local.json
 # AI work folder (session-specific, not for version control)
 .ai
 /.agents/
+/.codex/skills/tdesktop-mtproxy-architecture/
 
 # Generated changelog page (built by CI, deployed to GitHub Pages)
 /docs/changelog/
