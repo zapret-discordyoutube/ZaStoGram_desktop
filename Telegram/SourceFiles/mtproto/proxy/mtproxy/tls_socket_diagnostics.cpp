@@ -153,6 +153,7 @@ ProxyFailureAttribution TlsSocket::failureAttribution() const {
 	if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
 		return ProxyFailureAttribution::Client;
 	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
+		|| reason == MtProxy::FailureReason::ServerHelloForeignTls
 		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
 		return ProxyFailureAttribution::Peer;
 	} else if (_closeOrigin == ProxyCloseOrigin::PeerClosed) {

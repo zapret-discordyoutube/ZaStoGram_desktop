@@ -414,6 +414,8 @@ namespace {
 		return u"tls_alert_after_client_hello"_q;
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return u"server_hello_hmac_mismatch"_q;
+	case ProxyMtproxyTerminalReason::ServerHelloForeignTls:
+		return u"server_hello_foreign_tls"_q;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
 		return u"server_hello_ok_no_appdata"_q;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:

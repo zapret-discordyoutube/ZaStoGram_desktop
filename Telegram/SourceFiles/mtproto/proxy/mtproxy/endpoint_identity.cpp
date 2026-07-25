@@ -200,6 +200,8 @@ QString ToLegacyDiagnostic(FailureReason reason) {
 		return u"tls_alert_after_client_hello"_q;
 	case FailureReason::ServerHelloHmacMismatch:
 		return u"server_hello_hmac_mismatch"_q;
+	case FailureReason::ServerHelloForeignTls:
+		return u"server_hello_foreign_tls"_q;
 	case FailureReason::ServerHelloOkNoAppData:
 		return u"server_hello_ok_no_appdata"_q;
 	case FailureReason::ServerHelloOkNoMtprotoData:
@@ -258,6 +260,7 @@ ProxyConnectionError ToProxyConnectionError(FailureReason reason) {
 	case FailureReason::ClientHelloSentNoServerHello:
 	case FailureReason::TlsAlertAfterClientHello:
 	case FailureReason::ServerHelloHmacMismatch:
+	case FailureReason::ServerHelloForeignTls:
 	case FailureReason::ServerHelloOkNoAppData:
 		return ProxyConnectionError::BadResponse;
 	case FailureReason::None:
@@ -281,6 +284,8 @@ ProxyMtproxyTerminalReason ToProxyMtproxyTerminalReason(
 		return ProxyMtproxyTerminalReason::TlsAlertAfterClientHello;
 	case FailureReason::ServerHelloHmacMismatch:
 		return ProxyMtproxyTerminalReason::ServerHelloHmacMismatch;
+	case FailureReason::ServerHelloForeignTls:
+		return ProxyMtproxyTerminalReason::ServerHelloForeignTls;
 	case FailureReason::ServerHelloOkNoAppData:
 		return ProxyMtproxyTerminalReason::ServerHelloOkNoAppData;
 	case FailureReason::ServerHelloOkNoMtprotoData:
@@ -317,6 +322,8 @@ FailureReason FromProxyMtproxyTerminalReason(
 		return FailureReason::TlsAlertAfterClientHello;
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return FailureReason::ServerHelloHmacMismatch;
+	case ProxyMtproxyTerminalReason::ServerHelloForeignTls:
+		return FailureReason::ServerHelloForeignTls;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
 		return FailureReason::ServerHelloOkNoAppData;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:

@@ -70,6 +70,7 @@ enum class ProxyMtproxyTerminalReason {
 	ClientHelloSentNoServerHello,
 	TlsAlertAfterClientHello,
 	ServerHelloHmacMismatch,
+	ServerHelloForeignTls,
 	ServerHelloOkNoAppData,
 	ServerHelloOkNoMtprotoData,
 	AppDataRemoteClosed,

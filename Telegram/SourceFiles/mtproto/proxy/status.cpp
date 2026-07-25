@@ -30,6 +30,8 @@ ProxyConnectionStatusKind ProxyConnectionStatusKindFor(
 		return ProxyConnectionStatusKind::MtproxyTlsAlert;
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch;
+	case ProxyMtproxyTerminalReason::ServerHelloForeignTls:
+		return ProxyConnectionStatusKind::MtproxyServerHelloForeignTls;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:
 		return ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoMtprotoData:
@@ -114,6 +116,7 @@ ProxyConnectionStatusSeverity ProxyConnectionStatusSeverityFor(
 	case ProxyConnectionStatusKind::MtproxyNoServerHello:
 	case ProxyConnectionStatusKind::MtproxyTlsAlert:
 	case ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch:
+	case ProxyConnectionStatusKind::MtproxyServerHelloForeignTls:
 	case ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed:
 	case ProxyConnectionStatusKind::MtproxyProxyProtocolBadResponse:
 		return ProxyConnectionStatusSeverity::Error;
@@ -163,6 +166,7 @@ ProxyConnectionStatusTone ProxyConnectionStatusToneFor(
 	case ProxyConnectionStatusKind::MtproxyNoServerHello:
 	case ProxyConnectionStatusKind::MtproxyTlsAlert:
 	case ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch:
+	case ProxyConnectionStatusKind::MtproxyServerHelloForeignTls:
 		return ProxyConnectionStatusTone::ErrorHandshake;
 	case ProxyConnectionStatusKind::MtproxyAppDataRemoteClosed:
 		return ProxyConnectionStatusTone::ErrorData;

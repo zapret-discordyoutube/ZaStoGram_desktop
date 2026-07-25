@@ -108,6 +108,7 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 	if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
 		return ProxyFailureAttribution::Client;
 	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
+		|| reason == MtProxy::FailureReason::ServerHelloForeignTls
 		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
 		return ProxyFailureAttribution::Peer;
 	}
@@ -133,6 +134,8 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 		return 50;
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
 		return 60;
+	case ProxyMtproxyTerminalReason::ServerHelloForeignTls:
+		return 62;
 	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
 		return 65;
 	case ProxyMtproxyTerminalReason::ServerHelloOkNoAppData:

@@ -171,6 +171,7 @@ bool TlsSocket::clearSyntheticPskOnFailure(MtProxy::FailureReason reason) {
 	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
 	case MtProxy::FailureReason::TlsAlertAfterClientHello:
 	case MtProxy::FailureReason::ServerHelloHmacMismatch:
+	case MtProxy::FailureReason::ServerHelloForeignTls:
 		_runtime->proxyServices().syntheticPsks().clear(
 			MtProxy::EndpointKey(_endpointId.canonical),
 			domainFromSecret(),

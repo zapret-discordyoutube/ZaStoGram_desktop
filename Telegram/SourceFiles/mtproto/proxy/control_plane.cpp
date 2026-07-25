@@ -132,6 +132,7 @@ constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 	case ProxyMtproxyTerminalReason::ClientHelloSentNoServerHello:
 	case ProxyMtproxyTerminalReason::TlsAlertAfterClientHello:
 	case ProxyMtproxyTerminalReason::ServerHelloHmacMismatch:
+	case ProxyMtproxyTerminalReason::ServerHelloForeignTls:
 	case ProxyMtproxyTerminalReason::AppDataRemoteClosed:
 	case ProxyMtproxyTerminalReason::ProxyProtocolBadResponse:
 		return false;

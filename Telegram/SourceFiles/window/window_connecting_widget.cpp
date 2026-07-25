@@ -78,6 +78,8 @@ constexpr auto kMinimalWaitingStateDuration = crl::time(4000);
 		return tr::lng_proxy_status_mtproxy_tls_alert(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloHmacMismatch:
 		return tr::lng_proxy_status_mtproxy_hmac_mismatch(tr::now);
+	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloForeignTls:
+		return tr::lng_proxy_status_mtproxy_foreign_tls(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyServerHelloOkNoAppData:
 		return tr::lng_proxy_status_mtproxy_no_appdata(tr::now);
 	case MTP::ProxyConnectionStatusKind::MtproxyConnectedNoMtprotoData:

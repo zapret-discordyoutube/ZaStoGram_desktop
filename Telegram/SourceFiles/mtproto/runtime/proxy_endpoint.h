@@ -27,6 +27,7 @@ enum class FailureReason {
 	ClientHelloSentNoServerHello,
 	TlsAlertAfterClientHello,
 	ServerHelloHmacMismatch,
+	ServerHelloForeignTls,
 	ServerHelloOkNoAppData,
 	ServerHelloOkNoMtprotoData,
 	AppDataRemoteClosed,

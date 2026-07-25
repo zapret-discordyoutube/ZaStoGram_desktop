@@ -33,6 +33,7 @@ enum class ProxyConnectionStatusKind {
 	MtproxyNoServerHello,
 	MtproxyTlsAlert,
 	MtproxyServerHelloHmacMismatch,
+	MtproxyServerHelloForeignTls,
 	MtproxyServerHelloOkNoAppData,
 	MtproxyConnectedNoMtprotoData,
 	MtproxyAppDataRemoteClosed,

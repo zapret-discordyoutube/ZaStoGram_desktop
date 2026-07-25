@@ -1319,6 +1319,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_status_mtproxy_short_response" = "MTProxy FakeTLS failed: short Server Hello";
 "lng_proxy_status_mtproxy_unrecognized_response" = "MTProxy FakeTLS failed: unrecognized Server Hello";
 "lng_proxy_status_mtproxy_hmac_mismatch" = "MTProxy FakeTLS failed: bad Server Hello digest";
+"lng_proxy_status_mtproxy_foreign_tls" = "MTProxy did not accept the ClientHello: a real TLS site answered";
 "lng_proxy_status_mtproxy_no_appdata" = "MTProxy FakeTLS handshake OK, but no Telegram data";
 "lng_proxy_status_mtproxy_connected_no_mtproto_data" = "Proxy connected, MTProto data stalled";
 "lng_proxy_status_mtproxy_appdata_closed" = "MTProxy app data stream was closed";
