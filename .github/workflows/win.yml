@@ -273,8 +273,23 @@ jobs:
               fi
             done
           }
+          # The trim filter keeps build products only, so a stage that a LATER
+          # stage consumes as sources comes back from the cache stripped of the
+          # files that stage needs: ffmpeg's build_ffmpeg_win.sh runs `make
+          # install` inside nv-codec-headers, and its Makefile is not a build
+          # product. The dir survives (its headers are kept), so the generic
+          # checks above see nothing wrong. Drop the key when the probe file is
+          # missing — prepare.py wipes and re-clones the stage, which is cheap.
+          check_sources() {
+            local root="$1" name="$2" probe="$3"
+            [ -d "$root/$name" ] || return 0
+            [ -f "$root/$name/$probe" ] && return 0
+            rm -f "$root/cache_keys/$name"
+            echo "smoke: $name -> sources trimmed ($probe missing), will rebuild"
+          }
           check_tree "${LibrariesPath//\\//}"
           check_tree "${TBUILD//\\//}/ThirdParty"
+          check_sources "${LibrariesPath//\\//}" nv-codec-headers Makefile
           echo "smoke: cache verification done"
 
       - name: Libraries.
