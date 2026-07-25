@@ -8,10 +8,6 @@ MTPROXY_DIR = PROXY_DIR / "mtproxy"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
 DATA_CPP = PROXY_DIR / "data.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
-CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
-ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
-ENDPOINT_HEALTH_CAPABILITIES_CPP = MTPROXY_DIR / "endpoint_health_capabilities.cpp"
-ENDPOINT_HEALTH_POLICY_CPP = MTPROXY_DIR / "endpoint_health_policy.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
 
@@ -64,60 +60,6 @@ def test_mtproxy_effective_policy_is_always_conservative_tcp():
         assert contract in strict
 
 
-def test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe():
-    policy = read(TRANSPORT_POLICY_CPP)
-    adaptive = read(MTPROXY_DIR / "adaptive_policy.cpp")
-    effective = function_body(policy, "ProxyStealthOptions EffectiveProxyStealthOptions(")
-    recipe = function_body(adaptive, "AdaptiveRecipeResult ApplyAdaptiveRecipe(")
-    mtproxy_branch = effective.split(
-        "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
-        "if (settings == ProxyData::Settings::Enabled", 1)[0]
-
-    assert "BoringMtproxyStealthOptions(" in policy
-    assert "ProxyTlsProfile::ChromeModern" in policy
-    assert "result.tlsProfile = profile;" in policy
-    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
-    assert "ProxyTlsProfile::AutoRotate" not in mtproxy_branch
-    assert "ResolveEffectiveTlsProfile(" not in mtproxy_branch
-    assert "input.stealth.level == ProxyStealthLevel::CompatStrict" in recipe
-    assert recipe.index(
-        "input.stealth.level == ProxyStealthLevel::CompatStrict") < (
-            recipe.index("ApplyProxyStealthLevel("))
-
-
-def test_admission_delay_is_queued_not_failed_or_backoff():
-    session = read_session_private_sources()
-    broker = read(CONNECTION_BROKER_CPP)
-    append = function_body(session, "bool SessionTransport::appendTestConnection(")
-    decision = function_body(
-        broker,
-        "ConnectionBrokerDecision DecisionFromUpdate(")
-
-    assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
-    assert "ConnectionBrokerAction::Queued" in decision
-    assert "ConnectionBrokerAction::StartAfter" in decision
-    assert "ProxyDiagnosticsPhase::Failed" not in broker
-    assert "setState(-int(admission.retryAfter));" not in append
-    assert "mtproxy admission delayed" not in append
-
-
-def test_route_success_updates_canonical_capability_and_health():
-    health = read(ENDPOINT_HEALTH_CPP)
-    capabilities = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
-    tls = read(TLS_SOCKET_RECORDS_CPP)
-    success = function_body(health, "void EndpointHealth::reportSuccess(")
-    packet = function_body(tls, "bool TlsSocket::checkNextPacket()")
-
-    assert "NoteCapabilityMtproxySuccess(" in success
-    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
-        capabilities)
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
-    assert "RouteKey(report.endpoint.route)" in success
-    assert "state.lastFailure = FailureReason::None;" in success
-    assert "state.healthy = true;" in success
-    assert "reportMtproxySuccess({" in packet
-
-
 def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
     policy = read(TRANSPORT_POLICY_CPP)
     allowed = function_body(policy, "bool ProxyWssAllowed(")
@@ -130,26 +72,3 @@ def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
     assert "kWssRemoteClosedTtl = crl::time(30 * 60 * 1000)" in policy
     assert "noteWssRemoteClosed(" in note
     assert "kWssRemoteClosedTtl" in note
-
-
-def test_pre_clienthello_timeouts_do_not_rotate_or_escalate_recipes():
-    policy = read(ENDPOINT_HEALTH_POLICY_CPP)
-    traits = function_body(policy, "FailureTraits TraitsFor(")
-
-    for reason in ("TcpConnectTimeout", "TcpConnectedNoClientHelloWrite"):
-        row = traits.split(
-            f"case FailureReason::{reason}:", 1,
-        )[1].split("case FailureReason::", 1)[0]
-        assert ".escalatesRecipe = true" not in row
-        assert ".rotatesTls = true" not in row
-        assert ".needsCooldown = true" not in row
-        assert ".routeOnly = true" in row
-
-
-if __name__ == "__main__":
-    test_mtproxy_effective_policy_is_always_conservative_tcp()
-    test_mtproxy_default_hotfix_ignores_autorotate_and_adaptive_recipe()
-    test_admission_delay_is_queued_not_failed_or_backoff()
-    test_route_success_updates_canonical_capability_and_health()
-    test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key()
-    test_pre_clienthello_timeouts_do_not_rotate_or_escalate_recipes()

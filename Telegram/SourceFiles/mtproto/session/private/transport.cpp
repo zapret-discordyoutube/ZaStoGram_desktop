@@ -199,19 +199,10 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 	_state.startedConnectingAt = crl::time(0);
 }
 
-SessionProxyAttempt SessionTransport::currentProxyAttempt() const {
-	const auto attempt = _state.connection
+ProxyConnectionAttempt SessionTransport::currentProxyAttempt() const {
+	return _state.connection
 		? _state.connection->proxyConnectionAttempt()
 		: _state.mtproxyAttempt;
-	return {
-		.runtime = _owner->_runtime,
-		.use = _state.mtproxyUse,
-		.attempt = attempt,
-		.transport = _state.connection
-			? _state.connection->proxyTransportFailure()
-			: ProxyTransportFailure(),
-		.attemptStartedAt = _state.mtproxyAttemptStartedAt,
-	};
 }
 
 } // namespace MTP::details

@@ -635,8 +635,6 @@ Instance::Private::Private(
 }
 
 void Instance::Private::start() {
-	_runtime->proxyServices().control().applyMtproxyProxyGeneration(
-		_proxyGeneration);
 	if (isKeysDestroyer()) {
 		for (const auto &[shiftedDcId, dc] : _dcenters) {
 			startSession(shiftedDcId, SessionRole::Maintenance);
@@ -857,28 +855,15 @@ void Instance::Private::migrateProxy(bool manual) {
 		return restart();
 	}
 	++_proxyGeneration;
-	_runtime->proxyServices().control().applyMtproxyProxyGeneration(
-		_proxyGeneration);
 	const auto selected = (_runtime->proxy().enabled
 		&& _runtime->proxy().enabled()
 		&& _runtime->proxy().selected)
 		? _runtime->proxy().selected()
 		: ProxyData();
-	if (manual && selected && selected.type == ProxyData::Type::Mtproto) {
-		// A user picking this proxy is explicit evidence it is worth trying
-		// now: clear its cooldown penalty so the scout probes immediately
-		// instead of sitting out the ladder. Automatic rotation and blanket
-		// connection restarts must NOT reset it, or a dead proxy's backoff
-		// never escalates.
-		_runtime->proxyServices().control().noteMtproxyEndpointSelected(
-			details::MtProxy::EndpointIdFromProxy(selected, {}));
-	}
 	_connectionStatus->setProxyStatus({
 		.attempt = { .proxyGeneration = _proxyGeneration },
 		.proxy = selected,
 	});
-	_runtime->proxyServices().broker().cancelByProxyGeneration(
-		_proxyGeneration);
 	for (const auto &[shiftedDcId, session] : _sessions) {
 		session->migrateProxy(_proxyGeneration);
 	}

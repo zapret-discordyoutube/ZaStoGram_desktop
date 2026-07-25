@@ -86,14 +86,13 @@ def test_proxy_switch_avoids_duplicate_row_and_rotation_updates():
     apply = body_after("void ProxiesBoxController::applyItem")
     settings = body_after("bool ProxiesBoxController::setProxySettings")
 
-    assert "void saveDelayed(bool notifyRotation = true);" in header
     assert "auto old = findByProxy(_settings.selected());" in apply
-    assert "saveDelayed(false);" in apply
+    assert "saveDelayed();" in apply
     assert "old->id != id" in apply
     assert "updateView(*old)" in apply
     assert "updateView(*item)" not in apply
     assert "Core::App().setCurrentProxy(_settings.selected(), value);" in settings
-    assert "saveDelayed(false);" in settings
+    assert "saveDelayed();" in settings
 
 
 def test_explicit_proxy_changes_still_start_check():

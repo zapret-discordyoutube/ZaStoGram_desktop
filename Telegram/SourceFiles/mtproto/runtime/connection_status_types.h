@@ -17,15 +17,6 @@ namespace MTP {
 using ProxyRuntimeId = uint64;
 using ProxyTraceId = uint64;
 
-struct AdmissionTicketKey {
-	ProxyRuntimeId runtimeId = 0;
-	uint64 ticketId = 0;
-
-	friend inline auto operator<=>(
-		AdmissionTicketKey,
-		AdmissionTicketKey) = default;
-};
-
 struct RuntimeGenerationKey {
 	ProxyRuntimeId runtimeId = 0;
 	uint64 proxyGeneration = 0;
@@ -42,24 +33,6 @@ enum class ProxyConnectionUse {
 	Media,
 	Upload,
 	ProxyCheck,
-};
-
-enum class ProxySchedulerLifecycle {
-	None,
-	Queued,
-	Scheduled,
-	Granted,
-	HandedOff,
-	Cancelled,
-};
-
-enum class ProxyAdmissionPhase {
-	Idle,
-	Queued,
-	Scheduled,
-	Resolving,
-	Tcp,
-	FakeTls,
 };
 
 [[nodiscard]] inline bool IsProxyCheck(ProxyConnectionUse use) {
@@ -174,7 +147,6 @@ struct MtProxyAttemptPlan {
 struct ProxyConnectionAttempt {
 	ProxyRuntimeId runtimeId = 0;
 	ProxyTraceId traceId = 0;
-	uint64 ticketId = 0;
 	uint64 routeAttemptId = 0;
 	uint64 proxyGeneration = 0;
 	uint64 proxyEpoch = 0;
@@ -182,20 +154,17 @@ struct ProxyConnectionAttempt {
 	uint64 attemptId = 0;
 	QString connectionId;
 	ProxyConnectionUse use = ProxyConnectionUse::Main;
-	AdmissionTicketKey ticketKey;
 
 	bool operator==(const ProxyConnectionAttempt &other) const {
 		return (runtimeId == other.runtimeId)
 			&& (traceId == other.traceId)
-			&& (ticketId == other.ticketId)
 			&& (routeAttemptId == other.routeAttemptId)
 			&& (proxyGeneration == other.proxyGeneration)
 			&& (proxyEpoch == other.proxyEpoch)
 			&& (successEpoch == other.successEpoch)
 			&& (attemptId == other.attemptId)
 			&& (connectionId == other.connectionId)
-			&& (use == other.use)
-			&& (ticketKey == other.ticketKey);
+			&& (use == other.use);
 	}
 
 };

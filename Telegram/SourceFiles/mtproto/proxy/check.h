@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/proxy/connection_broker.h"
-#include "mtproto/proxy/handshake_gate.h"
+#include "mtproto/proxy/dial_pacer.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/transport/connection_abstract.h"
 
 #include <memory>
@@ -34,10 +34,8 @@ public:
 		ProxyData proxy;
 		DcId dcId = 0;
 		details::ConnectionPointer connection;
-		details::ConnectionTicket connectionTicket;
-		details::HandshakeGateLease handshakeGate;
+		details::ProxyDialLease dial;
 		details::MtProxy::EndpointId mtproxyEndpoint;
-		details::MtProxy::EndpointAttemptLease mtproxyLease;
 		ProxyStealthOptions mtproxyStealth;
 		ProxyTlsProfile mtproxySentProfile = ProxyTlsProfile::Auto;
 		ProxyConnectionAttempt mtproxyAttempt;

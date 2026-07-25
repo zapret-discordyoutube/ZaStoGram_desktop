@@ -27,26 +27,6 @@ def test_runtime_headers_do_not_include_proxy_layer_headers():
         ))
 
 
-def test_session_private_proxy_port_does_not_include_endpoint_health():
-    assert_no_tokens(
-        MTPROTO_DIR / "session" / "private" / "proxy_port.h",
-        (
-            '#include "mtproto/proxy/mtproxy/endpoint_health.h"',
-            "MtProxy::EndpointAttemptLease",
-            "MtProxy::Snapshot",
-            "MtProxy::SuccessScope",
-        ))
-
-
-def test_proxy_adapter_header_does_not_include_session_private_header():
-    assert_no_tokens(
-        MTPROTO_DIR / "proxy" / "session_proxy_adapter.h",
-        (
-            '#include "mtproto/session/private/proxy_port.h"',
-            "public SessionProxyPort",
-        ))
-
-
 def test_transport_details_do_not_include_proxy_socket_subclasses():
     assert_no_tokens(
         MTPROTO_DIR
@@ -63,17 +43,13 @@ def test_transport_details_do_not_include_proxy_socket_subclasses():
 
 def test_existing_source_guards_do_not_lock_old_cycles():
     for path in (
-            TESTS_DIR / "test_session_proxy_port.py",
-            TESTS_DIR / "test_proxy_connection_status.py"):
+            TESTS_DIR / "test_proxy_connection_status.py",):
         assert_no_tokens(path, (
-            'assert \'#include "mtproto/session/private/proxy_port.h"\' in adapter_h',
             'assert \'#include "mtproto/proxy/status.h"\' in abstract_socket_h',
         ))
 
 
 if __name__ == "__main__":
     test_runtime_headers_do_not_include_proxy_layer_headers()
-    test_session_private_proxy_port_does_not_include_endpoint_health()
-    test_proxy_adapter_header_does_not_include_session_private_header()
     test_transport_details_do_not_include_proxy_socket_subclasses()
     test_existing_source_guards_do_not_lock_old_cycles()

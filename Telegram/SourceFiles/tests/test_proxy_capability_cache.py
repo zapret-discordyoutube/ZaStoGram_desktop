@@ -11,7 +11,6 @@ PROXY_SERVICES_CPP = PROXY_DIR / "proxy_services.cpp"
 PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
 RUNTIME_CPP = SOURCE_DIR / "mtproto" / "runtime" / "runtime_environment.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
-ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_LIFECYCLE_CPP = (
     PROXY_DIR / "mtproxy" / "endpoint_health_lifecycle.cpp")
 ENDPOINT_HEALTH_CAPABILITIES_CPP = (
@@ -151,76 +150,6 @@ def test_wss_remote_closed_is_persisted_with_ttl_per_proxy():
     assert "card.wssBlockedUntil = crl::now() + ttl;" in capabilities
 
 
-def test_mtproxy_success_and_failure_update_capability_routes():
-    health = read(ENDPOINT_HEALTH_CPP)
-    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
-    tls_records = read(TLS_SOCKET_RECORDS_CPP)
-    failure = function_body(health, "void EndpointHealth::reportFailure(")
-    success = function_body(health, "void EndpointHealth::reportSuccess(")
-    packet_body = function_body(tls_records, "bool TlsSocket::checkNextPacket()")
-
-    assert '#include "mtproto/proxy/capabilities.h"' in capabilities_bridge
-    assert "NoteCapabilityMtproxyFailure(" in failure
-    assert "NoteCapabilityMtproxySuccess(" in success
-    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
-        capabilities_bridge)
-    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
-        capabilities_bridge)
-    assert "CapabilityProxyKey(endpoint.canonical)" in capabilities_bridge
-    assert "RouteKey(endpoint.route)" in capabilities_bridge
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
-    assert "RouteKey(report.endpoint.route)" in success
-    assert "RouteText(report.endpoint)" in success
-    assert "report.scope != SuccessScope::Relay" in success
-    assert "successRecipeLevel" in success
-    assert ".stealth = _stealth" in packet_body
-    assert ".sentProfile = _sentTlsProfile" in packet_body
-
-
-def test_endpoint_health_updates_capabilities_after_state_lock_release():
-    health = read_endpoint_health_sources()
-    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
-    failure = function_body(health, "void EndpointHealth::reportFailure(")
-    success = function_body(health, "void EndpointHealth::reportSuccess(")
-    stall = function_body(health, "void EndpointHealth::noteRelayStall(")
-    neutral = function_body(health, "void EndpointHealth::retireRelayProof(")
-
-    assert "proxyServices().capabilities()" not in failure
-    assert "proxyServices().capabilities()" not in success
-    assert "proxyServices().capabilities()" not in stall
-    assert "proxyServices().capabilities()" not in neutral
-    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
-        capabilities_bridge)
-    assert "NoteCapabilityMtproxyFailure(" in failure
-    assert "NoteCapabilityMtproxyRelayFailure(" in failure
-    failure_unlock = failure.index("\n\t}\n\tif (staleRecipeLevel)")
-    assert failure_unlock < failure.index("NoteCapabilityMtproxyFailure(")
-    assert failure_unlock < failure.index("NoteCapabilityMtproxyRelayFailure(")
-    success_unlock = success.index("\n\t}\n\tapplyDeferredCleanup();")
-    assert "NoteConnectSuccess(" not in success
-    assert "endpointAdmissionArbiter().openingEvent(" not in success
-    assert success_unlock < success.index("NoteCapabilityMtproxySuccess(")
-    assert success_unlock < success.rindex("notifyEndpointAdmissible(key)")
-    stall_unlock = stall.index(
-        "\n\t}\n\tif (retirement.outcome == RelayProofRetirement::StaleGeneration")
-    assert stall_unlock < stall.index("NoteCapabilityMtproxyRelayFailure(")
-    assert "NoteCapability" not in neutral
-
-    generic_invalidation = failure.index(
-        "capabilityFailure = CapabilityFailure{")
-    relay_invalidation = failure.index(
-        "capabilityRelayFailure = CapabilityFailure{")
-    assert generic_invalidation < relay_invalidation < failure_unlock
-    assert "HasCurrentMainRelayProof(" in failure
-    assert failure.index("HasCurrentMainRelayProof(") < relay_invalidation
-
-    stall_survivors = stall.index(
-        "retirement.outcome\n\t\t\t\t\t== RelayProofRetirement::RetiredWithSurvivors")
-    stall_invalidation = stall.index("NoteCapabilityMtproxyRelayFailure(")
-    assert stall_survivors < stall_invalidation
-    assert "return;" in stall[stall_survivors:stall_invalidation]
-
-
 def test_mtproxy_relay_success_persists_boring_last_good_path():
     header = read(CAPABILITIES_H)
     source = read(CAPABILITIES_CPP)
@@ -290,70 +219,3 @@ def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
     assert "capability.syntheticPskAllowed" not in mtproxy_branch
     assert "capability.fragmentationAllowed" not in mtproxy_branch
     assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
-
-
-def test_relay_data_degradation_invalidates_persisted_relay_proof():
-    header = read(CAPABILITIES_H)
-    source = read(CAPABILITIES_CPP)
-    health = read_endpoint_health_sources()
-    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
-    relay_failure = function_body(
-        source,
-        "void ProxyCapabilityCache::noteMtproxyRelayFailure(")
-    report_failure = function_body(health, "void EndpointHealth::reportFailure(")
-    terminal = function_body(health, "RecordTerminalAttemptLocked(")
-    relay_stall = function_body(health, "void EndpointHealth::noteRelayStall(")
-    neutral = function_body(health, "void EndpointHealth::retireRelayProof(")
-
-    assert "void noteMtproxyRelayFailure(" in header
-    assert "card.relayProven = false;" in relay_failure
-    assert "card.relayProvenAt = 0;" in relay_failure
-    assert "card.lastFailureClass = failureClass;" in relay_failure
-    assert "AddRoute(card.badRoutes, routeKey);" in relay_failure
-    assert "NoteCapabilityMtproxyRelayFailure(" in report_failure
-    assert "NoteCapabilityMtproxyRelayFailure(" in relay_stall
-    assert "runtime->proxyServices().capabilities().noteMtproxyRelayFailure(" in (
-        capabilities_bridge)
-    assert "relay_stall" in relay_stall
-    assert "RetireRelayProof(state, identity)" in terminal
-    assert "!HasCurrentMainRelayProof(" in report_failure
-    assert report_failure.index("!HasCurrentMainRelayProof(") < (
-        report_failure.index("RelayFailureInvalidatesCapability("))
-    assert "RelayProofRetirement::RetiredWithSurvivors" in relay_stall
-    assert relay_stall.index(
-        "RelayProofRetirement::RetiredWithSurvivors") < relay_stall.index(
-            "NoteCapabilityMtproxyRelayFailure(")
-    assert "NoteCapabilityMtproxyRelayFailure(" not in neutral
-
-    assert "const auto softNoAppData = SoftNoAppDataFailure(" in report_failure
-    assert "const auto applyGlobalPenalty = !state.relayProven" in report_failure
-    assert "applyGlobalPenalty" in report_failure
-
-
-def test_hard_mtproxy_failures_invalidate_stale_relay_cache():
-    source = read(CAPABILITIES_CPP)
-    failure = function_body(source, "void ProxyCapabilityCache::noteMtproxyFailure(")
-
-    assert "HardMtproxyFailureInvalidatesRelayProof(" in source
-    assert 'u"client_hello_sent_no_server_hello"_q' in source
-    assert 'u"tls_alert_after_client_hello"_q' in source
-    assert 'u"server_hello_hmac_mismatch"_q' in source
-    assert 'u"server_hello_ok_no_appdata"_q' not in function_body(
-        source,
-        "bool HardMtproxyFailureInvalidatesRelayProof(")
-    assert "card.relayProven = false;" in failure
-    assert "card.relayProvenAt = 0;" in failure
-
-
-if __name__ == "__main__":
-    test_capability_cache_module_is_file_backed_and_registered()
-    test_capability_card_contains_transport_profile_flags_and_routes()
-    test_proxy_capability_key_uses_canonical_identity_not_route_ip()
-    test_wss_remote_closed_is_persisted_with_ttl_per_proxy()
-    test_mtproxy_success_and_failure_update_capability_routes()
-    test_endpoint_health_updates_capabilities_after_state_lock_release()
-    test_mtproxy_relay_success_persists_boring_last_good_path()
-    test_legacy_relay_cache_uses_last_success_as_proof_time()
-    test_last_good_capability_is_used_before_saved_mtproxy_experiments()
-    test_relay_data_degradation_invalidates_persisted_relay_proof()
-    test_hard_mtproxy_failures_invalidate_stale_relay_cache()

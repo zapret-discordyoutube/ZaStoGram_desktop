@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "mtproto/proxy/mtproxy/handshake_plan.h"
+
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
@@ -110,7 +112,7 @@ void TlsSocket::plainConnected() {
 		ProxyDiagnosticsSeverity::Info,
 		u"mtproxy tcp connected"_q);
 
-	const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);
+	const auto delay = ConnectionSpacing(_connectionPattern);
 	if (delay > 0) {
 		_clientHelloTimer.callOnce(delay);
 	} else {
@@ -324,19 +326,6 @@ void TlsSocket::checkHelloDigest() {
 		ProxyDiagnosticsPhase::ServerHelloOk,
 		ProxyDiagnosticsSeverity::Info,
 		u"mtproxy server hello hmac verified"_q);
-	_runtime->proxyServices().control().reportMtproxySuccess({
-		.endpoint = _endpointId,
-		.use = _endpointUse,
-		.runtimeId = _mtproxyAttempt.runtimeId,
-		.stealth = _stealth,
-		.sentProfile = _sentTlsProfile,
-		.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-		.attemptId = _mtproxyAttempt.attemptId,
-		.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-		.successEpoch = _mtproxyAttempt.successEpoch,
-		.attemptStartedAt = _mtproxyAttemptStartedAt,
-		.scope = MtProxy::SuccessScope::Handshake,
-	});
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();
 		_startupCoverFrames = 0;

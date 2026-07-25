@@ -10,8 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_capabilities.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -43,7 +41,7 @@ constexpr auto kOnlyRouteAttemptTimeout = crl::time(8000);
 // when it fires the failure must be attributed from the phase the child
 // socket actually reached - reporting a generic tcp_connect_timeout for
 // a connection that completed TCP (or even the whole TLS handshake)
-// corrupts diagnostics and feeds the wrong signal into EndpointHealth.
+// corrupts diagnostics.
 [[nodiscard]] MtProxy::FailureReason RouteTimeoutReason(
 		HandshakePhase phase) {
 	switch (phase) {
@@ -245,9 +243,11 @@ void RecordRouteOutcome(
 		return;
 	}
 	const auto endpoint = MtproxyEndpointIdForRoute(proxy, ipIndex);
-	MtProxy::NoteCapabilityMtproxyFailure(
-		runtime,
-		endpoint,
+	// Route memory only: "this address of this proxy did not answer". It
+	// never feeds back into the handshake shape.
+	runtime->proxyServices().capabilities().noteMtproxyFailure(
+		MtProxy::CapabilityProxyKey(endpoint.canonical),
+		MtProxy::RouteKey(endpoint.route),
 		MtProxy::ToLegacyDiagnostic(reason));
 }
 
@@ -439,21 +439,40 @@ std::vector<int> ResolvingConnection::routeOrder() const {
 			result.push_back(index);
 		}
 	};
-	if (_proxy.type == ProxyData::Type::Mtproto) {
-		const auto capability = _runtime->proxyServices().capabilities().lookup(_proxy);
-		for (const auto &goodRoute : capability.goodRoutes) {
-			for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
-				const auto route = MtProxy::RouteEndpointFromAddress(
-					_proxy.resolvedIPs[index],
-					int(_proxy.port),
-					ProxyTransport::Tcp,
-					_proxy.originalHost.isEmpty()
-						? _proxy.host
-						: _proxy.originalHost);
-				if (MtProxy::RouteKey(route) == goodRoute) {
-					result.push_back(index);
-				}
-			}
+	if (_proxy.type != ProxyData::Type::Mtproto) {
+		for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
+			append(index);
+		}
+		return result;
+	}
+	const auto capability = _runtime->proxyServices().capabilities().lookup(
+		_proxy);
+	const auto keyOf = [&](int index) {
+		return MtProxy::RouteKey(MtProxy::RouteEndpointFromAddress(
+			_proxy.resolvedIPs[index],
+			int(_proxy.port),
+			ProxyTransport::Tcp,
+			_proxy.originalHost.isEmpty()
+				? _proxy.host
+				: _proxy.originalHost));
+	};
+	const auto listed = [](const std::vector<QString> &list,
+			const QString &key) {
+		return std::find(begin(list), end(list), key) != end(list);
+	};
+	// Addresses that answered last time first, then untried ones, then the
+	// ones that already failed - a blackholed IP of a multi-homed proxy
+	// should not keep being the first thing we dial.
+	for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
+		if (listed(capability.goodRoutes, keyOf(index))) {
+			append(index);
+		}
+	}
+	for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
+		const auto key = keyOf(index);
+		if (!listed(capability.goodRoutes, key)
+			&& !listed(capability.badRoutes, key)) {
+			append(index);
 		}
 	}
 	for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) {
@@ -880,6 +899,23 @@ void ResolvingConnection::handleConnected(AbstractConnection *child) {
 				runtime->proxyResolver().setGoodDomain(host, good);
 			}
 		});
+		if (_proxy.type == ProxyData::Type::Mtproto) {
+			// This address of this proxy answered a Telegram reply, so it
+			// goes to the front of the order next time. Route memory only -
+			// it never influences the handshake shape.
+			const auto endpoint = MtproxyEndpointIdForRoute(
+				_proxy,
+				_ipIndex);
+			const auto routeKey = MtProxy::RouteKey(endpoint.route);
+			_runtime->proxyServices().capabilities().noteMtproxySuccess(
+				MtProxy::CapabilityProxyKey(endpoint.canonical),
+				routeKey,
+				routeKey,
+				_mtproxyPlan.effectiveTlsProfile,
+				_mtproxyPlan.stealth,
+				_mtproxyPlan.recipeLevel,
+				true);
+		}
 	}
 	connected();
 }

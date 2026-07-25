@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/object_ptr.h"
 #include "base/timer.h"
 #include "core/core_settings_proxy.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
 #include "mtproto/proxy/check.h"
 #include "mtproto/proxy/data.h"
 #include "mtproto/transport/connection_abstract.h"
@@ -93,8 +92,6 @@ public:
 	object_ptr<Ui::BoxContent> addNewItemBox();
 	bool setProxySettings(ProxyData::Settings value);
 	void setProxyForCalls(bool enabled);
-	void setProxyRotationEnabled(bool enabled);
-	void setProxyRotationTimeout(int value);
 	void setTryIPv6(bool enabled);
 	void setFastWarmup(bool enabled);
 	rpl::producer<ProxyData::Settings> proxySettingsValue() const;
@@ -119,7 +116,6 @@ private:
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 		int ping = 0;
-		std::optional<MTP::details::MtProxy::ProxyEndpointView> endpointView;
 	};
 
 	std::vector<Item>::iterator findById(int id);
@@ -127,13 +123,8 @@ private:
 	void setDeleted(int id, bool deleted);
 	void updateView(const Item &item);
 	void share(const ProxyData &proxy, bool qr = false);
-	void saveDelayed(bool notifyRotation = true);
+	void saveDelayed();
 	void refreshChecker(Item &item);
-	void refreshSelectedMtproxyView();
-	void applyMtproxyEndpointView(
-		const MTP::details::MtProxy::ProxyEndpointView &view);
-	void refreshRetryCountdown();
-	void refreshRetryTimer();
 
 	void replaceItemWith(
 		std::vector<Item>::iterator which,
@@ -148,7 +139,6 @@ private:
 	std::vector<Item> _list;
 	rpl::event_stream<ItemView> _views;
 	base::Timer _saveTimer;
-	base::Timer _retryTimer;
 	rpl::event_stream<ProxyData::Settings> _proxySettingsChanges;
 	std::shared_ptr<Ui::Show> _show;
 

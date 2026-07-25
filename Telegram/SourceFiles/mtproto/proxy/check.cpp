@@ -10,8 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/control_plane.h"
+#include "mtproto/proxy/mtproxy/handshake_plan.h"
 #include "mtproto/proxy/diagnostics.h"
-#include "mtproto/proxy/mtproxy/endpoint_health_policy.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/transport_policy.h"
@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QHash>
 #include <QtCore/QTimer>
 
+#include <atomic>
 #include <utility>
 
 namespace MTP {
@@ -31,6 +32,9 @@ namespace MtProxy = details::MtProxy;
 namespace {
 
 QHash<QString, int> ActiveProxyCheckKeys;
+
+// Only ties the log lines of one probe together; no health state behind it.
+std::atomic<uint64> LastProxyCheckAttemptId = 0;
 
 void RetainActiveProxyCheckKey(const QString &key) {
 	if (!key.isEmpty()) {
@@ -97,56 +101,11 @@ void SetProxyCheckProgress(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy,
 		const ProxyStealthOptions &stealth) {
-	if (proxy.type == ProxyData::Type::Mtproto) {
-		const auto endpoint = MtProxy::EndpointIdFromProxy(proxy, stealth);
-		const auto &control = runtime->proxyServices().control();
-		const auto view = control.mtproxyEndpointView(endpoint);
-		return view.mainProof.strength
-			!= MtProxy::MainRelayProofStrength::None
-			|| view.endpointMainProof.strength
-			!= MtProxy::MainRelayProofStrength::None;
-	}
 	const auto status = runtime->instance().connectionStatus
 		? runtime->instance().connectionStatus->proxyStatus()
 		: ProxyConnectionStatus();
 	return (status.phase == ProxyConnectionPhase::Connected)
 		&& (status.proxy == proxy);
-}
-
-[[nodiscard]] ProxyFailureAttribution ProxyCheckFailureAttribution(
-		MtProxy::FailureReason reason,
-		const ProxyTransportFailure &failure) {
-	if (failure.attribution != ProxyFailureAttribution::None) {
-		return failure.attribution;
-	} else if (failure.closeOrigin == ProxyCloseOrigin::PeerClosed) {
-		return ProxyFailureAttribution::Peer;
-	} else if (failure.error == ProxyConnectionError::Network
-		|| failure.error == ProxyConnectionError::ConnectionRefused
-		|| failure.error == ProxyConnectionError::HostNotFound) {
-		return ProxyFailureAttribution::Network;
-	} else if (reason == MtProxy::FailureReason::TlsAlertAfterClientHello) {
-		return ProxyFailureAttribution::Client;
-	} else if (reason == MtProxy::FailureReason::ServerHelloHmacMismatch
-		|| reason == MtProxy::FailureReason::ProxyProtocolBadResponse) {
-		return ProxyFailureAttribution::Peer;
-	}
-	return (reason == MtProxy::FailureReason::None)
-		? ProxyFailureAttribution::None
-		: ProxyFailureAttribution::Unclear;
-}
-
-[[nodiscard]] bool IsProxyCheckCapacityTerminal(
-		MtProxy::FailureReason reason) {
-	switch (reason) {
-	case MtProxy::FailureReason::TcpConnectTimeout:
-	case MtProxy::FailureReason::ClientHelloSentNoServerHello:
-	case MtProxy::FailureReason::ServerHelloOkNoAppData:
-	case MtProxy::FailureReason::ServerHelloOkNoMtprotoData:
-	case MtProxy::FailureReason::ConnectedNoMtprotoData:
-		return true;
-	default:
-		return false;
-	}
 }
 
 [[nodiscard]] ProxyEventReport ProxyCheckAttemptReport(
@@ -255,7 +214,6 @@ void ResetProxyCheckState(
 	if (!state) {
 		return;
 	}
-	state->connectionTicket.cancel();
 	if (state->runtime && state->mtproxyAttempt.traceId) {
 		const auto runtime = not_null{ state->runtime };
 		if (ClaimProxyCheckTerminal(runtime, state)) {
@@ -273,8 +231,7 @@ void ResetProxyCheckState(
 		}
 	}
 	state->connection.reset();
-	state->handshakeGate.release();
-	state->mtproxyLease.release();
+	state->dial.release();
 	state->mtproxyEndpoint = MtProxy::EndpointId();
 	state->mtproxyAttempt = {};
 	state->mtproxyPlan = {};
@@ -433,8 +390,7 @@ void StartProxyCheck(
 		}
 		state->finished = true;
 		state->networkStarted = false;
-		state->connectionTicket.cancel();
-		state->handshakeGate.release();
+		state->dial.release();
 		if (!MtProxy::EndpointEmpty(state->mtproxyEndpoint)) {
 			const auto transportFailure = raw->proxyTransportFailure();
 			const auto reason =
@@ -443,31 +399,6 @@ void StartProxyCheck(
 					transportFailure.reason)
 				: ProxyCheckFailureReason(error);
 			if (ClaimProxyCheckTerminal(runtime, state)) {
-				runtime->proxyServices().control().reportMtproxyFailure({
-					.endpoint = state->mtproxyEndpoint,
-					.use = MtProxy::EndpointUse::ProxyCheck,
-					.runtimeId = state->mtproxyAttempt.runtimeId,
-					.reason = reason,
-					.configuredTlsProfile
-						= state->mtproxyPlan.configuredTlsProfile,
-					.sentProfile = transportFailure.sentTlsProfile.value_or(
-						state->mtproxyPlan.effectiveTlsProfile),
-					.lease = &state->mtproxyLease,
-					.proxyGeneration = state->mtproxyAttempt.proxyGeneration,
-					.attemptId = state->mtproxyAttempt.attemptId,
-					.proxyEpoch = state->mtproxyAttempt.proxyEpoch,
-					.successEpoch = state->mtproxyAttempt.successEpoch,
-					.attemptStartedAt = state->mtproxyAttemptStartedAt,
-					.routesExhausted = true,
-					.ticketKey = state->mtproxyAttempt.ticketKey,
-					.attribution = ProxyCheckFailureAttribution(
-						reason,
-						transportFailure),
-					.terminalAt = crl::now(),
-				});
-				if (IsProxyCheckCapacityTerminal(reason)) {
-					state->mtproxyLease.capacityTerminal(reason, true);
-				}
 				ReportClaimedProxyCheckSummary(
 					runtime,
 					ProxyCheckAttemptReport(
@@ -511,9 +442,7 @@ void StartProxyCheck(
 		RetainActiveProxyCheckKey(probeKey);
 		state->progressStatus = ProxyCheckStatus::Idle;
 		state->networkStarted = false;
-		auto handshakeGate = details::ReserveHandshakeGateForProxy(
-			runtime,
-			proxy);
+		auto dial = details::ReserveProxyDial(runtime, proxy);
 		state->connection = Connection::Create(
 			runtime,
 			connType,
@@ -522,7 +451,7 @@ void StartProxyCheck(
 			proxy,
 			checkStealth);
 		state->finished = false;
-		state->handshakeGate = std::move(handshakeGate);
+		state->dial = std::move(dial);
 		const auto raw = state->connection.get();
 		raw->connect(raw, &Connection::connected, [=] {
 			if (state->connection.get() != raw || state->finished) {
@@ -532,23 +461,6 @@ void StartProxyCheck(
 				if (!ClaimProxyCheckTerminal(runtime, state)) {
 					return;
 				}
-				runtime->proxyServices().control().reportMtproxySuccess({
-					.endpoint = state->mtproxyEndpoint,
-					.use = MtProxy::EndpointUse::ProxyCheck,
-					.runtimeId = state->mtproxyAttempt.runtimeId,
-					.stealth = state->mtproxyStealth,
-					.sentProfile = state->mtproxySentProfile,
-					.lease = &state->mtproxyLease,
-					.proxyGeneration = state->mtproxyAttempt.proxyGeneration,
-					.attemptId = state->mtproxyAttempt.attemptId,
-					.proxyEpoch = state->mtproxyAttempt.proxyEpoch,
-					.successEpoch = state->mtproxyAttempt.successEpoch,
-					.attemptStartedAt = state->mtproxyAttemptStartedAt,
-					.scope = MtProxy::SuccessScope::Relay,
-					.ticketKey = state->mtproxyAttempt.ticketKey,
-					.payloadAt = crl::now(),
-				});
-				state->mtproxyLease.transportReady();
 				ReportClaimedProxyCheckSummary(
 					runtime,
 					ProxyCheckAttemptReport(
@@ -561,6 +473,7 @@ void StartProxyCheck(
 						ProxyDiagnosticsSeverity::Info,
 						u"proxy_check_relay_ready"_q));
 			}
+			state->dial.proven();
 			const auto ping = raw->pingTime();
 			SetProxyCheckProgress(
 				state,
@@ -570,8 +483,7 @@ void StartProxyCheck(
 			}
 			state->finished = true;
 			state->networkStarted = false;
-			state->connectionTicket.cancel();
-			state->handshakeGate.release();
+			state->dial.release();
 			ReportProxyEvent(runtime, {
 				.phase = ProxyDiagnosticsPhase::ProxyCheckFinished,
 				.proxy = proxy,
@@ -611,95 +523,62 @@ void StartProxyCheck(
 			bytes::vector secret) {
 		const auto state = checker.state();
 		const auto raw = state->connection.get();
-		const auto gateDelay = state->handshakeGate.delay();
 		const auto endpoint = (proxy.type == ProxyData::Type::Mtproto)
 			? MtProxy::EndpointIdFromProxy(proxy, checkStealth)
 			: MtProxy::EndpointId();
-		const auto proxyGeneration = MtProxy::EndpointEmpty(endpoint)
-			? uint64()
-			: runtime->proxyServices().control().mtproxyEndpointView(
-				endpoint).runtimeGeneration.proxyGeneration;
-		state->connectionTicket = runtime->proxyServices().broker().request({
-			.proxyGeneration = proxyGeneration,
-			.endpoint = endpoint,
-			.proxy = proxy,
-			.use = MtProxy::EndpointUse::ProxyCheck,
-			.stealth = checkStealth,
-			.configuredTlsProfile = checkStealth.tlsProfile,
-			.notBefore = gateDelay,
-			.context = raw,
-			.reclaim = [
-				weak = std::weak_ptr<ProxyCheckConnection::Data>(state),
-				raw
-			](
-					MtProxy::LiveSlotKey key,
-					std::optional<MtProxy::AdmissionPurpose>) {
-				const auto state = weak.lock();
-				if (!state
-					|| state->connection.get() != raw
-					|| state->mtproxyLease.slotKey() != key) {
-					return;
-				}
-				ResetProxyCheckState(
-					state,
-					ProxyCloseOrigin::BrokerCancelled);
-			},
-			.start = [=, secret = std::move(secret)](
-					details::ConnectionStart start) mutable {
-				if (state->connection.get() != raw) {
-					return;
-				}
-				state->mtproxyEndpoint = start.endpoint;
-				state->mtproxyLease = std::move(start.lease);
-				state->mtproxyStealth = start.stealth;
-				state->mtproxySentProfile = start.effectiveTlsProfile;
-				state->mtproxyAttempt = start.attempt;
-				state->mtproxyAttempt.connectionId = raw->debugId();
-				state->mtproxyPlan = start.plan;
-				state->mtproxyAttemptStartedAt = start.attemptStartedAt;
-				state->networkStarted = true;
-				SetProxyCheckProgress(state, ProxyCheckStatus::Resolving);
-				raw->connectToServer(
-					address,
-					port,
-					secret,
-					dcId,
-					false,
-					{
-						.mtproxyAttempt = state->mtproxyAttempt,
-						.mtproxyPlan = start.plan,
-						.mtproxyAttemptStartedAt = start.attemptStartedAt,
-					});
-				QTimer::singleShot(int(raw->fullConnectTimeout()), raw, [=] {
-					if (state->connection.get() != raw || state->finished) {
-						return;
-					}
-					raw->timedOut();
-					finishWithFail(state, raw, ProxyConnectionError::Timeout);
+		state->mtproxyEndpoint = endpoint;
+		state->mtproxyStealth = checkStealth;
+		state->mtproxySentProfile = checkStealth.tlsProfile;
+		state->mtproxyAttemptStartedAt = crl::now();
+		if (!MtProxy::EndpointEmpty(endpoint)) {
+			state->mtproxyPlan = MtProxy::MakeAttemptPlan(checkStealth);
+			state->mtproxySentProfile = state->mtproxyPlan.effectiveTlsProfile;
+			state->mtproxyAttempt = {
+				.runtimeId = runtime->proxyRuntimeId(),
+				.attemptId = ++LastProxyCheckAttemptId,
+				.connectionId = raw->debugId(),
+				.use = ProxyConnectionUse::ProxyCheck,
+			};
+			state->mtproxyAttempt.traceId
+				= runtime->proxyEndpointContext().nextTraceId(
+					state->mtproxyAttempt);
+		}
+		const auto plan = state->mtproxyPlan;
+		const auto attempt = state->mtproxyAttempt;
+		const auto attemptStartedAt = state->mtproxyAttemptStartedAt;
+		const auto begin = [=] {
+			if (state->connection.get() != raw || state->finished) {
+				return;
+			}
+			state->networkStarted = true;
+			SetProxyCheckProgress(state, ProxyCheckStatus::Resolving);
+			raw->connectToServer(
+				address,
+				port,
+				secret,
+				dcId,
+				false,
+				{
+					.mtproxyAttempt = attempt,
+					.mtproxyPlan = plan,
+					.mtproxyAttemptStartedAt = attemptStartedAt,
 				});
-			},
-			.status = [=](details::ConnectionBrokerDecision decision) {
+			QTimer::singleShot(int(raw->fullConnectTimeout()), raw, [=] {
 				if (state->connection.get() != raw || state->finished) {
 					return;
 				}
-				if (decision.action
-						== details::ConnectionBrokerAction::Rejected) {
-					finishWithFail(
-						state,
-						raw,
-						ProxyConnectionError::Unknown);
-				} else if (decision.action
-						== details::ConnectionBrokerAction::Queued
-					|| decision.action
-						== details::ConnectionBrokerAction::StartAfter) {
-					SetProxyCheckProgress(
-						state,
-						ProxyCheckStatus::WaitingForConnectionSlot);
-				}
-			},
-		});
-		if (!state->connectionTicket) {
-			finishWithFail(state, raw, ProxyConnectionError::Unknown);
+				raw->timedOut();
+				finishWithFail(state, raw, ProxyConnectionError::Timeout);
+			});
+		};
+		const auto delay = state->dial.delay();
+		if (delay > 0) {
+			SetProxyCheckProgress(
+				state,
+				ProxyCheckStatus::WaitingForConnectionSlot);
+			runtime->async().singleShot(delay, raw, begin);
+		} else {
+			begin();
 		}
 	};
 	if (proxy.type == ProxyData::Type::Mtproto) {

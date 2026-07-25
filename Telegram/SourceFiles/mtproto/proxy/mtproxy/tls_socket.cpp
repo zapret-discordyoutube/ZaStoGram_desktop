@@ -278,12 +278,9 @@ ProxyMtproxyTerminalReason TlsSocket::mtproxyTerminalReason() const {
 }
 
 crl::time TlsSocket::mtproxyTerminalUntil() const {
-	return _runtime->proxyServices().control().mtproxyEndpointRetryUntil(
-		_endpointId,
-		{
-			.runtimeId = _mtproxyAttempt.runtimeId,
-			.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-		});
+	// Failures no longer put an endpoint into a cooldown, so there is no
+	// "retry not before" instant to report.
+	return 0;
 }
 
 void TlsSocket::handleError(MtProxy::FailureReason reason, int errorCode) {

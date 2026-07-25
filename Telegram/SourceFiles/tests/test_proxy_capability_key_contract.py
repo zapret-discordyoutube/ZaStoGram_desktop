@@ -4,8 +4,6 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 CAPABILITIES_CPP = PROXY_DIR / "capabilities.cpp"
-ENDPOINT_HEALTH_H = PROXY_DIR / "mtproxy" / "endpoint_health.h"
-ENDPOINT_HEALTH_CPP = PROXY_DIR / "mtproxy" / "endpoint_health.cpp"
 ENDPOINT_HEALTH_CAPABILITIES_CPP = (
     PROXY_DIR / "mtproxy" / "endpoint_health_capabilities.cpp")
 ENDPOINT_IDENTITY_H = PROXY_DIR / "mtproxy" / "endpoint_identity.h"
@@ -119,50 +117,3 @@ def test_capability_key_components_compute_identical_values():
     domain = function_body(capabilities, "QString ProxyCapabilityDomain(")
     assert "DomainFromSecret(bytes::make_span(secret))" in domain
     assert "result.canonical.domainFromSecret = DomainFromSecret(secret);" in from_proxy
-
-
-def test_capability_writers_and_readers_use_the_matching_keys():
-    capabilities = read(CAPABILITIES_CPP)
-    header = read(ENDPOINT_IDENTITY_H)
-    health = read(ENDPOINT_HEALTH_CPP)
-    capabilities_bridge = read(ENDPOINT_HEALTH_CAPABILITIES_CPP)
-    resolving = read(RESOLVING_CONNECTION_CPP)
-    policy = read(TRANSPORT_POLICY_CPP)
-
-    assert "QString CapabilityProxyKey(const CanonicalProxyEndpoint &endpoint)" in header
-
-    failure = function_body(health, "void EndpointHealth::reportFailure(")
-    success = function_body(health, "void EndpointHealth::reportSuccess(")
-    assert "NoteCapabilityMtproxyFailure(" in failure
-    assert "runtime->proxyServices().capabilities().noteMtproxyFailure(" in (
-        capabilities_bridge)
-    assert "CapabilityProxyKey(" in failure
-    assert "report.endpoint.canonical" in failure
-    assert "NoteCapabilityMtproxySuccess(" in success
-    assert "runtime->proxyServices().capabilities().noteMtproxySuccess(" in (
-        capabilities_bridge)
-    assert "CapabilityProxyKey(report.endpoint.canonical)" in success
-
-    # Writers must not fall back to the health-state EndpointKey, which has
-    # an extra proxyKind segment lookup(proxy) can never match.
-    for call in ("noteMtproxyFailure(", "noteMtproxySuccess("):
-        callsite = capabilities_bridge[capabilities_bridge.index(call):]
-        callsite = callsite[:callsite.index(";")]
-        assert "EndpointKey(" not in callsite.replace("CapabilityProxyKey(", "")
-
-    lookup = function_body(
-        capabilities,
-        "ProxyCapabilityCard ProxyCapabilityCache::lookup(const ProxyData &proxy)")
-    assert "lookup(ProxyCapabilityKey(proxy))" in lookup
-    route_order = function_body(
-        resolving, "std::vector<int> ResolvingConnection::routeOrder(")
-    assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in (
-        route_order)
-    assert "capability.goodRoutes" in route_order
-    assert "runtime->proxyServices().capabilities().lookup(proxy)" in policy
-
-
-if __name__ == "__main__":
-    test_capability_writer_key_matches_reader_key_format()
-    test_capability_key_components_compute_identical_values()
-    test_capability_writers_and_readers_use_the_matching_keys()

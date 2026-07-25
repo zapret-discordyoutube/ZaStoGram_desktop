@@ -12,8 +12,6 @@ TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 TLS_SOCKET_PSK_CPP = MTPROXY_DIR / "tls_socket_psk.cpp"
 TLS_SOCKET_PSK_H = MTPROXY_DIR / "tls_socket_psk.h"
 TLS_SOCKET_RECORDS_CPP = MTPROXY_DIR / "tls_socket_records.cpp"
-ADAPTIVE_POLICY_H = MTPROXY_DIR / "adaptive_policy.h"
-ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 TCP_SOCKET_H = SOURCE_DIR / "mtproto" / "transport" / "details" / "mtproto_tcp_socket.h"
 PROXY_DATA_H = SOURCE_DIR / "mtproto" / "runtime" / "proxy_data.h"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
@@ -23,15 +21,6 @@ README = SOURCE_DIR.parents[1] / "README.md"
 
 def psk_header():
     return TLS_SOCKET_PSK_H.read_text(encoding="utf-8")
-
-
-def test_mtproxy_transport_policy_files_live_in_proxy_module():
-    header = ADAPTIVE_POLICY_H.read_text(encoding="utf-8")
-    source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-
-    assert "struct AdaptiveRecipeInput" in header
-    assert "ApplyAdaptiveRecipe(" in header
-    assert '#include "mtproto/proxy/mtproxy/adaptive_policy.h"' in source
 
 
 def test_qtcp_socket_members_have_direct_header_include():
@@ -118,18 +107,6 @@ def test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile():
 
     assert "NoteSyntheticPskHandshakeSuccess(" not in hello_digest
     assert "noteDataPathSuccess(" not in hello_digest
-
-
-def test_synthetic_psk_cache_is_armed_only_after_data_path_success():
-    source = TLS_SOCKET_RECORDS_CPP.read_text(encoding="utf-8")
-    packet_body = function_body(source, "bool TlsSocket::checkNextPacket()")
-
-    assert "_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(" in (
-        source)
-    assert packet_body.index("_phase = HandshakePhase::FirstDataReceived;") < (
-        packet_body.index("noteDataPathSuccess("))
-    assert packet_body.index("reportMtproxySuccess({") < (
-        packet_body.index("noteDataPathSuccess("))
 
 
 def test_synthetic_psk_cache_is_cleared_on_post_handshake_failure():
@@ -323,7 +300,7 @@ def test_admission_plan_drives_tls_socket_spacing_and_diagnostics():
     assert "ProxyTlsProfile _configuredTlsProfile" in header
     assert "applyAdaptiveRecipe" not in source
     assert "reportTransportEvent(" in source
-    assert "const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);" in connected_body
+    assert "const auto delay = ConnectionSpacing(_connectionPattern);" in connected_body
     assert "_clientHelloTimer.callOnce(delay);" in connected_body
     assert "clearSyntheticPskOnFailure(reason)" in terminal_body
     assert "_sentTlsProfile" in clear_body
@@ -358,12 +335,10 @@ def body_from_brace(text: str, brace: int) -> str:
 
 
 if __name__ == "__main__":
-    test_mtproxy_transport_policy_files_live_in_proxy_module()
     test_qtcp_socket_members_have_direct_header_include()
     test_server_hello_length_uses_non_narrow_storage()
     test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
     test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
-    test_synthetic_psk_cache_is_armed_only_after_data_path_success()
     test_synthetic_psk_cache_is_cleared_on_post_handshake_failure()
     test_synthetic_psk_uses_cached_identity_and_plausible_age()
     test_synthetic_psk_ticket_is_consumed_after_offer()

@@ -184,17 +184,6 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 	if (settings == ProxyData::Settings::Enabled
 		&& proxy.type == ProxyData::Type::Mtproto) {
 		result.transport = ProxyTransport::Tcp;
-		const auto capability = runtime->proxyServices().capabilities().lookup(proxy);
-		if (capability.lastGoodTransport
-				== ProxyCapabilityTransport::MtproxyFakeTlsTcp
-			&& capability.relayProven
-			&& capability.lastGoodRecipeLevel == 0
-			&& !capability.autoRotateAllowed
-			&& capability.lastGoodProfile != ProxyTlsProfile::Auto) {
-			return BoringMtproxyStealthOptions(
-				std::move(result),
-				capability.lastGoodProfile);
-		}
 		return BoringMtproxyStealthOptions(std::move(result));
 	}
 	if (settings == ProxyData::Settings::Enabled

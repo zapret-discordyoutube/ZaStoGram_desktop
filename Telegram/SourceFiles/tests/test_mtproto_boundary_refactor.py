@@ -9,7 +9,6 @@ MTPROTO_DIR = SOURCE_DIR / "mtproto"
 PROXY_DIR = MTPROTO_DIR / "proxy"
 PROXY_SERVICES_H = PROXY_DIR / "proxy_services.h"
 PROXY_SERVICES_CPP = PROXY_DIR / "proxy_services.cpp"
-SESSION_PROXY_ADAPTER_CPP = PROXY_DIR / "session_proxy_adapter.cpp"
 RUNTIME_H = MTPROTO_DIR / "runtime" / "runtime_environment.h"
 RUNTIME_CPP = MTPROTO_DIR / "runtime" / "runtime_environment.cpp"
 CONNECTION_STATUS_H = MTPROTO_DIR / "runtime" / "connection_status.h"
@@ -18,7 +17,6 @@ DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
 CONTROL_H = PROXY_DIR / "control_plane.h"
 CONTROL_CPP = PROXY_DIR / "control_plane.cpp"
-BROKER_H = PROXY_DIR / "connection_broker.h"
 DNS_H = PROXY_DIR / "dns_resolver_cache.h"
 CHECK_H = PROXY_DIR / "check.h"
 ABSTRACT_CONNECTION_H = MTPROTO_DIR / "transport" / "connection_abstract.h"
@@ -102,7 +100,6 @@ def test_runtime_environment_is_the_app_gateway():
     assert "[[nodiscard]] ProxyServices &proxyServices() const;" in header
     assert "class ProxyServices final" in services_header
     assert "ProxyControlPlane &control();" in services_header
-    assert "details::ConnectionBroker &broker();" in services_header
     assert "details::DnsResolverCache &dnsResolver();" in services_header
     assert "void bindInstance(RuntimeInstanceServices services);" in header
     assert "void unbindInstance(ConnectionStatus *status);" in header
@@ -297,29 +294,6 @@ def test_session_callbacks_are_hidden_behind_delegate():
     assert "_delegate->hasCallback(" in session_private
 
 
-def test_runtime_context_replaces_instance_in_proxy_entrypoints():
-    broker_h = read(BROKER_H)
-    dns_h = read(DNS_H)
-    check_h = read(CHECK_H)
-    session = read_session_private_sources()
-    adapter = read(SESSION_PROXY_ADAPTER_CPP)
-
-    assert "RuntimeEnvironment *runtime = nullptr;" not in broker_h
-    assert "explicit ConnectionBroker(not_null<RuntimeEnvironment*> runtime);" in (
-        broker_h)
-    assert "cancelByProxyGeneration(RuntimeEnvironment *runtime" not in broker_h
-    assert "void cancelByProxyGeneration(uint64 generation);" in broker_h
-    assert "void request(\n\t\tQObject *receiver" in dns_h
-    assert "void StartProxyCheck(\n\tnot_null<RuntimeEnvironment*> runtime" in check_h
-    assert "_connectionFactory->create(\n\t\t\t\t_owner->_runtime" in session
-    assert "SessionProxyPort" in session
-    assert "proxyServices().broker().request(" in adapter
-    assert "proxyServices().control().reportMtproxySuccess(" in adapter
-    assert "ConnectionBroker::Instance()" not in session
-    assert "DnsResolverCache::Instance()" not in session
-    assert ".instance = _instance" not in session
-
-
 def test_transport_session_leaks_use_neutral_metadata():
     abstract_h = read(ABSTRACT_CONNECTION_H)
     abstract_cpp = read(ABSTRACT_CONNECTION_CPP)
@@ -410,7 +384,6 @@ if __name__ == "__main__":
     test_instance_and_session_use_runtime_gateway_for_app_facade()
     test_on_error_default_is_split_into_helpers()
     test_session_callbacks_are_hidden_behind_delegate()
-    test_runtime_context_replaces_instance_in_proxy_entrypoints()
     test_sources_that_call_instance_main_dc_include_instance_header()
     test_transport_session_leaks_use_neutral_metadata()
     test_sender_header_does_not_pull_instance_facade()

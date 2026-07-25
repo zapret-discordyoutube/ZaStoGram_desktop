@@ -14,7 +14,6 @@ CORE_SETTINGS_PROXY_CPP = SOURCE_DIR / "core" / "core_settings_proxy.cpp"
 APPLICATION_CPP = SOURCE_DIR / "core" / "application.cpp"
 PROXY_CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
 PROXY_CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
-PROXY_ROTATION_MANAGER_CPP = SOURCE_DIR / "core" / "proxy_rotation_manager.cpp"
 TRANSPORT_POLICY_H = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.h"
 TRANSPORT_POLICY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "transport_policy.cpp"
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
@@ -199,28 +198,6 @@ def test_route_via_wss_checkbox_refreshes_after_proxy_change():
     assert "refreshRouteViaWss();" in source
 
 
-def test_runtime_consumers_use_effective_transport_policy():
-    header = PROXY_CHECK_H.read_text(encoding="utf-8")
-    source = PROXY_CHECK_CPP.read_text(encoding="utf-8")
-    box = CONNECTION_BOX_CPP.read_text(encoding="utf-8")
-    session = SESSION_CPP.read_text(encoding="utf-8")
-    rotation = PROXY_ROTATION_MANAGER_CPP.read_text(encoding="utf-8")
-
-    assert '#include "mtproto/proxy/transport_policy.h"' in session
-    assert "MTP::EffectiveProxyStealthOptions(" in session
-    assert "const ProxyStealthOptions &stealth" in header
-    assert "const ProxyStealthOptions &stealth" in source
-    assert '#include "mtproto/proxy/transport_policy.h"' in source
-    assert "MTP::EffectiveProxyStealthOptions(" in source
-    assert "checkStealth.transport = ProxyTransport::Tcp;" not in source
-    assert "Connection::Create(" in source
-    assert "checkStealth);" in source
-    assert "ProxyStealthOptions())" not in source
-    assert box.count("Core::App().settings().proxyStealthOptions(),") >= 2
-    assert "MTP::ProxyWssAllowed(" in box
-    assert "App().settings().proxyStealthOptions()," in rotation
-
-
 def test_wss_dc_coverage_policy_is_centralized_and_soft():
     header = TRANSPORT_POLICY_H.read_text(encoding="utf-8")
     source = TRANSPORT_POLICY_CPP.read_text(encoding="utf-8")
@@ -321,7 +298,6 @@ if __name__ == "__main__":
     test_persisted_transport_is_raw_and_not_mtproxy_clamped()
     test_enabling_mtproxy_does_not_rewrite_saved_transport()
     test_route_via_wss_checkbox_refreshes_after_proxy_change()
-    test_runtime_consumers_use_effective_transport_policy()
     test_wss_dc_coverage_policy_is_centralized_and_soft()
     test_wss_direct_fallback_requests_proxy_without_blocking()
     test_wss_remembers_working_relay_host_across_sockets()

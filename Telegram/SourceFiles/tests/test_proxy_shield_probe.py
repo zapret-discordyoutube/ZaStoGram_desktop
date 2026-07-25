@@ -5,7 +5,6 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 CHECK_H = SOURCE_DIR / "mtproto" / "proxy" / "check.h"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
 CONTROL_CPP = SOURCE_DIR / "mtproto" / "proxy" / "control_plane.cpp"
-HEALTH_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "endpoint_health.cpp"
 CONNECTION_BOX_CPP = SOURCE_DIR / "boxes" / "connection_box.cpp"
 CONNECTION_BOX_H = SOURCE_DIR / "boxes" / "connection_box.h"
 STATUS_TYPES_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status_types.h"
@@ -39,36 +38,14 @@ def test_proxy_check_has_a_dedicated_progress_model():
     assert "state->progress = progress;" in source
 
 
-def test_active_session_shortcut_requires_a_live_main_proof():
-    source = read(CHECK_CPP)
-    active = function_body(source, "bool ActiveSessionProvesProxy(")
-    start = function_body(source, "void StartProxyCheck(")
-
-    assert "control.mtproxyEndpointView(endpoint)" in active
-    assert "view.mainProof.strength" in active
-    assert "MainRelayProofStrength::None" in active
-    assert "lastRelaySuccessAt" not in active
-    assert "ActiveProxyCheckKeys" in source
-    assert "ActiveSessionProvesProxy(" in start
-    assert "ProxyCheckStatus::ConnectedByActiveSession" in start
-
-
-def test_queued_and_rejected_admission_have_distinct_probe_outcomes():
+def test_paced_and_rejected_probe_outcomes_are_distinct():
     start = function_body(read(CHECK_CPP), "void StartProxyCheck(")
 
-    assert ".reclaim = [" in start
-    reclaim = function_body(start, ".reclaim = [")
-    assert "state->connection.get() != raw" in reclaim
-    assert "state->mtproxyLease.slotKey() != key" in reclaim
-    assert "ResetProxyCheckState(" in reclaim
-    assert "ProxyCloseOrigin::BrokerCancelled" in reclaim
-    assert ".status = [=](details::ConnectionBrokerDecision decision)" in start
-    assert "ConnectionBrokerAction::Queued" in start
-    assert "ConnectionBrokerAction::StartAfter" in start
+    # A probe that has to wait for its pacing slot reports "waiting",
+    # a probe the health layer refuses to register fails outright.
+    assert "state->dial.delay()" in start
     assert "ProxyCheckStatus::WaitingForConnectionSlot" in start
-    assert "ConnectionBrokerAction::Rejected" in start
-    rejected = start.split("ConnectionBrokerAction::Rejected", 1)[1]
-    assert "finishWithFail" in rejected
+    assert "MtProxy::MakeAttemptPlan(checkStealth)" in start
 
 
 def test_proxy_check_reports_progressive_transport_phases():
@@ -91,14 +68,9 @@ def test_proxy_check_reports_progressive_transport_phases():
         start, "raw->connect(raw, &Connection::handshakeProgress")
     assert "transportReady();" not in handshake
     assert "ProxyCheckStatus::FirstMtprotoPayload" in start
-    assert ".scope = MtProxy::SuccessScope::Relay" in start
     connected = function_body(
         start, "raw->connect(raw, &Connection::connected")
-    assert connected.count("state->mtproxyLease.transportReady();") == 1
-    assert connected.index("ClaimProxyCheckTerminal(") < connected.index(
-        "reportMtproxySuccess({")
-    assert connected.index("reportMtproxySuccess({") < connected.index(
-        "state->mtproxyLease.transportReady();")
+    assert "ClaimProxyCheckTerminal(" in connected
 
 
 def test_probe_timeout_starts_after_handoff_and_uses_network_budget():
@@ -108,8 +80,8 @@ def test_probe_timeout_starts_after_handoff_and_uses_network_budget():
 
     assert "ProxyStealthOptions mtproxyStealth;" in header
     assert "ProxyTlsProfile mtproxySentProfile" in header
-    assert "state->mtproxyAttempt = start.attempt;" in start
-    assert "state->mtproxyPlan = start.plan;" in start
+    assert "state->mtproxyAttempt = {" in start
+    assert "state->mtproxyPlan = MtProxy::MakeAttemptPlan(" in start
     assert "state->networkStarted = true;" in start
     assert "QTimer::singleShot(int(raw->fullConnectTimeout()), raw" in start
     assert start.index("state->networkStarted = true;") < start.index(
@@ -131,24 +103,6 @@ def test_probe_facts_do_not_publish_selected_main_status():
         "IsProxyCheck(fact.status.attempt.use)", 1)[1].split("}", 1)[0]
 
 
-def test_probe_terminal_is_telemetry_not_canonical_health():
-    check = function_body(read(CHECK_CPP), "void StartProxyCheck(")
-    health = read(HEALTH_CPP)
-    failure = function_body(health, "void EndpointHealth::reportFailure(")
-    success = function_body(health, "void EndpointHealth::reportSuccess(")
-
-    assert ".use = MtProxy::EndpointUse::ProxyCheck" in check
-    assert "report.use == EndpointUse::ProxyCheck" in failure
-    assert "LogProbeAttemptFailure(_runtime, report)" in failure
-    assert "const auto probe = (report.use == EndpointUse::ProxyCheck);" in success
-    assert "RetireRelayProof(state, identity)" in success
-    assert "LogProbeAttemptSuccess(_runtime, report)" in success
-    canonical = failure.split("const auto canonicalEligible", 1)[1].split(
-        "if (canonicalEligible)", 1)[0]
-    assert "report.use" in canonical
-    assert "EndpointUse::Main" in canonical
-
-
 def test_probe_terminal_callbacks_reset_before_exact_lease_release():
     source = read(CHECK_CPP)
     start = function_body(source, "void StartProxyCheck(")
@@ -159,11 +113,7 @@ def test_probe_terminal_callbacks_reset_before_exact_lease_release():
     connected = function_body(
         start, "raw->connect(raw, &Connection::connected")
 
-    assert "reportMtproxyFailure({" in terminal
-    assert terminal.index("reportMtproxyFailure({") < terminal.index(
-        "state->mtproxyLease.capacityTerminal(reason, true);")
     assert "ClaimProxyCheckTerminal(runtime, state)" in terminal
-    assert "IsProxyCheckCapacityTerminal(reason)" in terminal
     assert "state->mtproxyLease.release();" not in finish
     assert finish.index("fail(raw);") < finish.index(
         "if (state->connection.get() == raw)")
@@ -173,66 +123,7 @@ def test_probe_terminal_callbacks_reset_before_exact_lease_release():
         "if (state->connection.get() == raw)")
     assert connected.index("if (state->connection.get() == raw)") < (
         connected.index("ResetProxyCheckState("))
-    assert reset.index("state->connection.reset();") < reset.index(
-        "state->mtproxyLease.release();")
-    assert "state->connectionTicket.cancel();" in reset
-    assert "state->handshakeGate.release();" in reset
-
-
-def test_probe_non_capacity_paths_cannot_train_capacity():
-    source = read(CHECK_CPP)
-    capacity = function_body(source, "bool IsProxyCheckCapacityTerminal(")
-    reset = function_body(source, "void ResetProxyCheckState(")
-    start = function_body(source, "void StartProxyCheck(")
-    handshake = function_body(
-        start, "raw->connect(raw, &Connection::handshakeProgress")
-    reclaim = function_body(start, ".reclaim = [")
-
-    for reason in (
-        "TcpConnectTimeout",
-        "ClientHelloSentNoServerHello",
-        "ServerHelloOkNoAppData",
-        "ServerHelloOkNoMtprotoData",
-        "ConnectedNoMtprotoData",
-    ):
-        assert f"MtProxy::FailureReason::{reason}" in capacity
-    for reason in (
-        "DnsFailed",
-        "BrokerCancelled",
-        "RemoteClosed",
-    ):
-        assert f"MtProxy::FailureReason::{reason}" not in capacity
-    assert "capacityTerminal(" not in reset
-    assert "capacityTerminal(" not in reclaim
-    assert "capacityTerminal(" not in handshake
-
-
-def test_connection_box_uses_probe_status_and_composed_view():
-    source = read(CONNECTION_BOX_CPP)
-    header = read(CONNECTION_BOX_H)
-    lang = read(LANG)
-    refresh = function_body(source, "void ProxiesBoxController::refreshChecker(")
-
-    assert "ProxyCheckStatusText(" in source
-    assert "ProxyCheckStatusColor(" in source
-    assert "progressStatus" in header
-    assert "MTP::ProxyCheckStatus::WaitingForConnectionSlot" in source
-    assert "MTP::ProxyCheckStatus::ConnectedByActiveSession" in source
-    assert "mtproxyEndpointView(endpoint)" in source
-    assert "view.mainProof.strength" in source
-    assert "view.canonicalVerdict" in source
-    assert "progressStatus" in refresh
-    for key in (
-        "lng_proxy_box_table_waiting_slot",
-        "lng_proxy_box_table_resolving",
-        "lng_proxy_box_table_tcp_connected",
-        "lng_proxy_box_table_client_hello_sent",
-        "lng_proxy_box_table_server_hello_ok",
-        "lng_proxy_box_table_first_tls_appdata",
-        "lng_proxy_box_table_first_mtproto",
-        "lng_proxy_box_table_connected_active",
-    ):
-        assert key in lang
+    assert "state->dial.release();" in reset
 
 
 def function_body(text, signature):
@@ -251,12 +142,8 @@ def function_body(text, signature):
 
 if __name__ == "__main__":
     test_proxy_check_has_a_dedicated_progress_model()
-    test_active_session_shortcut_requires_a_live_main_proof()
-    test_queued_and_rejected_admission_have_distinct_probe_outcomes()
+    test_paced_and_rejected_probe_outcomes_are_distinct()
     test_proxy_check_reports_progressive_transport_phases()
     test_probe_timeout_starts_after_handoff_and_uses_network_budget()
     test_probe_facts_do_not_publish_selected_main_status()
-    test_probe_terminal_is_telemetry_not_canonical_health()
     test_probe_terminal_callbacks_reset_before_exact_lease_release()
-    test_probe_non_capacity_paths_cannot_train_capacity()
-    test_connection_box_uses_probe_status_and_composed_view()

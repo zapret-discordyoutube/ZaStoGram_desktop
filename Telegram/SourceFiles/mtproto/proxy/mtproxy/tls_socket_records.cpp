@@ -81,19 +81,6 @@ bool TlsSocket::checkNextPacket() {
 					ProxyDiagnosticsPhase::Connected,
 					ProxyDiagnosticsSeverity::Info,
 					u"mtproxy first tls appdata received"_q);
-				_runtime->proxyServices().control().reportMtproxySuccess({
-					.endpoint = _endpointId,
-					.use = _endpointUse,
-					.runtimeId = _mtproxyAttempt.runtimeId,
-					.stealth = _stealth,
-					.sentProfile = _sentTlsProfile,
-					.proxyGeneration = _mtproxyAttempt.proxyGeneration,
-					.attemptId = _mtproxyAttempt.attemptId,
-					.proxyEpoch = _mtproxyAttempt.proxyEpoch,
-					.successEpoch = _mtproxyAttempt.successEpoch,
-					.attemptStartedAt = _mtproxyAttemptStartedAt,
-					.scope = MtProxy::SuccessScope::FakeTlsAppData,
-				});
 				if (!IsProxyCheck(_endpointUse)) {
 					_runtime->proxyServices().syntheticPsks().noteDataPathSuccess(
 						MtProxy::EndpointKey(_endpointId.canonical),

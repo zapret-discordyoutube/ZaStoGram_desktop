@@ -228,8 +228,6 @@ public:
 		bool manual = true);
 	void applyProxyStealthOptions(const MTP::ProxyStealthOptions &options);
 	void restartProxyConnections();
-	void proxyRotationSettingsChanged();
-	void checkProxyRotation(not_null<Main::Account*> account, int32 state);
 	[[nodiscard]] rpl::producer<ProxyChange> proxyChanges() const;
 	void badMtprotoConfigurationError();
 

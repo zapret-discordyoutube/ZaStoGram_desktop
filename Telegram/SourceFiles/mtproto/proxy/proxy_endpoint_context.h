@@ -8,37 +8,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
-#include "mtproto/proxy/mtproxy/endpoint_health.h"
+#include "mtproto/runtime/connection_status_types.h"
 
+#include <QtCore/QMutex>
+
+#include <map>
 #include <memory>
+#include <set>
 #include <vector>
-
-namespace MTP::details::MtProxy {
-struct EndpointContextStorage;
-
-struct EndpointViewInvalidation final {
-	EndpointId endpoint;
-	RuntimeGenerationKey runtimeGeneration;
-};
-} // namespace MTP::details::MtProxy
-
-namespace MTP::details {
-class EndpointAdmissionArbiter;
-} // namespace MTP::details
 
 namespace MTP {
 
-class ProxyEndpointContext final
-	: public std::enable_shared_from_this<ProxyEndpointContext> {
+// Diagnostics correlation shared by every account: a trace id ties all log
+// lines of one connection attempt together, and runtime ids keep those
+// attempts apart between accounts. This used to also carry per-endpoint
+// health - verdicts, cooldowns, relay proofs - which is gone: the client no
+// longer reacts to its own failure history.
+class ProxyEndpointContext final {
 public:
-	ProxyEndpointContext();
-	ProxyEndpointContext(const ProxyEndpointContext &other) = delete;
-	ProxyEndpointContext &operator=(const ProxyEndpointContext &other) = delete;
-	~ProxyEndpointContext();
-
 	[[nodiscard]] ProxyRuntimeId registerRuntime();
 	void unregisterRuntime(ProxyRuntimeId runtimeId);
-	void setForegroundRuntime(ProxyRuntimeId runtimeId);
+
 	[[nodiscard]] ProxyTraceId nextTraceId(
 		ProxyConnectionAttempt attempt = {});
 	void updateTraceAttempt(const ProxyConnectionAttempt &attempt);
@@ -47,38 +37,13 @@ public:
 		ProxyRuntimeId runtimeId) const
 		-> std::vector<ProxyConnectionAttempt>;
 	[[nodiscard]] bool finishTrace(ProxyTraceId traceId);
-	void cancelEndpointAttempt(
-		const QString &key,
-		const ProxyConnectionAttempt &attempt);
-
-	void notifyEndpointAdmissible(const QString &key);
-	void notifyEndpointViewChanged(
-		const details::MtProxy::EndpointId &endpoint);
-	void notifyEndpointViewChanged(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration);
-	void notifyEndpointViewsChanged(ProxyRuntimeId runtimeId);
-	[[nodiscard]] details::MtProxy::ProxyEndpointView endpointView(
-		const details::MtProxy::EndpointId &endpoint,
-		ProxyRuntimeId runtimeId) const;
-	[[nodiscard]] details::MtProxy::ProxyEndpointView endpointView(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) const;
-	[[nodiscard]] crl::time endpointRetryUntil(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) const;
-	[[nodiscard]] auto endpointViewChanges() const
-		-> rpl::producer<details::MtProxy::EndpointViewInvalidation>;
-	[[nodiscard]] details::EndpointAdmissionArbiter &endpointAdmissionArbiter();
-
-	[[nodiscard]] auto storage()
-		-> details::MtProxy::EndpointContextStorage &;
-	[[nodiscard]] auto storage() const
-		-> const details::MtProxy::EndpointContextStorage &;
 
 private:
-	const std::unique_ptr<details::MtProxy::EndpointContextStorage> _storage;
-	const std::unique_ptr<details::EndpointAdmissionArbiter> _arbiter;
+	mutable QMutex _mutex;
+	std::set<ProxyRuntimeId> _runtimes;
+	std::map<ProxyTraceId, ProxyConnectionAttempt> _activeTraces;
+	ProxyRuntimeId _lastRuntimeId = 0;
+	ProxyTraceId _lastTraceId = 0;
 
 };
 

@@ -161,16 +161,11 @@ jobs:
         shell: bash
         run: |
           cd "$TBUILD/$REPO_NAME"
-          python Telegram/SourceFiles/tests/test_connection_broker.py
-          python Telegram/SourceFiles/tests/test_connection_concurrency_policy.py
           python Telegram/SourceFiles/tests/test_mtproto_relay_silence.py
           python Telegram/SourceFiles/tests/test_mtproxy_client_hello_profiles.py
-          python Telegram/SourceFiles/tests/test_mtproxy_endpoint_health.py
-          python Telegram/SourceFiles/tests/test_mtproxy_endpoint_context.py
           python Telegram/SourceFiles/tests/test_mtproxy_endpoint_identity.py
           python Telegram/SourceFiles/tests/test_mtproxy_faketls_hardening.py
           python Telegram/SourceFiles/tests/test_mtproxy_minimal_hotfix.py
-          python Telegram/SourceFiles/tests/test_mtproxy_open_scheduler.py
           python Telegram/SourceFiles/tests/test_mtproxy_phase_cooldown.py
           python Telegram/SourceFiles/tests/test_mtproxy_policy.py
           python Telegram/SourceFiles/tests/test_mtproxy_target_flow.py
@@ -184,7 +179,6 @@ jobs:
           python Telegram/SourceFiles/tests/test_proxy_diagnostics.py
           python Telegram/SourceFiles/tests/test_proxy_list_checks.py
           python Telegram/SourceFiles/tests/test_proxy_logging_events.py
-          python Telegram/SourceFiles/tests/test_proxy_rotation_health_switch.py
           python Telegram/SourceFiles/tests/test_proxy_shield_probe.py
           python Telegram/SourceFiles/tests/test_proxy_wss_default.py
           python Telegram/SourceFiles/tests/test_session_endpoint_cooldown.py

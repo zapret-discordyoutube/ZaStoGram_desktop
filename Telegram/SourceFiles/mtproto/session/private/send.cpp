@@ -103,7 +103,6 @@ constexpr auto kCutContainerOnSize = 16 * 1024;
 
 void ReportFileTransferSent(
 		not_null<RuntimeEnvironment*> runtime,
-		SessionProxyPort &proxyPort,
 		const std::vector<SerializedRequest> &requests) {
 	auto events = std::vector<ProxyDiagnosticsEvent>();
 	events.reserve(requests.size());
@@ -128,7 +127,7 @@ void ReportFileTransferSent(
 		}
 	}
 	for (auto &event : events) {
-		proxyPort.writeDiagnosticsEvent(runtime, std::move(event));
+		WriteProxyDiagnosticsLine(runtime, std::move(event));
 	}
 }
 
@@ -812,7 +811,7 @@ void SessionPrivate::tryToSend() {
 		_transport.scheduleCheckSentRequests(kCheckSentRequestTimeout);
 	}
 	if (sendSecureRequest(std::move(toSendRequest), needAnyResponse)) {
-		ReportFileTransferSent(_runtime, *_proxyPort, fileTransferRequests);
+		ReportFileTransferSent(_runtime, fileTransferRequests);
 	}
 	if (someSkipped) {
 		InvokeQueued(this, [=] {

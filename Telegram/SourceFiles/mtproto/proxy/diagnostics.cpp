@@ -314,13 +314,11 @@ namespace {
 	const auto hasUse = event.attempt.runtimeId
 		|| event.attempt.proxyGeneration
 		|| event.attempt.traceId
-		|| event.attempt.ticketId
 		|| event.attempt.routeAttemptId
 		|| event.attempt.attemptId;
 	if (hasUse) {
 		appendText(u"use"_q, ConnectionUseText(event.attempt.use));
 	}
-	appendOrdinal(u"ticket"_q, event.attempt.ticketId);
 	appendOrdinal(u"route_attempt"_q, event.attempt.routeAttemptId);
 	appendOrdinal(u"endpoint_attempt"_q, event.attempt.attemptId);
 	appendOrdinal(u"lane_ordinal"_q, event.laneOrdinal);
@@ -721,9 +719,6 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 		parts.push_back(u"trace=%1"_q.arg(safe.attempt.traceId));
 		parts.push_back(u"use=%1"_q.arg(
 			ConnectionUseText(safe.attempt.use)));
-	}
-	if (safe.attempt.ticketId) {
-		parts.push_back(u"ticket=%1"_q.arg(safe.attempt.ticketId));
 	}
 	if (safe.attempt.routeAttemptId) {
 		parts.push_back(u"route_attempt=%1"_q.arg(

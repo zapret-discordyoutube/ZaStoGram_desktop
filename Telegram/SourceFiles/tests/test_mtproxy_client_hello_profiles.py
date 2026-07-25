@@ -7,7 +7,6 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT_DIR = SOURCE_DIR.parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
-ADAPTIVE_POLICY_CPP = MTPROXY_DIR / "adaptive_policy.cpp"
 CLIENT_HELLO_BUILDER_CPP = MTPROXY_DIR / "client_hello_builder.cpp"
 CLIENT_HELLO_BUILDER_H = MTPROXY_DIR / "client_hello_builder.h"
 CLIENT_HELLO_CONSTANTS_H = MTPROXY_DIR / "client_hello_constants.h"
@@ -189,35 +188,6 @@ def test_chrome_modern_builder_matches_capture_extension_payloads():
         0xFF01,
     ):
         assert builder_extensions[extension] == fixture_extensions[extension]
-
-
-def test_auto_rotate_policy_uses_known_template_pool():
-    source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-    pool_body = function_body(source, "[[nodiscard]] int AutoRotatePoolSize()")
-
-    assert '#include "mtproto/proxy/mtproxy/client_hello_profile.h"' in source
-    assert "kAutoRotateCandidatePool" in source
-    assert "DefaultClientHelloProfile()" in source
-    assert "KnownClientHelloProfile(candidate)" in source
-    assert "AutoRotatePoolProfile(state.profileIndex)" in source
-    assert "kAutoRotatePool[]" not in source
-    assert "std::size(kAutoRotateCandidatePool)" in pool_body
-    assert "IsClientHelloProfileValidated(profile)" not in pool_body
-
-
-def test_auto_rotate_starts_with_default_profile_before_rotation():
-    source = ADAPTIVE_POLICY_CPP.read_text(encoding="utf-8")
-    resolve_body = function_body(
-        source,
-        "ProxyTlsProfile ResolveEffectiveTlsProfile(")
-    rotate_body = function_body(
-        source,
-        "ProxyTlsProfile RotateTlsProfileOnFailure(")
-
-    assert "DefaultAutoRotateProfileIndex()" in source
-    assert "AutoRotateInitialIndex(" not in source
-    assert "state.profileIndex = DefaultAutoRotateProfileIndex();" in resolve_body
-    assert "state.profileIndex = DefaultAutoRotateProfileIndex();" in rotate_body
 
 
 def test_new_client_hello_sources_are_registered_for_build():
@@ -586,7 +556,5 @@ if __name__ == "__main__":
     test_client_hello_facts_module_parses_and_computes_ja4()
     test_chrome_modern_builder_template_matches_capture_ja4_facts()
     test_chrome_modern_builder_matches_capture_extension_payloads()
-    test_auto_rotate_policy_uses_known_template_pool()
-    test_auto_rotate_starts_with_default_profile_before_rotation()
     test_new_client_hello_sources_are_registered_for_build()
     test_cpp_smoke_invokes_deterministic_builder_and_ja4_facts()

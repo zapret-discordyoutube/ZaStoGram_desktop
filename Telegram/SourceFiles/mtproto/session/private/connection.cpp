@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/dial_pacer.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
@@ -58,17 +59,17 @@ base::options::toggle OptionPreferIPv6({
 
 } // namespace
 
-SessionProxyEndpointUse SessionTransport::classifyEndpointUse() const {
+ProxyConnectionUse SessionTransport::classifyEndpointUse() const {
 	return isUploadDcId(_owner->_shiftedDcId)
-		? SessionProxyEndpointUse::Upload
+		? ProxyConnectionUse::Upload
 		: (isMediaClusterDcId(_owner->_shiftedDcId)
 			|| _owner->_realDcType == DcType::Cdn)
-		? SessionProxyEndpointUse::Media
+		? ProxyConnectionUse::Media
 		: (_owner->_role == SessionRole::PrimaryMain)
-		? SessionProxyEndpointUse::Main
+		? ProxyConnectionUse::Main
 		: (_owner->_role == SessionRole::Maintenance)
-		? SessionProxyEndpointUse::Maintenance
-		: SessionProxyEndpointUse::Auxiliary;
+		? ProxyConnectionUse::Maintenance
+		: ProxyConnectionUse::Auxiliary;
 }
 
 bool SessionTransport::appendTestConnection(
@@ -99,11 +100,13 @@ bool SessionTransport::appendTestConnection(
 	}
 	const auto attemptStartedAt = mtproxy ? crl::now() : crl::time();
 
-	// Ordinary MTProto sessions must own their connection lifecycle directly.
-	// The shared broker, health cooldown and main-first scout were introduced
-	// to soften proxy/DPI handshake bursts, but they created cross-account
-	// head-of-line blocking and left media RPCs queued without being sent.
-	// Proxy checks may use admission; live sessions have no caps or cooldowns.
+	// Ordinary MTProto sessions own their connection lifecycle directly: no
+	// admission queue, no health cooldown, no cross-account head-of-line
+	// blocking. The one thing a proxy does impose is that it cannot answer
+	// every session of every account handshaking in the same millisecond, so
+	// the dial itself is paced per proxy server.
+	auto dial = ReserveProxyDial(_owner->_runtime, proxy);
+	const auto dialDelay = dial.delay();
 	_state.testConnections.push_back({
 		.data = _owner->_connectionFactory->create(
 			_owner->_runtime,
@@ -117,6 +120,8 @@ bool SessionTransport::appendTestConnection(
 		.mtproxyUse = mtproxyUse,
 		.mtproxyAttempt = attempt,
 		.mtproxyAttemptStartedAt = attemptStartedAt,
+		.mtproxyDial = std::move(dial),
+		.mtproxyDialDelay = dialDelay,
 	});
 	const auto weak = _state.testConnections.back().data.get();
 	QObject::connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -156,7 +161,11 @@ bool SessionTransport::appendTestConnection(
 				.mtproxyAttemptStartedAt = attemptStartedAt,
 			});
 	};
-	InvokeQueued(_state.testConnections.back().data, start);
+	if (dialDelay > 0) {
+		_owner->_runtime->async().singleShot(dialDelay, weak, start);
+	} else {
+		InvokeQueued(_state.testConnections.back().data, start);
+	}
 	armWaitForConnectedTimer();
 	return true;
 }
@@ -168,7 +177,7 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin) {
 	_timing.waitForConnectedTimer.cancel();
 	clearTestConnections();
 	_state.connection.reset();
-	_state.mtproxyUse = SessionProxyEndpointUse::Main;
+	_state.mtproxyUse = ProxyConnectionUse::Main;
 	_state.mtproxyAttempt = {};
 	_state.mtproxyAttemptStartedAt = 0;
 	_state.mtprotoDataReceived = false;
@@ -195,7 +204,13 @@ void SessionTransport::armWaitForConnectedTimer() {
 	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {
 		auto minWait = crl::time(0);
 		for (const auto &connection : _state.testConnections) {
-			accumulate_max(minWait, connection.data->fullConnectTimeout());
+			// A paced attempt has not spent any of its budget yet, so the
+			// wait must cover the pacing delay as well or the timer fires
+			// before the socket is even opened.
+			accumulate_max(
+				minWait,
+				connection.data->fullConnectTimeout()
+					+ connection.mtproxyDialDelay);
 		}
 		accumulate_max(_timing.waitForConnected, minWait);
 	}
@@ -604,6 +619,12 @@ void SessionTransport::onConnected(
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
 	Assert(i != end(_state.testConnections));
+
+	// The proxy answered a real Telegram reply through this socket: the
+	// dial slot is free for the next session even while we keep waiting for
+	// a higher priority route, and the failure spacing resets.
+	i->mtproxyDial.proven();
+
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_state.testConnections,

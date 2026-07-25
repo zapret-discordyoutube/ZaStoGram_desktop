@@ -8,8 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/proxy/dial_pacer.h"
+#include "mtproto/runtime/connection_status_types.h"
 #include "mtproto/runtime/runtime_environment.h"
-#include "mtproto/session/private/proxy_port.h"
 #include "mtproto/transport/connection_abstract.h"
 
 namespace MTP::details {
@@ -75,20 +76,25 @@ public:
 		MTPint128 msgKey,
 		uint32 size) const;
 	[[nodiscard]] bool empty() const;
-	[[nodiscard]] SessionProxyAttempt currentProxyAttempt() const;
+	[[nodiscard]] ProxyConnectionAttempt currentProxyAttempt() const;
 
 private:
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
 		QString endpoint;
-		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		ProxyConnectionUse mtproxyUse = ProxyConnectionUse::Main;
 		ProxyConnectionAttempt mtproxyAttempt;
 		crl::time mtproxyAttemptStartedAt = 0;
+
+		// Held from the moment the attempt is queued until the proxy either
+		// relays a Telegram reply or the attempt dies with the entry.
+		ProxyDialLease mtproxyDial;
+		crl::time mtproxyDialDelay = 0;
 	};
 	struct ConnectionState {
 		ConnectionPointer connection;
-		SessionProxyEndpointUse mtproxyUse = SessionProxyEndpointUse::Main;
+		ProxyConnectionUse mtproxyUse = ProxyConnectionUse::Main;
 		ProxyConnectionAttempt mtproxyAttempt;
 		crl::time mtproxyAttemptStartedAt = 0;
 		uint64 proxyGeneration = 0;
@@ -119,7 +125,7 @@ private:
 		RuntimeTimer clearOldContainersTimer;
 	};
 
-	[[nodiscard]] SessionProxyEndpointUse classifyEndpointUse() const;
+	[[nodiscard]] ProxyConnectionUse classifyEndpointUse() const;
 	[[nodiscard]] bool appendTestConnection(
 		DcOptions::Variants::Protocol protocol,
 		const QString &ip,

@@ -12,19 +12,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP {
 
 ProxyServices::ProxyServices(not_null<RuntimeEnvironment*> runtime)
-: _endpointHealth(runtime, runtime->proxyEndpointContextShared())
-, _capabilities(runtime->proxyCapabilities().path)
-, _control(runtime, &_endpointHealth)
-, _broker(runtime)
+: _capabilities(runtime->proxyCapabilities().path)
+, _control(runtime)
 , _dnsResolver(runtime) {
 }
 
 ProxyControlPlane &ProxyServices::control() {
 	return _control;
-}
-
-details::ConnectionBroker &ProxyServices::broker() {
-	return _broker;
 }
 
 details::DnsResolverCache &ProxyServices::dnsResolver() {

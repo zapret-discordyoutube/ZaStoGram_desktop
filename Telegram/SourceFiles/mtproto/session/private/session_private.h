@@ -13,7 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session/private/auth_factory.h"
 #include "mtproto/session/private/connection_factory.h"
 #include "mtproto/session/private/message_handler.h"
-#include "mtproto/session/private/proxy_port.h"
 #include "mtproto/session/private/transport.h"
 #include "mtproto/session/session_delegate.h"
 #include "mtproto/session/session_role.h"
@@ -42,7 +41,6 @@ public:
 		ShiftedDcId shiftedDcId,
 		SessionRole role,
 		uint64 proxyGeneration = 0,
-		not_null<SessionProxyPort*> proxyPort = &DefaultSessionProxyPort(),
 		not_null<SessionConnectionFactory*> connectionFactory
 			= &DefaultSessionConnectionFactory(),
 		not_null<SessionAuthKeyFactory*> authKeyFactory
@@ -173,7 +171,6 @@ private:
 	const not_null<Instance*> _instance;
 	const not_null<SessionDelegate*> _delegate;
 	const not_null<RuntimeEnvironment*> _runtime;
-	const not_null<SessionProxyPort*> _proxyPort;
 	const not_null<SessionConnectionFactory*> _connectionFactory;
 	const not_null<SessionAuthKeyFactory*> _authKeyFactory;
 	const ShiftedDcId _shiftedDcId = 0;

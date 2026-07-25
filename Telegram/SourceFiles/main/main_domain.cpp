@@ -82,7 +82,6 @@ Storage::StartResult Domain::start(const QByteArray &passcode) {
 
 void Domain::finish() {
 	_accountToActivate = -1;
-	_proxyEndpointContext->setForegroundRuntime(0);
 	_active.reset(nullptr);
 	base::take(_accounts);
 }
@@ -479,8 +478,6 @@ void Domain::activate(not_null<Main::Account*> account) {
 		wasAuthed = _active.current()->sessionExists();
 	}
 	_accountToActivate = i->index;
-	_proxyEndpointContext->setForegroundRuntime(
-		account->mtp().runtimeEnvironment().proxyRuntimeId());
 	_active = account.get();
 	_active.current()->sessionValue(
 	) | rpl::start_to_stream(_activeSessions, _activeLifetime);
@@ -493,13 +490,6 @@ void Domain::activate(not_null<Main::Account*> account) {
 				removeRedundantAccounts();
 			});
 		}
-	}
-}
-
-void Domain::accountMtpStarted(not_null<Main::Account*> account) {
-	if (_active.current() == account.get()) {
-		_proxyEndpointContext->setForegroundRuntime(
-			account->mtp().runtimeEnvironment().proxyRuntimeId());
 	}
 }
 

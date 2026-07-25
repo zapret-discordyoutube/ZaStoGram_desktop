@@ -7,177 +7,35 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/proxy_endpoint_context.h"
 
-#include "base/timer.h"
-#include "mtproto/proxy/endpoint_admission_arbiter.h"
-#include "mtproto/proxy/proxy_endpoint_context_p.h"
-
-#include <algorithm>
-#include <optional>
 #include <utility>
-#include <vector>
 
 namespace MTP {
-namespace {
-namespace MtProxy = details::MtProxy;
-
-struct MainAttemptSelection {
-	uint64 attemptId = 0;
-	const MtProxy::EndpointAttemptState *attempt = nullptr;
-};
-
-ProxyConnectionAttempt AttemptIdentity(
-		uint64 attemptId,
-		const MtProxy::EndpointAttemptState &attempt) {
-	return {
-		.runtimeId = attempt.runtimeId,
-		.traceId = attempt.traceId,
-		.ticketId = attempt.ticketKey.ticketId,
-		.proxyGeneration = attempt.proxyGeneration,
-		.proxyEpoch = attempt.proxyEpoch,
-		.successEpoch = attempt.successEpoch,
-		.attemptId = attemptId,
-		.use = attempt.use,
-		.ticketKey = attempt.ticketKey,
-	};
-}
-
-MainAttemptSelection SelectMainAttempt(
-		const MtProxy::EndpointState &state,
-		RuntimeGenerationKey runtimeGeneration) {
-	auto result = MainAttemptSelection();
-	for (const auto &[attemptId, candidate] : state.attemptStarts) {
-		if (candidate.runtimeId != runtimeGeneration.runtimeId
-			|| candidate.proxyGeneration
-				!= runtimeGeneration.proxyGeneration
-			|| candidate.use != MtProxy::EndpointUse::Main) {
-			continue;
-		}
-		if (!result.attempt
-			|| (result.attempt->terminalVerdict.has_value()
-				&& !candidate.terminalVerdict.has_value())
-			|| (result.attempt->terminalVerdict.has_value()
-				== candidate.terminalVerdict.has_value()
-				&& candidate.attemptStartedAt
-					< result.attempt->attemptStartedAt)) {
-			result = {
-				.attemptId = attemptId,
-				.attempt = &candidate,
-			};
-		}
-	}
-	return result;
-}
-
-MtProxy::ProxyEndpointView ComposeEndpointViewLocked(
-		const MtProxy::EndpointContextStorage &storage,
-		const details::EndpointAdmissionArbiter &arbiter,
-		const MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) {
-	auto result = MtProxy::ProxyEndpointView{
-		.endpoint = endpoint,
-		.runtimeGeneration = runtimeGeneration,
-	};
-	if (!runtimeGeneration.runtimeId
-		|| !runtimeGeneration.proxyGeneration) {
-		return result;
-	}
-	const auto key = MtProxy::EndpointKey(endpoint);
-	const auto i = storage.states.find(key);
-	if (i != end(storage.states)) {
-		const auto &state = i->second;
-		result.endpointMainProof = MtProxy::EndpointMainRelayProof(state);
-		const auto generation = state.generations.find(
-			runtimeGeneration.runtimeId);
-		if (generation != end(state.generations)
-			&& generation->second != runtimeGeneration.proxyGeneration) {
-			return result;
-		}
-		if (generation != end(state.generations)) {
-			result.mainProof = MtProxy::CurrentMainRelayProof(
-				state,
-				runtimeGeneration);
-			result.mainRecovery = MtProxy::ComposeMainRecoveryViewLocked(
-				storage,
-				key,
-				runtimeGeneration);
-			const auto canonical = state.canonicalVerdicts.find(
-				runtimeGeneration);
-			if (canonical != end(state.canonicalVerdicts)) {
-				result.canonicalVerdict = canonical->second;
-				result.terminalAt = canonical->second.terminalAt;
-				result.retryUntil = canonical->second.retryUntil;
-			}
-			const auto selected = SelectMainAttempt(
-				state,
-				runtimeGeneration);
-			if (selected.attempt) {
-				const auto &attempt = *selected.attempt;
-				result.mainAttempt = AttemptIdentity(
-					selected.attemptId,
-					attempt);
-				result.ticketKey = attempt.ticketKey;
-				result.schedulerLifecycle = attempt.schedulerLifecycle;
-				result.admissionPhase = attempt.admissionPhase;
-				result.enqueuedAt = attempt.enqueuedAt;
-				result.scheduledOpenAt = attempt.scheduledOpenAt;
-				result.attemptStartedAt = attempt.attemptStartedAt;
-				result.phaseStartedAt = attempt.phaseStartedAt;
-				result.terminalAt = std::max(
-					result.terminalAt,
-					attempt.terminalAt);
-			}
-		}
-	}
-	arbiter.composeEndpointViewLocked(endpoint, runtimeGeneration, result);
-	return result;
-}
-
-} // namespace
-
-ProxyEndpointContext::ProxyEndpointContext()
-: _storage(std::make_unique<details::MtProxy::EndpointContextStorage>())
-, _arbiter(std::make_unique<details::EndpointAdmissionArbiter>(*_storage)) {
-}
-
-ProxyEndpointContext::~ProxyEndpointContext() = default;
 
 ProxyRuntimeId ProxyEndpointContext::registerRuntime() {
-	QMutexLocker lock(&_storage->mutex);
-	const auto result = ++_storage->lastRuntimeId;
-	_storage->runtimes.emplace(result);
-	_storage->runtimeGenerations.emplace(result, 0);
+	QMutexLocker lock(&_mutex);
+	const auto result = ++_lastRuntimeId;
+	_runtimes.emplace(result);
 	return result;
 }
 
 void ProxyEndpointContext::unregisterRuntime(ProxyRuntimeId runtimeId) {
-	_arbiter->unregisterRuntime(runtimeId);
-}
-
-void ProxyEndpointContext::setForegroundRuntime(ProxyRuntimeId runtimeId) {
-	auto endpoints = std::vector<QString>();
-	{
-		QMutexLocker lock(&_storage->mutex);
-		if ((runtimeId && !_storage->runtimes.contains(runtimeId))
-			|| _storage->foregroundRuntimeId == runtimeId) {
-			return;
+	QMutexLocker lock(&_mutex);
+	_runtimes.erase(runtimeId);
+	for (auto i = begin(_activeTraces); i != end(_activeTraces);) {
+		if (i->second.runtimeId == runtimeId) {
+			i = _activeTraces.erase(i);
+		} else {
+			++i;
 		}
-		_storage->foregroundRuntimeId = runtimeId;
-		endpoints.reserve(_storage->states.size());
-		for (const auto &entry : _storage->states) {
-			endpoints.push_back(entry.first);
-		}
-	}
-	for (const auto &endpoint : endpoints) {
-		_arbiter->drainEndpoint(endpoint);
 	}
 }
 
 ProxyTraceId ProxyEndpointContext::nextTraceId(
 		ProxyConnectionAttempt attempt) {
-	QMutexLocker lock(&_storage->mutex);
-	const auto result = ++_storage->lastTraceId;
+	QMutexLocker lock(&_mutex);
+	const auto result = ++_lastTraceId;
 	attempt.traceId = result;
-	_storage->activeTraces.emplace(result, std::move(attempt));
+	_activeTraces.emplace(result, std::move(attempt));
 	return result;
 }
 
@@ -186,9 +44,9 @@ void ProxyEndpointContext::updateTraceAttempt(
 	if (!attempt.traceId) {
 		return;
 	}
-	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->activeTraces.find(attempt.traceId);
-	if (i != end(_storage->activeTraces)) {
+	QMutexLocker lock(&_mutex);
+	const auto i = _activeTraces.find(attempt.traceId);
+	if (i != end(_activeTraces)) {
 		i->second = attempt;
 	}
 }
@@ -197,17 +55,16 @@ bool ProxyEndpointContext::traceActive(ProxyTraceId traceId) const {
 	if (!traceId) {
 		return false;
 	}
-	QMutexLocker lock(&_storage->mutex);
-	return _storage->activeTraces.contains(traceId);
+	QMutexLocker lock(&_mutex);
+	return _activeTraces.contains(traceId);
 }
 
 auto ProxyEndpointContext::activeTracesForRuntime(
 		ProxyRuntimeId runtimeId) const
 -> std::vector<ProxyConnectionAttempt> {
 	auto result = std::vector<ProxyConnectionAttempt>();
-	QMutexLocker lock(&_storage->mutex);
-	for (const auto &entry : _storage->activeTraces) {
-		const auto &attempt = entry.second;
+	QMutexLocker lock(&_mutex);
+	for (const auto &[traceId, attempt] : _activeTraces) {
 		if (attempt.runtimeId == runtimeId) {
 			result.push_back(attempt);
 		}
@@ -219,249 +76,8 @@ bool ProxyEndpointContext::finishTrace(ProxyTraceId traceId) {
 	if (!traceId) {
 		return false;
 	}
-	QMutexLocker lock(&_storage->mutex);
-	return _storage->activeTraces.erase(traceId) > 0;
-}
-
-void ProxyEndpointContext::cancelEndpointAttempt(
-		const QString &key,
-		const ProxyConnectionAttempt &owner) {
-	if (key.isEmpty() || !owner.attemptId) {
-		return;
-	}
-	auto removed = false;
-	auto endpoint = details::MtProxy::EndpointId();
-	auto runtimeGeneration = RuntimeGenerationKey();
-	auto cleanup = details::MtProxy::EndpointDeferredCleanup();
-	{
-		QMutexLocker lock(&_storage->mutex);
-		const auto i = _storage->states.find(key);
-		if (i == end(_storage->states)) {
-			return;
-		}
-		const auto attempt = i->second.attemptStarts.find(owner.attemptId);
-		if (attempt != end(i->second.attemptStarts)) {
-			const auto attemptState = attempt->second;
-			if (!(AttemptIdentity(owner.attemptId, attemptState) == owner)) {
-				return;
-			}
-			endpoint = i->second.endpoint;
-			runtimeGeneration = {
-				.runtimeId = attemptState.runtimeId,
-				.proxyGeneration = attemptState.proxyGeneration,
-			};
-			const auto identity = details::MtProxy::RelayProofIdentity{
-				.runtimeId = attemptState.runtimeId,
-				.proxyGeneration = attemptState.proxyGeneration,
-				.attemptId = owner.attemptId,
-			};
-			static_cast<void>(
-				details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
-					*_storage,
-					key,
-					runtimeGeneration,
-					attemptState.use,
-					owner.attemptId));
-			static_cast<void>(details::MtProxy::RetireRelayProof(
-				i->second,
-				identity));
-			details::MtProxy::DeferEndpointOwnerDisconnect(
-				cleanup,
-				attemptState.ownerDestroyed);
-			removed = true;
-		} else {
-			const auto identity = details::MtProxy::RelayProofIdentity{
-				.runtimeId = owner.runtimeId,
-				.proxyGeneration = owner.proxyGeneration,
-				.attemptId = owner.attemptId,
-			};
-			const auto lane = i->second.liveLanes.find(identity);
-			if (lane != end(i->second.liveLanes)) {
-				const auto laneState = lane->second;
-				if (!(AttemptIdentity(owner.attemptId, laneState) == owner)) {
-					return;
-				}
-				endpoint = i->second.endpoint;
-				runtimeGeneration = {
-					.runtimeId = identity.runtimeId,
-					.proxyGeneration = identity.proxyGeneration,
-				};
-				static_cast<void>(
-					details::MtProxy::FinishMainRecoveryByReplacementAttemptLocked(
-						*_storage,
-						key,
-						runtimeGeneration,
-						laneState.use,
-						owner.attemptId));
-				static_cast<void>(details::MtProxy::RetireRelayProof(
-					i->second,
-					identity));
-				details::MtProxy::DeferEndpointOwnerDisconnect(
-					cleanup,
-					laneState.ownerDestroyed);
-				i->second.liveLanes.erase(lane);
-				removed = true;
-			}
-		}
-		i->second.attemptStarts.erase(owner.attemptId);
-	}
-	for (const auto &connection : cleanup.ownerConnections) {
-		QObject::disconnect(connection);
-	}
-	if (removed) {
-		notifyEndpointViewChanged(endpoint, runtimeGeneration);
-	}
-}
-
-void ProxyEndpointContext::notifyEndpointAdmissible(const QString &key) {
-	if (key.isEmpty()) {
-		return;
-	}
-	_arbiter->drainEndpoint(key);
-}
-
-void ProxyEndpointContext::notifyEndpointViewChanged(
-		const details::MtProxy::EndpointId &endpoint) {
-	auto generations = std::vector<RuntimeGenerationKey>();
-	{
-		QMutexLocker lock(&_storage->mutex);
-		const auto i = _storage->states.find(
-			details::MtProxy::EndpointKey(endpoint));
-		if (i != end(_storage->states)) {
-			generations.reserve(i->second.generations.size());
-			for (const auto &[runtimeId, proxyGeneration]
-					: i->second.generations) {
-				generations.push_back({ runtimeId, proxyGeneration });
-			}
-		}
-	}
-	for (const auto runtimeGeneration : generations) {
-		notifyEndpointViewChanged(endpoint, runtimeGeneration);
-	}
-}
-
-void ProxyEndpointContext::notifyEndpointViewChanged(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) {
-	if (details::MtProxy::EndpointEmpty(endpoint)
-		|| !runtimeGeneration.runtimeId
-		|| !runtimeGeneration.proxyGeneration) {
-		return;
-	}
-	const auto weak = weak_from_this();
-	crl::on_main([weak, endpoint, runtimeGeneration] {
-		if (const auto context = weak.lock()) {
-			context->_storage->viewInvalidations.fire_copy({
-				.endpoint = endpoint,
-				.runtimeGeneration = runtimeGeneration,
-			});
-		}
-	});
-}
-
-void ProxyEndpointContext::notifyEndpointViewsChanged(
-		ProxyRuntimeId runtimeId) {
-	auto invalidations = std::vector<
-		details::MtProxy::EndpointViewInvalidation>();
-	{
-		QMutexLocker lock(&_storage->mutex);
-		for (const auto &entry : _storage->states) {
-			const auto &state = entry.second;
-			const auto generation = state.generations.find(runtimeId);
-			if (generation != end(state.generations)) {
-				invalidations.push_back({
-					.endpoint = state.endpoint,
-					.runtimeGeneration = {
-						.runtimeId = runtimeId,
-						.proxyGeneration = generation->second,
-					},
-				});
-			}
-		}
-	}
-	for (const auto &invalidation : invalidations) {
-		notifyEndpointViewChanged(
-			invalidation.endpoint,
-			invalidation.runtimeGeneration);
-	}
-}
-
-auto ProxyEndpointContext::endpointView(
-		const details::MtProxy::EndpointId &endpoint,
-		ProxyRuntimeId runtimeId) const
--> details::MtProxy::ProxyEndpointView {
-	QMutexLocker lock(&_storage->mutex);
-	auto runtimeGeneration = RuntimeGenerationKey{
-		.runtimeId = runtimeId,
-	};
-	const auto i = _storage->states.find(
-		details::MtProxy::EndpointKey(endpoint));
-	if (i != end(_storage->states)) {
-		const auto generation = i->second.generations.find(runtimeId);
-		if (generation != end(i->second.generations)) {
-			runtimeGeneration.proxyGeneration = generation->second;
-		}
-	}
-	return ComposeEndpointViewLocked(
-		*_storage,
-		*_arbiter,
-		endpoint,
-		runtimeGeneration);
-}
-
-auto ProxyEndpointContext::endpointView(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) const
--> details::MtProxy::ProxyEndpointView {
-	QMutexLocker lock(&_storage->mutex);
-	return ComposeEndpointViewLocked(
-		*_storage,
-		*_arbiter,
-		endpoint,
-		runtimeGeneration);
-}
-
-crl::time ProxyEndpointContext::endpointRetryUntil(
-		const details::MtProxy::EndpointId &endpoint,
-		RuntimeGenerationKey runtimeGeneration) const {
-	if (!runtimeGeneration.runtimeId
-		|| !runtimeGeneration.proxyGeneration) {
-		return 0;
-	}
-	QMutexLocker lock(&_storage->mutex);
-	const auto i = _storage->states.find(
-		details::MtProxy::EndpointKey(endpoint));
-	if (i == end(_storage->states)
-		|| !details::MtProxy::RuntimeGenerationIsCurrent(
-			i->second,
-			runtimeGeneration)) {
-		return 0;
-	}
-	return ComposeEndpointViewLocked(
-		*_storage,
-		*_arbiter,
-		endpoint,
-		runtimeGeneration).retryUntil;
-}
-
-auto ProxyEndpointContext::endpointViewChanges() const
--> rpl::producer<details::MtProxy::EndpointViewInvalidation> {
-	return _storage->viewInvalidations.events();
-}
-
-auto ProxyEndpointContext::endpointAdmissionArbiter()
--> details::EndpointAdmissionArbiter & {
-	return *_arbiter;
-}
-
-auto ProxyEndpointContext::storage()
--> details::MtProxy::EndpointContextStorage & {
-	return *_storage;
-}
-
-auto ProxyEndpointContext::storage() const
--> const details::MtProxy::EndpointContextStorage & {
-	return *_storage;
+	QMutexLocker lock(&_mutex);
+	return _activeTraces.erase(traceId) > 0;
 }
 
 std::shared_ptr<ProxyEndpointContext> CreateProxyEndpointContext() {

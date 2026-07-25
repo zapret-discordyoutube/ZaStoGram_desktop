@@ -79,55 +79,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
-constexpr auto kRetryCountdownTick = crl::time(1000);
-constexpr auto kNetworkBlockingFailureThreshold = 2;
 
 using ProxyData = MTP::ProxyData;
-using EndpointVerdict = MTP::details::MtProxy::EndpointVerdict;
-using EndpointView = MTP::details::MtProxy::ProxyEndpointView;
 using ItemState = ProxiesBoxController::ItemState;
-
-[[nodiscard]] bool NetworkBlockingThresholdReached(
-		const EndpointVerdict &verdict) {
-	using Reason = MTP::details::MtProxy::FailureReason;
-	if (verdict.attribution != MTP::ProxyFailureAttribution::Network
-		|| verdict.confidence < kNetworkBlockingFailureThreshold) {
-		return false;
-	}
-	switch (verdict.reason) {
-	case Reason::TcpConnectTimeout:
-	case Reason::ClientHelloSentNoServerHello:
-	case Reason::Network:
-		return true;
-	case Reason::None:
-	case Reason::DnsFailed:
-	case Reason::TcpConnectedNoClientHelloWrite:
-	case Reason::TlsAlertAfterClientHello:
-	case Reason::ServerHelloHmacMismatch:
-	case Reason::ServerHelloOkNoAppData:
-	case Reason::ServerHelloOkNoMtprotoData:
-	case Reason::AppDataRemoteClosed:
-	case Reason::ConnectedNoMtprotoData:
-	case Reason::MtpReceiveTimeoutAfterData:
-	case Reason::ProxyProtocolBadResponse:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] int ClosestProxyRotationTimeoutSection(int value) {
-	auto result = 0;
-	auto bestDistance = 0;
-	for (auto i = 0; i != int(Core::SettingsProxy::kProxyRotationTimeouts.size()); ++i) {
-		const auto current = Core::SettingsProxy::kProxyRotationTimeouts[i];
-		const auto distance = (current > value) ? (current - value) : (value - current);
-		if ((i == 0) || (distance < bestDistance)) {
-			result = i;
-			bestDistance = distance;
-		}
-	}
-	return result;
-}
 
 [[nodiscard]] std::vector<QString> ExtractLinkCandidates(const QString &input) {
 	auto urls = std::vector<QString>();
@@ -205,188 +159,6 @@ using ItemState = ProxiesBoxController::ItemState;
 		return st::proxyRowStatusFg;
 	}
 	return st::proxyRowStatusFg;
-}
-
-[[nodiscard]] QString ProxyHealthReasonText(const EndpointVerdict &verdict) {
-	using Reason = MTP::details::MtProxy::FailureReason;
-	using Attribution = MTP::ProxyFailureAttribution;
-	if (NetworkBlockingThresholdReached(verdict)) {
-		return tr::lng_proxy_health_reason_dpi(tr::now);
-	}
-	switch (verdict.reason) {
-	case Reason::ClientHelloSentNoServerHello:
-		if (verdict.attribution == Attribution::Peer) {
-			return tr::lng_proxy_health_reason_peer_closed(tr::now);
-		} else if (verdict.attribution == Attribution::Network) {
-			return tr::lng_proxy_health_reason_connection_reset(tr::now);
-		}
-		return tr::lng_proxy_health_reason_no_server_hello(tr::now);
-	case Reason::TlsAlertAfterClientHello:
-		return tr::lng_proxy_health_reason_handshake_rejected(tr::now);
-	case Reason::ServerHelloHmacMismatch:
-	case Reason::ProxyProtocolBadResponse:
-		return tr::lng_proxy_health_reason_invalid_handshake(tr::now);
-	case Reason::ServerHelloOkNoAppData:
-	case Reason::ServerHelloOkNoMtprotoData:
-	case Reason::ConnectedNoMtprotoData:
-	case Reason::MtpReceiveTimeoutAfterData:
-		return tr::lng_proxy_health_reason_no_relay(tr::now);
-	case Reason::AppDataRemoteClosed:
-		return (verdict.attribution == Attribution::Network)
-			? tr::lng_proxy_health_reason_connection_reset(tr::now)
-			: tr::lng_proxy_health_reason_peer_closed(tr::now);
-	case Reason::TcpConnectTimeout:
-		if (verdict.attribution == Attribution::Peer) {
-			return tr::lng_proxy_health_reason_peer_closed(tr::now);
-		} else if (verdict.attribution == Attribution::Network) {
-			return tr::lng_proxy_health_reason_connection_reset(tr::now);
-		}
-		return tr::lng_proxy_health_reason_timeout(tr::now);
-	case Reason::TcpConnectedNoClientHelloWrite:
-		return tr::lng_proxy_health_reason_error(tr::now);
-	case Reason::DnsFailed:
-		return tr::lng_proxy_health_reason_dns(tr::now);
-	case Reason::Network:
-		if (verdict.attribution == Attribution::Peer) {
-			return tr::lng_proxy_health_reason_peer_closed(tr::now);
-		} else if (verdict.attribution == Attribution::Network) {
-			return tr::lng_proxy_health_reason_connection_reset(tr::now);
-		}
-		return tr::lng_proxy_health_reason_error(tr::now);
-	case Reason::None:
-		return tr::lng_proxy_health_reason_error(tr::now);
-	}
-	return tr::lng_proxy_health_reason_error(tr::now);
-}
-
-[[nodiscard]] QString ProxyHealthRetryDuration(crl::time ms) {
-	const auto seconds = int((ms + 999) / 1000);
-	return tr::lng_seconds_tiny(tr::now, lt_count, seconds);
-}
-
-[[nodiscard]] bool ActiveMtproxyMainRecovery(const EndpointView &view) {
-	if (!view.mainRecovery || !view.mainRecovery->token) {
-		return false;
-	}
-	const auto &recovery = *view.mainRecovery;
-	const auto &attempt = recovery.sourceAttempt;
-	return recovery.runtimeGeneration == view.runtimeGeneration
-		&& attempt.runtimeId == view.runtimeGeneration.runtimeId
-		&& attempt.proxyGeneration
-			== view.runtimeGeneration.proxyGeneration
-		&& attempt.use == MTP::ProxyConnectionUse::Main;
-}
-
-[[nodiscard]] bool ActiveMtproxyNetwork(const EndpointView &view) {
-	switch (view.networkPhase) {
-	case MTP::ProxyConnectionPhase::Resolving:
-	case MTP::ProxyConnectionPhase::Connecting:
-	case MTP::ProxyConnectionPhase::Handshake:
-	case MTP::ProxyConnectionPhase::CheckingTelegram:
-		return true;
-	case MTP::ProxyConnectionPhase::None:
-	case MTP::ProxyConnectionPhase::Connected:
-	case MTP::ProxyConnectionPhase::Failed:
-		return false;
-	}
-	return false;
-}
-
-[[nodiscard]] bool WaitingMtproxyOpen(const EndpointView &view) {
-	return (view.admissionPhase == MTP::ProxyAdmissionPhase::Queued)
-		|| (view.admissionPhase == MTP::ProxyAdmissionPhase::Scheduled);
-}
-
-[[nodiscard]] bool VisibleMtproxyRetryCountdown(
-		const EndpointView &view,
-		crl::time now) {
-	using Strength = MTP::details::MtProxy::MainRelayProofStrength;
-	using Cause = MTP::details::MtProxy::EndpointVerdictCause;
-	return view.mainProof.strength == Strength::None
-		&& !ActiveMtproxyMainRecovery(view)
-		&& !ActiveMtproxyNetwork(view)
-		&& !WaitingMtproxyOpen(view)
-		&& view.canonicalVerdict
-		&& view.canonicalVerdict->cause != Cause::Admission
-		&& view.retryUntil > now;
-}
-
-[[nodiscard]] MTP::details::MtProxy::EndpointId MtproxyEndpointFor(
-		not_null<Main::Account*> account,
-		const ProxyData &proxy) {
-	auto &runtime = account->mtp().runtimeEnvironment();
-	const auto settings = Core::App().settings().proxy().settings();
-	const auto saved = Core::App().settings().proxyStealthOptions();
-	return MTP::details::MtProxy::EndpointIdFromProxy(
-		proxy,
-		MTP::EffectiveProxyStealthOptions(
-			&runtime,
-			proxy,
-			settings,
-			saved));
-}
-
-struct MtproxyRowPresentation {
-	ItemState state = ItemState::Unknown;
-	QString statusText;
-};
-
-[[nodiscard]] MtproxyRowPresentation MtproxyRowPresentationFor(
-		const EndpointView &view,
-		ItemState fallback,
-		crl::time now) {
-	using Strength = MTP::details::MtProxy::MainRelayProofStrength;
-	using Cause = MTP::details::MtProxy::EndpointVerdictCause;
-	if (view.mainProof.strength != Strength::None) {
-		return { .state = ItemState::Online };
-	} else if (ActiveMtproxyMainRecovery(view)) {
-		if (!view.canonicalVerdict) {
-			return { .state = ItemState::Connecting };
-		}
-		return {
-			.state = ItemState::Connecting,
-			.statusText = tr::lng_proxy_health_recovering(
-				tr::now,
-				lt_reason,
-				ProxyHealthReasonText(*view.canonicalVerdict)),
-		};
-	} else if (ActiveMtproxyNetwork(view)) {
-		return { .state = ItemState::Connecting };
-	} else if (WaitingMtproxyOpen(view)) {
-		return {
-			.state = ItemState::Connecting,
-			.statusText = tr::lng_proxy_health_waiting_open(tr::now),
-		};
-	} else if (view.canonicalVerdict) {
-		const auto &verdict = *view.canonicalVerdict;
-		if (verdict.cause == Cause::Admission) {
-			return {
-				.state = ItemState::Connecting,
-				.statusText = tr::lng_proxy_health_waiting_open(tr::now),
-			};
-		}
-		const auto reason = ProxyHealthReasonText(verdict);
-		const auto cooldownLeft = view.retryUntil - now;
-		if (cooldownLeft > 0) {
-			return {
-				.state = ItemState::Connecting,
-				.statusText = tr::lng_proxy_health_cooldown(
-					tr::now,
-					lt_duration,
-					ProxyHealthRetryDuration(cooldownLeft),
-					lt_reason,
-					reason),
-			};
-		}
-		return {
-			.state = ItemState::Connecting,
-			.statusText = tr::lng_proxy_health_recovering(
-				tr::now,
-				lt_reason,
-				reason),
-		};
-	}
-	return { .state = fallback };
 }
 
 [[nodiscard]] QString ProxyDataToQueryPath(const ProxyData &proxy) {
@@ -973,7 +745,6 @@ private:
 	void setupButtons(int id, not_null<ProxyRow*> button);
 	int rowHeight() const;
 	void refreshProxyForCalls();
-	void refreshProxyRotation();
 	void refreshRouteViaWss();
 	void refreshReorder();
 
@@ -983,9 +754,6 @@ private:
 	QPointer<Ui::Checkbox> _fastWarmup;
 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
-	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
-	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxyRotationOptions;
-	QPointer<Ui::SettingsSlider> _proxyRotationTimeout;
 	QPointer<Ui::Checkbox> _routeViaWss;
 	QPointer<Ui::DividerLabel> _about;
 	base::unique_qptr<Ui::RpWidget> _noRows;
@@ -1548,52 +1316,6 @@ void ProxiesBox::setupContent() {
 				st::proxySettingsRightCheckPadding.right(),
 				st::proxySettingsRightCheckPadding.top()));
 	}
-	{
-		auto checkbox = object_ptr<Ui::Checkbox>(
-			right,
-			tr::lng_proxy_auto_switch(tr::now),
-			_settings.proxyRotationEnabled());
-		checkbox->setAllowTextLines(2);
-		_proxyRotation = right->add(
-			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
-				right,
-				std::move(checkbox),
-				style::margins(
-					0,
-					st::proxySettingsRightUsePadding.top(),
-					0,
-					st::proxySettingsRightUsePadding.bottom())),
-			style::margins(
-				st::proxySettingsRightCheckPadding.left(),
-				0,
-				st::proxySettingsRightCheckPadding.right(),
-				st::proxySettingsRightCheckPadding.top()));
-	}
-	_proxyRotationOptions = right->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			right,
-			object_ptr<Ui::VerticalLayout>(right)));
-	_proxyRotationTimeout = _proxyRotationOptions->entity()->add(
-		object_ptr<Ui::SettingsSlider>(
-			_proxyRotationOptions->entity(),
-			st::settingsSlider),
-		st::proxySettingsRightSliderPadding);
-	for (const auto seconds : Core::SettingsProxy::kProxyRotationTimeouts) {
-		_proxyRotationTimeout->addSection(
-			tr::lng_proxy_auto_switch_timeout(
-				tr::now,
-				lt_count,
-				seconds));
-	}
-	_proxyRotationTimeout->setActiveSectionFast(
-		ClosestProxyRotationTimeoutSection(_settings.proxyRotationTimeout()));
-	_proxyRotationOptions->entity()->add(
-		object_ptr<Ui::FlatLabel>(
-			_proxyRotationOptions->entity(),
-			tr::lng_proxy_auto_switch_about(tr::now),
-			st::boxDividerLabel),
-		st::proxySettingsRightAboutPadding);
-
 	const auto addStealthToggle = [&](
 			const QString &label,
 			bool checked,
@@ -1854,7 +1576,6 @@ void ProxiesBox::setupContent() {
 			addNewProxy();
 		}
 		refreshProxyForCalls();
-		refreshProxyRotation();
 		refreshRouteViaWss();
 	});
 	_tryIPv6->checkedChanges(
@@ -1870,7 +1591,6 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](ProxyData::Settings value) {
 		_proxySettings->setValue(value);
 		refreshProxyForCalls();
-		refreshProxyRotation();
 		refreshRouteViaWss();
 	}, inner->lifetime());
 	_settings.connectionTypeChanges(
@@ -1882,26 +1602,13 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](bool checked) {
 		_controller->setProxyForCalls(checked);
 	}, _proxyForCalls->lifetime());
-	_proxyRotation->entity()->checkedChanges(
-	) | rpl::on_next([=](bool checked) {
-		_controller->setProxyRotationEnabled(checked);
-		refreshProxyRotation();
-	}, _proxyRotation->lifetime());
-	_proxyRotationTimeout->sectionActivated(
-	) | rpl::on_next([=](int section) {
-		_controller->setProxyRotationTimeout(
-			Core::SettingsProxy::kProxyRotationTimeouts[section]);
-	}, _proxyRotationTimeout->lifetime());
 
 	if (_rows.empty()) {
 		createNoRowsLabel();
 	}
 	refreshProxyForCalls();
-	refreshProxyRotation();
 	refreshRouteViaWss();
 	_proxyForCalls->finishAnimating();
-	_proxyRotation->finishAnimating();
-	_proxyRotationOptions->finishAnimating();
 
 	{
 		const auto wrap = left->add(
@@ -1943,20 +1650,6 @@ void ProxiesBox::refreshProxyForCalls() {
 	_proxyForCalls->toggle(
 		(_proxySettings->current() == ProxyData::Settings::Enabled
 			&& _currentProxySupportsCallsId != 0),
-		anim::type::normal);
-}
-
-void ProxiesBox::refreshProxyRotation() {
-	if (!_proxyRotation || !_proxyRotationOptions) {
-		return;
-	}
-	const auto visible = (_proxySettings->current()
-			== ProxyData::Settings::Enabled)
-		&& _settings.selected()
-		&& (_settings.list().size() > 1);
-	_proxyRotation->toggle(visible, anim::type::normal);
-	_proxyRotationOptions->toggle(
-		visible && _proxyRotation->entity()->checked(),
 		anim::type::normal);
 }
 
@@ -2002,7 +1695,6 @@ void ProxiesBox::finishInitialRows() {
 		wrap->resizeToWidth(st::proxySettingsListColumnWidth);
 	}
 	refreshProxyForCalls();
-	refreshProxyRotation();
 }
 
 void ProxiesBox::applyView(View &&view) {
@@ -2043,7 +1735,6 @@ void ProxiesBox::applyView(View &&view) {
 		i->second->updateFields(std::move(view));
 	}
 	if (!_initializingRows) {
-		refreshProxyRotation();
 	}
 }
 
@@ -2409,7 +2100,7 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 : _account(account)
 , _settings(Core::App().settings().proxy())
 , _saveTimer([] { Local::writeSettings(); })
-, _retryTimer([=] { refreshRetryCountdown(); }) {
+{
 	_list = ranges::views::all(
 		_settings.list()
 	) | ranges::views::transform([&](const ProxyData &proxy) {
@@ -2419,7 +2110,6 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 	_settings.connectionTypeChanges(
 	) | rpl::on_next([=] {
 		_proxySettingsChanges.fire_copy(_settings.settings());
-		refreshSelectedMtproxyView();
 		const auto i = findByProxy(_settings.selected());
 		if (i != end(_list)) {
 			updateView(*i);
@@ -2436,12 +2126,6 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 
 	_account->mtp().ping();
 
-	_account->mtp().runtimeEnvironment().proxyServices().control(
-	).mtproxyEndpointViewChanges(
-	) | rpl::on_next([=](EndpointView view) {
-		applyMtproxyEndpointView(view);
-	}, _lifetime);
-	refreshSelectedMtproxyView();
 }
 
 void ProxiesBoxController::ShowApplyConfirmation(
@@ -2834,78 +2518,6 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 	}
 }
 
-void ProxiesBoxController::refreshSelectedMtproxyView() {
-	auto selectedView = std::optional<EndpointView>();
-	const auto selected = _settings.isEnabled()
-		? _settings.selected()
-		: ProxyData();
-	if (selected.type == Type::Mtproto) {
-		const auto endpoint = MtproxyEndpointFor(_account, selected);
-		selectedView = _account->mtp().runtimeEnvironment()
-			.proxyServices().control().mtproxyEndpointView(endpoint);
-	}
-	for (auto &item : _list) {
-		auto next = (selectedView && item.data == selected)
-			? selectedView
-			: std::optional<EndpointView>();
-		if (item.endpointView == next) {
-			continue;
-		}
-		item.endpointView = std::move(next);
-		updateView(item);
-	}
-	refreshRetryTimer();
-}
-
-void ProxiesBoxController::applyMtproxyEndpointView(
-		const EndpointView &view) {
-	if (!_settings.isEnabled()) {
-		return;
-	}
-	const auto selected = _settings.selected();
-	if (selected.type != Type::Mtproto) {
-		return;
-	}
-	const auto item = findByProxy(selected);
-	if (item == end(_list)
-		|| MTP::details::MtProxy::EndpointKey(view.endpoint)
-			!= MTP::details::MtProxy::EndpointKey(
-				MtproxyEndpointFor(_account, selected))) {
-		return;
-	}
-	if (item->endpointView && *item->endpointView == view) {
-		return;
-	}
-	item->endpointView = view;
-	updateView(*item);
-	refreshRetryTimer();
-}
-
-void ProxiesBoxController::refreshRetryCountdown() {
-	if (_settings.isEnabled()) {
-		const auto item = findByProxy(_settings.selected());
-		if (item != end(_list) && item->endpointView) {
-			updateView(*item);
-		}
-	}
-	refreshRetryTimer();
-}
-
-void ProxiesBoxController::refreshRetryTimer() {
-	_retryTimer.cancel();
-	if (!_settings.isEnabled()) {
-		return;
-	}
-	const auto item = findByProxy(_settings.selected());
-	if (item != end(_list)
-		&& item->endpointView
-		&& VisibleMtproxyRetryCountdown(
-			*item->endpointView,
-			crl::now())) {
-		_retryTimer.callOnce(kRetryCountdownTick);
-	}
-}
-
 object_ptr<Ui::BoxContent> ProxiesBoxController::CreateOwningBox(
 		not_null<Main::Account*> account,
 		const QString &highlightId) {
@@ -3004,7 +2616,7 @@ void ProxiesBoxController::applyItem(int id) {
 	Core::App().setCurrentProxy(
 		item->data,
 		ProxyData::Settings::Enabled);
-	saveDelayed(false);
+	saveDelayed();
 
 	if (old != end(_list) && old->id != id) {
 		updateView(*old);
@@ -3193,7 +2805,7 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
 		}
 	}
 	Core::App().setCurrentProxy(_settings.selected(), value);
-	saveDelayed(false);
+	saveDelayed();
 	return true;
 }
 
@@ -3205,22 +2817,6 @@ void ProxiesBoxController::setProxyForCalls(bool enabled) {
 	if (_settings.isEnabled() && _settings.selected().supportsCalls()) {
 		_settings.connectionTypeChangesNotify();
 	}
-	saveDelayed();
-}
-
-void ProxiesBoxController::setProxyRotationEnabled(bool enabled) {
-	if (_settings.proxyRotationEnabled() == enabled) {
-		return;
-	}
-	_settings.setProxyRotationEnabled(enabled);
-	saveDelayed();
-}
-
-void ProxiesBoxController::setProxyRotationTimeout(int value) {
-	if (_settings.proxyRotationTimeout() == value) {
-		return;
-	}
-	_settings.setProxyRotationTimeout(value);
 	saveDelayed();
 }
 
@@ -3244,10 +2840,7 @@ void ProxiesBoxController::setFastWarmup(bool enabled) {
 	saveDelayed();
 }
 
-void ProxiesBoxController::saveDelayed(bool notifyRotation) {
-	if (notifyRotation) {
-		Core::App().proxyRotationSettingsChanged();
-	}
+void ProxiesBoxController::saveDelayed() {
 	_saveTimer.callOnce(kSaveSettingsDelayedTimeout);
 }
 
@@ -3285,16 +2878,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		}
 		return ItemState::Connecting;
 	}();
-	const auto presentation = (selected
-		&& _settings.isEnabled()
-		&& item.data.type == Type::Mtproto
-		&& item.endpointView)
-		? MtproxyRowPresentationFor(
-			*item.endpointView,
-			fallbackState,
-			crl::now())
-		: MtproxyRowPresentation{ .state = fallbackState };
-	const auto state = presentation.state;
+	const auto state = fallbackState;
 	const auto ping = (state == ItemState::Online)
 		? int(_account->mtp().connectionStatus().pingTime())
 		: item.ping;
@@ -3312,7 +2896,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		supportsCalls,
 		state,
 		item.progressStatus,
-		presentation.statusText,
+		QString(),
 	});
 }
 

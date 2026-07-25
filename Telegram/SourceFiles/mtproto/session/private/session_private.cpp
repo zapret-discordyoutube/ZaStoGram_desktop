@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -48,14 +49,12 @@ SessionPrivate::SessionPrivate(
 		ShiftedDcId shiftedDcId,
 		SessionRole role,
 		uint64 proxyGeneration,
-		not_null<SessionProxyPort*> proxyPort,
 		not_null<SessionConnectionFactory*> connectionFactory,
 		not_null<SessionAuthKeyFactory*> authKeyFactory)
 : QObject(nullptr)
 , _instance(instance)
 , _delegate(delegate)
 , _runtime(&delegate->runtimeEnvironment())
-, _proxyPort(proxyPort)
 , _connectionFactory(connectionFactory)
 , _authKeyFactory(authKeyFactory)
 , _shiftedDcId(shiftedDcId)
@@ -156,15 +155,28 @@ void SessionPrivate::logMtprotoEvent(
 		ProxyDiagnosticsPhase phase,
 		ProxyDiagnosticsSeverity severity,
 		const QString &message) const {
-	const auto proxy = _sessionState.options ? _sessionState.options->proxy : ProxyData();
-	_proxyPort->logEvent(
-		_runtime,
-		proxy,
-		_transport.currentProxyAttempt().attempt,
-		mtprotoLogDc(),
-		phase,
-		severity,
-		message);
+	const auto proxy = _sessionState.options
+		? _sessionState.options->proxy
+		: ProxyData();
+	if (proxy.type == ProxyData::Type::None) {
+		WriteProxyDiagnosticsLine(_runtime, {
+			.source = ProxyDiagnosticsSource::MTP,
+			.phase = phase,
+			.severity = severity,
+			.proxy = proxy,
+			.dc = mtprotoLogDc(),
+			.message = message,
+		});
+		return;
+	}
+	ReportProxyEvent(_runtime, {
+		.phase = phase,
+		.attempt = _transport.currentProxyAttempt(),
+		.severity = severity,
+		.proxy = proxy,
+		.dc = mtprotoLogDc(),
+		.message = message,
+	});
 }
 
 int16 SessionPrivate::getProtocolDcId() const {

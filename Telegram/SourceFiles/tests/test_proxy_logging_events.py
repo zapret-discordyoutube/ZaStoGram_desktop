@@ -7,9 +7,7 @@ PROXY_DIR = SOURCE_DIR / "mtproto" / "proxy"
 MTPROXY_DIR = PROXY_DIR / "mtproxy"
 DIAGNOSTICS_H = PROXY_DIR / "diagnostics.h"
 DIAGNOSTICS_CPP = PROXY_DIR / "diagnostics.cpp"
-CONNECTION_BROKER_CPP = PROXY_DIR / "connection_broker.cpp"
 RESOLVING_CPP = PROXY_DIR / "resolving_connection.cpp"
-ENDPOINT_HEALTH_CPP = MTPROXY_DIR / "endpoint_health.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
 TLS_SOCKET_HANDSHAKE_CPP = MTPROXY_DIR / "tls_socket_handshake.cpp"
 TRANSPORT_POLICY_CPP = PROXY_DIR / "transport_policy.cpp"
@@ -95,58 +93,3 @@ def test_diagnostics_declares_structured_proxy_events_and_context():
 
     assert "ProxyKeyHash(" in source
     assert "QCryptographicHash::Sha256" in source
-
-
-def test_admission_queue_and_start_are_logged_not_failed():
-    broker = read(CONNECTION_BROKER_CPP)
-    session = read_session_private_sources()
-
-    assert "ProxyDiagnosticsPhase::AdmissionQueued" in broker
-    assert "ProxyDiagnosticsPhase::AdmissionStarted" in broker
-    assert "ProxyDiagnosticsPhase::AdmissionCancelled" not in broker
-    assert "queueMs =" in broker
-    assert "endpointAdmissionArbiter().enqueue(" in broker
-    assert "request.instance" not in broker
-
-    append_body = function_body(session, "bool SessionTransport::appendTestConnection(")
-    assert "_owner->_proxyPort->requestConnection({" not in append_body
-    assert "SessionProxyAdmissionDecision" not in append_body
-    assert "mtproxy admission queued" not in append_body
-    assert "_owner->_connectionFactory->create(" in append_body
-
-
-def test_route_canonical_recipe_and_fallback_events_are_emitted():
-    resolving = read(RESOLVING_CPP)
-    endpoint_health = read(ENDPOINT_HEALTH_CPP)
-    tls_socket = read(TLS_SOCKET_HANDSHAKE_CPP) + read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp") + read(
-        SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" /
-        "tls_socket_diagnostics.cpp")
-    transport_policy = read(TRANSPORT_POLICY_CPP)
-
-    assert "ProxyDiagnosticsPhase::RouteSelected" in resolving
-    assert "ProxyDiagnosticsPhase::RouteFailed" in resolving
-    assert ".phaseAtFailure =" in resolving
-    assert "tcp_not_connected" in resolving
-    assert "MtProxy::RouteKey(" in resolving
-
-    assert "ProxyDiagnosticsPhase::CanonicalDegraded" in endpoint_health
-    assert "ProxyDiagnosticsPhase::CanonicalRecovered" in endpoint_health
-    assert "WriteProxyDiagnosticsLine(" in endpoint_health
-
-    assert "ProxyDiagnosticsPhase::ClientHelloSent" in tls_socket
-    assert "std::make_optional(_syntheticPskOffered)" in tls_socket
-    assert "std::make_optional(_clientHelloFragmented)" in tls_socket
-    assert ".rxClass = clientHelloKnown ? responseClass() : QString()" in (
-        tls_socket)
-    assert ".clientHelloFragmentSplit = _clientHelloFragmented" in tls_socket
-    assert ".parserStage = proxyTransportFailure().parserStage" in tls_socket
-
-    assert "ProxyDiagnosticsPhase::TransportFallbackApplied" in transport_policy
-    assert "transportFallbackLogged" in transport_policy
-
-
-if __name__ == "__main__":
-    test_diagnostics_declares_structured_proxy_events_and_context()
-    test_admission_queue_and_start_are_logged_not_failed()
-    test_route_canonical_recipe_and_fallback_events_are_emitted()

@@ -14,8 +14,6 @@ SESSION_TRANSPORT_H = SESSION_PRIVATE_DIR / "transport.h"
 SESSION_TIMINGS_H = SESSION_PRIVATE_DIR / "timings.h"
 SESSION_MESSAGE_HANDLER = SESSION_PRIVATE_DIR / "message_handler.cpp"
 SESSION_MESSAGE_HANDLER_H = SESSION_PRIVATE_DIR / "message_handler.h"
-SESSION_PROXY_PORT = SESSION_PRIVATE_DIR / "proxy_port.cpp"
-SESSION_PROXY_PORT_H = SESSION_PRIVATE_DIR / "proxy_port.h"
 SESSION_CONNECTION = SESSION_PRIVATE_DIR / "connection.cpp"
 SESSION_SEND = SESSION_PRIVATE_DIR / "send.cpp"
 SESSION_RECEIVE = SESSION_PRIVATE_DIR / "receive.cpp"
@@ -28,8 +26,6 @@ SPLIT_SOURCES = (
     SESSION_TIMINGS_H,
     SESSION_MESSAGE_HANDLER,
     SESSION_MESSAGE_HANDLER_H,
-    SESSION_PROXY_PORT,
-    SESSION_PROXY_PORT_H,
     SESSION_CONNECTION,
     SESSION_SEND,
     SESSION_RECEIVE,
@@ -102,20 +98,6 @@ def test_session_private_header_groups_private_state():
     assert not declarations_named(header, "_connection")
     assert not declarations_named(header, "_sessionData")
     assert not declarations_named(header, "_keyCreator")
-
-
-def test_session_private_owns_transport_and_message_handler_components():
-    header = read(SESSION_H)
-    source = read(SESSION_MAIN)
-
-    assert '#include "mtproto/session/private/transport.h"' in header
-    assert '#include "mtproto/session/private/message_handler.h"' in header
-    assert '#include "mtproto/session/private/proxy_port.h"' in header
-    assert "SessionTransport _transport;" in header
-    assert "SessionMessageHandler _messageHandler;" in header
-    assert "const not_null<SessionProxyPort*> _proxyPort;" in header
-    assert ", _transport(\n\tthis,\n\t_runtime,\n\tthread," in source
-    assert ", _messageHandler(this)" in source
 
 
 def test_session_transport_timers_are_bound_to_session_thread():

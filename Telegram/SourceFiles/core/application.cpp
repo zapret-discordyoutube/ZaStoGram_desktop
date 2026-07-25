@@ -27,7 +27,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/sandbox.h"
 #include "core/local_url_handlers.h"
 #include "core/launcher.h"
-#include "core/proxy_rotation_manager.h"
 #include "core/ui_integration.h"
 #include "core/version.h"
 #include "mtproto/session/pause_state.h"
@@ -151,7 +150,6 @@ struct Application::Private {
 	base::Timer quitTimer;
 	UiIntegration uiIntegration;
 	Settings settings;
-	std::unique_ptr<ProxyRotationManager> proxyRotation;
 };
 
 Application::Application()
@@ -179,7 +177,6 @@ Application::Application()
 , _setupEmailLock(false)
 , _autoLockTimer([=] { checkAutoLock(); }) {
 	Ui::Integration::Set(&_private->uiIntegration);
-	_private->proxyRotation = std::make_unique<ProxyRotationManager>();
 
 	_platformIntegration->init();
 
@@ -242,7 +239,6 @@ Application::~Application() {
 	// Domain::finish() and there is a violation on Ensures(started()).
 	closeAdditionalWindows();
 
-	_private->proxyRotation = nullptr;
 	_domain->finish();
 
 	Local::finish();
@@ -847,7 +843,6 @@ void Application::setCurrentProxy(
 		_proxyChanges.fire({ was, now, manual });
 	}
 	my.connectionTypeChangesNotify();
-	proxyRotationSettingsChanged();
 }
 
 void Application::applyProxyStealthOptions(
@@ -872,16 +867,6 @@ void Application::restartProxyConnections() {
 		? my.selected()
 		: MTP::ProxyData();
 	_proxyChanges.fire({ current, current, false });
-}
-
-void Application::proxyRotationSettingsChanged() {
-	_private->proxyRotation->settingsChanged();
-}
-
-void Application::checkProxyRotation(
-		not_null<Main::Account*> account,
-		int32 state) {
-	_private->proxyRotation->handleConnectionStateChanged(account, state);
 }
 
 auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {

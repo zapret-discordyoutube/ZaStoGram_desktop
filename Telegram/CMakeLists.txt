@@ -530,8 +530,6 @@ PRIVATE
     chat_helpers/ttl_media_layer_widget.h
     core/application.cpp
     core/application.h
-    core/proxy_rotation_manager.cpp
-    core/proxy_rotation_manager.h
     core/cached_webview_availability.h
     core/bank_card_click_handler.cpp
     core/bank_card_click_handler.h
@@ -1559,19 +1557,14 @@ PRIVATE
     mtproto/runtime/proxy_data.h
     mtproto/runtime/runtime_environment.cpp
     mtproto/runtime/runtime_environment.h
-    mtproto/proxy/connection_broker.cpp
-    mtproto/proxy/connection_broker.h
     mtproto/proxy/control_plane.cpp
     mtproto/proxy/control_plane.h
-    mtproto/proxy/endpoint_admission_arbiter.cpp
-    mtproto/proxy/endpoint_admission_arbiter.h
-    mtproto/proxy/endpoint_live_pool.cpp
-    mtproto/proxy/endpoint_live_pool.h
+    mtproto/proxy/dial_pacer.cpp
+    mtproto/proxy/dial_pacer.h
     mtproto/proxy/proxy_services.cpp
     mtproto/proxy/proxy_services.h
     mtproto/proxy/proxy_endpoint_context.cpp
     mtproto/proxy/proxy_endpoint_context.h
-    mtproto/proxy/proxy_endpoint_context_p.h
     mtproto/proxy/capabilities.cpp
     mtproto/proxy/capabilities.h
     mtproto/proxy/data.cpp
@@ -1584,8 +1577,6 @@ PRIVATE
     mtproto/proxy/status.h
     mtproto/proxy/resolving_connection.cpp
     mtproto/proxy/resolving_connection.h
-    mtproto/proxy/session_proxy_adapter.cpp
-    mtproto/proxy/session_proxy_adapter.h
     mtproto/proxy/socket_factory.cpp
     mtproto/proxy/socket_factory.h
     mtproto/transport/connection_tcp.cpp
@@ -1596,8 +1587,6 @@ PRIVATE
     mtproto/files/dedicated_file_loader.h
     mtproto/session/pause_state.cpp
     mtproto/session/pause_state.h
-    mtproto/proxy/handshake_gate.cpp
-    mtproto/proxy/handshake_gate.h
     mtproto/instance/mtp_instance.cpp
     mtproto/instance/mtp_instance.h
     mtproto/instance/request_registry.cpp
@@ -1609,8 +1598,6 @@ PRIVATE
     mtproto/proxy/diagnostics.h
     mtproto/proxy/check.cpp
     mtproto/proxy/check.h
-    mtproto/proxy/mtproxy/adaptive_policy.cpp
-    mtproto/proxy/mtproxy/adaptive_policy.h
     mtproto/proxy/mtproxy/client_hello_builder.cpp
     mtproto/proxy/mtproxy/client_hello_builder.h
     mtproto/proxy/mtproxy/client_hello_constants.h
@@ -1620,21 +1607,11 @@ PRIVATE
     mtproto/proxy/mtproxy/client_hello_profile.cpp
     mtproto/proxy/mtproxy/client_hello_profile.h
     mtproto/proxy/mtproxy/client_hello_rules.cpp
-    mtproto/proxy/mtproxy/endpoint_health_capabilities.cpp
-    mtproto/proxy/mtproxy/endpoint_health_capabilities.h
-    mtproto/proxy/mtproxy/endpoint_health.cpp
-    mtproto/proxy/mtproxy/endpoint_health.h
-    mtproto/proxy/mtproxy/endpoint_health_diagnostics.cpp
-    mtproto/proxy/mtproxy/endpoint_health_diagnostics.h
-    mtproto/proxy/mtproxy/endpoint_health_lifecycle.cpp
-    mtproto/proxy/mtproxy/endpoint_health_policy.cpp
-    mtproto/proxy/mtproxy/endpoint_health_policy.h
-    mtproto/proxy/mtproxy/endpoint_health_state.h
     mtproto/proxy/mtproxy/endpoint_identity.cpp
     mtproto/proxy/mtproxy/endpoint_identity.h
     mtproto/proxy/mtproxy/handshake_diagnosis.h
-    mtproto/proxy/mtproxy/open_scheduler.cpp
-    mtproto/proxy/mtproxy/open_scheduler.h
+    mtproto/proxy/mtproxy/handshake_plan.cpp
+    mtproto/proxy/mtproxy/handshake_plan.h
     mtproto/proxy/mtproxy/tls_socket.cpp
     mtproto/proxy/mtproxy/tls_socket_diagnostics.cpp
     mtproto/proxy/mtproxy/tls_socket.h
@@ -1663,8 +1640,6 @@ PRIVATE
     mtproto/session/private/connection_factory.h
     mtproto/session/private/message_handler.cpp
     mtproto/session/private/message_handler.h
-    mtproto/session/private/proxy_port.cpp
-    mtproto/session/private/proxy_port.h
     mtproto/session/private/auth.cpp
     mtproto/session/private/connection.cpp
     mtproto/session/private/session_private.cpp
