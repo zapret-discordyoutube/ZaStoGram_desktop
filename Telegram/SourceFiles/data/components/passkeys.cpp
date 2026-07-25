@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "mtproto/auth/mtproto_auth_key.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "platform/platform_webauthn.h"
 
 namespace Data {
