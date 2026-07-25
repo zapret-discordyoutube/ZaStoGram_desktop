@@ -615,8 +615,17 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
 	if (state.useProxy) {
 		const auto status = state.proxyStatus;
 		result.proxySeverity = MTP::ProxyConnectionStatusSeverityFor(status);
-		result.proxyTone = (status.proxy.type == MTP::ProxyData::Type::Mtproto
-			&& status.phase == MTP::ProxyConnectionPhase::Connected)
+		result.proxyTone = (state.type == State::Type::Connected)
+			// The account is connected through this proxy right now. Every
+			// session dials it on its own and there are a dozen of them, so
+			// at any moment one is retrying and reporting a failure - which
+			// is how the shield ended up alternating between the handshake
+			// and the stall colour while messages and files kept arriving.
+			// There is no text beside the icon in this state either, so the
+			// colour was the whole message, and the message was wrong.
+			? MTP::ProxyConnectionStatusTone::Success
+			: (status.proxy.type == MTP::ProxyData::Type::Mtproto
+				&& status.phase == MTP::ProxyConnectionPhase::Connected)
 			? MTP::ProxyConnectionStatusTone::Progress
 			: MTP::ProxyConnectionStatusToneFor(status);
 	}

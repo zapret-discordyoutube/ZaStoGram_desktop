@@ -15,7 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 namespace {
-constexpr auto kNonMtproxyFreshRelaySuccessWindow = crl::time(15 * 1000);
+constexpr auto kFreshRelaySuccessWindow = crl::time(15 * 1000);
 
 [[nodiscard]] bool IsSuccess(const ProxyConnectionStatus &status) {
 	return status.phase == ProxyConnectionPhase::Connected;
@@ -110,10 +110,9 @@ constexpr auto kNonMtproxyFreshRelaySuccessWindow = crl::time(15 * 1000);
 		&& (status.terminalUntil > crl::now());
 }
 
-[[nodiscard]] bool NonMtproxyRelaySuccessIsFresh(
+[[nodiscard]] bool RelaySuccessIsFresh(
 		const ProxyConnectionStatus &status) {
-	return (status.proxy.type != ProxyData::Type::Mtproto)
-		&& (status.phase == ProxyConnectionPhase::Connected)
+	return (status.phase == ProxyConnectionPhase::Connected)
 		&& status.successUntil
 		&& (status.successUntil > crl::now());
 }
@@ -143,7 +142,7 @@ constexpr auto kNonMtproxyFreshRelaySuccessWindow = crl::time(15 * 1000);
 [[nodiscard]] bool ShadowedByFreshRelaySuccess(
 		const ProxyConnectionStatus &current,
 		const ProxyFact &fact) {
-	return NonMtproxyRelaySuccessIsFresh(current)
+	return RelaySuccessIsFresh(current)
 		&& IsTerminalFailure(fact.status)
 		&& !(fact.status.attempt == current.attempt)
 		&& !IsNewerProxyEpoch(current.attempt, fact.status.attempt);
@@ -186,7 +185,7 @@ void LogShadowedFact(
 	if (IsOlderAttempt(current.attempt, update.attempt)) {
 		return current;
 	}
-	if (NonMtproxyRelaySuccessIsFresh(current)
+	if (RelaySuccessIsFresh(current)
 		&& IsTerminalFailure(update)
 		&& !(update.attempt == current.attempt)
 		&& !IsNewerProxyEpoch(current.attempt, update.attempt)) {
@@ -311,14 +310,21 @@ ProxyConnectionStatus ProxyControlPlane::Reduce(
 	if (fact.status.proxy.type == ProxyData::Type::Mtproto) {
 		if (fact.successScope == ProxyControlPlaneSuccessScope::Relay) {
 			fact.status.phase = ProxyConnectionPhase::Connected;
+			fact.status.successUntil = crl::now() + kFreshRelaySuccessWindow;
+		} else if (ShadowedByFreshRelaySuccess(current, fact)) {
+			// One mtproxy carries every session of every account, so a dozen
+			// sockets are always in flight against it and one of them is
+			// almost always retrying. Reporting that socket's failure while
+			// the others relay Telegram data describes the socket, not the
+			// proxy, and it is the proxy the shield claims to be about.
+			return current;
 		}
-		fact.status.successUntil = 0;
 		return std::move(fact.status);
 	}
 	if (fact.successScope == ProxyControlPlaneSuccessScope::Relay) {
 		fact.status.phase = ProxyConnectionPhase::Connected;
 		fact.status.successUntil = crl::now()
-			+ kNonMtproxyFreshRelaySuccessWindow;
+			+ kFreshRelaySuccessWindow;
 	}
 	if (ShadowedByFreshRelaySuccess(current, fact)) {
 		return current;
@@ -351,7 +357,7 @@ void ProxyControlPlane::submitFactOnOwner(ProxyFact fact) {
 		_selectedStatus = reduced;
 		_endpointSnapshot.proxy = reduced.proxy;
 		_endpointSnapshot.status = reduced;
-		_endpointSnapshot.relayProven = NonMtproxyRelaySuccessIsFresh(reduced);
+		_endpointSnapshot.relayProven = RelaySuccessIsFresh(reduced);
 		_runtime->instance().connectionStatus->setProxyStatus(reduced);
 	}
 }

@@ -27,8 +27,11 @@ def test_raw_reducer_rejects_probe_and_stale_generation_facts():
         "IsProxyCheck(fact.status.attempt.use)", 1)[1].split("}", 1)[0]
     assert "IsOlderProxyGeneration(current.attempt, update.attempt)" in update
     assert "IsOlderAttempt(current.attempt, update.attempt)" in update
-    assert "NonMtproxyRelaySuccessIsFresh(current)" in update
-    assert "kNonMtproxyFreshRelaySuccessWindow" in source
+    assert "RelaySuccessIsFresh(current)" in update
+    assert "kFreshRelaySuccessWindow" in source
+    # An mtproxy carries every session at once, so a single socket failing
+    # while the others relay must not repaint the shield.
+    assert "ShadowedByFreshRelaySuccess(current, fact)" in reduce
 
 
 def test_tls_socket_owns_serverhello_timeout_and_one_terminal_path():
