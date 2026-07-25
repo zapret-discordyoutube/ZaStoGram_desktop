@@ -112,7 +112,7 @@ void TlsSocket::plainConnected() {
 		ProxyDiagnosticsSeverity::Info,
 		u"mtproxy tcp connected"_q);
 
-	const auto delay = ConnectionSpacing(_connectionPattern);
+	const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);
 	if (delay > 0) {
 		_clientHelloTimer.callOnce(delay);
 	} else {

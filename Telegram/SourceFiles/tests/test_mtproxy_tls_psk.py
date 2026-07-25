@@ -300,7 +300,7 @@ def test_admission_plan_drives_tls_socket_spacing_and_diagnostics():
     assert "ProxyTlsProfile _configuredTlsProfile" in header
     assert "applyAdaptiveRecipe" not in source
     assert "reportTransportEvent(" in source
-    assert "const auto delay = ConnectionSpacing(_connectionPattern);" in connected_body
+    assert "const auto delay = MtProxy::ConnectionSpacing(_connectionPattern);" in connected_body
     assert "_clientHelloTimer.callOnce(delay);" in connected_body
     assert "clearSyntheticPskOnFailure(reason)" in terminal_body
     assert "_sentTlsProfile" in clear_body
