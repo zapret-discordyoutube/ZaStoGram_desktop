@@ -844,9 +844,7 @@ not_null<HistoryItem*> History::addNewItem(
 	}
 
 	if (!loadedAtBottom() || peer->migrateTo()) {
-		if (!item->isEphemeral()) {
-			setLastMessage(item);
-		}
+		setLastMessage(item);
 		if (unread) {
 			const auto type = item->out()
 				? NewAddType::Outgoing
@@ -1220,9 +1218,7 @@ not_null<HistoryItem*> History::addNewToBack(
 		}
 	}
 
-	if (!item->isEphemeral()) {
-		setLastMessage(item);
-	}
+	setLastMessage(item);
 	if (unread) {
 		const auto type = item->out()
 			? NewAddType::Outgoing
@@ -2483,7 +2479,7 @@ void History::updateCommunityRegistration() {
 	const auto listFor = [&](Data::CommunityInfo *info)
 	-> Dialogs::MainList* {
 		if (info
-			&& info->collapsedInDialogs()
+			&& info->collapsedInChatLists()
 			&& info->channel() != peer) {
 			return info->chatsList();
 		}

@@ -327,10 +327,29 @@ bool EphemeralMessages::wouldSend(const Api::MessageToSend &message) const {
 	}
 	if (const auto replyToId = realReplyId(message)) {
 		const auto replyTo = _session->data().message(replyToId);
-		return replyTo && replyTo->isEphemeral();
+		if (replyTo && replyTo->isEphemeral()) {
+			return true;
+		}
 	}
 	return findCommandBot(peer, message.textWithTags.text.trimmed())
 		!= nullptr;
+}
+
+bool EphemeralMessages::hasEphemeralCommand(
+		not_null<PeerData*> peer,
+		const QString &text) const {
+	if (!peer->isChat() && !peer->isMegagroup()) {
+		return false;
+	}
+	return findCommandBot(peer, text.trimmed()) != nullptr;
+}
+
+bool EphemeralMessages::wouldSendMedia(
+		not_null<PeerData*> peer,
+		FullReplyTo replyTo,
+		const QString &caption) const {
+	return isEphemeralBotReply(replyTo.messageId)
+		|| hasEphemeralCommand(peer, caption);
 }
 
 bool EphemeralMessages::isEphemeralBotReply(FullMsgId replyToId) const {
@@ -370,6 +389,7 @@ bool EphemeralMessages::trySend(const Api::MessageToSend &message) {
 	if (text.text.isEmpty()) {
 		return false;
 	}
+	auto realReply = FullReplyTo();
 	if (const auto replyToId = realReplyId(message)) {
 		const auto replyTo = _session->data().message(replyToId);
 		if (replyTo && replyTo->isEphemeral()) {
@@ -383,7 +403,7 @@ bool EphemeralMessages::trySend(const Api::MessageToSend &message) {
 			}
 			return true;
 		}
-		return false;
+		realReply = message.action.replyTo;
 	}
 	const auto bot = findCommandBot(peer, text.text);
 	if (!bot) {
@@ -394,13 +414,17 @@ bool EphemeralMessages::trySend(const Api::MessageToSend &message) {
 		bot,
 		std::move(text),
 		0,
-		message.action.replyTo.topicRootId);
+		message.action.replyTo.topicRootId,
+		realReply);
 	return true;
 }
 
 UserData *EphemeralMessages::findCommandBot(
 		not_null<PeerData*> peer,
 		const QString &text) const {
+	if (!peer->isChat() && !peer->isMegagroup()) {
+		return nullptr;
+	}
 	const auto parsed = ParseCommand(text);
 	if (!parsed) {
 		return nullptr;
@@ -434,7 +458,8 @@ void EphemeralMessages::send(
 		not_null<UserData*> bot,
 		TextWithEntities text,
 		int32 replyToEphemeralId,
-		MsgId topicRootId) {
+		MsgId topicRootId,
+		FullReplyTo realReply) {
 	request(
 		history,
 		bot,
@@ -442,14 +467,42 @@ void EphemeralMessages::send(
 		MTPInputMedia(),
 		false,
 		replyToEphemeralId,
-		topicRootId);
+		topicRootId,
+		realReply);
 }
 
 bool EphemeralMessages::sendMedia(
 		not_null<HistoryItem*> item,
-		const MTPInputMedia &media) {
-	const auto target = _session->data().message(item->replyTo().messageId);
+		const MTPInputMedia &media,
+		Data::FileOrigin origin,
+		Fn<MTPInputMedia()> rebuildMedia) {
+	const auto history = item->history();
+	const auto replyTo = item->replyTo();
+	const auto target = _session->data().message(replyTo.messageId);
 	if (!target || !target->isEphemeral()) {
+		const auto bot = findCommandBot(
+			history->peer,
+			item->originalText().text.trimmed());
+		if (bot) {
+			const auto realReply = (replyTo.messageId
+				&& !(replyTo.topicRootId
+					&& replyTo.messageId.msg == replyTo.topicRootId))
+				? replyTo
+				: FullReplyTo();
+			request(
+				history,
+				bot,
+				item->originalText(),
+				media,
+				true,
+				0,
+				item->topicRootId(),
+				realReply,
+				item->fullId(),
+				origin,
+				rebuildMedia);
+			return true;
+		}
 		return false;
 	}
 	if (!target->out()) {
@@ -464,7 +517,10 @@ bool EphemeralMessages::sendMedia(
 				true,
 				entry->ephemeralId,
 				MsgId(0),
-				item->fullId());
+				FullReplyTo(),
+				item->fullId(),
+				origin,
+				rebuildMedia);
 			return true;
 		}
 	}
@@ -505,7 +561,10 @@ void EphemeralMessages::request(
 		bool hasMedia,
 		int32 replyToEphemeralId,
 		MsgId topicRootId,
-		FullMsgId destroyOnResult) {
+		FullReplyTo realReply,
+		FullMsgId destroyOnResult,
+		Data::FileOrigin origin,
+		Fn<MTPInputMedia()> rebuildMedia) {
 	const auto session = _session;
 	const auto destroyLocal = [=] {
 		if (destroyOnResult) {
@@ -524,6 +583,9 @@ void EphemeralMessages::request(
 		replyTo = MTP_inputReplyToEphemeralMessage(
 			MTP_int(replyToEphemeralId));
 		hasReplyTo = true;
+	} else if (realReply.messageId) {
+		replyTo = Data::ReplyToForMTP(history, realReply);
+		hasReplyTo = (replyTo.type() == mtpc_inputReplyToMessage);
 	} else if (topicRootId && topicRootId != Data::ForumTopic::kGeneralId) {
 		auto anchor = FullReplyTo();
 		anchor.messageId = { history->peer->id, topicRootId };
@@ -536,31 +598,49 @@ void EphemeralMessages::request(
 		| (entities.v.isEmpty() ? Flag(0) : Flag::f_entities)
 		| (hasMedia ? Flag::f_media : Flag(0))
 		| (hasReplyTo ? Flag::f_reply_to : Flag(0));
-	session->api().request(MTPephemeral_SendMessage(
-		MTP_flags(flags),
-		history->peer->input(),
-		bot->inputUser(),
-		MTPlong(), // query_id
-		MTP_string(text.text),
-		entities,
-		media,
-		MTPReplyMarkup(),
-		MTPInputRichMessage(),
-		MTP_long(base::RandomValue<uint64>()),
-		replyTo
-	)).done([=](const MTPUpdates &result) {
-		_convertLocalMediaTarget = destroyOnResult;
-		session->api().applyUpdates(result);
-		if (destroyOnResult) {
-			const auto local = session->data().message(destroyOnResult);
-			if (local && !findByItem(local)) {
-				local->destroy();
+	const auto randomId = base::RandomValue<uint64>();
+	const auto send = [=](
+			const auto &send,
+			const MTPInputMedia &media,
+			int attempt) -> void {
+		session->api().request(MTPephemeral_SendMessage(
+			MTP_flags(flags),
+			history->peer->input(),
+			bot->inputUser(),
+			MTPlong(), // query_id
+			MTP_string(text.text),
+			entities,
+			media,
+			MTPReplyMarkup(),
+			MTPInputRichMessage(),
+			MTP_long(randomId),
+			replyTo
+		)).done([=](const MTPUpdates &result) {
+			_convertLocalMediaTarget = destroyOnResult;
+			session->api().applyUpdates(result);
+			if (destroyOnResult) {
+				const auto local = session->data().message(destroyOnResult);
+				if (local && !findByItem(local)) {
+					local->destroy();
+				}
 			}
-		}
-	}).fail([=](const MTP::Error &error) {
-		LOG(("API Error: send ephemeral message - %1").arg(error.type()));
-		destroyLocal();
-	}).send();
+		}).fail([=](const MTP::Error &error) {
+			if (rebuildMedia
+				&& !attempt
+				&& error.code() == 400
+				&& error.type().startsWith(u"FILE_REFERENCE_"_q)) {
+				session->api().refreshFileReference(
+					origin,
+					[=](const auto &) {
+						send(send, rebuildMedia(), 1);
+					});
+				return;
+			}
+			LOG(("API Error: send ephemeral message - %1").arg(error.type()));
+			destroyLocal();
+		}).send();
+	};
+	send(send, media, 0);
 }
 
 void EphemeralMessages::deleteMessage(not_null<HistoryItem*> item) {

@@ -43,6 +43,17 @@ add_dependencies(Telegram test_text)
 
 target_prepare_qrc(test_text)
 
+if (APPLE)
+    add_custom_command(TARGET test_text POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:test_text>/Contents/Resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/test_text.rcc"
+            "${CMAKE_BINARY_DIR}/lib_ui.rcc"
+            "$<TARGET_FILE_DIR:test_text>/Contents/Resources/"
+    )
+endif()
+
 add_executable(test_bot_callback_state WIN32)
 init_target(test_bot_callback_state "(tests)")
 

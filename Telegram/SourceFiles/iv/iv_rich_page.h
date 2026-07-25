@@ -304,6 +304,7 @@ inline constexpr auto kTextDiffDeletedColorIndex = 11;
 [[nodiscard]] bool RichPageUsesPremiumFormatting(const RichPage &page);
 [[nodiscard]] bool RichPageIsFlattenSafe(const RichPage &page);
 [[nodiscard]] RichPage SplitTextIntoRichPage(TextWithEntities text);
+[[nodiscard]] RichPage SplitTextIntoRichPage(const TextWithTags &text);
 [[nodiscard]] bool TextLooksLikeMarkdownPage(const QString &text);
 [[nodiscard]] RichPage ParseMarkdownTextIntoRichPage(TextWithEntities text);
 [[nodiscard]] TextWithEntities FlattenRichPageSummary(
@@ -314,5 +315,6 @@ inline constexpr auto kTextDiffDeletedColorIndex = 11;
 	bool emptyFallback = true);
 [[nodiscard]] TextWithEntities FlattenRichPageToSimpleText(
 	const RichPage &page);
+[[nodiscard]] bool DetermineRichPageRtl(const RichPage &page);
 
 } // namespace Iv

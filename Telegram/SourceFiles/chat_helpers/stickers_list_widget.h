@@ -117,6 +117,9 @@ public:
 	void afterShown() override;
 	void beforeHiding() override;
 	void animationActiveChanged(bool active) override;
+	[[nodiscard]] bool canConsumeHorizontalScroll(
+		QPoint position,
+		int delta) override;
 
 	void refreshStickers();
 

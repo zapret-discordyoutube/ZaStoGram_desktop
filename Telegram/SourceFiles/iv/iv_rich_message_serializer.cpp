@@ -1718,6 +1718,9 @@ SerializeInputRichMessageResult SerializeInputRichMessage(
 	if (mode == SerializeInputRichMessageMode::FinalSubmit
 		&& !normalizedBlocks.hasRealContent) {
 		return EmptySerializeInputRichMessage();
+	} else if (mode == SerializeInputRichMessageMode::Draft
+		&& blocks->isEmpty()) {
+		return EmptySerializeInputRichMessage();
 	}
 	auto photos = QVector<MTPInputPhoto>();
 	photos.reserve(context.photos.size());
@@ -1736,7 +1739,7 @@ SerializeInputRichMessageResult SerializeInputRichMessage(
 	}
 	using Flag = MTPDinputRichMessage::Flag;
 	auto flags = MTPDinputRichMessage::Flags();
-	if (page.rtl) {
+	if (DetermineRichPageRtl(page)) {
 		flags |= Flag::f_rtl;
 	}
 	if (!photos.isEmpty()) {

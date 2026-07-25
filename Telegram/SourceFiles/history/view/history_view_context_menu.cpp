@@ -24,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_components.h"
+#include "history/history_item_helpers.h"
 #include "history/history_item_text.h"
 #include "history/view/history_view_schedule_box.h"
 #include "history/view/media/history_view_media.h"
@@ -601,11 +602,17 @@ bool AddRescheduleAction(
 			: itemDate + (firstItem->isScheduled() ? 0 : crl::time(600));
 		const auto repeatPeriod = firstItem->scheduleRepeatPeriod();
 
+		const auto topic = firstItem->topic();
 		const auto box = request.navigation->parentController()->show(
 			HistoryView::PrepareScheduleBox(
 				&request.navigation->session(),
 				request.navigation->uiShow(),
-				{ .type = sendMenuType, .effectAllowed = false },
+				{
+					.type = sendMenuType,
+					.barePeerId = firstItem->history()->peer->id.value,
+					.bareTopicRootId = topic ? topic->rootId().bare : 0,
+					.effectAllowed = false,
+				},
 				callback,
 				{ .scheduleRepeatPeriod = repeatPeriod },
 				date));
@@ -867,13 +874,27 @@ bool AddDeleteSelectedAction(
 	}
 
 	menu->addAction(tr::lng_context_delete_selected(tr::now), [=] {
+		const auto clear = crl::guard(list, [=] { list->cancelSelection(); });
+		if (request.selectedItems.front().ephemeral) {
+			const auto owner = &request.navigation->session().data();
+			auto items = std::vector<not_null<HistoryItem*>>();
+			items.reserve(request.selectedItems.size());
+			for (const auto &selected : request.selectedItems) {
+				if (const auto item = owner->message(selected.msgId)) {
+					items.push_back(item);
+				}
+			}
+			ConfirmDeleteSelectedEphemeral(
+				request.navigation->uiShow(),
+				std::move(items),
+				clear);
+			return;
+		}
 		auto items = ExtractIdsList(request.selectedItems);
 		auto box = Box<DeleteMessagesBox>(
 			&request.navigation->session(),
 			std::move(items));
-		box->setDeleteConfirmedCallback(crl::guard(list, [=] {
-			list->cancelSelection();
-		}));
+		box->setDeleteConfirmedCallback(clear);
 		request.navigation->parentController()->show(std::move(box));
 	}, &st::menuIconDelete);
 	return true;
@@ -930,6 +951,16 @@ bool AddDeleteMessageAction(
 		}
 	});
 	if (item->isUploading()) {
+		if (item->media() && item->media()->allowsEditCaption()) {
+			menu->addAction(
+				tr::lng_context_upload_edit_caption(tr::now),
+				crl::guard(controller, [=] {
+					if (const auto item = owner->message(itemId)) {
+						list->showEditCaptionUploadLayer(item);
+					}
+				}),
+				&st::menuIconEdit);
+		}
 		menu->addAction(
 			tr::lng_context_cancel_upload(tr::now),
 			callback,
@@ -1023,12 +1054,18 @@ bool AddSelectMessageAction(
 	if (request.overSelection && !request.selectedItems.empty()) {
 		return false;
 	} else if (!item
-		|| item->isLocal()
+		|| (item->isLocal() && !item->isEphemeral())
 		|| item->isService()
 		|| list->hasSelectRestriction()) {
 		return false;
 	}
 	const auto owner = &item->history()->owner();
+	if (!request.selectedItems.empty()) {
+		const auto first = owner->message(request.selectedItems.front().msgId);
+		if (first && !first->inSameSelectionGroup(item)) {
+			return false;
+		}
+	}
 	const auto itemId = item->fullId();
 	const auto asGroup = (request.pointState != PointState::GroupPart);
 	menu->addAction(tr::lng_context_select_msg(tr::now), [=] {
@@ -1080,6 +1117,9 @@ void AddMessageActions(
 			request.item);
 	}
 	AddSelectionAction(menu, request, list);
+	if (request.item && request.selectedItems.empty()) {
+		AddEphemeralAboutAction(menu, request.item);
+	}
 	AddRescheduleAction(menu, request, list);
 }
 
@@ -2643,6 +2683,14 @@ void AddEphemeralMessageActions(
 			.confirmStyle = &st::attentionBoxButton,
 		}));
 	}, &st::menuIconDelete);
+}
+
+void AddEphemeralAboutAction(
+		not_null<Ui::PopupMenu*> menu,
+		not_null<HistoryItem*> item) {
+	if (!item->isEphemeral()) {
+		return;
+	}
 	if (!menu->empty()) {
 		menu->addSeparator();
 	}
