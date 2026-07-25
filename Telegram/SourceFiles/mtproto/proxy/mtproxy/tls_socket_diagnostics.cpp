@@ -111,6 +111,22 @@ QString TlsSocket::responseClass() const {
 	return FakeTlsResponseClass(_responsePrefix, _rxAfterClientHello);
 }
 
+QString TlsSocket::clockReferenceName() const {
+	// Which corrections stood behind the time we sent. "none" is the one that
+	// matters: it means the raw system clock went out, and the skew reported
+	// next to it is zero by construction rather than by being right.
+	if (!_clientHelloTimestamp) {
+		return QString();
+	} else if (_clockFromMtproto && _clockFromHttp) {
+		return u"both"_q;
+	} else if (_clockFromMtproto) {
+		return u"mtproto"_q;
+	} else if (_clockFromHttp) {
+		return u"http"_q;
+	}
+	return u"none"_q;
+}
+
 QString TlsSocket::blockToken() const {
 	// Only meaningful for the ambiguous "ClientHello sent, no ServerHello"
 	// stall - other phases have unambiguous reasons of their own. The peer
@@ -326,6 +342,13 @@ void TlsSocket::reportTransportEvent(
 		.sniHash = clientHelloKnown
 			? QString::fromLatin1(domainHash.toHex().left(16))
 			: QString(),
+		.clientHelloTimestamp = _clientHelloTimestamp
+			? std::make_optional(_clientHelloTimestamp)
+			: std::nullopt,
+		.clockReference = clockReferenceName(),
+		.clockSkew = _clientHelloTimestamp
+			? std::make_optional(_clockSkew)
+			: std::nullopt,
 		.parserStage = proxyTransportFailure().parserStage,
 		.closeOrigin = (_closeOrigin == ProxyCloseOrigin::None)
 			? std::optional<ProxyCloseOrigin>()

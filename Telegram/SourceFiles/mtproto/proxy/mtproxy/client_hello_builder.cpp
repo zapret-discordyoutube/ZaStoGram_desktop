@@ -133,6 +133,7 @@ private:
 		void writeBlock(const MTPDtlsBlockPadding &data);
 		void finalize(bytes::const_span key);
 		[[nodiscard]] QByteArray extractDigest() const;
+		[[nodiscard]] TimeId injectedTimestamp() const;
 
 		[[nodiscard]] bool error() const;
 		[[nodiscard]] QByteArray take();
@@ -151,6 +152,7 @@ private:
 		QByteArray _result;
 		const char *_data = nullptr;
 		std::optional<int> _digestPosition;
+		TimeId _injectedTimestamp = 0;
 		bool _error = false;
 
 	};
@@ -497,6 +499,10 @@ QByteArray Generator::Part::extractDigest() const {
 	return _result.mid(*_digestPosition, kClientHelloDigestLength);
 }
 
+TimeId Generator::Part::injectedTimestamp() const {
+	return _injectedTimestamp;
+}
+
 void Generator::Part::writeDigest(bytes::const_span key) {
 	Expects(_digestPosition.has_value());
 
@@ -513,7 +519,11 @@ void Generator::Part::injectTimestamp() {
 		sizeof(int32));
 	auto already = int32();
 	bytes::copy(bytes::object_as_span(&already), storage);
-	already ^= qToLittleEndian(int32(base::unixtime::http_now()));
+	// Kept so the caller can report the value that really went out. Reading
+	// the clock again later returns a different second, and the whole point
+	// of reporting it is to compare it against what the relay accepts.
+	_injectedTimestamp = base::unixtime::http_now();
+	already ^= qToLittleEndian(int32(_injectedTimestamp));
 	bytes::copy(storage, bytes::object_as_span(&already));
 }
 
@@ -535,7 +545,8 @@ Generator::Generator(
 
 ClientHello Generator::take() {
 	auto digest = _result.extractDigest();
-	return { _result.take(), std::move(digest) };
+	const auto timestamp = _result.injectedTimestamp();
+	return { _result.take(), std::move(digest), timestamp };
 }
 
 } // namespace

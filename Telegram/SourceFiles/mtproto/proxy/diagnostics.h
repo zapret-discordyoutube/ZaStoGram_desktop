@@ -154,6 +154,12 @@ struct ProxyDiagnosticsEvent {
 	QString responsePrefixHash;
 	std::optional<int> sniLength;
 	QString sniHash;
+	// The time that went into the hello's digest, and whether any reference
+	// stood behind it. A skew reported without the reference is unreadable:
+	// with no reference it is zero however wrong the machine's clock is.
+	std::optional<TimeId> clientHelloTimestamp;
+	QString clockReference;
+	std::optional<TimeId> clockSkew;
 	QString parserStage;
 	std::optional<ProxyCloseOrigin> closeOrigin;
 	std::optional<crl::time> dnsMs;
@@ -218,6 +224,12 @@ struct ProxyEventReport {
 	QString responsePrefixHash;
 	std::optional<int> sniLength;
 	QString sniHash;
+	// The time that went into the hello's digest, and whether any reference
+	// stood behind it. A skew reported without the reference is unreadable:
+	// with no reference it is zero however wrong the machine's clock is.
+	std::optional<TimeId> clientHelloTimestamp;
+	QString clockReference;
+	std::optional<TimeId> clockSkew;
 	QString parserStage;
 	std::optional<ProxyCloseOrigin> closeOrigin;
 	std::optional<crl::time> dnsMs;

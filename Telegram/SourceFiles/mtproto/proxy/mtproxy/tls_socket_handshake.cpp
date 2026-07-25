@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/openssl_help.h"
+#include "base/unixtime.h"
 #include "mtproto/proxy/mtproxy/client_hello_builder.h"
 #include "mtproto/proxy/mtproxy/client_hello_constants.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
@@ -155,12 +156,35 @@ void TlsSocket::sendClientHello() {
 		logError(888, "Could not generate Client Hello.");
 		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
 	} else {
+		noteClientHelloClock(hello.timestamp);
 		checkClientHelloContract(hello.data);
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
 		writeClientHello(hello.data);
 	}
 }
+
+void TlsSocket::noteClientHelloClock(TimeId timestamp) {
+	// Snapshot, not a computation done later: an MTProto time update clears
+	// the HTTP correction as a side effect, so the references present when
+	// the hello was built may be gone a moment after.
+	const auto local = TimeId(time(nullptr));
+	const auto corrected = base::unixtime::now();
+	_clientHelloTimestamp = timestamp;
+	_clockFromMtproto = (corrected != local);
+	_clockFromHttp = base::unixtime::http_valid();
+	_clockSkew = timestamp ? (local - timestamp) : 0;
+	if (_clockFromMtproto || _clockFromHttp) {
+		return;
+	}
+	// Warn on the absence of a reference, never on the size of the skew:
+	// with no reference the skew is zero by construction and says nothing.
+	reportTransportEvent(
+		ProxyDiagnosticsPhase::ClientHelloSent,
+		ProxyDiagnosticsSeverity::Warning,
+		u"mtproxy client hello carries the raw system clock: no time "
+		"reference obtained, and a clock more than three seconds fast is "
+		"refused by the relay"_q);
 
 void TlsSocket::checkClientHelloContract(const QByteArray &hello) {
 	const auto domain = domainFromSecret();
@@ -199,6 +223,10 @@ void TlsSocket::plainDisconnected() {
 	_connectionError = ProxyConnectionError::None;
 	_syntheticPskOffered = false;
 	_clientHelloContract = ClientHelloContractIssue::None;
+	_clientHelloTimestamp = 0;
+	_clockFromMtproto = false;
+	_clockFromHttp = false;
+	_clockSkew = 0;
 	_clientHelloFragmented = false;
 	_clientHelloBytes = 0;
 	_clientHelloWrites = 0;
@@ -368,10 +396,14 @@ void TlsSocket::checkHelloDigest() {
 	_phase = HandshakePhase::ServerHelloOk;
 	_serverHelloAt = crl::now();
 	connectionProgress(_phase);
+	// A verified ServerHello is also a clock measurement: the relay accepted
+	// the time we sent, so it sits inside the window the relay allows. That
+	// closes the "maybe it is our clock" question for this attempt without
+	// any extra request.
 	reportTransportEvent(
 		ProxyDiagnosticsPhase::ServerHelloOk,
 		ProxyDiagnosticsSeverity::Info,
-		u"mtproxy server hello hmac verified"_q);
+		u"mtproxy server hello hmac verified, clock validated by relay"_q);
 	if (_startupCover != StartupCover::Off) {
 		_startupCoverStartedAt = crl::now();
 		_startupCoverFrames = 0;

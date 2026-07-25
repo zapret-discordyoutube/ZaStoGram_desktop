@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/basic_types.h"
 #include "base/bytes.h"
 #include "base/timer.h"
 #include "mtproto/proxy/data.h"
@@ -27,6 +28,11 @@ struct SyntheticPskOffer {
 struct ClientHello {
 	QByteArray data;
 	QByteArray digest;
+	// The time actually mixed into the digest. Relays check it and refuse
+	// anything more than three seconds ahead of their own clock, so this is
+	// the one value worth reporting - re-reading the clock anywhere else
+	// gives a number that has already drifted from the one on the wire.
+	TimeId timestamp = 0;
 };
 
 struct ClientHelloFragmentationPlan {

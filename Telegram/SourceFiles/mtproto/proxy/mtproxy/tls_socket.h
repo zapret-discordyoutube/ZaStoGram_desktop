@@ -105,6 +105,7 @@ private:
 	[[nodiscard]] MtProxy::FailureReason failureReason() const;
 	bool clearSyntheticPskOnFailure(MtProxy::FailureReason reason);
 	[[nodiscard]] crl::time recordPacingDelay();
+	void noteClientHelloClock(TimeId timestamp);
 	void checkClientHelloContract(const QByteArray &hello);
 	void writeClientHello(const QByteArray &data);
 	void writeClientHelloPart(const char *data, int size);
@@ -120,6 +121,7 @@ private:
 		ProxyDiagnosticsSeverity severity,
 		const QString &message);
 	[[nodiscard]] QString responseClass() const;
+	[[nodiscard]] QString clockReferenceName() const;
 	[[nodiscard]] QString blockToken() const;
 	[[nodiscard]] ProxyFailureAttribution failureAttribution() const;
 	[[nodiscard]] ProxyTransportFailure collectTransportFailure() const;
@@ -167,6 +169,17 @@ private:
 	// a secret that is not the relay's.
 	ClientHelloContractIssue _clientHelloContract
 		= ClientHelloContractIssue::None;
+	// The time that went into the digest, and where it came from. A relay
+	// refuses anything more than three seconds ahead of its own clock, and
+	// the client corrects its clock only through channels that bypass the
+	// proxy - so on the very network where a proxy is needed the correction
+	// may never arrive. Without knowing whether a reference existed, a skew
+	// of zero is unreadable: it means either "clock is right" or "we sent the
+	// raw system clock and have no idea".
+	TimeId _clientHelloTimestamp = 0;
+	bool _clockFromMtproto = false;
+	bool _clockFromHttp = false;
+	TimeId _clockSkew = 0;
 	bool _clientHelloFragmented = false;
 	int _clientHelloBytes = 0;
 	int _clientHelloWrites = 0;

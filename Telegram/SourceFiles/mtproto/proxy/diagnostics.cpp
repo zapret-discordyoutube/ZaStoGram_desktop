@@ -705,6 +705,19 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (!safe.sniHash.isEmpty()) {
 		parts.push_back(u"sni_hash=%1"_q.arg(safe.sniHash));
 	}
+	if (safe.clientHelloTimestamp) {
+		parts.push_back(u"ch_timestamp=%1"_q.arg(*safe.clientHelloTimestamp));
+	}
+	if (!safe.clockReference.isEmpty()) {
+		parts.push_back(u"clock_ref=%1"_q.arg(safe.clockReference));
+	}
+	if (safe.clockSkew) {
+		// Signed on purpose: a plus means the machine's clock runs ahead of
+		// our best estimate, and ahead is the direction a relay refuses.
+		parts.push_back(u"clock_skew=%1%2"_q
+			.arg((*safe.clockSkew > 0) ? u"+"_q : QString())
+			.arg(*safe.clockSkew));
+	}
 	if (!safe.parserStage.isEmpty()) {
 		parts.push_back(u"parser_stage=%1"_q.arg(safe.parserStage));
 	}
