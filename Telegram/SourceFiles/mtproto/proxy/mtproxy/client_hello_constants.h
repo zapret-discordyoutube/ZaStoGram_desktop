@@ -24,6 +24,10 @@ constexpr auto kTlsLengthFieldSize = sizeof(uint16);
 // compare against literally.
 constexpr auto kCanonicalClientHelloLength = 517;
 
+// The relay reads the ClientHello into a buffer of this size and then refuses
+// anything that did not fit, so a longer hello is never seen as a client's.
+constexpr auto kMaxRelayClientHelloLength = 4096;
+
 // Two bytes of extension id plus two of extension length.
 constexpr auto kTlsExtensionHeaderLength = 2 * kTlsLengthFieldSize;
 constexpr auto kClientHelloFragmentDelayMin = crl::time(2);

@@ -28,16 +28,14 @@ const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
 constexpr auto kMaxServerHelloLength = 65536;
 
-// An mtproxy answers a ClientHello with a fixed little block: the ServerHello
-// record, a ChangeCipherSpec, and one short application data record - about
-// two hundred bytes in total, and it is not a real handshake, so nothing in
-// it can grow. A real TLS server puts its certificate chain in that first
-// application data record instead, which is kilobytes. When the digest does
-// not match and the answer is that big, we are not talking to the mtproxy at
-// all: it did not recognise the ClientHello as its own and proxied us on to
-// the domain it camouflages as. That is a wrong secret, not a broken relay,
-// and it is worth saying so - "bad Server Hello digest" reads like our bug.
-constexpr auto kMaxMtproxyServerHelloBatch = 1024;
+// The size of the answer does not say who wrote it, so nothing here reads it.
+// A relay fills its first application data record with random bytes sized to
+// the domain it fronts for, so a working relay behind a heavy domain answers
+// in kilobytes and one behind a light domain in a couple of hundred bytes;
+// measured against two live relays, a verified answer of 3381 bytes on one
+// and 196 on the other, against 184 and 196 on their camouflage paths. On the
+// first the camouflage reply is the smaller of the two. Any byte threshold
+// mislabels one of them, so the verdict comes from the hello we sent instead.
 
 } // namespace
 
@@ -157,10 +155,33 @@ void TlsSocket::sendClientHello() {
 		logError(888, "Could not generate Client Hello.");
 		handleError(MtProxy::FailureReason::ProxyProtocolBadResponse);
 	} else {
+		checkClientHelloContract(hello.data);
 		_state = State::WaitingHello;
 		_incoming = hello.digest;
 		writeClientHello(hello.data);
 	}
+}
+
+void TlsSocket::checkClientHelloContract(const QByteArray &hello) {
+	const auto domain = domainFromSecret();
+	_clientHelloContract = CheckClientHelloContract(
+		hello,
+		QByteArray(
+			reinterpret_cast<const char*>(domain.data()),
+			int(domain.size())));
+	if (_clientHelloContract == ClientHelloContractIssue::None) {
+		return;
+	}
+	// Deliberately not fatal. A relay that disagrees with this list still gets
+	// its chance, because a false alarm here would take away a connection that
+	// works; what the check buys is a log line naming the cause at the moment
+	// it is created, instead of an unsigned ServerHello an eternity later.
+	reportTransportEvent(
+		ProxyDiagnosticsPhase::ClientHelloSent,
+		ProxyDiagnosticsSeverity::Warning,
+		u"mtproxy client hello breaks the relay contract: %1 (%2 bytes)"_q
+			.arg(ClientHelloContractIssueSlug(_clientHelloContract))
+			.arg(int(hello.size())));
 }
 
 void TlsSocket::plainDisconnected() {
@@ -177,6 +198,7 @@ void TlsSocket::plainDisconnected() {
 	_failureReason = MtProxy::FailureReason::None;
 	_connectionError = ProxyConnectionError::None;
 	_syntheticPskOffered = false;
+	_clientHelloContract = ClientHelloContractIssue::None;
 	_clientHelloFragmented = false;
 	_clientHelloBytes = 0;
 	_clientHelloWrites = 0;
@@ -314,12 +336,19 @@ void TlsSocket::checkHelloDigest() {
 	bytes::set_with_const(digest, bytes::type(0));
 	const auto check = openssl::HmacSha256(keyFromSecret(), fulldata);
 	if (bytes::compare(digestCopy, check) != 0) {
-		const auto foreign = (_serverHelloLength
-			> kMaxMtproxyServerHelloBatch);
-		logError(888, foreign
-			? "Server Hello came from a real TLS server, not the mtproxy."
-			: "Bad Server Hello digest.");
-		handleError(foreign
+		// Two readings end here, and nothing in the answer separates them - the
+		// relay pads its reply to the camouflage domain, so its size measures
+		// that domain and not who wrote it. What does separate them is the
+		// hello we sent: one that breaks the relay's contract could not have
+		// been recognised, whatever secret it carried, so the mismatch is ours
+		// and not the secret's.
+		const auto ours = (_clientHelloContract
+			!= ClientHelloContractIssue::None);
+		logError(888, ours
+			? "Server Hello unsigned - our ClientHello broke the relay "
+				"contract, so it was never read as a client's."
+			: "Server Hello unsigned - the secret is not this relay's.");
+		handleError(ours
 			? MtProxy::FailureReason::ServerHelloForeignTls
 			: MtProxy::FailureReason::ServerHelloHmacMismatch);
 		return;

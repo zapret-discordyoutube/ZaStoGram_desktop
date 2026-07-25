@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/openssl_help.h"
+#include "mtproto/proxy/mtproxy/client_hello_constants.h"
 
 #include <algorithm>
 #include <optional>
@@ -111,6 +112,31 @@ namespace {
 		}
 	}
 	return result;
+}
+
+[[nodiscard]] QByteArray SniHost(const QByteArray &value) {
+	const auto listLength = ClientHelloRead16(value, 0);
+	if (!listLength) {
+		return {};
+	}
+	auto position = 2;
+	const auto end = position + *listLength;
+	if (end > value.size()) {
+		return {};
+	}
+	while (position + 3 <= end) {
+		const auto nameType = uchar(value[position]);
+		const auto nameLength = ClientHelloRead16(value, position + 1);
+		const auto nameOffset = position + 3;
+		if (!nameLength || nameOffset + *nameLength > end) {
+			return {};
+		}
+		if (nameType == 0 && *nameLength > 0) {
+			return value.mid(nameOffset, *nameLength);
+		}
+		position = nameOffset + *nameLength;
+	}
+	return {};
 }
 
 [[nodiscard]] bool HasSniHost(const QByteArray &value) {
@@ -269,6 +295,7 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 		result.extensions.push_back(*extension);
 		if (*extension == 0x0000) {
 			result.hasSni = HasSniHost(value);
+			result.sniHost = SniHost(value);
 		} else if (*extension == 0x0010) {
 			result.firstAlpn = FirstAlpn(value);
 		} else if (*extension == 0x002B) {
@@ -283,6 +310,129 @@ std::optional<ClientHelloFacts> ComputeClientHelloFacts(
 		? result.legacyVersion
 		: *std::max_element(cleanVersions.begin(), cleanVersions.end());
 	return result;
+}
+
+ClientHelloContractIssue CheckClientHelloContract(
+		const QByteArray &hello,
+		const QByteArray &domainFromSecret) {
+	const auto size = int(hello.size());
+	if (size < 9
+		|| uchar(hello[0]) != 0x16
+		|| uchar(hello[1]) != 0x03
+		|| uchar(hello[2]) != 0x01
+		|| uchar(hello[5]) != 0x01) {
+		return ClientHelloContractIssue::BadRecordHeader;
+	} else if (size < kCanonicalClientHelloLength) {
+		// The relay only enters its fake TLS branch when the high byte of the
+		// record length is at least two, so a shorter hello is not rejected -
+		// it is never read as a client's in the first place.
+		return ClientHelloContractIssue::TooShort;
+	} else if (size > kMaxRelayClientHelloLength) {
+		return ClientHelloContractIssue::TooLong;
+	}
+	const auto recordLength = ClientHelloRead16(hello, 3);
+	const auto handshakeLength = ClientHelloRead24(hello, 6);
+	if (!recordLength
+		|| !handshakeLength
+		|| *recordLength != size - 5
+		|| *handshakeLength != size - 9) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+	const auto facts = ComputeClientHelloFacts(hello);
+	if (!facts) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+
+	// Nested lengths that do not add up are as fatal as a wrong length in the
+	// header, and nothing else in the tree catches them: the fact parser
+	// leaves its loop as soon as fewer than four bytes remain, so a template
+	// whose extensions stop one to three bytes short of the block passes it
+	// without a word. Walk the fixed fields to the extension block, require
+	// the block to end where the packet does, and then walk the extensions
+	// themselves and require the walk to land on that end exactly.
+	auto position = 43 + 1 + int(uchar(hello[43]));
+	const auto cipherSuitesLength = ClientHelloRead16(hello, position);
+	if (!cipherSuitesLength) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+	position += 2 + *cipherSuitesLength;
+	if (position >= size) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+	position += 1 + int(uchar(hello[position]));
+	const auto extensionsLength = ClientHelloRead16(hello, position);
+	if (!extensionsLength || position + 2 + *extensionsLength != size) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+	position += 2;
+	while (position != size) {
+		if (position + 4 > size) {
+			return ClientHelloContractIssue::InconsistentLength;
+		}
+		const auto length = ClientHelloRead16(hello, position + 2);
+		if (!length) {
+			return ClientHelloContractIssue::InconsistentLength;
+		}
+		position += 4 + *length;
+		if (position > size) {
+			return ClientHelloContractIssue::InconsistentLength;
+		}
+	}
+	const auto extensionsEnd = position + 2 + *extensionsLength;
+	position += 2;
+	while (position + 4 <= extensionsEnd) {
+		const auto length = ClientHelloRead16(hello, position + 2);
+		if (!length) {
+			return ClientHelloContractIssue::InconsistentLength;
+		}
+		position += 4 + *length;
+	}
+	if (position != extensionsEnd) {
+		return ClientHelloContractIssue::InconsistentLength;
+	}
+
+	// GREASE is recognised by shape, not by a table of values: both bytes must
+	// have 0x0A in the low nibble. A placeholder of any other shape is not
+	// skipped - it takes the place of the first real suite and fails the check
+	// below, which is exactly what the relay does with it.
+	auto first = std::optional<int>();
+	for (const auto suite : facts->cipherSuites) {
+		if (((suite & 0x0F) == 0x0A) && (((suite >> 8) & 0x0F) == 0x0A)) {
+			continue;
+		}
+		first = suite;
+		break;
+	}
+	if (!first
+		|| ((*first >> 8) != 0x13)
+		|| ((*first & 0xFF) < 0x01)
+		|| ((*first & 0xFF) > 0x03)) {
+		return ClientHelloContractIssue::FirstCipherNotTls13;
+	}
+
+	if (!facts->hasSni || facts->sniHost.isEmpty()) {
+		return ClientHelloContractIssue::SniMissing;
+	} else if (facts->sniHost != domainFromSecret) {
+		return ClientHelloContractIssue::SniMismatch;
+	}
+	return ClientHelloContractIssue::None;
+}
+
+QString ClientHelloContractIssueSlug(ClientHelloContractIssue issue) {
+	switch (issue) {
+	case ClientHelloContractIssue::None: return QString();
+	case ClientHelloContractIssue::BadRecordHeader:
+		return u"bad_record_header"_q;
+	case ClientHelloContractIssue::TooShort: return u"under_canonical_length"_q;
+	case ClientHelloContractIssue::TooLong: return u"over_relay_read_limit"_q;
+	case ClientHelloContractIssue::InconsistentLength:
+		return u"declared_lengths_disagree"_q;
+	case ClientHelloContractIssue::FirstCipherNotTls13:
+		return u"first_cipher_not_tls13"_q;
+	case ClientHelloContractIssue::SniMissing: return u"sni_missing"_q;
+	case ClientHelloContractIssue::SniMismatch: return u"sni_not_from_secret"_q;
+	}
+	return u"unknown"_q;
 }
 
 QString ComputeClientHelloJa4(const ClientHelloFacts &facts) {

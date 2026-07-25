@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "mtproto/proxy/mtproxy/client_hello_facts.h"
 #include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/proxy/mtproxy/tls_socket_transport.h"
 #include "mtproto/proxy/data.h"
@@ -104,6 +105,7 @@ private:
 	[[nodiscard]] MtProxy::FailureReason failureReason() const;
 	bool clearSyntheticPskOnFailure(MtProxy::FailureReason reason);
 	[[nodiscard]] crl::time recordPacingDelay();
+	void checkClientHelloContract(const QByteArray &hello);
 	void writeClientHello(const QByteArray &data);
 	void writeClientHelloPart(const char *data, int size);
 	void writeClientHelloTail();
@@ -158,6 +160,13 @@ private:
 	int _outgoingOffset = 0;
 	bool _clientPrefixSent = false;
 	bool _syntheticPskOffered = false;
+	// Whether the hello we sent satisfies everything the relay checks before
+	// accepting one. A relay never says no - it hands a hello it does not
+	// recognise to the site it fronts for - so this verdict is what tells an
+	// unsigned ServerHello caused by our own template apart from one caused by
+	// a secret that is not the relay's.
+	ClientHelloContractIssue _clientHelloContract
+		= ClientHelloContractIssue::None;
 	bool _clientHelloFragmented = false;
 	int _clientHelloBytes = 0;
 	int _clientHelloWrites = 0;
