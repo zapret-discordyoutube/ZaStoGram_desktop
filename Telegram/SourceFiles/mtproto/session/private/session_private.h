@@ -22,6 +22,8 @@ namespace MTP {
 
 class Instance;
 class RuntimeEnvironment;
+enum class ProxyDiagnosticsPhase;
+enum class ProxyDiagnosticsSeverity;
 
 namespace details {
 
