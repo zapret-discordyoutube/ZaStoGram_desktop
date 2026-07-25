@@ -67,7 +67,16 @@ def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
         profile_body = block_after(rules_body, marker)
         assert "P();" in profile_body
     assert "ShouldPadBeforeSyntheticPsk(profile)" in prepare_body
-    assert "_padBeforeSyntheticPsk && length < 513" in padding_body
+    # The flag decides whether the padding goes in front of a synthetic PSK,
+    # never whether the hello is padded at all: without the padding the short
+    # profiles go out well below the canonical length and relays proxy them
+    # on to the camouflage domain instead of answering.
+    assert "if (!psk || _padBeforeSyntheticPsk) {" in padding_body
+    assert "writeCanonicalPadding();" in padding_body
+    canonical_body = function_body(
+        builder,
+        "void Generator::Part::writeCanonicalPadding()")
+    assert "kCanonicalClientHelloLength - header - length" in canonical_body
     assert "nullptr" in permutation_body
 
 

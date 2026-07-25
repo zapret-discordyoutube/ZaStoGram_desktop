@@ -138,6 +138,7 @@ private:
 		[[nodiscard]] QByteArray take();
 
 	private:
+		void writeCanonicalPadding();
 		void writeSyntheticPskExtension();
 		void writeDigest(bytes::const_span key);
 		void injectTimestamp();
@@ -366,13 +367,42 @@ void Generator::Part::writeBlock(const MTPDtlsBlockE &data) {
 }
 
 void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data) {
-	const auto length = int(_result.size());
-	if (_padBeforeSyntheticPsk && length < 513) {
-		const auto zero = MTP_tlsBlockZero(MTP_int(513 - length));
-		writeBlock(MTP_tlsBlockString(MTP_bytes("\x00\x15"_q)));
-		writeBlock(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(1, zero)));
+	// A synthetic PSK has to be the last extension in the hello, so when one
+	// is coming the padding either goes in front of it or not at all - that
+	// is what this flag was for. It was also the only thing that let the
+	// padding run, so with no PSK offered, which is every ordinary mtproxy
+	// connection, no profile was ever padded. See writeCanonicalPadding()
+	// for what that cost.
+	const auto psk = (_pskOffer && _pskOffer->has_value());
+	if (!psk || _padBeforeSyntheticPsk) {
+		writeCanonicalPadding();
 	}
 	writeSyntheticPskExtension();
+}
+
+void Generator::Part::writeCanonicalPadding() {
+	// Fake TLS is not a negotiation. The relay recognises its own clients by
+	// the shape of this hello, and every Telegram client sends the same one:
+	// exactly kCanonicalClientHelloLength bytes, which puts 0x0200 in the
+	// record length field. Widely deployed relays match that prefix
+	// literally, so a hello of any other size is not rejected - it is not
+	// recognised at all, and the connection is quietly proxied on to the
+	// domain the relay camouflages as. What comes back is that domain's real
+	// certificate, and our digest check then reports a mismatch that reads
+	// like the relay is broken when the hello never reached it.
+	const auto length = int(_result.size());
+	const auto header = int(kTlsExtensionHeaderLength);
+	if (length + header >= kCanonicalClientHelloLength) {
+		// A template longer than the canonical hello cannot be brought back
+		// to it by adding bytes. Those profiles keep their own length and
+		// only work with relays that verify the digest instead of matching
+		// the prefix.
+		return;
+	}
+	const auto zero = MTP_tlsBlockZero(
+		MTP_int(kCanonicalClientHelloLength - header - length));
+	writeBlock(MTP_tlsBlockString(MTP_bytes("\x00\x15"_q)));
+	writeBlock(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(1, zero)));
 }
 
 void Generator::Part::writeSyntheticPskExtension() {

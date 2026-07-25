@@ -17,6 +17,15 @@ constexpr auto kClientHelloGreaseCount = 8;
 constexpr auto kClientHelloLimit = 4096;
 constexpr auto kClientHelloDigestLength = 32;
 constexpr auto kTlsLengthFieldSize = sizeof(uint16);
+
+// The size of the fake TLS ClientHello every Telegram client sends. It is not
+// a free choice: relays identify their own clients by this shape, and the
+// length lands in the record header as 0x0200, which the common relay builds
+// compare against literally.
+constexpr auto kCanonicalClientHelloLength = 517;
+
+// Two bytes of extension id plus two of extension length.
+constexpr auto kTlsExtensionHeaderLength = 2 * kTlsLengthFieldSize;
 constexpr auto kClientHelloFragmentDelayMin = crl::time(2);
 constexpr auto kClientHelloFragmentDelayMax = crl::time(7);
 
