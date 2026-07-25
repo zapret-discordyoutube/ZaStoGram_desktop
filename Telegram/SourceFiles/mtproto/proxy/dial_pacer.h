@@ -30,7 +30,10 @@ namespace details {
 // A lease is taken when a connection is created and lives until the attempt
 // either proves the relay or dies, so the limit counts unproven handshakes
 // and not established connections: a steady state of many live sessions is
-// fine, only the burst is spread out.
+// fine, only the burst is spread out. A dial that would exceed the limit
+// waits for a slot to come back rather than for a fixed spacing, which turns
+// a batch of sessions into a ramp: each one that Telegram answers through
+// hands its slot to the next immediately.
 //
 // A run of attempts that never proved anything also stretches the spacing,
 // which is the only thing standing between a blackholed proxy and every
@@ -55,17 +58,28 @@ public:
 	// The attempt is over without having proved anything.
 	void release();
 
+	// The attempt is being dropped for a reason of ours - it lost a route
+	// race, or the proxy was switched under it. The slot comes back, but the
+	// proxy did nothing wrong and is not moved towards the failure spacing.
+	void cancel();
+
 private:
 	friend ProxyDialLease ReserveProxyDial(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy);
 
-	ProxyDialLease(QString key, crl::time delay);
+	ProxyDialLease(QString key, crl::time delay, crl::time until);
 
-	void finish(bool proven);
+	enum class Verdict {
+		Proven,
+		Failed,
+		Cancelled,
+	};
+	void finish(Verdict verdict);
 
 	QString _key;
 	crl::time _delay = 0;
+	crl::time _until = 0;
 
 };
 

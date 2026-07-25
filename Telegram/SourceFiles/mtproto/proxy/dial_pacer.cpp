@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 #include <map>
 #include <utility>
+#include <vector>
 
 namespace MTP::details {
 namespace {
@@ -23,10 +24,19 @@ namespace {
 // everything above that is accepted on TCP and then never replied to.
 constexpr auto kDialsInFlight = 2;
 
-// Spacing between two dials that do not fit into the in-flight budget. A
-// full fake-TLS handshake needs about a second, so a quarter of that keeps
-// the ramp short while still looking like separate clients to the proxy.
+// Spacing between two dials that do fit into the in-flight budget. A full
+// fake-TLS handshake needs about a second, so a quarter of that keeps the
+// ramp short while still looking like separate clients to the proxy.
 constexpr auto kDialSpacing = crl::time(250);
+
+// How long an unproven dial is assumed to occupy a slot at the proxy. The
+// slot is normally handed back the moment Telegram answers through the
+// socket, which on a healthy relay happens in about a second; this is only
+// the fallback for an attempt that never gets there, and it matches the
+// deadline the fake TLS handshake itself runs on. It doubles as the leak
+// guard: an attempt older than this stops being counted whatever happened
+// to its lease.
+constexpr auto kDialHandshakeBudget = crl::time(5000);
 
 // A couple of misses can happen to a healthy proxy (a stale route, a
 // migrating DC), so the spacing only starts growing after them.
@@ -39,17 +49,18 @@ constexpr auto kFailureSpacingMax = crl::time(30 * 1000);
 // eight seconds forever.
 constexpr auto kMaxQueueDelay = crl::time(120 * 1000);
 
-// The in-flight overflow component stays small: it only exists to survive a
-// lease that was never released because its owner died oddly.
-constexpr auto kMaxInFlightDelay = crl::time(8000);
-
 // A proxy is not punished for a bad hour once it has been left alone.
 constexpr auto kFailureMemory = crl::time(5 * 60 * 1000);
 
 constexpr auto kMinDialJitter = crl::time(150);
 
+// The jitter is drawn outside the lock, before the spacing it scales is
+// known, so it is drawn as a fraction of it.
+constexpr auto kJitterFractionBase = 1000;
+
 struct DialState {
-	int inFlight = 0;
+	// When each unproven dial is expected to release its slot, ascending.
+	std::vector<crl::time> inFlightUntil;
 	int failures = 0;
 	crl::time nextFreeAt = 0;
 	crl::time lastFailureAt = 0;
@@ -74,7 +85,7 @@ struct DialState {
 }
 
 [[nodiscard]] bool Forgettable(const DialState &state, crl::time now) {
-	return !state.inFlight
+	return state.inFlightUntil.empty()
 		&& state.nextFreeAt <= now
 		&& (!state.failures
 			|| (now - state.lastFailureAt >= kFailureMemory));
@@ -82,27 +93,30 @@ struct DialState {
 
 } // namespace
 
-ProxyDialLease::ProxyDialLease(QString key, crl::time delay)
+ProxyDialLease::ProxyDialLease(QString key, crl::time delay, crl::time until)
 : _key(std::move(key))
-, _delay(delay) {
+, _delay(delay)
+, _until(until) {
 }
 
 ProxyDialLease::ProxyDialLease(ProxyDialLease &&other) noexcept
 : _key(std::exchange(other._key, QString()))
-, _delay(std::exchange(other._delay, crl::time(0))) {
+, _delay(std::exchange(other._delay, crl::time(0)))
+, _until(std::exchange(other._until, crl::time(0))) {
 }
 
 ProxyDialLease &ProxyDialLease::operator=(ProxyDialLease &&other) noexcept {
 	if (this != &other) {
-		release();
+		finish(Verdict::Failed);
 		_key = std::exchange(other._key, QString());
 		_delay = std::exchange(other._delay, crl::time(0));
+		_until = std::exchange(other._until, crl::time(0));
 	}
 	return *this;
 }
 
 ProxyDialLease::~ProxyDialLease() {
-	release();
+	finish(Verdict::Failed);
 }
 
 crl::time ProxyDialLease::delay() const {
@@ -110,18 +124,23 @@ crl::time ProxyDialLease::delay() const {
 }
 
 void ProxyDialLease::proven() {
-	finish(true);
+	finish(Verdict::Proven);
 }
 
 void ProxyDialLease::release() {
-	finish(false);
+	finish(Verdict::Failed);
 }
 
-void ProxyDialLease::finish(bool proven) {
+void ProxyDialLease::cancel() {
+	finish(Verdict::Cancelled);
+}
+
+void ProxyDialLease::finish(Verdict verdict) {
 	const auto key = std::exchange(_key, QString());
 	if (key.isEmpty()) {
 		return;
 	}
+	const auto until = std::exchange(_until, crl::time(0));
 	_delay = 0;
 
 	const auto now = crl::now();
@@ -132,14 +151,16 @@ void ProxyDialLease::finish(bool proven) {
 		return;
 	}
 	auto &state = i->second;
-	if (state.inFlight > 0) {
-		--state.inFlight;
+	auto &inFlight = state.inFlightUntil;
+	const auto j = std::lower_bound(begin(inFlight), end(inFlight), until);
+	if (j != end(inFlight) && *j == until) {
+		inFlight.erase(j);
 	}
-	if (proven) {
+	if (verdict == Verdict::Proven) {
 		state.failures = 0;
 		state.lastFailureAt = 0;
 		state.nextFreeAt = std::min(state.nextFreeAt, now + kDialSpacing);
-	} else {
+	} else if (verdict == Verdict::Failed) {
 		++state.failures;
 		state.lastFailureAt = now;
 	}
@@ -159,8 +180,10 @@ ProxyDialLease ReserveProxyDial(
 		return ProxyDialLease();
 	}
 	const auto now = runtime->async().now();
+	const auto jitterFraction = runtime->async().randomIndex(
+		kJitterFractionBase);
 	auto at = now;
-	auto spacing = kDialSpacing;
+	auto until = crl::time(0);
 	{
 		QMutexLocker lock(&DialMutex());
 		auto &state = DialStates()[key];
@@ -169,31 +192,43 @@ ProxyDialLease ReserveProxyDial(
 			state.failures = 0;
 			state.lastFailureAt = 0;
 		}
-		spacing = SpacingFor(state.failures);
+		auto &inFlight = state.inFlightUntil;
+		inFlight.erase(
+			begin(inFlight),
+			std::upper_bound(begin(inFlight), end(inFlight), now));
+		const auto spacing = SpacingFor(state.failures);
 		at = std::max(now, state.nextFreeAt);
-		if (state.inFlight >= kDialsInFlight) {
-			const auto over = state.inFlight - kDialsInFlight + 1;
-			at = std::max(at, now + std::min(
-				kMaxInFlightDelay,
-				over * kDialSpacing));
+		if (int(inFlight.size()) >= kDialsInFlight) {
+			// The proxy answers kDialsInFlight handshakes at a time and
+			// swallows the rest, so a dial that would be one too many waits
+			// for a slot instead of being sent into the void. Slots come back
+			// as soon as Telegram answers through them, so a batch of
+			// sessions becomes a ramp of successes and not a wave of
+			// handshakes that time out together.
+			at = std::max(
+				at,
+				inFlight[int(inFlight.size()) - kDialsInFlight]);
 		}
 		at = std::min(at, now + kMaxQueueDelay);
+		if (at > now) {
+			// Sessions lose their connect budget together and re-reserve in
+			// the same millisecond, so the tail of a queue deeper than
+			// kMaxQueueDelay is handed the same clamped slot over and over.
+			// A fixed jitter is too small to separate those once the spacing
+			// has grown, and they reach the proxy as the burst this exists to
+			// prevent. Half a spacing keeps the queued order (two neighbours
+			// stay at least half a spacing apart) while spreading everything
+			// that shares a slot.
+			const auto jitter = std::max(kMinDialJitter, spacing / 2);
+			at += (jitter * jitterFraction) / kJitterFractionBase;
+		}
 		state.nextFreeAt = at + spacing;
-		++state.inFlight;
+		until = at + kDialHandshakeBudget;
+		inFlight.insert(
+			std::upper_bound(begin(inFlight), end(inFlight), until),
+			until);
 	}
-	auto delay = at - now;
-	if (delay > 0) {
-		// Sessions lose their connect budget together and re-reserve in the
-		// same millisecond, so the tail of a queue deeper than kMaxQueueDelay
-		// is handed the same clamped slot over and over. A fixed jitter is
-		// too small to separate those once the spacing has grown, and they
-		// reach the proxy as the burst this exists to prevent. Half a spacing
-		// keeps the queued order (two neighbours stay at least half a spacing
-		// apart) while spreading everything that shares a slot.
-		const auto jitter = std::max(kMinDialJitter, spacing / 2);
-		delay += runtime->async().randomIndex(int(jitter) + 1);
-	}
-	return ProxyDialLease(std::move(key), delay);
+	return ProxyDialLease(std::move(key), at - now, until);
 }
 
 } // namespace MTP::details

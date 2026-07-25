@@ -194,6 +194,11 @@ void SessionTransport::destroyAllConnections(ProxyCloseOrigin) {
 
 void SessionTransport::clearTestConnections() {
 	for (auto &connection : _state.testConnections) {
+		// Whatever brings us here - a route race that someone else won, a
+		// proxy switch, a restart - these connections are dropped by us and
+		// not by the proxy. The one that really failed was already removed
+		// through removeTestConnection(), where its lease counts as a miss.
+		connection.mtproxyDial.cancel();
 		connection.data.reset();
 	}
 	_state.testConnections.clear();
@@ -227,7 +232,13 @@ void SessionTransport::armWaitForConnectedTimer() {
 		}
 		accumulate_max(wait, minWait);
 	}
-	if (!_timing.waitForConnectedTimer.isActive()) {
+	// Connections are appended one after another, and the one that got the
+	// long pacing delay is rarely the first. Leaving the timer that the first
+	// one armed in place kills the queued attempt before it dials, which is
+	// exactly the wait the pacer was granting it. Never shorten the timer,
+	// only stretch it to the budget the widest attempt now needs.
+	if (!_timing.waitForConnectedTimer.isActive()
+		|| (wait > _timing.waitForConnectedArmed)) {
 		_timing.waitForConnectedArmed = wait;
 		_timing.waitForConnectedTimer.callOnce(wait);
 	}
