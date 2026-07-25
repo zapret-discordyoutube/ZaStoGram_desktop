@@ -715,6 +715,12 @@ void SessionTransport::confirmBestConnection() {
 	DEBUG_LOG(("MTP Info: can't connect through better, using %1."
 		).arg(i->data->tag()));
 
+	// This one is connected - it just was not the route we hoped for. Its
+	// lease used to die unclaimed here, which the pacer reads as a miss and
+	// answers with the failure spacing, on a proxy that had in fact just
+	// carried a Telegram reply.
+	i->mtproxyDial.proven();
+
 	_state.mtproxyAttempt = i->mtproxyAttempt;
 	_state.mtproxyAttemptStartedAt = i->mtproxyAttemptStartedAt;
 	_state.mtproxyUse = i->mtproxyUse;

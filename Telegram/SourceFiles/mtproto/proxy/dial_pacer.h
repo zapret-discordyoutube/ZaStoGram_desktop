@@ -22,18 +22,19 @@ namespace details {
 //
 // Every session dials on its own, so a cold start or a proxy switch makes
 // every session of every account open its socket in the same millisecond.
-// A public mtproxy answers the first couple of handshakes and silently
-// drops the rest, which the client then reads as
-// client_hello_sent_no_server_hello or connected_no_mtproto_data across the
-// whole batch.
+// Some public mtproxies take that batch in stride; others answer the first
+// two or three handshakes and silently drop the rest, which the client then
+// reads as client_hello_sent_no_server_hello or connected_no_mtproto_data
+// across everything that did not get in.
+//
+// Which kind a relay is cannot be known before dialing it, so the limit is
+// not a constant: it starts at what a client asks for anyway and is raised
+// by proof, never lowered below concurrency the relay has already answered.
 //
 // A lease is taken when a connection is created and lives until the attempt
 // either proves the relay or dies, so the limit counts unproven handshakes
 // and not established connections: a steady state of many live sessions is
-// fine, only the burst is spread out. A dial that would exceed the limit
-// waits for a slot to come back rather than for a fixed spacing, which turns
-// a batch of sessions into a ramp: each one that Telegram answers through
-// hands its slot to the next immediately.
+// fine, only the burst is spread out.
 //
 // A run of attempts that never proved anything also stretches the spacing,
 // which is the only thing standing between a blackholed proxy and every
@@ -68,7 +69,7 @@ private:
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy);
 
-	ProxyDialLease(QString key, crl::time delay, crl::time until);
+	ProxyDialLease(QString key, crl::time delay);
 
 	enum class Verdict {
 		Proven,
@@ -79,7 +80,6 @@ private:
 
 	QString _key;
 	crl::time _delay = 0;
-	crl::time _until = 0;
 
 };
 
