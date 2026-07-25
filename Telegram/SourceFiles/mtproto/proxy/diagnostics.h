@@ -236,7 +236,7 @@ struct ProxyEventReport {
 	const QString &host,
 	int port);
 [[nodiscard]] QString ProxyDiagnosticsTransportName(
-	ProxyData::Type proxyType,
+	const ProxyData &proxy,
 	ProxyTransport transport);
 [[nodiscard]] QString ProxyDiagnosticsTlsProfileName(
 	ProxyTlsProfile profile);

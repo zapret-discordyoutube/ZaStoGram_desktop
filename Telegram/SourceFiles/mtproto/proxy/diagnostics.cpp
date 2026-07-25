@@ -511,14 +511,22 @@ QString ProxyDiagnosticsEndpointText(const QString &host, int port) {
 }
 
 QString ProxyDiagnosticsTransportName(
-		ProxyData::Type proxyType,
+		const ProxyData &proxy,
 		ProxyTransport transport) {
 	if (transport == ProxyTransport::Wss) {
 		return u"WSS"_q;
 	}
-	switch (proxyType) {
-	case ProxyData::Type::Mtproto:
-		return u"MtproxyFakeTlsTcp"_q;
+	switch (proxy.type) {
+	case ProxyData::Type::Mtproto: {
+		// Only an "ee" secret carries a fake TLS handshake. A "dd" secret,
+		// and the bare sixteen byte form, are the padded obfuscated stream:
+		// no ClientHello is ever sent on them. Naming every mtproxy FakeTls
+		// made the log describe a handshake that never happened.
+		const auto secret = proxy.secretFromMtprotoPassword();
+		return (secret.size() >= 21 && secret[0] == bytes::type(0xEE))
+			? u"MtproxyFakeTlsTcp"_q
+			: u"MtproxyTcp"_q;
+	}
 	case ProxyData::Type::Socks5:
 		return u"SocksTcp"_q;
 	case ProxyData::Type::Http:
@@ -594,7 +602,7 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	const auto transport = (!safe.transport.isEmpty() || safe.traceSchema)
 		? safe.transport
 		: ProxyDiagnosticsTransportName(
-			safe.proxy.type,
+			safe.proxy,
 			ProxyTransport::Tcp);
 	if (!transport.isEmpty()) {
 		parts.push_back(u"transport=%1"_q.arg(transport));

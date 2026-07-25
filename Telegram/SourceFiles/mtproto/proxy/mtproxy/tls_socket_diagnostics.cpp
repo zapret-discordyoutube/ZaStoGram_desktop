@@ -255,7 +255,7 @@ void TlsSocket::reportTransportEvent(
 		.severity = severity,
 		.proxy = _proxy,
 		.transport = ProxyDiagnosticsTransportName(
-			ProxyData::Type::Mtproto,
+			_proxy,
 			_stealth.transport),
 		.connectionId = _debugId,
 		.message = message,

@@ -135,7 +135,7 @@ void SetProxyCheckProgress(
 		.severity = severity,
 		.proxy = proxy,
 		.transport = ProxyDiagnosticsTransportName(
-			proxy.type,
+			proxy,
 			state->mtproxyPlan.stealth.transport),
 		.dc = QString::number(dcId),
 		.connectionId = connection ? connection->debugId() : QString(),

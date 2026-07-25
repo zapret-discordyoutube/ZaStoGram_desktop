@@ -288,7 +288,7 @@ void ReportRouteEvent(
 			: ProxyDiagnosticsSeverity::Info,
 		.proxy = proxy,
 		.transport = ProxyDiagnosticsTransportName(
-			proxy.type,
+			proxy,
 			ProxyTransport::Tcp),
 		.message = routeRaceLost
 			? u"mtproxy route race lost"_q

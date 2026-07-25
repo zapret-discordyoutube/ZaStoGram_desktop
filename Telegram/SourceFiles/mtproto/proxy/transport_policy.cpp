@@ -99,7 +99,7 @@ void LogTransportFallback(
 		.phase = ProxyDiagnosticsPhase::TransportFallbackApplied,
 		.severity = ProxyDiagnosticsSeverity::Warning,
 		.proxy = proxy,
-		.transport = ProxyDiagnosticsTransportName(proxy.type, effective),
+		.transport = ProxyDiagnosticsTransportName(proxy, effective),
 		.message = u"proxy transport fallback applied"_q,
 		.canonical = ProxyDiagnosticsEndpointText(
 			proxy.originalHost.isEmpty() ? proxy.host : proxy.originalHost,
@@ -153,7 +153,14 @@ ProxyTransport EffectiveProxyTransport(
 	const auto effective = ProxyWssAllowed(runtime, proxy, settings)
 		? saved
 		: ProxyTransport::Tcp;
-	if (saved == ProxyTransport::Wss && effective != saved) {
+	// A socks5 relay is the only one that can carry WSS at all, so for every
+	// other proxy type this is not a fallback that happened - it is a
+	// transport that was never on the table. Warning about it on every
+	// switch to every mtproxy made the log read like the connection had
+	// degraded when nothing had.
+	if (saved == ProxyTransport::Wss
+		&& effective != saved
+		&& proxy.type == ProxyData::Type::Socks5) {
 		LogTransportFallback(
 			runtime,
 			proxy,
