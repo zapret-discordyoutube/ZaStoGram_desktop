@@ -76,7 +76,10 @@ def test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk():
     canonical_body = function_body(
         builder,
         "void Generator::Part::writeCanonicalPadding()")
-    assert "kCanonicalClientHelloLength - header - length" in canonical_body
+    # No length may come out under the floor, including the few just below
+    # it where the extension header alone is enough to clear it.
+    assert "length >= kCanonicalClientHelloLength" in canonical_body
+    assert "const auto zeros = std::max(" in canonical_body
     assert "nullptr" in permutation_body
 
 

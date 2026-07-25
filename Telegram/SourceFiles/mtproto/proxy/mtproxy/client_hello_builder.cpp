@@ -381,28 +381,37 @@ void Generator::Part::writeBlock(const MTPDtlsBlockPadding &data) {
 }
 
 void Generator::Part::writeCanonicalPadding() {
-	// Fake TLS is not a negotiation. The relay recognises its own clients by
-	// the shape of this hello, and every Telegram client sends the same one:
-	// exactly kCanonicalClientHelloLength bytes, which puts 0x0200 in the
-	// record length field. Widely deployed relays match that prefix
-	// literally, so a hello of any other size is not rejected - it is not
-	// recognised at all, and the connection is quietly proxied on to the
-	// domain the relay camouflages as. What comes back is that domain's real
-	// certificate, and our digest check then reports a mismatch that reads
-	// like the relay is broken when the hello never reached it.
+	// Fake TLS is not a negotiation. kCanonicalClientHelloLength is a floor
+	// the relay enforces before it looks at anything else: the reference
+	// implementation enters its fake TLS branch only for
+	//
+	//     (packet_len & 0xFFFFFF) == 0x010316 && (packet_len >> 24) >= 2
+	//
+	// where the second half is the high byte of the record length, so the
+	// record must be at least 0x0200 and the hello at least five bytes more.
+	// A shorter one is not rejected - it is not recognised at all, and the
+	// connection is quietly proxied on to the domain the relay camouflages
+	// as. What comes back is that domain's real certificate, and our digest
+	// check then reports a mismatch that reads like the relay is broken when
+	// the hello never reached it as a hello.
 	const auto length = int(_result.size());
-	const auto header = int(kTlsExtensionHeaderLength);
-	if (length + header >= kCanonicalClientHelloLength) {
-		// A template longer than the canonical hello cannot be brought back
-		// to it by adding bytes. Those profiles keep their own length and
-		// only work with relays that verify the digest instead of matching
-		// the prefix.
+	if (length >= kCanonicalClientHelloLength) {
+		// A template already past the floor cannot be brought back to it by
+		// adding bytes, and does not need to be. The post-quantum profiles
+		// live here at seventeen hundred bytes and up.
 		return;
 	}
-	const auto zero = MTP_tlsBlockZero(
-		MTP_int(kCanonicalClientHelloLength - header - length));
+	// Between the floor and four bytes below it the extension header alone
+	// carries the hello over, so the block is still written - with nothing
+	// in it. Skipping it there would leave the one length that fails.
+	const auto zeros = std::max(
+		0,
+		kCanonicalClientHelloLength
+			- int(kTlsExtensionHeaderLength)
+			- length);
 	writeBlock(MTP_tlsBlockString(MTP_bytes("\x00\x15"_q)));
-	writeBlock(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(1, zero)));
+	writeBlock(MTP_tlsBlockScope(
+		MTP_vector<MTPTlsBlock>(1, MTP_tlsBlockZero(MTP_int(zeros)))));
 }
 
 void Generator::Part::writeSyntheticPskExtension() {
