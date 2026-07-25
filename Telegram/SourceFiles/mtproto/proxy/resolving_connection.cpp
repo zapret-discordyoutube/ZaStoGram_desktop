@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/capabilities.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dns_resolver_cache.h"
+#include "mtproto/proxy/mtproxy/endpoint_identity.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/runtime/runtime_environment.h"
