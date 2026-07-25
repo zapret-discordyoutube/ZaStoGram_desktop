@@ -1082,12 +1082,18 @@ void ResolvingConnection::timedOut() {
 	if (_terminal) {
 		return;
 	}
+	auto reported = false;
 	for (const auto &attempt : _routeAttempts) {
 		if (attempt.child) {
 			attempt.child->timedOut();
+			reported = true;
 		}
 	}
-	if (_child) {
+	// _child is the template the routes are cloned from: it never dials, so
+	// its own report is always "tcp connect timed out" no matter how far the
+	// routes got. Letting it speak over them puts that reason on the proxy
+	// status the user sees. It is only the truth while no route exists yet.
+	if (!reported && _child) {
 		_child->timedOut();
 	}
 }

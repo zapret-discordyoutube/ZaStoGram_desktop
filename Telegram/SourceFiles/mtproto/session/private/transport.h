@@ -119,6 +119,7 @@ private:
 		RuntimeTimer waitForBetterTimer;
 		crl::time waitForReceived = 0;
 		crl::time waitForConnected = 0;
+		crl::time waitForConnectedArmed = 0;
 		crl::time firstSentAt = -1;
 		RuntimeTimer pingSender;
 		RuntimeTimer checkSentRequestsTimer;

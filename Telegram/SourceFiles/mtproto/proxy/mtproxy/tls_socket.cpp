@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "base/invoke_queued.h"
 #include "base/unixtime.h"
+#include "mtproto/proxy/mtproxy/client_hello_profile.h"
 #include "mtproto/proxy/mtproxy/tls_socket_psk.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/proxy_endpoint_context.h"
@@ -35,7 +36,7 @@ constexpr auto kDefaultServerHelloTimeout = crl::time(2500);
 	plan.admitted = true;
 	plan.recipeLevel = 0;
 	plan.configuredTlsProfile = fallback.tlsProfile;
-	plan.effectiveTlsProfile = ProxyTlsProfile::ChromeModern;
+	plan.effectiveTlsProfile = ClientHelloProfile(fallback.tlsProfile).profile;
 	plan.stealth = fallback;
 	plan.stealth.level = ProxyStealthLevel::CompatStrict;
 	plan.stealth.tlsProfile = plan.effectiveTlsProfile;

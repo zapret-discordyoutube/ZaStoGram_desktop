@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/proxy/dial_pacer.h"
+#include "mtproto/proxy/mtproxy/handshake_plan.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
@@ -95,6 +96,13 @@ bool SessionTransport::appendTestConnection(
 		.proxyGeneration = _state.proxyGeneration,
 		.use = mtproxyUse,
 	};
+	// Without a plan the socket falls back to its own emergency defaults,
+	// which wait for the ServerHello for half as long as the handshake is
+	// meant to - so a proxy the settings check calls working has its
+	// handshake killed early on every real session.
+	const auto plan = mtproxy
+		? MtProxy::MakeAttemptPlan(stealth)
+		: MtProxyAttemptPlan();
 	if (mtproxy) {
 		attempt.runtimeId = _owner->_runtime->proxyRuntimeId();
 	}
@@ -158,6 +166,7 @@ bool SessionTransport::appendTestConnection(
 			protocolForFiles,
 			{
 				.mtproxyAttempt = attempt,
+				.mtproxyPlan = plan,
 				.mtproxyAttemptStartedAt = attemptStartedAt,
 			});
 	};
@@ -201,21 +210,26 @@ void SessionTransport::armWaitForConnectedTimer() {
 	// kMinConnectedTimeout only burns a handshake against the DPI and
 	// reconnects, and repeated fresh handshakes are exactly what gets
 	// proxies throttled. Direct connections keep the short first wait.
+	auto wait = _timing.waitForConnected;
 	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {
 		auto minWait = crl::time(0);
 		for (const auto &connection : _state.testConnections) {
 			// A paced attempt has not spent any of its budget yet, so the
 			// wait must cover the pacing delay as well or the timer fires
-			// before the socket is even opened.
+			// before the socket is even opened. The delay belongs to this
+			// attempt only: folding it into waitForConnected would leave
+			// every later attempt of this session waiting out a queue it is
+			// no longer in, since that budget is reset only by a connect.
 			accumulate_max(
 				minWait,
 				connection.data->fullConnectTimeout()
 					+ connection.mtproxyDialDelay);
 		}
-		accumulate_max(_timing.waitForConnected, minWait);
+		accumulate_max(wait, minWait);
 	}
 	if (!_timing.waitForConnectedTimer.isActive()) {
-		_timing.waitForConnectedTimer.callOnce(_timing.waitForConnected);
+		_timing.waitForConnectedArmed = wait;
+		_timing.waitForConnectedTimer.callOnce(wait);
 	}
 }
 
@@ -548,12 +562,15 @@ void SessionTransport::waitConnectedFailed() {
 	if (_state.testConnections.empty()) {
 		return;
 	}
-	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(_timing.waitForConnected));
+	const auto waited = _timing.waitForConnectedArmed
+		? _timing.waitForConnectedArmed
+		: _timing.waitForConnected;
+	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(waited));
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpConnectTimeout,
 		ProxyDiagnosticsSeverity::Warning,
 		u"connect budget %1ms expired (sockets: %2)"_q
-			.arg(_timing.waitForConnected)
+			.arg(waited)
 			.arg(_state.testConnections.size()));
 	auto maxTimeout = kMaxConnectedTimeout;
 	for (const auto &connection : _state.testConnections) {

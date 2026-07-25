@@ -46,7 +46,7 @@ constexpr auto kMaxInFlightDelay = crl::time(8000);
 // A proxy is not punished for a bad hour once it has been left alone.
 constexpr auto kFailureMemory = crl::time(5 * 60 * 1000);
 
-constexpr auto kDialJitter = crl::time(150);
+constexpr auto kMinDialJitter = crl::time(150);
 
 struct DialState {
 	int inFlight = 0;
@@ -160,6 +160,7 @@ ProxyDialLease ReserveProxyDial(
 	}
 	const auto now = runtime->async().now();
 	auto at = now;
+	auto spacing = kDialSpacing;
 	{
 		QMutexLocker lock(&DialMutex());
 		auto &state = DialStates()[key];
@@ -168,7 +169,7 @@ ProxyDialLease ReserveProxyDial(
 			state.failures = 0;
 			state.lastFailureAt = 0;
 		}
-		const auto spacing = SpacingFor(state.failures);
+		spacing = SpacingFor(state.failures);
 		at = std::max(now, state.nextFreeAt);
 		if (state.inFlight >= kDialsInFlight) {
 			const auto over = state.inFlight - kDialsInFlight + 1;
@@ -182,9 +183,15 @@ ProxyDialLease ReserveProxyDial(
 	}
 	auto delay = at - now;
 	if (delay > 0) {
-		// Attempts that landed on the same clamped slot must not fire
-		// together again.
-		delay += runtime->async().randomIndex(int(kDialJitter) + 1);
+		// Sessions lose their connect budget together and re-reserve in the
+		// same millisecond, so the tail of a queue deeper than kMaxQueueDelay
+		// is handed the same clamped slot over and over. A fixed jitter is
+		// too small to separate those once the spacing has grown, and they
+		// reach the proxy as the burst this exists to prevent. Half a spacing
+		// keeps the queued order (two neighbours stay at least half a spacing
+		// apart) while spreading everything that shares a slot.
+		const auto jitter = std::max(kMinDialJitter, spacing / 2);
+		delay += runtime->async().randomIndex(int(jitter) + 1);
 	}
 	return ProxyDialLease(std::move(key), delay);
 }

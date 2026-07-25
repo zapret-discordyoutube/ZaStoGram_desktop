@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/handshake_plan.h"
 
+#include "mtproto/proxy/mtproxy/client_hello_profile.h"
+
 namespace MTP::details::MtProxy {
 namespace {
 
@@ -18,11 +20,17 @@ constexpr auto kServerHelloTimeout = crl::time(5000);
 } // namespace
 
 MtProxyAttemptPlan MakeAttemptPlan(const ProxyStealthOptions &stealth) {
+	// The two auto entries are names for "whatever the client defaults to",
+	// so they resolve to a concrete template here - the plan is what the
+	// diagnostics report as the profile that was actually sent.
+	const auto effective = ClientHelloProfile(stealth.tlsProfile).profile;
+	auto planned = stealth;
+	planned.tlsProfile = effective;
 	return {
 		.admitted = true,
 		.configuredTlsProfile = stealth.tlsProfile,
-		.effectiveTlsProfile = stealth.tlsProfile,
-		.stealth = stealth,
+		.effectiveTlsProfile = effective,
+		.stealth = planned,
 		.serverHelloTimeout = kServerHelloTimeout,
 	};
 }

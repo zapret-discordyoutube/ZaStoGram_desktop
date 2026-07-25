@@ -59,8 +59,13 @@ QSet<QString> transportFallbackLogged;
 }
 
 [[nodiscard]] ProxyStealthOptions BoringMtproxyStealthOptions(
-		ProxyStealthOptions result,
-		ProxyTlsProfile profile = ProxyTlsProfile::ChromeModern) {
+		ProxyStealthOptions result) {
+	// Everything that shapes the flow - fragmentation, pacing, record
+	// sizing - is off for an mtproxy, but the ClientHello template itself
+	// stays the one the user picked. Overriding it here made the whole
+	// profile selector a no-op, since an mtproxy is the only proxy type
+	// that sends a ClientHello at all.
+	const auto profile = result.tlsProfile;
 	result = CompatStrictProxyStealthOptions(std::move(result));
 	result.tlsProfile = profile;
 	return result;
