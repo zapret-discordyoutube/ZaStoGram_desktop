@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/unique_qptr.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "ui/text/text.h"
 #include "ui/widgets/buttons.h"
 
