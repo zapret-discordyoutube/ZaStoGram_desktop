@@ -168,9 +168,12 @@ void TlsSocket::noteClientHelloClock(TimeId timestamp) {
 	// Snapshot, not a computation done later: an MTProto time update clears
 	// the HTTP correction as a side effect, so the references present when
 	// the hello was built may be gone a moment after.
-	const auto local = TimeId(time(nullptr));
+	const auto local = (TimeId)::time(nullptr);
 	const auto corrected = base::unixtime::now();
 	_clientHelloTimestamp = timestamp;
+	// There is no public way to ask whether the MTProto shift exists, only
+	// what it produced, so a shift that happens to be zero reads as absent.
+	// That errs towards "we do not know", which is the safe direction here.
 	_clockFromMtproto = (corrected != local);
 	_clockFromHttp = base::unixtime::http_valid();
 	_clockSkew = timestamp ? (local - timestamp) : 0;
@@ -185,6 +188,7 @@ void TlsSocket::noteClientHelloClock(TimeId timestamp) {
 		u"mtproxy client hello carries the raw system clock: no time "
 		"reference obtained, and a clock more than three seconds fast is "
 		"refused by the relay"_q);
+}
 
 void TlsSocket::checkClientHelloContract(const QByteArray &hello) {
 	const auto domain = domainFromSecret();
