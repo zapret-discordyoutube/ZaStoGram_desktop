@@ -679,6 +679,15 @@ QString FormatProxyDiagnosticsEvent(const ProxyDiagnosticsEvent &event) {
 	if (safe.rxAfterClientHello) {
 		parts.push_back(u"rx_after_ch=%1"_q.arg(*safe.rxAfterClientHello));
 	}
+	if (safe.socketState) {
+		parts.push_back(u"sock_state=%1"_q.arg(*safe.socketState));
+	}
+	if (safe.socketBytesAvailable) {
+		parts.push_back(u"sock_avail=%1"_q.arg(*safe.socketBytesAvailable));
+	}
+	if (safe.readNotifications) {
+		parts.push_back(u"rx_notify=%1"_q.arg(*safe.readNotifications));
+	}
 	if (!safe.rxClass.isEmpty()) {
 		parts.push_back(u"rx_class=%1"_q.arg(safe.rxClass));
 	}

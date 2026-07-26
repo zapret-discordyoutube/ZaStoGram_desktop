@@ -251,6 +251,7 @@ void TlsSocket::plainDisconnected() {
 	_clientHelloFragmentSplit = 0;
 	_clientHelloFragmentDelayMs = 0;
 	_rxAfterClientHello = 0;
+	_readNotifications = 0;
 	_tcpConnectedAt = 0;
 	_firstRxAt = 0;
 	_serverHelloAt = 0;
@@ -269,6 +270,9 @@ void TlsSocket::plainDisconnected() {
 }
 
 void TlsSocket::plainReadyRead() {
+	// Counted before the state switch on purpose: a notification arriving in a
+	// state that reads nothing is exactly the kind of silence being chased.
+	++_readNotifications;
 	switch (_state) {
 	case State::WaitingHello: return readHello();
 	case State::Connected: return readData();

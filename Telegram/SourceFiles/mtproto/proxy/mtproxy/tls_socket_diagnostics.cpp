@@ -320,6 +320,22 @@ void TlsSocket::reportTransportEvent(
 		.rxAfterClientHello = clientHelloKnown
 			? std::make_optional(_rxAfterClientHello)
 			: std::nullopt,
+		// Only for the case that has been unreadable so far: the hello went out
+		// and nothing came back. Then it matters whether the socket is still
+		// connected, whether bytes are sitting in it unread, and whether it
+		// ever announced any - a silent network and an answer this process
+		// never picked up produce the same zero without these.
+		.socketState = (clientHelloKnown && !_rxAfterClientHello && _transport)
+			? std::make_optional(int(_transport->state()))
+			: std::nullopt,
+		.socketBytesAvailable = (clientHelloKnown
+			&& !_rxAfterClientHello
+			&& _transport)
+			? std::make_optional(_transport->bytesAvailable())
+			: std::nullopt,
+		.readNotifications = (clientHelloKnown && !_rxAfterClientHello)
+			? std::make_optional(_readNotifications)
+			: std::nullopt,
 		.rxClass = clientHelloKnown ? responseClass() : QString(),
 		.block = (severity == ProxyDiagnosticsSeverity::Error)
 			? blockToken()

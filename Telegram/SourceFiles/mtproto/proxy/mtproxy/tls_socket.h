@@ -199,6 +199,10 @@ private:
 	ProxyCloseOrigin _closeOrigin = ProxyCloseOrigin::None;
 	ProxyTransportFailure _terminalFailure;
 	qint64 _rxAfterClientHello = 0;
+	// A report of zero received bytes reads the same whether the answer never
+	// arrived or arrived and was never handed to us. This counts the times the
+	// socket said it had something to read, which separates the two.
+	int _readNotifications = 0;
 	crl::time _tcpConnectedAt = 0;
 	crl::time _firstRxAt = 0;
 	crl::time _serverHelloAt = 0;

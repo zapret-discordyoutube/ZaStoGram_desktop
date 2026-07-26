@@ -146,6 +146,14 @@ struct ProxyDiagnosticsEvent {
 	std::optional<int> clientHelloFragmentSplit;
 	std::optional<crl::time> clientHelloFragmentDelayMs;
 	std::optional<qint64> rxAfterClientHello;
+	// Filled in when a handshake times out. Zero received bytes reads the same
+	// whether the answer never arrived or arrived and was never handed to us,
+	// and those two have nothing in common: one is the network, the other is
+	// this process. The socket's own state, its unread backlog and the number
+	// of times it announced something to read tell them apart.
+	std::optional<int> socketState;
+	std::optional<qint64> socketBytesAvailable;
+	std::optional<int> readNotifications;
 	QString rxClass;
 	QString block;
 	QString tlsRecordType;
@@ -216,6 +224,14 @@ struct ProxyEventReport {
 	std::optional<int> clientHelloFragmentSplit;
 	std::optional<crl::time> clientHelloFragmentDelayMs;
 	std::optional<qint64> rxAfterClientHello;
+	// Filled in when a handshake times out. Zero received bytes reads the same
+	// whether the answer never arrived or arrived and was never handed to us,
+	// and those two have nothing in common: one is the network, the other is
+	// this process. The socket's own state, its unread backlog and the number
+	// of times it announced something to read tell them apart.
+	std::optional<int> socketState;
+	std::optional<qint64> socketBytesAvailable;
+	std::optional<int> readNotifications;
 	QString rxClass;
 	QString block;
 	QString tlsRecordType;
