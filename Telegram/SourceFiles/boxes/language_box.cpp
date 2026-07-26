@@ -1710,6 +1710,14 @@ base::binary_guard LanguageBox::Show(
 	auto result = base::binary_guard();
 
 	auto &manager = Lang::CurrentCloudManager();
+
+	// The list comes from the server and is kept in memory only, so it is
+	// empty on every launch until the first connection. Waiting for it
+	// before showing anything is why the Language button in the intro
+	// settings does nothing at all when the network is not up yet: no box,
+	// no spinner, no reason given. Show what we have - at least the current
+	// language - and replace the box once the real list arrives.
+	const auto shown = Ui::show(Box<LanguageBox>(controller, highlightId));
 	if (manager.languageList().empty()) {
 		const auto weak = base::make_weak(controller);
 		auto guard = std::make_shared<base::binary_guard>(
@@ -1719,7 +1727,7 @@ base::binary_guard LanguageBox::Show(
 		) | rpl::take(
 			1
 		) | rpl::on_next([=]() mutable {
-			const auto show = guard->alive();
+			const auto show = guard->alive() && shown;
 			if (lifetime) {
 				base::take(lifetime)->destroy();
 			}
@@ -1727,8 +1735,6 @@ base::binary_guard LanguageBox::Show(
 				Ui::show(Box<LanguageBox>(weak.get(), highlightId));
 			}
 		}, *lifetime);
-	} else {
-		Ui::show(Box<LanguageBox>(controller, highlightId));
 	}
 	manager.requestLanguageList();
 
