@@ -350,6 +350,14 @@ namespace {
 		S("\x00\x1d\x00\x20"_q);
 		K();
 		G(3);
+		// Empty on purpose, and do not "fix" it to match a real capture. A
+		// genuine Yandex Browser hello carries one zero byte here, and a
+		// filtered network refuses exactly that shape: this template was
+		// answered twelve times out of twelve where the byte-for-byte
+		// browser capture was answered once out of six. Keeping the copy
+		// imperfect is what makes it work. See client_hello_profile.cpp for
+		// the measurement and test_mtproxy_profile_selection.py for the
+		// guard on this line.
 		S("\x00\x00"_q);
 		P();
 		CloseScope();
@@ -457,6 +465,10 @@ namespace {
 			}
 		} ClosePermutation();
 		G(3);
+		// One zero byte, exactly as Chromium sends it - and exactly what a
+		// filtered network refuses. This profile is withheld for that
+		// reason, so these bytes are never sent; they stay here because the
+		// template is still a correct capture and the JA4 guard checks it.
 		S("\x00\x01\x00"_q);
 		P();
 		CloseScope();

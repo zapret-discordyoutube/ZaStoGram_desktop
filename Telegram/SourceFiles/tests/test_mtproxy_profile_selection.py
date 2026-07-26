@@ -13,6 +13,17 @@ These tests pin the two halves of the fix: the default is a profile that was
 answered everywhere it was measured, and a refused fingerprint is steered
 away from at both sites that turn a setting into a hello - including for a
 user who selected it by hand before the measurement existed.
+
+Three follow-up experiments narrowed what is refused: not one field, but an
+exact match. Changing the trailing GREASE payload byte from 0x00 to 0xff,
+moving it to the first GREASE extension, or taking the ECH payload length off
+the set the builder draws from - each on its own turns a refused hello into an
+answered one. So the trait that decides a profile's fate is its tail, and the
+two refused profiles are exactly the two that end with a GREASE extension
+carrying one zero byte, which is what Chromium really sends. A byte-for-byte
+capture of a real browser is refused too, so the copy has to stay imperfect;
+the last test here guards that, because "align the template to a real dump"
+is the obvious improvement to make and it would break connectivity.
 """
 
 from pathlib import Path
@@ -22,8 +33,26 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 MTPROXY_DIR = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy"
 PROFILE_H = MTPROXY_DIR / "client_hello_profile.h"
 PROFILE_CPP = MTPROXY_DIR / "client_hello_profile.cpp"
+RULES_CPP = MTPROXY_DIR / "client_hello_rules.cpp"
 HANDSHAKE_PLAN_CPP = MTPROXY_DIR / "handshake_plan.cpp"
 TLS_SOCKET_CPP = MTPROXY_DIR / "tls_socket.cpp"
+
+# A GREASE extension carrying a single zero byte, written out as the rules
+# write it. This is the shape a filtered network matches on.
+REFUSED_TAIL = 'S("\\x00\\x01\\x00"_q);'
+EMPTY_TAIL = 'S("\\x00\\x00"_q);'
+# ALPS, which only the Chromium-shaped profiles carry.
+ALPS_EXTENSION = "\\x44\\xcd"
+
+
+def rule_bodies():
+    """Each profile's rule block, by profile name."""
+    source = RULES_CPP.read_text(encoding="utf-8")
+    bodies = {}
+    for chunk in source.split("case ProxyTlsProfile::")[1:]:
+        name = chunk.split(":", 1)[0].strip()
+        bodies[name] = chunk.split("break;", 1)[0]
+    return bodies
 
 
 def test_default_profile_is_one_that_was_answered_everywhere():
@@ -85,3 +114,44 @@ def test_both_plan_sites_resolve_through_the_effective_profile():
     socket = TLS_SOCKET_CPP.read_text(encoding="utf-8")
     assert "EffectiveClientHelloProfile(fallback.tlsProfile)" in socket
     assert "ClientHelloProfile(fallback.tlsProfile).profile" not in socket
+
+
+def test_no_sent_profile_combines_the_tail_with_the_chromium_shape():
+    """The refusal needs both halves, so no sent profile may have both.
+
+    android_okhttp ends with that same GREASE byte and is answered 12/12,
+    which is what proves the tail alone is not the trigger: it carries none
+    of the rest - no ECH payload, no ALPS, no post-quantum share. The two
+    refused profiles are the only ones with the tail AND the full Chromium
+    shape around it. Both halves are guarded, because either one added to a
+    passing profile would bring the outage back.
+    """
+    bodies = rule_bodies()
+    for name in ("Yandex", "ChromeModern", "AndroidChrome", "Firefox",
+                 "FirefoxAndroid", "AndroidOkHttp"):
+        assert name in bodies, name
+
+    def chromium_shaped(body):
+        return "E();" in body and ALPS_EXTENSION in body
+
+    for name in ("ChromeModern", "AndroidChrome"):
+        assert REFUSED_TAIL in bodies[name], name
+        assert chromium_shaped(bodies[name]), name
+
+    for name in ("Yandex", "Firefox", "FirefoxAndroid", "AndroidOkHttp"):
+        body = bodies[name]
+        assert not (REFUSED_TAIL in body and chromium_shaped(body)), name
+
+
+def test_yandex_tail_stays_an_imperfect_copy():
+    body = rule_bodies()["Yandex"]
+    # The profile ends with a GREASE extension, and that extension has to
+    # stay empty: a real Yandex Browser capture carries one zero byte there
+    # and is refused where this template is answered.
+    assert "G(3);" in body
+    tail = body.rsplit("G(3);", 1)[1]
+    assert EMPTY_TAIL in tail
+    assert REFUSED_TAIL not in tail
+    # And the reason lives next to the line, because "make the copy exact" is
+    # the obvious thing for the next reader to try.
+    assert "do not" in tail.lower()

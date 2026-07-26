@@ -14,21 +14,37 @@ namespace {
 
 // Measured 26 July 2026 against one relay from two networks, twelve attempts
 // per profile per network. On an unfiltered network every profile below is
-// answered in under fifty milliseconds. On a filtered one the four without
-// extension permutation are answered twelve times out of twelve, while the
-// two that permute their extensions on every hello - chrome_modern and
-// android_chrome - are answered three times out of twelve and otherwise get
-// silence, on the same relay, with the same secret, in the same minutes. The
-// post-quantum key share is not what is being refused: three of the four
-// that pass carry it too. Permutation is the only structural trait the two
-// refused ones share and the others lack.
+// answered in under fifty milliseconds. On a filtered one, chrome_modern and
+// android_chrome are answered three times out of twelve and otherwise get
+// silence, while the other four are answered twelve times out of twelve - on
+// the same relay, with the same secret, in the same minutes.
+//
+// What is being refused is not one field but an exact match. Three follow-up
+// experiments each changed one thing in the refused hello and each made it
+// pass: the trailing GREASE payload byte set to 0xff instead of 0x00, that
+// byte moved to the first GREASE extension instead of the last, and the ECH
+// payload length taken off the {144, 176, 208, 240} set the builder draws
+// from. Extension order, packet size, the post-quantum key share and JA4
+// were each measured and ruled out - JA4 is byte-identical between a profile
+// that passes and one that does not.
+//
+// So the trait that decides a profile's fate is its tail: chrome_modern and
+// android_chrome end with a GREASE extension carrying one zero byte, which
+// is what Chromium really sends and what this network matches on. The
+// profiles that pass end with an empty GREASE extension or with no GREASE
+// extension at all. A byte-for-byte capture of a real browser is refused
+// too, one time out of six, so an imperfect copy is not a defect here - it
+// is the reason the client connects.
 constexpr auto kWithheldReason
 	= "measured refused: 3/12 answered on a filtered network, 12/12 for "
-	"every non-permuting profile on the same relay";
+	"every profile whose last extension is not a GREASE one carrying a zero "
+	"byte, on the same relay in the same minutes";
 
 constexpr auto kProfiles = std::array{
 	// First entry is also what an unknown value falls back to, so the
-	// default stands at the front.
+	// default stands at the front. Deliberately not aligned to the real
+	// Yandex Browser capture: that capture is refused where this template is
+	// answered, see kWithheldReason and client_hello_rules.cpp.
 	ClientHelloProfileInfo{
 		.profile = ProxyTlsProfile::Yandex,
 		.id = "yandex",
