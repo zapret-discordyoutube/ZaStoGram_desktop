@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/protocol/mtproto_binary.h"
 #include "mtproto/transport/connection_abstract.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/openssl_help.h"
 #include "base/random.h"
 #include "base/unixtime.h"
@@ -331,6 +332,9 @@ void DcKeyCreator::dhParamsAnswered(
 			DEBUG_LOG(("AuthKey Error: sha1 did not match for server_DH_inner_data."));
 			return failed();
 		}
+		// Marked separately from the update: a shift under three seconds is
+		// skipped there, and the reference has to survive that.
+		NoteServerTimeReceived();
 		base::unixtime::update(dh_inner_data.vserver_time().v);
 
 		// check that dhPrime and (dhPrime - 1) / 2 are really prime

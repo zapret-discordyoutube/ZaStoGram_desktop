@@ -18,6 +18,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/proxy_endpoint_context.h"
 #include "mtproto/proxy/proxy_services.h"
 #include "settings.h"
+
+#include <atomic>
 #include "storage/localstorage.h"
 
 #include <QtCore/QDir>
@@ -25,6 +27,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 namespace {
+
+// Set where a server time arrives, cleared never: a process that once heard
+// the time keeps a reference for the rest of its life, even if the resulting
+// shift is zero. Written from connection threads, read from socket threads.
+std::atomic<bool> ServerTimeHeard/* = false*/;
 
 RuntimeProxySettings CreateProxySettings() {
 	return {
@@ -434,6 +441,14 @@ std::shared_ptr<RuntimeEnvironment> CreateRuntimeEnvironment(
 not_null<RuntimeEnvironment*> DefaultRuntimeEnvironment() {
 	static const auto Result = CreateRuntimeEnvironment();
 	return not_null{ Result.get() };
+}
+
+void NoteServerTimeReceived() {
+	ServerTimeHeard.store(true, std::memory_order_relaxed);
+}
+
+bool ServerTimeReceived() {
+	return ServerTimeHeard.load(std::memory_order_relaxed);
 }
 
 } // namespace MTP

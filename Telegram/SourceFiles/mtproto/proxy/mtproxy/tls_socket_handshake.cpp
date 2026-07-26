@@ -169,12 +169,15 @@ void TlsSocket::noteClientHelloClock(TimeId timestamp) {
 	// the HTTP correction as a side effect, so the references present when
 	// the hello was built may be gone a moment after.
 	const auto local = (TimeId)::time(nullptr);
-	const auto corrected = base::unixtime::now();
 	_clientHelloTimestamp = timestamp;
-	// There is no public way to ask whether the MTProto shift exists, only
-	// what it produced, so a shift that happens to be zero reads as absent.
-	// That errs towards "we do not know", which is the safe direction here.
-	_clockFromMtproto = (corrected != local);
+	// Deliberately not "did the correction move the clock". A shift under
+	// three seconds is skipped by base::unixtime::update(), so a machine whose
+	// clock is right ends up with a zero shift - and inferring the reference
+	// from the shift would put a warning in front of exactly the users whose
+	// clocks are fine, on every hello, while staying silent for the ones
+	// already off by the three seconds a relay refuses. What matters is
+	// whether a server ever told us the time.
+	_clockFromMtproto = ServerTimeReceived();
 	_clockFromHttp = base::unixtime::http_valid();
 	_clockSkew = timestamp ? (local - timestamp) : 0;
 	if (_clockFromMtproto || _clockFromHttp) {

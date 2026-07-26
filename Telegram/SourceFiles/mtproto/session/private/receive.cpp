@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/transport/connection_abstract.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "base/options.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
@@ -559,6 +560,7 @@ SessionMessageHandler::HandleResult SessionMessageHandler::handleBadServerSalt(
 	_owner->_sessionState.sessionSalt = data.vnew_server_salt().v;
 
 	// Don't force time update here.
+	NoteServerTimeReceived();
 	base::unixtime::update(info.serverTime);
 
 	if (_owner->_authState.bindMsgId) {
@@ -1008,6 +1010,7 @@ void SessionMessageHandler::correctUnixtimeByFastRequest(
 		locker.unlock();
 
 		SyncTimeRequestDuration = duration;
+		NoteServerTimeReceived();
 		base::unixtime::update(serverTime);
 		return;
 	}
@@ -1015,6 +1018,7 @@ void SessionMessageHandler::correctUnixtimeByFastRequest(
 
 void SessionMessageHandler::correctUnixtimeWithBadLocal(TimeId serverTime) {
 	SyncTimeRequestDuration = kFastRequestDuration;
+	NoteServerTimeReceived();
 	base::unixtime::update(serverTime, true);
 }
 

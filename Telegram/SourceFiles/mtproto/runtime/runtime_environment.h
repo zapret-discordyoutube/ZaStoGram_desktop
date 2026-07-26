@@ -188,4 +188,14 @@ private:
 	std::shared_ptr<ProxyEndpointContext> endpointContext);
 [[nodiscard]] not_null<RuntimeEnvironment*> DefaultRuntimeEnvironment();
 
+// Whether a server has ever told this process the time. A relay reads the
+// time out of the fake TLS digest and refuses a hello it does not like, so
+// the client needs to know whether any reference stood behind the value it
+// sent - and the correction cannot answer that. base::unixtime::update()
+// returns without applying a shift smaller than three seconds, so a machine
+// whose clock is right keeps a zero shift and is indistinguishable from one
+// that never heard from a server. This records the hearing, not the shift.
+void NoteServerTimeReceived();
+[[nodiscard]] bool ServerTimeReceived();
+
 } // namespace MTP

@@ -46,8 +46,27 @@ def test_socket_snapshots_both_corrections_at_send_time():
     assert "void TlsSocket::noteClientHelloClock(TimeId timestamp)" in source
     # Snapshot, because an MTProto time update clears the HTTP correction as
     # a side effect - the state at send time is not the state a moment later.
-    assert "base::unixtime::now()" in source
     assert "base::unixtime::http_valid()" in source
+    # The MTProto reference is the fact that a server told us the time, not
+    # the size of the resulting shift: update() skips shifts under three
+    # seconds, so a correct clock keeps a zero shift and would otherwise be
+    # reported as having no reference at all.
+    assert "_clockFromMtproto = ServerTimeReceived();" in source
+    assert "corrected != local" not in source
+
+    runtime = RUNTIME_ENVIRONMENT_CPP.read_text(encoding="utf-8")
+    assert "void NoteServerTimeReceived()" in runtime
+    assert "bool ServerTimeReceived()" in runtime
+    # Every place a server time arrives has to raise the flag, or a client
+    # that heard the time still reports none.
+    receive = (SOURCE_DIR / "mtproto" / "session" / "private"
+               / "receive.cpp").read_text(encoding="utf-8")
+    creator = (SOURCE_DIR / "mtproto" / "auth"
+               / "mtproto_dc_key_creator.cpp").read_text(encoding="utf-8")
+    assert receive.count("NoteServerTimeReceived();") == 3
+    assert creator.count("NoteServerTimeReceived();") == 1
+    assert receive.count("base::unixtime::update(") == 3
+    assert creator.count("base::unixtime::update(") == 1
 
 
 def test_warning_fires_on_a_missing_reference_and_not_on_a_threshold():
