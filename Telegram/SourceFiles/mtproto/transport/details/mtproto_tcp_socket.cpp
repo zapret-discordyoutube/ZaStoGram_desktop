@@ -37,7 +37,14 @@ TcpSocket::TcpSocket(
 	connect(
 		&_socket,
 		&QTcpSocket::connected,
-		wrap([=] { _connected.fire({}); }));
+		wrap([=] {
+			// Nagle costs a round trip on the short request-then-wait writes
+			// mtproto is made of. Set here rather than above with the buffer
+			// sizes, because Qt applies socket options through the engine and
+			// the engine only exists once the connection is up.
+			_socket.setSocketOption(QAbstractSocket::LowDelayOption, 1);
+			_connected.fire({});
+		}));
 	connect(
 		&_socket,
 		&QTcpSocket::disconnected,

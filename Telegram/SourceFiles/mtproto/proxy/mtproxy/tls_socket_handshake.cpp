@@ -126,6 +126,14 @@ void TlsSocket::plainConnected() {
 	}
 	_phase = HandshakePhase::TcpConnected;
 	_tcpConnectedAt = crl::now();
+
+	// Nagle holds a small write back until the previous one is acknowledged,
+	// which is exactly the shape of mtproto traffic: one short request, then
+	// waiting. Qt only applies socket options once the engine exists, that
+	// is after the connection is up, so this belongs here and not in the
+	// constructor next to the buffer sizes.
+	_transport->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+
 	connectionProgress(_phase);
 	reportTransportEvent(
 		ProxyDiagnosticsPhase::TcpConnected,

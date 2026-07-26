@@ -19,9 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
-// Spacing between two dials to the same relay. A full fake-TLS handshake
-// needs about a second, so a quarter of that keeps the ramp short while
-// still arriving as separate clients rather than as one burst.
+// Spacing between two dials to the same relay.
 //
 // This is the whole of the unconditional limit. There used to be a cap on
 // unproven handshakes in flight as well, on the premise that a public
@@ -31,7 +29,22 @@ namespace {
 // relay that really does drop the overflow is still handled, by the failure
 // spacing below, which acts on what happened rather than on a guess - and
 // unlike a cap it costs nothing on the relays that never needed one.
-constexpr auto kDialSpacing = crl::time(250);
+//
+// The spacing itself used to be 250ms, on the remaining premise that
+// arriving as separate clients rather than as one burst is worth something
+// against a filtered network. Two measurements retired that premise. What
+// the network keys on was found and it is not the burst: it is the exact
+// shape of the hello and the name in SNI, and a hello that matches neither
+// is answered however it arrives. And the cost was measured on the other
+// side - twenty-four unpaced dials reached resPQ in 170ms all told, where
+// the same twenty-four cost about six seconds of queue at a quarter second
+// apiece. A cold start pays that six seconds before the first message
+// moves, which is what "the proxy is slow" looks like from the outside.
+//
+// So the spacing is kept, but only at the size that separates a burst from a
+// single instant - enough that a relay logging connections sees distinct
+// arrivals, small enough that a full ramp costs a second rather than six.
+constexpr auto kDialSpacing = crl::time(50);
 
 // Losing a handful at once is what a sleep, a network change or a DC switch
 // looks like, and none of that is the relay's doing, so the spacing starts
