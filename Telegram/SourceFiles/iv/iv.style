@@ -971,7 +971,7 @@ defaultMarkdown: Markdown {
 	}
 	code: defaultMarkdownCodeStyle;
 	pagePadding: margins(0px, 0px, 0px, 16px);
-	pageMaxWidth: 732px;
+	pageMaxWidth: 100000px;
 	textPadding: defaultMarkdownSidesMargin;
 	mediaPadding: margins(0px, 0px, 0px, 0px);
 	blockSkips: defaultMarkdownBlockSkips;

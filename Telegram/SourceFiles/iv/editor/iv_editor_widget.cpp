@@ -1284,6 +1284,10 @@ void EnableQTextEditLineMetrics(style::Markdown &style) {
 [[nodiscard]] style::Markdown CreateEditorMarkdownStyle() {
 	auto result = st::messageMarkdown;
 	EnableQTextEditLineMetrics(result);
+
+	// st::messageMarkdown.pageMaxWidth also sizes the editor window on open,
+	// so the cap is lifted here instead of in the style itself.
+	result.pageMaxWidth = st::defaultMarkdown.pageMaxWidth;
 	return result;
 }
 
