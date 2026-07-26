@@ -8886,10 +8886,30 @@ int Widget::richOffsetForFieldOffset(
 		const TextWithEntities &text,
 		int offset) const {
 	const auto replacements = ConvertRichTextToEditorTags(text).replacements;
-	return std::clamp(
+	const auto result = std::clamp(
 		MapEditorOffsetToRichOffset(replacements, offset),
 		0,
 		int(text.text.size()));
+
+	// Temporary diagnostics for the paragraph split landing before an emoji.
+	// replacements only ever covers formulas, while an emoji is one character
+	// in the field and two UTF-16 units here, so this is where the two
+	// coordinate systems are expected to disagree.
+	static auto logged = 0;
+	if (logged < 60) {
+		++logged;
+		const auto from = std::max(result - 8, 0);
+		LOG(("IvOffset %1: editor=%2 rich=%3 len=%4 replacements=%5 "
+			"around='%6|%7'"
+			).arg(logged
+			).arg(offset
+			).arg(result
+			).arg(int(text.text.size())
+			).arg(int(replacements.size())
+			).arg(text.text.mid(from, result - from)
+			).arg(text.text.mid(result, 8)));
+	}
+	return result;
 }
 
 ApplyResult Widget::applyFieldTextToState() {
