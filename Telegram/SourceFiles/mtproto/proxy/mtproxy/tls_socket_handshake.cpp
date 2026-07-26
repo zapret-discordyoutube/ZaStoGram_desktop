@@ -51,6 +51,13 @@ void TlsSocket::writeClientHello(const QByteArray &data) {
 		_clientHelloFragmentation);
 	if (!plan) {
 		writeClientHelloPart(data.constData(), data.size());
+		// The socket only queues what it is given and sends it when its thread
+		// next runs the event loop. Everything after this point is waiting on
+		// the answer - the ServerHello deadline starts in
+		// finishClientHelloWrite() - so a hello still sitting in that queue is
+		// indistinguishable from a relay that never replied. The fragmented
+		// path below has always flushed; this one has to as well.
+		_transport->flush();
 		finishClientHelloWrite();
 		return;
 	}
@@ -90,6 +97,9 @@ void TlsSocket::writeClientHelloTail() {
 		return;
 	}
 	writeClientHelloPart(tail.constData(), tail.size());
+	// Same reason as the whole-hello path: the deadline starts here, so the
+	// bytes have to be on their way and not in a queue.
+	_transport->flush();
 	finishClientHelloWrite();
 }
 
