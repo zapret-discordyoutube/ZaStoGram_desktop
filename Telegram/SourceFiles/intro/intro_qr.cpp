@@ -38,6 +38,9 @@ namespace Intro {
 namespace details {
 namespace {
 
+constexpr auto kCodeRetryTimeout = 5 * crl::time(1000);
+constexpr auto kCodeErrorRetryTimeout = 15 * crl::time(1000);
+
 [[nodiscard]] QImage TelegramQrExact(const Qr::Data &data, int pixel) {
 	return Qr::Generate(data, pixel, Qt::black);
 }
@@ -194,7 +197,8 @@ QrWidget::QrWidget(
 	not_null<Main::Account*> account,
 	not_null<Data*> data)
 : Step(parent, account, data)
-, _refreshTimer([=] { refreshCode(); }) {
+, _refreshTimer([=] { refreshCode(); })
+, _retryTimer([=] { retryCode(); }) {
 	setTitleText(rpl::single(QString()));
 	setDescriptionText(rpl::single(QString()));
 	setErrorCentered(true);
@@ -437,6 +441,24 @@ void QrWidget::refreshCode() {
 	}).fail([=](const MTP::Error &error) {
 		showTokenError(error);
 	}).send();
+
+	if (!_codeShown) {
+		// Until the first token arrives the screen is an empty placeholder
+		// with a spinner, and a request the network swallowed keeps it that
+		// way forever: no answer, no failure, nothing to retry from. This
+		// is what a fresh start looks like here - the app comes up before
+		// a working proxy is set, sends this into a session that cannot
+		// reach a DC, and never asks again once the proxy is added.
+		_retryTimer.callOnce(kCodeRetryTimeout);
+	}
+}
+
+void QrWidget::retryCode() {
+	if (_codeShown) {
+		return;
+	}
+	api().request(base::take(_requestId)).cancel();
+	refreshCode();
 }
 
 void QrWidget::handleTokenResult(const MTPauth_LoginToken &result) {
@@ -465,10 +487,21 @@ void QrWidget::showTokenError(const MTP::Error &error) {
 		refreshCode();
 	} else {
 		showError(rpl::single(error.type()));
+		if (!_codeShown) {
+			// Keep the error on screen, but keep asking as well: on a
+			// filtered network the first answers are the ones that fail.
+			_retryTimer.callOnce(kCodeErrorRetryTimeout);
+		}
 	}
 }
 
 void QrWidget::showToken(const QByteArray &token) {
+	if (!_codeShown) {
+		_codeShown = true;
+		_retryTimer.cancel();
+		showError(rpl::single(QString()));
+	}
+
 	const auto encoded = token.toBase64(QByteArray::Base64UrlEncoding);
 	_qrCodes.fire_copy("tg://login?token=" + encoded);
 }
@@ -484,6 +517,12 @@ void QrWidget::importTo(MTP::DcId dcId, const QByteArray &token) {
 	}).fail([=](const MTP::Error &error) {
 		showTokenError(error);
 	}).toDC(dcId).send();
+
+	if (!_codeShown) {
+		// The timer measures the wait for a request that could produce a
+		// code, and this one just replaced the request it was armed for.
+		_retryTimer.callOnce(kCodeRetryTimeout);
+	}
 }
 
 void QrWidget::done(const MTPauth_Authorization &authorization) {
@@ -491,6 +530,10 @@ void QrWidget::done(const MTPauth_Authorization &authorization) {
 }
 
 void QrWidget::sendCheckPasswordRequest() {
+	// We are past the token now, and the retry below would cancel this
+	// request as if it was a token one that got stuck.
+	_retryTimer.cancel();
+
 	_requestId = api().request(MTPaccount_GetPassword(
 	)).done([=](const MTPaccount_Password &result) {
 		result.match([&](const MTPDaccount_password &data) {
@@ -530,6 +573,7 @@ void QrWidget::activate() {
 void QrWidget::finished() {
 	Step::finished();
 	_refreshTimer.cancel();
+	_retryTimer.cancel();
 	apiClear();
 	cancelled();
 }

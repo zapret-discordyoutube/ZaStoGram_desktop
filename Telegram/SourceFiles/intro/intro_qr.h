@@ -46,6 +46,7 @@ private:
 	void setupControls();
 	void setupPasskeyLink();
 	void refreshCode();
+	void retryCode();
 	void checkForTokenUpdate(const MTPUpdates &updates);
 	void checkForTokenUpdate(const MTPUpdate &update);
 	void handleTokenResult(const MTPauth_LoginToken &result);
@@ -58,8 +59,10 @@ private:
 	Ui::LinkButton *_skip = nullptr;
 	Ui::LinkButton *_passkey = nullptr;
 	base::Timer _refreshTimer;
+	base::Timer _retryTimer;
 	mtpRequestId _requestId = 0;
 	bool _forceRefresh = false;
+	bool _codeShown = false;
 	std::optional<::Data::Passkey::LoginData> _passkeyLoginData;
 	crl::time _passkeyLoginTime = 0;
 	int _passkeyLoginDc = 0;
