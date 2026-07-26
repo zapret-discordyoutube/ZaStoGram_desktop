@@ -12,7 +12,28 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
+// Measured 26 July 2026 against one relay from two networks, twelve attempts
+// per profile per network. On an unfiltered network every profile below is
+// answered in under fifty milliseconds. On a filtered one the four without
+// extension permutation are answered twelve times out of twelve, while the
+// two that permute their extensions on every hello - chrome_modern and
+// android_chrome - are answered three times out of twelve and otherwise get
+// silence, on the same relay, with the same secret, in the same minutes. The
+// post-quantum key share is not what is being refused: three of the four
+// that pass carry it too. Permutation is the only structural trait the two
+// refused ones share and the others lack.
+constexpr auto kWithheldReason
+	= "measured refused: 3/12 answered on a filtered network, 12/12 for "
+	"every non-permuting profile on the same relay";
+
 constexpr auto kProfiles = std::array{
+	// First entry is also what an unknown value falls back to, so the
+	// default stands at the front.
+	ClientHelloProfileInfo{
+		.profile = ProxyTlsProfile::Yandex,
+		.id = "yandex",
+		.validation = ClientHelloProfileValidation::Claimed,
+	},
 	ClientHelloProfileInfo{
 		.profile = ProxyTlsProfile::ChromeModern,
 		.id = "chrome_modern",
@@ -20,11 +41,15 @@ constexpr auto kProfiles = std::array{
 		.captureSource = "local_chrome_headless_capture",
 		.captureVersion = "Google Chrome 149.0.7827.155",
 		.expectedJa4 = "t13d1516h2_8daaf6152771_d8a2da3f94cd",
+		.withheld = true,
+		.withheldReason = kWithheldReason,
 	},
 	ClientHelloProfileInfo{
 		.profile = ProxyTlsProfile::AndroidChrome,
 		.id = "android_chrome",
 		.validation = ClientHelloProfileValidation::Claimed,
+		.withheld = true,
+		.withheldReason = kWithheldReason,
 	},
 	ClientHelloProfileInfo{
 		.profile = ProxyTlsProfile::Firefox,
@@ -34,11 +59,6 @@ constexpr auto kProfiles = std::array{
 	ClientHelloProfileInfo{
 		.profile = ProxyTlsProfile::FirefoxAndroid,
 		.id = "firefox_android",
-		.validation = ClientHelloProfileValidation::Claimed,
-	},
-	ClientHelloProfileInfo{
-		.profile = ProxyTlsProfile::Yandex,
-		.id = "yandex",
 		.validation = ClientHelloProfileValidation::Claimed,
 	},
 	ClientHelloProfileInfo{
@@ -63,8 +83,15 @@ const ClientHelloProfileInfo &ClientHelloProfile(ProxyTlsProfile profile) {
 	return kProfiles[0];
 }
 
+ProxyTlsProfile EffectiveClientHelloProfile(ProxyTlsProfile profile) {
+	const auto &info = ClientHelloProfile(profile);
+	return info.withheld ? DefaultClientHelloProfile() : info.profile;
+}
+
 ProxyTlsProfile DefaultClientHelloProfile() {
-	return ProxyTlsProfile::ChromeModern;
+	// Yandex over the Chrome templates: both answer everywhere the client was
+	// measured, and this one is not the shape a filtered network refuses.
+	return ProxyTlsProfile::Yandex;
 }
 
 bool IsClientHelloProfileValidated(ProxyTlsProfile profile) {

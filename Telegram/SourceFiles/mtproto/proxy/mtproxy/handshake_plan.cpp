@@ -22,8 +22,10 @@ constexpr auto kServerHelloTimeout = crl::time(5000);
 MtProxyAttemptPlan MakeAttemptPlan(const ProxyStealthOptions &stealth) {
 	// The two auto entries are names for "whatever the client defaults to",
 	// so they resolve to a concrete template here - the plan is what the
-	// diagnostics report as the profile that was actually sent.
-	const auto effective = ClientHelloProfile(stealth.tlsProfile).profile;
+	// diagnostics report as the profile that was actually sent. A withheld
+	// fingerprint resolves away as well, including one a user selected before
+	// it was measured as refused.
+	const auto effective = EffectiveClientHelloProfile(stealth.tlsProfile);
 	auto planned = stealth;
 	planned.tlsProfile = effective;
 	return {
