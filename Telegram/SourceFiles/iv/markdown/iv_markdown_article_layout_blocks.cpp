@@ -39,8 +39,14 @@ constexpr auto kIvMarkedTextOptionsRtl = TextParseOptions{
 
 constexpr auto kCodeTabColumns = 4;
 constexpr auto kCodeTrailingGuard = 0x2060;
+// ReadableTextMinWidth() serves two purposes at once: it is the narrowest a
+// text block may be laid out at, and — through Ui::Text::String — the width
+// above which a single word starts breaking at any character instead of at a
+// word boundary. So it has to stay wider than an ordinary word, or prose wraps
+// mid-word. Four line heights gave 93px, while "стабильную" alone measures
+// 100px, so every word from nine letters up was broken apart.
 constexpr auto kReadableTextColumns = 12;
-constexpr auto kReadableTextLineHeights = 4;
+constexpr auto kReadableTextLineHeights = 13;
 constexpr auto kReadableCodeColumns = 16;
 
 thread_local const LayoutContext *CurrentLayoutContext = nullptr;
