@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 
+#include "base/random.h"
 #include "mtproto/proxy/mtproxy/handshake_diagnosis.h"
 #include "mtproto/proxy/mtproxy/tls_socket_utils.h"
 #include "mtproto/proxy/diagnostics.h"
@@ -19,6 +20,38 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 
 namespace MTP::details {
+namespace {
+
+// The masqueraded domain is logged as a hash so that a log can be shared
+// without naming it. An unsalted hash does not achieve that: the name is
+// short and comes from a small set of plausible ones, so eight bytes of
+// SHA-256 fall to a wordlist in well under a second - which is exactly how
+// www.google.com was read back out of a log while investigating.
+//
+// Salting with a value drawn once per run keeps what the field is for -
+// telling apart, inside one log, which connections carried which name - and
+// takes away what it never should have offered, which is recovering the name
+// from the log alone. Hashes from two runs no longer line up either, and that
+// is the price: correlating across logs now needs the domains themselves.
+[[nodiscard]] QByteArray SniHashSalt() {
+	static const auto result = [] {
+		auto salt = QByteArray(16, Qt::Uninitialized);
+		base::RandomFill(salt.data(), salt.size());
+		return salt;
+	}();
+	return result;
+}
+
+[[nodiscard]] QByteArray HashedSni(bytes::const_span domain) {
+	auto hash = QCryptographicHash(QCryptographicHash::Sha256);
+	hash.addData(SniHashSalt());
+	hash.addData(QByteArray(
+		reinterpret_cast<const char*>(domain.data()),
+		int(domain.size())));
+	return hash.result();
+}
+
+} // namespace
 
 ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
 	return _terminal ? _terminalFailure : collectTransportFailure();
@@ -27,12 +60,7 @@ ProxyTransportFailure TlsSocket::proxyTransportFailure() const {
 ProxyTransportFailure TlsSocket::collectTransportFailure() const {
 	const auto clientHelloKnown = _clientHelloBytes > 0;
 	const auto domain = domainFromSecret();
-	const auto domainBytes = QByteArray(
-		reinterpret_cast<const char*>(domain.data()),
-		int(domain.size()));
-	const auto domainHash = QCryptographicHash::hash(
-		domainBytes,
-		QCryptographicHash::Sha256);
+	const auto domainHash = HashedSni(domain);
 	const auto parserStage = [&] {
 		switch (_phase) {
 		case HandshakePhase::None: return u"tcp_connect"_q;
@@ -249,12 +277,7 @@ void TlsSocket::reportTransportEvent(
 		const QString &message) {
 	const auto now = crl::now();
 	const auto domain = domainFromSecret();
-	const auto domainBytes = QByteArray(
-		reinterpret_cast<const char*>(domain.data()),
-		int(domain.size()));
-	const auto domainHash = QCryptographicHash::hash(
-		domainBytes,
-		QCryptographicHash::Sha256);
+	const auto domainHash = HashedSni(domain);
 	const auto clientHelloKnown = _clientHelloBytes > 0;
 	auto attempt = _mtproxyAttempt;
 	if (attempt.connectionId.isEmpty()) {
