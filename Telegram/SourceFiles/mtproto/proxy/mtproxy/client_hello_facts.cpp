@@ -378,18 +378,6 @@ ClientHelloContractIssue CheckClientHelloContract(
 			return ClientHelloContractIssue::InconsistentLength;
 		}
 	}
-	const auto extensionsEnd = position + 2 + *extensionsLength;
-	position += 2;
-	while (position + 4 <= extensionsEnd) {
-		const auto length = ClientHelloRead16(hello, position + 2);
-		if (!length) {
-			return ClientHelloContractIssue::InconsistentLength;
-		}
-		position += 4 + *length;
-	}
-	if (position != extensionsEnd) {
-		return ClientHelloContractIssue::InconsistentLength;
-	}
 
 	// GREASE is recognised by shape, not by a table of values: both bytes must
 	// have 0x0A in the low nibble. A placeholder of any other shape is not
