@@ -19,6 +19,9 @@ inline bool AutostartSupported() {
 inline void AutostartRequestStateFromSystem(Fn<void(bool)> callback) {
 }
 
+inline void AutostartValidate() {
+}
+
 inline bool TrayIconSupported() {
 	return true;
 }

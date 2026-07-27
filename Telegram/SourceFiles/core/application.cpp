@@ -284,6 +284,10 @@ void Application::run() {
 		cSetAutoStart(false);
 	}
 
+	// Before the check below, so that a saved flag which lost sync with the
+	// system does not make us delete a working autostart link and quit.
+	Platform::AutostartValidate();
+
 	if (cLaunchMode() == LaunchModeAutoStart && Platform::AutostartSkip()) {
 		Platform::AutostartToggle(false);
 		Quit();

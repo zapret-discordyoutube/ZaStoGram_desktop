@@ -45,6 +45,7 @@ void IgnoreApplicationActivationRightNow();
 [[nodiscard]] bool AutostartSupported();
 void AutostartRequestStateFromSystem(Fn<void(bool)> callback);
 void AutostartToggle(bool enabled, Fn<void(bool)> done = nullptr);
+void AutostartValidate();
 [[nodiscard]] bool AutostartSkip();
 [[nodiscard]] bool TrayIconSupported();
 [[nodiscard]] bool SkipTaskbarSupported();

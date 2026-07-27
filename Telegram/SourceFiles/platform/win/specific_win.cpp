@@ -160,23 +160,30 @@ void DeleteMyModules() {
 	RemoveDirectory(modules.c_str());
 }
 
-bool ManageAppLink(
-		bool create,
-		bool silent,
-		const GUID &folderId,
-		const wchar_t *args,
-		const wchar_t *description) {
-	if (cExeName().isEmpty()) {
-		return false;
-	}
-	PWSTR startupFolder;
-	HRESULT hr = SHGetKnownFolderPath(
+// Windows remembers here which startup entries a user switched off in the
+// system Startup apps list. The mark is keyed by the link file name and it
+// outlives the link itself, so a rewritten link stays switched off.
+const auto kStartupApprovedKey = L""
+	"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer"
+	"\\StartupApproved\\StartupFolder";
+
+[[nodiscard]] QString AppLinkName() {
+	return AppName.utf16() + u".lnk"_q;
+}
+
+[[nodiscard]] QString LegacyAppLinkName() {
+	return AppFile.utf16() + u".lnk"_q;
+}
+
+[[nodiscard]] QString KnownFolderPath(const GUID &folderId, bool silent) {
+	PWSTR folder = nullptr;
+	const HRESULT hr = SHGetKnownFolderPath(
 		folderId,
 		KF_FLAG_CREATE,
 		nullptr,
-		&startupFolder);
+		&folder);
 	const auto guard = gsl::finally([&] {
-		CoTaskMemFree(startupFolder);
+		CoTaskMemFree(folder);
 	});
 	if (!SUCCEEDED(hr)) {
 		WCHAR buffer[64];
@@ -186,12 +193,108 @@ bool ManageAppLink(
 			buffer[length] = 0;
 			if (!silent) LOG(("App Error: could not get %1 folder: %2").arg(buffer).arg(hr));
 		}
+		return QString();
+	}
+	return QString::fromWCharArray(folder);
+}
+
+[[nodiscard]] bool AppLinkPointsToMe(const QString &path) {
+	const auto native = QDir::toNativeSeparators(path).toStdWString();
+	if (GetFileAttributes(native.c_str()) == INVALID_FILE_ATTRIBUTES) {
 		return false;
 	}
-	const auto lnk = QString::fromWCharArray(startupFolder)
-		+ '\\'
-		+ AppFile.utf16()
-		+ u".lnk"_q;
+	const auto shellLink = base::WinRT::TryCreateInstance<IShellLink>(
+		CLSID_ShellLink);
+	if (!shellLink) {
+		return false;
+	}
+	const auto persistFile = shellLink.try_as<IPersistFile>();
+	if (!persistFile) {
+		return false;
+	} else if (!SUCCEEDED(persistFile->Load(native.c_str(), STGM_READ))) {
+		return false;
+	}
+	WCHAR target[MAX_PATH] = { 0 };
+	if (!SUCCEEDED(shellLink->GetPath(target, MAX_PATH, nullptr, 0))) {
+		return false;
+	}
+	const auto id = AppUserModelId::GetUniqueFileId(target);
+	if (id && id == AppUserModelId::MyExecutablePathId()) {
+		return true;
+	}
+	// A moved or replaced exe gets a new file id, so the path the link was
+	// written with is the only thing left to compare it against.
+	return !QString::fromWCharArray(target).compare(
+		QDir::toNativeSeparators(cExeDir() + cExeName()),
+		Qt::CaseInsensitive);
+}
+
+[[nodiscard]] bool StartupApprovedDisabled(const QString &name) {
+	auto key = HKEY();
+	if (RegOpenKeyEx(
+			HKEY_CURRENT_USER,
+			kStartupApprovedKey,
+			0,
+			KEY_READ,
+			&key) != ERROR_SUCCESS) {
+		return false;
+	}
+	const auto guard = gsl::finally([&] {
+		RegCloseKey(key);
+	});
+	auto value = std::array<BYTE, 12>();
+	auto size = DWORD(value.size());
+	auto type = DWORD(0);
+	const auto read = RegQueryValueEx(
+		key,
+		name.toStdWString().c_str(),
+		nullptr,
+		&type,
+		value.data(),
+		&size);
+	if (read != ERROR_SUCCESS || type != REG_BINARY || !size) {
+		return false;
+	}
+	// An even first byte means enabled, an odd one means switched off.
+	return (value[0] & 0x01) != 0;
+}
+
+void StartupApprovedClear(const QString &name) {
+	auto key = HKEY();
+	if (RegOpenKeyEx(
+			HKEY_CURRENT_USER,
+			kStartupApprovedKey,
+			0,
+			KEY_SET_VALUE,
+			&key) != ERROR_SUCCESS) {
+		return;
+	}
+	const auto guard = gsl::finally([&] {
+		RegCloseKey(key);
+	});
+	// Dropping the value is how the system reads "enabled" again.
+	const auto removed = RegDeleteValue(key, name.toStdWString().c_str());
+	if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) {
+		LOG(("App Error: could not clear startup approval for %1: %2"
+			).arg(name).arg(removed));
+	}
+}
+
+bool ManageAppLink(
+		bool create,
+		bool silent,
+		const GUID &folderId,
+		const wchar_t *args,
+		const wchar_t *description,
+		const QString &name) {
+	if (cExeName().isEmpty()) {
+		return false;
+	}
+	const auto folder = KnownFolderPath(folderId, silent);
+	if (folder.isEmpty()) {
+		return false;
+	}
+	const auto lnk = folder + '\\' + name;
 	if (!create) {
 		QFile::remove(lnk);
 		return true;
@@ -199,9 +302,10 @@ bool ManageAppLink(
 	const auto shellLink = base::WinRT::TryCreateInstance<IShellLink>(
 		CLSID_ShellLink);
 	if (!shellLink) {
-		if (!silent) LOG(("App Error: could not create instance of IID_IShellLink %1").arg(hr));
+		if (!silent) LOG(("App Error: could not create instance of IID_IShellLink"));
 		return false;
 	}
+	auto hr = HRESULT(S_OK);
 	QString exe = QDir::toNativeSeparators(cExeDir() + cExeName()), dir = QDir::toNativeSeparators(QDir(cWorkingDir()).absolutePath());
 	shellLink->SetArguments(args);
 	shellLink->SetPath(exe.toStdWString().c_str());
@@ -231,6 +335,85 @@ bool ManageAppLink(
 		return false;
 	}
 	return true;
+}
+
+void RemoveLegacyAppLink(const GUID &folderId) {
+	const auto legacyName = LegacyAppLinkName();
+	if (legacyName == AppLinkName()) {
+		return;
+	}
+	const auto folder = KnownFolderPath(folderId, true);
+	if (folder.isEmpty()) {
+		return;
+	}
+	// Older builds wrote links under the name the official Telegram Desktop
+	// uses as well. Drop only the ones pointing at us, theirs stay.
+	const auto legacy = folder + '\\' + legacyName;
+	if (AppLinkPointsToMe(legacy)) {
+		LOG(("App Info: Removing the legacy link '%1'.").arg(legacy));
+		QFile::remove(legacy);
+	}
+}
+
+bool AppLinkManage(
+		bool create,
+		bool silent,
+		const GUID &folderId,
+		const wchar_t *args,
+		const wchar_t *description) {
+	const auto success = ManageAppLink(
+		create,
+		silent,
+		folderId,
+		args,
+		description,
+		AppLinkName());
+	if (success || !create) {
+		// A link we failed to write is no reason to drop a working one.
+		RemoveLegacyAppLink(folderId);
+	}
+	return success;
+}
+
+bool AutostartLinkManage(bool create, bool silent) {
+	return AppLinkManage(
+		create,
+		silent,
+		FOLDERID_Startup,
+		L"-autostart",
+		L"ZaStoGram autorun link.\n"
+		"You can disable autorun in ZaStoGram settings.");
+}
+
+struct AutostartState {
+	bool linkValid = false;
+	bool disabledInSystem = false;
+};
+
+// Nothing outside the app keeps our link alive: the exe can be moved, an
+// installer or a cleaner can delete the link, and the system Startup apps
+// list can switch it off. The saved flag alone says nothing about what will
+// really happen on the next logon.
+[[nodiscard]] AutostartState AutostartSystemState() {
+	const auto folder = KnownFolderPath(FOLDERID_Startup, true);
+	return {
+		.linkValid = !folder.isEmpty()
+			&& AppLinkPointsToMe(folder + '\\' + AppLinkName()),
+		.disabledInSystem = StartupApprovedDisabled(AppLinkName()),
+	};
+}
+
+[[nodiscard]] bool AutostartCheckAndRepair() {
+	const auto state = AutostartSystemState();
+	if (state.disabledInSystem) {
+		return false;
+	} else if (state.linkValid) {
+		return true;
+	} else if (!cAutoStart()) {
+		return false;
+	}
+	LOG(("App Info: Autostart link is missing, writing it again."));
+	return AutostartLinkManage(true, true);
 }
 
 } // namespace
@@ -442,7 +625,37 @@ void AutostartRequestStateFromSystem(Fn<void(bool)> callback) {
 			callback(enabled);
 		});
 	});
+#else // OS_WIN_STORE
+	const auto enabled = AutostartCheckAndRepair();
+	crl::on_main([=] {
+		callback(enabled);
+	});
 #endif // OS_WIN_STORE
+}
+
+void AutostartValidate() {
+#ifndef OS_WIN_STORE
+	const auto state = AutostartSystemState();
+	if (state.disabledInSystem) {
+		if (cAutoStart()) {
+			// Switched off by the user in the system Startup apps list.
+			cSetAutoStart(false);
+			Local::writeSettings();
+		}
+	} else if (state.linkValid) {
+		if (!cAutoStart()) {
+			// The link is what actually launches us at logon, so it wins
+			// over a saved flag that lost sync with it. Trusting the flag
+			// here would delete a working link and quit on every logon.
+			cSetAutoStart(true);
+			Local::writeSettings();
+		}
+	} else if (cAutoStart()) {
+		// The link is gone or points elsewhere. A write failure is not
+		// worth turning the setting off, the next launch tries again.
+		AutostartLinkManage(true, true);
+	}
+#endif // !OS_WIN_STORE
 }
 
 void AutostartToggle(bool enabled, Fn<void(bool)> done) {
@@ -471,13 +684,12 @@ void AutostartToggle(bool enabled, Fn<void(bool)> done) {
 		done ? Fn<void(bool)>(callback) : nullptr);
 #else // OS_WIN_STORE
 	const auto silent = !done;
-	const auto success = ManageAppLink(
-		enabled,
-		silent,
-		FOLDERID_Startup,
-		L"-autostart",
-		L"Telegram autorun link.\n"
-		"You can disable autorun in Telegram settings.");
+	if (enabled) {
+		// Turning it on here should also undo a "switched off" mark left
+		// in the system Startup apps list, or the link will do nothing.
+		StartupApprovedClear(AppLinkName());
+	}
+	const auto success = AutostartLinkManage(enabled, silent);
 	if (done) {
 		done(enabled && success);
 	}
@@ -717,13 +929,13 @@ void LaunchMaps(const Data::LocationPoint &point, Fn<void()> fail) {
 } // namespace Platform
 
 void psSendToMenu(bool send, bool silent) {
-	ManageAppLink(
+	AppLinkManage(
 		send,
 		silent,
 		FOLDERID_SendTo,
 		L"--",
-		L"Telegram send to link.\n"
-		"You can disable send to menu item in Telegram settings.");
+		L"ZaStoGram send to link.\n"
+		"You can disable send to menu item in ZaStoGram settings.");
 }
 
 // Stub while we still support Windows 7.

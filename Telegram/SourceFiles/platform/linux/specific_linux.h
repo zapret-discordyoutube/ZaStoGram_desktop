@@ -20,6 +20,9 @@ inline void WriteCrashDumpDetails() {
 inline void AutostartRequestStateFromSystem(Fn<void(bool)> callback) {
 }
 
+inline void AutostartValidate() {
+}
+
 inline bool PreventsQuit(Core::QuitReason reason) {
 	return false;
 }
