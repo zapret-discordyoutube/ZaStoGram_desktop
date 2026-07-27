@@ -581,6 +581,28 @@ jobs:
               print("mtime: CMake graph changed, configure will run")
           PY
 
+      - name: Bake ZaStoGram build id.
+        if: env.ONLY_CACHE == 'false'
+        shell: bash
+        run: |
+          # Must run after the mtime normalization: that step rewinds the mtime
+          # of every unchanged tracked file, so baking earlier would let Ninja
+          # keep the object compiled with the previous build id.
+          cd "${TBUILD//\\//}/${REPO_NAME}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # A tagged release is fully identified by its version number.
+            BUILD_ID=""
+          else
+            BUILD_ID="dev-${GITHUB_RUN_NUMBER}"
+          fi
+          HEADER=Telegram/SourceFiles/core/zsg_build.h
+          sed -i "s|^constexpr auto ZsgBuildId = .*|constexpr auto ZsgBuildId = \"$BUILD_ID\"_cs;|" "$HEADER"
+          if ! grep -qF "constexpr auto ZsgBuildId = \"$BUILD_ID\"_cs;" "$HEADER"; then
+            echo "Failed to bake the build id into $HEADER!"
+            exit 1
+          fi
+          tail -n 1 "$HEADER"
+
       - name: Prepare update signing keys.
         if: env.ONLY_CACHE == 'false'
         shell: bash

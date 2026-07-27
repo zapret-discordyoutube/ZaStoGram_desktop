@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/file_utilities.h"
 #include "core/update_checker.h"
 #include "core/version.h"
+#include "core/zsg_build.h"
 #include "lang/lang_keys.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/painter.h"
@@ -64,7 +65,7 @@ rpl::producer<TextWithEntities> Text3() {
 } // namespace
 
 void AboutBox(not_null<Ui::GenericBox*> box) {
-	box->setTitle(u"Telegram Desktop"_q);
+	box->setTitle(AppName.utf16());
 
 	auto layout = box->verticalLayout();
 
@@ -155,6 +156,9 @@ QString currentVersionText() {
 		result += u" alpha %1"_q.arg(cAlphaVersion() % 1000);
 	} else if (AppBetaVersion) {
 		result += " beta";
+	}
+	if (!ZsgBuildId.empty()) {
+		result += u" (%1)"_q.arg(ZsgBuildId.utf16());
 	}
 	if (Platform::IsWindows64Bit()) {
 		result += " x64";
