@@ -215,7 +215,11 @@ Retrying builds wastes time and context. The ONLY fix is for the user to close t
 
 ## Delivery
 
-After completing requested code changes and the strongest available checks, commit and push the intended changes immediately unless the user asks not to. Push the current working branch and do not create a pull request unless the user explicitly requests one.
+Always commit. Every finished piece of work ends as a commit — after the strongest available checks, right away, without being asked and without waiting for a build or a release. Never leave completed work sitting only in the working tree.
+
+Commit your own changes only, never the whole tree. Stage the files you touched by name; when one of them also carries work from another session, stage your hunks and leave the rest. `git commit -a` and `git add .` are how another session's unfinished work ends up in your commit.
+
+Push once, batched, before a build. Not after every commit: commits accumulate on the branch, and the push that sends them all happens right before a build starts, local or CI, so the thing being built always exists on the remote too. Push the current working branch and do not create a pull request unless the user explicitly requests one.
 
 For product-source deliveries, use `.codex/skills/tdesktop-local-release/SKILL.md`: push first so the remote workflow starts, then build and package the same revision locally. Do not wait for GitHub Actions. A local package is an unsigned development release; version bumps, tags, public GitHub Releases, and signed auto-updates still require an explicit production-release request.
 
