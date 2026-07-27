@@ -1369,6 +1369,29 @@ struct InlineFieldTrimResult {
 	return { std::move(text), from };
 }
 
+// The field keeps an emoji as a single character, while the article text keeps
+// it as a surrogate pair. Nothing in `replacements` covers that — the list is
+// built from formulas only — so an offset that came from the field counts one
+// unit per emoji and lands short of where the caret really is. A dev build
+// measured the gap exactly: with the caret at the end of a 1077 unit block
+// holding two emoji it reported 1075, and 1430 for a 1433 unit block holding
+// three. Walk the text and give every pair back its second unit.
+[[nodiscard]] int ExpandOverSurrogatePairs(const QString &text, int offset) {
+	const auto size = int(text.size());
+	auto result = std::min(offset, size);
+	for (auto i = 0; i < result && i < size; ++i) {
+		if (text.at(i).isHighSurrogate()
+			&& (i + 1 < size)
+			&& text.at(i + 1).isLowSurrogate()) {
+			++i;
+			if (result < size) {
+				++result;
+			}
+		}
+	}
+	return result;
+}
+
 [[nodiscard]] int MapEditorOffsetToRichOffset(
 		const std::vector<RichTextEditorOffsetReplacement> &replacements,
 		int offset) {
@@ -8886,10 +8909,11 @@ int Widget::richOffsetForFieldOffset(
 		const TextWithEntities &text,
 		int offset) const {
 	const auto replacements = ConvertRichTextToEditorTags(text).replacements;
-	const auto result = std::clamp(
+	const auto mapped = std::clamp(
 		MapEditorOffsetToRichOffset(replacements, offset),
 		0,
 		int(text.text.size()));
+	const auto result = ExpandOverSurrogatePairs(text.text, mapped);
 
 	// Temporary diagnostics for the paragraph split landing before an emoji.
 	// replacements only ever covers formulas, while an emoji is one character
@@ -8899,15 +8923,16 @@ int Widget::richOffsetForFieldOffset(
 	if (logged < 60) {
 		++logged;
 		const auto from = std::max(result - 8, 0);
-		LOG(("IvOffset %1: editor=%2 rich=%3 len=%4 replacements=%5 "
-			"around='%6|%7'"
+		LOG(("IvOffset %1: editor=%2 mapped=%8 rich=%3 len=%4 "
+			"replacements=%5 around='%6|%7'"
 			).arg(logged
 			).arg(offset
 			).arg(result
 			).arg(int(text.text.size())
 			).arg(int(replacements.size())
 			).arg(text.text.mid(from, result - from)
-			).arg(text.text.mid(result, 8)));
+			).arg(text.text.mid(result, 8)
+			).arg(mapped));
 	}
 	return result;
 }
