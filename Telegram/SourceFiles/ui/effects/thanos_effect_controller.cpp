@@ -163,6 +163,9 @@ bool ThanosEffectController::captureView(
 	auto image = QImage(
 		QSize(viewWidth, captureHeight) * dpr,
 		QImage::Format_RGBA8888_Premultiplied);
+	if (image.isNull()) {
+		return false;
+	}
 	image.setDevicePixelRatio(dpr);
 	image.fill(Qt::transparent);
 	{

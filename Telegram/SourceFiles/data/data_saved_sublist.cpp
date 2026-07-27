@@ -246,12 +246,16 @@ void SavedSublist::applyItemRemoved(MsgId id) {
 				if (_chatListMessage.value_or(nullptr)) {
 					return;
 				} else if ((_skippedAfter == 0) || locallyKnownEmpty) {
-					if (!_list.empty()) {
-						applyMaybeLast(owner().message(
+					const auto last = _list.empty()
+						? nullptr
+						: owner().message(
 							owningHistory()->peer,
-							_list.front()));
+							_list.front());
+					if (last) {
+						applyMaybeLast(last);
 						return;
-					} else if ((_skippedBefore == 0) || locallyKnownEmpty) {
+					} else if (_list.empty()
+						&& ((_skippedBefore == 0) || locallyKnownEmpty)) {
 						if (!_parent->parentChat()
 							&& isPinnedDialog(FilterId())) {
 							_restorePinnedWhenNonEmpty = true;

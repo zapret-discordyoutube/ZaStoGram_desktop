@@ -93,6 +93,12 @@ static_assert(sizeof(RenderUniforms) % 16 == 0);
 	return Rhi::ShaderFromFile(u":/shaders/"_q + name + u".qsb"_q);
 }
 
+template <typename Resource>
+[[nodiscard]] bool CreateResource(Resource *&field, Resource *resource) {
+	field = resource;
+	return resource && resource->create();
+}
+
 } // namespace
 
 ThanosEffectRenderer::ThanosEffectRenderer(
@@ -123,71 +129,70 @@ void ThanosEffectRenderer::initialize(
 	}
 	releaseResources();
 	if (_creationFailed) {
+		_rhi = rhi;
 		return;
 	}
 	_rhi = rhi;
 
+	const auto disable = [&](const QString &reason) {
+		LOG(("ThanosEffect: %1, disabled.").arg(reason));
+		releaseResources();
+		_creationFailed = true;
+		_rhi = rhi;
+	};
+
 	if (!rhi->isFeatureSupported(QRhi::Compute)) {
-		LOG(("ThanosEffect: Compute shaders not supported, disabled"));
+		disable(u"compute shaders not supported"_q);
+		return;
+	} else if (!rhi->isTextureFormatSupported(
+			QRhiTexture::RGBA32F,
+			QRhiTexture::UsedWithLoadStore)) {
+		disable(u"RGBA32F image load/store not supported"_q);
 		return;
 	}
 
-	_quadVertexBuffer = rhi->newBuffer(
-		QRhiBuffer::Immutable,
-		QRhiBuffer::VertexBuffer,
-		sizeof(kQuadVertices));
-	_quadVertexBuffer->create();
-
-	_computeInitUniformBuffer = rhi->newBuffer(
-		QRhiBuffer::Dynamic,
-		QRhiBuffer::UniformBuffer,
-		sizeof(ComputeInitUniforms));
-	_computeInitUniformBuffer->create();
-
-	_computeUpdateUniformBuffer = rhi->newBuffer(
-		QRhiBuffer::Dynamic,
-		QRhiBuffer::UniformBuffer,
-		sizeof(ComputeUpdateUniforms));
-	_computeUpdateUniformBuffer->create();
-
-	_renderUniformBuffer = rhi->newBuffer(
-		QRhiBuffer::Dynamic,
-		QRhiBuffer::UniformBuffer,
-		sizeof(RenderUniforms));
-	_renderUniformBuffer->create();
-
-	_placeholderTexture = rhi->newTexture(
-		QRhiTexture::RGBA8,
-		QSize(1, 1));
-	_placeholderTexture->create();
-
-	_placeholderSampler = rhi->newSampler(
-		QRhiSampler::Linear,
-		QRhiSampler::Linear,
-		QRhiSampler::None,
-		QRhiSampler::ClampToEdge,
-		QRhiSampler::ClampToEdge);
-	_placeholderSampler->create();
-
-	_placeholderStateTexture = rhi->newTexture(
-		QRhiTexture::RGBA32F,
-		QSize(1, 1),
-		1,
-		QRhiTexture::UsedWithLoadStore);
-	_placeholderStateTexture->create();
-
-	_placeholderStateSampler = rhi->newSampler(
-		QRhiSampler::Nearest,
-		QRhiSampler::Nearest,
-		QRhiSampler::None,
-		QRhiSampler::ClampToEdge,
-		QRhiSampler::ClampToEdge);
-	_placeholderStateSampler->create();
+	if (!CreateResource(_quadVertexBuffer, rhi->newBuffer(
+			QRhiBuffer::Immutable,
+			QRhiBuffer::VertexBuffer,
+			sizeof(kQuadVertices)))
+		|| !CreateResource(_computeInitUniformBuffer, rhi->newBuffer(
+			QRhiBuffer::Dynamic,
+			QRhiBuffer::UniformBuffer,
+			sizeof(ComputeInitUniforms)))
+		|| !CreateResource(_computeUpdateUniformBuffer, rhi->newBuffer(
+			QRhiBuffer::Dynamic,
+			QRhiBuffer::UniformBuffer,
+			sizeof(ComputeUpdateUniforms)))
+		|| !CreateResource(_renderUniformBuffer, rhi->newBuffer(
+			QRhiBuffer::Dynamic,
+			QRhiBuffer::UniformBuffer,
+			sizeof(RenderUniforms)))
+		|| !CreateResource(_placeholderTexture, rhi->newTexture(
+			QRhiTexture::RGBA8,
+			QSize(1, 1)))
+		|| !CreateResource(_placeholderSampler, rhi->newSampler(
+			QRhiSampler::Linear,
+			QRhiSampler::Linear,
+			QRhiSampler::None,
+			QRhiSampler::ClampToEdge,
+			QRhiSampler::ClampToEdge))
+		|| !CreateResource(_placeholderStateTexture, rhi->newTexture(
+			QRhiTexture::RGBA32F,
+			QSize(1, 1),
+			1,
+			QRhiTexture::UsedWithLoadStore))
+		|| !CreateResource(_placeholderStateSampler, rhi->newSampler(
+			QRhiSampler::Nearest,
+			QRhiSampler::Nearest,
+			QRhiSampler::None,
+			QRhiSampler::ClampToEdge,
+			QRhiSampler::ClampToEdge))) {
+		disable(u"resource creation failed"_q);
+		return;
+	}
 
 	if (!createPipelines(rt)) {
-		LOG(("ThanosEffect: pipeline creation failed, disabling effect"));
-		_creationFailed = true;
-		releaseResources();
+		disable(u"pipeline creation failed"_q);
 		return;
 	}
 
@@ -208,6 +213,12 @@ bool ThanosEffectRenderer::createPipelines(QRhiRenderTarget *rt) {
 	const auto updateShader = LoadShader(u"thanos_update.comp"_q);
 	const auto vertShader = LoadShader(u"thanos.vert"_q);
 	const auto fragShader = LoadShader(u"thanos.frag"_q);
+	if (!initShader.isValid()
+		|| !updateShader.isValid()
+		|| !vertShader.isValid()
+		|| !fragShader.isValid()) {
+		return false;
+	}
 
 	_computeInitSrbLayout = _rhi->newShaderResourceBindings();
 	_computeInitSrbLayout->setBindings({
@@ -226,7 +237,9 @@ bool ThanosEffectRenderer::createPipelines(QRhiRenderTarget *rt) {
 			_placeholderStateTexture,
 			0),
 	});
-	_computeInitSrbLayout->create();
+	if (!_computeInitSrbLayout->create()) {
+		return false;
+	}
 
 	_computeInitPipeline = _rhi->newComputePipeline();
 	_computeInitPipeline->setShaderStage(
@@ -253,7 +266,9 @@ bool ThanosEffectRenderer::createPipelines(QRhiRenderTarget *rt) {
 			_placeholderStateTexture,
 			0),
 	});
-	_computeUpdateSrbLayout->create();
+	if (!_computeUpdateSrbLayout->create()) {
+		return false;
+	}
 
 	_computeUpdatePipeline = _rhi->newComputePipeline();
 	_computeUpdatePipeline->setShaderStage(
@@ -281,7 +296,9 @@ bool ThanosEffectRenderer::createPipelines(QRhiRenderTarget *rt) {
 			_placeholderStateTexture,
 			_placeholderStateSampler),
 	});
-	_renderSrbLayout->create();
+	if (!_renderSrbLayout->create()) {
+		return false;
+	}
 
 	_renderPipeline = _rhi->newGraphicsPipeline();
 	_renderPipeline->setShaderStages({
@@ -325,7 +342,11 @@ void ThanosEffectRenderer::render(
 		releaseResources();
 		return;
 	}
-	if (!_initialized || !rhi->isFeatureSupported(QRhi::Compute)) {
+	if (!_initialized
+		|| !_computeInitPipeline
+		|| !_computeUpdatePipeline
+		|| !_renderPipeline
+		|| !rhi->isFeatureSupported(QRhi::Compute)) {
 		_pendingItems.clear();
 		return;
 	}
@@ -568,7 +589,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 	auto *tex = _rhi->newTexture(
 		QRhiTexture::RGBA8,
 		QSize(item.snapshot.width(), item.snapshot.height()));
-	if (!tex->create()) {
+	if (!tex || !tex->create()) {
 		delete tex;
 		return result;
 	}
@@ -583,7 +604,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QRhiSampler::None,
 		QRhiSampler::ClampToEdge,
 		QRhiSampler::ClampToEdge);
-	if (!sampler->create()) {
+	if (!sampler || !sampler->create()) {
 		delete sampler;
 		destroyAnimatingItem(result);
 		return result;
@@ -595,7 +616,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QSize(int(result.particleCountX), int(result.particleCountY)),
 		1,
 		QRhiTexture::UsedWithLoadStore);
-	if (!stateTex->create()) {
+	if (!stateTex || !stateTex->create()) {
 		delete stateTex;
 		destroyAnimatingItem(result);
 		return result;
@@ -607,7 +628,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QSize(int(result.particleCountX), int(result.particleCountY)),
 		1,
 		QRhiTexture::UsedWithLoadStore);
-	if (!velocityTex->create()) {
+	if (!velocityTex || !velocityTex->create()) {
 		delete velocityTex;
 		destroyAnimatingItem(result);
 		return result;
@@ -620,7 +641,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QRhiSampler::None,
 		QRhiSampler::ClampToEdge,
 		QRhiSampler::ClampToEdge);
-	if (!stateSampler->create()) {
+	if (!stateSampler || !stateSampler->create()) {
 		delete stateSampler;
 		destroyAnimatingItem(result);
 		return result;
@@ -631,7 +652,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QRhiBuffer::Dynamic,
 		QRhiBuffer::UniformBuffer,
 		sizeof(ComputeInitUniforms));
-	if (!initUbo->create()) {
+	if (!initUbo || !initUbo->create()) {
 		delete initUbo;
 		destroyAnimatingItem(result);
 		return result;
@@ -642,7 +663,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QRhiBuffer::Dynamic,
 		QRhiBuffer::UniformBuffer,
 		sizeof(ComputeUpdateUniforms));
-	if (!updateUbo->create()) {
+	if (!updateUbo || !updateUbo->create()) {
 		delete updateUbo;
 		destroyAnimatingItem(result);
 		return result;
@@ -697,7 +718,7 @@ ThanosEffectRenderer::AnimatingItem ThanosEffectRenderer::createAnimatingItem(
 		QRhiBuffer::Dynamic,
 		QRhiBuffer::UniformBuffer,
 		sizeof(RenderUniforms));
-	if (!renderUbo->create()) {
+	if (!renderUbo || !renderUbo->create()) {
 		delete renderUbo;
 		destroyAnimatingItem(result);
 		return result;

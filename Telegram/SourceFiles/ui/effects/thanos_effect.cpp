@@ -28,7 +28,7 @@ bool ThanosEffect::Supported() {
 	if (!GL::WidgetsRhiEnabled()) {
 		return false;
 	}
-	return GL::CheckRhiCapabilities().compute;
+	return GL::CheckRhiCapabilities().computeImageLoadStore;
 #else
 	return false;
 #endif
@@ -106,6 +106,10 @@ void ThanosEffect::ensureSurface() {
 			.renderer = std::move(renderer),
 			.backend = GL::Backend::QRhi,
 		});
+	if (!_surface) {
+		_renderer = nullptr;
+		return;
+	}
 
 	if (const auto w = surfaceWidget()) {
 		w->setAttribute(Qt::WA_TransparentForMouseEvents);
