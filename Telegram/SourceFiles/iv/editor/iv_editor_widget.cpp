@@ -4915,8 +4915,25 @@ Fn<void()> Widget::captureScrollTopRestorer() const {
 		if (const auto scroll = dynamic_cast<Ui::ScrollArea*>(parent)) {
 			const auto weak = QPointer<Ui::ScrollArea>(scroll);
 			const auto top = scroll->scrollTop();
+			const auto max = scroll->scrollTopMax();
 			return [=] {
 				if (weak) {
+					// Temporary diagnostics for the article moving on its
+					// own. This restores an absolute position captured
+					// before a mutation; if the content changed height in
+					// between, the same number now points somewhere else.
+					static auto logged = 0;
+					const auto nowMax = weak->scrollTopMax();
+					if ((logged < 40) && (nowMax != max)) {
+						++logged;
+						LOG(("IvRestore %1: restoring top=%2, "
+							"was at %3, max %4 -> %5"
+							).arg(logged
+							).arg(top
+							).arg(weak->scrollTop()
+							).arg(max
+							).arg(nowMax));
+					}
 					weak->scrollToY(top);
 				}
 			};
