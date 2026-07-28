@@ -1,8 +1,12 @@
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
 
-# Ensure diffs have LF endings
+# Ensure diffs have LF endings. This covers *.patch too: the qtbase patches under
+# Telegram/build/patches_extra are applied by prepare.py to freshly cloned Qt sources,
+# which are LF. Checked out with CRLF under `* text=auto`, they stop matching their
+# own context and git apply fails with "patch does not apply".
 *.diff text eol=lf
+*.patch text eol=lf
 *.bat text eol=crlf
 
 # Ensure lottie animations are treated as binary files
