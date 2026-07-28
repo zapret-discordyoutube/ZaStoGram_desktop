@@ -2856,6 +2856,23 @@ Widget::Widget(
 			_selectScroll.cancel();
 			return;
 		}
+		// Temporary diagnostics for the editor scrolling on its own. This
+		// handler only ever fires from the selection auto-scroll timer, so
+		// say what the drag state looks like when it does.
+		static auto logged = 0;
+		if (logged < 40) {
+			++logged;
+			LOG(("IvScroll %1: delta=%2 scrollTop=%3 visible=%4..%5 "
+				"dragActive=%6 dragStarted=%7 operation=%8"
+				).arg(logged
+				).arg(delta
+				).arg(scroll->scrollTop()
+				).arg(_visibleRange.top
+				).arg(_visibleRange.bottom
+				).arg(_articleSelectionDrag.active ? 1 : 0
+				).arg(_articleSelectionDrag.dragStarted ? 1 : 0
+				).arg(int(_articleSelectionDrag.operation)));
+		}
 		scroll->scrollToY(scroll->scrollTop() + delta);
 		updateArticleSelectionDragFromCursor();
 	}, lifetime());
