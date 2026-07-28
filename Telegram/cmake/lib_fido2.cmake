@@ -177,6 +177,18 @@ foreach(v
 endforeach()
 target_compile_definitions(lib_fido2 PRIVATE ${fido2_definitions})
 
+# Qt6Core bundles tinycbor, which exports cbor_encode_double as well, so linking
+# Telegram against both static libraries fails:
+#
+#   Qt6Core.lib(qcborstreamwriter.cpp.obj) : error LNK2005: cbor_encode_double
+#   already defined in lib_fido2.lib(encoding.c.obj)
+#
+# It is the only symbol the two collide on, and nothing outside this target uses
+# it: libcbor calls it internally from serialization.c, libfido2 never does, and
+# neither do our sources. Renaming it here keeps the definition and every call
+# inside lib_fido2 consistent while leaving Qt's copy alone.
+target_compile_definitions(lib_fido2 PRIVATE cbor_encode_double=tdesktop_cbor_encode_double)
+
 # --- Dependencies. ---
 # NOTE: openbsd-compat is deliberately NOT on the include path — libfido2 pulls
 # it in via relative quote-includes ("../openbsd-compat/..."), and its shim
