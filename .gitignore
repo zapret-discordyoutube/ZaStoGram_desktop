@@ -82,3 +82,4 @@ Telegram/SourceFiles/mtproto.zip
 *.patch
 # Qt patches applied by prepare.py during library builds must stay tracked.
 !Telegram/build/patches_extra/**/*.patch
+/.claude
