@@ -8,9 +8,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/editor/iv_editor_window.h"
 
 #include "ui/layers/layer_manager.h"
-#include "ui/platform/ui_platform_window.h"
-#include "core/application.h"
-#include "core/core_settings.h"
 
 #include <QtGui/QCloseEvent>
 
@@ -38,13 +35,6 @@ namespace {
 Window::Window(QWidget *parent)
 : Ui::RpWindow(parent)
 , _layers(std::make_unique<Ui::LayerManager>(body())) {
-	// Without this the editor window keeps whatever frame the toolkit
-	// defaults to while the platform draws its own around it, so the close,
-	// minimise and maximise buttons end up inside a second frame. The main
-	// window follows the same setting, see MainWindow::refreshTitleWidget().
-	setNativeFrame(Ui::Platform::NativeWindowFrameSupported()
-		&& Core::App().settings().nativeWindowFrame());
-
 	_layers->setHideByBackgroundClick(true);
 	LiveWindows().push_back(this);
 }
