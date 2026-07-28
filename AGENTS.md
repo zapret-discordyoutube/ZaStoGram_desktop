@@ -50,13 +50,45 @@ L:\Telegram\ThirdParty\         # Build tools (NuGet, Python, etc.)
 
 Dependencies are located relative to the repository: `../Libraries`, `../win64/Libraries`, or `../ThirdParty`.
 
+### Local build host (Proxmox + Windows VM)
+
+On this host the Windows build runs in a dedicated VM, not on the machine holding the checkout:
+
+```text
+C:\TBuild\                       # BuildPath inside VM 100 "win10-workstation"
+C:\TBuild\ZaStoGram_desktop\     # build clone, synced from origin
+C:\TBuild\Libraries\win64\       # 64-bit dependencies
+C:\TBuild\DesktopPrivate\        # update signing keys, never in Git
+C:\TBuild\sccache\               # compilation cache, 20 GB
+```
+
+Reach it with `ssh win10` or `/home/codex-pve/winps.sh` (PowerShell on stdin). Toolchain is
+pinned to what CI uses: MSVC 14.44 from VS 2022 Build Tools, Windows SDK 10.0.26100, CMake 3.31.x.
+Do not "modernize" it — VS 2026's v145 drops Windows 7 support and CMake 4 breaks the dependency
+recipes in `prepare.py`. Details and troubleshooting live in `.claude/skills/local-build/SKILL.md`.
+
 ## Build Configuration
 
 ### Default Verification Policy
 
-Do not run a compile/build step unless the user's latest request explicitly asks for compilation or a build. This applies even when an earlier plan or generic test checklist mentions building. For ordinary implementation work, prefer targeted fast checks such as focused scripts, static guards, `git diff --check`, line-ending checks, and source inspection. If build verification is useful but was not explicitly requested, report what was checked and note that compilation was skipped by repository instruction.
+Building is now local and cheap, so compile the change instead of reasoning about whether it
+compiles. After completing product-source changes, build Release x64 in the VM
+(`.claude/skills/local-build/SKILL.md`) and publish a **dev prerelease** with
+`/home/codex-pve/zsg-release.sh --ref dev --publish`. A prerelease is not marked `latest` and does
+not touch `current4`, so installed clients receive nothing from it.
 
-The delivery workflow is the explicit exception: after completing user-requested product-source changes, follow `.codex/skills/tdesktop-local-release/SKILL.md` unless the user opts out of a local build or package. That workflow authorizes a local Release build and package without waiting for GitHub Actions.
+Two boundaries hold regardless:
+
+- **Never publish an auto-update without an explicit request.** The `--release` flag makes the
+  release `latest` and rewrites `current4`, after which every installed client updates within
+  8–16 hours and there is no rollback. That path belongs to `.claude/skills/release-update/SKILL.md`
+  and requires the user to ask for a release in so many words.
+- **Never bump the version** in `Telegram/build/version` for an ordinary build.
+
+When a local build is impossible (VM down, toolchain broken, libraries not built yet), say so
+plainly, fall back to static guards — `Telegram/SourceFiles/tests/test_*.py`, `git diff --check`,
+line-ending checks — and report that compilation was skipped and why. GitHub Actions still builds
+every push independently; do not wait for it, cancel it, or treat it as the local verification step.
 
 ### Test Account Policy
 
@@ -64,13 +96,23 @@ A prepared Telegram test account is optional and its absence must never block im
 
 ### Build Commands
 
-**From repository root, run:**
+**On the Proxmox host, build Release x64 in the Windows VM:**
+
+```bash
+ssh win10 'cmd /c C:\TBuild\build-telegram.bat > C:\TBuild\build.log 2>&1'
+```
+
+Result lands in `C:\TBuild\ZaStoGram_desktop\out\Release\Telegram.exe`. Add the argument `lto`
+to match how CI builds tags and nightly. `/home/codex-pve/zsg-release.sh` wraps the whole
+sequence — sync, source guards, build, artifact collection — and is the normal entry point.
+
+**On a Windows machine with its own configured tree, run from the repository root:**
 
 ```bash
 cmake --build out --config Debug --target Telegram
 ```
 
-That's it for local verification when the user explicitly asks for a build. The `out/` directory is already configured. The executable will be at `out/Debug/Telegram.exe`.
+The executable will be at `out/Debug/Telegram.exe`.
 
 **GitHub Windows CI builds Release artifacts.** Keep `.github/workflows/win.yml` on `Release` for both `x64_x86` and `x64`, and keep artifact collection pointed at `out/Release`.
 
@@ -114,7 +156,7 @@ Do not switch CI artifact builds back to Debug unless the user explicitly asks f
 ## Troubleshooting
 
 ### "Libraries not found"
-Ensure the repository is in `L:\Telegram\tdesktop`. The build system requires `../win64/Libraries` to exist.
+The build system resolves dependencies relative to the repository, so the checkout must sit next to them: `../win64/Libraries` has to exist. On the Proxmox host that means `C:\TBuild\ZaStoGram_desktop` alongside `C:\TBuild\Libraries\win64`, populated by the one-time `C:\TBuild\build-libs.bat` run.
 
 ### Build fails with "wrong command prompt"
 On Windows, use the correct Visual Studio Native Tools Command Prompt matching your target (x64/x86/ARM64).
@@ -221,7 +263,7 @@ Commit your own changes only, never the whole tree. Stage the files you touched 
 
 Push once, batched, before a build. Not after every commit: commits accumulate on the branch, and the push that sends them all happens right before a build starts, local or CI, so the thing being built always exists on the remote too. Push the current working branch and do not create a pull request unless the user explicitly requests one.
 
-For product-source deliveries, use `.codex/skills/tdesktop-local-release/SKILL.md`: push first so the remote workflow starts, then build and package the same revision locally. Do not wait for GitHub Actions. A local package is an unsigned development release; version bumps, tags, public GitHub Releases, and signed auto-updates still require an explicit production-release request.
+For product-source deliveries, use `.codex/skills/tdesktop-local-release/SKILL.md` (Claude: `.claude/skills/local-build/SKILL.md`): push first so the remote workflow starts, then build and package the same revision locally. Do not wait for GitHub Actions. A local package goes out as a prerelease and is never served as an auto-update; version bumps, `latest` releases, `current4`, and signed update packages still require an explicit production-release request.
 
 ## Local Storage Serialization
 

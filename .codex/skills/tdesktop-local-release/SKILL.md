@@ -5,16 +5,20 @@ description: Build and package a local ZaStoGram Release immediately after deliv
 
 # Ship a local ZaStoGram Release
 
-Treat "local release" as an unsigned development package built from the exact
-committed revision. Produce it immediately and leave GitHub Actions running in
-the background.
+Treat "local release" as a development package built from the exact committed
+revision. Produce it immediately and leave GitHub Actions running in the
+background.
+
+On the Proxmox host this is fully automated — the Windows toolchain lives in
+VM 100 `win10-workstation` and the whole sequence is one command. The Claude
+counterpart of this workflow, with infrastructure details and troubleshooting,
+is `.claude/skills/local-build/SKILL.md`; keep the two consistent.
 
 ## Keep the release boundary safe
 
-- Follow the repository `AGENTS.md` and inspect the existing configured build
-  tree before choosing a command.
-- Do not bump the application version, create or push a tag, create a GitHub
-  Release, generate `current4`, or claim that an auto-update is live.
+- Do not bump the application version, generate `current4`, mark a release
+  `latest`, or claim that an auto-update is live. A prerelease is the ceiling
+  for this workflow.
 - Use `.claude/skills/release-update/SKILL.md` only when the user explicitly
   requests a signed production update or a new public version.
 - Do not wait for, poll, cancel, or retry GitHub Actions. A single read-only
@@ -29,46 +33,42 @@ the background.
    This starts the remote workflow; continue locally without waiting for it.
 3. Record the commit SHA. Build and package only that committed revision.
 
-## Build locally
+## Build and publish locally
 
-1. Inspect `out/CMakeCache.txt` and use only a toolchain compatible with that
-   build tree. Do not reconfigure the project merely to switch platforms.
-2. For a configured Windows tree, run from the matching Visual Studio Native
-   Tools environment:
+```bash
+/home/codex-pve/zsg-release.sh --ref dev --publish
+```
 
-   ```text
-   cmake --build out --config Release --target Telegram --parallel
-   ```
+That syncs the build clone in the VM, runs the same source guards as CI, builds
+Release x64 with MSVC 14.44, verifies the artifact is a non-empty 64-bit PE,
+packages `ZaStoGram-x64.exe` plus a portable zip, and publishes them as the
+prerelease `local-<sha>`. A prerelease is never served as an auto-update.
 
-   The `Telegram` target also builds `Updater` when auto-update support is
-   enabled.
-3. From WSL, invoke the matching native Windows toolchain only for a Windows
-   build tree. Never run native Windows CMake against a Linux or Docker tree.
-   For a Linux tree, use the repository Docker environment and build the
-   `Release` configuration only when that environment is already available.
-4. Do not substitute a Debug binary or an older successful output. If no
-   compatible local Release toolchain or configured tree exists, report that
-   concrete blocker immediately; do not wait for Actions as a fallback.
-5. If the build reports `C1041`, `LNK1104`, an inaccessible output executable,
-   `access denied`, or `file in use`, stop after the first failure and ask the
-   user to close Telegram and any debugger. Do not retry.
+Drop `--publish` to leave the packages in `~/zsg-release-work/release` without
+touching GitHub.
 
-## Package the result
+If the host has no such VM (a different machine, or a Windows/WSL checkout),
+fall back to the manual route: inspect `out/CMakeCache.txt`, build only with a
+toolchain matching that tree, and package by hand under
+`out/local-release/<short-commit>/`. Never run native Windows CMake against a
+Linux or Docker build tree.
 
-1. Verify that the Release executable exists, is non-empty, has the expected
-   platform format, and is newer than the build start time.
-2. Create an ignored staging directory at
-   `out/local-release/<short-commit>/`.
-3. Copy the executable there with a `ZaStoGram-local-<short-commit>-<arch>`
-   filename. For Windows, also create a portable ZIP containing the freshly
-   built `Telegram.exe` and `Updater.exe` when the updater exists.
-4. Compute SHA-256 hashes for every delivered file. Keep build and package
-   output out of Git.
+## When the build cannot run
+
+Stop after the first failure and report the concrete blocker — do not retry
+blindly and do not fall back to waiting for Actions:
+
+- `C1041`, `LNK1104`, inaccessible output executable, `access denied`, or
+  `file in use` → a running client or debugger holds the binary; ask the user
+  to close it.
+- Missing libraries or an unconfigured tree → the one-time
+  `C:\TBuild\build-libs.bat` run has not completed; that takes hours.
+- No compatible local toolchain at all → say so instead of substituting a Debug
+  binary or an older successful output.
 
 ## Report completion
 
-Provide the exact absolute package paths, commit SHA, architecture, and
-SHA-256 hashes. State that GitHub Actions is continuing independently and
-include its URL only if it was obtained without waiting. Do not call the task
-complete when no fresh local Release package was produced; report the local
-toolchain blocker instead.
+Provide the exact package paths (or the release URL), the commit SHA,
+architecture, and SHA-256 hashes. State that GitHub Actions is continuing
+independently and include its URL only if it was obtained without waiting. Do
+not call the task complete when no fresh local Release package was produced.
