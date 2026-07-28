@@ -127,7 +127,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_changes.h"
 #include "dialogs/ui/dialogs_video_userpic.h"
 #include "styles/style_chat.h"
-#include "styles/style_chat_helpers.h"
 #include "styles/style_menu_icons.h"
 
 #include <QtGui/QClipboard>
@@ -697,7 +696,9 @@ void HistoryInner::setupSwipeReplyAndBack() {
 				int itembottom) {
 			if ((position.y() < itemtop)
 				|| (position.y() > itembottom)
-				|| !view->data()->isRegular()
+				|| (!view->data()->isRegular()
+					&& (!view->data()->isEphemeral()
+						|| view->data()->out()))
 				|| view->data()->isService()) {
 				return true;
 			}
@@ -749,7 +750,9 @@ void HistoryInner::setupSwipeReplyAndBack() {
 				int itembottom) {
 			if ((data.cursorPosition.y() < itemtop)
 				|| (data.cursorPosition.y() > itembottom)
-				|| !view->data()->isRegular()
+				|| (!view->data()->isRegular()
+					&& (!view->data()->isEphemeral()
+						|| view->data()->out()))
 				|| view->data()->showSimilarChannels()
 				|| view->data()->isService()) {
 				return true;
@@ -835,6 +838,16 @@ bool HistoryInner::hasSelectRestriction() const {
 void HistoryInner::messagesReceived(
 		not_null<PeerData*> peer,
 		const QVector<MTPMessage> &messages) {
+	if (_thanosController && !messages.isEmpty()) {
+		_thanosController->notePrependBaseline(historyHeight());
+	}
+	const auto anchor = _history->scrollTopItem
+		? _history->scrollTopItem
+		: (_migrated ? _migrated->scrollTopItem : nullptr);
+	if (anchor && !messages.isEmpty() && !_prependAnchorId) {
+		_prependAnchorId = anchor->data()->fullId();
+		_prependAnchorDateHeight = anchor->displayedDateHeight();
+	}
 	if (_history->peer == peer) {
 		_history->addOlderSlice(messages);
 		if (!messages.isEmpty()) {
@@ -913,7 +926,7 @@ void HistoryInner::enumerateItemsInHistory(History *history, int historytop, Met
 	}
 
 	auto collapseGapsTotal = 0;
-	for (const auto &gap : _collapseGaps) {
+	for (const auto &gap : collapseGaps()) {
 		collapseGapsTotal += gap.height;
 	}
 
@@ -930,7 +943,7 @@ void HistoryInner::enumerateItemsInHistory(History *history, int historytop, Met
 	auto blockbottom = blocktop + block->height();
 	auto itemIndex = BinarySearchBlocksOrItems<TopToBottom>(block->messages, searchEdge - blocktop);
 
-	const auto gapCount = int(_collapseGaps.size());
+	const auto gapCount = int(collapseGaps().size());
 	auto nextGapIndex = TopToBottom ? 0 : gapCount;
 	auto collapseShift = TopToBottom ? 0 : collapseGapsTotal;
 
@@ -941,14 +954,14 @@ void HistoryInner::enumerateItemsInHistory(History *history, int historytop, Met
 
 			if (TopToBottom) {
 				while (nextGapIndex < gapCount) {
-					const auto &gap = _collapseGaps[nextGapIndex];
+					const auto &gap = collapseGaps()[nextGapIndex];
 					if (logicalTop < gap.absY) break;
 					collapseShift += gap.height;
 					++nextGapIndex;
 				}
 			} else {
 				while (nextGapIndex > 0) {
-					const auto &gap = _collapseGaps[nextGapIndex - 1];
+					const auto &gap = collapseGaps()[nextGapIndex - 1];
 					if (logicalTop >= gap.absY) break;
 					collapseShift -= gap.height;
 					--nextGapIndex;
@@ -1129,8 +1142,12 @@ void HistoryInner::enumerateDates(Method method) {
 			if (lowestInOneDayItemBottom < 0) {
 				lowestInOneDayItemBottom = itembottom - view->marginBottom();
 			}
+			const auto collapsed = Ui::CollapseDateShift(
+				collapseGaps(),
+				itemtop);
+
 			// Attach date to the top of the visible area with the same margin as it has in service message.
-			int dateTop = qMax(itemtop, _visibleAreaTop) + st::msgServiceMargin.top();
+			int dateTop = qMax(itemtop - collapsed, _visibleAreaTop) + st::msgServiceMargin.top();
 
 			// Do not let the date go below the single-day messages pack bottom line.
 			int dateHeight = st::msgServicePadding.bottom() + st::msgServiceFont->height + st::msgServicePadding.top();
@@ -1409,6 +1426,10 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 	Painter p(this);
 	auto clip = e->rect();
 
+	if (_thanosController) {
+		_thanosController->clearRemovalHeight();
+	}
+
 	auto context = preparePaintContext(clip);
 	context.gestureHorizontal = _gestureHorizontal;
 	context.highlightPathCache = &_highlightPathCache;
@@ -1566,9 +1587,29 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 		auto iItem = (_curHistory == _migrated ? _curItem : (block->messages.size() - 1));
 		auto view = block->messages[iItem].get();
 		auto top = mtop + block->y() + view->y();
+
+		auto nextGapIndex = 0;
+		auto collapseShift = 0;
+		for (; nextGapIndex < int(collapseGaps().size()); ++nextGapIndex) {
+			const auto &gap = collapseGaps()[nextGapIndex];
+			if (top < gap.absY) break;
+			collapseShift += gap.height;
+		}
+		top += collapseShift;
+
 		context.translate(0, -top);
 		p.translate(0, top);
 		if (context.clip.y() < view->height()) while (top < drawToY) {
+			while (nextGapIndex < int(collapseGaps().size())) {
+				const auto &gap = collapseGaps()[nextGapIndex];
+				if (top - collapseShift < gap.absY) break;
+				top += gap.height;
+				collapseShift += gap.height;
+				context.translate(0, -gap.height);
+				p.translate(0, gap.height);
+				++nextGapIndex;
+			}
+
 			const auto height = view->height();
 			context.reactionInfo
 				= _reactionsManager->currentReactionPaintInfo();
@@ -1611,8 +1652,8 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 
 		auto nextGapIndex = 0;
 		auto collapseShift = 0;
-		for (; nextGapIndex < int(_collapseGaps.size()); ++nextGapIndex) {
-			const auto &gap = _collapseGaps[nextGapIndex];
+		for (; nextGapIndex < int(collapseGaps().size()); ++nextGapIndex) {
+			const auto &gap = collapseGaps()[nextGapIndex];
 			if (top < gap.absY) break;
 			collapseShift += gap.height;
 		}
@@ -1624,8 +1665,8 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 		p.translate(0, top);
 		const auto &sendingAnimation = _controller->sendingAnimation();
 		while (top < drawToY) {
-			while (nextGapIndex < int(_collapseGaps.size())) {
-				const auto &gap = _collapseGaps[nextGapIndex];
+			while (nextGapIndex < int(collapseGaps().size())) {
+				const auto &gap = collapseGaps()[nextGapIndex];
 				if (top - collapseShift < gap.absY) break;
 				top += gap.height;
 				collapseShift += gap.height;
@@ -4378,6 +4419,9 @@ void HistoryInner::checkActivation() {
 }
 
 void HistoryInner::recountHistoryGeometry(bool initial) {
+	if (_thanosController) {
+		_thanosController->clearRemovalHeight();
+	}
 	_contentWidth = _scroll->width();
 
 	if (_history->hasPendingResizedItems()
@@ -4416,6 +4460,25 @@ void HistoryInner::recountHistoryGeometry(bool initial) {
 				}
 			}
 		}
+	}
+
+	if (_prependAnchorId) {
+		const auto id = base::take(_prependAnchorId);
+		const auto history = _history->scrollTopItem
+			? _history.get()
+			: ((_migrated && _migrated->scrollTopItem) ? _migrated : nullptr);
+		const auto anchor = history ? history->scrollTopItem : nullptr;
+		if (anchor && anchor->data()->fullId() == id) {
+			const auto delta = anchor->displayedDateHeight()
+				- _prependAnchorDateHeight;
+			if (delta) {
+				history->scrollTopOffset += delta;
+			}
+		}
+	}
+
+	if (_thanosController) {
+		_thanosController->applyPrependBaseline(historyHeight());
 	}
 
 	if (const auto view = _aboutView ? _aboutView->view() : nullptr) {
@@ -4637,12 +4700,15 @@ void HistoryInner::setItemsRevealHeight(int revealHeight) {
 	_revealHeight = revealHeight;
 }
 
-void HistoryInner::setCollapseGaps(std::vector<CollapseGap> gaps) {
-	if (_collapseGaps != gaps) {
-		_collapseGaps = std::move(gaps);
-		updateSize();
-	}
+const std::vector<Ui::CollapseGap> &HistoryInner::collapseGaps() const {
+	static const auto kNone = std::vector<Ui::CollapseGap>();
+	return _thanosController ? _thanosController->renderGaps() : kNone;
 }
+
+void HistoryInner::collapseGapsUpdated() {
+	updateSize();
+}
+
 
 void HistoryInner::changeItemsRevealHeight(int revealHeight) {
 	if (_revealHeight == revealHeight) {
@@ -4663,9 +4729,14 @@ void HistoryInner::setPullBottomInset(int inset) {
 void HistoryInner::updateSize() {
 	const auto visibleHeight = _scroll->height();
 	auto collapseGapTotal = 0;
-	for (const auto &gap : _collapseGaps) {
+	for (const auto &gap : collapseGaps()) {
 		collapseGapTotal += gap.height;
 	}
+	collapseGapTotal = std::max(
+		collapseGapTotal - (_thanosController
+			? _thanosController->removalHeight()
+			: 0),
+		0);
 	const auto itemsHeight = historyHeight() - _revealHeight + collapseGapTotal;
 	const auto aboutAboveHistory = _aboutView && _aboutView->aboveHistory();
 	const auto aboutBelowHistory = _aboutView && !aboutAboveHistory;
@@ -4696,6 +4767,10 @@ void HistoryInner::updateSize() {
 	}
 
 	if (_historyMarginTop != newHistoryMarginTop) {
+		if (_thanosController) {
+			_thanosController->shiftGaps(
+				newHistoryMarginTop - _historyMarginTop);
+		}
 		_historyMarginTop = newHistoryMarginTop;
 	}
 	if (_historyMarginBottom != newHistoryMarginBottom) {
@@ -4714,6 +4789,10 @@ void HistoryInner::updateSize() {
 		}
 	} else {
 		update();
+	}
+
+	if (_thanosController && !_pullBottomInset) {
+		_thanosController->pinScroll();
 	}
 }
 
@@ -4776,9 +4855,7 @@ void HistoryInner::setupThanosEffect() {
 			.scrollToY = [=](int y) {
 				_widget->synteticScrollToY(y);
 			},
-			.setCollapseGaps = [=](std::vector<CollapseGap> gaps) {
-				setCollapseGaps(std::move(gaps));
-			},
+			.collapseGapsUpdated = [=] { collapseGapsUpdated(); },
 		},
 		lifetime());
 
@@ -4821,7 +4898,7 @@ bool HistoryInner::focusNextPrevChild(bool next) {
 
 void HistoryInner::adjustCurrent(int32 y) const {
 	auto gapShift = 0;
-	for (const auto &gap : _collapseGaps) {
+	for (const auto &gap : collapseGaps()) {
 		if (y < gap.absY + gapShift) {
 			break;
 		}
@@ -6089,8 +6166,10 @@ void HistoryInner::playPauseFocusedMedia() {
 				|| document->isSong()
 				|| document->isAudioFile()
 				|| document->isVideoMessage()) {
-				::Media::Player::instance()->playPause(
-					{ document, item->fullId() });
+				// Go the same way as a mouse click on the media, so that
+				// the playlist gets the same context (e.g. is not scoped
+				// to a single topic when the whole forum is shown).
+				elementOpenDocument(document, item->fullId(), false);
 			}
 		}
 	}

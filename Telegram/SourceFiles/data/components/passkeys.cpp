@@ -18,7 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Data {
 namespace {
 
-constexpr auto kTimeoutMs = 5000;
+constexpr auto kRequestTimeout = crl::time(5000);
 
 [[nodiscard]] PasskeyEntry FromTL(const MTPDpasskey &data) {
 	return PasskeyEntry{
@@ -99,7 +99,8 @@ void Passkeys::deletePasskey(
 }
 
 rpl::producer<> Passkeys::requestList() {
-	if (crl::now() - _lastRequestTime > kTimeoutMs) {
+	if (!_lastRequestTime
+		|| (crl::now() - _lastRequestTime > kRequestTimeout)) {
 		if (!_listRequestId) {
 			loadList();
 		}

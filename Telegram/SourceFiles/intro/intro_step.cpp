@@ -156,6 +156,10 @@ void Step::goReplace(Step *step, Animate animate) {
 	}
 }
 
+Step *Step::stepBelow() const {
+	return _stepBelowCallback ? _stepBelowCallback() : nullptr;
+}
+
 void Step::finish(const MTPauth_Authorization &auth, QImage &&photo) {
 	auth.match([&](const MTPDauth_authorization &data) {
 		if (data.vuser().type() != mtpc_user
@@ -597,6 +601,10 @@ void Step::setShowAnimationClipping(QRect clipping) {
 void Step::setGoCallback(
 		Fn<void(Step *step, StackAction action, Animate animate)> callback) {
 	_goCallback = std::move(callback);
+}
+
+void Step::setStepBelowCallback(Fn<Step*()> callback) {
+	_stepBelowCallback = std::move(callback);
 }
 
 void Step::setShowResetCallback(Fn<void()> callback) {
