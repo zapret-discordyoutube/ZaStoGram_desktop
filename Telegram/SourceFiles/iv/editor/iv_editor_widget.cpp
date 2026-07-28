@@ -4941,8 +4941,25 @@ Fn<void()> Widget::captureScrollTopRestorer() const {
 		if (const auto scroll = dynamic_cast<Ui::ElasticScroll*>(parent)) {
 			const auto weak = QPointer<Ui::ElasticScroll>(scroll);
 			const auto top = scroll->scrollTop();
+			const auto max = scroll->scrollTopMax();
 			return [=] {
 				if (weak) {
+					// Same diagnostics as the ScrollArea branch above. The
+					// first round measured only that one and saw nothing,
+					// which said the branch was never taken rather than that
+					// the restore was innocent.
+					static auto logged = 0;
+					const auto nowMax = weak->scrollTopMax();
+					if ((logged < 40) && (nowMax != max)) {
+						++logged;
+						LOG(("IvRestoreElastic %1: restoring top=%2, "
+							"was at %3, max %4 -> %5"
+							).arg(logged
+							).arg(top
+							).arg(weak->scrollTop()
+							).arg(max
+							).arg(nowMax));
+					}
 					weak->scrollToY(top);
 				}
 			};
