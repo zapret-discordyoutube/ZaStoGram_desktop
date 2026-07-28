@@ -1392,6 +1392,26 @@ struct InlineFieldTrimResult {
 	return result;
 }
 
+// The inverse of ExpandOverSurrogatePairs, for the trip back: an offset that
+// counts two units per emoji has to lose one of them before it can be used as
+// a caret position in the field. Without this the caret drifts right by one
+// per emoji every time a block is reopened, which is why it never seemed to
+// remember where a split had happened.
+[[nodiscard]] int SurrogatePairsBefore(const QString &text, int offset) {
+	const auto size = int(text.size());
+	const auto till = std::min(offset, size);
+	auto count = 0;
+	for (auto i = 0; i < till; ++i) {
+		if (text.at(i).isHighSurrogate()
+			&& (i + 1 < size)
+			&& text.at(i + 1).isLowSurrogate()) {
+			++i;
+			++count;
+		}
+	}
+	return count;
+}
+
 [[nodiscard]] int MapEditorOffsetToRichOffset(
 		const std::vector<RichTextEditorOffsetReplacement> &replacements,
 		int offset) {
@@ -8506,8 +8526,8 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 		trimmedLeft = trimmed.left;
 		clearArticleEditableHeightOverride();
 	} else {
-		const auto activeText = ConvertRichTextToEditorTags(
-			_state->activeText());
+		const auto activeRich = _state->activeText();
+		const auto activeText = ConvertRichTextToEditorTags(activeRich);
 		const auto trimmed = TrimInlineFieldText(activeText.text, trimLeft);
 		if (preserveRestoredRetainedField(trimmed.text)) {
 			finishWithRetainedField();
@@ -8521,10 +8541,12 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 		}
 		cursorSelectionFrom = MapRichTextOffsetToEditorOffset(
 			activeText.replacements,
-			selectionFrom);
+			selectionFrom)
+			- SurrogatePairsBefore(activeRich.text, selectionFrom);
 		cursorSelectionTo = MapRichTextOffsetToEditorOffset(
 			activeText.replacements,
-			selectionTo);
+			selectionTo)
+			- SurrogatePairsBefore(activeRich.text, selectionTo);
 		trimmedLeft = trimmed.left;
 	}
 	cursorSelectionFrom -= trimmedLeft;
