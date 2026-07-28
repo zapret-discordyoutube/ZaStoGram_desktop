@@ -2041,7 +2041,11 @@ void WindowHost::Impl::layout() {
 	const auto padding = st::ivEditorBottomControlsPadding;
 	const auto emojiWidth = _emojiColumnShown ? emojiColumnWidth() : 0;
 	const auto editorWidth = std::max(width - emojiWidth, 0);
-	_editor->setContentMaxWidth(_toolbar->contentMaxWidth());
+	// The article used to be capped at the toolbar's own width, which is just
+	// the sum of its buttons, so the text sat in a narrow column no matter how
+	// wide the window was. Let the article decide its own width; zero means
+	// no cap beyond what the article style already sets.
+	_editor->setContentMaxWidth(0);
 	const auto toolbarHeight = _toolbar->resizeGetHeight(editorWidth);
 	auto buttonsHeight = _send->height();
 	if (_cancel) {
