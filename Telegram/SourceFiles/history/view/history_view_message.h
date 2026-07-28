@@ -533,6 +533,11 @@ private:
 	uint32 _postShowingAuthor : 1 = 0;
 	mutable uint32 _fromLinkRipplePointSet : 1 = 0;
 
+	// Temporary diagnostics for spontaneous relayouts, see
+	// resizeContentGetHeight().
+	mutable int _diagLastResizeWidth = 0;
+	mutable int _diagLastResizeHeight = 0;
+
 	BottomInfo _bottomInfo;
 	mutable QPoint _lastMediaPosition;
 

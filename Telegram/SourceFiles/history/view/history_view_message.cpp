@@ -6619,6 +6619,28 @@ int Message::resizeContentGetHeight(int newWidth) {
 	}
 
 	newHeight += marginTop() + marginBottom();
+
+	// Temporary diagnostics for messages relaying themselves out after a
+	// while and changing height. Report only a height that changed while the
+	// width stayed the same — that is the case that cannot be explained by
+	// the window being resized.
+	{
+		static auto logged = 0;
+		if ((_diagLastResizeWidth == newWidth)
+			&& (_diagLastResizeHeight != newHeight)
+			&& (_diagLastResizeHeight > 0)
+			&& (logged < 60)) {
+			++logged;
+			LOG(("MsgResize %1: width=%2 height %3 -> %4 text='%5'"
+				).arg(logged
+				).arg(newWidth
+				).arg(_diagLastResizeHeight
+				).arg(newHeight
+				).arg(data()->originalText().text.left(40)));
+		}
+		_diagLastResizeWidth = newWidth;
+		_diagLastResizeHeight = newHeight;
+	}
 	return newHeight;
 }
 
