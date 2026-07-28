@@ -67,10 +67,15 @@ settings.local.json
 .cursor/*
 !.cursor/rules/
 
-# AI work folder (session-specific, not for version control)
+# Agent instructions and tooling. Written locally, never version-controlled — and
+# never taken from upstream either: upstream ships its own AGENTS.md and REVIEW.md,
+# and a merge that reintroduces them must drop them again (see .git/hooks/post-merge).
 .ai
 /.agents/
-/.codex/skills/tdesktop-mtproxy-architecture/
+/.claude/
+/.codex/
+/AGENTS.md
+/REVIEW.md
 
 # Generated changelog page (built by CI, deployed to GitHub Pages)
 /docs/changelog/
@@ -82,4 +87,3 @@ Telegram/SourceFiles/mtproto.zip
 *.patch
 # Qt patches applied by prepare.py during library builds must stay tracked.
 !Telegram/build/patches_extra/**/*.patch
-/.claude
