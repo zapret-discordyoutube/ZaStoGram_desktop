@@ -164,6 +164,7 @@ public:
 
 private:
 	void resolveChannel();
+	void refreshChannelState();
 
 	void rebuildLayout(int width);
 
@@ -336,15 +337,8 @@ void ChannelMediaBlock::resolveChannel() {
 	}
 }
 
-void ChannelMediaBlock::rebuildLayout(int width) {
+void ChannelMediaBlock::refreshChannelState() {
 	resolveChannel();
-	const auto &card = layoutStyle().channel;
-	const auto &padding = card.padding;
-	const auto &button = card.button;
-	const auto &buttonPadding = button.padding;
-	const auto &titleStyle = card.titleStyle;
-	const auto &actionStyle = button.textStyle;
-	_layoutWidth = std::max(width, 1);
 	_joinVisible = _channelRuntime && _channelRuntime->joinVisible();
 	if (_joinVisible && _channelRuntime) {
 		_joinActivation.kind = MediaActivationKind::JoinChannel;
@@ -359,31 +353,35 @@ void ChannelMediaBlock::rebuildLayout(int width) {
 		_joinActivation = {};
 		_joinLink = nullptr;
 	}
+}
 
-	auto actionTextHeight = 0;
-	auto actionOuterWidth = 0;
-	auto actionOuterHeight = 0;
-	if (_joinVisible) {
-		_actionText = tr::lng_iv_join_channel(tr::now);
-		_actionWidth = std::max(actionStyle.font->width(_actionText), 1);
-		actionTextHeight = TextLineHeight(actionStyle);
-		actionOuterWidth = _actionWidth
-			+ buttonPadding.left()
-			+ buttonPadding.right();
-		actionOuterHeight = actionTextHeight
-			+ buttonPadding.top()
-			+ buttonPadding.bottom();
-	} else {
-		_actionText = QString();
-		_actionWidth = 0;
-	}
-
+void ChannelMediaBlock::rebuildLayout(int width) {
+	refreshChannelState();
+	const auto &card = layoutStyle().channel;
+	const auto &padding = card.padding;
+	const auto &button = card.button;
+	const auto &buttonPadding = button.padding;
+	const auto &titleStyle = card.titleStyle;
+	const auto &actionStyle = button.textStyle;
+	_layoutWidth = std::max(width, 1);
+	// Membership arrives asynchronously, but it is presentation state, not
+	// document structure. Reserve the action slot in both states so learning
+	// whether the user joined can only change paint and hit testing, never the
+	// title wrapping or the message height.
+	_actionText = tr::lng_iv_join_channel(tr::now);
+	_actionWidth = std::max(actionStyle.font->width(_actionText), 1);
+	const auto actionTextHeight = TextLineHeight(actionStyle);
+	const auto actionOuterWidth = _actionWidth
+		+ buttonPadding.left()
+		+ buttonPadding.right();
+	const auto actionOuterHeight = actionTextHeight
+		+ buttonPadding.top()
+		+ buttonPadding.bottom();
 	_titleWidth = std::max(
 		_layoutWidth
 			- padding.left()
-			- (_joinVisible
-				? (actionOuterWidth + card.buttonSkip)
-				: padding.right()),
+			- actionOuterWidth
+			- card.buttonSkip,
 		1);
 	SetPlainTextLeaf(
 		&_titleLeaf,
@@ -434,30 +432,14 @@ void ChannelMediaBlock::applyGeometry() {
 }
 
 void ChannelMediaBlock::handleJoinedChange() {
-	if (_geometry.width() <= 0 && _layoutWidth <= 0) {
-		_channelResolved = false;
-		resolveChannel();
-		return;
-	}
 	const auto previousGeometry = _geometry;
-	const auto previousTitleRect = _titleRect;
-	const auto previousActionRect = _actionRect;
-	const auto previousHeight = _height;
 	const auto previousJoinVisible = _joinVisible;
 	_channelResolved = false;
-	resolveChannel();
-	rebuildLayout((_geometry.width() > 0) ? _geometry.width() : _layoutWidth);
+	refreshChannelState();
 	if (_geometry.width() > 0) {
-		_geometry = QRect(
-			previousGeometry.topLeft(),
-			QSize(_layoutWidth, _height));
 		applyGeometry();
 	}
-	if (_height != previousHeight) {
-		requestRelayout(QRect());
-	} else if (_joinVisible != previousJoinVisible
-		|| _titleRect != previousTitleRect
-		|| _actionRect != previousActionRect) {
+	if (_joinVisible != previousJoinVisible) {
 		requestRepaint(previousGeometry);
 	}
 }

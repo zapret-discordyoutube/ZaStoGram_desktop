@@ -676,6 +676,7 @@ private:
 	void clearFieldUndoRedoNoopState();
 	[[nodiscard]] bool escapeActiveBlockBodyFromToolbar();
 	[[nodiscard]] Fn<void()> captureActiveFieldViewportRestorer() const;
+	[[nodiscard]] Fn<void()> captureArticleViewportRestorer() const;
 	template <typename Scroll>
 	void scrollRangeToMakeVisible(Scroll *scroll, int top, int bottom) {
 		const auto padding = effectiveBodyPadding();

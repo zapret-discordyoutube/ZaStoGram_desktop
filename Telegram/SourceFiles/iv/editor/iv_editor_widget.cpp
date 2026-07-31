@@ -146,7 +146,12 @@ const auto kFormulaSamples = std::array{
 	width = std::max(width, 1);
 	const auto clone = std::unique_ptr<QTextDocument>(document->clone());
 	clone->setTextWidth(width);
-	clone->adjustSize();
+	// adjustSize() does not merely force layout: Qt replaces textWidth() with
+	// an 80-character heuristic and finally with idealWidth(). The pullquote
+	// would therefore measure itself at a width unrelated to the article and
+	// feed that narrower value back into the live field. Querying size() lays
+	// out the clone while preserving the width supplied by the article.
+	(void)clone->size();
 	return MaxVisualLineWidth(clone.get());
 }
 
@@ -4898,6 +4903,52 @@ Fn<void()> Widget::captureActiveFieldViewportRestorer() const {
 	return nullptr;
 }
 
+Fn<void()> Widget::captureArticleViewportRestorer() const {
+	if (!_article) {
+		return nullptr;
+	}
+	const auto weakThis = QPointer<Widget>(const_cast<Widget*>(this));
+	const auto make = [&](auto *scroll) -> Fn<void()> {
+		using Scroll = std::remove_pointer_t<decltype(scroll)>;
+		const auto absoluteTop = scroll->scrollTop();
+		const auto articleTop = articleTopLeft().y();
+		if (absoluteTop < articleTop) {
+			const auto weakScroll = QPointer<Scroll>(scroll);
+			return [=] {
+				if (weakScroll) {
+					weakScroll->scrollToY(absoluteTop);
+				}
+			};
+		}
+		const auto anchor = _article->scrollAnchorForTop(
+			absoluteTop - articleTop);
+		if (!anchor) {
+			return nullptr;
+		}
+		const auto weakScroll = QPointer<Scroll>(scroll);
+		return [=] {
+			if (!weakThis || !weakScroll || !weakThis->_article) {
+				return;
+			}
+			const auto restored = weakThis->_article->scrollTopForAnchor(
+				*anchor);
+			if (restored >= 0) {
+				weakScroll->scrollToY(
+					weakThis->articleTopLeft().y() + restored);
+			}
+		};
+	};
+	for (auto parent = parentWidget(); parent; parent = parent->parentWidget()) {
+		if (const auto scroll = dynamic_cast<Ui::ScrollArea*>(parent)) {
+			return make(scroll);
+		}
+		if (const auto scroll = dynamic_cast<Ui::ElasticScroll*>(parent)) {
+			return make(scroll);
+		}
+	}
+	return nullptr;
+}
+
 void Widget::insertHeading1() {
 	insertBlock({
 		.type = State::InsertBlockType::Heading,
@@ -7842,7 +7893,15 @@ void Widget::requestRelayout(QRect articleRect) {
 		if (!_article) {
 			return;
 		}
-		relayoutCurrentContent();
+		const auto restoreViewport = captureArticleViewportRestorer();
+		_article->invalidateLayout();
+		const auto width = std::max(
+			widthNoMargins(),
+			parentWidget() ? parentWidget()->width() : 0);
+		resizeCurrentContentToWidth(width);
+		if (restoreViewport) {
+			restoreViewport();
+		}
 		if (articleRect.isEmpty()) {
 			update();
 		} else {

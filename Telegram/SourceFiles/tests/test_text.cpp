@@ -597,6 +597,14 @@ void test(not_null<Ui::RpWindow*> window, not_null<Ui::RpWidget*> body) {
 		Expects(field->textOffsetForDocumentPosition(2) == 3);
 		Expects(field->documentPositionForTextOffset(1) == 1);
 		Expects(field->documentPositionForTextOffset(3) == 2);
+		auto emojiCursor = field->textCursor();
+		emojiCursor.setPosition(2);
+		field->setTextCursor(emojiCursor);
+		const auto emojiSnapshot
+			= field->getTextWithAppliedMarkdownAndSelection();
+		Expects(emojiSnapshot.text.text == emojiText);
+		Expects(emojiSnapshot.anchor == 3);
+		Expects(emojiSnapshot.position == 3);
 		field->clear();
 		field->setDocumentMargin(4.);
 		field->setAdditionalMargin(style::ConvertScale(4) - 4);
