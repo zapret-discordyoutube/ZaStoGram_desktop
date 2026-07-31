@@ -25,11 +25,13 @@ get_filename_component(src_loc SourceFiles REALPATH)
 get_filename_component(res_loc Resources REALPATH)
 
 include(cmake/telegram_options.cmake)
+include(cmake/lib_argon2.cmake)
 include(cmake/lib_ffmpeg.cmake)
 include(cmake/lib_stripe.cmake)
 include(cmake/lib_tgcalls.cmake)
 include(cmake/lib_prisma.cmake)
 include(cmake/lib_fido2.cmake)
+include(cmake/td_e2e_cloud.cmake)
 include(cmake/td_export.cmake)
 include(cmake/td_iv.cmake)
 include(cmake/td_lang.cmake)
@@ -57,8 +59,10 @@ set_target_properties(Telegram PROPERTIES AUTOMOC ON)
 
 target_link_libraries(Telegram
 PRIVATE
+    tdesktop::lib_argon2
     tdesktop::lib_fido2
     tdesktop::lib_tgcalls
+    tdesktop::td_e2e_cloud
     tdesktop::td_export
     tdesktop::td_iv
     tdesktop::td_lang

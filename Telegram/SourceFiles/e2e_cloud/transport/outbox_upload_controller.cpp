@@ -1,0 +1,95 @@
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
+#include "e2e_cloud/transport/outbox_upload_controller.h"
+
+#include <utility>
+
+namespace E2ECloud {
+
+struct OutboxUploadController::CallbackGuard {
+	OutboxUploadController *controller = nullptr;
+};
+
+OutboxUploadController::OutboxUploadController(
+		OutboxCoordinator &outbox,
+		TelegramTransport &transport,
+		CompletionCallback completionCallback)
+: _outbox(outbox)
+, _transport(transport)
+, _completionCallback(std::move(completionCallback))
+, _callbackGuard(std::make_shared<CallbackGuard>(CallbackGuard{ this })) {
+}
+
+OutboxUploadController::~OutboxUploadController() {
+	_callbackGuard->controller = nullptr;
+	if (_activeObjectId) {
+		(void)_outbox.markUploadFailed(*_activeObjectId);
+	}
+}
+
+UploadPumpResult OutboxUploadController::pump() {
+	if (_activeObjectId) {
+		return UploadPumpResult::UploadInProgress;
+	}
+	auto dispatch = _outbox.dispatchNext();
+	switch (dispatch.result) {
+	case OutboxDispatchResult::Empty:
+		return UploadPumpResult::Empty;
+	case OutboxDispatchResult::UploadInProgress:
+		return UploadPumpResult::UploadInProgress;
+	case OutboxDispatchResult::AwaitingFreshness:
+		return UploadPumpResult::AwaitingFreshness;
+	case OutboxDispatchResult::InvalidItem:
+		return UploadPumpResult::InvalidItem;
+	case OutboxDispatchResult::ProtectionFailed:
+		return UploadPumpResult::ProtectionFailed;
+	case OutboxDispatchResult::PersistenceFailed:
+		return UploadPumpResult::PersistenceFailed;
+	case OutboxDispatchResult::Ready:
+		break;
+	}
+	if (!dispatch.envelope) {
+		return UploadPumpResult::InvalidItem;
+	}
+	const auto objectId = dispatch.envelope->objectId;
+	_activeObjectId = objectId;
+	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
+	_transport.uploadExact(
+		std::move(*dispatch.envelope),
+		[weak, objectId](TelegramTransport::UploadResult result) {
+			if (const auto guard = weak.lock(); guard && guard->controller) {
+				guard->controller->complete(objectId, result);
+			}
+		});
+	return UploadPumpResult::Started;
+}
+
+bool OutboxUploadController::uploadInProgress() const {
+	return _activeObjectId.has_value();
+}
+
+void OutboxUploadController::complete(
+		ObjectId objectId,
+		TelegramTransport::UploadResult result) {
+	if (!_activeObjectId || *_activeObjectId != objectId) {
+		return;
+	}
+	const auto updated = (result == TelegramTransport::UploadResult::Accepted)
+		? _outbox.acknowledgeUploaded(objectId)
+		: _outbox.markUploadFailed(objectId);
+	_activeObjectId.reset();
+	if (_completionCallback) {
+		_completionCallback({
+			.objectId = objectId,
+			.transportResult = result,
+			.outboxUpdated = updated,
+		});
+	}
+}
+
+} // namespace E2ECloud
