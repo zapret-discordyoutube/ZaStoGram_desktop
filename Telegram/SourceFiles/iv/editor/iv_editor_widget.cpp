@@ -3009,7 +3009,7 @@ bool Widget::commitAndActivateTextOrdinal(
 		int selectionFrom,
 		int selectionTo,
 		ActivateReveal revealAfterRestore) {
-	const auto restoreViewport = captureActiveFieldViewportRestorer();
+	const auto restoreViewport = captureOuterScrollTopRestorer();
 	auto source = std::optional<Markdown::PreparedEditLeafSource>();
 	auto committed = ApplyResult::Unchanged;
 	beginArticleRelayoutDeferral();
@@ -3336,7 +3336,7 @@ void Widget::resizeCurrentContentToWidth(int width) {
 }
 
 void Widget::relayoutCurrentContent() {
-	const auto restoreViewport = captureActiveFieldViewportRestorer();
+	const auto restoreViewport = captureOuterScrollTopRestorer();
 	const auto width = std::max(
 		widthNoMargins(),
 		parentWidget() ? parentWidget()->width() : 0);
@@ -4857,84 +4857,17 @@ bool Widget::escapeActiveBlockBodyFromToolbar() {
 	return handled;
 }
 
-Fn<void()> Widget::captureActiveFieldViewportRestorer() const {
-	if (!_field || _field->isHidden() || !_fieldLeaf) {
-		return nullptr;
-	}
-	const auto leaf = *_fieldLeaf;
-	const auto weakThis = QPointer<Widget>(const_cast<Widget*>(this));
+Fn<void()> Widget::captureOuterScrollTopRestorer() const {
+	// Text layout is allowed to change the document height, but inline editing
+	// never owns the outer vertical viewport. Keep its absolute position; only
+	// explicit navigation and direct scrolling may move it.
 	const auto make = [&](auto *scroll) -> Fn<void()> {
 		using Scroll = std::remove_pointer_t<decltype(scroll)>;
 		const auto weakScroll = QPointer<Scroll>(scroll);
-		const auto inner = scroll->widget();
-		if (!inner) {
-			return nullptr;
-		}
-		const auto anchor = mapFieldLocalRectToScrollContent(
-			inner,
-			activeInlineFieldRevealRect()).center().y();
-		const auto viewportY = anchor - scroll->scrollTop();
+		const auto top = scroll->scrollTop();
 		return [=] {
-			if (!weakThis
-				|| !weakScroll
-				|| weakThis->_field->isHidden()
-				|| !weakThis->_fieldLeaf
-				|| (*weakThis->_fieldLeaf != leaf)) {
-				return;
-			}
-			const auto inner = weakScroll->widget();
-			if (!inner) {
-				return;
-			}
-			const auto now = weakThis->mapFieldLocalRectToScrollContent(
-				inner,
-				weakThis->activeInlineFieldRevealRect()).center().y();
-			weakScroll->scrollToY(now - viewportY);
-		};
-	};
-	for (auto parent = parentWidget(); parent; parent = parent->parentWidget()) {
-		if (const auto scroll = dynamic_cast<Ui::ScrollArea*>(parent)) {
-			return make(scroll);
-		}
-		if (const auto scroll = dynamic_cast<Ui::ElasticScroll*>(parent)) {
-			return make(scroll);
-		}
-	}
-	return nullptr;
-}
-
-Fn<void()> Widget::captureArticleViewportRestorer() const {
-	if (!_article) {
-		return nullptr;
-	}
-	const auto weakThis = QPointer<Widget>(const_cast<Widget*>(this));
-	const auto make = [&](auto *scroll) -> Fn<void()> {
-		using Scroll = std::remove_pointer_t<decltype(scroll)>;
-		const auto absoluteTop = scroll->scrollTop();
-		const auto articleTop = articleTopLeft().y();
-		if (absoluteTop < articleTop) {
-			const auto weakScroll = QPointer<Scroll>(scroll);
-			return [=] {
-				if (weakScroll) {
-					weakScroll->scrollToY(absoluteTop);
-				}
-			};
-		}
-		const auto anchor = _article->scrollAnchorForTop(
-			absoluteTop - articleTop);
-		if (!anchor) {
-			return nullptr;
-		}
-		const auto weakScroll = QPointer<Scroll>(scroll);
-		return [=] {
-			if (!weakThis || !weakScroll || !weakThis->_article) {
-				return;
-			}
-			const auto restored = weakThis->_article->scrollTopForAnchor(
-				*anchor);
-			if (restored >= 0) {
-				weakScroll->scrollToY(
-					weakThis->articleTopLeft().y() + restored);
+			if (weakScroll && (weakScroll->scrollTop() != top)) {
+				weakScroll->scrollToY(top);
 			}
 		};
 	};
@@ -7893,7 +7826,7 @@ void Widget::requestRelayout(QRect articleRect) {
 		if (!_article) {
 			return;
 		}
-		const auto restoreViewport = captureArticleViewportRestorer();
+		const auto restoreViewport = captureOuterScrollTopRestorer();
 		_article->invalidateLayout();
 		const auto width = std::max(
 			widthNoMargins(),
@@ -8656,32 +8589,6 @@ void Widget::activateTextOrdinal(
 	notifyToolbarStateChanged();
 }
 
-QRect Widget::activeInlineFieldRevealRect() const {
-	const auto raw = _field->rawTextEdit();
-	const auto cursor = _field->textCursor();
-	auto positionCursor = cursor;
-	positionCursor.setPosition(cursor.position());
-	auto revealRect = raw->cursorRect(positionCursor);
-	if (cursor.hasSelection()) {
-		auto anchorCursor = cursor;
-		anchorCursor.setPosition(cursor.anchor());
-		revealRect = revealRect.united(raw->cursorRect(anchorCursor));
-	}
-	if (!revealRect.isValid() || revealRect.isEmpty()) {
-		return _field->rect();
-	}
-	revealRect.moveTopLeft(
-		raw->viewport()->mapTo(_field, revealRect.topLeft()));
-	return revealRect;
-}
-
-QRect Widget::mapFieldLocalRectToScrollContent(
-		QWidget *inner,
-		QRect rect) const {
-	rect.moveTopLeft(_field->mapTo(inner, rect.topLeft()));
-	return rect;
-}
-
 void Widget::revealActiveInlineField() {
 	if (_settingField
 		|| inlineFieldRevealSuppressed()
@@ -8691,31 +8598,10 @@ void Widget::revealActiveInlineField() {
 	}
 	if (_article->revealSegment(_activeSegmentIndex)) {
 		syncInlineFieldGeometry();
-		if (_field->isHidden()) {
-			return;
-		}
 	}
-	const auto scrollIn = [&](auto &&scroll) {
-		if (const auto inner = scroll->widget()) {
-			const auto localRect = mapFieldLocalRectToScrollContent(
-				inner,
-				activeInlineFieldRevealRect());
-			scrollRangeToMakeVisible(
-				scroll,
-				localRect.y(),
-				localRect.y() + localRect.height());
-		}
-	};
-	for (auto parent = parentWidget(); parent; parent = parent->parentWidget()) {
-		if (const auto scroll = dynamic_cast<Ui::ScrollArea*>(parent)) {
-			scrollIn(scroll);
-			return;
-		}
-		if (const auto scroll = dynamic_cast<Ui::ElasticScroll*>(parent)) {
-			scrollIn(scroll);
-			return;
-		}
-	}
+	// This method is called for every cursor and field-height change. Do not
+	// scroll the enclosing viewport here: typing and Backspace must be inert
+	// with respect to the article's vertical position.
 }
 
 void Widget::activateTrailingParagraph() {

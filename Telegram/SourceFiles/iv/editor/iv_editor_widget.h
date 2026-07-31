@@ -675,8 +675,7 @@ private:
 		ToolbarFormatAction action) const;
 	void clearFieldUndoRedoNoopState();
 	[[nodiscard]] bool escapeActiveBlockBodyFromToolbar();
-	[[nodiscard]] Fn<void()> captureActiveFieldViewportRestorer() const;
-	[[nodiscard]] Fn<void()> captureArticleViewportRestorer() const;
+	[[nodiscard]] Fn<void()> captureOuterScrollTopRestorer() const;
 	template <typename Scroll>
 	void scrollRangeToMakeVisible(Scroll *scroll, int top, int bottom) {
 		const auto padding = effectiveBodyPadding();
@@ -719,10 +718,6 @@ private:
 	void ensureArticleLayoutForInlineField(int width);
 	void syncArticleVisibleTopBottom();
 	void syncInlineFieldGeometry(int width);
-	[[nodiscard]] QRect activeInlineFieldRevealRect() const;
-	[[nodiscard]] QRect mapFieldLocalRectToScrollContent(
-		QWidget *inner,
-		QRect rect) const;
 	void revealActiveInlineField();
 	void clearSelection();
 	void clearTextSelection();
