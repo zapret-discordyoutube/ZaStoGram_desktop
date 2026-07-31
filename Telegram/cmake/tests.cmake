@@ -91,6 +91,87 @@ set_target_properties(
 
 add_dependencies(Telegram test_bot_callback_state)
 
+add_executable(test_mtproxy_client_hello WIN32)
+init_target(test_mtproxy_client_hello "(tests)")
+
+target_include_directories(test_mtproxy_client_hello PRIVATE ${src_loc})
+
+nice_target_sources(test_mtproxy_client_hello ${src_loc}
+PRIVATE
+    mtproto/proxy/mtproxy/client_hello_builder.cpp
+    mtproto/proxy/mtproxy/client_hello_builder.h
+    mtproto/proxy/mtproxy/client_hello_constants.h
+    mtproto/proxy/mtproxy/client_hello_fragmentation.cpp
+    mtproto/proxy/mtproxy/client_hello_facts.cpp
+    mtproto/proxy/mtproxy/client_hello_facts.h
+    mtproto/proxy/mtproxy/client_hello_profile.cpp
+    mtproto/proxy/mtproxy/client_hello_profile.h
+    mtproto/proxy/mtproxy/client_hello_rules.cpp
+    tests/test_mtproxy_client_hello.cpp
+)
+
+target_precompile_headers(test_mtproxy_client_hello
+    PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${src_loc}/stdafx.h>)
+
+target_compile_definitions(test_mtproxy_client_hello
+PRIVATE
+    TDESKTOP_API_ID=${TDESKTOP_API_ID}
+    TDESKTOP_API_HASH=${TDESKTOP_API_HASH}
+)
+
+target_link_libraries(test_mtproxy_client_hello
+PRIVATE
+    tdesktop::td_scheme
+    desktop-app::lib_base
+    desktop-app::lib_crl
+    desktop-app::lib_ui
+    desktop-app::external_qt
+    desktop-app::external_openssl
+)
+
+set_target_properties(
+    test_mtproxy_client_hello
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_dependencies(Telegram test_mtproxy_client_hello)
+
+add_executable(test_mtproxy_tls_socket WIN32)
+init_target(test_mtproxy_tls_socket "(tests)")
+
+target_include_directories(test_mtproxy_tls_socket PRIVATE ${src_loc})
+
+nice_target_sources(test_mtproxy_tls_socket ${src_loc}
+PRIVATE
+    tests/test_mtproxy_tls_socket.cpp
+)
+
+target_precompile_headers(test_mtproxy_tls_socket
+    PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${src_loc}/stdafx.h>)
+
+target_compile_definitions(test_mtproxy_tls_socket
+PRIVATE
+    TDESKTOP_API_ID=${TDESKTOP_API_ID}
+    TDESKTOP_API_HASH=${TDESKTOP_API_HASH}
+)
+
+target_link_libraries(test_mtproxy_tls_socket
+PRIVATE
+    tdesktop::td_scheme
+    desktop-app::lib_base
+    desktop-app::lib_crl
+    desktop-app::lib_ui
+    desktop-app::external_qt
+    desktop-app::external_openssl
+)
+
+set_target_properties(
+    test_mtproxy_tls_socket
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_dependencies(Telegram test_mtproxy_tls_socket)
+
 add_executable(test_e2e_cloud WIN32)
 init_target(test_e2e_cloud "(tests)")
 

@@ -228,14 +228,14 @@ private:
 
 [[nodiscard]] bool ScenarioResponseClassification() {
 	using MTP::details::FakeTlsResponseClass;
-	return FakeTlsResponseClass(QByteArrayView(), 0) == u"zero"_q
-		&& FakeTlsResponseClass(QByteArrayView("\x16\x03", 2), 2)
+	return FakeTlsResponseClass(QByteArray(), 0) == u"zero"_q
+		&& FakeTlsResponseClass(QByteArray("\x16\x03", 2), 2)
 			== u"partial_tls_header"_q
 		&& FakeTlsResponseClass(
-			QByteArrayView("\x16\x03\x03\x00\x20", 5),
+			QByteArray("\x16\x03\x03\x00\x20", 5),
 			5) == u"partial_tls_record"_q
 		&& FakeTlsResponseClass(
-			QByteArrayView("\x15\x03\x03\x00\x02", 5),
+			QByteArray("\x15\x03\x03\x00\x02", 5),
 			5) == u"tls_alert"_q;
 }
 
