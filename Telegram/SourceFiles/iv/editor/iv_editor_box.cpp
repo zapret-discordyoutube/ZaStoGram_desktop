@@ -1593,10 +1593,12 @@ void WindowHost::Impl::setupWindow(ShowWindowDescriptor &&descriptor) {
 		descriptor.showCreated(_show);
 	}
 	window->setTitle(title);
-	// Forcing the frame off made the toolkit draw a title bar of its own
-	// while the platform kept drawing one too, which is where the second
-	// frame around the window buttons came from. The viewer window is the
-	// same Ui::RpWindow, never touches this, and draws a single frame.
+	// This used to force the frame off, which left the toolkit drawing a
+	// title bar of its own while the platform kept drawing one too — the
+	// second frame around the window buttons. Dropping the call altogether
+	// did not help either, so ask for the platform frame explicitly and let
+	// the toolkit stop drawing its own.
+	window->setNativeFrame(true);
 	window->setMinimumSize(st::ivEditorWindowMinSize);
 	window->setGeometry(DefaultWindowGeometry());
 

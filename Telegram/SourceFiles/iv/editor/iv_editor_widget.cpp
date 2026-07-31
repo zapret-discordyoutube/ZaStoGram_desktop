@@ -48,6 +48,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/text/text_entity.h"
 #include "ui/text/text_html_tags.h"
+#include "ui/emoji_config.h"
 #include "ui/text/text_utilities.h"
 #include "ui/ui_utility.h"
 #include "ui/widgets/elastic_scroll.h"
@@ -1376,20 +1377,48 @@ struct InlineFieldTrimResult {
 // measured the gap exactly: with the caret at the end of a 1077 unit block
 // holding two emoji it reported 1075, and 1430 for a 1433 unit block holding
 // three. Walk the text and give every pair back its second unit.
+// How many units of article text one character of the field stands for. The
+// field keeps an emoji as a single object character no matter how long its
+// text is, and that length is not always two: a surrogate pair is two, but so
+// is a base character followed by a variation selector, and a joined sequence
+// is longer still. Counting surrogate pairs alone left the caret one unit
+// short on text holding emoji like U+2757 U+FE0F.
+[[nodiscard]] int FieldCharacterLength(const QString &text, int at) {
+	const auto size = int(text.size());
+	auto length = 0;
+	const auto start = text.constData() + at;
+	const auto end = text.constData() + size;
+	if (Ui::Emoji::Find(start, end, &length) && (length > 0)) {
+		return length;
+	} else if (text.at(at).isHighSurrogate()
+		&& (at + 1 < size)
+		&& text.at(at + 1).isLowSurrogate()) {
+		return 2;
+	}
+	return 1;
+}
+
 [[nodiscard]] int ExpandOverSurrogatePairs(const QString &text, int offset) {
 	const auto size = int(text.size());
-	auto result = std::min(offset, size);
-	for (auto i = 0; i < result && i < size; ++i) {
-		if (text.at(i).isHighSurrogate()
-			&& (i + 1 < size)
-			&& text.at(i + 1).isLowSurrogate()) {
-			++i;
-			if (result < size) {
-				++result;
-			}
-		}
+	auto rich = 0;
+	auto counted = 0;
+	while ((counted < offset) && (rich < size)) {
+		rich += FieldCharacterLength(text, rich);
+		++counted;
 	}
-	return result;
+	return (rich > size) ? size : rich;
+}
+
+[[nodiscard]] int FieldCharactersBefore(const QString &text, int offset) {
+	const auto size = int(text.size());
+	const auto till = (offset > size) ? size : offset;
+	auto rich = 0;
+	auto counted = 0;
+	while (rich < till) {
+		rich += FieldCharacterLength(text, rich);
+		++counted;
+	}
+	return counted;
 }
 
 // The inverse of ExpandOverSurrogatePairs, for the trip back: an offset that
@@ -1399,17 +1428,8 @@ struct InlineFieldTrimResult {
 // remember where a split had happened.
 [[nodiscard]] int SurrogatePairsBefore(const QString &text, int offset) {
 	const auto size = int(text.size());
-	const auto till = std::min(offset, size);
-	auto count = 0;
-	for (auto i = 0; i < till; ++i) {
-		if (text.at(i).isHighSurrogate()
-			&& (i + 1 < size)
-			&& text.at(i + 1).isLowSurrogate()) {
-			++i;
-			++count;
-		}
-	}
-	return count;
+	const auto till = (offset > size) ? size : offset;
+	return till - FieldCharactersBefore(text, till);
 }
 
 [[nodiscard]] int MapEditorOffsetToRichOffset(
