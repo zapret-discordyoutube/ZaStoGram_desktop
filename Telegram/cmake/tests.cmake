@@ -150,6 +150,7 @@ target_link_libraries(test_mtproxy_tls_socket
 PRIVATE
     desktop-app::lib_base
     desktop-app::lib_crl
+    desktop-app::lib_tl
     desktop-app::external_qt
 )
 
