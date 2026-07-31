@@ -34,3 +34,19 @@ PRIVATE
 )
 
 target_compile_definitions(lib_argon2 PRIVATE ARGON2_NO_THREADS)
+if (WIN32)
+    target_compile_definitions(lib_argon2 PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# Silence third-party C warnings. On MSVC the flags must ride an INTERFACE lib
+# linked after common_options to land last and beat its /W4 /WX.
+if (MSVC)
+    add_library(lib_argon2_warnings_off INTERFACE)
+    target_compile_options(lib_argon2_warnings_off
+    INTERFACE
+        /W0
+        /WX-)
+    target_link_libraries(lib_argon2 PRIVATE lib_argon2_warnings_off)
+else()
+    target_compile_options(lib_argon2 PRIVATE -w)
+endif()
