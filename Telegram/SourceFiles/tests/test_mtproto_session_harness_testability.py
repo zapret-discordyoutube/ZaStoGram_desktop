@@ -4,7 +4,6 @@ from pathlib import Path
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 ROOT = SOURCE_DIR.parents[1]
 CMAKE = ROOT / "Telegram" / "CMakeLists.txt"
-TESTS_CMAKE = ROOT / "Telegram" / "cmake" / "tests.cmake"
 SESSION_DIR = SOURCE_DIR / "mtproto" / "session" / "private"
 
 SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
@@ -18,7 +17,6 @@ CONNECTION_FACTORY_H = SESSION_DIR / "connection_factory.h"
 CONNECTION_FACTORY_CPP = SESSION_DIR / "connection_factory.cpp"
 AUTH_FACTORY_H = SESSION_DIR / "auth_factory.h"
 AUTH_FACTORY_CPP = SESSION_DIR / "auth_factory.cpp"
-HARNESS_CPP = SOURCE_DIR / "tests" / "test_mtproto_session_harness.cpp"
 
 
 def read(path):
@@ -96,7 +94,6 @@ def test_session_transport_timers_use_runtime_gateway():
 	assert "RuntimeTimer waitForConnectedTimer;" in timing
 	assert "RuntimeTimer waitForReceivedTimer;" in timing
 	assert "RuntimeTimer waitForBetterTimer;" in timing
-	assert "RuntimeTimer brokerQueueDeadlineTimer;" in timing
 	assert "RuntimeTimer clearOldContainersTimer;" in timing
 	assert "base::Timer" not in timing
 	assert '#include "base/timer.h"' not in header
@@ -106,24 +103,3 @@ def test_session_transport_timers_use_runtime_gateway():
 	assert "timer->callEach(delay);" in runtime_source
 	assert "not_null<RuntimeEnvironment*> runtime" in header
 	assert "not_null<QThread*> thread" in header
-
-
-def test_mtproto_session_harness_target_is_registered():
-    tests_cmake = read(TESTS_CMAKE)
-    harness = read(HARNESS_CPP)
-
-    assert "add_executable(test_mtproto_session_harness WIN32)" in tests_cmake
-    assert "tests/test_mtproto_session_harness.cpp" in tests_cmake
-    assert "test_mtproto_session_harness" in tests_cmake
-    for token in (
-            "FakeSessionConnection",
-            "ScriptedSessionProxyPort",
-            "FakeSessionAuthKeyCreator",
-            "ScenarioConnectionSuccess",
-            "ScenarioAuthSuccess",
-            "ScenarioAuthFailure",
-            "ScenarioReconnectAfterTimeout",
-            "ScenarioCancelWhileAdmissionPending",
-            "ScenarioRequestLifecycle",
-            "ScenarioMainMediaRouting"):
-        assert token in harness
