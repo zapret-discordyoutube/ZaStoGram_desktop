@@ -1490,19 +1490,13 @@ void EmojiListWidget::repaintCustom(uint64 setId) {
 	if (!animationActive()) {
 		return;
 	}
-	if (_repaintsScheduled.contains(setId)) {
-		return;
-	}
-	auto scheduled = false;
 	if (_searchMode) {
 		if (setId == SearchEmojiSectionSetId()) {
-			scheduled = true;
 			animationScheduler().queueRepaint(this, rect());
 		} else {
 			for (auto i = 0, count = int(_searchShortcutSets.size());
 					i != count; ++i) {
 				if (_searchShortcutSets[i].id == setId) {
-					scheduled = true;
 					animationScheduler().queueRepaint(
 						this,
 						searchShortcutRect(i));
@@ -1511,7 +1505,6 @@ void EmojiListWidget::repaintCustom(uint64 setId) {
 			enumerateSections([&](const SectionInfo &info) {
 				if (info.section > 0
 					&& searchSetBySection(info.section).id == setId) {
-					scheduled = true;
 					animationScheduler().queueRepaint(this, QRect(
 						0,
 						info.rowsTop,
@@ -1530,7 +1523,6 @@ void EmojiListWidget::repaintCustom(uint64 setId) {
 				&& (info.section >= _staticCount)
 				&& (setId == _custom[info.section - _staticCount].id);
 			if (repaint1 || repaint2) {
-				scheduled = true;
 				animationScheduler().queueRepaint(this, QRect(
 					0,
 					info.rowsTop,
@@ -1539,9 +1531,6 @@ void EmojiListWidget::repaintCustom(uint64 setId) {
 			}
 			return true;
 		});
-	}
-	if (scheduled) {
-		_repaintsScheduled.emplace(setId);
 	}
 }
 
@@ -2154,7 +2143,6 @@ void EmojiListWidget::paintEvent(QPaintEvent *e) {
 
 	const auto clip = e ? e->rect() : rect();
 
-	_repaintsScheduled.clear();
 	if (_grabbingChosen) {
 		p.setCompositionMode(QPainter::CompositionMode_Source);
 		p.fillRect(clip, Qt::transparent);

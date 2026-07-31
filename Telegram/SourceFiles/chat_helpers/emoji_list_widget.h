@@ -519,7 +519,6 @@ private:
 	std::vector<RecentOne> _recent;
 	base::flat_set<DocumentId> _recentCustomIds;
 	base::flat_set<DocumentId> _freeEffects;
-	base::flat_set<uint64> _repaintsScheduled;
 	rpl::variable<int> _recentShownCount;
 	std::unique_ptr<Ui::Text::CustomEmojiPaintContext> _emojiPaintContext;
 	bool _recentPainted = false;

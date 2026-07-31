@@ -3392,9 +3392,9 @@ public:
 	void clearTextLeafHeightOverride();
 
 	[[nodiscard]] int maxWidth();
-	[[nodiscard]] int lastLayoutWidth() const;
 	[[nodiscard]] bool hasMissingMediaBlocks() const;
 
+	[[nodiscard]] QSize resizeGetSize(int width);
 	[[nodiscard]] int resizeGetHeight(int width);
 
 	[[nodiscard]] auto countRevealLinesGeometry(int width)
@@ -4062,15 +4062,11 @@ int MarkdownArticle::Impl::maxWidth() {
 			+ 1);
 }
 
-int MarkdownArticle::Impl::lastLayoutWidth() const {
-	return _laidOutWidth;
-}
-
 bool MarkdownArticle::Impl::hasMissingMediaBlocks() const {
 	return _missingMediaBlocks > 0;
 }
 
-int MarkdownArticle::Impl::resizeGetHeight(int width) {
+QSize MarkdownArticle::Impl::resizeGetSize(int width) {
 	width = std::max(width, 1);
 	if (_width != width) {
 		if (_blocks.empty()) {
@@ -4079,7 +4075,11 @@ int MarkdownArticle::Impl::resizeGetHeight(int width) {
 			relayoutRetained(width);
 		}
 	}
-	return std::max(_height, 1);
+	return QSize(_laidOutWidth, std::max(_height, 1));
+}
+
+int MarkdownArticle::Impl::resizeGetHeight(int width) {
+	return resizeGetSize(width).height();
 }
 
 auto MarkdownArticle::Impl::countRevealLinesGeometry(int width)
@@ -6121,12 +6121,12 @@ int MarkdownArticle::maxWidth() const {
 	return const_cast<Impl*>(_impl.get())->maxWidth();
 }
 
-int MarkdownArticle::lastLayoutWidth() const {
-	return _impl->lastLayoutWidth();
-}
-
 bool MarkdownArticle::hasMissingMediaBlocks() const {
 	return _impl->hasMissingMediaBlocks();
+}
+
+QSize MarkdownArticle::resizeGetSize(int width) {
+	return _impl->resizeGetSize(width);
 }
 
 int MarkdownArticle::resizeGetHeight(int width) {

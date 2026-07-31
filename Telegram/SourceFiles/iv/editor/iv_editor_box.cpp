@@ -294,7 +294,6 @@ public:
 	void hideShownTooltip();
 	void setEmojiColumnOpen(bool open);
 	[[nodiscard]] int minimalWidth() const;
-	[[nodiscard]] int contentMaxWidth() const;
 
 private:
 	struct PillButton {
@@ -1359,11 +1358,6 @@ int Toolbar::minimalWidth() const {
 		+ _emojiPill->naturalSize().width();
 }
 
-int Toolbar::contentMaxWidth() const {
-	const auto padding = st::ivEditorToolbarPadding;
-	return minimalWidth() - padding.left() - padding.right();
-}
-
 int Toolbar::resizeGetHeight(int width) {
 	const auto padding = st::ivEditorToolbarPadding;
 	const auto top = padding.top();
@@ -1593,12 +1587,6 @@ void WindowHost::Impl::setupWindow(ShowWindowDescriptor &&descriptor) {
 		descriptor.showCreated(_show);
 	}
 	window->setTitle(title);
-	// This used to force the frame off, which left the toolkit drawing a
-	// title bar of its own while the platform kept drawing one too — the
-	// second frame around the window buttons. Dropping the call altogether
-	// did not help either, so ask for the platform frame explicitly and let
-	// the toolkit stop drawing its own.
-	window->setNativeFrame(true);
 	window->setMinimumSize(st::ivEditorWindowMinSize);
 	window->setGeometry(DefaultWindowGeometry());
 
@@ -2046,11 +2034,6 @@ void WindowHost::Impl::layout() {
 	const auto padding = st::ivEditorBottomControlsPadding;
 	const auto emojiWidth = _emojiColumnShown ? emojiColumnWidth() : 0;
 	const auto editorWidth = std::max(width - emojiWidth, 0);
-	// The article used to be capped at the toolbar's own width, which is just
-	// the sum of its buttons, so the text sat in a narrow column no matter how
-	// wide the window was. Let the article decide its own width; zero means
-	// no cap beyond what the article style already sets.
-	_editor->setContentMaxWidth(0);
 	const auto toolbarHeight = _toolbar->resizeGetHeight(editorWidth);
 	auto buttonsHeight = _send->height();
 	if (_cancel) {

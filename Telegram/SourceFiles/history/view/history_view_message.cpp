@@ -620,11 +620,6 @@ void Message::requestRichPageRelayout(QRect articleRect) {
 	if (const auto rich = const_cast<Message*>(this)->richpage()) {
 		rich->article.invalidateLayout();
 	}
-	// The article layout was just invalidated, but textHeightFor() caches by
-	// _textWidth and would short-circuit when re-queried at the same (constant)
-	// max width, leaving the bubble sized from a stale, now-zeroed
-	// lastLayoutWidth(). Drop the text-size cache too so the article is really
-	// laid out again, the same way blockquoteExpandChanged() does for quotes.
 	invalidateTextSizeCache();
 	setPendingResize();
 	history()->owner().requestViewResize(this);
@@ -5360,11 +5355,9 @@ void Message::refreshDataIdHook() {
 
 int Message::monospaceMaxWidth() const {
 	const auto fromText = hasRichPage()
-		? std::max(
-			textualMaxWidth()
-				- st::msgPadding.left()
-				- st::msgPadding.right(),
-			richpage()->article.lastLayoutWidth())
+		? textualMaxWidth()
+			- st::msgPadding.left()
+			- st::msgPadding.right()
 		: hasVisibleText()
 		? text().countMaxMonospaceWidth()
 		: 0;
@@ -5395,9 +5388,8 @@ int Message::bubbleTextualWidth() const {
 	if (hasRichPage()) {
 		const auto innerWidth = bubbleTextWidth(full);
 		[[maybe_unused]] const auto laidOutHeight = textHeightFor(innerWidth);
-		const auto laidOutWidth = richpage()->article.lastLayoutWidth();
 		return st::msgPadding.left()
-			+ std::max(laidOutWidth, 1)
+			+ std::max(textRealWidth(), 1)
 			+ st::msgPadding.right();
 	}
 	const auto media = this->media();
@@ -6620,27 +6612,6 @@ int Message::resizeContentGetHeight(int newWidth) {
 
 	newHeight += marginTop() + marginBottom();
 
-	// Temporary diagnostics for messages relaying themselves out after a
-	// while and changing height. Report only a height that changed while the
-	// width stayed the same — that is the case that cannot be explained by
-	// the window being resized.
-	{
-		static auto logged = 0;
-		if ((_diagLastResizeWidth == newWidth)
-			&& (_diagLastResizeHeight != newHeight)
-			&& (_diagLastResizeHeight > 0)
-			&& (logged < 60)) {
-			++logged;
-			LOG(("MsgResize %1: width=%2 height %3 -> %4 text='%5'"
-				).arg(logged
-				).arg(newWidth
-				).arg(_diagLastResizeHeight
-				).arg(newHeight
-				).arg(data()->originalText().text.left(40)));
-		}
-		_diagLastResizeWidth = newWidth;
-		_diagLastResizeHeight = newHeight;
-	}
 	return newHeight;
 }
 

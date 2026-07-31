@@ -1744,14 +1744,14 @@ int Element::textHeightFor(int textWidth) const {
 	if (_textWidth != textWidth) {
 		_textWidth = textWidth;
 		if (const auto rich = const_cast<Element*>(this)->richpage()) {
-			const auto articleHeight = rich->article.resizeGetHeight(
+			const auto articleSize = rich->article.resizeGetSize(
 				richPageWidthFor(textWidth));
 			_textHeight = st::mediaInBubbleSkip
-				+ articleHeight
+				+ articleSize.height()
 				+ (_text.hasSkipBlock() ? skipBlockHeight() : 0);
-			rich->article.setVisibleTopBottom(0, articleHeight);
+			rich->article.setVisibleTopBottom(0, articleSize.height());
 			_textRealWidth = std::clamp(
-				rich->article.lastLayoutWidth(),
+				articleSize.width(),
 				0,
 				kMaxWidth);
 		} else {

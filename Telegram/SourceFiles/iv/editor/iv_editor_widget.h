@@ -235,7 +235,6 @@ public:
 	void setInlineFieldExternalInteractionActive(bool active);
 	void setTopContentPadding(int value);
 	void setBottomContentPadding(int value);
-	void setContentMaxWidth(int value);
 	[[nodiscard]] rpl::producer<int> searchSlideHeightValue() const;
 
 	struct ArticleColumn {
@@ -498,6 +497,12 @@ private:
 	};
 	[[nodiscard]] std::optional<State::ActiveTextInsertContext>
 	activeTextInsertContext() const;
+	struct FieldTextWithSelection {
+		TextWithEntities text;
+		int anchor = 0;
+		int position = 0;
+	};
+	[[nodiscard]] FieldTextWithSelection fieldTextWithSelection() const;
 	[[nodiscard]] bool hasFieldTextSpanSelection() const;
 	[[nodiscard]] PreparedMediaPasteTarget preparedMediaPasteTarget() const;
 	struct PreparedMediaPasteActivation {
@@ -512,9 +517,6 @@ private:
 		bool useStructuralSelection = true);
 	[[nodiscard]] std::optional<MathEditRequest> activeMathEditRequest() const;
 	[[nodiscard]] MathEditRequest newDisplayMathRequest() const;
-	[[nodiscard]] int richOffsetForFieldOffset(
-		const TextWithEntities &text,
-		int offset) const;
 	[[nodiscard]] int inlineFieldMaxVisualLineWidth() const;
 	struct MathEditResult {
 		QString source;
@@ -567,6 +569,10 @@ private:
 		int selectionFrom,
 		int selectionTo,
 		ActivateReveal revealAfterRestore = ActivateReveal::Skip);
+	[[nodiscard]] int fieldDocumentPositionForActiveTextOffset(
+		int offset) const;
+	[[nodiscard]] int activeTextOffsetForFieldDocumentPosition(
+		int position) const;
 	void setActiveFieldCursorOffset(int offset);
 	[[nodiscard]] std::optional<int> activeFieldPageCursorOffset(
 		bool down) const;
@@ -669,7 +675,7 @@ private:
 		ToolbarFormatAction action) const;
 	void clearFieldUndoRedoNoopState();
 	[[nodiscard]] bool escapeActiveBlockBodyFromToolbar();
-	[[nodiscard]] Fn<void()> captureScrollTopRestorer() const;
+	[[nodiscard]] Fn<void()> captureActiveFieldViewportRestorer() const;
 	template <typename Scroll>
 	void scrollRangeToMakeVisible(Scroll *scroll, int top, int bottom) {
 		const auto padding = effectiveBodyPadding();
@@ -912,12 +918,6 @@ private:
 	int _articleHeight = 0;
 	int _topContentPadding = 0;
 	int _bottomContentPadding = 0;
-	int _contentMaxWidth = 0;
-
-	// How much of the article text was trimmed off the left before it was put
-	// into the field. Offsets coming back out of the field are relative to
-	// what is left, so this has to be added to reach article coordinates.
-	int _fieldTrimmedLeft = 0;
 	int _activeOrdinal = -1;
 	int _activeSegmentIndex = -1;
 	bool _activeSegmentIsDisplayMath = false;

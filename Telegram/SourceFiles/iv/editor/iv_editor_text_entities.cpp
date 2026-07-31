@@ -656,7 +656,19 @@ int MapRichTextOffsetToEditorOffset(
 	return offset + delta;
 }
 
-TextWithEntities ConvertEditorTagsToRichText(TextWithTags text) {
+RichTextEditorContent ConvertEditorTagsToRichText(
+		TextWithTags text,
+		int anchor,
+		int position) {
+	const auto mapReplacement = [](int value, int from, int length, int now) {
+		const auto till = from + length;
+		if (value < from) {
+			return value;
+		} else if (value <= till) {
+			return from + ((value == till) ? now : 0);
+		}
+		return value + now - length;
+	};
 	auto entities = TextUtilities::ConvertTextTagsToEntities(
 		GenericTagsWithoutIvEditorTags(text.tags));
 	AppendEntitiesForTagId(
@@ -719,6 +731,8 @@ TextWithEntities ConvertEditorTagsToRichText(TextWithTags text) {
 			i->offset,
 			i->length,
 			QString(QChar::ObjectReplacementCharacter));
+		anchor = mapReplacement(anchor, i->offset, i->length, 1);
+		position = mapReplacement(position, i->offset, i->length, 1);
 		entities.push_back(EntityInText(
 			EntityType::CustomEmoji,
 			i->offset,
@@ -727,10 +741,19 @@ TextWithEntities ConvertEditorTagsToRichText(TextWithTags text) {
 	}
 
 	SortEntities(&entities);
+	const auto size = int(text.text.size());
 	return {
-		.text = text.text,
-		.entities = entities,
+		.text = {
+			.text = text.text,
+			.entities = entities,
+		},
+		.anchor = std::clamp(anchor, 0, size),
+		.position = std::clamp(position, 0, size),
 	};
+}
+
+TextWithEntities ConvertEditorTagsToRichText(TextWithTags text) {
+	return ConvertEditorTagsToRichText(std::move(text), 0, 0).text;
 }
 
 } // namespace Iv::Editor

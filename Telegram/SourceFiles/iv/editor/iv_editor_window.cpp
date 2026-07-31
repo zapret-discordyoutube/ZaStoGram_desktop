@@ -7,7 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "iv/editor/iv_editor_window.h"
 
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "ui/layers/layer_manager.h"
+#include "ui/platform/ui_platform_window.h"
 
 #include <QtGui/QCloseEvent>
 
@@ -35,6 +38,16 @@ namespace {
 Window::Window(QWidget *parent)
 : Ui::RpWindow(parent)
 , _layers(std::make_unique<Ui::LayerManager>(body())) {
+	auto nativeFrame = rpl::single(
+		Core::App().settings().nativeWindowFrame()
+	) | rpl::then(
+		Core::App().settings().nativeWindowFrameChanges()
+	);
+	std::move(nativeFrame) | rpl::on_next([=](bool enabled) {
+		setNativeFrame(
+			Ui::Platform::NativeWindowFrameSupported() && enabled);
+	}, lifetime());
+
 	_layers->setHideByBackgroundClick(true);
 	LiveWindows().push_back(this);
 }

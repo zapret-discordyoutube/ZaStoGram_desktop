@@ -380,8 +380,8 @@ public:
 	void clearTextLeafHeightOverride();
 	void invalidateLayout();
 	[[nodiscard]] int maxWidth() const;
-	[[nodiscard]] int lastLayoutWidth() const;
 	[[nodiscard]] bool hasMissingMediaBlocks() const;
+	[[nodiscard]] QSize resizeGetSize(int width);
 	[[nodiscard]] int resizeGetHeight(int width);
 	[[nodiscard]] auto countRevealLinesGeometry(int width)
 	-> std::vector<MarkdownArticleRevealLine>;

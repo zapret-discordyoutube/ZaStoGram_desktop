@@ -525,6 +525,30 @@ void test(not_null<Ui::RpWindow*> window, not_null<Ui::RpWidget*> body) {
 		HasEntityType(
 			controlText->toTextWithEntities().entities,
 			EntityType::CustomEmoji));
+	{
+		auto orphanData = TextWithEntities();
+		orphanData.append(u"prefix Alpha "_q);
+		const auto objectPosition = orphanData.text.size();
+		orphanData.append(QChar::ObjectReplacementCharacter);
+		orphanData.entities.push_back(EntityInText(
+			EntityType::CustomEmoji,
+			objectPosition,
+			1,
+			controlEntityData));
+		const auto orphanText = Ui::Text::String(
+			st::defaultTextStyle,
+			orphanData,
+			kMarkupTextOptions,
+			scale(64),
+			context);
+		const auto firstLineLimit = st::defaultTextStyle.font->width(
+			u"prefix Alpha "_q);
+		const auto lines = orphanText.countLinesGeometry(firstLineLimit);
+		Expects(lines.size() == 2);
+		if (lines.size() == 2) {
+			Expects(lines.back().width > controlImage.width());
+		}
+	}
 	const auto controlProbeText = u"a / b"_q;
 	const auto controlLineSource = u"Alpha a / b omega"_q;
 	const auto controlProbePosition = controlLineSource.indexOf(controlProbeText);
@@ -566,6 +590,14 @@ void test(not_null<Ui::RpWindow*> window, not_null<Ui::RpWidget*> body) {
 			QString());
 		field->resize(scale(320), fieldStyle.heightMin);
 		field->show();
+		const auto emojiText = u"a\U0001F600b"_q;
+		field->setText(emojiText);
+		Expects(field->getLastText() == emojiText);
+		Expects(field->textOffsetForDocumentPosition(1) == 1);
+		Expects(field->textOffsetForDocumentPosition(2) == 3);
+		Expects(field->documentPositionForTextOffset(1) == 1);
+		Expects(field->documentPositionForTextOffset(3) == 2);
+		field->clear();
 		field->setDocumentMargin(4.);
 		field->setAdditionalMargin(style::ConvertScale(4) - 4);
 		field->finishAnimating();

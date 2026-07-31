@@ -24,6 +24,12 @@ struct RichTextEditorConversion {
 	std::vector<RichTextEditorOffsetReplacement> replacements;
 };
 
+struct RichTextEditorContent {
+	TextWithEntities text;
+	int anchor = 0;
+	int position = 0;
+};
+
 [[nodiscard]] RichTextEditorConversion ConvertRichTextToEditorTags(
 	TextWithEntities text);
 [[nodiscard]] TextWithEntities FormulaSourceToRichText(QString source);
@@ -31,5 +37,9 @@ struct RichTextEditorConversion {
 	const std::vector<RichTextEditorOffsetReplacement> &replacements,
 	int offset);
 [[nodiscard]] TextWithEntities ConvertEditorTagsToRichText(TextWithTags text);
+[[nodiscard]] RichTextEditorContent ConvertEditorTagsToRichText(
+	TextWithTags text,
+	int anchor,
+	int position);
 
 } // namespace Iv::Editor

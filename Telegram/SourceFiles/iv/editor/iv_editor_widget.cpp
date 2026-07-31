@@ -48,7 +48,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/text/text_entity.h"
 #include "ui/text/text_html_tags.h"
-#include "ui/emoji_config.h"
 #include "ui/text/text_utilities.h"
 #include "ui/ui_utility.h"
 #include "ui/widgets/elastic_scroll.h"
@@ -100,6 +99,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <array>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 namespace Iv::Editor {
 namespace {
@@ -1368,71 +1368,6 @@ struct InlineFieldTrimResult {
 		}
 	}
 	return { std::move(text), from };
-}
-
-// The field keeps an emoji as a single character, while the article text keeps
-// it as a surrogate pair. Nothing in `replacements` covers that — the list is
-// built from formulas only — so an offset that came from the field counts one
-// unit per emoji and lands short of where the caret really is. A dev build
-// measured the gap exactly: with the caret at the end of a 1077 unit block
-// holding two emoji it reported 1075, and 1430 for a 1433 unit block holding
-// three. Walk the text and give every pair back its second unit.
-// How many units of article text one character of the field stands for. The
-// field keeps an emoji as a single object character no matter how long its
-// text is, and that length is not always two: a surrogate pair is two, but so
-// is a base character followed by a variation selector, and a joined sequence
-// is longer still. Counting surrogate pairs alone left the caret one unit
-// short on text holding emoji like U+2757 U+FE0F.
-[[nodiscard]] int FieldCharacterLength(const QString &text, int at) {
-	const auto size = int(text.size());
-	auto length = 0;
-	const auto start = text.constData() + at;
-	const auto end = text.constData() + size;
-	if (Ui::Emoji::Find(start, end, &length) && (length > 0)) {
-		return length;
-	} else if (text.at(at).isHighSurrogate()
-		&& (at + 1 < size)
-		&& text.at(at + 1).isLowSurrogate()) {
-		return 2;
-	}
-	return 1;
-}
-
-[[nodiscard]] int ExpandOverSurrogatePairs(
-		const QString &text,
-		int offset,
-		int from = 0) {
-	const auto size = int(text.size());
-	auto rich = (from > size) ? size : from;
-	auto counted = 0;
-	while ((counted < offset) && (rich < size)) {
-		rich += FieldCharacterLength(text, rich);
-		++counted;
-	}
-	return (rich > size) ? size : rich;
-}
-
-[[nodiscard]] int FieldCharactersBefore(const QString &text, int offset) {
-	const auto size = int(text.size());
-	const auto till = (offset > size) ? size : offset;
-	auto rich = 0;
-	auto counted = 0;
-	while (rich < till) {
-		rich += FieldCharacterLength(text, rich);
-		++counted;
-	}
-	return counted;
-}
-
-// The inverse of ExpandOverSurrogatePairs, for the trip back: an offset that
-// counts two units per emoji has to lose one of them before it can be used as
-// a caret position in the field. Without this the caret drifts right by one
-// per emoji every time a block is reopened, which is why it never seemed to
-// remember where a split had happened.
-[[nodiscard]] int SurrogatePairsBefore(const QString &text, int offset) {
-	const auto size = int(text.size());
-	const auto till = (offset > size) ? size : offset;
-	return till - FieldCharactersBefore(text, till);
 }
 
 [[nodiscard]] int MapEditorOffsetToRichOffset(
@@ -2899,23 +2834,6 @@ Widget::Widget(
 			_selectScroll.cancel();
 			return;
 		}
-		// Temporary diagnostics for the editor scrolling on its own. This
-		// handler only ever fires from the selection auto-scroll timer, so
-		// say what the drag state looks like when it does.
-		static auto logged = 0;
-		if (logged < 40) {
-			++logged;
-			LOG(("IvScroll %1: delta=%2 scrollTop=%3 visible=%4..%5 "
-				"dragActive=%6 dragStarted=%7 operation=%8"
-				).arg(logged
-				).arg(delta
-				).arg(scroll->scrollTop()
-				).arg(_visibleRange.top
-				).arg(_visibleRange.bottom
-				).arg(_articleSelectionDrag.active ? 1 : 0
-				).arg(_articleSelectionDrag.dragStarted ? 1 : 0
-				).arg(int(_articleSelectionDrag.operation)));
-		}
 		scroll->scrollToY(scroll->scrollTop() + delta);
 		updateArticleSelectionDragFromCursor();
 	}, lifetime());
@@ -3086,7 +3004,7 @@ bool Widget::commitAndActivateTextOrdinal(
 		int selectionFrom,
 		int selectionTo,
 		ActivateReveal revealAfterRestore) {
-	const auto restoreScroll = captureScrollTopRestorer();
+	const auto restoreViewport = captureActiveFieldViewportRestorer();
 	auto source = std::optional<Markdown::PreparedEditLeafSource>();
 	auto committed = ApplyResult::Unchanged;
 	beginArticleRelayoutDeferral();
@@ -3121,8 +3039,8 @@ bool Widget::commitAndActivateTextOrdinal(
 		refreshAfterInlineFieldCommit(committed, std::move(source));
 	}
 	endArticleRelayoutDeferral();
-	if (restoreScroll) {
-		restoreScroll();
+	if (restoreViewport) {
+		restoreViewport();
 	}
 	if (revealAfterRestore == ActivateReveal::Reveal) {
 		revealActiveInlineField();
@@ -3226,10 +3144,7 @@ void Widget::updateSearchBarGeometry() {
 }
 
 Widget::ArticleColumn Widget::searchBarColumn(int outerWidth) const {
-	const auto column = articleColumnForWidth(outerWidth);
-	return (column.width >= _contentMaxWidth)
-		? column
-		: ArticleColumn{ 0, outerWidth };
+	return articleColumnForWidth(outerWidth);
 }
 
 int Widget::searchBarTop() const {
@@ -3416,10 +3331,14 @@ void Widget::resizeCurrentContentToWidth(int width) {
 }
 
 void Widget::relayoutCurrentContent() {
+	const auto restoreViewport = captureActiveFieldViewportRestorer();
 	const auto width = std::max(
 		widthNoMargins(),
 		parentWidget() ? parentWidget()->width() : 0);
 	resizeCurrentContentToWidth(width);
+	if (restoreViewport) {
+		restoreViewport();
+	}
 }
 
 void Widget::syncInlineFieldGeometry() {
@@ -4933,59 +4852,47 @@ bool Widget::escapeActiveBlockBodyFromToolbar() {
 	return handled;
 }
 
-Fn<void()> Widget::captureScrollTopRestorer() const {
+Fn<void()> Widget::captureActiveFieldViewportRestorer() const {
+	if (!_field || _field->isHidden() || !_fieldLeaf) {
+		return nullptr;
+	}
+	const auto leaf = *_fieldLeaf;
+	const auto weakThis = QPointer<Widget>(const_cast<Widget*>(this));
+	const auto make = [&](auto *scroll) -> Fn<void()> {
+		using Scroll = std::remove_pointer_t<decltype(scroll)>;
+		const auto weakScroll = QPointer<Scroll>(scroll);
+		const auto inner = scroll->widget();
+		if (!inner) {
+			return nullptr;
+		}
+		const auto anchor = mapFieldLocalRectToScrollContent(
+			inner,
+			activeInlineFieldRevealRect()).center().y();
+		const auto viewportY = anchor - scroll->scrollTop();
+		return [=] {
+			if (!weakThis
+				|| !weakScroll
+				|| weakThis->_field->isHidden()
+				|| !weakThis->_fieldLeaf
+				|| (*weakThis->_fieldLeaf != leaf)) {
+				return;
+			}
+			const auto inner = weakScroll->widget();
+			if (!inner) {
+				return;
+			}
+			const auto now = weakThis->mapFieldLocalRectToScrollContent(
+				inner,
+				weakThis->activeInlineFieldRevealRect()).center().y();
+			weakScroll->scrollToY(now - viewportY);
+		};
+	};
 	for (auto parent = parentWidget(); parent; parent = parent->parentWidget()) {
 		if (const auto scroll = dynamic_cast<Ui::ScrollArea*>(parent)) {
-			const auto weak = QPointer<Ui::ScrollArea>(scroll);
-			const auto top = scroll->scrollTop();
-			const auto max = scroll->scrollTopMax();
-			return [=] {
-				if (weak) {
-					// Temporary diagnostics for the article moving on its
-					// own. This restores an absolute position captured
-					// before a mutation; if the content changed height in
-					// between, the same number now points somewhere else.
-					static auto logged = 0;
-					const auto nowMax = weak->scrollTopMax();
-					if ((logged < 40) && (nowMax != max)) {
-						++logged;
-						LOG(("IvRestore %1: restoring top=%2, "
-							"was at %3, max %4 -> %5"
-							).arg(logged
-							).arg(top
-							).arg(weak->scrollTop()
-							).arg(max
-							).arg(nowMax));
-					}
-					weak->scrollToY(top);
-				}
-			};
+			return make(scroll);
 		}
 		if (const auto scroll = dynamic_cast<Ui::ElasticScroll*>(parent)) {
-			const auto weak = QPointer<Ui::ElasticScroll>(scroll);
-			const auto top = scroll->scrollTop();
-			const auto max = scroll->scrollTopMax();
-			return [=] {
-				if (weak) {
-					// Same diagnostics as the ScrollArea branch above. The
-					// first round measured only that one and saw nothing,
-					// which said the branch was never taken rather than that
-					// the restore was innocent.
-					static auto logged = 0;
-					const auto nowMax = weak->scrollTopMax();
-					if ((logged < 40) && (nowMax != max)) {
-						++logged;
-						LOG(("IvRestoreElastic %1: restoring top=%2, "
-							"was at %3, max %4 -> %5"
-							).arg(logged
-							).arg(top
-							).arg(weak->scrollTop()
-							).arg(max
-							).arg(nowMax));
-					}
-					weak->scrollToY(top);
-				}
-			};
+			return make(scroll);
 		}
 	}
 	return nullptr;
@@ -5256,14 +5163,6 @@ void Widget::setBottomContentPadding(int value) {
 	}
 	_bottomContentPadding = value;
 	resizeToWidth(width());
-	update();
-}
-
-void Widget::setContentMaxWidth(int value) {
-	if (_contentMaxWidth == value) {
-		return;
-	}
-	_contentMaxWidth = value;
 	update();
 }
 
@@ -7866,10 +7765,8 @@ void Widget::mouseReleaseEvent(QMouseEvent *e) {
 			&& !_field->isHidden()
 			&& hit.segmentIndex == _activeSegmentIndex) {
 			auto cursor = _field->textCursor();
-			cursor.setPosition(std::clamp(
-				offset,
-				0,
-				int(_field->getLastText().size())));
+			cursor.setPosition(
+				fieldDocumentPositionForActiveTextOffset(offset));
 			_field->setTextCursor(cursor);
 			_field->setFocusFast();
 		} else if (targetOrdinal >= 0) {
@@ -8260,7 +8157,10 @@ void Widget::setupInlineField() {
 
 	const auto field = QPointer<Ui::InputField>(_field.get());
 	const auto revealActiveField = [=] {
-		if (!field || (_field.get() != field.data())) {
+		if (!field
+			|| (_field.get() != field.data())
+			|| _settingField
+			|| articleRelayoutDeferralActive()) {
 			return;
 		}
 		revealActiveInlineField();
@@ -8336,8 +8236,9 @@ void Widget::setupInlineField() {
 void Widget::recreateInlineField(const style::InputField &st) {
 	const auto text = _field->getTextWithTags();
 	const auto cursor = _field->textCursor();
-	const auto position = cursor.position();
-	const auto anchor = cursor.anchor();
+	const auto position = _field->textOffsetForDocumentPosition(
+		cursor.position());
+	const auto anchor = _field->textOffsetForDocumentPosition(cursor.anchor());
 	const auto wasHidden = _field->isHidden();
 	const auto hadFocus = _field->hasFocus();
 
@@ -8359,8 +8260,10 @@ void Widget::recreateInlineField(const style::InputField &st) {
 	_field->setTextWithTags(text, Ui::InputField::HistoryAction::Clear);
 	auto restored = _field->textCursor();
 	const auto size = int(_field->getLastText().size());
-	const auto restoredAnchor = std::clamp(anchor, 0, size);
-	const auto restoredPosition = std::clamp(position, 0, size);
+	const auto restoredAnchor = _field->documentPositionForTextOffset(
+		std::clamp(anchor, 0, size));
+	const auto restoredPosition = _field->documentPositionForTextOffset(
+		std::clamp(position, 0, size));
 	restored.setPosition(restoredAnchor);
 	if (restoredPosition != restoredAnchor) {
 		restored.setPosition(restoredPosition, QTextCursor::KeepAnchor);
@@ -8521,9 +8424,6 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 		&& activeLeaf
 		&& _fieldLeaf
 		&& (*_fieldLeaf == *activeLeaf);
-	auto cursorSelectionFrom = selectionFrom;
-	auto cursorSelectionTo = selectionTo;
-	auto trimmedLeft = 0;
 	const auto trimLeft = !_state->codeBlockLanguage(
 		_state->activeTextOrdinal()).has_value();
 	const auto wasSuppressingHistoryRedoInvalidation
@@ -8580,11 +8480,10 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 				trimmed.text,
 				Ui::InputField::HistoryAction::Clear);
 		}
-		trimmedLeft = trimmed.left;
 		clearArticleEditableHeightOverride();
 	} else {
-		const auto activeRich = _state->activeText();
-		const auto activeText = ConvertRichTextToEditorTags(activeRich);
+		const auto activeText = ConvertRichTextToEditorTags(
+			_state->activeText());
 		const auto trimmed = TrimInlineFieldText(activeText.text, trimLeft);
 		if (preserveRestoredRetainedField(trimmed.text)) {
 			finishWithRetainedField();
@@ -8596,23 +8495,10 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 				trimmed.text,
 				Ui::InputField::HistoryAction::Clear);
 		}
-		cursorSelectionFrom = MapRichTextOffsetToEditorOffset(
-			activeText.replacements,
-			selectionFrom)
-			- SurrogatePairsBefore(activeRich.text, selectionFrom);
-		cursorSelectionTo = MapRichTextOffsetToEditorOffset(
-			activeText.replacements,
-			selectionTo)
-			- SurrogatePairsBefore(activeRich.text, selectionTo);
-		trimmedLeft = trimmed.left;
 	}
-	_fieldTrimmedLeft = trimmedLeft;
-	cursorSelectionFrom -= trimmedLeft;
-	cursorSelectionTo -= trimmedLeft;
 	auto cursor = _field->textCursor();
-	const auto size = int(_field->getLastText().size());
-	const auto from = std::clamp(cursorSelectionFrom, 0, size);
-	const auto to = std::clamp(cursorSelectionTo, 0, size);
+	const auto from = fieldDocumentPositionForActiveTextOffset(selectionFrom);
+	const auto to = fieldDocumentPositionForActiveTextOffset(selectionTo);
 	cursor.setPosition(from);
 	if (to != from) {
 		cursor.setPosition(to, QTextCursor::KeepAnchor);
@@ -8738,7 +8624,8 @@ QRect Widget::mapFieldLocalRectToScrollContent(
 }
 
 void Widget::revealActiveInlineField() {
-	if (inlineFieldRevealSuppressed()
+	if (_settingField
+		|| inlineFieldRevealSuppressed()
 		|| _field->isHidden()
 		|| _activeSegmentIndex < 0) {
 		return;
@@ -8802,8 +8689,10 @@ void Widget::revertInlineFieldToState() {
 	if (_field->isHidden() || _activeSegmentIndex < 0) {
 		return;
 	}
-	const auto cursor = _field->textCursor();
-	setInlineFieldFromActiveState(cursor.anchor(), cursor.position());
+	const auto selection = captureHistoryViewState().leafSelection;
+	setInlineFieldFromActiveState(
+		selection ? selection->anchorOffset : 0,
+		selection ? selection->cursorOffset : 0);
 	syncInlineFieldGeometry();
 	updateInlineFieldHeightOverride();
 }
@@ -8816,10 +8705,10 @@ Widget::activeTextInsertContext() const {
 		|| (_state->activeFieldMode() == State::FieldMode::Raw)) {
 		return std::nullopt;
 	}
-	auto full = ConvertEditorTagsToRichText(_field->getTextWithAppliedMarkdown());
-	const auto cursor = _field->textCursor();
-	auto from = richOffsetForFieldOffset(full, cursor.selectionStart());
-	auto till = richOffsetForFieldOffset(full, cursor.selectionEnd());
+	auto snapshot = fieldTextWithSelection();
+	auto full = std::move(snapshot.text);
+	auto from = std::min(snapshot.anchor, snapshot.position);
+	auto till = std::max(snapshot.anchor, snapshot.position);
 	const auto textSize = int(full.text.size());
 	from = std::clamp(from, 0, textSize);
 	till = std::clamp(till, from, textSize);
@@ -8836,6 +8725,19 @@ Widget::activeTextInsertContext() const {
 		.before = std::move(before),
 		.selected = std::move(selected),
 		.after = std::move(after),
+	};
+}
+
+Widget::FieldTextWithSelection Widget::fieldTextWithSelection() const {
+	auto tagged = _field->getTextWithAppliedMarkdownAndSelection();
+	auto converted = ConvertEditorTagsToRichText(
+		std::move(tagged.text),
+		tagged.anchor,
+		tagged.position);
+	return {
+		.text = std::move(converted.text),
+		.anchor = converted.anchor,
+		.position = converted.position,
 	};
 }
 
@@ -9000,47 +8902,6 @@ bool Widget::handleIvClipboardMime(
 		}
 	}
 	return false;
-}
-
-int Widget::richOffsetForFieldOffset(
-		const TextWithEntities &text,
-		int offset) const {
-	const auto replacements = ConvertRichTextToEditorTags(text).replacements;
-	const auto mapped = std::clamp(
-		MapEditorOffsetToRichOffset(replacements, offset),
-		0,
-		int(text.text.size()));
-	// The field holds the article text with _fieldTrimmedLeft units cut off
-	// the front, so an offset from it counts from there and not from the
-	// start. setInlineFieldFromActiveState() subtracts the same amount on the
-	// way in; without adding it back here the two directions disagree and the
-	// caret lands a few characters off, inside a word.
-	const auto result = ExpandOverSurrogatePairs(
-		text.text,
-		mapped,
-		_fieldTrimmedLeft);
-
-	// Temporary diagnostics for the paragraph split landing before an emoji.
-	// replacements only ever covers formulas, while an emoji is one character
-	// in the field and two UTF-16 units here, so this is where the two
-	// coordinate systems are expected to disagree.
-	static auto logged = 0;
-	if (logged < 60) {
-		++logged;
-		const auto from = std::max(result - 8, 0);
-		LOG(("IvOffset %1: editor=%2 mapped=%8 rich=%3 len=%4 trim=%9 "
-			"replacements=%5 around='%6|%7'"
-			).arg(logged
-			).arg(offset
-			).arg(result
-			).arg(int(text.text.size())
-			).arg(int(replacements.size())
-			).arg(text.text.mid(from, result - from)
-			).arg(text.text.mid(result, 8)
-			).arg(mapped
-			).arg(_fieldTrimmedLeft));
-	}
-	return result;
 }
 
 ApplyResult Widget::applyFieldTextToState() {
@@ -9216,12 +9077,54 @@ void Widget::activateTextOrdinalAtEnd(int ordinal) {
 	activateTextOrdinal(ordinal, _state->activeTextLength());
 }
 
-void Widget::setActiveFieldCursorOffset(int offset) {
-	auto cursor = _field->textCursor();
-	cursor.setPosition(std::clamp(
-		offset,
+int Widget::fieldDocumentPositionForActiveTextOffset(int offset) const {
+	const auto trimLeft = !_state->codeBlockLanguage(
+		_state->activeTextOrdinal()).has_value();
+	auto editorOffset = offset;
+	if (_state->activeFieldMode() == State::FieldMode::Raw) {
+		const auto trimmed = TrimInlineFieldText(
+			{ _state->activeRawText(), {} },
+			trimLeft);
+		editorOffset -= trimmed.left;
+	} else {
+		const auto active = ConvertRichTextToEditorTags(_state->activeText());
+		const auto trimmed = TrimInlineFieldText(active.text, trimLeft);
+		editorOffset = MapRichTextOffsetToEditorOffset(
+			active.replacements,
+			offset) - trimmed.left;
+	}
+	return _field->documentPositionForTextOffset(std::clamp(
+		editorOffset,
 		0,
 		int(_field->getLastText().size())));
+}
+
+int Widget::activeTextOffsetForFieldDocumentPosition(int position) const {
+	const auto trimLeft = !_state->codeBlockLanguage(
+		_state->activeTextOrdinal()).has_value();
+	auto editorOffset = _field->textOffsetForDocumentPosition(position);
+	if (_state->activeFieldMode() == State::FieldMode::Raw) {
+		const auto trimmed = TrimInlineFieldText(
+			{ _state->activeRawText(), {} },
+			trimLeft);
+		return std::clamp(
+			editorOffset + trimmed.left,
+			0,
+			int(_state->activeRawText().size()));
+	}
+	const auto active = ConvertRichTextToEditorTags(_state->activeText());
+	const auto trimmed = TrimInlineFieldText(active.text, trimLeft);
+	return std::clamp(
+		MapEditorOffsetToRichOffset(
+			active.replacements,
+			editorOffset + trimmed.left),
+		0,
+		int(_state->activeText().text.size()));
+}
+
+void Widget::setActiveFieldCursorOffset(int offset) {
+	auto cursor = _field->textCursor();
+	cursor.setPosition(fieldDocumentPositionForActiveTextOffset(offset));
 	_field->setTextCursor(cursor);
 	_field->setFocusFast();
 	revealActiveInlineField();
@@ -9246,10 +9149,7 @@ std::optional<int> Widget::activeFieldPageCursorOffset(bool down) const {
 	if (!raw->viewport()->rect().contains(point)) {
 		return std::nullopt;
 	}
-	return std::clamp(
-		raw->cursorForPosition(point).position(),
-		0,
-		int(_field->getLastText().size()));
+	return raw->cursorForPosition(point).position();
 }
 
 std::optional<QPoint> Widget::activeFieldCursorArticlePoint() const {
@@ -9552,21 +9452,13 @@ bool Widget::enterStructuralSelectionFromField(bool forward, bool page) {
 		if (!leaf) {
 			return std::optional<CommittedFieldSelectionCapture>();
 		}
-		const auto text = ConvertEditorTagsToRichText(
-			_field->getTextWithAppliedMarkdown());
-		const auto cursor = _field->textCursor();
-		const auto length = int(text.text.size());
+		auto snapshot = fieldTextWithSelection();
+		const auto length = int(snapshot.text.text.size());
 		return std::make_optional(CommittedFieldSelectionCapture{
 			.leaf = *leaf,
-			.text = text,
-			.anchorOffset = std::clamp(
-				richOffsetForFieldOffset(text, cursor.anchor()),
-				0,
-				length),
-			.cursorOffset = std::clamp(
-				richOffsetForFieldOffset(text, cursor.position()),
-				0,
-				length),
+			.text = std::move(snapshot.text),
+			.anchorOffset = std::clamp(snapshot.anchor, 0, length),
+			.cursorOffset = std::clamp(snapshot.position, 0, length),
 		});
 	}();
 	const auto committed = commitInlineFieldForClose();
@@ -10375,21 +10267,13 @@ bool Widget::removeBoundaryOwner(bool forward) {
 		if (!leaf) {
 			return std::optional<CommittedFieldSelectionCapture>();
 		}
-		const auto text = ConvertEditorTagsToRichText(
-			_field->getTextWithAppliedMarkdown());
-		const auto cursor = _field->textCursor();
-		const auto length = int(text.text.size());
+		auto snapshot = fieldTextWithSelection();
+		const auto length = int(snapshot.text.text.size());
 		return std::make_optional(CommittedFieldSelectionCapture{
 			.leaf = *leaf,
-			.text = text,
-			.anchorOffset = std::clamp(
-				richOffsetForFieldOffset(text, cursor.anchor()),
-				0,
-				length),
-			.cursorOffset = std::clamp(
-				richOffsetForFieldOffset(text, cursor.position()),
-				0,
-				length),
+			.text = std::move(snapshot.text),
+			.anchorOffset = std::clamp(snapshot.anchor, 0, length),
+			.cursorOffset = std::clamp(snapshot.position, 0, length),
 		});
 	}();
 	beginArticleRelayoutDeferral();
@@ -10629,42 +10513,12 @@ Widget::HistoryViewState Widget::captureHistoryViewState() const {
 			return result;
 		}
 		const auto cursor = _field->textCursor();
-		const auto trimLeft = !_state->codeBlockLanguage(
-			_state->activeTextOrdinal()).has_value();
-		auto anchorOffset = 0;
-		auto cursorOffset = 0;
-		if (_state->activeFieldMode() == State::FieldMode::Raw) {
-			const auto trimmed = TrimInlineFieldText(
-				{ _state->activeRawText(), {} },
-				trimLeft);
-			const auto size = int(_state->activeRawText().size());
-			anchorOffset = std::clamp(cursor.anchor() + trimmed.left, 0, size);
-			cursorOffset = std::clamp(
-				cursor.position() + trimmed.left,
-				0,
-				size);
-		} else {
-			const auto activeText = ConvertRichTextToEditorTags(
-				_state->activeText());
-			const auto trimmed = TrimInlineFieldText(activeText.text, trimLeft);
-			const auto size = int(_state->activeText().text.size());
-			anchorOffset = std::clamp(
-				MapEditorOffsetToRichOffset(
-					activeText.replacements,
-					cursor.anchor() + trimmed.left),
-				0,
-				size);
-			cursorOffset = std::clamp(
-				MapEditorOffsetToRichOffset(
-					activeText.replacements,
-					cursor.position() + trimmed.left),
-				0,
-				size);
-		}
 		result.leafSelection = HistoryLeafSelection{
 			.leaf = *leaf,
-			.anchorOffset = anchorOffset,
-			.cursorOffset = cursorOffset,
+			.anchorOffset = activeTextOffsetForFieldDocumentPosition(
+				cursor.anchor()),
+			.cursorOffset = activeTextOffsetForFieldDocumentPosition(
+				cursor.position()),
 		};
 	} else if (hasStructuralSelection()) {
 		result.structuralSelection = _structuralSelection;
@@ -10960,7 +10814,8 @@ void Widget::syncInlineFieldGeometry(int width) {
 	const auto segmentRect = fieldOuterRectForSegment(_activeSegmentIndex);
 	if (segmentRect.isEmpty()) {
 		_pendingOrdinal = _activeOrdinal;
-		_pendingCursorOffset = _field->textCursor().position();
+		_pendingCursorOffset = activeTextOffsetForFieldDocumentPosition(
+			_field->textCursor().position());
 		hideInlineField();
 		clearArticleEditableHeightOverride();
 		_article->clearEditableMaxLineWidthOverride();
@@ -11302,25 +11157,22 @@ bool Widget::startSelectionDragFromExistingState(
 		if (!sourceLeaf || !preparedSource) {
 			return false;
 		}
-		const auto full = ConvertEditorTagsToRichText(
-			_field->getTextWithAppliedMarkdown());
+		auto snapshot = fieldTextWithSelection();
+		auto full = std::move(snapshot.text);
 		const auto cursor = _field->textCursor();
 		if (!cursor.hasSelection()) {
 			return false;
 		}
 		const auto length = int(full.text.size());
-		auto from = richOffsetForFieldOffset(full, cursor.selectionStart());
-		auto till = richOffsetForFieldOffset(full, cursor.selectionEnd());
+		auto from = std::min(snapshot.anchor, snapshot.position);
+		auto till = std::max(snapshot.anchor, snapshot.position);
 		from = std::clamp(from, 0, length);
 		till = std::clamp(till, from, length);
 		if (from >= till) {
 			return false;
 		}
 		drag.textSegment = _activeSegmentIndex;
-		drag.textOffset = std::clamp(
-			cursor.position(),
-			0,
-			int(_field->getLastText().size()));
+		drag.textOffset = snapshot.position;
 		drag.mode = DragSelectionMode::Text;
 		drag.inlineSource = TextNodeSpan{
 			.leaf = *sourceLeaf,
@@ -12231,10 +12083,7 @@ bool Widget::handleFieldMouseEvent(QEvent *event) {
 			.globalPressPoint = globalPoint,
 			.anchorHit = anchorHit,
 			.textSegment = _activeSegmentIndex,
-			.textOffset = std::clamp(
-				cursor.position(),
-				0,
-				int(_field->getLastText().size())),
+			.textOffset = fieldTextWithSelection().position,
 			.operation = ArticleSelectionOperation::GrowSelection,
 			.mode = DragSelectionMode::Text,
 		};
@@ -12318,7 +12167,8 @@ bool Widget::handleFieldMouseEvent(QEvent *event) {
 			const auto raw = _field->rawTextEdit();
 			const auto pointerCursor = raw->cursorForPosition(
 				raw->viewport()->mapFromGlobal(globalPoint));
-			const auto size = int(_field->getLastText().size());
+			const auto size = _field->documentPositionForTextOffset(
+				_field->getLastText().size());
 			const auto anchor = std::clamp(
 				*_articleSelectionDrag.interruptedFieldAnchor,
 				0,
@@ -12345,7 +12195,8 @@ bool Widget::handleFieldMouseEvent(QEvent *event) {
 				const auto raw = _field->rawTextEdit();
 				const auto pointerCursor = raw->cursorForPosition(
 					raw->viewport()->mapFromGlobal(globalPoint));
-				const auto size = int(_field->getLastText().size());
+				const auto size = _field->documentPositionForTextOffset(
+					_field->getLastText().size());
 				const auto position = std::clamp(
 					pointerCursor.position(),
 					0,
@@ -12565,9 +12416,7 @@ int Widget::articleWidth(int outerWidth) const {
 	const auto available = std::max(
 		outerWidth - padding.left() - padding.right(),
 		1);
-	const auto maxWidth = (_contentMaxWidth > 0)
-		? _contentMaxWidth
-		: (_article ? _article->maxWidth() : available);
+	const auto maxWidth = _article ? _article->maxWidth() : available;
 	return std::min(available, maxWidth);
 }
 
