@@ -913,6 +913,11 @@ private:
 	int _topContentPadding = 0;
 	int _bottomContentPadding = 0;
 	int _contentMaxWidth = 0;
+
+	// How much of the article text was trimmed off the left before it was put
+	// into the field. Offsets coming back out of the field are relative to
+	// what is left, so this has to be added to reach article coordinates.
+	int _fieldTrimmedLeft = 0;
 	int _activeOrdinal = -1;
 	int _activeSegmentIndex = -1;
 	bool _activeSegmentIsDisplayMath = false;

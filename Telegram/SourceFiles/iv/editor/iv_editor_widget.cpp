@@ -1398,9 +1398,12 @@ struct InlineFieldTrimResult {
 	return 1;
 }
 
-[[nodiscard]] int ExpandOverSurrogatePairs(const QString &text, int offset) {
+[[nodiscard]] int ExpandOverSurrogatePairs(
+		const QString &text,
+		int offset,
+		int from = 0) {
 	const auto size = int(text.size());
-	auto rich = 0;
+	auto rich = (from > size) ? size : from;
 	auto counted = 0;
 	while ((counted < offset) && (rich < size)) {
 		rich += FieldCharacterLength(text, rich);
@@ -8603,6 +8606,7 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 			- SurrogatePairsBefore(activeRich.text, selectionTo);
 		trimmedLeft = trimmed.left;
 	}
+	_fieldTrimmedLeft = trimmedLeft;
 	cursorSelectionFrom -= trimmedLeft;
 	cursorSelectionTo -= trimmedLeft;
 	auto cursor = _field->textCursor();
@@ -9006,7 +9010,15 @@ int Widget::richOffsetForFieldOffset(
 		MapEditorOffsetToRichOffset(replacements, offset),
 		0,
 		int(text.text.size()));
-	const auto result = ExpandOverSurrogatePairs(text.text, mapped);
+	// The field holds the article text with _fieldTrimmedLeft units cut off
+	// the front, so an offset from it counts from there and not from the
+	// start. setInlineFieldFromActiveState() subtracts the same amount on the
+	// way in; without adding it back here the two directions disagree and the
+	// caret lands a few characters off, inside a word.
+	const auto result = ExpandOverSurrogatePairs(
+		text.text,
+		mapped,
+		_fieldTrimmedLeft);
 
 	// Temporary diagnostics for the paragraph split landing before an emoji.
 	// replacements only ever covers formulas, while an emoji is one character
@@ -9016,7 +9028,7 @@ int Widget::richOffsetForFieldOffset(
 	if (logged < 60) {
 		++logged;
 		const auto from = std::max(result - 8, 0);
-		LOG(("IvOffset %1: editor=%2 mapped=%8 rich=%3 len=%4 "
+		LOG(("IvOffset %1: editor=%2 mapped=%8 rich=%3 len=%4 trim=%9 "
 			"replacements=%5 around='%6|%7'"
 			).arg(logged
 			).arg(offset
@@ -9025,7 +9037,8 @@ int Widget::richOffsetForFieldOffset(
 			).arg(int(replacements.size())
 			).arg(text.text.mid(from, result - from)
 			).arg(text.text.mid(result, 8)
-			).arg(mapped));
+			).arg(mapped
+			).arg(_fieldTrimmedLeft));
 	}
 	return result;
 }
