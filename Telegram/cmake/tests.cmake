@@ -146,12 +146,23 @@ PRIVATE
     tests/test_mtproxy_tls_socket.cpp
 )
 
+target_precompile_headers(test_mtproxy_tls_socket
+    PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${src_loc}/stdafx.h>)
+
+target_compile_definitions(test_mtproxy_tls_socket
+PRIVATE
+    TDESKTOP_API_ID=${TDESKTOP_API_ID}
+    TDESKTOP_API_HASH=${TDESKTOP_API_HASH}
+)
+
 target_link_libraries(test_mtproxy_tls_socket
 PRIVATE
+    tdesktop::td_scheme
     desktop-app::lib_base
     desktop-app::lib_crl
-    desktop-app::lib_tl
+    desktop-app::lib_ui
     desktop-app::external_qt
+    desktop-app::external_openssl
 )
 
 set_target_properties(
