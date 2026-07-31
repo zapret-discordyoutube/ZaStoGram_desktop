@@ -156,14 +156,14 @@ public:
 	const auto vault = PasswordVault(kdf);
 	auto key = MakeMasterKey();
 	auto config = MakeConfig();
-	config.memoryKibibytes = 1024 * 1024 + 1;
+	config.memoryKibibytes = 32 * 1024;
 	if (vault.wrap(
 			std::move(key),
 			QByteArray("password"),
 			config,
 			1)
 		|| kdf.calls) {
-		return Fail("vault ran an unbounded password derivation");
+		return Fail("vault created a record with weak password work factors");
 	}
 	return 0;
 }

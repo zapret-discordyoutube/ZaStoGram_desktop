@@ -34,4 +34,10 @@ bool IsValidArgon2idParameters(const Argon2idParameters &parameters) {
 			[](std::uint8_t byte) { return byte != 0; });
 }
 
+bool IsSecureArgon2idConfigForNewVault(const Argon2idConfig &config) {
+	return IsValidArgon2idConfig(config)
+		&& config.memoryKibibytes >= 64 * 1024
+		&& config.iterations >= 3;
+}
+
 } // namespace E2ECloud

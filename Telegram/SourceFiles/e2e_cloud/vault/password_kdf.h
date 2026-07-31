@@ -53,5 +53,7 @@ public:
 [[nodiscard]] bool IsValidArgon2idParameters(
 	const Argon2idParameters &parameters);
 [[nodiscard]] bool IsValidArgon2idConfig(const Argon2idConfig &config);
+[[nodiscard]] bool IsSecureArgon2idConfigForNewVault(
+	const Argon2idConfig &config);
 
 } // namespace E2ECloud

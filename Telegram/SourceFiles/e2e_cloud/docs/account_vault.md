@@ -57,9 +57,12 @@ the KDF so a hostile cloud record cannot request unbounded memory or work.
 
 The password is accepted as explicit UTF-8 bytes from the UI, is never silently
 truncated or normalized by the cryptographic layer, and is cleansed after each
-derivation attempt. The concrete Argon2id implementation remains a required
-reviewed dependency because the project's current bundled OpenSSL does not
-provide it.
+derivation attempt. Version one uses the official Argon2 reference
+implementation at tag `20190702`, built from its portable sources rather than
+depending on the project's older bundled OpenSSL. New vaults require at least
+64 MiB and three iterations; parsers retain a broader bounded range so an older
+vault can be opened and migrated. Final platform presets may raise these values
+after benchmarking but may not silently lower this creation floor.
 
 ## Local remembering
 

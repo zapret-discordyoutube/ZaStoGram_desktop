@@ -23,6 +23,8 @@ PRIVATE
     e2e_cloud/core/types.h
     e2e_cloud/files/file_chunk_crypto.cpp
     e2e_cloud/files/file_chunk_crypto.h
+    e2e_cloud/files/file_chunk_file_store.cpp
+    e2e_cloud/files/file_chunk_file_store.h
     e2e_cloud/files/idempotent_file_chunk_protector.cpp
     e2e_cloud/files/idempotent_file_chunk_protector.h
     e2e_cloud/files/private_file_manifest.cpp

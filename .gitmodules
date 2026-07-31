@@ -106,3 +106,6 @@
 [submodule "Telegram/ThirdParty/libfido2"]
 	path = Telegram/ThirdParty/libfido2
 	url = https://github.com/Yubico/libfido2.git
+[submodule "Telegram/ThirdParty/argon2"]
+	path = Telegram/ThirdParty/argon2
+	url = https://github.com/P-H-C/phc-winner-argon2.git

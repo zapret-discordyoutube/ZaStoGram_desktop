@@ -211,7 +211,7 @@ std::optional<QByteArray> PasswordVault::wrap(
 		std::uint64_t generation) const {
 	if (!ValidPassword(password)
 		|| !generation
-		|| !IsValidArgon2idConfig(config)
+		|| !IsSecureArgon2idConfigForNewVault(config)
 		|| !std::any_of(
 			begin(masterKey),
 			end(masterKey),
