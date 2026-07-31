@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "scheme-dump_to_text.h"
 #include "scheme.h"
+#include "logs.h"
 
 #include <zlib.h>
 

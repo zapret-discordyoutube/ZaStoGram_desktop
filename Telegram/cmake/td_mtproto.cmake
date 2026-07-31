@@ -26,8 +26,6 @@ PRIVATE
     mtproto/details/mtproto_dcenter.h
     mtproto/details/mtproto_domain_resolver.cpp
     mtproto/details/mtproto_domain_resolver.h
-    mtproto/protocol/mtproto_dump_to_text.cpp
-    mtproto/protocol/mtproto_dump_to_text.h
     mtproto/details/mtproto_received_ids_manager.cpp
     mtproto/details/mtproto_received_ids_manager.h
     mtproto/details/mtproto_rsa_public_key.cpp

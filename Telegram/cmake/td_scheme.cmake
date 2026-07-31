@@ -23,6 +23,12 @@ PRIVATE
     mtproto.tl
 )
 
+nice_target_sources(td_scheme ${src_loc}
+PRIVATE
+    mtproto/protocol/mtproto_dump_to_text.cpp
+    mtproto/protocol/mtproto_dump_to_text.h
+)
+
 target_include_directories(td_scheme
 PUBLIC
     ${src_loc}
@@ -32,6 +38,8 @@ target_link_libraries(td_scheme
 PUBLIC
     desktop-app::lib_base
     desktop-app::lib_tl
+PRIVATE
+    desktop-app::external_zlib
 )
 
 if (CMAKE_SYSTEM_PROCESSOR STREQUAL "mips64")
