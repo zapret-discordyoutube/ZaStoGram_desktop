@@ -161,6 +161,12 @@ jobs:
           git config --global user.email "you@example.com"
           git config --global user.name "Sample"
 
+      - name: ZaStoGram source guards.
+        shell: bash
+        run: |
+          cd "$TBUILD/$REPO_NAME"
+          python Telegram/SourceFiles/tests/test_zastogram_branding.py
+
       - name: Proxy control-plane source guards.
         shell: bash
         run: |
