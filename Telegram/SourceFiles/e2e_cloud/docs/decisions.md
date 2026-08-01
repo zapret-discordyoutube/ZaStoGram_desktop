@@ -374,3 +374,13 @@ can therefore cause a local availability failure, but it cannot make the client
 downgrade to plaintext. Cryptographic processing never trusts this UI marker;
 the envelope, peer binding, signature, MLS state, and replay checks remain
 authoritative.
+
+### D040: Discover before asking for a vault password
+
+Do not assume that a protected identity exists when the Desktop service is
+constructed. On first opening the protected surface, scan Saved Messages for
+exact vault carrier metadata without a password. Show identity creation only
+after an empty scan and show password unlock only after a carrier is present.
+Discovery never parses or accepts the encrypted bytes and cannot bypass normal
+vault selection after password entry. Retryable discovery failure exposes only
+a retry action, not an unsafe create-or-unlock guess.

@@ -105,6 +105,7 @@ void ProtectedGroupsBox::prepare() {
 	connect(_confirm, &Ui::MaskedInputField::submitted, [=] {
 		submit();
 	});
+	_controller->session().e2eCloud().ensureVaultDiscovery();
 	refresh();
 }
 
@@ -156,6 +157,10 @@ void ProtectedGroupsBox::refresh() {
 	_confirm->setDisabled(state == DesktopVaultState::Creating);
 	clearButtons();
 	switch (state) {
+	case DesktopVaultState::Uninitialized:
+	case DesktopVaultState::Discovering:
+		_status->setText(tr::lng_e2e_cloud_discovering(tr::now));
+		break;
 	case DesktopVaultState::Locked:
 		_status->setText(tr::lng_e2e_cloud_locked(tr::now));
 		addButton(tr::lng_e2e_cloud_unlock(), [=] { submit(); });
@@ -224,12 +229,28 @@ void ProtectedGroupsBox::refresh() {
 	case DesktopVaultState::PermanentTransportError:
 		_status->setText(tr::lng_e2e_cloud_transport_error(tr::now));
 		break;
+	case DesktopVaultState::DiscoveryRetryableError:
+		_status->setText(
+			tr::lng_e2e_cloud_discovery_network_error(tr::now));
+		addButton(tr::lng_e2e_cloud_retry(), [=] {
+			_controller->session().e2eCloud().ensureVaultDiscovery();
+		});
+		break;
+	case DesktopVaultState::DiscoveryPermanentError:
+		_status->setText(
+			tr::lng_e2e_cloud_discovery_transport_error(tr::now));
+		break;
 	case DesktopVaultState::SecurityBlocked:
 		_status->setText(tr::lng_e2e_cloud_security_blocked(tr::now));
 		break;
 	}
 	addButton(tr::lng_close(), [=] { closeBox(); });
 	updateControlsGeometry();
+	if (passwordVisible
+		&& !_password->hasFocus()
+		&& !_confirm->hasFocus()) {
+		_password->setFocusFast();
+	}
 }
 
 void ProtectedGroupsBox::submit() {

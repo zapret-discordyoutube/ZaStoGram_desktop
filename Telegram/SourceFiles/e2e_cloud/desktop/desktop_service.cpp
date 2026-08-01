@@ -478,12 +478,38 @@ const UnlockedCloudVault *DesktopService::vault() const {
 	return _vault ? &*_vault : nullptr;
 }
 
+void DesktopService::ensureVaultDiscovery() {
+	const auto state = _vaultState.current();
+	if (_sync
+		|| !_vaultAnchor.loaded()
+		|| (state != DesktopVaultState::Uninitialized
+			&& state != DesktopVaultState::DiscoveryRetryableError)) {
+		return;
+	}
+	_vaultState = DesktopVaultState::Discovering;
+	_sync = std::make_unique<CloudVaultSyncController>(
+		_telegramUserIdBinding,
+		*_remote,
+		_vaultSelector,
+		[weak = base::weak_ptr(this)](CloudVaultSyncCompletion result) {
+			if (weak) {
+				weak->applyVaultDiscoveryResult(std::move(result));
+			}
+		});
+	if (!_sync->startDiscovery()) {
+		_sync.reset();
+		_vaultState = DesktopVaultState::DiscoveryRetryableError;
+	}
+}
+
 bool DesktopService::unlock(QByteArray password) {
+	const auto state = _vaultState.current();
 	if (_sync
 		|| _pendingCreation
 		|| !_vaultAnchor.loaded()
-		|| _vaultState.current() == DesktopVaultState::SecurityBlocked
-		|| _vaultState.current() == DesktopVaultState::Creating
+		|| (state != DesktopVaultState::Locked
+			&& state != DesktopVaultState::WrongPasswordOrDamaged
+			&& state != DesktopVaultState::RetryableTransportError)
 		|| password.isEmpty()) {
 		return false;
 	}
@@ -1238,6 +1264,9 @@ void DesktopService::synchronizeProtectedContent(
 }
 
 void DesktopService::lock() {
+	const auto securityBlocked = _vaultState.current()
+		== DesktopVaultState::SecurityBlocked;
+	const auto knownVault = _vault || _vaultAnchor.anchor().has_value();
 	_sync.reset();
 	_pendingCreation.reset();
 	_pendingGroupCreation.reset();
@@ -1248,12 +1277,52 @@ void DesktopService::lock() {
 	_vault.reset();
 	Cleanse(_pendingUnlockPassword);
 	Cleanse(_unlockedPassword);
-	_vaultState = DesktopVaultState::Locked;
+	if (securityBlocked) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+	} else if (knownVault) {
+		_vaultState = DesktopVaultState::Locked;
+	} else {
+		_vaultState = DesktopVaultState::Uninitialized;
+	}
 	_groupCreationState = DesktopGroupCreationState::Idle;
 	_contentState = DesktopContentState::Idle;
 	_contentStates.clear();
 	_contentRevision = 0;
 	_securityRevision = 0;
+}
+
+void DesktopService::applyVaultDiscoveryResult(
+		CloudVaultSyncCompletion result) {
+	_sync.reset();
+	switch (result.status) {
+	case CloudVaultSyncStatus::Present:
+		_vaultState = DesktopVaultState::Locked;
+		break;
+	case CloudVaultSyncStatus::Missing:
+		_vaultState = _vaultAnchor.anchor()
+			? DesktopVaultState::SecurityBlocked
+			: DesktopVaultState::Missing;
+		break;
+	case CloudVaultSyncStatus::RetryableTransportError:
+		_vaultState = DesktopVaultState::DiscoveryRetryableError;
+		break;
+	case CloudVaultSyncStatus::PermanentTransportError:
+		_vaultState = DesktopVaultState::DiscoveryPermanentError;
+		break;
+	case CloudVaultSyncStatus::CapacityExceeded:
+	case CloudVaultSyncStatus::InvalidPagination:
+	case CloudVaultSyncStatus::Selected:
+	case CloudVaultSyncStatus::Unreadable:
+	case CloudVaultSyncStatus::IdentityConflict:
+	case CloudVaultSyncStatus::ForkDetected:
+	case CloudVaultSyncStatus::RollbackDetected:
+	case CloudVaultSyncStatus::ChainGap:
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		break;
+	case CloudVaultSyncStatus::Cancelled:
+		_vaultState = DesktopVaultState::Uninitialized;
+		break;
+	}
 }
 
 void DesktopService::applySyncResult(CloudVaultSyncCompletion result) {
@@ -1274,6 +1343,9 @@ void DesktopService::applySyncResult(CloudVaultSyncCompletion result) {
 		} else {
 			_vaultState = DesktopVaultState::WrongPasswordOrDamaged;
 		}
+		break;
+	case CloudVaultSyncStatus::Present:
+		_vaultState = DesktopVaultState::SecurityBlocked;
 		break;
 	case CloudVaultSyncStatus::Missing:
 		_vaultState = DesktopVaultState::Missing;

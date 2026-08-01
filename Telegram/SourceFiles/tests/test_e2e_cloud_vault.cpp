@@ -5,6 +5,7 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
+#include "e2e_cloud/transport/cloud_vault_sync_controller.h"
 #include "e2e_cloud/vault/argon2id_password_kdf.h"
 #include "e2e_cloud/vault/cloud_vault.h"
 #include "e2e_cloud/vault/cloud_vault_selection.h"
@@ -16,6 +17,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <array>
 #include <cstdio>
 #include <optional>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -107,6 +110,117 @@ public:
 	bool failWrites = false;
 
 };
+
+class TestCloudVaultRemote final : public CloudVaultRemote {
+public:
+	void uploadExact(QByteArray, UploadCallback callback) override {
+		callback(Result::PermanentError);
+	}
+
+	void downloadPage(
+			QByteArray cursor,
+			int limit,
+			DownloadCallback callback) override {
+		cursors.push_back(std::move(cursor));
+		limits.push_back(limit);
+		if (pages.empty()) {
+			callback(Result::PermanentError, {});
+			return;
+		}
+		auto [result, page] = std::move(pages.front());
+		pages.erase(pages.begin());
+		callback(result, std::move(page));
+	}
+
+	std::vector<std::pair<Result, CarrierDownloadPage>> pages;
+	std::vector<QByteArray> cursors;
+	std::vector<int> limits;
+};
+
+[[nodiscard]] int ScenarioVaultDiscoveryFindsMissingIdentity() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto remote = TestCloudVaultRemote();
+	remote.pages.push_back({
+		CloudVaultRemote::Result::Accepted,
+		{
+			.untrustedObjects = {},
+			.nextCursor = {},
+			.complete = true,
+		},
+	});
+	auto completion = std::optional<CloudVaultSyncCompletion>();
+	auto controller = CloudVaultSyncController(
+		777,
+		remote,
+		selector,
+		[&](CloudVaultSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (!controller.startDiscovery()
+		|| controller.running()
+		|| !completion
+		|| completion->status != CloudVaultSyncStatus::Missing
+		|| completion->pages != 1
+		|| completion->candidates != 0
+		|| kdf.calls != 0
+		|| remote.cursors != std::vector<QByteArray>{ QByteArray() }) {
+		return Fail("vault discovery did not identify a missing identity");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioVaultDiscoveryFindsExistingAccount() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto remote = TestCloudVaultRemote();
+	remote.pages = {
+		{
+			CloudVaultRemote::Result::Accepted,
+			{
+				.untrustedObjects = {},
+				.nextCursor = QByteArray("next"),
+				.complete = false,
+			},
+		},
+		{
+			CloudVaultRemote::Result::Accepted,
+			{
+				.untrustedObjects = {
+					{ .bytes = QByteArray("opaque vault") },
+				},
+				.nextCursor = QByteArray("unused"),
+				.complete = false,
+			},
+		},
+	};
+	auto completion = std::optional<CloudVaultSyncCompletion>();
+	auto controller = CloudVaultSyncController(
+		777,
+		remote,
+		selector,
+		[&](CloudVaultSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (!controller.startDiscovery()
+		|| controller.running()
+		|| !completion
+		|| completion->status != CloudVaultSyncStatus::Present
+		|| completion->pages != 2
+		|| completion->candidates != 1
+		|| kdf.calls != 0
+		|| remote.cursors != std::vector<QByteArray>{
+			QByteArray(),
+			QByteArray("next"),
+		}) {
+		return Fail("vault discovery requested a password before detection");
+	}
+	return 0;
+}
 
 [[nodiscard]] int ScenarioVaultRoundTrip() {
 	auto kdf = TestPasswordKdf();
@@ -557,6 +671,8 @@ public:
 
 int main(int, char *[]) {
 	for (const auto scenario : {
+		ScenarioVaultDiscoveryFindsMissingIdentity,
+		ScenarioVaultDiscoveryFindsExistingAccount,
 		ScenarioVaultRoundTrip,
 		ScenarioVaultRejectsWrongPasswordAndTampering,
 		ScenarioVaultUsesFreshNonce,

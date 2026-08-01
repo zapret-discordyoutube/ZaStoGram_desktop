@@ -2544,6 +2544,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_password" = "Encryption password";
 "lng_e2e_cloud_password_confirm" = "Confirm encryption password";
 "lng_e2e_cloud_password_requirements" = "Use a unique encryption password of at least 12 characters. It cannot be recovered.";
+"lng_e2e_cloud_discovering" = "Checking whether this Telegram account already has a protected identity…";
 "lng_e2e_cloud_locked" = "Enter your encryption password. Telegram stores only opaque encrypted containers; the password is never sent to Telegram.";
 "lng_e2e_cloud_loading" = "Checking the encrypted vault in Saved Messages…";
 "lng_e2e_cloud_missing" = "No encrypted vault was found. Confirm the password to create a new protected identity. Do this only for a new setup.";
@@ -2552,6 +2553,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_damaged" = "The password is wrong, or the encrypted vault is damaged. Nothing was reset.";
 "lng_e2e_cloud_network_error" = "Telegram storage is temporarily unavailable. The exact encrypted bytes are kept for retry.";
 "lng_e2e_cloud_transport_error" = "Telegram rejected the encrypted vault. No security state was reset.";
+"lng_e2e_cloud_discovery_network_error" = "Telegram storage is temporarily unavailable, so the client cannot safely decide whether to create or unlock a protected identity.";
+"lng_e2e_cloud_discovery_transport_error" = "Telegram rejected the protected-identity check. A new identity was not created.";
 "lng_e2e_cloud_security_blocked" = "Security check blocked access: a rollback, fork, identity conflict, or invalid history was detected. The vault will not be reset automatically.";
 "lng_e2e_cloud_unlock" = "Unlock";
 "lng_e2e_cloud_create" = "Create protected identity";

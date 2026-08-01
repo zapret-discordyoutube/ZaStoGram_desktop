@@ -22,6 +22,7 @@ namespace E2ECloud {
 
 enum class CloudVaultSyncStatus {
 	Selected,
+	Present,
 	Missing,
 	Unreadable,
 	CapacityExceeded,
@@ -56,6 +57,7 @@ public:
 	[[nodiscard]] bool start(
 		QByteArray password,
 		std::optional<CloudVaultAnchor> localAnchor = std::nullopt);
+	[[nodiscard]] bool startDiscovery();
 	void cancel();
 
 	[[nodiscard]] bool running() const;
@@ -63,6 +65,8 @@ public:
 private:
 	struct CallbackGuard;
 
+	[[nodiscard]] bool startRequests(
+		std::optional<CloudVaultAnchor> localAnchor);
 	void pumpRequests();
 	void pageReceived(
 		CloudVaultRemote::Result result,
@@ -85,6 +89,7 @@ private:
 	bool _requestActive = false;
 	bool _pumping = false;
 	bool _requestQueued = false;
+	bool _discoveryOnly = false;
 };
 
 } // namespace E2ECloud

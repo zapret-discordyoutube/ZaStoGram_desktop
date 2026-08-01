@@ -43,6 +43,8 @@ class HistoryItem;
 namespace E2ECloud {
 
 enum class DesktopVaultState {
+	Uninitialized,
+	Discovering,
 	Locked,
 	Loading,
 	Missing,
@@ -51,6 +53,8 @@ enum class DesktopVaultState {
 	WrongPasswordOrDamaged,
 	RetryableTransportError,
 	PermanentTransportError,
+	DiscoveryRetryableError,
+	DiscoveryPermanentError,
 	SecurityBlocked,
 };
 
@@ -123,6 +127,7 @@ public:
 	[[nodiscard]] rpl::producer<DesktopVaultState> vaultStateValue() const;
 	[[nodiscard]] const UnlockedCloudVault *vault() const;
 
+	void ensureVaultDiscovery();
 	[[nodiscard]] bool unlock(QByteArray password);
 	[[nodiscard]] bool createVault(QByteArray password);
 	[[nodiscard]] bool retryCreateVault();
@@ -183,6 +188,7 @@ private:
 	struct PendingGroupDiscovery;
 	enum class LocalGroupRecoveryResult;
 
+	void applyVaultDiscoveryResult(CloudVaultSyncCompletion result);
 	void applySyncResult(CloudVaultSyncCompletion result);
 	void applyGroupVaultSyncResult(CloudVaultSyncCompletion result);
 	void uploadPendingCreation();
@@ -284,7 +290,7 @@ private:
 	std::map<ConversationId, std::unique_ptr<PendingGroupCreation>> _groups;
 	rpl::lifetime _lifetime;
 	rpl::variable<DesktopVaultState> _vaultState
-		= DesktopVaultState::Locked;
+		= DesktopVaultState::Uninitialized;
 	rpl::variable<DesktopGroupCreationState> _groupCreationState
 		= DesktopGroupCreationState::Idle;
 	rpl::variable<DesktopContentState> _contentState

@@ -81,7 +81,22 @@ bool CloudVaultSyncController::start(
 		Cleanse(password);
 		return false;
 	}
+	_discoveryOnly = false;
 	_password = std::move(password);
+	return startRequests(localAnchor);
+}
+
+bool CloudVaultSyncController::startDiscovery() {
+	if (_running || !_telegramUserIdBinding) {
+		return false;
+	}
+	_discoveryOnly = true;
+	Cleanse(_password);
+	return startRequests(std::nullopt);
+}
+
+bool CloudVaultSyncController::startRequests(
+		std::optional<CloudVaultAnchor> localAnchor) {
 	_localAnchor = localAnchor;
 	_candidates.clear();
 	_seenCursors = { QByteArray() };
@@ -168,6 +183,15 @@ void CloudVaultSyncController::pageReceived(
 		return;
 	}
 	++_pages;
+	if (_discoveryOnly && !page.untrustedObjects.empty()) {
+		finish({
+			.status = CloudVaultSyncStatus::Present,
+			.vault = std::nullopt,
+			.pages = _pages,
+			.candidates = page.untrustedObjects.size(),
+		});
+		return;
+	}
 	for (auto &candidate : page.untrustedObjects) {
 		if (candidate.bytes.size() < 0
 			|| _candidates.size() == kMaximumCandidates
@@ -185,6 +209,15 @@ void CloudVaultSyncController::pageReceived(
 		_candidates.push_back(std::move(candidate.bytes));
 	}
 	if (page.complete) {
+		if (_discoveryOnly) {
+			finish({
+				.status = CloudVaultSyncStatus::Missing,
+				.vault = std::nullopt,
+				.pages = _pages,
+				.candidates = 0,
+			});
+			return;
+		}
 		const auto candidateCount = _candidates.size();
 		auto selection = _selector.select(
 			std::move(_candidates),
@@ -226,6 +259,7 @@ void CloudVaultSyncController::finish(
 	_running = false;
 	_requestActive = false;
 	_requestQueued = false;
+	_discoveryOnly = false;
 	Cleanse(_password);
 	_candidates.clear();
 	if (_completionCallback) {

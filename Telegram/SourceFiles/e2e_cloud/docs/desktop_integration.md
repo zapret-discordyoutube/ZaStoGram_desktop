@@ -31,6 +31,15 @@ window is fed only from locally authenticated and decrypted records.
 
 ## Session state
 
+Opening Protected Groups first performs a passwordless scan for exact vault
+carrier metadata in Saved Messages. Until that scan finishes, neither the
+unlock form nor new-identity creation is available. No matching carrier exposes
+the create-and-confirm-password flow; a matching opaque carrier exposes the
+unlock flow. Discovery never derives a password key or interprets carrier
+bytes. As elsewhere, an active server can hide or fabricate first-contact
+metadata, so the new-identity warning and the documented first-contact
+limitation still apply.
+
 Unlocking selects the newest valid cloud vault that is consistent with the
 local rollback anchor. The password derives only a wrapping key; it never
 becomes a message, archive, file, or local-record key. Locking destroys the
