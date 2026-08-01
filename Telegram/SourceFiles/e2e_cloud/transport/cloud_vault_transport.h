@@ -22,6 +22,12 @@ namespace E2ECloud {
 [[nodiscard]] QString CloudVaultCarrierFilename();
 [[nodiscard]] QString CloudVaultCarrierMimeType();
 [[nodiscard]] int CloudVaultMaximumCarrierSize();
+[[nodiscard]] bool IsProtectedVaultCarrierMetadata(
+	const QString &filename,
+	const QString &mimeType);
+[[nodiscard]] bool IsProtectedCarrierMetadata(
+	const QString &filename,
+	const QString &mimeType);
 
 class CloudVaultRemote {
 public:

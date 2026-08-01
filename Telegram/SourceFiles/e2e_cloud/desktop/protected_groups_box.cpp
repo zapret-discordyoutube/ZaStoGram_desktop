@@ -27,6 +27,29 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 namespace {
 
+inline constexpr auto kMinimumPasswordCharacters = 12;
+
+[[nodiscard]] bool HasMinimumPasswordLength(const QString &password) {
+	auto count = 0;
+	for (auto i = 0; i != password.size();) {
+		const auto first = password.at(i++);
+		if (first.isHighSurrogate()
+			&& i != password.size()
+			&& password.at(i).isLowSurrogate()) {
+			++i;
+		}
+		if (++count >= kMinimumPasswordCharacters) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void ClearPassword(QString &password) {
+	password.fill(QChar());
+	password.clear();
+}
+
 [[nodiscard]] QString VaultReadyText(const UnlockedCloudVault &vault) {
 	const auto accountId = DeriveAccountId(
 		vault.identity.credential,
@@ -148,6 +171,8 @@ void ProtectedGroupsBox::refresh() {
 		_status->setText(tr::lng_e2e_cloud_creating(tr::now));
 		break;
 	case DesktopVaultState::Ready: {
+		_password->setText(QString());
+		_confirm->setText(QString());
 		const auto vault = service.vault();
 		_status->setText(vault
 			? VaultReadyText(*vault)
@@ -179,6 +204,9 @@ void ProtectedGroupsBox::refresh() {
 				showGroupCreation();
 			});
 		}
+		addButton(tr::lng_e2e_cloud_lock(), [=] {
+			_controller->session().e2eCloud().lock();
+		});
 		break;
 	}
 	case DesktopVaultState::WrongPasswordOrDamaged:
@@ -206,22 +234,43 @@ void ProtectedGroupsBox::refresh() {
 
 void ProtectedGroupsBox::submit() {
 	auto &service = _controller->session().e2eCloud();
-	const auto password = _password->getLastText();
+	auto password = _password->getLastText();
 	if (password.isEmpty()) {
 		_password->setFocusFast();
 		_password->showError();
 		return;
 	}
-	if (service.vaultState() == DesktopVaultState::Missing) {
-		if (_confirm->getLastText().isEmpty()
-			|| _confirm->getLastText() != password) {
+	const auto creating = service.vaultState() == DesktopVaultState::Missing;
+	if (creating && !HasMinimumPasswordLength(password)) {
+		_status->setText(
+			tr::lng_e2e_cloud_password_requirements(tr::now));
+		_password->setFocusFast();
+		_password->showError();
+		ClearPassword(password);
+		return;
+	}
+	auto passwordBytes = password.toUtf8();
+	auto started = false;
+	if (creating) {
+		auto confirmation = _confirm->getLastText();
+		if (confirmation.isEmpty() || confirmation != password) {
 			_confirm->setFocusFast();
 			_confirm->showError();
+			passwordBytes.fill('\0');
+			ClearPassword(password);
+			ClearPassword(confirmation);
 			return;
 		}
-		(void)service.createVault(password.toUtf8());
+		ClearPassword(confirmation);
+		started = service.createVault(passwordBytes);
 	} else {
-		(void)service.unlock(password.toUtf8());
+		started = service.unlock(passwordBytes);
+	}
+	passwordBytes.fill('\0');
+	ClearPassword(password);
+	if (started) {
+		_password->setText(QString());
+		_confirm->setText(QString());
 	}
 }
 

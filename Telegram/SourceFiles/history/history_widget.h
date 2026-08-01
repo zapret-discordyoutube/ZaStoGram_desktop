@@ -581,6 +581,8 @@ private:
 	[[nodiscard]] MsgId resolveReplyToTopicRootId();
 	[[nodiscard]] Data::ForumTopic *resolveReplyToTopic();
 	[[nodiscard]] bool canWriteMessage() const;
+	[[nodiscard]] bool isE2ECloudProtectedPeer() const;
+	void openE2ECloudProtectedConversation();
 	[[nodiscard]] bool hasEnoughLinesForAi() const;
 	[[nodiscard]] bool hasEnoughLinesForExpand() const;
 	[[nodiscard]] bool textExceedsMaxSize() const;
@@ -908,6 +910,7 @@ private:
 	QPointer<Ui::IconButton> _directMessage;
 	rpl::lifetime _directMessageLifetime;
 	object_ptr<Ui::FlatButton> _reportMessages;
+	object_ptr<Ui::FlatButton> _protectedOpen;
 	struct {
 		object_ptr<Ui::RoundButton> button = { nullptr };
 		QString text;

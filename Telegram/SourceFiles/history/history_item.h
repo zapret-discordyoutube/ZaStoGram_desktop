@@ -441,6 +441,8 @@ public:
 	[[nodiscard]] TextWithEntities notificationText() const {
 		return notificationText({});
 	}
+	[[nodiscard]] bool isE2ECloudCarrier() const;
+	[[nodiscard]] bool isE2ECloudGroupCarrier() const;
 
 	using ToPreviewOptions = HistoryView::ToPreviewOptions;
 	using ItemPreview = HistoryView::ItemPreview;

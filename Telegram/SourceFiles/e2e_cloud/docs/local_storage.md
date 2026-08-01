@@ -3,12 +3,14 @@
 ## Key boundary
 
 Local drafts, sealed retry envelopes, MLS state, and vault cache records are
-protected under random local record keys derived or unwrapped only after the
+protected under per-conversation local record keys derived only after the
 account vault is unlocked. User password bytes never enter the local record
 protector.
 
-The operating-system credential adapter stores or wraps the local record key.
-Failure to access that adapter leaves protected records locked. There is no
+Version one derives each key from the vault master key with HKDF-SHA-256 and
+binds it to the Telegram account and protected conversation. Neither the
+password nor the vault master key is retained by an operating-system credential
+facility. Locked protected records remain inaccessible and there is no
 plaintext file fallback.
 
 ## Record protection

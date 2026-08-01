@@ -453,6 +453,12 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 			weak->handleNewTelegramItem(item);
 		}
 	}, _lifetime);
+	Core::App().passcodeLockValue(
+	) | rpl::on_next([weak = base::weak_ptr(this)](bool locked) {
+		if (locked && weak) {
+			weak->lock();
+		}
+	}, _lifetime);
 }
 
 DesktopService::~DesktopService() {
@@ -747,6 +753,46 @@ DesktopService::protectedGroups() const {
 		[](const auto &a, const auto &b) {
 			return a.title.compare(b.title, Qt::CaseInsensitive) < 0;
 		});
+	return result;
+}
+
+std::optional<ConversationId> DesktopService::protectedConversationForPeer(
+		std::uint64_t telegramPeerIdBinding) const {
+	if (!telegramPeerIdBinding) {
+		return std::nullopt;
+	}
+	auto result = std::optional<ConversationId>();
+	const auto consider = [&](
+			ConversationId conversationId,
+			std::uint64_t peerId) {
+		if (peerId != telegramPeerIdBinding) {
+			return true;
+		} else if (result && *result != conversationId) {
+			return false;
+		}
+		result = conversationId;
+		return true;
+	};
+	for (const auto &[conversationId, group] : _groups) {
+		if (!consider(conversationId, group->telegramPeerIdBinding)) {
+			return std::nullopt;
+		}
+	}
+	if (_vault) {
+		for (const auto &conversation : _vault->conversations) {
+			if (!consider(
+					conversation.conversationId,
+					conversation.telegramPeerIdBinding)) {
+				return std::nullopt;
+			}
+		}
+	}
+	if (_pendingGroupCreation
+		&& !consider(
+			_pendingGroupCreation->conversation.conversationId,
+			_pendingGroupCreation->telegramPeerIdBinding)) {
+		return std::nullopt;
+	}
 	return result;
 }
 
@@ -2815,7 +2861,9 @@ void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
 	const auto media = item->media();
 	const auto document = media ? media->document() : nullptr;
 	if (!document
-		|| document->mimeString() != ProtectedCarrierMimeType()) {
+		|| !IsProtectedGroupCarrierMetadata(
+			document->filename(),
+			document->mimeString())) {
 		return;
 	}
 	const auto peerId = item->history()->peer->id.value;
@@ -2826,8 +2874,8 @@ void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
 			}
 		}
 		return;
-	} else if (document->filename()
-			!= ProtectedControlCarrierFilename()) {
+	} else if (document->filename() != ProtectedControlCarrierFilename()
+		&& document->filename() != ProtectedLegacyCarrierFilename()) {
 		return;
 	}
 	auto conversations = std::vector<ConversationId>();

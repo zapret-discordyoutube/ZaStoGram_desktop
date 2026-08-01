@@ -25,7 +25,7 @@ silently weaken the agreed model.
 
 ## Active server and Telegram-only transport
 
-Status: partially resolved, with a documented limitation.
+Status: implemented with a documented first-contact limitation.
 
 Signatures, pinned identities, and authenticated group transitions protect an
 established conversation from silent participant injection. TOFU cannot fully
@@ -33,8 +33,11 @@ authenticate the first key when the adversary controls the only delivery
 channel. Safety codes and gossip improve detection but do not create an
 independent trust anchor.
 
-Required follow-up: define the safety-code input, gossip object, identity-change
-UI, and exact security claim before implementation.
+Account, pairwise, and group safety-code inputs are domain-separated and
+canonical. Account-signed deterministic checkpoint gossip is compared against
+the reconstructed roster, and a conflicting identity or checkpoint blocks the
+protected surface. The remaining limitation is the lack of an independent
+first-contact trust anchor.
 
 ## Full history and forward secrecy
 
@@ -83,12 +86,14 @@ administrator, and only within the group's policy.
 Status: resolved without fallback.
 
 Stock clients remain unable to decrypt and are not cryptographic members. The
-carrier may look noisy or unusable in stock clients. Carrier encoding and product
-messaging must be tested before release.
+carrier may look noisy or unusable in stock clients. ZaStoGram hides exact
+carrier metadata, prevents ordinary export actions, and replaces plaintext
+composition with the protected entry point. Carrier encoding and product
+messaging still require live server testing before production release.
 
 ## Server rollback and partition
 
-Status: product policy decided; protocol details remain open.
+Status: implemented with the documented Telegram-only limitation.
 
 Signed generations and gossip can expose some stale or conflicting views, but a
 new installation has no independent latest checkpoint. The selected policy
@@ -110,8 +115,10 @@ latest-state guarantee would require an independent transparency service,
 out-of-band checkpoint, or another trust anchor excluded by the chosen product
 constraints.
 
-Exact signed challenge payloads, witness selection strategy, rollback recovery,
-and fork recovery must still be completed with the selected MLS engine.
+Signed challenge and response payloads, any-active-account witness validation,
+newer-checkpoint resynchronization, equal-generation fork blocking, persistent
+freshness trust, and explicit OpenMLS fork recovery are implemented. No part of
+that protocol creates a global latest-state oracle.
 
 ## Production readiness gate
 
@@ -122,7 +129,7 @@ No implementation is production-ready until all of the following exist:
 - external interoperability against an independent implementation;
 - official test vectors and negative validation tests;
 - state-machine and parser fuzzing;
-- desktop and mobile secure-storage adapters;
+- mobile protected local-storage integration and cross-platform storage tests;
 - cross-platform account-vault test vectors;
 - Telegram carrier transformation and retry tests;
 - performance tests at the target group size;

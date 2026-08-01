@@ -22,8 +22,12 @@ The first Desktop surface supports:
   changes.
 
 Stock Telegram message widgets are not reused for plaintext protected content.
-The carrier history contains generic opaque documents. The protected window is
-fed only from locally authenticated and decrypted records.
+ZaStoGram hides exact reserved carrier documents from the ordinary timeline and
+shared-media index, replaces their preview with a generic encrypted-activity
+label, and disables forwarding and clipboard export. A carrier peer shows one
+full-width action that opens the protected conversation instead of Telegram's
+text, attachment, voice, bot, edit, and forwarding controls. The protected
+window is fed only from locally authenticated and decrypted records.
 
 ## Session state
 
@@ -31,7 +35,9 @@ Unlocking selects the newest valid cloud vault that is consistent with the
 local rollback anchor. The password derives only a wrapping key; it never
 becomes a message, archive, file, or local-record key. Locking destroys the
 unlocked vault value, pending password bytes, group pipelines, and observable
-per-conversation state.
+per-conversation state. Version one remembers neither the password nor the
+unlocked key across sessions. Manual E2E lock and Telegram's application
+passcode lock both invoke the same cleanup path.
 
 Each protected conversation owns independent instances of:
 
@@ -49,6 +55,13 @@ Content status is stored per conversation. Activity or a transport failure in
 one protected group cannot make another group appear synchronized, stale, or
 failed. The shared reactive signal is only an invalidation notification; every
 window rereads its own conversation state.
+
+Presentation recognition is deliberately separate from protocol acceptance.
+Exact filename/MIME metadata is sufficient to suppress or block the plaintext
+Desktop surface, because confidentiality takes priority over availability. It
+is never sufficient to decrypt, index, admit a participant, or advance state.
+An active server can fabricate the metadata and deny ordinary composition, but
+the authenticated protocol pipeline will reject fabricated bytes.
 
 ## Cloud synchronization
 
@@ -108,5 +121,5 @@ atomically commits the destination only after all checks pass.
 Mobile clients reuse the wire formats, Rust OpenMLS bridge, account vault,
 group/transaction engines, archive, files, and negative vectors. They replace
 only the Telegram transport adapter, protected local-storage adapter,
-credential-store integration, background scheduling, and product interface.
+unlock-session integration, background scheduling, and product interface.
 No Desktop device pairing or simultaneous Desktop connection is required.

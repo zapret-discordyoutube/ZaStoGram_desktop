@@ -111,6 +111,9 @@ public:
 
 	[[nodiscard]] bool isEmpty() const;
 	[[nodiscard]] bool isDisplayedEmpty() const;
+	[[nodiscard]] bool hasE2ECloudGroupCarrier() const {
+		return _hasE2ECloudGroupCarrier;
+	}
 	[[nodiscard]] Element *findFirstNonEmpty() const;
 	[[nodiscard]] Element *findFirstDisplayed() const;
 	[[nodiscard]] Element *findLastNonEmpty() const;
@@ -660,6 +663,7 @@ private:
 	HistoryItem *_newPeerPhotoChange = nullptr;
 	bool _loadedAtTop = false;
 	bool _loadedAtBottom = true;
+	bool _hasE2ECloudGroupCarrier = false;
 
 	std::optional<Data::Folder*> _folder;
 	Data::CommunityInfo *_communityInfo = nullptr;

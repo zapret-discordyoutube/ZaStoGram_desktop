@@ -78,12 +78,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/sponsored_messages.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/data_changes.h"
+#include "data/data_document.h"
+#include "data/data_document_media.h"
 #include "data/data_drafts.h"
 #include "data/data_session.h"
 #include "data/data_todo_list.h"
 #include "data/data_web_page.h"
-#include "data/data_document.h"
-#include "data/data_document_media.h"
+#include "e2e_cloud/desktop/desktop_service.h"
+#include "e2e_cloud/desktop/protected_conversation_box.h"
 #include "data/data_photo.h"
 #include "data/data_photo_media.h"
 #include "data/data_poll.h"
@@ -311,6 +313,10 @@ HistoryWidget::HistoryWidget(
 	tr::lng_channel_mute(tr::now).toUpper(),
 	st::historyComposeButton)
 , _reportMessages(this, QString(), st::historyComposeButton)
+, _protectedOpen(
+	this,
+	tr::lng_e2e_cloud_open_conversation(tr::now).toUpper(),
+	st::historyComposeButton)
 , _attachToggle(this, st::historyAttach)
 , _tabbedSelectorToggle(this, st::historyAttachEmoji)
 , _botKeyboardShow(this, st::historyBotKeyboardShow)
@@ -442,6 +448,9 @@ HistoryWidget::HistoryWidget(
 	setupGiftToChannelButton();
 	setupDirectMessageButton();
 	_reportMessages->addClickHandler([=] { reportSelectedMessages(); });
+	_protectedOpen->addClickHandler([=] {
+		openE2ECloudProtectedConversation();
+	});
 	_field->submits(
 	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
 		sendWithModifiers(modifiers);
@@ -628,6 +637,7 @@ HistoryWidget::HistoryWidget(
 	_joinChannel->hide();
 	_muteUnmute->hide();
 	_reportMessages->hide();
+	_protectedOpen->hide();
 
 	initVoiceRecordBar();
 
@@ -689,6 +699,17 @@ HistoryWidget::HistoryWidget(
 	session().data().newItemAdded(
 	) | rpl::on_next([=](not_null<HistoryItem*> item) {
 		newItemAdded(item);
+	}, lifetime());
+
+	auto &protectedService = session().e2eCloud();
+	rpl::merge(
+		protectedService.vaultStateValue() | rpl::to_empty,
+		protectedService.groupCreationStateValue() | rpl::to_empty
+	) | rpl::on_next([=] {
+		if (_history && updateCanSendMessage()) {
+			updateControlsVisibility();
+			updateControlsGeometry();
+		}
 	}, lifetime());
 
 	session().data().historyChanged(
@@ -2005,6 +2026,7 @@ void HistoryWidget::orderWidgets() {
 	_sendAsFile->raise();
 	_expand->raise();
 	_richDraftPreview->raise();
+	_protectedOpen->raise();
 	_topBars->raise();
 	if (_businessBotStatus) {
 		_businessBotStatus->bar().raise();
@@ -3836,11 +3858,35 @@ bool HistoryWidget::contentOverlapped(const QRect &globalRect) {
 bool HistoryWidget::canWriteMessage() const {
 	return _history
 		&& _canSendMessages
+		&& !isE2ECloudProtectedPeer()
 		&& !isBlocked()
 		&& !isJoinChannel()
 		&& !isMuteUnmute()
 		&& !isBotStart()
 		&& !isSearching();
+}
+
+bool HistoryWidget::isE2ECloudProtectedPeer() const {
+	if (!_history || !_peer) {
+		return false;
+	}
+	return _history->hasE2ECloudGroupCarrier()
+		|| (_migrated && _migrated->hasE2ECloudGroupCarrier())
+		|| session().e2eCloud().protectedConversationForPeer(_peer->id.value)
+			.has_value();
+}
+
+void HistoryWidget::openE2ECloudProtectedConversation() {
+	if (!_peer) {
+		return;
+	}
+	const auto conversationId = session().e2eCloud()
+		.protectedConversationForPeer(_peer->id.value);
+	if (conversationId) {
+		E2ECloud::ShowProtectedConversation(controller(), *conversationId);
+	} else {
+		controller()->showProtectedGroups();
+	}
 }
 
 void HistoryWidget::updateControlsVisibility() {
@@ -3915,7 +3961,9 @@ void HistoryWidget::updateControlsVisibility() {
 	if (_subsectionTabs) {
 		_subsectionTabs->show();
 	}
-	if (isChoosingTheme()
+	const auto protectedPeer = isE2ECloudProtectedPeer();
+	if (protectedPeer
+		|| isChoosingTheme()
 		|| (!editingMessage()
 			&& (isSearching()
 				|| isBlocked()
@@ -3937,11 +3985,14 @@ void HistoryWidget::updateControlsVisibility() {
 			toggleOne(_muteUnmute);
 			toggleOne(_botStart);
 			toggleOne(_unblock);
+			toggleOne(_protectedOpen);
 		};
 		if (isChoosingTheme()) {
 			_chooseTheme->show();
 			setInnerFocus();
 			toggle(nullptr);
+		} else if (protectedPeer) {
+			toggle(_protectedOpen);
 		} else if (isReportMessages()) {
 			toggle(_reportMessages);
 		} else if (isBlocked()) {
@@ -4011,6 +4062,7 @@ void HistoryWidget::updateControlsVisibility() {
 			_autocomplete->requestRefresh();
 		}
 		_unblock->hide();
+		_protectedOpen->hide();
 		_botStart->hide();
 		_joinChannel->hide();
 		_muteUnmute->hide();
@@ -4155,6 +4207,7 @@ void HistoryWidget::updateControlsVisibility() {
 		_joinChannel->hide();
 		_muteUnmute->hide();
 		_reportMessages->hide();
+		_protectedOpen->hide();
 		_attachToggle->hide();
 		if (_silent) {
 			_silent->hide();
@@ -5362,6 +5415,7 @@ void HistoryWidget::hideChildWidgets() {
 	if (_chooseTheme) {
 		_chooseTheme->hide();
 	}
+	_protectedOpen->hide();
 	_richDraftPreview->hide();
 	if (_paysStatus) {
 		_paysStatus->hide();
@@ -7223,6 +7277,7 @@ void HistoryWidget::moveFieldControls() {
 	_joinChannel->setGeometry(fullWidthButtonRect);
 	_muteUnmute->setGeometry(fullWidthButtonRect);
 	_reportMessages->setGeometry(fullWidthButtonRect);
+	_protectedOpen->setGeometry(fullWidthButtonRect);
 	if (_sendRestriction) {
 		_sendRestriction->setGeometry(fullWidthButtonRect);
 	}
@@ -7717,6 +7772,7 @@ void HistoryWidget::uploadFile(
 
 void HistoryWidget::handleHistoryChange(not_null<const History*> history) {
 	if (_list && (_history == history || _migrated == history)) {
+		const auto sendStateChanged = updateCanSendMessage();
 		handlePendingHistoryUpdate();
 		updateBotKeyboard();
 		if (!_scroll->isHidden()) {
@@ -7725,8 +7781,10 @@ void HistoryWidget::handleHistoryChange(not_null<const History*> history) {
 			const auto joinChannel = isJoinChannel();
 			const auto muteUnmute = isMuteUnmute();
 			const auto reportMessages = isReportMessages();
-			const auto update = false
+			const auto protectedPeer = isE2ECloudProtectedPeer();
+			const auto update = sendStateChanged
 				|| (_reportMessages->isHidden() == reportMessages)
+				|| (_protectedOpen->isHidden() == protectedPeer)
 				|| (!reportMessages && _unblock->isHidden() == unblock)
 				|| (!reportMessages
 					&& !unblock
@@ -8151,10 +8209,12 @@ void HistoryWidget::updateHistoryGeometry(
 	if (_businessBotStatus) {
 		newScrollHeight -= _businessBotStatus->bar().height();
 	}
-	if (isChoosingTheme()) {
+	if (isE2ECloudProtectedPeer()) {
+		newScrollHeight -= _protectedOpen->height();
+	} else if (isChoosingTheme()) {
 		newScrollHeight -= _chooseTheme->height();
 	} else if (!editingMessage()
-		&& (isSearching()
+			&& (isSearching()
 			|| isBlocked()
 			|| isBotStart()
 			|| isJoinChannel()
@@ -10438,12 +10498,13 @@ bool HistoryWidget::updateCanSendMessage() {
 	const auto onlyReplies = _peer->amMonoforumAdmin();
 	const auto restrictedOnlyReplies = onlyReplies
 		&& (!_replyTo.messageId || _replyTo.messageId.peer != _peer->id);
-	const auto newCanSendMessages = restrictedOnlyReplies
+	const auto protectedPeer = isE2ECloudProtectedPeer();
+	const auto newCanSendMessages = restrictedOnlyReplies || protectedPeer
 		? false
 		: topic
 		? Data::CanSendAnyOf(topic, allWithoutPolls)
 		: Data::CanSendAnyOf(_peer, allWithoutPolls);
-	const auto newCanSendTexts = restrictedOnlyReplies
+	const auto newCanSendTexts = restrictedOnlyReplies || protectedPeer
 		? false
 		: topic
 		? Data::CanSend(topic, ChatRestriction::SendOther)

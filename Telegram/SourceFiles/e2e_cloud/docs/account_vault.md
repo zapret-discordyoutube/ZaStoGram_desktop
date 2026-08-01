@@ -45,7 +45,8 @@ as much memory as safely available.
 
 A KDF slows offline guessing but cannot repair a weak password. The UI must
 encourage a long unique passphrase and must not silently truncate or normalize
-it inconsistently across platforms.
+it inconsistently across platforms. New vaults require at least 12 Unicode
+characters; unlocking remains compatible with older nonempty passwords.
 
 Version one wraps only the random 32-byte vault master key. Its authenticated
 binary record contains the `TDE2EVLT` magic, format and KDF identifiers,
@@ -64,19 +65,19 @@ depending on the project's older bundled OpenSSL. New vaults require at least
 vault can be opened and migrated. Final platform presets may raise these values
 after benchmarking but may not silently lower this creation floor.
 
-## Local remembering
+## Unlocked session
 
-After a successful unlock, the installation may wrap the vault master key using
-the operating system's protected credential storage. The portable vault stored
-through Telegram remains protected by the user's E2E password.
+Version one does not store the password or vault master key in an operating-
+system credential facility. The user enters the password after a process start
+and whenever the protected identity is manually locked or the application
+passcode locks Telegram. The unlocked vault master key remains only in process
+memory and is cleansed when the protected identity locks.
 
-Platform adapters must be defined for Windows, macOS, all-other desktop systems,
-Android, and iOS. Falling back to plaintext local storage is forbidden.
-
-Local protected records use a random 256-bit record key and versioned
-AES-256-GCM envelopes with purpose-bound authenticated data. Snapshot files are
-atomically replaced. The remaining platform adapter responsibility is to wrap
-or retain that random key in the operating system's credential facility.
+Per-conversation 256-bit local record keys are derived from the unlocked vault
+master key with HKDF-SHA-256 and are bound to the Telegram account and protected
+conversation. Versioned AES-256-GCM envelopes then protect local snapshots with
+purpose-bound authenticated data. Snapshot files are atomically replaced and
+there is no plaintext fallback.
 
 ## Password change
 

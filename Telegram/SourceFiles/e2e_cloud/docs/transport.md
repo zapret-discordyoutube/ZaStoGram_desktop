@@ -8,6 +8,10 @@ the sole remote storage and delivery system.
 The carrier is a newly created normal private Telegram group. Protected clients
 interpret specially encoded messages and documents as E2E protocol objects.
 Stock clients do not receive keys and may display only opaque carrier objects.
+ZaStoGram recognizes the reserved filename/MIME pairs as presentation metadata,
+hides them from its ordinary timeline and shared media, and routes the carrier
+peer to the protected interface. That recognition is fail-closed UI policy, not
+cryptographic acceptance.
 
 ## Transport responsibilities
 
@@ -89,6 +93,13 @@ auto-removed temporary directory before handing them upward.
 
 This encoding must still be tested against server-side content transformations,
 document deduplication, forwarding, copying, deletion, and retention behavior.
+
+Forwarding or copying an intact carrier document cannot move protected content
+to another conversation: every accepted object is authenticated to its random
+conversation identifier and Telegram peer binding. The Desktop UI also removes
+ordinary forwarding actions for recognized carriers. A stock client can still
+copy opaque bytes, and an active server can fabricate matching metadata; both
+remain untrusted and cannot advance protected state.
 
 ## Availability
 

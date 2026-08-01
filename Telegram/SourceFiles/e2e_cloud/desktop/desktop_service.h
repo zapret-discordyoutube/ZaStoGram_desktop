@@ -135,6 +135,9 @@ public:
 	[[nodiscard]] bool retryProtectedGroupCreation();
 	[[nodiscard]] std::vector<DesktopProtectedGroupSummary>
 		protectedGroups() const;
+	[[nodiscard]] std::optional<ConversationId>
+		protectedConversationForPeer(
+			std::uint64_t telegramPeerIdBinding) const;
 	[[nodiscard]] std::vector<ProtectedContentRecord> protectedContent(
 		ConversationId conversationId) const;
 	[[nodiscard]] std::optional<DesktopProtectedSecurity> protectedSecurity(

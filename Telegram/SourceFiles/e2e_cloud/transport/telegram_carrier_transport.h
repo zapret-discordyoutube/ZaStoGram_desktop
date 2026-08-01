@@ -20,10 +20,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+[[nodiscard]] QString ProtectedLegacyCarrierFilename();
 [[nodiscard]] QString ProtectedControlCarrierFilename();
 [[nodiscard]] QString ProtectedContentCarrierFilename();
 [[nodiscard]] QString ProtectedCarrierMimeType();
 [[nodiscard]] int ProtectedCarrierMaximumObjectSize();
+[[nodiscard]] bool IsProtectedGroupCarrierMetadata(
+	const QString &filename,
+	const QString &mimeType);
 
 struct UploadedCarrierFile {
 	QByteArray backendToken;

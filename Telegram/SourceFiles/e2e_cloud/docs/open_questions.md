@@ -11,7 +11,6 @@
 
 ## Telegram carrier
 
-- How are opaque carrier objects hidden or grouped in the protected client UI?
 - What server transformations affect bytes, metadata, ordering, forwarding, or
   document identity?
 - How are missing, deleted, copied, and migrated carrier groups handled?
@@ -22,10 +21,6 @@
 
 - What Argon2id parameters satisfy the oldest supported desktop and mobile
   devices?
-- Which exact Windows, macOS, all-other desktop, Android, and iOS credential
-  stores wrap the locally remembered vault key?
-- What password strength and normalization policy is consistent across every
-  platform?
 - Should a future independent transparency service be optional for users who
   want stronger brand-new-installation rollback detection than the chosen
   Telegram-only automatic freshness witness can provide?
@@ -44,6 +39,6 @@
 - Should a visible multi-party quorum be added for selected operations after
   the initial owner-only authorization model ships?
 - Which desktop/mobile release sequence can reuse the same protocol core while
-  keeping platform credential-store and background-sync behavior testable?
+  keeping platform local-storage and background-sync behavior testable?
 - What battery, background execution, and push-wakeup policy lets a phone answer
   freshness challenges without requiring a connected Desktop client?

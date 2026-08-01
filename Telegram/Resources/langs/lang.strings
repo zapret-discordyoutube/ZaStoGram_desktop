@@ -2543,6 +2543,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_title" = "Protected Groups";
 "lng_e2e_cloud_password" = "Encryption password";
 "lng_e2e_cloud_password_confirm" = "Confirm encryption password";
+"lng_e2e_cloud_password_requirements" = "Use a unique encryption password of at least 12 characters. It cannot be recovered.";
 "lng_e2e_cloud_locked" = "Enter your encryption password. Telegram stores only opaque encrypted containers; the password is never sent to Telegram.";
 "lng_e2e_cloud_loading" = "Checking the encrypted vault in Saved Messages…";
 "lng_e2e_cloud_missing" = "No encrypted vault was found. Confirm the password to create a new protected identity. Do this only for a new setup.";
@@ -2597,6 +2598,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_you" = "You";
 "lng_e2e_cloud_participant" = "Participant {code}";
 "lng_e2e_cloud_file" = "File: {name} ({size})";
+"lng_e2e_cloud_carrier_activity" = "Protected encrypted activity";
+"lng_e2e_cloud_open_conversation" = "Open protected conversation";
+"lng_e2e_cloud_lock" = "Lock protected identity";
+"lng_e2e_cloud_recent_messages" = "Showing the latest {count} protected messages.";
 "lng_create_channel_title" = "New Channel";
 "lng_create_public_channel_title" = "Public Channel";
 "lng_create_public_channel_about" = "Anyone can find the channel in search and join";

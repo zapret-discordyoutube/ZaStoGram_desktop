@@ -40,10 +40,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 namespace {
 
-inline constexpr auto kLegacyCarrierFilename = "protected.tde2e";
-inline constexpr auto kControlCarrierFilename = "protected-control.tde2e";
-inline constexpr auto kContentCarrierFilename = "protected-content.tde2e";
-inline constexpr auto kCarrierMimeType = "application/octet-stream";
 inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumDownloadPageBytes = 64 * 1024 * 1024;
 
@@ -192,15 +188,12 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	[[nodiscard]] bool carrierMetadata(
 			const QString &candidateFilename,
 			const QString &candidateMimeType) const {
-		return candidateMimeType == mimeType
-			&& (protectedCarrierFamily
-				? (candidateFilename
-						== QString::fromLatin1(kLegacyCarrierFilename)
-					|| candidateFilename
-						== QString::fromLatin1(kControlCarrierFilename)
-					|| candidateFilename
-						== QString::fromLatin1(kContentCarrierFilename))
-				: candidateFilename == filename);
+		return protectedCarrierFamily
+			? IsProtectedGroupCarrierMetadata(
+				candidateFilename,
+				candidateMimeType)
+			: candidateMimeType == mimeType
+				&& candidateFilename == filename;
 	}
 
 	~State() {
@@ -579,8 +572,8 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 	  session,
 	  history,
 	  telegramPeerIdBinding,
-	  QString::fromLatin1(kLegacyCarrierFilename),
-	  QString::fromLatin1(kCarrierMimeType),
+	  ProtectedLegacyCarrierFilename(),
+	  ProtectedCarrierMimeType(),
 	  kMaximumCarrierObjectSize,
 	  true)) {
 }

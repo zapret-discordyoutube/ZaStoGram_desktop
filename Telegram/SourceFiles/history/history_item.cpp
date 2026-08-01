@@ -53,6 +53,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/sponsored_messages.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/data_bot_app.h"
+#include "data/data_document.h"
 #include "data/data_saved_messages.h"
 #include "data/data_saved_sublist.h"
 #include "data/data_changes.h"
@@ -72,6 +73,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_todo_list.h"
 #include "data/data_stories.h"
 #include "data/data_web_page.h"
+#include "data/data_media_types.h"
+#include "e2e_cloud/transport/cloud_vault_transport.h"
 #include "chat_helpers/stickers_gift_box_pack.h"
 #include "payments/payments_checkout_process.h" // CheckoutProcess::Start.
 #include "payments/payments_non_panel_process.h" // ProcessNonPanelPaymentFormFactory.
@@ -2851,6 +2854,9 @@ void HistoryItem::destroyHistoryEntry() {
 
 Storage::SharedMediaTypesMask HistoryItem::sharedMediaTypes() const {
 	auto result = Storage::SharedMediaTypesMask{};
+	if (isE2ECloudCarrier()) {
+		return result;
+	}
 	const auto saved = Get<HistoryMessageSavedMediaData>();
 	const auto media = saved ? saved->media.get() : _media.get();
 	if (media) {
@@ -3034,7 +3040,8 @@ bool HistoryItem::allowsReschedule() const {
 }
 
 bool HistoryItem::allowsForward() const {
-	return !isService()
+	return !isE2ECloudCarrier()
+		&& !isService()
 		&& isRegular()
 		&& !forbidsForward()
 		&& history()->peer->allowsForwarding()
@@ -3826,7 +3833,7 @@ bool HistoryItem::hasHiddenLinks() const {
 }
 
 TextForMimeData HistoryItem::clipboardText() const {
-	return isService()
+	return (isService() || isE2ECloudCarrier())
 		? TextForMimeData()
 		: TextForMimeData::WithExpandedLinks(translatedText());
 }
@@ -4534,6 +4541,9 @@ const HiddenSenderInfo *HistoryItem::savedFromHiddenSenderInfo() const {
 
 TextWithEntities HistoryItem::notificationText(
 		NotificationTextOptions options) const {
+	if (isE2ECloudCarrier()) {
+		return tr::marked(tr::lng_e2e_cloud_carrier_activity(tr::now));
+	}
 	auto result = [&] {
 		if (_media && !isService()) {
 			return _media->notificationText();
@@ -4557,7 +4567,27 @@ TextWithEntities HistoryItem::notificationText(
 		Ui::kQEllipsis);
 }
 
+bool HistoryItem::isE2ECloudCarrier() const {
+	const auto document = _media ? _media->document() : nullptr;
+	return document && E2ECloud::IsProtectedCarrierMetadata(
+		document->filename(),
+		document->mimeString());
+}
+
+bool HistoryItem::isE2ECloudGroupCarrier() const {
+	const auto document = _media ? _media->document() : nullptr;
+	return document && E2ECloud::IsProtectedGroupCarrierMetadata(
+		document->filename(),
+		document->mimeString());
+}
+
 ItemPreview HistoryItem::toPreview(ToPreviewOptions options) const {
+	if (isE2ECloudCarrier()) {
+		return {
+			.text = tr::marked(
+				tr::lng_e2e_cloud_carrier_activity(tr::now)),
+		};
+	}
 	if (isService()) {
 		const_cast<HistoryItem*>(this)->resolveDependent();
 

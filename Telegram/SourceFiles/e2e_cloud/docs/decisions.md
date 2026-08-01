@@ -31,8 +31,12 @@ plaintext compatibility mode.
 ### D006: Password-unlocked account vault
 
 Use one user-memorized E2E password per account to unlock a random account vault
-master key. Remember the unlocked key locally only through protected operating
-system storage.
+master key. Version one does not remember the password or unlocked vault key in
+an operating-system credential store. Keep them only for the unlocked process
+session, cleanse owned password buffers on every failure or lock, and lock the
+vault automatically when the application passcode locks. New vaults require at
+least 12 Unicode characters; old vaults remain unlockable without changing
+their password bytes.
 
 ### D007: No server password recovery
 
@@ -352,3 +356,21 @@ while testing for 500 participants. These are denial-of-service and lifecycle
 bounds, not target group sizes. A protocol version that needs longer-lived
 groups must add reviewed signed state snapshots and compaction instead of
 silently increasing untrusted memory.
+
+### D039: Fail-closed Desktop carrier interface
+
+Recognize carrier presentation only by the reserved legacy/control/content or
+vault filename together with the exact generic MIME type. Hide recognized
+carrier objects from protected-client history elements and shared media, expose
+only a generic encrypted-activity preview, and disallow forwarding or clipboard
+export through ordinary message actions.
+
+When a Telegram peer is mapped to an authenticated protected conversation, or
+its loaded history contains reserved group-carrier metadata, replace the entire
+ordinary compose surface with one action that opens the protected interface.
+This blocks text, attachments, voice messages, bot commands, forwarding, and
+editing through the plaintext Telegram sender. A matching unverified carrier
+can therefore cause a local availability failure, but it cannot make the client
+downgrade to plaintext. Cryptographic processing never trusts this UI marker;
+the envelope, peer binding, signature, MLS state, and replay checks remain
+authoritative.

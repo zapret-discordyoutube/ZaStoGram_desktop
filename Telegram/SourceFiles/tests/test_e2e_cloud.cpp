@@ -903,6 +903,35 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioCarrierMetadataRecognitionIsExact() {
+	const auto mime = ProtectedCarrierMimeType();
+	if (!IsProtectedGroupCarrierMetadata(
+			ProtectedLegacyCarrierFilename(),
+			mime)
+		|| !IsProtectedGroupCarrierMetadata(
+			ProtectedControlCarrierFilename(),
+			mime)
+		|| !IsProtectedGroupCarrierMetadata(
+			ProtectedContentCarrierFilename(),
+			mime)
+		|| !IsProtectedVaultCarrierMetadata(
+			CloudVaultCarrierFilename(),
+			mime)
+		|| !IsProtectedCarrierMetadata(
+			CloudVaultCarrierFilename(),
+			mime)
+		|| IsProtectedCarrierMetadata(u"notes.tde2e"_q, mime)
+		|| IsProtectedCarrierMetadata(
+			ProtectedControlCarrierFilename(),
+			u"application/pdf"_q)
+		|| IsProtectedGroupCarrierMetadata(
+			CloudVaultCarrierFilename(),
+			mime)) {
+		return Fail("protected carrier metadata recognition was not exact");
+	}
+	return 0;
+}
+
 } // namespace
 
 int main(int, char *[]) {
@@ -924,6 +953,7 @@ int main(int, char *[]) {
 		ScenarioCarrierPropagatesUploadFailure,
 		ScenarioCarrierDownloadsOnlyUntrustedBytes,
 		ScenarioCloudVaultUsesSavedMessagesCarrier,
+		ScenarioCarrierMetadataRecognitionIsExact,
 	}) {
 		if (const auto result = scenario()) {
 			return result;

@@ -666,6 +666,9 @@ not_null<HistoryItem*> History::insertItem(
 
 	const auto result = i->get();
 	owner().registerMessage(result);
+	if (result->isE2ECloudGroupCarrier()) {
+		_hasE2ECloudGroupCarrier = true;
+	}
 
 	Ensures(ok);
 	return result;

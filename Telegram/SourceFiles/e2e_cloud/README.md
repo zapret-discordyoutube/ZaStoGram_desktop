@@ -31,8 +31,8 @@ password on each new installation.
   messages or files directly.
 - A forgotten password creates a new E2E identity. Telegram cannot recover the
   previous identity or vault.
-- An unlocked vault may be remembered using the operating system's protected
-  credential storage.
+- The user remembers the E2E password. Version one keeps the unlocked vault only
+  for the current process session and clears it on manual or application lock.
 - A new installation may unlock its vault, read available history, and compose
   messages before a freshness witness answers a new challenge. New messages
   remain in a protected local queue, and no content or security-critical
@@ -108,12 +108,15 @@ The first core slice now contains:
   encrypted text and arbitrary-file transfer, file restoration with final hash
   verification, participant safety details, E2E roles, removal, and history
   administration;
+- fail-closed Desktop carrier presentation that hides service containers from
+  the ordinary timeline/shared media, removes ordinary export actions, and
+  replaces plaintext composition with the protected-conversation entry point;
 - focused state-machine and negative tests in the standard desktop test area.
 
 Test doubles remain outside the production target. Live carrier integration
 still needs end-to-end server transformation, multi-account update-stream, and
-large-group testing. Secure operating-system credential-store adapters, mobile
-integration, full interoperability/fuzz/load coverage, and independent
+large-group testing. Mobile integration, full interoperability/fuzz/load
+coverage, and independent
 cryptographic review are still required; the module is not ready for user data.
 
 ## Code layout

@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "e2e_cloud/core/envelope_codec.h"
 
+#include <algorithm>
+#include <array>
 #include <utility>
 
 namespace E2ECloud {
@@ -25,6 +27,10 @@ inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 
 } // namespace
 
+QString ProtectedLegacyCarrierFilename() {
+	return QString::fromLatin1("protected.tde2e");
+}
+
 QString ProtectedControlCarrierFilename() {
 	return QString::fromLatin1("protected-control.tde2e");
 }
@@ -39,6 +45,21 @@ QString ProtectedCarrierMimeType() {
 
 int ProtectedCarrierMaximumObjectSize() {
 	return kMaximumCarrierObjectSize;
+}
+
+bool IsProtectedGroupCarrierMetadata(
+		const QString &filename,
+		const QString &mimeType) {
+	if (mimeType != ProtectedCarrierMimeType()) {
+		return false;
+	}
+	const auto filenames = std::array{
+		ProtectedLegacyCarrierFilename(),
+		ProtectedControlCarrierFilename(),
+		ProtectedContentCarrierFilename(),
+	};
+	return std::find(begin(filenames), end(filenames), filename)
+		!= end(filenames);
 }
 
 struct TelegramCarrierTransport::CallbackGuard {

@@ -26,7 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QDateTime>
 #include <QtCore/QLocale>
-#include <QtCore/QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -75,36 +74,129 @@ namespace {
 		: QString();
 }
 
-[[nodiscard]] QString ConversationText(
+[[nodiscard]] QString RecordText(
+		const DesktopService &service,
+		const ProtectedContentRecord &record) {
+	const auto content = ContentText(record);
+	if (content.isEmpty()) {
+		return QString();
+	}
+	const auto time = QLocale().toString(
+		QDateTime::fromSecsSinceEpoch(qint64(record.unixTime)),
+		QLocale::ShortFormat);
+	return AuthorText(service, record.senderAccountId)
+		+ u" · "_q
+		+ time
+		+ u"\n"_q
+		+ content;
+}
+
+[[nodiscard]] QString RecordHeaderText(
+		const DesktopService &service,
+		const ProtectedContentRecord &record) {
+	const auto time = QLocale().toString(
+		QDateTime::fromSecsSinceEpoch(qint64(record.unixTime)),
+		QLocale::ShortFormat);
+	return AuthorText(service, record.senderAccountId)
+		+ u" · "_q
+		+ time;
+}
+
+void SaveProtectedRecord(
+		not_null<const DesktopService*> service,
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		QString filename,
+		QWidget *guard) {
+	FileDialog::GetWritePath(
+		Core::App().getFileDialogParent(),
+		tr::lng_e2e_cloud_save_file(tr::now),
+		FileDialog::AllFilesFilter(),
+		std::move(filename),
+		crl::guard(guard, [=](QString &&path) {
+			if (!path.isEmpty()) {
+				(void)service->saveProtectedFile(
+					conversationId,
+					eventObjectId,
+					std::move(path));
+			}
+		}));
+}
+
+void RebuildConversationRecords(
+		not_null<Ui::VerticalLayout*> container,
 		const DesktopService &service,
 		ConversationId conversationId) {
+	container->clear();
 	const auto records = service.protectedContent(conversationId);
 	if (records.empty()) {
-		return tr::lng_e2e_cloud_content_empty(tr::now);
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				tr::lng_e2e_cloud_content_empty(),
+				st::boxLabel),
+			st::boxRowPadding);
+		return;
 	}
-	constexpr auto kMaximumVisibleRecords = std::size_t(500);
+	constexpr auto kMaximumVisibleRecords = std::size_t(200);
 	const auto first = (records.size() > kMaximumVisibleRecords)
 		? records.size() - kMaximumVisibleRecords
 		: 0;
-	auto lines = QStringList();
-	lines.reserve(int(records.size() - first));
+	if (first) {
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				tr::lng_e2e_cloud_recent_messages(
+					tr::now,
+					lt_count,
+					int(kMaximumVisibleRecords)),
+				st::boxLabel),
+			st::boxRowPadding);
+	}
 	for (auto index = first; index != records.size(); ++index) {
 		const auto &record = records[index];
 		const auto content = ContentText(record);
 		if (content.isEmpty()) {
 			continue;
 		}
-		const auto time = QLocale().toString(
-			QDateTime::fromSecsSinceEpoch(qint64(record.unixTime)),
-			QLocale::ShortFormat);
-		lines.push_back(
-			time
-			+ u"  "_q
-			+ AuthorText(service, record.senderAccountId)
-			+ u"\n"_q
-			+ content);
+		if (record.objectKind != ObjectKind::EncryptedFileManifest) {
+			container->add(
+				object_ptr<Ui::FlatLabel>(
+					container,
+					RecordText(service, record),
+					st::boxLabel),
+				st::boxRowPadding);
+			continue;
+		}
+		const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+			record.plaintext);
+		if (!manifest) {
+			continue;
+		}
+		const auto filename = QString::fromUtf8(manifest->filenameUtf8);
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				RecordHeaderText(service, record),
+				st::boxLabel),
+			st::boxRowPadding);
+		const auto button = container->add(
+			object_ptr<Ui::SettingsButton>(
+				container,
+				rpl::single(content),
+				st::settingsButton),
+			st::boxRowPadding,
+			style::al_top);
+		const auto eventObjectId = record.eventObjectId;
+		button->setClickedCallback([=, service = &service] {
+			SaveProtectedRecord(
+				service,
+				conversationId,
+				eventObjectId,
+				filename,
+				container.get());
+		});
 	}
-	return lines.join(u"\n\n"_q);
 }
 
 [[nodiscard]] QString ContentStatusText(
@@ -515,6 +607,8 @@ void ShowProtectedGroupList(
 		}
 		for (const auto &group : groups) {
 			const auto title = group.title
+				+ u" · "_q
+				+ QString::number(group.contentCount)
 				+ u" · #"_q
 				+ QString::number(group.generation);
 			const auto button = box->addRow(
@@ -553,17 +647,15 @@ void ShowProtectedConversation(
 			box,
 			QString(),
 			st::boxLabel));
-		const auto messages = box->addRow(object_ptr<Ui::FlatLabel>(
-			box,
-			QString(),
-			st::boxLabel));
+		const auto messages = box->addRow(
+			object_ptr<Ui::VerticalLayout>(box),
+			style::margins());
 		const auto field = box->addRow(object_ptr<Ui::InputField>(
 			box,
 			st::defaultInputField,
 			tr::lng_e2e_cloud_message()));
-		const auto refresh = [=] {
+		const auto refreshStatus = [=] {
 			status->setText(ContentStatusText(*service, conversationId));
-			messages->setText(ConversationText(*service, conversationId));
 			const auto current = service->protectedGroups();
 			const auto found = std::find_if(
 				begin(current),
@@ -576,14 +668,18 @@ void ShowProtectedConversation(
 		};
 		service->contentRevisionValue(
 		) | rpl::on_next([=](std::uint64_t) {
-			refresh();
+			RebuildConversationRecords(
+				messages,
+				*service,
+				conversationId);
+			refreshStatus();
 		}, box->lifetime());
 		service->contentStateValue(
 		) | rpl::on_next([=](DesktopContentState) {
-			refresh();
+			refreshStatus();
 		}, box->lifetime());
 		box->setFocusCallback([=] { field->setFocusFast(); });
-		box->addButton(tr::lng_e2e_cloud_send(), [=] {
+		const auto send = [=] {
 			const auto text = field->getLastText();
 			if (text.isEmpty()) {
 				field->showError();
@@ -594,7 +690,11 @@ void ShowProtectedConversation(
 			} else {
 				field->showError();
 			}
-		});
+		};
+		field->submits() | rpl::on_next([=](Qt::KeyboardModifiers) {
+			send();
+		}, field->lifetime());
+		box->addButton(tr::lng_e2e_cloud_send(), send);
 		box->addButton(tr::lng_e2e_cloud_send_file(), [=] {
 			FileDialog::GetOpenPath(
 				Core::App().getFileDialogParent(),
@@ -619,7 +719,11 @@ void ShowProtectedConversation(
 		});
 		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 		service->synchronizeProtectedContent(conversationId);
-		refresh();
+		RebuildConversationRecords(
+			messages,
+			*service,
+			conversationId);
+		refreshStatus();
 	}));
 }
 

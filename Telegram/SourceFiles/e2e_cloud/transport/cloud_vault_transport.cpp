@@ -28,6 +28,20 @@ int CloudVaultMaximumCarrierSize() {
 	return kCloudVaultMaximumCarrierSize;
 }
 
+bool IsProtectedVaultCarrierMetadata(
+		const QString &filename,
+		const QString &mimeType) {
+	return filename == CloudVaultCarrierFilename()
+		&& mimeType == CloudVaultCarrierMimeType();
+}
+
+bool IsProtectedCarrierMetadata(
+		const QString &filename,
+		const QString &mimeType) {
+	return IsProtectedVaultCarrierMetadata(filename, mimeType)
+		|| IsProtectedGroupCarrierMetadata(filename, mimeType);
+}
+
 struct TelegramCloudVaultTransport::CallbackGuard {
 	TelegramCloudVaultTransport *transport = nullptr;
 };
