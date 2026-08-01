@@ -81,7 +81,6 @@ bool CloudVaultSyncController::start(
 		Cleanse(password);
 		return false;
 	}
-	_discoveryOnly = false;
 	_password = std::move(password);
 	return startRequests(localAnchor);
 }
@@ -90,9 +89,26 @@ bool CloudVaultSyncController::startDiscovery() {
 	if (_running || !_telegramUserIdBinding) {
 		return false;
 	}
-	_discoveryOnly = true;
 	Cleanse(_password);
-	return startRequests(std::nullopt);
+	_localAnchor.reset();
+	_candidates.clear();
+	_seenCursors.clear();
+	_cursor.clear();
+	_candidateBytes = 0;
+	_pages = 0;
+	_running = true;
+	_requestActive = true;
+	_requestQueued = false;
+	const auto guard = _callbackGuard;
+	const auto weak = std::weak_ptr<CallbackGuard>(guard);
+	_remote.discover([weak](
+			CloudVaultRemote::Result result,
+			bool present) {
+		if (const auto guard = weak.lock(); guard && guard->controller) {
+			guard->controller->discoveryReceived(result, present);
+		}
+	});
+	return true;
 }
 
 bool CloudVaultSyncController::startRequests(
@@ -183,15 +199,6 @@ void CloudVaultSyncController::pageReceived(
 		return;
 	}
 	++_pages;
-	if (_discoveryOnly && !page.untrustedObjects.empty()) {
-		finish({
-			.status = CloudVaultSyncStatus::Present,
-			.vault = std::nullopt,
-			.pages = _pages,
-			.candidates = page.untrustedObjects.size(),
-		});
-		return;
-	}
 	for (auto &candidate : page.untrustedObjects) {
 		if (candidate.bytes.size() < 0
 			|| _candidates.size() == kMaximumCandidates
@@ -209,15 +216,6 @@ void CloudVaultSyncController::pageReceived(
 		_candidates.push_back(std::move(candidate.bytes));
 	}
 	if (page.complete) {
-		if (_discoveryOnly) {
-			finish({
-				.status = CloudVaultSyncStatus::Missing,
-				.vault = std::nullopt,
-				.pages = _pages,
-				.candidates = 0,
-			});
-			return;
-		}
 		const auto candidateCount = _candidates.size();
 		auto selection = _selector.select(
 			std::move(_candidates),
@@ -251,6 +249,30 @@ void CloudVaultSyncController::pageReceived(
 	pumpRequests();
 }
 
+void CloudVaultSyncController::discoveryReceived(
+		CloudVaultRemote::Result result,
+		bool present) {
+	if (!_running || !_requestActive) {
+		return;
+	}
+	_requestActive = false;
+	_pages = 1;
+	auto status = CloudVaultSyncStatus::RetryableTransportError;
+	if (result == CloudVaultRemote::Result::Accepted) {
+		status = present
+			? CloudVaultSyncStatus::Present
+			: CloudVaultSyncStatus::Missing;
+	} else if (result == CloudVaultRemote::Result::PermanentError) {
+		status = CloudVaultSyncStatus::PermanentTransportError;
+	}
+	finish({
+		.status = status,
+		.vault = std::nullopt,
+		.pages = _pages,
+		.candidates = present ? 1U : 0U,
+	});
+}
+
 void CloudVaultSyncController::finish(
 		CloudVaultSyncCompletion completion) {
 	if (!_running) {
@@ -259,7 +281,6 @@ void CloudVaultSyncController::finish(
 	_running = false;
 	_requestActive = false;
 	_requestQueued = false;
-	_discoveryOnly = false;
 	Cleanse(_password);
 	_candidates.clear();
 	if (_completionCallback) {

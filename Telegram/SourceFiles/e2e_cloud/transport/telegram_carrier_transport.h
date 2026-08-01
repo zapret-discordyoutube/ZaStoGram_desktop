@@ -46,6 +46,7 @@ public:
 		Result,
 		UploadedCarrierFile)>;
 	using SendCallback = std::function<void(Result)>;
+	using DiscoveryCallback = std::function<void(Result, bool)>;
 	using DownloadCallback = std::function<void(
 		Result,
 		CarrierDownloadPage)>;
@@ -68,6 +69,9 @@ public:
 		QByteArray cursor,
 		int limit,
 		DownloadCallback callback) = 0;
+	virtual void findDocument(
+		std::uint64_t telegramPeerId,
+		DiscoveryCallback callback) = 0;
 
 };
 

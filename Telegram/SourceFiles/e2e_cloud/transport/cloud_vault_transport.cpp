@@ -85,6 +85,25 @@ void TelegramCloudVaultTransport::uploadExact(
 		});
 }
 
+void TelegramCloudVaultTransport::discover(DiscoveryCallback callback) {
+	if (!callback) {
+		return;
+	} else if (!_telegramSelfPeerId) {
+		callback(Result::PermanentError, false);
+		return;
+	}
+	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
+	_backend.findDocument(
+		_telegramSelfPeerId,
+		[weak, callback = std::move(callback)](
+				Result result,
+				bool present) mutable {
+			if (const auto guard = weak.lock(); guard && guard->transport) {
+				callback(result, present);
+			}
+		});
+}
+
 void TelegramCloudVaultTransport::downloadPage(
 		QByteArray cursor,
 		int limit,

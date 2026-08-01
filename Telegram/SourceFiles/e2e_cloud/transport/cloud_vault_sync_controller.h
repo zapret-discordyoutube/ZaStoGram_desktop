@@ -71,6 +71,9 @@ private:
 	void pageReceived(
 		CloudVaultRemote::Result result,
 		CarrierDownloadPage page);
+	void discoveryReceived(
+		CloudVaultRemote::Result result,
+		bool present);
 	void finish(CloudVaultSyncCompletion completion);
 
 	std::uint64_t _telegramUserIdBinding = 0;
@@ -89,7 +92,6 @@ private:
 	bool _requestActive = false;
 	bool _pumping = false;
 	bool _requestQueued = false;
-	bool _discoveryOnly = false;
 };
 
 } // namespace E2ECloud

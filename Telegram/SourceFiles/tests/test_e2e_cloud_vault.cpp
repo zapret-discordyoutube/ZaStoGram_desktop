@@ -117,24 +117,21 @@ public:
 		callback(Result::PermanentError);
 	}
 
-	void downloadPage(
-			QByteArray cursor,
-			int limit,
-			DownloadCallback callback) override {
-		cursors.push_back(std::move(cursor));
-		limits.push_back(limit);
-		if (pages.empty()) {
-			callback(Result::PermanentError, {});
-			return;
-		}
-		auto [result, page] = std::move(pages.front());
-		pages.erase(pages.begin());
-		callback(result, std::move(page));
+	void discover(DiscoveryCallback callback) override {
+		++discoveryCalls;
+		callback(discoveryResult, discoveryPresent);
 	}
 
-	std::vector<std::pair<Result, CarrierDownloadPage>> pages;
-	std::vector<QByteArray> cursors;
-	std::vector<int> limits;
+	void downloadPage(
+			QByteArray,
+			int,
+			DownloadCallback callback) override {
+		callback(Result::PermanentError, {});
+	}
+
+	Result discoveryResult = Result::Accepted;
+	bool discoveryPresent = false;
+	int discoveryCalls = 0;
 };
 
 [[nodiscard]] int ScenarioVaultDiscoveryFindsMissingIdentity() {
@@ -143,14 +140,6 @@ public:
 	auto codec = CloudVaultCodecV1(kdf, sha256);
 	auto selector = CloudVaultSelector(codec, sha256);
 	auto remote = TestCloudVaultRemote();
-	remote.pages.push_back({
-		CloudVaultRemote::Result::Accepted,
-		{
-			.untrustedObjects = {},
-			.nextCursor = {},
-			.complete = true,
-		},
-	});
 	auto completion = std::optional<CloudVaultSyncCompletion>();
 	auto controller = CloudVaultSyncController(
 		777,
@@ -166,7 +155,7 @@ public:
 		|| completion->pages != 1
 		|| completion->candidates != 0
 		|| kdf.calls != 0
-		|| remote.cursors != std::vector<QByteArray>{ QByteArray() }) {
+		|| remote.discoveryCalls != 1) {
 		return Fail("vault discovery did not identify a missing identity");
 	}
 	return 0;
@@ -178,26 +167,7 @@ public:
 	auto codec = CloudVaultCodecV1(kdf, sha256);
 	auto selector = CloudVaultSelector(codec, sha256);
 	auto remote = TestCloudVaultRemote();
-	remote.pages = {
-		{
-			CloudVaultRemote::Result::Accepted,
-			{
-				.untrustedObjects = {},
-				.nextCursor = QByteArray("next"),
-				.complete = false,
-			},
-		},
-		{
-			CloudVaultRemote::Result::Accepted,
-			{
-				.untrustedObjects = {
-					{ .bytes = QByteArray("opaque vault") },
-				},
-				.nextCursor = QByteArray("unused"),
-				.complete = false,
-			},
-		},
-	};
+	remote.discoveryPresent = true;
 	auto completion = std::optional<CloudVaultSyncCompletion>();
 	auto controller = CloudVaultSyncController(
 		777,
@@ -210,13 +180,10 @@ public:
 		|| controller.running()
 		|| !completion
 		|| completion->status != CloudVaultSyncStatus::Present
-		|| completion->pages != 2
+		|| completion->pages != 1
 		|| completion->candidates != 1
 		|| kdf.calls != 0
-		|| remote.cursors != std::vector<QByteArray>{
-			QByteArray(),
-			QByteArray("next"),
-		}) {
+		|| remote.discoveryCalls != 1) {
 		return Fail("vault discovery requested a password before detection");
 	}
 	return 0;

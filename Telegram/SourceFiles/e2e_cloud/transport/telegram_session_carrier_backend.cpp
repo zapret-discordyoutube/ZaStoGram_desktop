@@ -42,6 +42,7 @@ namespace {
 
 inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumDownloadPageBytes = 64 * 1024 * 1024;
+inline constexpr auto kDiscoverySearchLimit = 100;
 
 [[nodiscard]] QByteArray EncodeCursor(MsgId messageId) {
 	if (!messageId) {
@@ -384,6 +385,106 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		}).send();
 	}
 
+	void findDocument(
+			std::uint64_t peerId,
+			DiscoveryCallback callback) {
+		if (!callback) {
+			return;
+		} else if (peerId != telegramPeerIdBinding) {
+			callback(TelegramTransport::UploadResult::PermanentError, false);
+			return;
+		} else if (discovery) {
+			callback(TelegramTransport::UploadResult::RetryableError, false);
+			return;
+		}
+		discovery = std::move(callback);
+		api.request(MTPmessages_Search(
+			MTP_flags(MTPmessages_Search::Flag(0)),
+			session->data().history(PeerId(peerId))->peer->input(),
+			MTP_string(filename),
+			MTP_inputPeerEmpty(),
+			MTPInputPeer(),
+			MTPVector<MTPReaction>(),
+			MTP_int(0),
+			MTP_inputMessagesFilterDocument(),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_int(kDiscoverySearchLimit),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_long(0)
+		)).done([weak = base::weak_ptr(this)](
+				const MTPmessages_Messages &result) {
+			if (weak) {
+				weak->discoveryLoaded(result);
+			}
+		}).fail([weak = base::weak_ptr(this)](const MTP::Error &error) {
+			if (weak) {
+				weak->finishDiscovery(ErrorResult(error), false);
+			}
+		}).send();
+	}
+
+	void discoveryLoaded(const MTPmessages_Messages &result) {
+		if (!discovery) {
+			return;
+		}
+		auto messages = QVector<MTPMessage>();
+		result.match([&](const MTPDmessages_messages &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			messages = data.vmessages().v;
+		}, [&](const MTPDmessages_messagesSlice &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			messages = data.vmessages().v;
+		}, [&](const MTPDmessages_channelMessages &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			messages = data.vmessages().v;
+		}, [](const MTPDmessages_messagesNotModified &) {
+		});
+		for (const auto &message : messages) {
+			const auto messagePeerId = PeerFromMessage(message);
+			if (!IdFromMessage(message)
+				|| messagePeerId != peerId
+				|| !session->data().peerLoaded(messagePeerId)
+				|| !DateFromMessage(message)) {
+				continue;
+			}
+			const auto item = session->data().addNewMessage(
+				message,
+				MessageFlags(),
+				NewMessageType::Existing);
+			const auto media = item ? item->media() : nullptr;
+			const auto document = media ? media->document() : nullptr;
+			if (document && carrierMetadata(
+					document->filename(),
+					document->mimeString())
+				&& document->size > 0
+				&& document->size <= maximumObjectSize) {
+				finishDiscovery(
+					TelegramTransport::UploadResult::Accepted,
+					true);
+				return;
+			}
+		}
+		finishDiscovery(TelegramTransport::UploadResult::Accepted, false);
+	}
+
+	void finishDiscovery(
+			TelegramTransport::UploadResult result,
+			bool present) {
+		if (!discovery) {
+			return;
+		}
+		auto callback = std::move(*discovery);
+		discovery.reset();
+		callback(result, present);
+	}
+
 	void historyLoaded(const MTPmessages_Messages &result, int limit) {
 		if (!download) {
 			return;
@@ -560,6 +661,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	std::map<FullMsgId, PendingUpload> uploads;
 	std::map<QByteArray, UploadedFile> uploaded;
 	std::optional<PendingDownload> download;
+	std::optional<DiscoveryCallback> discovery;
 	bool startingDownloads = false;
 	rpl::lifetime lifetime;
 };
@@ -656,6 +758,18 @@ void TelegramSessionCarrierBackend::downloadDocuments(
 		std::move(cursor),
 		limit,
 		std::move(callback));
+}
+
+void TelegramSessionCarrierBackend::findDocument(
+		std::uint64_t telegramPeerId,
+		DiscoveryCallback callback) {
+	if (!_state) {
+		if (callback) {
+			callback(TelegramTransport::UploadResult::PermanentError, false);
+		}
+		return;
+	}
+	_state->findDocument(telegramPeerId, std::move(callback));
 }
 
 } // namespace E2ECloud

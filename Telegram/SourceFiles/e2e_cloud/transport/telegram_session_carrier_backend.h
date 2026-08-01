@@ -52,6 +52,9 @@ public:
 		QByteArray cursor,
 		int limit,
 		DownloadCallback callback) override;
+	void findDocument(
+		std::uint64_t telegramPeerId,
+		DiscoveryCallback callback) override;
 
 private:
 	struct State;

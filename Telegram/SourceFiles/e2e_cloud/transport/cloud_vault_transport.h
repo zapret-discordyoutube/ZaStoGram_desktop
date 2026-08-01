@@ -33,6 +33,7 @@ class CloudVaultRemote {
 public:
 	using Result = TelegramTransport::UploadResult;
 	using UploadCallback = std::function<void(Result)>;
+	using DiscoveryCallback = std::function<void(Result, bool)>;
 	using DownloadCallback = std::function<void(Result, CarrierDownloadPage)>;
 
 	virtual ~CloudVaultRemote() = default;
@@ -40,6 +41,7 @@ public:
 	virtual void uploadExact(
 		QByteArray bytes,
 		UploadCallback callback) = 0;
+	virtual void discover(DiscoveryCallback callback) = 0;
 	virtual void downloadPage(
 		QByteArray cursor,
 		int limit,
@@ -56,6 +58,7 @@ public:
 	void uploadExact(
 		QByteArray bytes,
 		UploadCallback callback) override;
+	void discover(DiscoveryCallback callback) override;
 	void downloadPage(
 		QByteArray cursor,
 		int limit,

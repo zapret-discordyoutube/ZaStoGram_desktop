@@ -378,9 +378,11 @@ authoritative.
 ### D040: Discover before asking for a vault password
 
 Do not assume that a protected identity exists when the Desktop service is
-constructed. On first opening the protected surface, scan Saved Messages for
-exact vault carrier metadata without a password. Show identity creation only
-after an empty scan and show password unlock only after a carrier is present.
+constructed. On first opening the protected surface, issue one bounded Saved
+Messages document search for the reserved vault filename without a password,
+then verify the exact MIME type and size locally. Do not download carrier bytes
+or walk the complete history during discovery. Show identity creation only
+after an empty result and show password unlock only after a carrier is present.
 Discovery never parses or accepts the encrypted bytes and cannot bypass normal
 vault selection after password entry. Retryable discovery failure exposes only
 a retry action, not an unsafe create-or-unlock guess.

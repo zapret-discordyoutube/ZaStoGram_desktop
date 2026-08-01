@@ -268,6 +268,13 @@ public:
 		downloadCallbacks.push_back(std::move(callback));
 	}
 
+	void findDocument(
+			std::uint64_t telegramPeerId,
+			DiscoveryCallback callback) override {
+		peerIds.push_back(telegramPeerId);
+		discoveryCallbacks.push_back(std::move(callback));
+	}
+
 	std::vector<QByteArray> uploadedBytes;
 	std::vector<QString> filenames;
 	std::vector<QString> mimeTypes;
@@ -278,6 +285,7 @@ public:
 	std::vector<UploadCallback> uploadCallbacks;
 	std::vector<SendCallback> sendCallbacks;
 	std::vector<DownloadCallback> downloadCallbacks;
+	std::vector<DiscoveryCallback> discoveryCallbacks;
 
 };
 
@@ -871,6 +879,25 @@ public:
 		|| backend.filenames.size() != 2
 		|| backend.filenames[0] != backend.filenames[1]) {
 		return Fail("cloud vault carrier did not complete exact upload");
+	}
+	auto discovery = std::optional<bool>();
+	transport.discover([&](
+			TelegramTransport::UploadResult result,
+			bool present) {
+		if (result == TelegramTransport::UploadResult::Accepted) {
+			discovery = present;
+		}
+	});
+	if (backend.discoveryCallbacks.size() != 1
+		|| backend.peerIds.back() != 777
+		|| discovery) {
+		return Fail("cloud vault discovery bypassed its metadata backend");
+	}
+	backend.discoveryCallbacks.front()(
+		TelegramTransport::UploadResult::Accepted,
+		true);
+	if (discovery != true) {
+		return Fail("cloud vault discovery did not return backend presence");
 	}
 	auto page = std::optional<CarrierDownloadPage>();
 	transport.downloadPage(
