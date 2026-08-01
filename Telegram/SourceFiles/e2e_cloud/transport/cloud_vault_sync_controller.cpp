@@ -17,7 +17,7 @@ namespace {
 
 inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
-inline constexpr auto kMaximumCandidates = std::size_t(256);
+inline constexpr auto kMaximumCandidates = std::size_t(65536);
 inline constexpr auto kMaximumCandidateBytes = std::uint64_t(64 * 1024 * 1024);
 inline constexpr auto kMaximumPages = std::uint64_t(1'000'000);
 

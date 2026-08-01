@@ -1302,6 +1302,9 @@ void DesktopService::lock() {
 	const auto securityBlocked = _vaultState.current()
 		== DesktopVaultState::SecurityBlocked;
 	const auto knownVault = _vault || _vaultAnchor.anchor().has_value();
+	if (++_operationEpoch == 0) {
+		++_operationEpoch;
+	}
 	_sync.reset();
 	_pendingCreation.reset();
 	_pendingGroupCreation.reset();
@@ -1416,10 +1419,14 @@ void DesktopService::uploadPendingCreation() {
 		return;
 	}
 	_vaultState = DesktopVaultState::Creating;
+	const auto operationEpoch = _operationEpoch;
 	_remote->uploadExact(
 		_pendingCreation->encoded,
-		[weak = base::weak_ptr(this)](TelegramTransport::UploadResult result) {
-			if (!weak || !weak->_pendingCreation) {
+		[weak = base::weak_ptr(this), operationEpoch](
+				TelegramTransport::UploadResult result) {
+			if (!weak
+				|| weak->_operationEpoch != operationEpoch
+				|| !weak->_pendingCreation) {
 				return;
 			}
 			if (result == TelegramTransport::UploadResult::Accepted) {
@@ -1557,10 +1564,13 @@ void DesktopService::uploadPendingConversationIndex() {
 	}
 	_pendingGroupCreation->uploadInProgress = true;
 	_groupCreationState = DesktopGroupCreationState::UpdatingVault;
+	const auto operationEpoch = _operationEpoch;
 	_remote->uploadExact(
 		_pendingGroupCreation->vaultUpdate->encoded,
-		[weak = base::weak_ptr(this)](TelegramTransport::UploadResult result) {
+		[weak = base::weak_ptr(this), operationEpoch](
+				TelegramTransport::UploadResult result) {
 			if (!weak
+				|| weak->_operationEpoch != operationEpoch
 				|| !weak->_pendingGroupCreation
 				|| !weak->_pendingGroupCreation->vaultUpdate
 				|| !weak->_vault) {

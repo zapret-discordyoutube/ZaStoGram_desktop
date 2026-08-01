@@ -298,6 +298,7 @@ private:
 	std::map<ConversationId, DesktopContentState> _contentStates;
 	rpl::variable<std::uint64_t> _contentRevision = 0;
 	rpl::variable<std::uint64_t> _securityRevision = 0;
+	std::uint64_t _operationEpoch = 1;
 };
 
 } // namespace E2ECloud

@@ -102,13 +102,40 @@ def verify_discovery_has_a_timeout() -> None:
     )
 
     assert "kDiscoveryTimeout = crl::time(15'000)" in backend
-    assert "discoveryTimedOut(requestId);" in backend
+    assert "discoveryTimedOut(requestId, token);" in backend
     assert "api.request(base::take(discoveryRequestId)).cancel();" in backend
     assert "UploadResult::RetryableError" in function_body(
         backend,
-        "void discoveryTimedOut(mtpRequestId requestId)",
+        "void discoveryTimedOut(\n"
+        "\t\t\tmtpRequestId requestId,",
         "void discoveryLoaded(const MTPmessages_Messages &result)",
     )
+
+
+def verify_all_carrier_operations_have_timeouts() -> None:
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+
+    assert "kCarrierOperationTimeout = crl::time(120'000)" in backend
+    assert "weak->uploadTimedOut(id);" in backend
+    assert "weak->downloadTimedOut(token);" in backend
+    assert "weak->api.request(requestId).cancel();" in backend
+    assert "api.request(base::take(downloadRequestId)).cancel();" in backend
+
+
+def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+
+    assert "std::uint64_t _operationEpoch = 1;" in header
+    assert "if (++_operationEpoch == 0)" in function_body(
+        service,
+        "void DesktopService::lock()",
+        "void DesktopService::applyVaultDiscoveryResult(",
+    )
+    assert service.count("weak->_operationEpoch != operationEpoch") == 2
 
 
 def verify_protected_groups_layout_uses_own_visibility() -> None:
@@ -134,6 +161,8 @@ def main() -> None:
     verify_group_scope()
     verify_all_e2e_tests_are_registered()
     verify_discovery_has_a_timeout()
+    verify_all_carrier_operations_have_timeouts()
+    verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
 

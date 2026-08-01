@@ -97,12 +97,13 @@ PersistentInboundJournal::PersistentInboundJournal(
 }
 
 InboundJournalLoadResult PersistentInboundJournal::load() {
+	_entries.clear();
+	_revision = 0;
+	_loaded = false;
+	_storageError = false;
 	const auto stored = _blobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
-		_entries.clear();
-		_revision = 0;
 		_loaded = true;
-		_storageError = false;
 		return InboundJournalLoadResult::Missing;
 	} else if (stored.status != BlobReadStatus::Found) {
 		_storageError = true;

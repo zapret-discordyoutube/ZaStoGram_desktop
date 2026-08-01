@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/aes_gcm_local_record_protector.h"
 #include "e2e_cloud/storage/local_record_key_derivation.h"
 #include "e2e_cloud/storage/persistent_conversation_metadata.h"
+#include "e2e_cloud/storage/persistent_content_store.h"
 #include "e2e_cloud/storage/persistent_content_sync_state.h"
 #include "e2e_cloud/storage/persistent_freshness_trust.h"
 #include "e2e_cloud/files/persistent_file_transfer.h"
@@ -22,6 +23,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/persistent_key_package_pool.h"
 #include "e2e_cloud/storage/persistent_mls_state.h"
 #include "e2e_cloud/storage/persistent_outbox.h"
+
+#include <QtCore/QTemporaryDir>
 
 #include <algorithm>
 #include <cstdio>
@@ -223,10 +226,59 @@ public:
 	auto tampered = *blob.bytes;
 	tampered[tampered.size() - 1] ^= 1;
 	blob.bytes = tampered;
-	auto damaged = PersistentContentSyncState(blob, protector);
-	if (damaged.load(conversationId)
-			!= ContentSyncStateLoadResult::AuthenticationFailed) {
+	if (restored.load(conversationId)
+			!= ContentSyncStateLoadResult::AuthenticationFailed
+		|| restored.loaded()
+		|| restored.newestObservedMessageId()
+		|| restored.revision()
+		|| restored.advance(200)
+			!= ContentSyncStateCommitResult::InvalidBoundary) {
 		return Fail("content synchronization boundary accepted tampering");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioContentStoreReloadFailureClearsPlaintext() {
+	auto key = LocalRecordKey();
+	key.fill(51);
+	const auto protector = AesGcmLocalRecordProtector(std::move(key));
+	const auto sha256 = OpenSslSha256Provider();
+	const auto conversationId = FilledId<ConversationId>(52);
+	const auto eventObjectId = FilledId<ObjectId>(53);
+	auto indexBlob = MemoryBlobStore();
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("content store temporary directory was unavailable");
+	}
+	auto store = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	if (store.load() != ContentStoreLoadResult::Missing
+		|| store.append({
+			.conversationId = conversationId,
+			.eventObjectId = eventObjectId,
+			.contentObjectId = FilledId<ObjectId>(54),
+			.objectKind = ObjectKind::EncryptedMessageBody,
+			.groupGeneration = 7,
+			.senderAccountId = FilledId<AccountId>(55),
+			.senderClientId = FilledId<ClientId>(56),
+			.unixTime = 1'725'000'000,
+			.observedTelegramMessageId = 99,
+			.plaintext = QByteArray("decrypted protected message"),
+		}) != ContentStoreAppendResult::Stored
+		|| !store.record(eventObjectId)) {
+		return Fail("content store reload fixture could not be persisted");
+	}
+	(*indexBlob.bytes)[indexBlob.bytes->size() - 1] ^= 1;
+	if (store.load() != ContentStoreLoadResult::AuthenticationFailed
+		|| store.loaded()
+		|| store.revision()
+		|| !store.records().empty()
+		|| store.record(eventObjectId)) {
+		return Fail("failed content store reload retained plaintext state");
 	}
 	return 0;
 }
@@ -325,7 +377,21 @@ public:
 			!= FileTransferLoadResult::Loaded
 		|| !replaced.pending()
 		|| replaced.pending()->sourcePathUtf8
-			!= replacement.sourcePathUtf8
+			!= replacement.sourcePathUtf8) {
+		return Fail("resumable file transfer replacement did not reload");
+	}
+	const auto replacementSnapshot = *blob.bytes;
+	(*blob.bytes)[blob.bytes->size() - 1] ^= 1;
+	if (replaced.load(context.conversationId)
+			!= FileTransferLoadResult::AuthenticationFailed
+		|| replaced.loaded()
+		|| replaced.pending()
+		|| replaced.revision()) {
+		return Fail("failed file transfer reload retained pending plaintext");
+	}
+	blob.bytes = replacementSnapshot;
+	if (replaced.load(context.conversationId)
+			!= FileTransferLoadResult::Loaded
 		|| replaced.clear() != FileTransferCommitResult::Committed) {
 		return Fail("resumable file transfer could not be cleared");
 	}
@@ -793,10 +859,11 @@ public:
 		return Fail("inbound journal corruption setup failed");
 	}
 	(*blob.bytes)[blob.bytes->size() - 1] ^= 1;
-	auto corrupted = PersistentInboundJournal(blob, protector);
-	if (corrupted.load()
+	if (journal.load()
 			!= InboundJournalLoadResult::AuthenticationFailed
-		|| corrupted.lookup(
+		|| journal.size()
+		|| journal.revision()
+		|| journal.lookup(
 			FilledId<ConversationId>(1),
 			FilledId<ObjectId>(4),
 			FilledId<Digest>(5)) != InboundJournalLookup::StorageError) {
@@ -980,6 +1047,7 @@ int main(int, char *[]) {
 		ScenarioAeadProtection,
 		ScenarioConversationRecordKeyDerivation,
 		ScenarioContentSyncBoundarySurvivesRestart,
+		ScenarioContentStoreReloadFailureClearsPlaintext,
 		ScenarioFileTransferSurvivesRestart,
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,

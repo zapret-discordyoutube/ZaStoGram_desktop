@@ -28,6 +28,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/file_upload.h"
 #include "storage/localimageloader.h"
 
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 
@@ -45,6 +48,7 @@ inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumDownloadPageBytes = 64 * 1024 * 1024;
 inline constexpr auto kDiscoverySearchLimit = 100;
 inline constexpr auto kDiscoveryTimeout = crl::time(15'000);
+inline constexpr auto kCarrierOperationTimeout = crl::time(120'000);
 
 [[nodiscard]] QByteArray EncodeCursor(MsgId messageId) {
 	if (!messageId) {
@@ -91,6 +95,50 @@ inline constexpr auto kDiscoveryTimeout = crl::time(15'000);
 		: TelegramTransport::UploadResult::RetryableError;
 }
 
+[[nodiscard]] std::optional<std::uint64_t> CarrierRandomId(
+		std::uint64_t telegramPeerIdBinding,
+		const QByteArray &bytes) {
+	const auto domain = QByteArray("TDE2E/carrier-random-id/v1");
+	auto peerBytes = std::array<std::uint8_t, 8>();
+	for (auto i = std::size_t(); i != peerBytes.size(); ++i) {
+		peerBytes[i] = std::uint8_t(
+			telegramPeerIdBinding >> (56 - (i * 8)));
+	}
+	auto digest = std::array<std::uint8_t, 32>();
+	const auto context = EVP_MD_CTX_new();
+	auto digestSize = 0U;
+	const auto ok = context
+		&& EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1
+		&& EVP_DigestUpdate(
+			context,
+			domain.constData(),
+			domain.size()) == 1
+		&& EVP_DigestUpdate(
+			context,
+			peerBytes.data(),
+			peerBytes.size()) == 1
+		&& EVP_DigestUpdate(
+			context,
+			bytes.constData(),
+			bytes.size()) == 1
+		&& EVP_DigestFinal_ex(
+			context,
+			digest.data(),
+			&digestSize) == 1
+		&& digestSize == digest.size();
+	EVP_MD_CTX_free(context);
+	if (!ok) {
+		OPENSSL_cleanse(digest.data(), digest.size());
+		return std::nullopt;
+	}
+	auto result = std::uint64_t();
+	for (auto i = std::size_t(); i != 8; ++i) {
+		result = (result << 8) | digest[i];
+	}
+	OPENSSL_cleanse(digest.data(), digest.size());
+	return std::optional<std::uint64_t>(result ? result : 1);
+}
+
 [[nodiscard]] std::shared_ptr<FilePrepareResult> PrepareCarrierDocument(
 		MTP::DcId dcId,
 		const QString &filename,
@@ -127,10 +175,12 @@ inline constexpr auto kDiscoveryTimeout = crl::time(15'000);
 struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	struct PendingUpload {
 		UploadCallback callback;
+		std::uint64_t randomId = 0;
 	};
 
 	struct UploadedFile {
 		MTPInputFile file;
+		std::uint64_t randomId = 0;
 	};
 
 	struct DownloadEntry {
@@ -229,7 +279,25 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		const auto id = FullMsgId(
 			session->userPeerId(),
 			session->data().nextLocalMessageId());
-		uploads.emplace(id, PendingUpload{ std::move(callback) });
+		const auto randomId = CarrierRandomId(
+			telegramPeerIdBinding,
+			bytes);
+		if (!randomId) {
+			callback(
+				TelegramTransport::UploadResult::RetryableError,
+				{});
+			return;
+		}
+		if (uploads.contains(id)) {
+			callback(
+				TelegramTransport::UploadResult::RetryableError,
+				{});
+			return;
+		}
+		uploads.emplace(id, PendingUpload{
+			.callback = std::move(callback),
+			.randomId = *randomId,
+		});
 		session->uploader().upload(
 			id,
 			PrepareCarrierDocument(
@@ -237,6 +305,24 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				filename,
 				mimeType,
 				bytes));
+		base::call_delayed(
+			kCarrierOperationTimeout,
+			[weak = base::weak_ptr(this), id] {
+				if (weak) {
+					weak->uploadTimedOut(id);
+				}
+			});
+	}
+
+	void uploadTimedOut(FullMsgId id) {
+		const auto i = uploads.find(id);
+		if (i == uploads.end()) {
+			return;
+		}
+		auto callback = std::move(i->second.callback);
+		uploads.erase(i);
+		session->uploader().cancel(id);
+		callback(TelegramTransport::UploadResult::RetryableError, {});
 	}
 
 	void uploadReady(const Storage::UploadedMedia &media) {
@@ -245,6 +331,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		auto callback = std::move(i->second.callback);
+		const auto randomId = i->second.randomId;
 		uploads.erase(i);
 		auto token = QByteArray();
 		do {
@@ -253,7 +340,10 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				reinterpret_cast<const char*>(random.data()),
 				random.size());
 		} while (uploaded.contains(token));
-		uploaded.emplace(token, UploadedFile{ media.info.file });
+		uploaded.emplace(token, UploadedFile{
+			.file = media.info.file,
+			.randomId = randomId,
+		});
 		callback(
 			TelegramTransport::UploadResult::Accepted,
 			UploadedCarrierFile{ std::move(token) });
@@ -286,6 +376,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		const auto file = i->second.file;
+		const auto randomId = i->second.randomId;
 		uploaded.erase(i);
 		using MediaFlag = MTPDinputMediaUploadedDocument::Flag;
 		const auto media = MTP_inputMediaUploadedDocument(
@@ -300,10 +391,9 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			MTPInputPhoto(),
 			MTP_int(0),
 			MTP_int(0));
-		const auto randomId = base::RandomValue<std::uint64_t>();
 		auto sharedCallback = std::make_shared<SendCallback>(
 			std::move(callback));
-		api.request(MTPmessages_SendMedia(
+		const auto requestId = api.request(MTPmessages_SendMedia(
 			MTP_flags(MTPmessages_SendMedia::Flag(0)),
 			session->data().history(PeerId(peerId))->peer->input(),
 			MTPInputReplyTo(),
@@ -321,12 +411,10 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			MTPSuggestedPost()
 		)).done([weak = base::weak_ptr(this), sharedCallback](
 				const MTPUpdates &updates) mutable {
-			if (weak) {
+			if (weak && *sharedCallback) {
 				weak->session->api().applyUpdates(updates);
-				if (*sharedCallback) {
-					base::take(*sharedCallback)(
-						TelegramTransport::UploadResult::Accepted);
-				}
+				base::take(*sharedCallback)(
+					TelegramTransport::UploadResult::Accepted);
 			}
 		}).fail([weak = base::weak_ptr(this), sharedCallback](
 				const MTP::Error &error) mutable {
@@ -334,6 +422,15 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				base::take(*sharedCallback)(ErrorResult(error));
 			}
 		}).send();
+		base::call_delayed(
+			kCarrierOperationTimeout,
+			[weak = base::weak_ptr(this), sharedCallback, requestId] {
+				if (weak && *sharedCallback) {
+					weak->api.request(requestId).cancel();
+					base::take(*sharedCallback)(
+						TelegramTransport::UploadResult::RetryableError);
+				}
+			});
 	}
 
 	void downloadDocuments(
@@ -366,7 +463,11 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			finishDownload(TelegramTransport::UploadResult::RetryableError);
 			return;
 		}
-		api.request(MTPmessages_GetHistory(
+		if (++downloadToken == 0) {
+			++downloadToken;
+		}
+		const auto token = downloadToken;
+		downloadRequestId = api.request(MTPmessages_GetHistory(
 			session->data().history(PeerId(peerId))->peer->input(),
 			MTP_int(*offset),
 			MTP_int(0),
@@ -375,16 +476,40 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			MTP_int(0),
 			MTP_int(0),
 			MTP_long(0)
-		)).done([weak = base::weak_ptr(this), limit](
+		)).done([weak = base::weak_ptr(this), limit, token](
 				const MTPmessages_Messages &result) {
-			if (weak) {
+			if (weak
+				&& weak->download
+				&& weak->downloadToken == token) {
+				weak->downloadRequestId = 0;
 				weak->historyLoaded(result, limit);
 			}
-		}).fail([weak = base::weak_ptr(this)](const MTP::Error &error) {
-			if (weak) {
+		}).fail([weak = base::weak_ptr(this), token](
+				const MTP::Error &error) {
+			if (weak
+				&& weak->download
+				&& weak->downloadToken == token) {
+				weak->downloadRequestId = 0;
 				weak->finishDownload(ErrorResult(error));
 			}
 		}).send();
+		base::call_delayed(
+			kCarrierOperationTimeout,
+			[weak = base::weak_ptr(this), token] {
+				if (weak) {
+					weak->downloadTimedOut(token);
+				}
+			});
+	}
+
+	void downloadTimedOut(std::uint64_t token) {
+		if (!download || token != downloadToken) {
+			return;
+		}
+		if (downloadRequestId) {
+			api.request(base::take(downloadRequestId)).cancel();
+		}
+		finishDownload(TelegramTransport::UploadResult::RetryableError);
 	}
 
 	void findDocument(
@@ -400,6 +525,10 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		discovery = std::move(callback);
+		if (++discoveryToken == 0) {
+			++discoveryToken;
+		}
+		const auto token = discoveryToken;
 		discoveryRequestId = api.request(MTPmessages_Search(
 			MTP_flags(MTPmessages_Search::Flag(0)),
 			session->data().history(PeerId(peerId))->peer->input(),
@@ -417,28 +546,39 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			MTP_int(0),
 			MTP_int(0),
 			MTP_long(0)
-		)).done([weak = base::weak_ptr(this)](
+		)).done([weak = base::weak_ptr(this), token](
 				const MTPmessages_Messages &result) {
-			if (weak) {
+			if (weak
+				&& weak->discovery
+				&& weak->discoveryToken == token) {
+				weak->discoveryRequestId = 0;
 				weak->discoveryLoaded(result);
 			}
-		}).fail([weak = base::weak_ptr(this)](const MTP::Error &error) {
-			if (weak) {
+		}).fail([weak = base::weak_ptr(this), token](
+				const MTP::Error &error) {
+			if (weak
+				&& weak->discovery
+				&& weak->discoveryToken == token) {
+				weak->discoveryRequestId = 0;
 				weak->finishDiscovery(ErrorResult(error), false);
 			}
 		}).send();
 		const auto requestId = discoveryRequestId;
 		base::call_delayed(
 			kDiscoveryTimeout,
-			[weak = base::weak_ptr(this), requestId] {
+			[weak = base::weak_ptr(this), requestId, token] {
 				if (weak) {
-					weak->discoveryTimedOut(requestId);
+					weak->discoveryTimedOut(requestId, token);
 				}
 			});
 	}
 
-	void discoveryTimedOut(mtpRequestId requestId) {
-		if (!discovery || discoveryRequestId != requestId) {
+	void discoveryTimedOut(
+			mtpRequestId requestId,
+			std::uint64_t token) {
+		if (!discovery
+			|| discoveryRequestId != requestId
+			|| discoveryToken != token) {
 			return;
 		}
 		api.request(base::take(discoveryRequestId)).cancel();
@@ -652,6 +792,9 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		if (!download) {
 			return;
 		}
+		if (downloadRequestId) {
+			api.request(base::take(downloadRequestId)).cancel();
+		}
 		auto pending = std::move(*download);
 		download.reset();
 		auto callback = std::move(pending.callback);
@@ -682,8 +825,11 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	std::map<FullMsgId, PendingUpload> uploads;
 	std::map<QByteArray, UploadedFile> uploaded;
 	std::optional<PendingDownload> download;
+	mtpRequestId downloadRequestId = 0;
+	std::uint64_t downloadToken = 0;
 	std::optional<DiscoveryCallback> discovery;
 	mtpRequestId discoveryRequestId = 0;
+	std::uint64_t discoveryToken = 0;
 	bool startingDownloads = false;
 	rpl::lifetime lifetime;
 };

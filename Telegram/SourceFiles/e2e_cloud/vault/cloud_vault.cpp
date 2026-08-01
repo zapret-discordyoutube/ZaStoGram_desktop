@@ -507,6 +507,41 @@ struct BlobParts {
 	return plaintext;
 }
 
+[[nodiscard]] std::optional<UnlockedCloudVault> DecodeUnlockedVault(
+		const QByteArray &encoded,
+		BlobParts parts,
+		SecureKey32 &&masterKey,
+		std::uint64_t expectedTelegramUserIdBinding,
+		const Sha256Provider &sha256) {
+	if (!masterKey.valid()
+		|| parts.telegramUserIdBinding != expectedTelegramUserIdBinding) {
+		return std::nullopt;
+	}
+	auto plaintext = Decrypt(encoded, parts, masterKey);
+	if (!plaintext) {
+		return std::nullopt;
+	}
+	auto decoded = DecodePlaintext(*plaintext);
+	Cleanse(*plaintext);
+	const auto blobDigest = sha256.digest(encoded);
+	if (!decoded
+		|| !blobDigest
+		|| decoded->telegramUserIdBinding != parts.telegramUserIdBinding
+		|| decoded->generation != parts.generation) {
+		return std::nullopt;
+	}
+	return UnlockedCloudVault{
+		.telegramUserIdBinding = decoded->telegramUserIdBinding,
+		.generation = decoded->generation,
+		.previousBlobDigest = decoded->previousBlobDigest,
+		.blobDigest = blobDigest,
+		.masterKey = std::move(masterKey),
+		.wrappedMasterKey = std::move(parts.wrappedMasterKey),
+		.identity = std::move(decoded->identity),
+		.conversations = std::move(decoded->conversations),
+	};
+}
+
 [[nodiscard]] std::vector<CloudVaultConversation> SortedConversations(
 		std::vector<CloudVaultConversation> conversations) {
 	std::sort(
@@ -596,30 +631,55 @@ std::optional<UnlockedCloudVault> CloudVaultCodecV1::unlock(
 	if (!unwrapped) {
 		return std::nullopt;
 	}
-	auto plaintext = Decrypt(encoded, *parts, unwrapped->masterKey);
 	auto secureMasterKey = SecureKey32(std::move(unwrapped->masterKey));
-	if (!plaintext) {
+	return DecodeUnlockedVault(
+		encoded,
+		std::move(*parts),
+		std::move(secureMasterKey),
+		expectedTelegramUserIdBinding,
+		_sha256);
+}
+
+std::optional<CloudVaultBlobHeader> CloudVaultCodecV1::inspect(
+		const QByteArray &encoded) const {
+	const auto parts = ParseBlob(encoded);
+	return parts
+		? std::optional<CloudVaultBlobHeader>({
+			.telegramUserIdBinding = parts->telegramUserIdBinding,
+			.generation = parts->generation,
+			.wrappedMasterKey = parts->wrappedMasterKey,
+		})
+		: std::nullopt;
+}
+
+std::optional<SecureKey32> CloudVaultCodecV1::unlockMasterKey(
+		const QByteArray &wrappedMasterKey,
+		QByteArray password) const {
+	auto unwrapped = _passwordVault.unwrap(
+		wrappedMasterKey,
+		std::move(password));
+	return unwrapped
+		? std::optional<SecureKey32>(
+			SecureKey32(std::move(unwrapped->masterKey)))
+		: std::nullopt;
+}
+
+std::optional<UnlockedCloudVault> CloudVaultCodecV1::unlockWithMasterKey(
+		const QByteArray &encoded,
+		const SecureKey32 &masterKey,
+		std::uint64_t expectedTelegramUserIdBinding) const {
+	auto parts = ParseBlob(encoded);
+	if (!parts) {
 		return std::nullopt;
 	}
-	auto decoded = DecodePlaintext(*plaintext);
-	Cleanse(*plaintext);
-	const auto blobDigest = _sha256.digest(encoded);
-	if (!decoded
-		|| !blobDigest
-		|| decoded->telegramUserIdBinding != parts->telegramUserIdBinding
-		|| decoded->generation != parts->generation) {
-		return std::nullopt;
-	}
-	return UnlockedCloudVault{
-		.telegramUserIdBinding = decoded->telegramUserIdBinding,
-		.generation = decoded->generation,
-		.previousBlobDigest = decoded->previousBlobDigest,
-		.blobDigest = blobDigest,
-		.masterKey = std::move(secureMasterKey),
-		.wrappedMasterKey = std::move(parts->wrappedMasterKey),
-		.identity = std::move(decoded->identity),
-		.conversations = std::move(decoded->conversations),
-	};
+	auto clonedBytes = masterKey.bytes();
+	auto clonedKey = SecureKey32(std::move(clonedBytes));
+	return DecodeUnlockedVault(
+		encoded,
+		std::move(*parts),
+		std::move(clonedKey),
+		expectedTelegramUserIdBinding,
+		_sha256);
 }
 
 std::optional<PreparedCloudVaultUpdate> CloudVaultCodecV1::prepareUpdate(

@@ -167,17 +167,19 @@ PersistentFileTransfer::~PersistentFileTransfer() {
 
 FileTransferLoadResult PersistentFileTransfer::load(
 		ConversationId conversationId) {
+	_conversationId = {};
+	if (_pending) {
+		Cleanse(*_pending);
+	}
+	_pending.reset();
+	_revision = 0;
+	_loaded = false;
 	if (!conversationId) {
 		return FileTransferLoadResult::InvalidSnapshot;
 	}
 	const auto stored = _blobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
 		_conversationId = conversationId;
-		if (_pending) {
-			Cleanse(*_pending);
-		}
-		_pending.reset();
-		_revision = 0;
 		_loaded = true;
 		return FileTransferLoadResult::Empty;
 	} else if (stored.status != BlobReadStatus::Found) {
@@ -252,9 +254,6 @@ FileTransferLoadResult PersistentFileTransfer::load(
 	}
 	Cleanse(*plaintext);
 	_conversationId = conversationId;
-	if (_pending) {
-		Cleanse(*_pending);
-	}
 	_pending = std::move(pending);
 	_revision = revision;
 	_loaded = true;

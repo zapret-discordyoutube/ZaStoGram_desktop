@@ -240,17 +240,18 @@ PersistentContentStore::~PersistentContentStore() {
 }
 
 ContentStoreLoadResult PersistentContentStore::load() {
+	for (auto &record : _records) {
+		Cleanse(record.plaintext);
+	}
+	_records.clear();
+	_entries.clear();
+	_revision = 0;
+	_loaded = false;
 	if (!_conversationId || _recordsDirectory.isEmpty()) {
 		return ContentStoreLoadResult::InvalidSnapshot;
 	}
 	const auto stored = _indexBlobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
-		for (auto &record : _records) {
-			Cleanse(record.plaintext);
-		}
-		_records.clear();
-		_entries.clear();
-		_revision = 0;
 		_loaded = true;
 		return ContentStoreLoadResult::Missing;
 	} else if (stored.status != BlobReadStatus::Found) {
@@ -333,9 +334,6 @@ ContentStoreLoadResult PersistentContentStore::load() {
 			return ContentStoreLoadResult::InvalidSnapshot;
 		}
 		records.push_back(std::move(*record));
-	}
-	for (auto &record : _records) {
-		Cleanse(record.plaintext);
 	}
 	_records = std::move(records);
 	_entries = std::move(entries);

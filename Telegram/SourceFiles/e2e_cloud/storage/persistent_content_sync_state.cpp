@@ -71,14 +71,16 @@ PersistentContentSyncState::PersistentContentSyncState(
 
 ContentSyncStateLoadResult PersistentContentSyncState::load(
 		ConversationId conversationId) {
+	_conversationId = {};
+	_newestObservedMessageId = 0;
+	_revision = 0;
+	_loaded = false;
 	if (!conversationId) {
 		return ContentSyncStateLoadResult::InvalidSnapshot;
 	}
 	const auto stored = _blobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
 		_conversationId = conversationId;
-		_newestObservedMessageId = 0;
-		_revision = 0;
 		_loaded = true;
 		return ContentSyncStateLoadResult::Missing;
 	} else if (stored.status != BlobReadStatus::Found) {

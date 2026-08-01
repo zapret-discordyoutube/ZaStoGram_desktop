@@ -18,8 +18,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 namespace {
 
-inline constexpr auto kMaximumCandidates = std::size_t(256);
+inline constexpr auto kMaximumCandidates = std::size_t(65536);
 inline constexpr auto kMaximumCandidateBytes = std::uint64_t(64 * 1024 * 1024);
+inline constexpr auto kMaximumWrappedMasterKeys = std::size_t(16);
 
 void Cleanse(QByteArray &bytes) {
 	if (!bytes.isEmpty()) {
@@ -71,15 +72,38 @@ CloudVaultSelectionResult CloudVaultSelector::select(
 			.vault = std::nullopt,
 		};
 	}
+	auto groups = std::map<QByteArray, std::vector<std::size_t>>();
+	for (auto i = std::size_t(); i != candidates.size(); ++i) {
+		const auto header = _codec.inspect(candidates[i]);
+		if (header
+			&& header->telegramUserIdBinding == telegramUserIdBinding) {
+			groups[header->wrappedMasterKey].push_back(i);
+		}
+	}
+	if (groups.size() > kMaximumWrappedMasterKeys) {
+		Cleanse(password);
+		return {
+			.status = CloudVaultSelectionStatus::CapacityExceeded,
+			.vault = std::nullopt,
+		};
+	}
 	auto opened = std::vector<UnlockedCloudVault>();
 	auto seenDigests = std::set<Digest>();
-	for (const auto &candidate : candidates) {
-		auto value = _codec.unlock(
-			candidate,
-			password,
-			telegramUserIdBinding);
-		if (value && seenDigests.emplace(value->blobDigest).second) {
-			opened.push_back(std::move(*value));
+	for (const auto &[wrappedMasterKey, indices] : groups) {
+		auto masterKey = _codec.unlockMasterKey(
+			wrappedMasterKey,
+			password);
+		if (!masterKey) {
+			continue;
+		}
+		for (const auto index : indices) {
+			auto value = _codec.unlockWithMasterKey(
+				candidates[index],
+				*masterKey,
+				telegramUserIdBinding);
+			if (value && seenDigests.emplace(value->blobDigest).second) {
+				opened.push_back(std::move(*value));
+			}
 		}
 	}
 	Cleanse(password);

@@ -54,6 +54,12 @@ struct PreparedCloudVaultUpdate {
 	std::vector<CloudVaultConversation> conversations;
 };
 
+struct CloudVaultBlobHeader {
+	std::uint64_t telegramUserIdBinding = 0;
+	std::uint64_t generation = 0;
+	QByteArray wrappedMasterKey;
+};
+
 class CloudVaultCodecV1 final {
 public:
 	CloudVaultCodecV1(
@@ -69,6 +75,15 @@ public:
 	[[nodiscard]] std::optional<UnlockedCloudVault> unlock(
 		const QByteArray &encoded,
 		QByteArray password,
+		std::uint64_t expectedTelegramUserIdBinding) const;
+	[[nodiscard]] std::optional<CloudVaultBlobHeader> inspect(
+		const QByteArray &encoded) const;
+	[[nodiscard]] std::optional<SecureKey32> unlockMasterKey(
+		const QByteArray &wrappedMasterKey,
+		QByteArray password) const;
+	[[nodiscard]] std::optional<UnlockedCloudVault> unlockWithMasterKey(
+		const QByteArray &encoded,
+		const SecureKey32 &masterKey,
 		std::uint64_t expectedTelegramUserIdBinding) const;
 	[[nodiscard]] std::optional<PreparedCloudVaultUpdate> prepareUpdate(
 		const UnlockedCloudVault &vault,

@@ -567,6 +567,63 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioCloudVaultSelectionScalesPastOldLimit() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto identity = GenerateAccountPrivateIdentity();
+	auto created = identity
+		? codec.create(
+			777,
+			std::move(*identity),
+			QByteArray("selection scale password"),
+			MakeConfig())
+		: std::nullopt;
+	if (!created) {
+		return Fail("large cloud vault selection fixture could not be created");
+	}
+	const auto accountId = DeriveAccountId(
+		created->unlocked.identity.credential,
+		sha256);
+	if (!accountId) {
+		return Fail("large cloud vault selection account id was invalid");
+	}
+	const auto anchor = CloudVaultAnchor{
+		.generation = created->unlocked.generation,
+		.blobDigest = created->unlocked.blobDigest,
+		.accountId = *accountId,
+	};
+	auto versions = std::vector<QByteArray>{ created->encoded };
+	while (created->unlocked.generation != 300) {
+		auto update = codec.prepareUpdate(
+			created->unlocked,
+			created->unlocked.conversations);
+		if (!update) {
+			return Fail("large cloud vault chain could not be extended");
+		}
+		versions.push_back(update->encoded);
+		if (!codec.applyPublished(
+				created->unlocked,
+				std::move(*update))) {
+			return Fail("large cloud vault update could not be adopted");
+		}
+	}
+	const auto callsBeforeSelection = kdf.calls;
+	auto selected = selector.select(
+		std::move(versions),
+		QByteArray("selection scale password"),
+		777,
+		anchor);
+	if (selected.status != CloudVaultSelectionStatus::Selected
+		|| !selected.vault
+		|| selected.vault->generation != 300
+		|| kdf.calls != callsBeforeSelection + 1) {
+		return Fail("large cloud vault chain repeated KDF work or hit old cap");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioPersistentCloudVaultAnchor() {
 	auto blob = MemoryBlobStore();
 	auto persistent = PersistentCloudVaultAnchor(blob, 777);
@@ -648,6 +705,7 @@ int main(int, char *[]) {
 		ScenarioCloudVaultRoundTripAndUpdate,
 		ScenarioCloudVaultRejectsTamperingAndKeyMismatch,
 		ScenarioCloudVaultSelectionDetectsForksAndGaps,
+		ScenarioCloudVaultSelectionScalesPastOldLimit,
 		ScenarioPersistentCloudVaultAnchor,
 	}) {
 		if (const auto result = scenario()) {
