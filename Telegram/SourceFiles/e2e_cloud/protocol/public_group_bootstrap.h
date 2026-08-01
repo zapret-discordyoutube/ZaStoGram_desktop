@@ -38,6 +38,11 @@ struct PublicGroupBootstrapOutcome {
 	std::optional<VerifiedPublicGroupBootstrap> verified;
 };
 
+[[nodiscard]] bool IsPublicGroupBootstrapCandidate(
+	const TelegramTransport::UntrustedObject &object,
+	std::uint64_t expectedTelegramPeerIdBinding,
+	std::optional<ConversationId> expectedConversationId,
+	const EnvelopeCodec &envelopeCodec);
 [[nodiscard]] PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 	const std::vector<TelegramTransport::UntrustedObject> &objects,
 	std::uint64_t expectedTelegramPeerIdBinding,

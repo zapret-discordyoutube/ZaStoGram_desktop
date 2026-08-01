@@ -158,7 +158,13 @@ void PublicBootstrapDiscoveryController::pageReceived(
 	}
 	++_pages;
 	for (auto &object : page.untrustedObjects) {
-		if (object.bytes.size() < 0
+		if (!IsPublicGroupBootstrapCandidate(
+				object,
+				_telegramPeerIdBinding,
+				std::nullopt,
+				_envelopeCodec)) {
+			continue;
+		} else if (object.bytes.size() < 0
 			|| _objects.size() == kMaximumObjects
 			|| _bytes > kMaximumBytes
 				- std::uint64_t(object.bytes.size())) {

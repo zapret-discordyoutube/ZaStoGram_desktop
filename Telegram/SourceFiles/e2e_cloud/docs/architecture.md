@@ -80,14 +80,15 @@ transaction. The application never sends ciphertext from an uncommitted state
 and never advances a live sender ratchet before the corresponding exact retry
 bytes are durable.
 
-Inbound commit, transition, and archive-distribution objects may arrive in any
-order. A purpose-bound encrypted inbox stages them by stable object identifier,
-detects competing next-generation transitions, and assembles a bundle only when
-all signed hashes match. Existing members process the commit and distribution
-on isolated OpenMLS state. A joining client processes the Welcome and
-distribution from its KeyPackage state. Both paths use the same cross-store
-transaction, but inbound transactions never enqueue the received objects for
-upload.
+Inbound commit, transition, archive-distribution, and admission-KeyPackage
+objects may arrive in any order. A purpose-bound encrypted inbox stages them by
+stable object identifier together with the Telegram sender binding observed at
+receipt, detects competing next-generation transitions or sender substitutions,
+and assembles a bundle only when all signed hashes match. Existing members
+process the commit and distribution on isolated OpenMLS state. A joining client
+processes the Welcome and distribution from its KeyPackage state. Both paths
+use the same cross-store transaction, but inbound transactions never enqueue
+the received objects for upload.
 
 If a processed commit removes the local client, it cannot decrypt the following
 archive distribution. The transaction instead destroys active provider bytes,

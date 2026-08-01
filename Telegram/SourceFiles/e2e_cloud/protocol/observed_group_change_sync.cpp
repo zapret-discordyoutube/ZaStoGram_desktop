@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 
 namespace E2ECloud {
@@ -21,8 +22,8 @@ inline constexpr auto kMaximumObjects = std::size_t(65'536);
 inline constexpr auto kMaximumBytes = std::uint64_t(512 * 1024 * 1024);
 
 struct ObservedEnvelope {
-	TelegramTransport::UntrustedObject observed;
 	TransportEnvelope envelope;
+	std::uint64_t observedSenderTelegramUserIdBinding = 0;
 };
 
 struct Candidate {
@@ -59,8 +60,131 @@ struct CandidateOutcome {
 		std::uint64_t telegramUserIdBinding) {
 	return record.envelope.senderAccountId == transition.actorAccountId
 		&& record.envelope.senderClientId == transition.actorClientId
-		&& record.observed.observedSenderTelegramUserIdBinding
+		&& record.observedSenderTelegramUserIdBinding
 			== telegramUserIdBinding;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> ActorGeneration(
+		const TransportEnvelope &envelope,
+		const MlsContextCodecV1 &contextCodec,
+		const GroupControlCodecV1 &controlCodec) {
+	if (envelope.objectKind == ObjectKind::SignedGroupTransition) {
+		const auto transition = SignedGroupTransitionCodecV1().decode(
+			envelope.payload);
+		return transition
+			? std::optional<std::uint64_t>(
+				transition->transition.previousGeneration)
+			: std::nullopt;
+	} else if (envelope.objectKind != ObjectKind::MlsCommit
+		&& envelope.objectKind != ObjectKind::ArchiveEpoch) {
+		return std::nullopt;
+	}
+	const auto aad = contextCodec.decodeAad(envelope.authenticationData);
+	const auto preludeBytes = aad
+		? (envelope.objectKind == ObjectKind::MlsCommit)
+			? aad->context
+			: (aad->context.size()
+					== kGroupChangePreludeEncodedSize + 32)
+				? QByteArray(
+					aad->context.constData(),
+					kGroupChangePreludeEncodedSize)
+				: QByteArray()
+		: QByteArray();
+	const auto prelude = controlCodec.decodePrelude(preludeBytes);
+	return prelude
+		? std::optional<std::uint64_t>(
+			prelude->transition.previousGeneration)
+		: std::nullopt;
+}
+
+enum class StageObservedStatus {
+	Ignored,
+	Staged,
+	ForkDetected,
+	PersistenceFailure,
+};
+
+[[nodiscard]] StageObservedStatus StageObservedObject(
+		const TelegramTransport::UntrustedObject &object,
+		const OpenMlsClientContext &local,
+		std::uint64_t currentTime,
+		const EnvelopeCodec &envelopeCodec,
+		const MlsContextCodecV1 &contextCodec,
+		const GroupControlCodecV1 &controlCodec,
+		const Sha256Provider &sha256,
+		const PersistentGroupLedger &groupLedger,
+		PersistentGroupChangeInbox &inbox) {
+	const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+	if (!envelope
+		|| envelope->conversationId != local.conversationId
+		|| envelope->telegramPeerIdBinding
+			!= local.telegramPeerIdBinding
+		|| object.observedTelegramPeerIdBinding
+			!= local.telegramPeerIdBinding
+		|| !object.observedSenderTelegramUserIdBinding
+		|| object.observedMessageId <= 0) {
+		return StageObservedStatus::Ignored;
+	}
+	auto authenticated = false;
+	if (envelope->objectKind == ObjectKind::ClientKeyPackage) {
+		const auto verified = VerifyClientKeyPackageEnvelope(
+			*envelope,
+			local.conversationId,
+			local.telegramPeerIdBinding,
+			envelope->epochOrGeneration,
+			sha256);
+		authenticated = verified.result
+				== ClientKeyPackageEnvelopeResult::Verified
+			&& verified.publication
+			&& ClientAuthorizationUsableAt(
+				verified.publication->authorization,
+				currentTime);
+	} else {
+		const auto authenticator = OpenMlsGroupChangeEnvelopeAuthenticator(
+			contextCodec,
+			controlCodec,
+			groupLedger,
+			sha256);
+		if (!authenticator.authenticate(*envelope)) {
+			return StageObservedStatus::Ignored;
+		}
+		const auto generation = ActorGeneration(
+			*envelope,
+			contextCodec,
+			controlCodec);
+		const auto state = generation
+			? groupLedger.stateAt(*generation)
+			: std::nullopt;
+		const auto actor = state
+			? state->memberByClient(envelope->senderClientId)
+			: nullptr;
+		if (!actor || actor->accountId != envelope->senderAccountId) {
+			return StageObservedStatus::Ignored;
+		} else if (actor->telegramUserIdBinding
+				!= object.observedSenderTelegramUserIdBinding) {
+			return StageObservedStatus::ForkDetected;
+		}
+		authenticated = true;
+	}
+	if (!authenticated) {
+		return StageObservedStatus::Ignored;
+	}
+	switch (inbox.stageObserved(
+		*envelope,
+		object.observedSenderTelegramUserIdBinding)) {
+	case GroupChangeInboxStageResult::Staged:
+	case GroupChangeInboxStageResult::Duplicate:
+		return StageObservedStatus::Staged;
+	case GroupChangeInboxStageResult::ObjectIdConflict:
+		return StageObservedStatus::ForkDetected;
+	case GroupChangeInboxStageResult::InvalidEnvelope:
+		return StageObservedStatus::Ignored;
+	case GroupChangeInboxStageResult::CapacityExceeded:
+	case GroupChangeInboxStageResult::NotLoaded:
+	case GroupChangeInboxStageResult::PersistenceFailed:
+		return StageObservedStatus::PersistenceFailure;
+	}
+	return StageObservedStatus::Ignored;
 }
 
 [[nodiscard]] CandidateOutcome VerifyTransitionCandidate(
@@ -173,28 +297,32 @@ VerifyAdmissionMaterial(
 		const SignedGroupTransition &transition,
 		const OpenMlsClientContext &local,
 		std::uint64_t currentTime,
-		const EnvelopeCodec &envelopeCodec,
 		const Sha256Provider &sha256) {
-	const auto verified = VerifyObservedClientKeyPackage(
-		record.observed,
+	const auto verified = VerifyClientKeyPackageEnvelope(
+		record.envelope,
 		local.conversationId,
 		local.telegramPeerIdBinding,
-		transition.transition.previousGeneration,
-		currentTime,
-		envelopeCodec,
+		record.envelope.epochOrGeneration,
 		sha256);
-	return (verified.verified
+	return (verified.result == ClientKeyPackageEnvelopeResult::Verified
+		&& verified.publication
+		&& record.envelope.epochOrGeneration
+		&& record.envelope.epochOrGeneration
+			<= transition.transition.previousGeneration
+		&& ClientAuthorizationUsableAt(
+			verified.publication->authorization,
+			currentTime)
 		&& transition.targetClientAuthorization
-		&& verified.verified->telegramUserIdBinding
+		&& record.observedSenderTelegramUserIdBinding
 			== transition.transition.targetTelegramUserIdBinding
-		&& verified.verified->envelope.senderAccountId
+		&& record.envelope.senderAccountId
 			== transition.transition.targetAccountId
-		&& verified.verified->envelope.senderClientId
+		&& record.envelope.senderClientId
 			== transition.transition.targetClientId
-		&& verified.verified->publication.authorization
+		&& verified.publication->authorization
 			== *transition.targetClientAuthorization)
 		? std::optional<ClientKeyPackagePublication>(
-			std::move(verified.verified->publication))
+			*verified.publication)
 		: std::nullopt;
 }
 
@@ -222,18 +350,19 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 		PersistentMlsStateStore &mlsState,
 		PersistentArchiveState &archiveState,
 		PersistentGroupLedger &groupLedger,
-		PersistentGroupChangeJournal &journal) {
+		PersistentGroupChangeJournal &journal,
+		PersistentGroupChangeInbox &inbox) {
 	if (!local.conversationId
 		|| !local.accountId
 		|| !local.clientId
 		|| !local.telegramPeerIdBinding
 		|| !currentTime
-		|| objects.size() > kMaximumObjects
 		|| !mlsState.loaded()
 		|| !archiveState.loaded()
 		|| !groupLedger.loaded()
 		|| !groupLedger.state()
 		|| !journal.loaded()
+		|| !inbox.loaded()
 		|| mlsState.removed()
 		|| mlsState.conversationId() != local.conversationId
 		|| archiveState.conversationId() != local.conversationId
@@ -241,44 +370,70 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 		|| !groupLedger.state()->memberByClient(local.clientId)) {
 		return Outcome(ObservedGroupChangeSyncStatus::InvalidState, 0);
 	}
+	auto staleTransitions = std::vector<ObjectId>();
+	for (const auto &record : inbox.records()) {
+		if (record.envelope.objectKind
+				!= ObjectKind::SignedGroupTransition) {
+			continue;
+		}
+		const auto transition = SignedGroupTransitionCodecV1().decode(
+			record.envelope.payload);
+		if (transition
+			&& transition->transition.generation
+				<= groupLedger.checkpoint().generation) {
+			staleTransitions.push_back(record.envelope.objectId);
+		}
+	}
+	for (const auto transitionId : staleTransitions) {
+		if (!inbox.discardBundle(transitionId)) {
+			return Outcome(
+				ObservedGroupChangeSyncStatus::PersistenceFailure,
+				0);
+		}
+	}
+	if (!inbox.discardExpiredKeyPackages(currentTime)) {
+		return Outcome(
+			ObservedGroupChangeSyncStatus::PersistenceFailure,
+			0);
+	}
+	for (const auto &object : objects) {
+		switch (StageObservedObject(
+			object,
+			local,
+			currentTime,
+			envelopeCodec,
+			contextCodec,
+			controlCodec,
+			sha256,
+			groupLedger,
+			inbox)) {
+		case StageObservedStatus::Ignored:
+		case StageObservedStatus::Staged:
+			break;
+		case StageObservedStatus::ForkDetected:
+			return Outcome(ObservedGroupChangeSyncStatus::ForkDetected, 0);
+		case StageObservedStatus::PersistenceFailure:
+			return Outcome(
+				ObservedGroupChangeSyncStatus::PersistenceFailure,
+				0);
+		}
+	}
+	if (inbox.records().size() > kMaximumObjects) {
+		return Outcome(ObservedGroupChangeSyncStatus::InvalidState, 0);
+	}
 	auto totalBytes = std::uint64_t();
 	auto records = std::map<ObjectId, ObservedEnvelope>();
-	for (const auto &object : objects) {
-		if (object.bytes.size() < 0
+	for (const auto &record : inbox.records()) {
+		if (record.envelope.payload.size() < 0
 			|| totalBytes > kMaximumBytes
-				- std::uint64_t(object.bytes.size())) {
+				- std::uint64_t(record.envelope.payload.size())) {
 			return Outcome(ObservedGroupChangeSyncStatus::InvalidState, 0);
 		}
-		totalBytes += std::uint64_t(object.bytes.size());
-		if (totalBytes > kMaximumBytes) {
-			return Outcome(ObservedGroupChangeSyncStatus::InvalidState, 0);
-		}
-		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
-		if (!envelope
-			|| envelope->conversationId != local.conversationId
-			|| envelope->telegramPeerIdBinding
-				!= local.telegramPeerIdBinding
-			|| object.observedTelegramPeerIdBinding
-				!= local.telegramPeerIdBinding
-			|| !object.observedSenderTelegramUserIdBinding
-			|| object.observedMessageId <= 0) {
-			continue;
-		}
-		const auto i = records.find(envelope->objectId);
-		if (i != end(records)) {
-			if (i->second.observed.bytes != object.bytes
-				|| i->second.observed
-					.observedSenderTelegramUserIdBinding
-					!= object.observedSenderTelegramUserIdBinding) {
-				return Outcome(
-					ObservedGroupChangeSyncStatus::ForkDetected,
-					0);
-			}
-			continue;
-		}
-		records.emplace(envelope->objectId, ObservedEnvelope{
-			.observed = object,
-			.envelope = *envelope,
+		totalBytes += std::uint64_t(record.envelope.payload.size());
+		records.emplace(record.envelope.objectId, ObservedEnvelope{
+			.envelope = record.envelope,
+			.observedSenderTelegramUserIdBinding
+				= record.observedSenderTelegramUserIdBinding,
 		});
 	}
 	auto appliedTransitions = std::uint64_t();
@@ -364,7 +519,6 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 				candidate.transition,
 				local,
 				currentTime,
-				envelopeCodec,
 				sha256);
 			if (!publication) {
 				return Outcome(
@@ -410,6 +564,16 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 		}
 		const auto localRemoved = prepared.prepared->transaction.direction
 			== GroupChangeTransactionDirection::InboundRemoval;
+		auto consumedObjectIds = std::set<ObjectId>{
+			candidate.transition.transition.transitionId,
+			candidate.transition.mlsCommitObjectId,
+			candidate.transition.archiveDistributionObjectId,
+		};
+		if (candidate.transition.targetClientAuthorization) {
+			consumedObjectIds.emplace(
+				candidate.transition.targetClientAuthorization
+					->authorizationId);
+		}
 		auto coordinator = GroupChangeTransactionCoordinator(
 			journal,
 			mlsState,
@@ -417,13 +581,22 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 			groupLedger,
 			sha256);
 		if (coordinator.apply(std::move(
-				prepared.prepared->transaction))
+			prepared.prepared->transaction))
 				!= GroupChangeApplyStatus::Applied) {
 			return Outcome(
 				ObservedGroupChangeSyncStatus::PersistenceFailure,
 				appliedTransitions);
 		}
 		++appliedTransitions;
+		if (!inbox.discardBundle(
+				candidate.transition.transition.transitionId)) {
+			return Outcome(
+				ObservedGroupChangeSyncStatus::PersistenceFailure,
+					appliedTransitions);
+		}
+		for (const auto objectId : consumedObjectIds) {
+			records.erase(objectId);
+		}
 		if (localRemoved) {
 			return Outcome(
 				ObservedGroupChangeSyncStatus::LocalClientRemoved,

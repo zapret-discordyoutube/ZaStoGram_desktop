@@ -303,6 +303,7 @@ struct DesktopService::PendingGroupCreation {
 	, groupBlob(this->directory + u"group.state"_q)
 	, outboxBlob(this->directory + u"outbox.state"_q)
 	, changeJournalBlob(this->directory + u"group-change.wal"_q)
+	, changeInboxBlob(this->directory + u"group-change-inbox.state"_q)
 	, keyPackagePoolBlob(this->directory + u"key-packages.state"_q)
 	, freshnessTrustBlob(this->directory + u"freshness-trust.state"_q)
 	, inboundJournalBlob(this->directory + u"content-inbound.state"_q)
@@ -319,6 +320,11 @@ struct DesktopService::PendingGroupCreation {
 	, groupLedger(groupBlob, protector, sha256)
 	, outbox(outboxBlob, protector)
 	, changeJournal(changeJournalBlob, protector)
+	, changeInbox(
+		changeInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256)
 	, keyPackages(
 		keyPackagePoolBlob,
 		protector,
@@ -382,6 +388,7 @@ struct DesktopService::PendingGroupCreation {
 	FileAtomicBlobStore groupBlob;
 	FileAtomicBlobStore outboxBlob;
 	FileAtomicBlobStore changeJournalBlob;
+	FileAtomicBlobStore changeInboxBlob;
 	FileAtomicBlobStore keyPackagePoolBlob;
 	FileAtomicBlobStore freshnessTrustBlob;
 	FileAtomicBlobStore inboundJournalBlob;
@@ -398,6 +405,7 @@ struct DesktopService::PendingGroupCreation {
 	PersistentGroupLedger groupLedger;
 	PersistentOutboxStore outbox;
 	PersistentGroupChangeJournal changeJournal;
+	PersistentGroupChangeInbox changeInbox;
 	PersistentKeyPackagePool keyPackages;
 	PersistentFreshnessTrust freshnessTrust;
 	PersistentInboundJournal inboundJournal;
@@ -721,6 +729,8 @@ bool DesktopService::createProtectedGroup(
 			!= PersistentOutboxLoadResult::Empty
 		|| operation->changeJournal.load(*conversationId)
 			!= GroupChangeJournalLoadResult::Empty
+		|| operation->changeInbox.load(*conversationId)
+			!= GroupChangeInboxLoadResult::Missing
 		|| operation->keyPackages.load(*conversationId, peer->id.value)
 			!= KeyPackagePoolLoadResult::Empty
 		|| operation->freshnessTrust.load(*conversationId)
@@ -1942,7 +1952,7 @@ void DesktopService::beginIndexedGroupJoin(
 					weak->applyPublicBootstrapSyncResult(std::move(result));
 				}
 			});
-	if (!_pendingGroupJoin->sync->start()) {
+	if (!_pendingGroupJoin->sync->startForJoin()) {
 		_pendingGroupJoin.reset();
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 	}
@@ -2035,6 +2045,8 @@ bool DesktopService::prepareGroupJoin(
 		|| operation->outbox.load() != PersistentOutboxLoadResult::Empty
 		|| operation->changeJournal.load(conversation.conversationId)
 			!= GroupChangeJournalLoadResult::Empty
+		|| operation->changeInbox.load(conversation.conversationId)
+			!= GroupChangeInboxLoadResult::Missing
 		|| operation->keyPackages.load(
 			conversation.conversationId,
 			conversation.telegramPeerIdBinding)
@@ -2496,12 +2508,14 @@ bool DesktopService::synchronizeObservedGroupChanges(
 		group.mlsState,
 		group.archiveState,
 		group.groupLedger,
-		group.changeJournal);
+		group.changeJournal,
+		group.changeInbox);
 	if (synchronized.status == ObservedGroupChangeSyncStatus::NoChange) {
 		return false;
 	} else if (synchronized.status
-			== ObservedGroupChangeSyncStatus::WaitingForObjects) {
-		return true;
+			== ObservedGroupChangeSyncStatus::WaitingForObjects
+		&& !synchronized.appliedTransitions) {
+		return false;
 	} else if (synchronized.status
 			== ObservedGroupChangeSyncStatus::ForkDetected
 		|| synchronized.status
@@ -3026,6 +3040,8 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 	const auto boundary = group.controlSyncState.newestObservedMessageId();
 	const auto started = boundary
 		? group.observation->startFromBoundary(boundary)
+		: (group.phase == PendingGroupCreation::Phase::AwaitingAdmission)
+		? group.observation->startForJoin()
 		: group.observation->start();
 	if (!started) {
 		group.observation.reset();
@@ -4163,6 +4179,7 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 	const auto outboxLoad = operation->outbox.load();
 	const auto changeJournalLoad = operation->changeJournal.load(
 		conversationId);
+	const auto changeInboxLoad = operation->changeInbox.load(conversationId);
 	const auto keyPackageLoad = operation->keyPackages.load(
 		conversationId,
 		localMetadata.telegramPeerIdBinding);
@@ -4198,6 +4215,10 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		|| changeJournalLoad
 			== GroupChangeJournalLoadResult::AuthenticationFailed
 		|| changeJournalLoad == GroupChangeJournalLoadResult::InvalidSnapshot
+		|| changeInboxLoad == GroupChangeInboxLoadResult::StorageError
+		|| changeInboxLoad
+			== GroupChangeInboxLoadResult::AuthenticationFailed
+		|| changeInboxLoad == GroupChangeInboxLoadResult::InvalidSnapshot
 		|| keyPackageLoad == KeyPackagePoolLoadResult::StorageError
 		|| keyPackageLoad == KeyPackagePoolLoadResult::AuthenticationFailed
 		|| keyPackageLoad == KeyPackagePoolLoadResult::InvalidSnapshot

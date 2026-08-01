@@ -606,6 +606,54 @@ private:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioJoinSyncDropsUnboundedControlNoise() {
+	auto fixture = Fixture();
+	const auto object = [&](ObjectKind kind, std::int64_t messageId) {
+		auto envelope = MakeEnvelope(std::uint8_t(messageId));
+		envelope.objectKind = kind;
+		return TelegramTransport::UntrustedObject{
+			.bytes = fixture.codec.encode(envelope)->bytes,
+			.observedTelegramPeerIdBinding = 42,
+			.observedSenderTelegramUserIdBinding = 100,
+			.observedMessageId = messageId,
+		};
+	};
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				object(ObjectKind::SafetyCodeGossip, 3),
+				object(ObjectKind::FreshnessResponse, 2),
+				object(ObjectKind::SignedGroupTransition, 1),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto completion = std::optional<PublicBootstrapSyncCompletion>();
+	auto controller = PublicBootstrapSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		std::nullopt,
+		fixture.transport,
+		fixture.codec,
+		fixture.sha256,
+		[&](PublicBootstrapSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (!controller.startForJoin()
+		|| !completion
+		|| completion->status != PublicBootstrapSyncStatus::Missing
+		|| completion->objects != 1
+		|| completion->untrustedObjects.size() != 1
+		|| fixture.codec.decodeUntrusted(
+			completion->untrustedObjects.front().bytes)->objectKind
+			!= ObjectKind::SignedGroupTransition) {
+		return Fail("join synchronization retained unbounded control noise");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioControlSyncRejectsMissingBoundary() {
 	auto fixture = Fixture();
 	fixture.transport.pages = {
@@ -683,6 +731,7 @@ int main(int, char *[]) {
 		ScenarioObservedContentKeepsOverlap,
 		ScenarioObservedPageCanDestroyController,
 		ScenarioControlSyncStopsAtBoundary,
+		ScenarioJoinSyncDropsUnboundedControlNoise,
 		ScenarioControlSyncRejectsMissingBoundary,
 		ScenarioControlSyncRejectsReordering,
 	}) {

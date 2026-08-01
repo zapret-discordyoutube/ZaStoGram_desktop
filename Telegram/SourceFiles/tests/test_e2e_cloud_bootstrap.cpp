@@ -267,7 +267,27 @@ public:
 		prepared.prepared->ownerAccountId,
 		EnvelopeCodecV1(),
 		OpenSslSha256Provider());
-	if (verified.status != PublicGroupBootstrapStatus::Verified
+	if (!IsPublicGroupBootstrapCandidate(
+			objects[0],
+			1001,
+			FilledId<ConversationId>(1),
+			EnvelopeCodecV1())
+		|| !IsPublicGroupBootstrapCandidate(
+			objects[1],
+			1001,
+			FilledId<ConversationId>(1),
+			EnvelopeCodecV1())
+		|| !IsPublicGroupBootstrapCandidate(
+			objects[2],
+			1001,
+			FilledId<ConversationId>(1),
+			EnvelopeCodecV1())
+		|| IsPublicGroupBootstrapCandidate(
+			objects[3],
+			1001,
+			FilledId<ConversationId>(1),
+			EnvelopeCodecV1())
+		|| verified.status != PublicGroupBootstrapStatus::Verified
 		|| !verified.verified
 		|| verified.verified->checkpoint
 			!= prepared.prepared->checkpoint) {

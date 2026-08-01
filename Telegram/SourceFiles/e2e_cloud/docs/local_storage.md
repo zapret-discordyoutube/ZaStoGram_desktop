@@ -130,14 +130,17 @@ copying a key.
 ## Out-of-order group-change inbox
 
 The encrypted group-change inbox durably stages signed transitions, MLS
-commits, and encrypted archive-key distributions by application object ID.
+commits, encrypted archive-key distributions, and admission KeyPackages by
+application object ID. Each record also preserves the Telegram user ID that
+was observed as the carrier sender. An exact object with a different observed
+sender is an object-ID conflict rather than an interchangeable duplicate.
 Telegram order is not trusted. The inbox assembles only the single next
 generation whose referenced IDs and hashes match the signed transition;
 multiple candidates at that generation are reported as a fork. Successfully
-applied bundles are removed after the cross-store transaction clears. If a
-crash occurs between inbox storage and replay-journal acceptance, recovery
-recognizes the already staged payload hash and does not process the MLS object
-twice.
+applied bundles and their referenced KeyPackage are removed after the
+cross-store transaction clears. If a crash occurs between inbox storage and
+replay-journal acceptance, recovery recognizes the already staged payload hash
+and does not process the MLS object twice.
 
 ## Rollback
 

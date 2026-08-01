@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/transport/public_bootstrap_sync_controller.h"
 
+#include "e2e_cloud/protocol/public_join_catchup.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -65,19 +67,24 @@ PublicBootstrapSyncController::~PublicBootstrapSyncController() {
 }
 
 bool PublicBootstrapSyncController::start(QByteArray cursor) {
-	return startInternal(std::move(cursor), 0);
+	return startInternal(std::move(cursor), 0, false);
+}
+
+bool PublicBootstrapSyncController::startForJoin(QByteArray cursor) {
+	return startInternal(std::move(cursor), 0, true);
 }
 
 bool PublicBootstrapSyncController::startFromBoundary(
 		std::int64_t boundaryMessageId) {
 	return (boundaryMessageId > 0)
-		? startInternal({}, boundaryMessageId)
+		? startInternal({}, boundaryMessageId, false)
 		: false;
 }
 
 bool PublicBootstrapSyncController::startInternal(
 		QByteArray cursor,
-		std::int64_t boundaryMessageId) {
+		std::int64_t boundaryMessageId,
+		bool joinRelevantOnly) {
 	if (_running
 		|| !_conversationId
 		|| !_telegramPeerIdBinding
@@ -93,6 +100,7 @@ bool PublicBootstrapSyncController::startInternal(
 	_boundaryMessageId = boundaryMessageId;
 	_newestObservedMessageId = 0;
 	_lastObservedMessageId = 0;
+	_joinRelevantOnly = joinRelevantOnly;
 	_running = true;
 	_requestActive = false;
 	_requestQueued = true;
@@ -207,6 +215,14 @@ void PublicBootstrapSyncController::pageReceived(
 		if (_boundaryMessageId && messageId == _boundaryMessageId) {
 			reachedBoundary = true;
 			break;
+		}
+		if (_joinRelevantOnly
+			&& !IsPublicJoinRelevantObject(
+				object,
+				_conversationId,
+				_telegramPeerIdBinding,
+				_envelopeCodec)) {
+			continue;
 		}
 		if (object.bytes.size() < 0
 			|| _objects.size() == kMaximumObjects

@@ -54,6 +54,7 @@ public:
 	~PublicBootstrapSyncController();
 
 	[[nodiscard]] bool start(QByteArray cursor = {});
+	[[nodiscard]] bool startForJoin(QByteArray cursor = {});
 	[[nodiscard]] bool startFromBoundary(std::int64_t boundaryMessageId);
 	void cancel();
 	[[nodiscard]] bool running() const;
@@ -66,7 +67,8 @@ private:
 	void finish(PublicBootstrapSyncCompletion completion);
 	[[nodiscard]] bool startInternal(
 		QByteArray cursor,
-		std::int64_t boundaryMessageId);
+		std::int64_t boundaryMessageId,
+		bool joinRelevantOnly);
 
 	ConversationId _conversationId;
 	std::uint64_t _telegramPeerIdBinding = 0;
@@ -88,6 +90,8 @@ private:
 	bool _requestActive = false;
 	bool _pumping = false;
 	bool _requestQueued = false;
+	bool _joinRelevantOnly = false;
+
 };
 
 } // namespace E2ECloud

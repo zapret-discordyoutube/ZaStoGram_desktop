@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "e2e_cloud/core/interfaces.h"
 #include "e2e_cloud/mls/openmls_inbound_group_change.h"
+#include "e2e_cloud/protocol/group_change_inbox.h"
 
 #include <cstdint>
 #include <vector>
@@ -45,6 +46,7 @@ struct ObservedGroupChangeSyncOutcome {
 		PersistentMlsStateStore &mlsState,
 		PersistentArchiveState &archiveState,
 		PersistentGroupLedger &groupLedger,
-		PersistentGroupChangeJournal &journal);
+		PersistentGroupChangeJournal &journal,
+		PersistentGroupChangeInbox &inbox);
 
 } // namespace E2ECloud

@@ -41,6 +41,11 @@ struct PublicJoinCatchupOutcome {
 	std::uint64_t appliedTransitions = 0;
 };
 
+[[nodiscard]] bool IsPublicJoinRelevantObject(
+	const TelegramTransport::UntrustedObject &object,
+	ConversationId conversationId,
+	std::uint64_t telegramPeerIdBinding,
+	const EnvelopeCodec &envelopeCodec);
 [[nodiscard]] PublicJoinCatchupOutcome CatchUpPublicJoin(
 	const std::vector<TelegramTransport::UntrustedObject> &objects,
 	ConversationId conversationId,

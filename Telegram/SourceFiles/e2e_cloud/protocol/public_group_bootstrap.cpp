@@ -44,7 +44,38 @@ struct Candidate {
 			int(genesis.ownerSignature.size()));
 }
 
+[[nodiscard]] bool BootstrapKind(const TransportEnvelope &envelope) {
+	switch (envelope.objectKind) {
+	case ObjectKind::InitialGroupState:
+	case ObjectKind::AccountCredential:
+		return envelope.epochOrGeneration == 1;
+	case ObjectKind::MlsGroupInfo:
+		return envelope.epochOrGeneration == 0;
+	default:
+		return false;
+	}
+}
+
 } // namespace
+
+bool IsPublicGroupBootstrapCandidate(
+		const TelegramTransport::UntrustedObject &object,
+		std::uint64_t expectedTelegramPeerIdBinding,
+		std::optional<ConversationId> expectedConversationId,
+		const EnvelopeCodec &envelopeCodec) {
+	const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+	return expectedTelegramPeerIdBinding
+		&& (!expectedConversationId || *expectedConversationId)
+		&& envelope
+		&& BootstrapKind(*envelope)
+		&& envelope->telegramPeerIdBinding
+			== expectedTelegramPeerIdBinding
+		&& object.observedTelegramPeerIdBinding
+			== expectedTelegramPeerIdBinding
+		&& object.observedMessageId > 0
+		&& (!expectedConversationId
+			|| envelope->conversationId == *expectedConversationId);
+}
 
 PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
@@ -55,8 +86,7 @@ PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 		const Sha256Provider &sha256) {
 	if (!expectedTelegramPeerIdBinding
 		|| (expectedConversationId && !*expectedConversationId)
-		|| (expectedOwnerAccountId && !*expectedOwnerAccountId)
-		|| objects.size() > kMaximumObjects) {
+		|| (expectedOwnerAccountId && !*expectedOwnerAccountId)) {
 		return {
 			.status = PublicGroupBootstrapStatus::CapacityExceeded,
 			.verified = std::nullopt,
@@ -66,7 +96,21 @@ PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 	auto unique = std::map<ObjectId, TelegramTransport::UntrustedObject>();
 	auto candidates = std::vector<Candidate>();
 	for (const auto &object : objects) {
+		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+		if (!envelope
+			|| !BootstrapKind(*envelope)
+			|| envelope->telegramPeerIdBinding
+				!= expectedTelegramPeerIdBinding
+			|| object.observedTelegramPeerIdBinding
+				!= expectedTelegramPeerIdBinding
+			|| object.observedMessageId <= 0
+			|| (expectedConversationId
+				&& envelope->conversationId
+					!= *expectedConversationId)) {
+			continue;
+		}
 		if (object.bytes.size() < 0
+			|| unique.size() == kMaximumObjects
 			|| totalBytes > kMaximumBytes
 				- std::uint64_t(object.bytes.size())) {
 			return {
@@ -80,16 +124,6 @@ PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 				.status = PublicGroupBootstrapStatus::CapacityExceeded,
 				.verified = std::nullopt,
 			};
-		}
-		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
-		if (!envelope
-			|| envelope->telegramPeerIdBinding
-				!= expectedTelegramPeerIdBinding
-			|| object.observedTelegramPeerIdBinding
-				!= expectedTelegramPeerIdBinding
-			|| (expectedConversationId
-				&& envelope->conversationId != *expectedConversationId)) {
-			continue;
 		}
 		const auto i = unique.find(envelope->objectId);
 		if (i != end(unique)) {

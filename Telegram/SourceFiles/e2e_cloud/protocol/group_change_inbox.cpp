@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/protocol/group_change_inbox.h"
 
+#include "e2e_cloud/mls/client_key_package.h"
+
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -22,7 +24,7 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 	'T', 'D', 'E', '2', 'E', 'G', 'I', 'B',
 };
 inline constexpr auto kPurpose = "TDE2E/local-group-change-inbox/v1";
-inline constexpr auto kMaximumEnvelopes = std::size_t(256);
+inline constexpr auto kMaximumEnvelopes = std::size_t(4096);
 inline constexpr auto kMaximumEnvelopeSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumSnapshotSize = 64 * 1024 * 1024;
 
@@ -147,19 +149,20 @@ void Cleanse(QByteArray &bytes) {
 [[nodiscard]] bool SupportedKind(ObjectKind kind) {
 	return kind == ObjectKind::SignedGroupTransition
 		|| kind == ObjectKind::MlsCommit
-		|| kind == ObjectKind::ArchiveEpoch;
+		|| kind == ObjectKind::ArchiveEpoch
+		|| kind == ObjectKind::ClientKeyPackage;
 }
 
-[[nodiscard]] const TransportEnvelope *FindEnvelope(
-		const std::vector<TransportEnvelope> &envelopes,
+[[nodiscard]] const StagedGroupChangeEnvelope *FindRecord(
+		const std::vector<StagedGroupChangeEnvelope> &records,
 		ObjectId objectId) {
 	const auto i = std::find_if(
-		std::begin(envelopes),
-		std::end(envelopes),
-		[&](const TransportEnvelope &envelope) {
-			return envelope.objectId == objectId;
+		std::begin(records),
+		std::end(records),
+		[&](const StagedGroupChangeEnvelope &record) {
+			return record.envelope.objectId == objectId;
 		});
-	return (i == std::end(envelopes)) ? nullptr : &*i;
+	return (i == std::end(records)) ? nullptr : &*i;
 }
 
 [[nodiscard]] bool AadMatchesEnvelope(
@@ -189,7 +192,7 @@ PersistentGroupChangeInbox::PersistentGroupChangeInbox(
 GroupChangeInboxLoadResult PersistentGroupChangeInbox::load(
 		ConversationId conversationId) {
 	_conversationId = {};
-	_envelopes.clear();
+	_records.clear();
 	_revision = 0;
 	_loaded = false;
 	if (!conversationId) {
@@ -219,7 +222,7 @@ GroupChangeInboxLoadResult PersistentGroupChangeInbox::load(
 		|| !ReadUint64(reader, revision)
 		|| !ReadUint32(reader, count)
 		|| magic != kMagic
-		|| version != 1
+		|| (version != 1 && version != 2)
 		|| storedConversationId != conversationId
 		|| !revision
 		|| count > kMaximumEnvelopes) {
@@ -227,15 +230,20 @@ GroupChangeInboxLoadResult PersistentGroupChangeInbox::load(
 		return GroupChangeInboxLoadResult::InvalidSnapshot;
 	}
 	_conversationId = conversationId;
-	auto envelopes = std::vector<TransportEnvelope>();
-	envelopes.reserve(count);
+	auto records = std::vector<StagedGroupChangeEnvelope>();
+	records.reserve(count);
 	auto objectIds = std::set<ObjectId>();
 	for (auto index = std::uint32_t(); index != count; ++index) {
 		auto objectId = ObjectId();
 		auto payloadHash = Digest();
+		auto observedSenderTelegramUserIdBinding = std::uint64_t();
 		auto encodedBytes = QByteArray();
 		if (!ReadArray(reader, objectId.bytes)
 			|| !ReadArray(reader, payloadHash.bytes)
+			|| (version == 2
+				&& !ReadUint64(
+					reader,
+					observedSenderTelegramUserIdBinding))
 			|| !ReadBytes(reader, kMaximumEnvelopeSize, encodedBytes)) {
 			Cleanse(*opened);
 			return GroupChangeInboxLoadResult::InvalidSnapshot;
@@ -252,14 +260,18 @@ GroupChangeInboxLoadResult PersistentGroupChangeInbox::load(
 			Cleanse(*opened);
 			return GroupChangeInboxLoadResult::InvalidSnapshot;
 		}
-		envelopes.push_back(*envelope);
+		records.push_back({
+			.envelope = *envelope,
+			.observedSenderTelegramUserIdBinding
+				= observedSenderTelegramUserIdBinding,
+		});
 	}
 	const auto complete = reader.offset == reader.bytes.size();
 	Cleanse(*opened);
 	if (!complete) {
 		return GroupChangeInboxLoadResult::InvalidSnapshot;
 	}
-	_envelopes = std::move(envelopes);
+	_records = std::move(records);
 	_revision = revision;
 	_loaded = true;
 	return GroupChangeInboxLoadResult::Loaded;
@@ -267,29 +279,55 @@ GroupChangeInboxLoadResult PersistentGroupChangeInbox::load(
 
 GroupChangeInboxStageResult PersistentGroupChangeInbox::stage(
 		const TransportEnvelope &envelope) {
-	if (!_loaded) {
-		return GroupChangeInboxStageResult::NotLoaded;
-	} else if (!validEnvelope(envelope)) {
+	return stageRecord({ .envelope = envelope });
+}
+
+GroupChangeInboxStageResult PersistentGroupChangeInbox::stageObserved(
+		const TransportEnvelope &envelope,
+		std::uint64_t observedSenderTelegramUserIdBinding) {
+	if (!observedSenderTelegramUserIdBinding) {
 		return GroupChangeInboxStageResult::InvalidEnvelope;
 	}
-	const auto existing = lookup(envelope.objectId, envelope.payloadHash);
+	return stageRecord({
+		.envelope = envelope,
+		.observedSenderTelegramUserIdBinding
+			= observedSenderTelegramUserIdBinding,
+	});
+}
+
+GroupChangeInboxStageResult PersistentGroupChangeInbox::stageRecord(
+		StagedGroupChangeEnvelope record) {
+	if (!_loaded) {
+		return GroupChangeInboxStageResult::NotLoaded;
+	} else if (!validEnvelope(record.envelope)) {
+		return GroupChangeInboxStageResult::InvalidEnvelope;
+	}
+	const auto current = FindRecord(_records, record.envelope.objectId);
+	if (current) {
+		return (*current == record)
+			? GroupChangeInboxStageResult::Duplicate
+			: GroupChangeInboxStageResult::ObjectIdConflict;
+	}
+	const auto existing = lookup(
+		record.envelope.objectId,
+		record.envelope.payloadHash);
 	if (existing == GroupChangeInboxLookup::Present) {
 		return GroupChangeInboxStageResult::Duplicate;
 	} else if (existing == GroupChangeInboxLookup::ObjectIdConflict) {
 		return GroupChangeInboxStageResult::ObjectIdConflict;
 	} else if (existing == GroupChangeInboxLookup::Unavailable) {
 		return GroupChangeInboxStageResult::NotLoaded;
-	} else if (_envelopes.size() == kMaximumEnvelopes
+	} else if (_records.size() == kMaximumEnvelopes
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return GroupChangeInboxStageResult::CapacityExceeded;
 	}
-	auto envelopes = _envelopes;
-	envelopes.push_back(envelope);
+	auto records = _records;
+	records.push_back(std::move(record));
 	const auto revision = _revision + 1;
-	if (!persist(envelopes, revision)) {
+	if (!persist(records, revision)) {
 		return GroupChangeInboxStageResult::PersistenceFailed;
 	}
-	_envelopes = std::move(envelopes);
+	_records = std::move(records);
 	_revision = revision;
 	return GroupChangeInboxStageResult::Staged;
 }
@@ -300,11 +338,11 @@ GroupChangeInboxLookup PersistentGroupChangeInbox::lookup(
 	if (!_loaded || !objectId || !payloadHash) {
 		return GroupChangeInboxLookup::Unavailable;
 	}
-	const auto envelope = FindEnvelope(_envelopes, objectId);
-	if (!envelope) {
+	const auto record = FindRecord(_records, objectId);
+	if (!record) {
 		return GroupChangeInboxLookup::Missing;
 	}
-	return (envelope->payloadHash == payloadHash)
+	return (record->envelope.payloadHash == payloadHash)
 		? GroupChangeInboxLookup::Present
 		: GroupChangeInboxLookup::ObjectIdConflict;
 }
@@ -319,7 +357,8 @@ GroupChangeInboxReadyResult PersistentGroupChangeInbox::ready(
 	}
 	auto candidates = std::vector<
 		std::pair<const TransportEnvelope*, SignedGroupTransition>>();
-	for (const auto &envelope : _envelopes) {
+	for (const auto &record : _records) {
+		const auto &envelope = record.envelope;
 		if (envelope.objectKind != ObjectKind::SignedGroupTransition) {
 			continue;
 		}
@@ -345,25 +384,28 @@ GroupChangeInboxReadyResult PersistentGroupChangeInbox::ready(
 		};
 	}
 	const auto &[transitionEnvelope, signedTransition] = candidates.front();
-	const auto commitEnvelope = FindEnvelope(
-		_envelopes,
+	const auto commitRecord = FindRecord(
+		_records,
 		signedTransition.mlsCommitObjectId);
-	const auto distributionEnvelope = FindEnvelope(
-		_envelopes,
+	const auto distributionRecord = FindRecord(
+		_records,
 		signedTransition.archiveDistributionObjectId);
-	if (!commitEnvelope || !distributionEnvelope) {
+	if (!commitRecord || !distributionRecord) {
 		return {
 			.status = GroupChangeInboxReadyStatus::Incomplete,
 			.bundle = std::nullopt,
 		};
-	} else if (transitionEnvelope->objectId
+	}
+	const auto &commitEnvelope = commitRecord->envelope;
+	const auto &distributionEnvelope = distributionRecord->envelope;
+	if (transitionEnvelope->objectId
 			!= signedTransition.transition.transitionId
 		|| transitionEnvelope->payloadHash
 			!= _sha256.digest(transitionEnvelope->payload)
-		|| commitEnvelope->objectKind != ObjectKind::MlsCommit
-		|| commitEnvelope->payloadHash != signedTransition.mlsCommitHash
-		|| distributionEnvelope->objectKind != ObjectKind::ArchiveEpoch
-		|| distributionEnvelope->payloadHash
+		|| commitEnvelope.objectKind != ObjectKind::MlsCommit
+		|| commitEnvelope.payloadHash != signedTransition.mlsCommitHash
+		|| distributionEnvelope.objectKind != ObjectKind::ArchiveEpoch
+		|| distributionEnvelope.payloadHash
 			!= signedTransition.archiveDistributionHash) {
 		return {
 			.status = GroupChangeInboxReadyStatus::ForkDetected,
@@ -375,8 +417,8 @@ GroupChangeInboxReadyResult PersistentGroupChangeInbox::ready(
 		.bundle = GroupChangeInboxBundle{
 			.signedTransition = signedTransition,
 			.transitionEnvelope = *transitionEnvelope,
-			.commitEnvelope = *commitEnvelope,
-			.archiveDistributionEnvelope = *distributionEnvelope,
+			.commitEnvelope = commitEnvelope,
+			.archiveDistributionEnvelope = distributionEnvelope,
 		},
 	};
 }
@@ -387,7 +429,8 @@ std::vector<ForkRecoveryCandidate> PersistentGroupChangeInbox::candidates(
 		return {};
 	}
 	auto result = std::vector<ForkRecoveryCandidate>();
-	for (const auto &envelope : _envelopes) {
+	for (const auto &record : _records) {
+		const auto &envelope = record.envelope;
 		if (envelope.objectKind != ObjectKind::SignedGroupTransition) {
 			continue;
 		}
@@ -421,36 +464,90 @@ bool PersistentGroupChangeInbox::discardBundle(ObjectId transitionId) {
 	if (!_loaded || !transitionId) {
 		return false;
 	}
-	const auto transitionEnvelope = FindEnvelope(_envelopes, transitionId);
-	if (!transitionEnvelope) {
+	const auto transitionRecord = FindRecord(_records, transitionId);
+	if (!transitionRecord) {
 		return true;
 	}
 	const auto transition = SignedGroupTransitionCodecV1().decode(
-		transitionEnvelope->payload);
+		transitionRecord->envelope.payload);
 	if (!transition
 		|| transition->transition.transitionId != transitionId
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return false;
 	}
-	const auto objectIds = std::set<ObjectId>{
+	auto objectIds = std::set<ObjectId>{
 		transitionId,
 		transition->mlsCommitObjectId,
 		transition->archiveDistributionObjectId,
 	};
-	auto envelopes = _envelopes;
-	envelopes.erase(
+	if (transition->targetClientAuthorization) {
+		objectIds.emplace(
+			transition->targetClientAuthorization->authorizationId);
+	}
+	auto records = _records;
+	records.erase(
 		std::remove_if(
-			std::begin(envelopes),
-			std::end(envelopes),
-			[&](const TransportEnvelope &envelope) {
-				return objectIds.contains(envelope.objectId);
+			std::begin(records),
+			std::end(records),
+			[&](const StagedGroupChangeEnvelope &record) {
+				return objectIds.contains(record.envelope.objectId);
 			}),
-		std::end(envelopes));
+		std::end(records));
 	const auto revision = _revision + 1;
-	if (!persist(envelopes, revision)) {
+	if (!persist(records, revision)) {
 		return false;
 	}
-	_envelopes = std::move(envelopes);
+	_records = std::move(records);
+	_revision = revision;
+	return true;
+}
+
+bool PersistentGroupChangeInbox::discardExpiredKeyPackages(
+		std::uint64_t currentTime) {
+	if (!_loaded || !currentTime) {
+		return false;
+	}
+	auto referenced = std::set<ObjectId>();
+	for (const auto &record : _records) {
+		if (record.envelope.objectKind
+				!= ObjectKind::SignedGroupTransition) {
+			continue;
+		}
+		const auto transition = SignedGroupTransitionCodecV1().decode(
+			record.envelope.payload);
+		if (transition && transition->targetClientAuthorization) {
+			referenced.emplace(
+				transition->targetClientAuthorization->authorizationId);
+		}
+	}
+	auto records = _records;
+	records.erase(
+		std::remove_if(
+			std::begin(records),
+			std::end(records),
+			[&](const StagedGroupChangeEnvelope &record) {
+				if (record.envelope.objectKind
+						!= ObjectKind::ClientKeyPackage
+					|| referenced.contains(record.envelope.objectId)) {
+					return false;
+				}
+				const auto publication
+					= ClientKeyPackagePublicationCodecV1().decode(
+						record.envelope.payload);
+				return !publication
+					|| publication->authorization.expiresAt <= currentTime;
+			}),
+		std::end(records));
+	if (records.size() == _records.size()) {
+		return true;
+	} else if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+		return false;
+	}
+	const auto revision = _revision + 1;
+	if (!persist(records, revision)) {
+		return false;
+	}
+	_records = std::move(records);
 	_revision = revision;
 	return true;
 }
@@ -460,29 +557,35 @@ bool PersistentGroupChangeInbox::loaded() const {
 }
 
 std::size_t PersistentGroupChangeInbox::size() const {
-	return _envelopes.size();
+	return _records.size();
 }
 
 std::uint64_t PersistentGroupChangeInbox::revision() const {
 	return _revision;
 }
 
+auto PersistentGroupChangeInbox::records() const
+-> const std::vector<StagedGroupChangeEnvelope> & {
+	return _records;
+}
+
 bool PersistentGroupChangeInbox::persist(
-		const std::vector<TransportEnvelope> &envelopes,
+		const std::vector<StagedGroupChangeEnvelope> &records,
 		std::uint64_t revision) const {
 	if (!_conversationId
 		|| !revision
-		|| envelopes.size() > kMaximumEnvelopes) {
+		|| records.size() > kMaximumEnvelopes) {
 		return false;
 	}
 	auto plaintext = QByteArray();
 	AppendArray(plaintext, kMagic);
-	AppendUint16(plaintext, 1);
+	AppendUint16(plaintext, 2);
 	AppendArray(plaintext, _conversationId.bytes);
 	AppendUint64(plaintext, revision);
-	AppendUint32(plaintext, std::uint32_t(envelopes.size()));
+	AppendUint32(plaintext, std::uint32_t(records.size()));
 	auto objectIds = std::set<ObjectId>();
-	for (const auto &envelope : envelopes) {
+	for (const auto &record : records) {
+		const auto &envelope = record.envelope;
 		const auto encoded = _envelopeCodec.encode(envelope);
 		if (!validEnvelope(envelope)
 			|| !objectIds.emplace(envelope.objectId).second
@@ -493,6 +596,9 @@ bool PersistentGroupChangeInbox::persist(
 		}
 		AppendArray(plaintext, envelope.objectId.bytes);
 		AppendArray(plaintext, envelope.payloadHash.bytes);
+		AppendUint64(
+			plaintext,
+			record.observedSenderTelegramUserIdBinding);
 		AppendBytes(plaintext, encoded->bytes);
 		if (plaintext.size() > kMaximumSnapshotSize) {
 			Cleanse(plaintext);

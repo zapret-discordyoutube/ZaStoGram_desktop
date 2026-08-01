@@ -273,6 +273,17 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
         "SourceFiles/e2e_cloud/transport/"
         "public_bootstrap_sync_controller.cpp"
     )
+    discovery = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "public_bootstrap_discovery_controller.cpp"
+    )
+    join = source("SourceFiles/e2e_cloud/protocol/public_join_catchup.cpp")
+    group_sync = source(
+        "SourceFiles/e2e_cloud/protocol/observed_group_change_sync.cpp"
+    )
+    inbox = source(
+        "SourceFiles/e2e_cloud/protocol/group_change_inbox.cpp"
+    )
     observation = function_body(
         service,
         "void DesktopService::beginGroupObservation(",
@@ -285,7 +296,9 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     )
 
     assert 'u"control-sync.state"_q' in service
+    assert 'u"group-change-inbox.state"_q' in service
     assert "PersistentControlObservationState controlSyncState" in service
+    assert "PersistentGroupChangeInbox changeInbox" in service
     assert "startFromBoundary(boundary)" in observation
     assert "safetyWitnessGeneration\n\t\t?" not in observation
     assert "group.controlSyncState.advance(" in result
@@ -293,8 +306,18 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     assert "group.ownSafetyGossipObserved" in result
     assert "kLegacyPurpose" in state
     assert "safetyWitnesses" in state
+    assert "startForJoin()" in service
+    assert "IsPublicJoinRelevantObject(" in controller
+    assert "IsPublicGroupBootstrapCandidate(" in discovery
+    assert "ObjectKind::SafetyCodeGossip" not in join[
+        join.index("bool JoinRelevantKind("):join.index("bool ValidPayload(")
+    ]
     assert "messageId >= _lastObservedMessageId" in controller
     assert "messageId < _boundaryMessageId" in controller
+    assert "group.changeInbox" in service
+    assert "inbox.stageObserved(" in group_sync
+    assert "observedSenderTelegramUserIdBinding" in inbox
+    assert "!synchronized.appliedTransitions" in service
 
 
 def verify_content_sync_requires_its_saved_boundary() -> None:

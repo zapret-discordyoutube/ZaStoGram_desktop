@@ -689,6 +689,7 @@ public:
 	auto syncArchiveBlob = targetArchiveBlob;
 	auto syncGroupBlob = targetGroupBlob;
 	auto syncJournalBlob = MemoryBlobStore();
+	auto syncInboxBlob = MemoryBlobStore();
 	auto syncMlsState = PersistentMlsStateStore(syncMlsBlob, protector);
 	auto syncArchiveState = PersistentArchiveState(
 		syncArchiveBlob,
@@ -700,6 +701,11 @@ public:
 	auto syncJournal = PersistentGroupChangeJournal(
 		syncJournalBlob,
 		protector);
+	auto syncInbox = PersistentGroupChangeInbox(
+		syncInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256);
 	auto syncObjects = std::vector<TelegramTransport::UntrustedObject>();
 	if (thirdPublicationEnvelope) {
 		syncObjects.push_back({
@@ -728,7 +734,9 @@ public:
 		&& syncGroupLedger.load(conversationId)
 			== GroupLedgerLoadResult::Loaded
 		&& syncJournal.load(conversationId)
-			== GroupChangeJournalLoadResult::Empty;
+			== GroupChangeJournalLoadResult::Empty
+		&& syncInbox.load(conversationId)
+			== GroupChangeInboxLoadResult::Missing;
 	const auto synchronized = syncReady
 		? SynchronizeObservedGroupChanges(
 			syncObjects,
@@ -743,7 +751,8 @@ public:
 			syncMlsState,
 			syncArchiveState,
 			syncGroupLedger,
-			syncJournal)
+			syncJournal,
+			syncInbox)
 		: ObservedGroupChangeSyncOutcome();
 	if (synchronized.status != ObservedGroupChangeSyncStatus::Updated
 		|| synchronized.appliedTransitions != 1
@@ -752,6 +761,91 @@ public:
 		|| syncMlsState.revision() != 3
 		|| syncJournal.pending()) {
 		return Fail("observed group synchronizer did not apply admission");
+	}
+	auto splitMlsBlob = targetMlsBlob;
+	auto splitArchiveBlob = targetArchiveBlob;
+	auto splitGroupBlob = targetGroupBlob;
+	auto splitJournalBlob = MemoryBlobStore();
+	auto splitInboxBlob = MemoryBlobStore();
+	auto splitMlsState = PersistentMlsStateStore(splitMlsBlob, protector);
+	auto splitArchiveState = PersistentArchiveState(
+		splitArchiveBlob,
+		protector);
+	auto splitGroupLedger = PersistentGroupLedger(
+		splitGroupBlob,
+		protector,
+		sha256);
+	auto splitJournal = PersistentGroupChangeJournal(
+		splitJournalBlob,
+		protector);
+	auto splitInbox = PersistentGroupChangeInbox(
+		splitInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256);
+	const auto splitReady = syncObjects.size() >= 5
+		&& splitMlsState.load(conversationId) == MlsStateLoadResult::Loaded
+		&& splitArchiveState.load(conversationId)
+			== ArchiveStateLoadResult::Loaded
+		&& splitGroupLedger.load(conversationId)
+			== GroupLedgerLoadResult::Loaded
+		&& splitJournal.load(conversationId)
+			== GroupChangeJournalLoadResult::Empty
+		&& splitInbox.load(conversationId)
+			== GroupChangeInboxLoadResult::Missing;
+	const auto splitFirst = splitReady
+		? SynchronizeObservedGroupChanges(
+			std::vector<TelegramTransport::UntrustedObject>(
+				begin(syncObjects),
+				begin(syncObjects) + 2),
+			targetContext,
+			1'000'000,
+			envelopeCodec,
+			bridge,
+			contextCodec,
+			rosterCodec,
+			controlCodec,
+			sha256,
+			splitMlsState,
+			splitArchiveState,
+			splitGroupLedger,
+			splitJournal,
+			splitInbox)
+		: ObservedGroupChangeSyncOutcome();
+	auto splitReloadedInbox = PersistentGroupChangeInbox(
+		splitInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256);
+	const auto splitReloaded = splitReloadedInbox.load(conversationId)
+		== GroupChangeInboxLoadResult::Loaded;
+	const auto splitSecond = splitReloaded
+		? SynchronizeObservedGroupChanges(
+			std::vector<TelegramTransport::UntrustedObject>(
+				begin(syncObjects) + 2,
+				end(syncObjects)),
+			targetContext,
+			1'000'000,
+			envelopeCodec,
+			bridge,
+			contextCodec,
+			rosterCodec,
+			controlCodec,
+			sha256,
+			splitMlsState,
+			splitArchiveState,
+			splitGroupLedger,
+			splitJournal,
+			splitReloadedInbox)
+		: ObservedGroupChangeSyncOutcome();
+	if (splitFirst.status
+			!= ObservedGroupChangeSyncStatus::WaitingForObjects
+		|| !splitReloaded
+		|| splitSecond.status != ObservedGroupChangeSyncStatus::Updated
+		|| splitSecond.appliedTransitions != 1
+		|| splitReloadedInbox.size()
+		|| splitGroupLedger.state()->generation() != 3) {
+		return Fail("observed group inbox did not survive split delivery");
 	}
 	auto substitutedObjects = syncObjects;
 	for (auto &object : substitutedObjects) {
@@ -766,6 +860,7 @@ public:
 	auto substitutedArchiveBlob = targetArchiveBlob;
 	auto substitutedGroupBlob = targetGroupBlob;
 	auto substitutedJournalBlob = MemoryBlobStore();
+	auto substitutedInboxBlob = MemoryBlobStore();
 	auto substitutedMlsState = PersistentMlsStateStore(
 		substitutedMlsBlob,
 		protector);
@@ -779,6 +874,11 @@ public:
 	auto substitutedJournal = PersistentGroupChangeJournal(
 		substitutedJournalBlob,
 		protector);
+	auto substitutedInbox = PersistentGroupChangeInbox(
+		substitutedInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256);
 	const auto substitutedReady = substitutedMlsState.load(conversationId)
 			== MlsStateLoadResult::Loaded
 		&& substitutedArchiveState.load(conversationId)
@@ -786,7 +886,9 @@ public:
 		&& substitutedGroupLedger.load(conversationId)
 			== GroupLedgerLoadResult::Loaded
 		&& substitutedJournal.load(conversationId)
-			== GroupChangeJournalLoadResult::Empty;
+			== GroupChangeJournalLoadResult::Empty
+		&& substitutedInbox.load(conversationId)
+			== GroupChangeInboxLoadResult::Missing;
 	const auto substituted = substitutedReady
 		? SynchronizeObservedGroupChanges(
 			substitutedObjects,
@@ -801,7 +903,8 @@ public:
 			substitutedMlsState,
 			substitutedArchiveState,
 			substitutedGroupLedger,
-			substitutedJournal)
+			substitutedJournal,
+			substitutedInbox)
 		: ObservedGroupChangeSyncOutcome();
 	if (substituted.status
 			!= ObservedGroupChangeSyncStatus::ForkDetected

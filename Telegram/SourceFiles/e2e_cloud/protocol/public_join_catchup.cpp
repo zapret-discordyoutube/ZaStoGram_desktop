@@ -42,6 +42,23 @@ struct Candidate {
 		|| kind == GroupTransitionKind::AddClient;
 }
 
+[[nodiscard]] bool JoinRelevantKind(ObjectKind kind) {
+	switch (kind) {
+	case ObjectKind::InitialGroupState:
+	case ObjectKind::AccountCredential:
+	case ObjectKind::ClientKeyPackage:
+	case ObjectKind::MlsCommit:
+	case ObjectKind::MlsWelcome:
+	case ObjectKind::ArchiveEpoch:
+	case ObjectKind::HistoryGrant:
+	case ObjectKind::SignedGroupTransition:
+	case ObjectKind::MlsGroupInfo:
+		return true;
+	default:
+		return false;
+	}
+}
+
 [[nodiscard]] bool ValidPayload(const TransportEnvelope &envelope,
 		const Sha256Provider &sha256) {
 	return ValidateEnvelope(envelope) == EnvelopeValidationError::None
@@ -267,6 +284,22 @@ struct Candidate {
 }
 
 } // namespace
+
+bool IsPublicJoinRelevantObject(
+		const TelegramTransport::UntrustedObject &object,
+		ConversationId conversationId,
+		std::uint64_t telegramPeerIdBinding,
+		const EnvelopeCodec &envelopeCodec) {
+	const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+	return conversationId
+		&& telegramPeerIdBinding
+		&& envelope
+		&& JoinRelevantKind(envelope->objectKind)
+		&& envelope->conversationId == conversationId
+		&& envelope->telegramPeerIdBinding == telegramPeerIdBinding
+		&& object.observedTelegramPeerIdBinding == telegramPeerIdBinding
+		&& object.observedMessageId > 0;
+}
 
 PublicJoinCatchupOutcome CatchUpPublicJoin(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,

@@ -59,7 +59,8 @@ passcode lock both invoke the same cleanup path.
 Each protected conversation owns independent instances of:
 
 - OpenMLS provider state and application engine;
-- signed group ledger and group-change write-ahead journal;
+- signed group ledger, group-change write-ahead journal, and durable
+  out-of-order inbox;
 - archive epochs and history grants;
 - exact-byte control and content outboxes;
 - replay and inbound transaction journals;
