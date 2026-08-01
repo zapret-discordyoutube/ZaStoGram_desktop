@@ -183,6 +183,18 @@ void PublicBootstrapSyncController::pageReceived(
 			.newestObservedMessageId = _newestObservedMessageId,
 		});
 		return;
+	} else if (result.untrustedObjects.size()
+			> std::size_t(kDownloadPageLimit)) {
+		finish({
+			.status = PublicBootstrapSyncStatus::InvalidPagination,
+			.verified = std::nullopt,
+			.untrustedObjects = {},
+			.pages = _pages,
+			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
+		});
+		return;
 	} else if (_pages == kMaximumPages) {
 		finish({
 			.status = PublicBootstrapSyncStatus::InvalidPagination,

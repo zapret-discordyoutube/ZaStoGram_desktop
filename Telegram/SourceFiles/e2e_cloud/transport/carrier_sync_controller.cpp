@@ -149,6 +149,10 @@ void CarrierSyncController::pageReceived(
 			? CarrierSyncFinishReason::PermanentTransportError
 			: CarrierSyncFinishReason::RetryableTransportError);
 		return;
+	} else if (result.untrustedObjects.size()
+			> std::size_t(kDownloadPageLimit)) {
+		finish(CarrierSyncFinishReason::SecurityBlocked);
+		return;
 	} else if (_stats.pages == kMaximumPagesPerRun) {
 		finish(CarrierSyncFinishReason::InvalidPagination);
 		return;

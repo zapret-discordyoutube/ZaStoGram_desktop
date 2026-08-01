@@ -192,6 +192,15 @@ void CloudVaultSyncController::pageReceived(
 			.candidates = _candidates.size(),
 		});
 		return;
+	} else if (page.untrustedObjects.size()
+			> std::size_t(kDownloadPageLimit)) {
+		finish({
+			.status = CloudVaultSyncStatus::InvalidPagination,
+			.vault = std::nullopt,
+			.pages = _pages,
+			.candidates = _candidates.size(),
+		});
+		return;
 	} else if (_pages == kMaximumPages) {
 		finish({
 			.status = CloudVaultSyncStatus::InvalidPagination,

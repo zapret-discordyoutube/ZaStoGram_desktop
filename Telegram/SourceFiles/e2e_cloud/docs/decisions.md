@@ -412,3 +412,8 @@ returned first page. A malformed count or a partial first page without a valid
 vault carrier exposes Retry only, never identity creation. The same malformed or
 not-modified responses interrupt protected history synchronization instead of
 silently truncating it.
+
+Every MTP search response must also contain no more messages than the requested
+page limit. Enforce the same limit again in every pagination controller before
+parsing, retaining, or authenticating an object so future transport adapters
+cannot accidentally weaken the boundary.

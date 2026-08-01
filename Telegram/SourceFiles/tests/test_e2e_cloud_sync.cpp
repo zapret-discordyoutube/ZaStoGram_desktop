@@ -255,6 +255,33 @@ struct Fixture {
 	return 0;
 }
 
+[[nodiscard]] int ScenarioRejectsOversizedCarrierPage() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {{
+		.result = TelegramTransport::UploadResult::Accepted,
+		.untrustedObjects = std::vector<
+			TelegramTransport::UntrustedObject>(101),
+		.nextCursor = {},
+		.complete = true,
+	}};
+	auto completion = std::optional<CarrierSyncCompletion>();
+	auto controller = CarrierSyncController(
+		FilledId<ConversationId>(1),
+		fixture.transport,
+		fixture.processor,
+		[&](CarrierSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (controller.start() != CarrierSyncStartResult::Started
+		|| !completion
+		|| completion->reason != CarrierSyncFinishReason::SecurityBlocked
+		|| completion->stats.pages != 0
+		|| completion->stats.objects != 0) {
+		return Fail("oversized carrier page reached the envelope processor");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioStopsOnAuthenticatedFork() {
 	auto fixture = Fixture();
 	fixture.applier.forkObject = FilledId<ObjectId>(5);
@@ -894,6 +921,36 @@ private:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioControlSyncRejectsOversizedPage() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {{
+		.result = TelegramTransport::UploadResult::Accepted,
+		.untrustedObjects = std::vector<
+			TelegramTransport::UntrustedObject>(101),
+		.nextCursor = {},
+		.complete = true,
+	}};
+	auto completion = std::optional<PublicBootstrapSyncCompletion>();
+	auto controller = PublicBootstrapSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		std::nullopt,
+		fixture.transport,
+		fixture.codec,
+		fixture.sha256,
+		[&](PublicBootstrapSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (!controller.start()
+		|| !completion
+		|| completion->status != PublicBootstrapSyncStatus::InvalidPagination
+		|| completion->pages != 0
+		|| completion->objects != 0) {
+		return Fail("oversized control page reached bootstrap processing");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioFileDownloadStopsWhenChunksArrive() {
 	auto transport = TestTransport();
 	transport.pages = {
@@ -1026,6 +1083,7 @@ int main(int, char *[]) {
 	for (const auto scenario : {
 		ScenarioCompletesPagedBackfill,
 		ScenarioRejectsCursorLoop,
+		ScenarioRejectsOversizedCarrierPage,
 		ScenarioStopsOnAuthenticatedFork,
 		ScenarioCancellationIgnoresLatePage,
 		ScenarioObservedContentStopsAtBoundary,
@@ -1040,6 +1098,7 @@ int main(int, char *[]) {
 		ScenarioJoinSyncDropsUnboundedControlNoise,
 		ScenarioControlSyncRejectsMissingBoundary,
 		ScenarioControlSyncRejectsReordering,
+		ScenarioControlSyncRejectsOversizedPage,
 		ScenarioFileDownloadStopsWhenChunksArrive,
 		ScenarioFileDownloadRejectsOldOrReorderedObjects,
 		ScenarioFileDownloadEnforcesByteLimit,

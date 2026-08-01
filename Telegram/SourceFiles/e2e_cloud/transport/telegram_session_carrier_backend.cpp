@@ -610,18 +610,21 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
-			complete = true;
+			valid = messages.size() <= kDiscoverySearchLimit;
+			complete = valid;
 		}, [&](const MTPDmessages_messagesSlice &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
-			valid = data.vcount().v >= int(messages.size());
+			valid = messages.size() <= kDiscoverySearchLimit
+				&& data.vcount().v >= int(messages.size());
 			complete = valid && data.vcount().v == int(messages.size());
 		}, [&](const MTPDmessages_channelMessages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
-			valid = data.vcount().v >= int(messages.size());
+			valid = messages.size() <= kDiscoverySearchLimit
+				&& data.vcount().v >= int(messages.size());
 			complete = valid && data.vcount().v == int(messages.size());
 		}, [&](const MTPDmessages_messagesNotModified &) {
 			valid = false;
@@ -686,11 +689,13 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
+			valid = messages.size() <= limit;
 		}, [&](const MTPDmessages_messagesSlice &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
-			valid = data.vcount().v >= int(messages.size());
+			valid = messages.size() <= limit
+				&& data.vcount().v >= int(messages.size());
 		}, [&](const MTPDmessages_channelMessages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
@@ -698,7 +703,8 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				channel->ptsReceived(data.vpts().v);
 			}
 			messages = data.vmessages().v;
-			valid = data.vcount().v >= int(messages.size());
+			valid = messages.size() <= limit
+				&& data.vcount().v >= int(messages.size());
 		}, [&](const MTPDmessages_messagesNotModified &) {
 			valid = false;
 		});

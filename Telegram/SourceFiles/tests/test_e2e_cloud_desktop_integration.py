@@ -163,11 +163,45 @@ def verify_ambiguous_search_results_fail_closed() -> None:
         assert "valid = false;" in body[not_modified:]
         assert "if (!valid)" in body
         assert "UploadResult::RetryableError" in body
-    assert "complete = true;" in discovery
+    assert "complete = valid;" in discovery
     assert discovery.count("data.vcount().v >= int(messages.size())") == 2
     assert "complete\n\t\t\t\t? UploadResult::Accepted" not in discovery
     assert "complete\n\t\t\t\t? TelegramTransport::UploadResult::Accepted" \
         in discovery
+
+
+def verify_download_pages_are_bounded_at_every_layer() -> None:
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    history = function_body(
+        backend,
+        "void historyLoaded(const MTPmessages_Messages &result, int limit)",
+        "void downloadProgress(",
+    )
+    discovery = function_body(
+        backend,
+        "void discoveryLoaded(const MTPmessages_Messages &result)",
+        "void finishDiscovery(",
+    )
+
+    assert history.count("messages.size() <= limit") == 3
+    assert discovery.count("messages.size() <= kDiscoverySearchLimit") == 3
+    controllers = [
+        "carrier_sync_controller",
+        "cloud_vault_sync_controller",
+        "file_chunk_download_controller",
+        "observed_content_sync_controller",
+        "public_bootstrap_discovery_controller",
+        "public_bootstrap_sync_controller",
+    ]
+    for name in controllers:
+        implementation = source(
+            f"SourceFiles/e2e_cloud/transport/{name}.cpp"
+        )
+        assert "untrustedObjects.size()" in implementation
+        assert "> std::size_t(kDownloadPageLimit)" in implementation
 
 
 def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
@@ -732,6 +766,7 @@ def main() -> None:
     verify_all_carrier_operations_have_timeouts()
     verify_carrier_backfill_searches_documents()
     verify_ambiguous_search_results_fail_closed()
+    verify_download_pages_are_bounded_at_every_layer()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
     verify_pending_plaintext_is_cleansed()
