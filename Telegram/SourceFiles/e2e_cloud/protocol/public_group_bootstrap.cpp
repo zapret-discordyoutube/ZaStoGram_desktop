@@ -82,6 +82,8 @@ bool PublicGroupBootstrapCanReachCheckpoint(
 		Checkpoint targetCheckpoint) {
 	return targetCheckpoint.conversationId
 			== verified.genesis.conversationId
+		&& targetCheckpoint.generation
+		&& targetCheckpoint.stateHash
 		&& targetCheckpoint.generation >= verified.checkpoint.generation
 		&& (targetCheckpoint.generation != verified.checkpoint.generation
 			|| targetCheckpoint == verified.checkpoint);

@@ -173,6 +173,14 @@ bool DiscardUncommittedConversationDirectory(const QString &directory) {
 			conversation.checkpoint);
 }
 
+[[nodiscard]] bool ValidConversationCheckpoint(
+		const Checkpoint &checkpoint,
+		ConversationId conversationId) {
+	return checkpoint.conversationId == conversationId
+		&& checkpoint.generation
+		&& checkpoint.stateHash;
+}
+
 [[nodiscard]] QString AccountDirectory(
 		std::uint64_t telegramUserIdBinding) {
 	return cWorkingDir()
@@ -3640,7 +3648,7 @@ bool DesktopService::completeObservedJoin(
 	if (catchup.status == PublicJoinCatchupStatus::Waiting) {
 		const auto current = group.groupLedger.checkpoint();
 		const auto target = group.joinTargetCheckpoint;
-		if (!target || target.conversationId != conversationId) {
+		if (!ValidConversationCheckpoint(target, conversationId)) {
 			_vaultState = DesktopVaultState::SecurityBlocked;
 			_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		} else if (current.generation >= target.generation) {
@@ -3660,8 +3668,7 @@ bool DesktopService::completeObservedJoin(
 		}
 		const auto current = group.groupLedger.checkpoint();
 		const auto target = group.joinTargetCheckpoint;
-		if (!target
-			|| target.conversationId != conversationId
+		if (!ValidConversationCheckpoint(target, conversationId)
 			|| (current.generation >= target.generation
 				&& group.groupLedger.checkpointAt(target.generation)
 					!= target)) {
@@ -3686,8 +3693,7 @@ bool DesktopService::completeObservedJoin(
 		return false;
 	}
 	const auto target = group.joinTargetCheckpoint;
-	if (!target
-		|| target.conversationId != conversationId
+	if (!ValidConversationCheckpoint(target, conversationId)
 		|| group.groupLedger.checkpoint().generation < target.generation
 		|| group.groupLedger.checkpointAt(target.generation) != target) {
 		_vaultState = DesktopVaultState::SecurityBlocked;
