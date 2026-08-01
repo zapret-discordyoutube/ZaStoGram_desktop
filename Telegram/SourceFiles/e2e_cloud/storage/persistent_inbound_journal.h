@@ -32,8 +32,11 @@ class PersistentInboundJournal final : public InboundEnvelopeJournal {
 public:
 	PersistentInboundJournal(
 		AtomicBlobStore &blobStore,
+		const LocalRecordProtector &protector);
+	PersistentInboundJournal(
+		AtomicBlobStore &blobStore,
 		const LocalRecordProtector &protector,
-		InboundJournalDomain domain = InboundJournalDomain::Content);
+		InboundJournalDomain domain);
 
 	[[nodiscard]] InboundJournalLoadResult load();
 	[[nodiscard]] InboundJournalLookup lookup(

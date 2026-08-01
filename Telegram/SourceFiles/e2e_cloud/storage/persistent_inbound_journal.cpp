@@ -98,6 +98,15 @@ void Cleanse(QByteArray &bytes) {
 
 PersistentInboundJournal::PersistentInboundJournal(
 		AtomicBlobStore &blobStore,
+		const LocalRecordProtector &protector)
+: PersistentInboundJournal(
+	blobStore,
+	protector,
+	InboundJournalDomain::Content) {
+}
+
+PersistentInboundJournal::PersistentInboundJournal(
+		AtomicBlobStore &blobStore,
 		const LocalRecordProtector &protector,
 		InboundJournalDomain domain)
 : _blobStore(blobStore)
