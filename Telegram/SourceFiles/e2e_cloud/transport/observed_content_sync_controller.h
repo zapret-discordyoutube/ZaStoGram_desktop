@@ -14,9 +14,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace E2ECloud {
+
+class Sha256Provider;
 
 enum class ObservedContentPageResult {
 	Persisted,
@@ -54,6 +57,7 @@ public:
 		ConversationId conversationId,
 		std::uint64_t telegramPeerIdBinding,
 		TelegramTransport &transport,
+		const Sha256Provider &sha256,
 		PageCallback pageCallback,
 		CompletionCallback completionCallback);
 	~ObservedContentSyncController();
@@ -64,25 +68,37 @@ public:
 
 private:
 	struct CallbackGuard;
+	struct ScannedPage;
+	enum class Phase {
+		Scanning,
+		Replaying,
+	};
 
 	void pumpRequests();
 	void pageReceived(TelegramTransport::DownloadResult result);
+	bool deliverPage(
+		std::vector<TelegramTransport::UntrustedObject> objects);
 	void finish(ObservedContentSyncStatus status);
 
 	ConversationId _conversationId;
 	std::uint64_t _telegramPeerIdBinding = 0;
 	TelegramTransport &_transport;
+	const Sha256Provider &_sha256;
 	PageCallback _pageCallback;
 	CompletionCallback _completionCallback;
-	std::vector<QByteArray> _seenCursors;
+	std::set<QByteArray> _seenCursors;
+	std::vector<ScannedPage> _scannedPages;
 	QByteArray _cursor;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	std::uint64_t _pages = 0;
 	std::uint64_t _objects = 0;
+	std::uint64_t _storedCursorBytes = 0;
 	std::vector<std::int64_t> _boundaryCandidates;
+	std::size_t _replayPageIndex = 0;
 	std::int64_t _boundaryMessageId = 0;
 	std::int64_t _newestObservedMessageId = 0;
 	std::int64_t _lastObservedMessageId = 0;
+	Phase _phase = Phase::Scanning;
 	bool _running = false;
 	bool _requestActive = false;
 	bool _requestQueued = false;

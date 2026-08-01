@@ -3093,6 +3093,7 @@ void DesktopService::beginContentObservation(
 			conversationId,
 			group.telegramPeerIdBinding,
 			group.contentTransport,
+			_sha256,
 			[weak = base::weak_ptr(this), conversationId](
 					std::vector<TelegramTransport::UntrustedObject> objects) {
 				return weak

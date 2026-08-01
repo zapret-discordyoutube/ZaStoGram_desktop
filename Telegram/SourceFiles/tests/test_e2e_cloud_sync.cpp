@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/transport/observed_content_sync_controller.h"
 #include "e2e_cloud/transport/public_bootstrap_sync_controller.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -339,6 +340,16 @@ struct Fixture {
 			.nextCursor = QByteArray("unused"),
 			.complete = false,
 		},
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(7),
+				fixture.object(6),
+				fixture.object(5),
+			},
+			.nextCursor = QByteArray("unused"),
+			.complete = false,
+		},
 	};
 	auto retained = std::vector<std::int64_t>();
 	auto completion = std::optional<ObservedContentSyncCompletion>();
@@ -346,7 +357,9 @@ struct Fixture {
 		FilledId<ConversationId>(1),
 		42,
 		fixture.transport,
+		fixture.sha256,
 		[&](std::vector<TelegramTransport::UntrustedObject> objects) {
+			std::reverse(begin(objects), end(objects));
 			for (const auto &object : objects) {
 				retained.push_back(object.observedMessageId);
 			}
@@ -364,7 +377,7 @@ struct Fixture {
 		|| completion->previousBoundaryMessageId != 6
 		|| completion->newestObservedMessageId != 9
 		|| completion->nextBoundaryMessageId != 6
-		|| retained != std::vector<std::int64_t>({ 9, 8, 7 })) {
+		|| retained != std::vector<std::int64_t>({ 7, 8, 9 })) {
 		return Fail("observed content synchronization crossed its boundary");
 	}
 	return 0;
@@ -389,6 +402,7 @@ struct Fixture {
 		FilledId<ConversationId>(1),
 		42,
 		fixture.transport,
+		fixture.sha256,
 		[](std::vector<TelegramTransport::UntrustedObject>) {
 			return ObservedContentPageResult::Persisted;
 		},
@@ -421,6 +435,7 @@ struct Fixture {
 		FilledId<ConversationId>(1),
 		42,
 		fixture.transport,
+		fixture.sha256,
 		[](std::vector<TelegramTransport::UntrustedObject>) {
 			return ObservedContentPageResult::Persisted;
 		},
@@ -456,6 +471,7 @@ struct Fixture {
 		FilledId<ConversationId>(1),
 		42,
 		fixture.transport,
+		fixture.sha256,
 		[](std::vector<TelegramTransport::UntrustedObject>) {
 			return ObservedContentPageResult::Persisted;
 		},
@@ -465,6 +481,113 @@ struct Fixture {
 	if (!controller.start()
 		|| status != ObservedContentSyncStatus::SecurityBlocked) {
 		return Fail("reordered observed Telegram content was accepted");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedContentReplaysOldestPageFirst() {
+	auto fixture = Fixture();
+	const auto page = [&](std::uint8_t newest, const QByteArray &next) {
+		return TelegramTransport::DownloadResult{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(newest),
+				fixture.object(newest - 1),
+			},
+			.nextCursor = next,
+			.complete = next.isEmpty(),
+		};
+	};
+	fixture.transport.pages = {
+		page(9, QByteArray("second")),
+		page(7, QByteArray("third")),
+		page(5, QByteArray()),
+		page(5, QByteArray()),
+		page(7, QByteArray("third")),
+	};
+	auto retained = std::vector<std::int64_t>();
+	auto completion = std::optional<ObservedContentSyncCompletion>();
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		fixture.sha256,
+		[&](std::vector<TelegramTransport::UntrustedObject> objects) {
+			std::reverse(begin(objects), end(objects));
+			for (const auto &object : objects) {
+				retained.push_back(object.observedMessageId);
+			}
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion result) {
+			completion = result;
+		});
+	if (!controller.start()
+		|| controller.running()
+		|| !completion
+		|| completion->status != ObservedContentSyncStatus::Complete
+		|| completion->pages != 3
+		|| completion->objects != 6
+		|| retained != std::vector<std::int64_t>({ 4, 5, 6, 7, 8, 9 })
+		|| fixture.transport.requests.size() != 5
+		|| fixture.transport.requests[3].cursor != QByteArray("third")
+		|| fixture.transport.requests[4].cursor != QByteArray("second")) {
+		return Fail("observed content pages were not replayed oldest first");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedContentRejectsReplayMutation() {
+	auto fixture = Fixture();
+	auto changed = fixture.object(7);
+	changed.bytes.append(char(1));
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(9),
+				fixture.object(8),
+			},
+			.nextCursor = QByteArray("second"),
+			.complete = false,
+		},
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(7),
+				fixture.object(6),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				std::move(changed),
+				fixture.object(6),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto status = std::optional<ObservedContentSyncStatus>();
+	auto pageCalled = false;
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		fixture.sha256,
+		[&](std::vector<TelegramTransport::UntrustedObject>) {
+			pageCalled = true;
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion result) {
+			status = result.status;
+		});
+	if (!controller.start()
+		|| status != ObservedContentSyncStatus::SecurityBlocked
+		|| pageCalled) {
+		return Fail("mutated observed content replay was accepted");
 	}
 	return 0;
 }
@@ -532,6 +655,7 @@ private:
 		FilledId<ConversationId>(1),
 		42,
 		fixture.transport,
+		fixture.sha256,
 		[&, probe = PageCallbackLifetimeProbe(lifetime)](
 				std::vector<TelegramTransport::UntrustedObject>) {
 			const auto state = probe.state();
@@ -729,6 +853,8 @@ int main(int, char *[]) {
 		ScenarioObservedContentRejectsReordering,
 		ScenarioObservedContentRejectsMissingBoundary,
 		ScenarioObservedContentKeepsOverlap,
+		ScenarioObservedContentReplaysOldestPageFirst,
+		ScenarioObservedContentRejectsReplayMutation,
 		ScenarioObservedPageCanDestroyController,
 		ScenarioControlSyncStopsAtBoundary,
 		ScenarioJoinSyncDropsUnboundedControlNoise,

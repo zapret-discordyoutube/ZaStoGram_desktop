@@ -343,6 +343,9 @@ def verify_content_sync_requires_its_saved_boundary() -> None:
     assert "messageId < _boundaryMessageId" in controller
     assert "result.complete && _boundaryMessageId" in controller
     assert "kBoundaryOverlap" in controller
+    assert "Phase::Replaying" in controller
+    assert "PageFingerprint(_cursor, result, _sha256)" in controller
+    assert "_scannedPages.front().retainedNewestObjects" in controller
     assert "completion.nextBoundaryMessageId" in result
     assert "group.contentSyncState.advance(" in result
 
@@ -384,7 +387,7 @@ def verify_completion_callbacks_survive_owner_reset() -> None:
     )
     page = function_body(
         observed,
-        "void ObservedContentSyncController::pageReceived(",
+        "bool ObservedContentSyncController::deliverPage(",
         "void ObservedContentSyncController::finish(",
     )
     assert "const auto callback = _pageCallback;" in page

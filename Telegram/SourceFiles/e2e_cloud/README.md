@@ -70,11 +70,12 @@ The first core slice now contains:
   the final send operation succeeds;
 - a desktop Telegram-session carrier adapter that uses the existing uploader,
   sends an empty-caption force-file document with `messages.sendMedia`, and
-  downloads bounded `messages.getHistory` pages through the existing file
+  downloads bounded `messages.search` pages through the existing file
   loader;
 - separate fixed-name control and content carriers, Telegram update-driven
-  incremental content synchronization, and automatic protected-group discovery
-  from the carrier groups already visible to the signed-in account;
+  incremental content synchronization with fingerprint-verified oldest-first
+  page replay, and automatic protected-group discovery from the carrier groups
+  already visible to the signed-in account;
 - a two-phase authenticated inbound processor and protected replay journal that
   preserve uncertain crash state instead of replaying it blindly;
 - resumable AES-256-GCM file chunks, a canonical private manifest, and a
