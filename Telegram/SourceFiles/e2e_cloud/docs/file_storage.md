@@ -12,7 +12,7 @@ A file object contains:
 - an encrypted and authenticated manifest;
 - ordered ciphertext chunks;
 - authenticated chunk sizes and hashes;
-- an authenticated final marker that detects truncation.
+- an authenticated total size and chunk count that detect truncation.
 
 The encrypted manifest contains the original file name, declared MIME type,
 plaintext size, chunk layout, and any future preview metadata. Telegram-visible
@@ -60,6 +60,23 @@ message. When the sender later observes its own carrier, local deduplication
 compares the exact ciphertext bytes. It deliberately does not compare the
 ledger's plaintext digest with the envelope's ciphertext digest because those
 fields have different meanings.
+
+The authenticated manifest is published and acknowledged before the first
+chunk. A receiver persists a protected local authorization record derived from
+that manifest and accepts a chunk only when its file identifier, layout,
+sender, client, generation, and authenticated ciphertext agree with the
+manifest. Unknown or malformed chunks are discarded without creating files.
+During history synchronization, manifests are previewed while Telegram pages
+are scanned and ordinary content is still replayed oldest-first. This preserves
+files written by the earlier chunk-first sender without reopening orphan-chunk
+storage.
+
+Version one limits a protected file to 4 GiB. The Desktop ciphertext cache is
+also bounded to 8 GiB and refuses a write that would leave less than 1 GiB free
+on its filesystem. Reaching either storage boundary drops additional remote
+chunks rather than allowing an authenticated participant to exhaust the local
+disk. The limits apply to bytes and not extensions; arbitrary file types remain
+supported.
 
 Global plaintext deduplication is excluded because it leaks equality across
 conversations. Any future conversation-local deduplication requires an explicit

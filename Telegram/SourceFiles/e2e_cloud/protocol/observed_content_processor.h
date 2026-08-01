@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/core/interfaces.h"
 #include "e2e_cloud/mls/openmls_application_engine.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -43,6 +44,18 @@ struct ObservedContentProcessOutcome {
 		= ObservedContentProcessStatus::InvalidState;
 	ObservedContentProcessStats stats;
 };
+
+[[nodiscard]] ObservedContentProcessOutcome
+ProcessObservedFileManifestPreview(
+	const std::vector<TelegramTransport::UntrustedObject> &objects,
+	std::size_t objectLimit,
+	OpenMlsClientContext local,
+	const EnvelopeCodec &envelopeCodec,
+	const Sha256Provider &sha256,
+	PersistentArchiveState &archiveState,
+	PersistentGroupLedger &groupLedger,
+	PersistentContentStore &contentStore,
+	FileChunkCiphertextStore &chunkStore);
 
 [[nodiscard]] ObservedContentProcessOutcome ProcessObservedContentPage(
 	const std::vector<TelegramTransport::UntrustedObject> &objects,

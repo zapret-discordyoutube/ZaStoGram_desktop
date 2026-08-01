@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QByteArray>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -50,6 +51,9 @@ class ObservedContentSyncController final {
 public:
 	using PageCallback = std::function<ObservedContentPageResult(
 		std::vector<TelegramTransport::UntrustedObject>)>;
+	using PreviewPageCallback = std::function<ObservedContentPageResult(
+		const std::vector<TelegramTransport::UntrustedObject> &,
+		std::size_t)>;
 	using CompletionCallback = std::function<void(
 		ObservedContentSyncCompletion)>;
 
@@ -59,7 +63,8 @@ public:
 		TelegramTransport &transport,
 		const Sha256Provider &sha256,
 		PageCallback pageCallback,
-		CompletionCallback completionCallback);
+		CompletionCallback completionCallback,
+		PreviewPageCallback previewPageCallback = {});
 	~ObservedContentSyncController();
 
 	[[nodiscard]] bool start(std::int64_t boundaryMessageId = 0);
@@ -76,6 +81,9 @@ private:
 
 	void pumpRequests();
 	void pageReceived(TelegramTransport::DownloadResult result);
+	bool previewPage(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		std::size_t objectLimit);
 	bool deliverPage(
 		std::vector<TelegramTransport::UntrustedObject> objects);
 	void finish(ObservedContentSyncStatus status);
@@ -86,6 +94,7 @@ private:
 	const Sha256Provider &_sha256;
 	PageCallback _pageCallback;
 	CompletionCallback _completionCallback;
+	PreviewPageCallback _previewPageCallback;
 	std::set<QByteArray> _seenCursors;
 	std::vector<ScannedPage> _scannedPages;
 	QByteArray _cursor;

@@ -143,6 +143,13 @@ template <typename Id>
 		|| cipher.encrypt(key, context, 2, FilledBytes(13, 'a'))) {
 		return Fail("file chunk accepted a wrong index or plaintext length");
 	}
+	context = MakeContext();
+	context.plaintextSize = kMaximumProtectedFileSize + 1;
+	context.chunkCount = std::uint32_t(
+		1 + ((context.plaintextSize - 1) / context.chunkSize));
+	if (IsValidFileChunkContext(context)) {
+		return Fail("file chunk accepted an oversized protected file");
+	}
 	return 0;
 }
 
@@ -254,6 +261,31 @@ public:
 		return { .status = FileChunkReadStatus::Found, .chunk = *chunk };
 	}
 
+	[[nodiscard]] FileChunkAuthorizationReadResult authorization(
+			ConversationId,
+			FileId) const override {
+		return authorizedManifest
+			? FileChunkAuthorizationReadResult{
+				.status = FileChunkAuthorizationReadStatus::Found,
+				.authorization = *authorizedManifest,
+			}
+			: FileChunkAuthorizationReadResult{
+				.status = FileChunkAuthorizationReadStatus::Missing,
+				.authorization = {},
+			};
+	}
+
+	FileChunkAuthorizeResult authorize(
+			FileChunkAuthorization value) override {
+		if (!authorizedManifest) {
+			authorizedManifest = value;
+			return FileChunkAuthorizeResult::Authorized;
+		}
+		return IsSameFileChunkAuthorization(*authorizedManifest, value)
+			? FileChunkAuthorizeResult::AlreadyAuthorized
+			: FileChunkAuthorizeResult::Conflict;
+	}
+
 	FileChunkStoreResult storeIfAbsent(
 			ConversationId,
 			FileId,
@@ -270,10 +302,22 @@ public:
 	}
 
 	std::optional<StoredFileChunk> chunk;
+	std::optional<FileChunkAuthorization> authorizedManifest;
 	int storeCalls = 0;
 	bool readError = false;
 	bool writeError = false;
 };
+
+[[nodiscard]] FileChunkAuthorization MakeAuthorization() {
+	return {
+		.context = MakeContext(),
+		.senderAccountId = FilledId<AccountId>(5),
+		.senderClientId = FilledId<ClientId>(6),
+		.manifestEventObjectId = FilledId<ObjectId>(7),
+		.manifestDigest = FilledId<Digest>(8),
+		.groupGeneration = 9,
+	};
+}
 
 [[nodiscard]] int ScenarioIdempotentChunkLedger() {
 	const auto cipher = AesGcmFileChunkCipher();
@@ -374,6 +418,71 @@ public:
 	if (stored.status != FileChunkReadStatus::Error
 		|| !stored.chunk.exactCiphertext.isEmpty()) {
 		return Fail("file chunk read allocated an oversized local record");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioChunkAuthorizationLedger() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file authorization temporary directory was unavailable");
+	}
+	const auto authorization = MakeAuthorization();
+	auto store = FileChunkFileStore(directory.path(), protector);
+	if (store.authorization(
+			authorization.context.conversationId,
+			authorization.context.fileId).status
+			!= FileChunkAuthorizationReadStatus::Missing
+		|| store.authorize(authorization)
+			!= FileChunkAuthorizeResult::Authorized
+		|| store.authorize(authorization)
+			!= FileChunkAuthorizeResult::AlreadyAuthorized) {
+		return Fail("file manifest authorization was not idempotent");
+	}
+	const auto restored = FileChunkFileStore(
+		directory.path(),
+		protector).authorization(
+			authorization.context.conversationId,
+			authorization.context.fileId);
+	auto conflicting = authorization;
+	conflicting.senderClientId = FilledId<ClientId>(10);
+	if (restored.status != FileChunkAuthorizationReadStatus::Found
+		|| !IsSameFileChunkAuthorization(
+			restored.authorization,
+			authorization)
+		|| store.authorize(std::move(conflicting))
+			!= FileChunkAuthorizeResult::Conflict) {
+		return Fail("file manifest authorization conflict was not detected");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioChunkStoreEnforcesQuota() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file chunk quota temporary directory was unavailable");
+	}
+	const auto context = MakeContext();
+	auto store = FileChunkFileStore(directory.path(), protector, 1);
+	if (store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			0,
+			{
+				.plaintextHash = FilledId<Digest>(11),
+				.exactCiphertext = QByteArray("ciphertext"),
+			}) != FileChunkStoreResult::QuotaExceeded
+		|| store.read(
+			context.conversationId,
+			context.fileId,
+			0).status != FileChunkReadStatus::Missing) {
+		return Fail("file chunk cache exceeded its storage quota");
 	}
 	return 0;
 }
@@ -488,6 +597,8 @@ int main(int, char *[]) {
 		ScenarioIdempotentChunkLedger,
 		ScenarioChunkLedgerFailsClosed,
 		ScenarioChunkStoreRejectsOversizedRecord,
+		ScenarioChunkAuthorizationLedger,
+		ScenarioChunkStoreEnforcesQuota,
 		ScenarioSignedChunkEnvelope,
 		ScenarioProtectedMessageBody,
 	}) {

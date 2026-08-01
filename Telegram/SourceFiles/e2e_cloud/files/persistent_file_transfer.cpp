@@ -25,7 +25,9 @@ inline constexpr auto kPurpose = "e2e-cloud-file-transfer-v1";
 inline constexpr auto kMaximumSourcePathSize = 16 * 1024;
 inline constexpr auto kMaximumManifestSize = 64 * 1024;
 inline constexpr auto kHeaderSize = 8 + 2 + 32 + 8 + 1;
-inline constexpr auto kPendingFixedSize = 32 + 32 + 8 + 4 + 4 + 4;
+inline constexpr auto kPendingFixedSizeV1 = 32 + 32 + 8 + 4 + 4 + 4;
+inline constexpr auto kPendingFixedSizeV2
+	= 32 + 32 + 8 + 8 + 1 + 4 + 4 + 4;
 
 struct Reader {
 	const QByteArray &bytes;
@@ -212,7 +214,7 @@ FileTransferLoadResult PersistentFileTransfer::load(
 		|| !ReadUint64(reader, revision)
 		|| !ReadUint8(reader, present)
 		|| magic != kMagic
-		|| version != 1
+		|| (version != 1 && version != 2)
 		|| storedConversationId != conversationId
 		|| present > 1
 		|| (!revision && present)) {
@@ -224,15 +226,25 @@ FileTransferLoadResult PersistentFileTransfer::load(
 			.eventObjectId = {},
 			.contentObjectId = {},
 			.groupGeneration = 0,
+			.archiveEpochGeneration = 0,
+			.manifestPublished = false,
 			.nextChunkIndex = 0,
 			.sourcePathUtf8 = {},
 			.manifestPlaintext = {},
 		};
-		const auto parsed = reader.bytes.size() - reader.offset
-				>= kPendingFixedSize
+		auto manifestPublished = std::uint8_t();
+		auto parsed = reader.bytes.size() - reader.offset
+				>= ((version == 1)
+					? kPendingFixedSizeV1
+					: kPendingFixedSizeV2)
 			&& ReadArray(reader, value.eventObjectId.bytes)
 			&& ReadArray(reader, value.contentObjectId.bytes)
 			&& ReadUint64(reader, value.groupGeneration)
+			&& (version == 1 || ReadUint64(
+				reader,
+				value.archiveEpochGeneration))
+			&& (version == 1 || (ReadUint8(reader, manifestPublished)
+				&& manifestPublished <= 1))
 			&& ReadUint32(reader, value.nextChunkIndex)
 			&& ReadBytes(
 				reader,
@@ -241,8 +253,9 @@ FileTransferLoadResult PersistentFileTransfer::load(
 			&& ReadBytes(
 				reader,
 				kMaximumManifestSize,
-				value.manifestPlaintext)
-			&& valid(value, conversationId);
+				value.manifestPlaintext);
+		value.manifestPublished = (manifestPublished != 0);
+		parsed = parsed && valid(value, conversationId);
 		if (!parsed) {
 			Cleanse(value);
 			return fail();
@@ -303,6 +316,33 @@ FileTransferCommitResult PersistentFileTransfer::replace(
 	return FileTransferCommitResult::Committed;
 }
 
+FileTransferCommitResult PersistentFileTransfer::markManifestPublished(
+		std::uint64_t archiveEpochGeneration) {
+	if (!_loaded
+		|| !_pending
+		|| !archiveEpochGeneration
+		|| (_pending->archiveEpochGeneration
+			&& _pending->archiveEpochGeneration != archiveEpochGeneration)) {
+		return FileTransferCommitResult::InvalidMutation;
+	} else if (_pending->manifestPublished) {
+		return FileTransferCommitResult::AlreadyCommitted;
+	} else if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+		return FileTransferCommitResult::PersistenceFailed;
+	}
+	auto next = *_pending;
+	next.archiveEpochGeneration = archiveEpochGeneration;
+	next.manifestPublished = true;
+	const auto revision = _revision + 1;
+	if (!persist(&next, revision)) {
+		Cleanse(next);
+		return FileTransferCommitResult::PersistenceFailed;
+	}
+	Cleanse(*_pending);
+	_pending = std::move(next);
+	_revision = revision;
+	return FileTransferCommitResult::Committed;
+}
+
 FileTransferCommitResult PersistentFileTransfer::advance(
 		std::uint32_t completedChunkIndex) {
 	if (!_loaded || !_pending) {
@@ -311,6 +351,7 @@ FileTransferCommitResult PersistentFileTransfer::advance(
 	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
 		_pending->manifestPlaintext);
 	if (!manifest
+		|| !_pending->manifestPublished
 		|| completedChunkIndex != _pending->nextChunkIndex
 		|| completedChunkIndex >= manifest->context.chunkCount
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -367,12 +408,12 @@ bool PersistentFileTransfer::persist(
 	}
 	auto plaintext = QByteArray();
 	plaintext.reserve(kHeaderSize + (pending
-		? kPendingFixedSize
+		? kPendingFixedSizeV2
 			+ pending->sourcePathUtf8.size()
 			+ pending->manifestPlaintext.size()
 		: 0));
 	AppendArray(plaintext, kMagic);
-	AppendUint16(plaintext, 1);
+	AppendUint16(plaintext, 2);
 	AppendArray(plaintext, _conversationId.bytes);
 	AppendUint64(plaintext, revision);
 	AppendUint8(plaintext, pending ? 1 : 0);
@@ -380,6 +421,8 @@ bool PersistentFileTransfer::persist(
 		AppendArray(plaintext, pending->eventObjectId.bytes);
 		AppendArray(plaintext, pending->contentObjectId.bytes);
 		AppendUint64(plaintext, pending->groupGeneration);
+		AppendUint64(plaintext, pending->archiveEpochGeneration);
+		AppendUint8(plaintext, pending->manifestPublished ? 1 : 0);
 		AppendUint32(plaintext, pending->nextChunkIndex);
 		AppendUint32(
 			plaintext,
@@ -408,6 +451,8 @@ bool PersistentFileTransfer::valid(
 		&& transfer.contentObjectId
 		&& transfer.eventObjectId != transfer.contentObjectId
 		&& transfer.groupGeneration
+		&& (!transfer.manifestPublished
+			|| transfer.archiveEpochGeneration)
 		&& !transfer.sourcePathUtf8.isEmpty()
 		&& transfer.sourcePathUtf8.size() <= kMaximumSourcePathSize
 		&& transfer.manifestPlaintext.size() <= kMaximumManifestSize

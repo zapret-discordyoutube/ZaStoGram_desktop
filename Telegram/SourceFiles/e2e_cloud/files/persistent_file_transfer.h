@@ -22,6 +22,8 @@ struct PendingFileTransfer {
 	ObjectId eventObjectId;
 	ObjectId contentObjectId;
 	std::uint64_t groupGeneration = 0;
+	std::uint64_t archiveEpochGeneration = 0;
+	bool manifestPublished = false;
 	std::uint32_t nextChunkIndex = 0;
 	QByteArray sourcePathUtf8;
 	QByteArray manifestPlaintext;
@@ -58,6 +60,8 @@ public:
 	[[nodiscard]] FileTransferCommitResult begin(PendingFileTransfer transfer);
 	[[nodiscard]] FileTransferCommitResult replace(
 		PendingFileTransfer transfer);
+	[[nodiscard]] FileTransferCommitResult markManifestPublished(
+		std::uint64_t archiveEpochGeneration);
 	[[nodiscard]] FileTransferCommitResult advance(
 		std::uint32_t completedChunkIndex);
 	[[nodiscard]] FileTransferCommitResult clear();

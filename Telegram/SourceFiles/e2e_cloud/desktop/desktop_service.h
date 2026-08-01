@@ -242,9 +242,15 @@ private:
 		ConversationId conversationId,
 		std::uint32_t chunkIndex,
 		TelegramTransport::UploadResult result);
+	[[nodiscard]] bool queuePendingFileManifest(
+		ConversationId conversationId);
 	[[nodiscard]] bool finalizeFileTransfer(
 		ConversationId conversationId);
 	void beginContentObservation(ConversationId conversationId);
+	[[nodiscard]] ObservedContentPageResult previewObservedFileManifests(
+		ConversationId conversationId,
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		std::size_t objectLimit);
 	[[nodiscard]] ObservedContentPageResult processObservedContentPage(
 		ConversationId conversationId,
 		std::vector<TelegramTransport::UntrustedObject> objects);

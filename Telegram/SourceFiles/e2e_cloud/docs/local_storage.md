@@ -70,6 +70,12 @@ downloaded carrier file must match Telegram's declared size before it is read.
 Oversized or short local files fail closed instead of being passed to
 `readAll()`.
 
+File manifest authorizations are separate purpose-bound local records. The
+chunk store reconstructs its byte usage at unlock, counts committed protected
+records against an 8 GiB ceiling, and reserves at least 1 GiB of filesystem
+space before each new write. Reservation is released on an atomic-write
+failure and retained only after commit.
+
 The encrypted snapshot is bounded to 128 MiB and 4096 items. Attachments are not
 copied into it; they use the encrypted file pipeline.
 

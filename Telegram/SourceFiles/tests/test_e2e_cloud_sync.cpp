@@ -537,6 +537,58 @@ struct Fixture {
 	return 0;
 }
 
+[[nodiscard]] int ScenarioObservedContentPreviewsBeforeReplay() {
+	auto fixture = Fixture();
+	const auto page = [&](std::uint8_t newest, const QByteArray &next) {
+		return TelegramTransport::DownloadResult{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(newest),
+				fixture.object(newest - 1),
+			},
+			.nextCursor = next,
+			.complete = next.isEmpty(),
+		};
+	};
+	fixture.transport.pages = {
+		page(9, QByteArray("second")),
+		page(7, QByteArray()),
+		page(7, QByteArray()),
+	};
+	auto order = std::vector<std::int64_t>();
+	auto status = std::optional<ObservedContentSyncStatus>();
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		fixture.sha256,
+		[&](std::vector<TelegramTransport::UntrustedObject> objects) {
+			std::reverse(begin(objects), end(objects));
+			for (const auto &object : objects) {
+				order.push_back(-object.observedMessageId);
+			}
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion completion) {
+			status = completion.status;
+		},
+		[&](const std::vector<TelegramTransport::UntrustedObject> &objects,
+				std::size_t objectLimit) {
+			for (auto index = std::size_t(); index != objectLimit; ++index) {
+				order.push_back(objects[index].observedMessageId);
+			}
+			return ObservedContentPageResult::Persisted;
+		});
+	if (!controller.start()
+		|| status != ObservedContentSyncStatus::Complete
+		|| order != std::vector<std::int64_t>({
+			9, 8, 7, 6, -6, -7, -8, -9,
+		})) {
+		return Fail("observed manifests were not previewed before chunk replay");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioObservedContentRejectsReplayMutation() {
 	auto fixture = Fixture();
 	auto changed = fixture.object(7);
@@ -854,6 +906,7 @@ int main(int, char *[]) {
 		ScenarioObservedContentRejectsMissingBoundary,
 		ScenarioObservedContentKeepsOverlap,
 		ScenarioObservedContentReplaysOldestPageFirst,
+		ScenarioObservedContentPreviewsBeforeReplay,
 		ScenarioObservedContentRejectsReplayMutation,
 		ScenarioObservedPageCanDestroyController,
 		ScenarioControlSyncStopsAtBoundary,

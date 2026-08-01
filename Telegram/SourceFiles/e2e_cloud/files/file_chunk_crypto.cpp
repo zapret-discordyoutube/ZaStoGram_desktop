@@ -181,6 +181,7 @@ std::optional<FileEncryptionMaterial> GenerateFileEncryptionMaterial() {
 bool IsValidFileChunkContext(const FileChunkContext &context) {
 	if (!context.conversationId
 		|| !context.fileId
+		|| context.plaintextSize > kMaximumProtectedFileSize
 		|| context.chunkSize < kMinimumChunkSize
 		|| context.chunkSize > kMaximumChunkSize
 		|| !std::any_of(

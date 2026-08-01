@@ -251,7 +251,9 @@ struct HashedFile {
 
 [[nodiscard]] std::optional<HashedFile> HashFile(const QString &path) {
 	auto file = QFile(path);
-	if (!file.open(QIODevice::ReadOnly) || file.size() < 0) {
+	if (!file.open(QIODevice::ReadOnly)
+		|| file.size() < 0
+		|| std::uint64_t(file.size()) > kMaximumProtectedFileSize) {
 		return std::nullopt;
 	}
 	const auto originalSize = file.size();
@@ -1152,12 +1154,14 @@ bool DesktopService::sendProtectedFile(
 	auto &group = *i->second;
 	const auto metadata = group.metadata.metadata();
 	const auto state = group.groupLedger.state();
+	const auto epoch = group.archiveState.currentEpoch();
 	const auto source = HashFile(path);
 	const auto material = GenerateFileEncryptionMaterial();
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
 	if (!metadata
 		|| !state
+		|| !epoch
 		|| !source
 		|| !material
 		|| !eventObjectId
@@ -1166,9 +1170,7 @@ bool DesktopService::sendProtectedFile(
 		|| group.uploadInProgress
 		|| (group.uploadController
 			&& group.uploadController->uploadInProgress())
-		|| source->size
-			> std::uint64_t(kDesktopFileChunkSize)
-				* std::numeric_limits<std::uint32_t>::max()) {
+		|| source->size > kMaximumProtectedFileSize) {
 		return false;
 	}
 	const auto chunkCount = source->size
@@ -1212,6 +1214,8 @@ bool DesktopService::sendProtectedFile(
 		.eventObjectId = *eventObjectId,
 		.contentObjectId = *contentObjectId,
 		.groupGeneration = state->generation(),
+		.archiveEpochGeneration = epoch->generation,
+		.manifestPublished = false,
 		.nextChunkIndex = 0,
 		.sourcePathUtf8 = absolutePath.toUtf8(),
 		.manifestPlaintext = *manifestPlaintext,
@@ -2754,9 +2758,15 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			});
 		return;
 	}
-	if (group.fileTransfer.pending()) {
-		(void)pumpFileTransfer(conversationId);
-		return;
+	if (const auto pending = group.fileTransfer.pending(); pending) {
+		if (!pending->manifestPublished) {
+			if (!queuePendingFileManifest(conversationId)) {
+				return;
+			}
+		} else {
+			(void)pumpFileTransfer(conversationId);
+			return;
+		}
 	}
 	const auto pumped = group.uploadController->pump();
 	switch (pumped) {
@@ -2827,6 +2837,28 @@ void DesktopService::completeActiveUpload(
 			return;
 		}
 	}
+	if (const auto pending = group.fileTransfer.pending(); pending
+		&& !pending->manifestPublished
+		&& (completion.objectId == pending->eventObjectId
+			|| completion.objectId == pending->contentObjectId)
+		&& !group.outbox.contains(pending->eventObjectId)
+		&& !group.outbox.contains(pending->contentObjectId)) {
+		const auto currentEpoch = group.archiveState.currentEpoch();
+		const auto archiveEpochGeneration = pending->archiveEpochGeneration
+			? pending->archiveEpochGeneration
+			: (currentEpoch
+				? currentEpoch->generation
+				: 0);
+		const auto marked = group.fileTransfer.markManifestPublished(
+			archiveEpochGeneration);
+		if (marked != FileTransferCommitResult::Committed
+			&& marked != FileTransferCommitResult::AlreadyCommitted) {
+			setContentState(
+				conversationId,
+				DesktopContentState::LocalFailure);
+			return;
+		}
+	}
 	pumpActiveOutbox(conversationId);
 }
 
@@ -2841,6 +2873,9 @@ bool DesktopService::pumpFileTransfer(ConversationId conversationId) {
 	const auto pending = group.fileTransfer.pending();
 	if (!pending) {
 		return false;
+	} else if (!pending->manifestPublished) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return true;
 	} else if (!group.freshnessGate
 		|| !group.freshnessGate->sendingAllowed()) {
 		setContentState(
@@ -2947,7 +2982,7 @@ void DesktopService::completeFileChunkUpload(
 	pumpActiveOutbox(conversationId);
 }
 
-bool DesktopService::finalizeFileTransfer(
+bool DesktopService::queuePendingFileManifest(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups) || !_vault) {
@@ -2963,30 +2998,30 @@ bool DesktopService::finalizeFileTransfer(
 		? HashFile(QString::fromUtf8(pending->sourcePathUtf8))
 		: std::nullopt;
 	const auto metadata = group.metadata.metadata();
-	const auto state = group.groupLedger.state();
-	const auto epoch = group.archiveState.currentEpoch();
+	const auto epoch = (pending && pending->archiveEpochGeneration)
+		? group.archiveState.epoch(pending->archiveEpochGeneration)
+		: group.archiveState.currentEpoch();
 	if (!pending
 		|| !manifest
 		|| !source
 		|| source->size != manifest->context.plaintextSize
 		|| source->hash != manifest->plaintextHash
 		|| !metadata
-		|| !state
 		|| !epoch
+		|| !group.groupLedger.wasClientActiveAt(
+			metadata->accountId,
+			metadata->clientId,
+			pending->groupGeneration)
+		|| !group.archiveState.epochWasActiveAt(
+			epoch->generation,
+			pending->groupGeneration)
 		|| !group.outboxCoordinator) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
 	const auto hasEvent = group.outbox.contains(pending->eventObjectId);
 	const auto hasContent = group.outbox.contains(pending->contentObjectId);
-	if (hasEvent != hasContent) {
-		setContentState(
-			conversationId,
-			DesktopContentState::SecurityBlocked);
-		_vaultState = DesktopVaultState::SecurityBlocked;
-		return false;
-	}
-	if (!hasEvent) {
+	if (!hasEvent && !hasContent) {
 		const auto queued = QueueArchivedContent({
 			.conversationId = conversationId,
 			.eventObjectId = pending->eventObjectId,
@@ -2995,7 +3030,7 @@ bool DesktopService::finalizeFileTransfer(
 			.senderAccountId = metadata->accountId,
 			.senderClientId = metadata->clientId,
 			.telegramPeerIdBinding = group.telegramPeerIdBinding,
-			.groupGeneration = state->generation(),
+			.groupGeneration = pending->groupGeneration,
 			.archiveEpochGeneration = epoch->generation,
 			.archiveEpochKey = &epoch->key,
 			.senderSigningPrivateKey = &_vault->identity.signingPrivateKey,
@@ -3014,6 +3049,33 @@ bool DesktopService::finalizeFileTransfer(
 				DesktopContentState::LocalFailure);
 			return false;
 		}
+	}
+	return true;
+}
+
+bool DesktopService::finalizeFileTransfer(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)) {
+		return false;
+	}
+	auto &group = *i->second;
+	const auto pending = group.fileTransfer.pending();
+	const auto manifest = pending
+		? PrivateFileManifestCodecV1().decodePlaintext(
+			pending->manifestPlaintext)
+		: std::nullopt;
+	const auto source = pending
+		? HashFile(QString::fromUtf8(pending->sourcePathUtf8))
+		: std::nullopt;
+	if (!pending
+		|| !pending->manifestPublished
+		|| !manifest
+		|| !source
+		|| source->size != manifest->context.plaintextSize
+		|| source->hash != manifest->plaintextHash) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
 	}
 	const auto cleared = group.fileTransfer.clear();
 	if (cleared != FileTransferCommitResult::Committed
@@ -3109,6 +3171,17 @@ void DesktopService::beginContentObservation(
 						conversationId,
 						std::move(completion));
 				}
+			},
+			[weak = base::weak_ptr(this), conversationId](
+					const std::vector<
+						TelegramTransport::UntrustedObject> &objects,
+					std::size_t objectLimit) {
+				return weak
+					? weak->previewObservedFileManifests(
+						conversationId,
+						objects,
+						objectLimit)
+					: ObservedContentPageResult::PersistenceFailed;
 			});
 	setContentState(conversationId, DesktopContentState::Synchronizing);
 	if (!group.contentObservation->start(
@@ -3116,6 +3189,55 @@ void DesktopService::beginContentObservation(
 		group.contentObservation.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 	}
+}
+
+ObservedContentPageResult DesktopService::previewObservedFileManifests(
+		ConversationId conversationId,
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		std::size_t objectLimit) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)) {
+		return ObservedContentPageResult::PersistenceFailed;
+	}
+	auto &group = *i->second;
+	const auto metadata = group.metadata.metadata();
+	if (!metadata) {
+		return ObservedContentPageResult::PersistenceFailed;
+	}
+	const auto processed = ProcessObservedFileManifestPreview(
+		objects,
+		objectLimit,
+		{
+			.conversationId = conversationId,
+			.accountId = metadata->accountId,
+			.clientId = metadata->clientId,
+			.telegramPeerIdBinding = group.telegramPeerIdBinding,
+		},
+		group.envelopeCodec,
+		_sha256,
+		group.archiveState,
+		group.groupLedger,
+		group.contentStore,
+		group.chunkStore);
+	if (processed.status == ObservedContentProcessStatus::SecurityBlocked) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		setContentState(
+			conversationId,
+			DesktopContentState::SecurityBlocked);
+		return ObservedContentPageResult::SecurityBlocked;
+	} else if (processed.status
+			== ObservedContentProcessStatus::PersistenceFailed
+		|| processed.status == ObservedContentProcessStatus::InvalidState) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return ObservedContentPageResult::PersistenceFailed;
+	}
+	if (processed.stats.manifestsStored) {
+		const auto revision = _contentRevision.current();
+		if (revision != std::numeric_limits<std::uint64_t>::max()) {
+			_contentRevision = revision + 1;
+		}
+	}
+	return ObservedContentPageResult::Persisted;
 }
 
 ObservedContentPageResult DesktopService::processObservedContentPage(

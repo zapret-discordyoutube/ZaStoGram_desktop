@@ -23,6 +23,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
+#include <QtCore/QScopeGuard>
+
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -68,7 +70,237 @@ void Cleanse(QByteArray &bytes) {
 	bytes.clear();
 }
 
+[[nodiscard]] ObservedContentProcessStatus ProcessObservedManifest(
+		const TelegramTransport::UntrustedObject &object,
+		const TransportEnvelope &envelope,
+		const OpenMlsClientContext &local,
+		const Sha256Provider &sha256,
+		PersistentArchiveState &archiveState,
+		PersistentGroupLedger &groupLedger,
+		PersistentContentStore &contentStore,
+		FileChunkCiphertextStore &chunkStore,
+		ObservedContentProcessStats &stats) {
+	auto opened = OpenStoredArchivedContent(
+		local.conversationId,
+		local.telegramPeerIdBinding,
+		envelope,
+		groupLedger,
+		archiveState,
+		EncryptedArchivedContentCodecV1(),
+		sha256,
+		ArchiveEpochCrypto());
+	if (opened.status == ArchivedContentOpenStatus::ArchiveEpochUnavailable
+		|| !opened.content) {
+		++stats.ignored;
+		return ObservedContentProcessStatus::Processed;
+	} else if (!ObservedSender(
+			object,
+			envelope,
+			opened.content->groupGeneration,
+			groupLedger)) {
+		return ObservedContentProcessStatus::SecurityBlocked;
+	}
+	auto openedContent = std::move(*opened.content);
+	const auto plaintextGuard = qScopeGuard([&] {
+		Cleanse(openedContent.plaintext);
+	});
+	auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+		openedContent.plaintext);
+	const auto manifestGuard = qScopeGuard([&] {
+		if (manifest) {
+			Cleanse(manifest->filenameUtf8);
+			Cleanse(manifest->mimeTypeUtf8);
+		}
+	});
+	if (!manifest
+		|| manifest->context.conversationId != local.conversationId) {
+		++stats.ignored;
+		return ObservedContentProcessStatus::Processed;
+	}
+	const auto authorization = FileChunkAuthorization{
+		.context = manifest->context,
+		.senderAccountId = openedContent.senderAccountId,
+		.senderClientId = openedContent.senderClientId,
+		.manifestEventObjectId = openedContent.eventObjectId,
+		.manifestDigest = sha256.digest(openedContent.plaintext),
+		.groupGeneration = openedContent.groupGeneration,
+	};
+	if (!authorization.manifestDigest) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	}
+	const auto existingAuthorization = chunkStore.authorization(
+		local.conversationId,
+		manifest->context.fileId);
+	if (existingAuthorization.status
+			== FileChunkAuthorizationReadStatus::Error) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	} else if (existingAuthorization.status
+			== FileChunkAuthorizationReadStatus::Found
+		&& !IsSameFileChunkAuthorization(
+			existingAuthorization.authorization,
+			authorization)) {
+		++stats.ignored;
+		return ObservedContentProcessStatus::Processed;
+	}
+	const auto stored = contentStore.append({
+		.conversationId = local.conversationId,
+		.eventObjectId = openedContent.eventObjectId,
+		.contentObjectId = openedContent.contentObjectId,
+		.objectKind = openedContent.objectKind,
+		.groupGeneration = openedContent.groupGeneration,
+		.senderAccountId = openedContent.senderAccountId,
+		.senderClientId = openedContent.senderClientId,
+		.unixTime = manifest->unixTime,
+		.observedTelegramMessageId = object.observedMessageId,
+		.plaintext = std::move(openedContent.plaintext),
+	});
+	if (stored == ContentStoreAppendResult::Conflict) {
+		return ObservedContentProcessStatus::SecurityBlocked;
+	} else if (stored == ContentStoreAppendResult::InvalidRecord
+		|| stored == ContentStoreAppendResult::PersistenceFailed) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	} else if (stored == ContentStoreAppendResult::Stored) {
+		++stats.manifestsStored;
+	}
+	const auto authorized = chunkStore.authorize(authorization);
+	if (authorized == FileChunkAuthorizeResult::Conflict) {
+		++stats.ignored;
+		return ObservedContentProcessStatus::Processed;
+	} else if (authorized == FileChunkAuthorizeResult::Error) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	}
+	return ObservedContentProcessStatus::Processed;
+}
+
+enum class FileChunkAdmissionStatus {
+	Admitted,
+	Ignored,
+	PersistenceFailed,
+};
+
+[[nodiscard]] FileChunkAdmissionStatus AdmitObservedFileChunk(
+		const TransportEnvelope &envelope,
+		const VerifiedFileChunkEnvelope &verified,
+		const Sha256Provider &sha256,
+		PersistentContentStore &contentStore,
+		FileChunkCiphertextStore &chunkStore) {
+	const auto storedAuthorization = chunkStore.authorization(
+		envelope.conversationId,
+		verified.fileId);
+	if (storedAuthorization.status
+			== FileChunkAuthorizationReadStatus::Missing) {
+		return FileChunkAdmissionStatus::Ignored;
+	} else if (storedAuthorization.status
+			!= FileChunkAuthorizationReadStatus::Found) {
+		return FileChunkAdmissionStatus::PersistenceFailed;
+	}
+	const auto &authorization = storedAuthorization.authorization;
+	if (authorization.context.fileId != verified.fileId
+		|| authorization.context.chunkCount != verified.chunkCount
+		|| authorization.senderAccountId != envelope.senderAccountId
+		|| authorization.senderClientId != envelope.senderClientId
+		|| authorization.groupGeneration != envelope.epochOrGeneration) {
+		return FileChunkAdmissionStatus::Ignored;
+	}
+	auto record = contentStore.record(authorization.manifestEventObjectId);
+	const auto recordGuard = qScopeGuard([&] {
+		if (record) {
+			Cleanse(record->plaintext);
+		}
+	});
+	if (!record
+		|| record->objectKind != ObjectKind::EncryptedFileManifest
+		|| record->senderAccountId != authorization.senderAccountId
+		|| record->senderClientId != authorization.senderClientId
+		|| record->groupGeneration != authorization.groupGeneration
+		|| sha256.digest(record->plaintext)
+			!= authorization.manifestDigest) {
+		return FileChunkAdmissionStatus::PersistenceFailed;
+	}
+	auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+		record->plaintext);
+	const auto manifestGuard = qScopeGuard([&] {
+		if (manifest) {
+			Cleanse(manifest->filenameUtf8);
+			Cleanse(manifest->mimeTypeUtf8);
+		}
+	});
+	if (!manifest
+		|| !IsSameFileChunkAuthorization(authorization, {
+			.context = manifest->context,
+			.senderAccountId = record->senderAccountId,
+			.senderClientId = record->senderClientId,
+			.manifestEventObjectId = record->eventObjectId,
+			.manifestDigest = authorization.manifestDigest,
+			.groupGeneration = record->groupGeneration,
+		})) {
+		return FileChunkAdmissionStatus::PersistenceFailed;
+	}
+	auto plaintext = AesGcmFileChunkCipher().decrypt(
+		manifest->key,
+		manifest->context,
+		verified.chunkIndex,
+		envelope.payload);
+	if (!plaintext) {
+		return FileChunkAdmissionStatus::Ignored;
+	}
+	Cleanse(*plaintext);
+	return FileChunkAdmissionStatus::Admitted;
+}
+
 } // namespace
+
+ObservedContentProcessOutcome ProcessObservedFileManifestPreview(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		std::size_t objectLimit,
+		OpenMlsClientContext local,
+		const EnvelopeCodec &envelopeCodec,
+		const Sha256Provider &sha256,
+		PersistentArchiveState &archiveState,
+		PersistentGroupLedger &groupLedger,
+		PersistentContentStore &contentStore,
+		FileChunkCiphertextStore &chunkStore) {
+	auto outcome = ObservedContentProcessOutcome{
+		.status = ObservedContentProcessStatus::Processed,
+		.stats = {},
+	};
+	if (!local.conversationId
+		|| !local.accountId
+		|| !local.clientId
+		|| !local.telegramPeerIdBinding
+		|| !archiveState.loaded()
+		|| !groupLedger.loaded()
+		|| !groupLedger.state()
+		|| !contentStore.loaded()
+		|| objectLimit > objects.size()) {
+		outcome.status = ObservedContentProcessStatus::InvalidState;
+		return outcome;
+	}
+	for (auto index = std::size_t(); index != objectLimit; ++index) {
+		const auto &object = objects[index];
+		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+		if (!envelope
+			|| !ObservedCarrierMatches(object, *envelope, local)
+			|| envelope->objectKind
+				!= ObjectKind::EncryptedFileManifest) {
+			continue;
+		}
+		outcome.status = ProcessObservedManifest(
+			object,
+			*envelope,
+			local,
+			sha256,
+			archiveState,
+			groupLedger,
+			contentStore,
+			chunkStore,
+			outcome.stats);
+		if (outcome.status != ObservedContentProcessStatus::Processed) {
+			return outcome;
+		}
+	}
+	return outcome;
+}
 
 ObservedContentProcessOutcome ProcessObservedContentPage(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
@@ -130,6 +362,21 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
 				return outcome;
 			}
+			const auto admission = AdmitObservedFileChunk(
+				*envelope,
+				*verified,
+				sha256,
+				contentStore,
+				chunkStore);
+			if (admission == FileChunkAdmissionStatus::Ignored) {
+				++outcome.stats.ignored;
+				continue;
+			} else if (admission
+					== FileChunkAdmissionStatus::PersistenceFailed) {
+				outcome.status
+					= ObservedContentProcessStatus::PersistenceFailed;
+				return outcome;
+			}
 			const auto stored = chunkStore.storeIfAbsent(
 				local.conversationId,
 				verified->fileId,
@@ -138,7 +385,10 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 					.plaintextHash = envelope->payloadHash,
 					.exactCiphertext = envelope->payload,
 				});
-			if (stored == FileChunkStoreResult::Error) {
+			if (stored == FileChunkStoreResult::QuotaExceeded) {
+				++outcome.stats.ignored;
+				continue;
+			} else if (stored == FileChunkStoreResult::Error) {
 				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
 				return outcome;
 			} else if (stored == FileChunkStoreResult::AlreadyExists
@@ -148,15 +398,29 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 						verified->fileId,
 						verified->chunkIndex),
 					envelope->payload)) {
-				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
-				return outcome;
+				++outcome.stats.ignored;
 			} else if (stored == FileChunkStoreResult::Stored) {
 				++outcome.stats.chunksStored;
 			}
 			continue;
-		} else if (envelope->objectKind != ObjectKind::EncryptedMessageBody
-			&& envelope->objectKind
-				!= ObjectKind::EncryptedFileManifest) {
+		} else if (envelope->objectKind
+				== ObjectKind::EncryptedFileManifest) {
+			outcome.status = ProcessObservedManifest(
+				object,
+				*envelope,
+				local,
+				sha256,
+				archiveState,
+				groupLedger,
+				contentStore,
+				chunkStore,
+				outcome.stats);
+			if (outcome.status != ObservedContentProcessStatus::Processed) {
+				return outcome;
+			}
+			continue;
+		} else if (envelope->objectKind
+				!= ObjectKind::EncryptedMessageBody) {
 			++outcome.stats.ignored;
 			continue;
 		}
@@ -196,29 +460,17 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 			.observedTelegramMessageId = object.observedMessageId,
 			.plaintext = std::move(openedContent.plaintext),
 		};
-		auto unixTime = std::uint64_t();
-		if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-			auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
-				record.plaintext);
-			unixTime = body ? body->unixTime : 0;
-			if (body) {
-				Cleanse(body->textUtf8);
-			}
-		} else {
-			auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
-				record.plaintext);
-			unixTime = manifest ? manifest->unixTime : 0;
-			if (manifest) {
-				Cleanse(manifest->filenameUtf8);
-				Cleanse(manifest->mimeTypeUtf8);
-			}
+		auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+			record.plaintext);
+		const auto unixTime = body ? body->unixTime : 0;
+		if (body) {
+			Cleanse(body->textUtf8);
 		}
 		if (!unixTime) {
 			Cleanse(record.plaintext);
 			++outcome.stats.ignored;
 			continue;
 		}
-		const auto kind = record.objectKind;
 		record.unixTime = unixTime;
 		const auto stored = contentStore.append(std::move(record));
 		if (stored == ContentStoreAppendResult::Conflict) {
@@ -229,11 +481,7 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
 			return outcome;
 		} else if (stored == ContentStoreAppendResult::Stored) {
-			if (kind == ObjectKind::EncryptedMessageBody) {
-				++outcome.stats.messagesStored;
-			} else {
-				++outcome.stats.manifestsStored;
-			}
+			++outcome.stats.messagesStored;
 		}
 	}
 	std::sort(

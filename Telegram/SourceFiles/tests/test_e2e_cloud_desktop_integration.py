@@ -611,6 +611,54 @@ def verify_local_record_reads_are_bounded() -> None:
     assert "bytes = file.read(size);" in backend
 
 
+def verify_file_chunks_require_manifests_and_quota() -> None:
+    processor = source(
+        "SourceFiles/e2e_cloud/protocol/observed_content_processor.cpp"
+    )
+    chunk_store = source(
+        "SourceFiles/e2e_cloud/files/file_chunk_file_store.cpp"
+    )
+    sync = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "observed_content_sync_controller.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    transfer = source(
+        "SourceFiles/e2e_cloud/files/persistent_file_transfer.cpp"
+    )
+    admission = function_body(
+        processor,
+        "[[nodiscard]] FileChunkAdmissionStatus AdmitObservedFileChunk(",
+        "} // namespace",
+    )
+    page = function_body(
+        sync,
+        "void ObservedContentSyncController::pageReceived(",
+        "bool ObservedContentSyncController::previewPage(",
+    )
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "void DesktopService::completeActiveUpload(",
+    )
+
+    assert "chunkStore.authorization(" in admission
+    assert "authorization.manifestEventObjectId" in admission
+    assert "AesGcmFileChunkCipher().decrypt(" in admission
+    assert processor.index("AesGcmFileChunkCipher().decrypt(") \
+        < processor.index("chunkStore.storeIfAbsent(")
+    assert "FileChunkStoreResult::QuotaExceeded" in processor
+    assert "kMinimumFreeBytes" in chunk_store
+    assert "_storedBytes > _maximumStoredBytes - size" in chunk_store
+    assert page.index("previewPage(result.untrustedObjects") \
+        < page.index("_scannedPages.push_back(")
+    assert pump.index("queuePendingFileManifest(") \
+        < pump.index("pumpFileTransfer(")
+    assert "!pending->manifestPublished" in pump
+    assert "markManifestPublished(" in service
+    assert "|| !_pending->manifestPublished" in transfer
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -638,6 +686,7 @@ def main() -> None:
     verify_protected_history_can_page_back()
     verify_protected_plaintext_is_loaded_by_page()
     verify_local_record_reads_are_bounded()
+    verify_file_chunks_require_manifests_and_quota()
 
 
 if __name__ == "__main__":

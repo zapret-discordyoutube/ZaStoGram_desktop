@@ -53,6 +53,31 @@ template <typename Id>
 	return 1;
 }
 
+void AppendTestUint16(QByteArray &result, std::uint16_t value) {
+	result.append(char(value >> 8));
+	result.append(char(value));
+}
+
+void AppendTestUint32(QByteArray &result, std::uint32_t value) {
+	result.append(char(value >> 24));
+	result.append(char(value >> 16));
+	result.append(char(value >> 8));
+	result.append(char(value));
+}
+
+void AppendTestUint64(QByteArray &result, std::uint64_t value) {
+	for (auto shift = 56; shift >= 0; shift -= 8) {
+		result.append(char(value >> shift));
+	}
+}
+
+template <typename Array>
+void AppendTestArray(QByteArray &result, const Array &value) {
+	result.append(
+		reinterpret_cast<const char*>(value.data()),
+		int(value.size()));
+}
+
 class MemoryBlobStore final : public AtomicBlobStore {
 public:
 	[[nodiscard]] BlobReadResult read() const override {
@@ -666,10 +691,16 @@ int CountingLocalRecordProtector::openCalls() const {
 			.eventObjectId = FilledId<ObjectId>(39),
 			.contentObjectId = FilledId<ObjectId>(40),
 			.groupGeneration = 7,
+			.archiveEpochGeneration = 3,
+			.manifestPublished = false,
 			.nextChunkIndex = 0,
 			.sourcePathUtf8 = QByteArray("/private/source.any"),
 			.manifestPlaintext = manifest.value_or(QByteArray()),
 		}) != FileTransferCommitResult::Committed
+		|| transfer.advance(0)
+			!= FileTransferCommitResult::InvalidMutation
+		|| transfer.markManifestPublished(3)
+			!= FileTransferCommitResult::Committed
 		|| transfer.advance(0) != FileTransferCommitResult::Committed) {
 		return Fail("resumable file transfer was not persisted");
 	}
@@ -682,6 +713,8 @@ int CountingLocalRecordProtector::openCalls() const {
 	} else if (restoredLoad != FileTransferLoadResult::Loaded) {
 		return Fail("resumable file transfer snapshot did not load");
 	} else if (!restored.pending()
+		|| !restored.pending()->manifestPublished
+		|| restored.pending()->archiveEpochGeneration != 3
 		|| restored.pending()->nextChunkIndex != 1) {
 		return Fail("resumable file transfer did not restore its chunk cursor");
 	}
@@ -703,6 +736,8 @@ int CountingLocalRecordProtector::openCalls() const {
 		.eventObjectId = FilledId<ObjectId>(44),
 		.contentObjectId = FilledId<ObjectId>(45),
 		.groupGeneration = 8,
+		.archiveEpochGeneration = 4,
+		.manifestPublished = false,
 		.nextChunkIndex = 0,
 		.sourcePathUtf8 = QByteArray("/private/replacement.any"),
 		.manifestPlaintext = replacementManifest.value_or(QByteArray()),
@@ -719,7 +754,7 @@ int CountingLocalRecordProtector::openCalls() const {
 	if (restored.replace(replacement) != FileTransferCommitResult::Committed
 		|| !restored.pending()
 		|| restored.pending()->eventObjectId != replacement.eventObjectId
-		|| restored.revision() != 3) {
+		|| restored.revision() != 4) {
 		return Fail("file transfer could not be replaced atomically");
 	}
 	auto replaced = PersistentFileTransfer(blob, protector);
@@ -750,6 +785,80 @@ int CountingLocalRecordProtector::openCalls() const {
 			!= FileTransferLoadResult::Empty
 		|| completed.pending()) {
 		return Fail("completed file transfer reappeared after restart");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioLegacyFileTransferPublishesManifestFirst() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(50);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto fileKey = std::array<std::uint8_t, 32>();
+	fileKey.fill(51);
+	auto context = FileChunkContext{
+		.conversationId = FilledId<ConversationId>(52),
+		.fileId = FilledId<FileId>(53),
+		.plaintextSize = 13,
+		.chunkSize = 64 * 1024,
+		.chunkCount = 1,
+		.noncePrefix = {},
+	};
+	context.noncePrefix.fill(54);
+	const auto manifest = PrivateFileManifestCodecV1().encodePlaintext({
+		.context = context,
+		.key = FileEncryptionKey(std::move(fileKey)),
+		.plaintextHash = FilledId<Digest>(55),
+		.unixTime = 1'725'000'002,
+		.filenameUtf8 = QByteArray("legacy.any"),
+		.mimeTypeUtf8 = QByteArray("application/octet-stream"),
+	});
+	if (!manifest) {
+		return Fail("legacy file transfer manifest could not be encoded");
+	}
+	const auto eventObjectId = FilledId<ObjectId>(56);
+	const auto contentObjectId = FilledId<ObjectId>(57);
+	const auto sourcePath = QByteArray("/private/legacy.any");
+	auto plaintext = QByteArray("TDE2EFTR", 8);
+	AppendTestUint16(plaintext, 1);
+	AppendTestArray(plaintext, context.conversationId.bytes);
+	AppendTestUint64(plaintext, 5);
+	plaintext.append(char(1));
+	AppendTestArray(plaintext, eventObjectId.bytes);
+	AppendTestArray(plaintext, contentObjectId.bytes);
+	AppendTestUint64(plaintext, 7);
+	AppendTestUint32(plaintext, 0);
+	AppendTestUint32(plaintext, std::uint32_t(sourcePath.size()));
+	plaintext.append(sourcePath);
+	AppendTestUint32(plaintext, std::uint32_t(manifest->size()));
+	plaintext.append(*manifest);
+	auto blob = MemoryBlobStore();
+	blob.bytes = protector.seal(
+		QByteArray("e2e-cloud-file-transfer-v1"),
+		plaintext);
+	auto transfer = PersistentFileTransfer(blob, protector);
+	if (!blob.bytes
+		|| transfer.load(context.conversationId)
+			!= FileTransferLoadResult::Loaded
+		|| !transfer.pending()
+		|| transfer.pending()->manifestPublished
+		|| transfer.pending()->archiveEpochGeneration
+		|| transfer.advance(0)
+			!= FileTransferCommitResult::InvalidMutation
+		|| transfer.markManifestPublished(3)
+			!= FileTransferCommitResult::Committed
+		|| !transfer.pending()
+		|| !transfer.pending()->manifestPublished
+		|| transfer.pending()->archiveEpochGeneration != 3
+		|| transfer.revision() != 6) {
+		return Fail("legacy file transfer bypassed manifest-first migration");
+	}
+	auto restored = PersistentFileTransfer(blob, protector);
+	if (restored.load(context.conversationId)
+			!= FileTransferLoadResult::Loaded
+		|| !restored.pending()
+		|| !restored.pending()->manifestPublished
+		|| restored.pending()->archiveEpochGeneration != 3) {
+		return Fail("migrated file transfer did not persist version two");
 	}
 	return 0;
 }
@@ -1714,6 +1823,7 @@ int main(int, char *[]) {
 		ScenarioContentStoreAcceptsCarrierDuplicates,
 		ScenarioContentStorePagesAndMigratesLegacyIndex,
 		ScenarioFileTransferSurvivesRestart,
+		ScenarioLegacyFileTransferPublishesManifestFirst,
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,
 		ScenarioFreshnessResponseReplayIsPersistent,

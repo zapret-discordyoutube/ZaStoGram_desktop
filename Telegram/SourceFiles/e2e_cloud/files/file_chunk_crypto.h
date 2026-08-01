@@ -17,6 +17,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+inline constexpr auto kMaximumProtectedFileSize
+	= std::uint64_t(4) * 1024 * 1024 * 1024;
+
 class FileEncryptionKey final {
 public:
 	FileEncryptionKey();

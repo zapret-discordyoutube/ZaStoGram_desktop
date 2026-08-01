@@ -83,13 +83,15 @@ ObservedContentSyncController::ObservedContentSyncController(
 		TelegramTransport &transport,
 		const Sha256Provider &sha256,
 		PageCallback pageCallback,
-		CompletionCallback completionCallback)
+		CompletionCallback completionCallback,
+		PreviewPageCallback previewPageCallback)
 : _conversationId(conversationId)
 , _telegramPeerIdBinding(telegramPeerIdBinding)
 , _transport(transport)
 , _sha256(sha256)
 , _pageCallback(std::move(pageCallback))
 , _completionCallback(std::move(completionCallback))
+, _previewPageCallback(std::move(previewPageCallback))
 , _callbackGuard(std::make_shared<CallbackGuard>(CallbackGuard{ this })) {
 }
 
@@ -270,6 +272,10 @@ void ObservedContentSyncController::pageReceived(
 		finish(ObservedContentSyncStatus::InvalidPagination);
 		return;
 	}
+	if (retainedObjects
+		&& !previewPage(result.untrustedObjects, retainedObjects)) {
+		return;
+	}
 	auto retainedNewestObjects
 		= std::vector<TelegramTransport::UntrustedObject>();
 	if (_pages == 1 && retainedObjects) {
@@ -320,6 +326,26 @@ void ObservedContentSyncController::pageReceived(
 	_seenCursors.emplace(_cursor);
 	_requestQueued = true;
 	pumpRequests();
+}
+
+bool ObservedContentSyncController::previewPage(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		std::size_t objectLimit) {
+	if (!_previewPageCallback) {
+		return true;
+	}
+	const auto guard = _callbackGuard;
+	const auto callback = _previewPageCallback;
+	const auto persisted = callback(objects, objectLimit);
+	if (guard->controller != this || !_running) {
+		return false;
+	} else if (persisted != ObservedContentPageResult::Persisted) {
+		finish((persisted == ObservedContentPageResult::SecurityBlocked)
+			? ObservedContentSyncStatus::SecurityBlocked
+			: ObservedContentSyncStatus::PersistenceFailed);
+		return false;
+	}
+	return true;
 }
 
 bool ObservedContentSyncController::deliverPage(

@@ -48,6 +48,22 @@ bool HasExactFileChunkCiphertext(
 		&& stored.chunk.exactCiphertext == ciphertext;
 }
 
+bool IsSameFileChunkAuthorization(
+		const FileChunkAuthorization &a,
+		const FileChunkAuthorization &b) {
+	return a.context.conversationId == b.context.conversationId
+		&& a.context.fileId == b.context.fileId
+		&& a.context.plaintextSize == b.context.plaintextSize
+		&& a.context.chunkSize == b.context.chunkSize
+		&& a.context.chunkCount == b.context.chunkCount
+		&& a.context.noncePrefix == b.context.noncePrefix
+		&& a.senderAccountId == b.senderAccountId
+		&& a.senderClientId == b.senderClientId
+		&& a.manifestEventObjectId == b.manifestEventObjectId
+		&& a.manifestDigest == b.manifestDigest
+		&& a.groupGeneration == b.groupGeneration;
+}
+
 IdempotentFileChunkProtector::IdempotentFileChunkProtector(
 		const AesGcmFileChunkCipher &cipher,
 		FileChunkCiphertextStore &store)
@@ -112,7 +128,7 @@ PreparedFileChunk IdempotentFileChunkProtector::prepare(
 			.result = FileChunkPrepareResult::Ready,
 			.exactCiphertext = std::move(encrypted),
 		};
-	} else if (storedResult == FileChunkStoreResult::Error) {
+	} else if (storedResult != FileChunkStoreResult::AlreadyExists) {
 		return {
 			.result = FileChunkPrepareResult::StorageFailed,
 			.exactCiphertext = std::nullopt,

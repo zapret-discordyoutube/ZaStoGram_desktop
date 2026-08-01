@@ -32,13 +32,46 @@ struct FileChunkReadResult {
 	StoredFileChunk chunk;
 };
 
+struct FileChunkAuthorization {
+	FileChunkContext context;
+	AccountId senderAccountId;
+	ClientId senderClientId;
+	ObjectId manifestEventObjectId;
+	Digest manifestDigest;
+	std::uint64_t groupGeneration = 0;
+};
+
+enum class FileChunkAuthorizationReadStatus {
+	Missing,
+	Found,
+	Error,
+};
+
+struct FileChunkAuthorizationReadResult {
+	FileChunkAuthorizationReadStatus status
+		= FileChunkAuthorizationReadStatus::Missing;
+	FileChunkAuthorization authorization;
+};
+
+enum class FileChunkAuthorizeResult {
+	Authorized,
+	AlreadyAuthorized,
+	Conflict,
+	QuotaExceeded,
+	Error,
+};
+
 [[nodiscard]] bool HasExactFileChunkCiphertext(
 	const FileChunkReadResult &stored,
 	const QByteArray &ciphertext);
+[[nodiscard]] bool IsSameFileChunkAuthorization(
+	const FileChunkAuthorization &a,
+	const FileChunkAuthorization &b);
 
 enum class FileChunkStoreResult {
 	Stored,
 	AlreadyExists,
+	QuotaExceeded,
 	Error,
 };
 
@@ -50,6 +83,11 @@ public:
 		ConversationId conversationId,
 		FileId fileId,
 		std::uint32_t chunkIndex) const = 0;
+	[[nodiscard]] virtual FileChunkAuthorizationReadResult authorization(
+		ConversationId conversationId,
+		FileId fileId) const = 0;
+	virtual FileChunkAuthorizeResult authorize(
+		FileChunkAuthorization authorization) = 0;
 	virtual FileChunkStoreResult storeIfAbsent(
 		ConversationId conversationId,
 		FileId fileId,
