@@ -517,7 +517,7 @@ struct BlobParts {
 		|| parts.telegramUserIdBinding != expectedTelegramUserIdBinding) {
 		return std::nullopt;
 	}
-	auto plaintext = Decrypt(encoded, parts, masterKey);
+	auto plaintext = Decrypt(encoded, parts, masterKey.bytes());
 	if (!plaintext) {
 		return std::nullopt;
 	}
