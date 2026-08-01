@@ -920,10 +920,12 @@ public:
 		|| !IsProtectedCarrierMetadata(
 			CloudVaultCarrierFilename(),
 			mime)
-		|| IsProtectedCarrierMetadata(u"notes.tde2e"_q, mime)
+		|| IsProtectedCarrierMetadata(
+			QString::fromLatin1("notes.tde2e"),
+			mime)
 		|| IsProtectedCarrierMetadata(
 			ProtectedControlCarrierFilename(),
-			u"application/pdf"_q)
+			QString::fromLatin1("application/pdf"))
 		|| IsProtectedGroupCarrierMetadata(
 			CloudVaultCarrierFilename(),
 			mime)) {
