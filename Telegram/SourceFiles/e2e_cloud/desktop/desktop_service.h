@@ -212,6 +212,9 @@ private:
 		PublicBootstrapSyncCompletion result);
 	[[nodiscard]] bool queueFreshnessChallenge(
 		PendingGroupCreation &group);
+	[[nodiscard]] bool resumeQueuedFreshnessChallenge(
+		PendingGroupCreation &group,
+		const EncodedEnvelope &encoded);
 	[[nodiscard]] bool processObservedFreshness(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects);

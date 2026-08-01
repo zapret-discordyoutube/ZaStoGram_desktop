@@ -318,6 +318,32 @@ def verify_freshness_witness_is_rechecked_after_catchup() -> None:
     assert service.count("completeResynchronization(") >= 2
 
 
+def verify_freshness_challenges_resume_and_replays_stop() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    protocol = source(
+        "SourceFiles/e2e_cloud/protocol/freshness_protocol.cpp"
+    )
+    publisher = function_body(
+        service,
+        "void DesktopService::publishNextBootstrapObject(",
+        "void DesktopService::resumePendingGroupCreation(",
+    )
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "void DesktopService::completeActiveUpload(",
+    )
+
+    assert 'u"control-inbound.state"_q' in service
+    assert "InboundJournalDomain::Control" in service
+    assert "controlInboundJournal.load()" in service
+    assert "resumeQueuedFreshnessChallenge(" in publisher
+    assert "resumeQueuedFreshnessChallenge(group, *item->sealed)" in pump
+    assert "FreshnessState::WaitingForWitness" in service
+    assert "QueueFreshnessResponseOnce(" in service
+    assert "FreshnessResponseQueueResult::AlreadyResponded" in protocol
+
+
 def verify_observed_mls_receipts_finish_crash_recovery() -> None:
     reconciler = source(
         "SourceFiles/e2e_cloud/mls/mls_outbox_reconciler.cpp"
@@ -368,6 +394,7 @@ def main() -> None:
     verify_control_sync_uses_a_persistent_boundary()
     verify_content_sync_requires_its_saved_boundary()
     verify_freshness_witness_is_rechecked_after_catchup()
+    verify_freshness_challenges_resume_and_replays_stop()
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()

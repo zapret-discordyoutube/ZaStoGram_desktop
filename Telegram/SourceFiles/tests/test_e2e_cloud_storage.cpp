@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/mls/client_key_package.h"
 #include "e2e_cloud/mls/mls_outbox_reconciler.h"
 #include "e2e_cloud/mls/observed_key_package.h"
+#include "e2e_cloud/protocol/freshness_protocol.h"
 #include "e2e_cloud/storage/persistent_inbound_journal.h"
 #include "e2e_cloud/storage/persistent_key_package_pool.h"
 #include "e2e_cloud/storage/persistent_mls_state.h"
@@ -578,6 +579,141 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioFreshnessResponseReplayIsPersistent() {
+	auto key = LocalRecordKey();
+	key.fill(54);
+	const auto protector = AesGcmLocalRecordProtector(std::move(key));
+	auto outboxBlob = MemoryBlobStore();
+	auto journalBlob = MemoryBlobStore();
+	auto outbox = PersistentOutboxStore(outboxBlob, protector);
+	auto journal = PersistentInboundJournal(
+		journalBlob,
+		protector,
+		InboundJournalDomain::Control);
+	const auto conversationId = FilledId<ConversationId>(55);
+	const auto challengeObjectId = FilledId<ObjectId>(56);
+	const auto challengeHash = FilledId<Digest>(57);
+	const auto response = EncodedEnvelope{
+		.conversationId = conversationId,
+		.objectId = FilledId<ObjectId>(58),
+		.bytes = QByteArray("exact signed freshness response"),
+	};
+	const auto queue = [&](bool alreadyPublished = false) {
+		return QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = challengeHash,
+			.responseEnvelope = response,
+			.responseAlreadyPublished = alreadyPublished,
+		}, outbox, journal);
+	};
+	if (outbox.load() != PersistentOutboxLoadResult::Empty
+		|| journal.load() != InboundJournalLoadResult::Missing
+		|| queue() != FreshnessResponseQueueResult::Queued
+		|| outbox.size() != 1
+		|| journal.lookup(
+			conversationId,
+			challengeObjectId,
+			challengeHash) != InboundJournalLookup::Accepted
+		|| queue() != FreshnessResponseQueueResult::AlreadyResponded
+		|| !outbox.remove(response.objectId)) {
+		return Fail("freshness response replay setup was not durable");
+	}
+	auto wrongDomain = PersistentInboundJournal(journalBlob, protector);
+	if (wrongDomain.load() != InboundJournalLoadResult::AuthenticationFailed) {
+		return Fail("control replay journal was swappable with content state");
+	}
+	auto restoredOutbox = PersistentOutboxStore(outboxBlob, protector);
+	auto restoredJournal = PersistentInboundJournal(
+		journalBlob,
+		protector,
+		InboundJournalDomain::Control);
+	if (restoredOutbox.load() != PersistentOutboxLoadResult::Loaded
+		|| restoredJournal.load() != InboundJournalLoadResult::Loaded
+		|| QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = challengeHash,
+			.responseEnvelope = response,
+		}, restoredOutbox, restoredJournal)
+			!= FreshnessResponseQueueResult::AlreadyResponded
+		|| restoredOutbox.size()
+		|| QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = FilledId<Digest>(59),
+			.responseEnvelope = response,
+		}, restoredOutbox, restoredJournal)
+			!= FreshnessResponseQueueResult::ObjectIdConflict) {
+		return Fail("freshness response replay survived a restart");
+	}
+	auto publishedOutboxBlob = MemoryBlobStore();
+	auto publishedJournalBlob = MemoryBlobStore();
+	auto publishedOutbox = PersistentOutboxStore(
+		publishedOutboxBlob,
+		protector);
+	auto publishedJournal = PersistentInboundJournal(
+		publishedJournalBlob,
+		protector,
+		InboundJournalDomain::Control);
+	if (publishedOutbox.load() != PersistentOutboxLoadResult::Empty
+		|| publishedJournal.load() != InboundJournalLoadResult::Missing
+		|| !publishedOutbox.appendSealed(response)
+		|| QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = challengeHash,
+			.responseEnvelope = response,
+			.responseAlreadyPublished = true,
+		}, publishedOutbox, publishedJournal)
+			!= FreshnessResponseQueueResult::AlreadyPublished
+		|| publishedOutbox.size()
+		|| publishedOutbox.revision() != 2
+		|| publishedJournal.lookup(
+			conversationId,
+			challengeObjectId,
+			challengeHash) != InboundJournalLookup::Accepted) {
+		return Fail("published freshness response was queued again");
+	}
+	auto failedOutboxBlob = MemoryBlobStore();
+	auto failedJournalBlob = MemoryBlobStore();
+	auto failedOutbox = PersistentOutboxStore(failedOutboxBlob, protector);
+	auto failedJournal = PersistentInboundJournal(
+		failedJournalBlob,
+		protector,
+		InboundJournalDomain::Control);
+	if (failedOutbox.load() != PersistentOutboxLoadResult::Empty
+		|| failedJournal.load() != InboundJournalLoadResult::Missing) {
+		return Fail("freshness replay failure fixture did not load");
+	}
+	failedJournalBlob.writeError = true;
+	if (QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = challengeHash,
+			.responseEnvelope = response,
+		}, failedOutbox, failedJournal)
+			!= FreshnessResponseQueueResult::PersistenceFailed
+		|| !failedOutbox.contains(response.objectId)) {
+		return Fail("freshness replay journal failure lost the response");
+	}
+	failedJournalBlob.writeError = false;
+	if (QueueFreshnessResponseOnce({
+			.conversationId = conversationId,
+			.challengeObjectId = challengeObjectId,
+			.challengePayloadHash = challengeHash,
+			.responseEnvelope = response,
+		}, failedOutbox, failedJournal)
+			!= FreshnessResponseQueueResult::AlreadyQueued
+		|| failedJournal.lookup(
+			conversationId,
+			challengeObjectId,
+			challengeHash) != InboundJournalLookup::Accepted) {
+		return Fail("freshness replay journal did not recover atomically");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioSealedRetrySurvivesRestart() {
 	auto key = LocalRecordKey();
 	key.fill(9);
@@ -1010,8 +1146,19 @@ public:
 	auto concurrent = envelope;
 	concurrent.objectId = FilledId<ObjectId>(6);
 	concurrent.payloadHash = FilledId<Digest>(7);
-	if (journal.begin(concurrent)) {
-		return Fail("inbound journal admitted a second pending operation");
+	if (!journal.begin(concurrent)
+		|| journal.lookup(
+			concurrent.conversationId,
+			concurrent.objectId,
+			concurrent.payloadHash) != InboundJournalLookup::Pending
+		|| !journal.abort(
+			concurrent.conversationId,
+			concurrent.objectId)
+		|| journal.lookup(
+			concurrent.conversationId,
+			concurrent.objectId,
+			concurrent.payloadHash) != InboundJournalLookup::Missing) {
+		return Fail("inbound journal could not recover independent operations");
 	}
 	auto pending = PersistentInboundJournal(blob, protector);
 	if (pending.load() != InboundJournalLoadResult::Loaded
@@ -1020,7 +1167,7 @@ public:
 			envelope.objectId,
 			envelope.payloadHash) != InboundJournalLookup::Pending
 		|| !pending.accept(envelope.conversationId, envelope.objectId)
-		|| pending.revision() != 2) {
+		|| pending.revision() != 4) {
 		return Fail("inbound journal lost pending crash recovery state");
 	}
 	auto accepted = PersistentInboundJournal(blob, protector);
@@ -1271,6 +1418,7 @@ int main(int, char *[]) {
 		ScenarioFileTransferSurvivesRestart,
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,
+		ScenarioFreshnessResponseReplayIsPersistent,
 		ScenarioPersistentDraftRoundTrip,
 		ScenarioOutboxPlaintextCleanup,
 		ScenarioSealedRetrySurvivesRestart,

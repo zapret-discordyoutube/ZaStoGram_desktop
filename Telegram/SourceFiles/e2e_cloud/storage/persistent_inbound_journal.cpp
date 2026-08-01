@@ -24,7 +24,14 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 inline constexpr auto kMaximumEntries = std::size_t(65536);
 inline constexpr auto kEntrySize = 32 + 32 + 32 + 1;
 inline constexpr auto kHeaderSize = 8 + 2 + 8 + 4;
-inline constexpr auto kPurpose = "e2e-cloud-inbound-journal-v1";
+inline constexpr auto kContentPurpose = "e2e-cloud-inbound-journal-v1";
+inline constexpr auto kControlPurpose = "e2e-cloud-control-inbound-journal-v1";
+
+[[nodiscard]] QByteArray Purpose(InboundJournalDomain domain) {
+	return QByteArray((domain == InboundJournalDomain::Control)
+		? kControlPurpose
+		: kContentPurpose);
+}
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -91,9 +98,11 @@ void Cleanse(QByteArray &bytes) {
 
 PersistentInboundJournal::PersistentInboundJournal(
 		AtomicBlobStore &blobStore,
-		const LocalRecordProtector &protector)
+		const LocalRecordProtector &protector,
+		InboundJournalDomain domain)
 : _blobStore(blobStore)
-, _protector(protector) {
+, _protector(protector)
+, _domain(domain) {
 }
 
 InboundJournalLoadResult PersistentInboundJournal::load() {
@@ -109,7 +118,7 @@ InboundJournalLoadResult PersistentInboundJournal::load() {
 		_storageError = true;
 		return InboundJournalLoadResult::ReadFailed;
 	}
-	auto plaintext = _protector.open(QByteArray(kPurpose), stored.bytes);
+	auto plaintext = _protector.open(Purpose(_domain), stored.bytes);
 	if (!plaintext) {
 		_storageError = true;
 		return InboundJournalLoadResult::AuthenticationFailed;
@@ -189,19 +198,25 @@ InboundJournalLookup PersistentInboundJournal::lookup(
 }
 
 bool PersistentInboundJournal::begin(const TransportEnvelope &envelope) {
+	return begin(
+		envelope.conversationId,
+		envelope.objectId,
+		envelope.payloadHash);
+}
+
+bool PersistentInboundJournal::begin(
+		ConversationId conversationId,
+		ObjectId objectId,
+		Digest payloadHash) {
 	if (!_loaded
 		|| _storageError
-		|| !envelope.conversationId
-		|| !envelope.objectId
-		|| !envelope.payloadHash
+		|| !conversationId
+		|| !objectId
+		|| !payloadHash
 		|| lookup(
-			envelope.conversationId,
-			envelope.objectId,
-			envelope.payloadHash) != InboundJournalLookup::Missing
-		|| std::any_of(
-			std::begin(_entries),
-			std::end(_entries),
-			[](const Entry &entry) { return !entry.accepted; })
+			conversationId,
+			objectId,
+			payloadHash) != InboundJournalLookup::Missing
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return false;
 	}
@@ -217,9 +232,9 @@ bool PersistentInboundJournal::begin(const TransportEnvelope &envelope) {
 		entries.erase(accepted);
 	}
 	entries.push_back({
-		.conversationId = envelope.conversationId,
-		.objectId = envelope.objectId,
-		.payloadHash = envelope.payloadHash,
+		.conversationId = conversationId,
+		.objectId = objectId,
+		.payloadHash = payloadHash,
 		.accepted = false,
 	});
 	const auto revision = _revision + 1;
@@ -323,7 +338,7 @@ bool PersistentInboundJournal::persist(
 		plaintext.append(char(entry.accepted ? 1 : 0));
 	}
 	auto protectedBytes = _protector.seal(
-		QByteArray(kPurpose),
+		Purpose(_domain),
 		plaintext);
 	Cleanse(plaintext);
 	if (!protectedBytes) {

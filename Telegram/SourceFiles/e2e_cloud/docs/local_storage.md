@@ -83,6 +83,13 @@ between object application and journal commit and forces explicit recovery
 instead of blind replay. MLS replay state remains authoritative for application
 messages; the bounded transport journal is not an unbounded message archive.
 
+Content delivery and control-response replay use separate journal domains. A
+freshness response is placed in the protected outbox before its challenge is
+accepted by the control journal, so either write can be retried after a crash.
+An exact accepted challenge is never answered twice, including after restart.
+Persisted outgoing MLS receipts are likewise reconciled with the exact inbound
+journal entry before the receipt is removed.
+
 ## Cross-store group-change transaction
 
 Group changes span records that cannot be replaced in one filesystem rename:

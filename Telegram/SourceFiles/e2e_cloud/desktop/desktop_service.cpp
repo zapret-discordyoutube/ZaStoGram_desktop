@@ -270,6 +270,8 @@ struct DesktopService::PendingGroupCreation {
 	, keyPackagePoolBlob(this->directory + u"key-packages.state"_q)
 	, freshnessTrustBlob(this->directory + u"freshness-trust.state"_q)
 	, inboundJournalBlob(this->directory + u"content-inbound.state"_q)
+	, controlInboundJournalBlob(
+		this->directory + u"control-inbound.state"_q)
 	, contentIndexBlob(this->directory + u"content-index.state"_q)
 	, controlSyncBlob(this->directory + u"control-sync.state"_q)
 	, contentSyncBlob(this->directory + u"content-sync.state"_q)
@@ -288,6 +290,10 @@ struct DesktopService::PendingGroupCreation {
 		sha256)
 	, freshnessTrust(freshnessTrustBlob, protector)
 	, inboundJournal(inboundJournalBlob, protector)
+	, controlInboundJournal(
+		controlInboundJournalBlob,
+		protector,
+		InboundJournalDomain::Control)
 	, contentStore(
 		conversationId,
 		this->directory + u"content-records"_q,
@@ -344,6 +350,7 @@ struct DesktopService::PendingGroupCreation {
 	FileAtomicBlobStore keyPackagePoolBlob;
 	FileAtomicBlobStore freshnessTrustBlob;
 	FileAtomicBlobStore inboundJournalBlob;
+	FileAtomicBlobStore controlInboundJournalBlob;
 	FileAtomicBlobStore contentIndexBlob;
 	FileAtomicBlobStore controlSyncBlob;
 	FileAtomicBlobStore contentSyncBlob;
@@ -359,6 +366,7 @@ struct DesktopService::PendingGroupCreation {
 	PersistentKeyPackagePool keyPackages;
 	PersistentFreshnessTrust freshnessTrust;
 	PersistentInboundJournal inboundJournal;
+	PersistentInboundJournal controlInboundJournal;
 	PersistentContentStore contentStore;
 	PersistentContentSyncState controlSyncState;
 	PersistentContentSyncState contentSyncState;
@@ -681,6 +689,8 @@ bool DesktopService::createProtectedGroup(
 		|| operation->freshnessTrust.load(*conversationId)
 			!= FreshnessTrustLoadResult::Missing
 		|| operation->inboundJournal.load()
+			!= InboundJournalLoadResult::Missing
+		|| operation->controlInboundJournal.load()
 			!= InboundJournalLoadResult::Missing
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
@@ -1684,6 +1694,18 @@ void DesktopService::publishNextBootstrapObject() {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
 	}
+	const auto persistedEnvelope = _pendingGroupCreation->envelopeCodec.decode(
+		*item->sealed);
+	if (_pendingGroupCreation->phase == PendingGroupCreation::Phase::Active
+		&& persistedEnvelope
+		&& persistedEnvelope->objectKind
+			== ObjectKind::FreshnessChallenge
+		&& !resumeQueuedFreshnessChallenge(
+			*_pendingGroupCreation,
+			*item->sealed)) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return;
+	}
 	const auto objectId = item->sealed->objectId;
 	_pendingGroupCreation->uploadInProgress = true;
 	_groupCreationState = DesktopGroupCreationState::PublishingBootstrap;
@@ -1921,6 +1943,8 @@ bool DesktopService::prepareGroupJoin(
 			!= FreshnessTrustLoadResult::Missing
 		|| operation->inboundJournal.load()
 			!= InboundJournalLoadResult::Missing
+		|| operation->controlInboundJournal.load()
+			!= InboundJournalLoadResult::Missing
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
 		|| operation->controlSyncState.load(conversation.conversationId)
@@ -2027,6 +2051,39 @@ bool DesktopService::queueFreshnessChallenge(
 	return true;
 }
 
+bool DesktopService::resumeQueuedFreshnessChallenge(
+		PendingGroupCreation &group,
+		const EncodedEnvelope &encoded) {
+	const auto metadata = group.metadata.metadata();
+	const auto envelope = group.envelopeCodec.decode(encoded);
+	const auto challenge = envelope
+		? FreshnessChallengeCodecV1().decode(envelope->payload)
+		: std::nullopt;
+	if (!metadata
+		|| !group.freshnessGate
+		|| !envelope
+		|| !challenge
+		|| challenge->conversationId != group.conversationId
+		|| challenge->knownCheckpoint
+			!= group.freshnessGate->knownCheckpoint()
+		|| envelope->conversationId != group.conversationId
+		|| envelope->objectKind != ObjectKind::FreshnessChallenge
+		|| envelope->senderAccountId != metadata->accountId
+		|| envelope->senderClientId != metadata->clientId
+		|| envelope->telegramPeerIdBinding
+			!= group.telegramPeerIdBinding
+		|| envelope->epochOrGeneration
+			!= challenge->knownCheckpoint.generation
+		|| envelope->payloadHash != _sha256.digest(envelope->payload)) {
+		return false;
+	}
+	const auto state = group.freshnessGate->state();
+	return (state == FreshnessState::Required)
+		? group.freshnessGate->beginChallenge(challenge->nonce)
+		: (state == FreshnessState::WaitingForWitness
+			&& group.freshnessGate->challenge() == challenge);
+}
+
 bool DesktopService::processObservedFreshness(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
@@ -2057,13 +2114,30 @@ bool DesktopService::processObservedFreshness(
 						== metadata->clientId)) {
 				continue;
 			}
+			const auto replay = group.controlInboundJournal.lookup(
+				conversationId,
+				challenge->objectId,
+				challenge->payloadHash);
+			if (replay == InboundJournalLookup::Accepted) {
+				continue;
+			} else if (replay == InboundJournalLookup::ObjectIdConflict) {
+				_vaultState = DesktopVaultState::SecurityBlocked;
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				setContentState(
+					conversationId,
+					DesktopContentState::SecurityBlocked);
+				return false;
+			} else if (replay == InboundJournalLookup::StorageError) {
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return false;
+			}
 			const auto responseObjectId = FreshnessResponseObjectId(
 				challenge->objectId,
 				metadata->clientId,
 				_sha256);
-			if (group.outbox.contains(responseObjectId)) {
-				continue;
-			}
 			const auto response = PrepareFreshnessResponseEnvelope({
 				.challenge = challenge->challenge,
 				.witnessCheckpoint = group.groupLedger.checkpoint(),
@@ -2080,10 +2154,34 @@ bool DesktopService::processObservedFreshness(
 				[&](const auto &candidate) {
 					return candidate.bytes == response->bytes;
 				});
-			if (response
-				&& !alreadyPublished
-				&& group.outbox.appendSealed(*response)) {
+			const auto queued = response
+				? QueueFreshnessResponseOnce({
+					.conversationId = conversationId,
+					.challengeObjectId = challenge->objectId,
+					.challengePayloadHash = challenge->payloadHash,
+					.responseEnvelope = *response,
+					.responseAlreadyPublished = alreadyPublished,
+				}, group.outbox, group.controlInboundJournal)
+				: FreshnessResponseQueueResult::InvalidArguments;
+			if (queued == FreshnessResponseQueueResult::Queued) {
 				changed = true;
+			} else if (queued
+					== FreshnessResponseQueueResult::ObjectIdConflict) {
+				_vaultState = DesktopVaultState::SecurityBlocked;
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				setContentState(
+					conversationId,
+					DesktopContentState::SecurityBlocked);
+				return false;
+			} else if (queued
+					== FreshnessResponseQueueResult::InvalidArguments
+				|| queued
+					== FreshnessResponseQueueResult::PersistenceFailed) {
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return false;
 			}
 		} else if (group.freshnessGate->state()
 				== FreshnessState::WaitingForWitness) {
@@ -2466,7 +2564,14 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 				conversationId,
 				DesktopContentState::AwaitingFreshness);
 			return;
-		} else if (group.uploadInProgress) {
+		}
+		if (!resumeQueuedFreshnessChallenge(group, *item->sealed)) {
+			setContentState(
+				conversationId,
+				DesktopContentState::LocalFailure);
+			return;
+		}
+		if (group.uploadInProgress) {
 			return;
 		}
 		const auto objectId = item->sealed->objectId;
@@ -3953,6 +4058,7 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 	const auto freshnessTrustLoad = operation->freshnessTrust.load(
 		conversationId);
 	const auto inboundJournalLoad = operation->inboundJournal.load();
+	const auto controlInboundJournalLoad = operation->controlInboundJournal.load();
 	const auto contentStoreLoad = operation->contentStore.load();
 	const auto controlSyncLoad = operation->controlSyncState.load(
 		conversationId);
@@ -3994,6 +4100,11 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		|| inboundJournalLoad
 			== InboundJournalLoadResult::AuthenticationFailed
 		|| inboundJournalLoad == InboundJournalLoadResult::InvalidSnapshot
+		|| controlInboundJournalLoad == InboundJournalLoadResult::ReadFailed
+		|| controlInboundJournalLoad
+			== InboundJournalLoadResult::AuthenticationFailed
+		|| controlInboundJournalLoad
+			== InboundJournalLoadResult::InvalidSnapshot
 		|| contentStoreLoad == ContentStoreLoadResult::ReadFailed
 		|| contentStoreLoad == ContentStoreLoadResult::AuthenticationFailed
 		|| contentStoreLoad == ContentStoreLoadResult::InvalidSnapshot

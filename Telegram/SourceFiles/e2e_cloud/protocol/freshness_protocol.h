@@ -12,6 +12,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+class PersistentInboundJournal;
+class ProtectedOutboxStore;
+
 struct PrepareFreshnessChallengeEnvelopeArgs {
 	FreshnessChallenge challenge;
 	AccountId requesterAccountId;
@@ -36,12 +39,36 @@ struct VerifiedObservedFreshnessChallenge {
 	AccountId requesterAccountId;
 	ClientId requesterClientId;
 	ObjectId objectId;
+	Digest payloadHash;
 };
 
 struct VerifiedObservedFreshnessResponse {
 	FreshnessResponse response;
 	ObjectId objectId;
 };
+
+enum class FreshnessResponseQueueResult {
+	Queued,
+	AlreadyQueued,
+	AlreadyPublished,
+	AlreadyResponded,
+	InvalidArguments,
+	ObjectIdConflict,
+	PersistenceFailed,
+};
+
+struct QueueFreshnessResponseArgs {
+	ConversationId conversationId;
+	ObjectId challengeObjectId;
+	Digest challengePayloadHash;
+	EncodedEnvelope responseEnvelope;
+	bool responseAlreadyPublished = false;
+};
+
+[[nodiscard]] FreshnessResponseQueueResult QueueFreshnessResponseOnce(
+	QueueFreshnessResponseArgs args,
+	ProtectedOutboxStore &outbox,
+	PersistentInboundJournal &replayJournal);
 
 [[nodiscard]] std::optional<EncodedEnvelope>
 	PrepareFreshnessChallengeEnvelope(

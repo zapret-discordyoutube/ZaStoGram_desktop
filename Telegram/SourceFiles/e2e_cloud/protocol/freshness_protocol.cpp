@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/protocol/freshness_protocol.h"
 
 #include "e2e_cloud/core/envelope_codec.h"
+#include "e2e_cloud/core/outbox.h"
+#include "e2e_cloud/storage/persistent_inbound_journal.h"
 
 #include <algorithm>
 
@@ -44,6 +46,59 @@ namespace {
 }
 
 } // namespace
+
+FreshnessResponseQueueResult QueueFreshnessResponseOnce(
+		QueueFreshnessResponseArgs args,
+		ProtectedOutboxStore &outbox,
+		PersistentInboundJournal &replayJournal) {
+	if (!args.conversationId
+		|| !args.challengeObjectId
+		|| !args.challengePayloadHash
+		|| args.responseEnvelope.conversationId != args.conversationId
+		|| !args.responseEnvelope.objectId
+		|| args.responseEnvelope.bytes.isEmpty()) {
+		return FreshnessResponseQueueResult::InvalidArguments;
+	}
+	const auto lookup = replayJournal.lookup(
+		args.conversationId,
+		args.challengeObjectId,
+		args.challengePayloadHash);
+	if (lookup == InboundJournalLookup::Accepted) {
+		return FreshnessResponseQueueResult::AlreadyResponded;
+	} else if (lookup == InboundJournalLookup::ObjectIdConflict) {
+		return FreshnessResponseQueueResult::ObjectIdConflict;
+	} else if (lookup == InboundJournalLookup::StorageError) {
+		return FreshnessResponseQueueResult::PersistenceFailed;
+	}
+	const auto alreadyQueued = outbox.contains(
+		args.responseEnvelope.objectId);
+	if (args.responseAlreadyPublished) {
+		if (!outbox.appendSealed(args.responseEnvelope)
+			|| !outbox.remove(args.responseEnvelope.objectId)) {
+			return FreshnessResponseQueueResult::PersistenceFailed;
+		}
+	} else if (!outbox.appendSealed(args.responseEnvelope)) {
+		return FreshnessResponseQueueResult::PersistenceFailed;
+	}
+	if (lookup == InboundJournalLookup::Missing) {
+		if (!replayJournal.begin(
+				args.conversationId,
+				args.challengeObjectId,
+				args.challengePayloadHash)) {
+			return FreshnessResponseQueueResult::PersistenceFailed;
+		}
+	}
+	if (!replayJournal.accept(
+			args.conversationId,
+			args.challengeObjectId)) {
+		return FreshnessResponseQueueResult::PersistenceFailed;
+	}
+	return args.responseAlreadyPublished
+		? FreshnessResponseQueueResult::AlreadyPublished
+		: alreadyQueued
+		? FreshnessResponseQueueResult::AlreadyQueued
+		: FreshnessResponseQueueResult::Queued;
+}
 
 std::optional<EncodedEnvelope> PrepareFreshnessChallengeEnvelope(
 		PrepareFreshnessChallengeEnvelopeArgs args,
@@ -175,6 +230,7 @@ VerifyObservedFreshnessChallenge(
 		.requesterAccountId = envelope->senderAccountId,
 		.requesterClientId = envelope->senderClientId,
 		.objectId = envelope->objectId,
+		.payloadHash = envelope->payloadHash,
 	};
 }
 

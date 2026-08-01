@@ -23,11 +23,17 @@ enum class InboundJournalLoadResult {
 	InvalidSnapshot,
 };
 
+enum class InboundJournalDomain {
+	Content,
+	Control,
+};
+
 class PersistentInboundJournal final : public InboundEnvelopeJournal {
 public:
 	PersistentInboundJournal(
 		AtomicBlobStore &blobStore,
-		const LocalRecordProtector &protector);
+		const LocalRecordProtector &protector,
+		InboundJournalDomain domain = InboundJournalDomain::Content);
 
 	[[nodiscard]] InboundJournalLoadResult load();
 	[[nodiscard]] InboundJournalLookup lookup(
@@ -35,6 +41,10 @@ public:
 		ObjectId objectId,
 		Digest payloadHash) const override;
 	bool begin(const TransportEnvelope &envelope) override;
+	bool begin(
+		ConversationId conversationId,
+		ObjectId objectId,
+		Digest payloadHash);
 	bool accept(
 		ConversationId conversationId,
 		ObjectId objectId) override;
@@ -60,6 +70,7 @@ private:
 
 	AtomicBlobStore &_blobStore;
 	const LocalRecordProtector &_protector;
+	InboundJournalDomain _domain = InboundJournalDomain::Content;
 	std::vector<Entry> _entries;
 	std::uint64_t _revision = 0;
 	bool _loaded = false;
