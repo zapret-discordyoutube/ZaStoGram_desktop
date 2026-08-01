@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 
 namespace {
 
@@ -217,6 +218,19 @@ template <typename Id>
 	if (codec.encodePlaintext(manifest)) {
 		return Fail("private file manifest accepted invalid UTF-8 metadata");
 	}
+	manifest = MakeManifest();
+	manifest.unixTime = std::numeric_limits<std::uint64_t>::max();
+	if (codec.encodePlaintext(manifest)) {
+		return Fail("private file manifest accepted overflowing timestamp");
+	}
+	auto encoded = codec.encodePlaintext(MakeManifest());
+	if (!encoded) {
+		return Fail("private file manifest timestamp test did not encode");
+	}
+	std::fill_n(encoded->data() + 162, 8, char(0xFF));
+	if (codec.decodePlaintext(*encoded)) {
+		return Fail("private file manifest decoded overflowing timestamp");
+	}
 	return 0;
 }
 
@@ -396,12 +410,20 @@ public:
 	invalidUtf8.textUtf8 = QByteArray("\xC0\xAF", 2);
 	auto nul = body;
 	nul.textUtf8 = QByteArray("a\0b", 3);
+	auto overflowingTime = body;
+	overflowingTime.unixTime = std::numeric_limits<std::uint64_t>::max();
 	auto trailing = *encoded;
 	trailing.append('x');
 	if (codec.encodePlaintext(invalidUtf8)
 		|| codec.encodePlaintext(nul)
+		|| codec.encodePlaintext(overflowingTime)
 		|| codec.decodePlaintext(trailing)) {
 		return Fail("protected message body accepted malformed text");
+	}
+	auto overflowingEncoded = *encoded;
+	std::fill_n(overflowingEncoded.data() + 10, 8, char(0xFF));
+	if (codec.decodePlaintext(overflowingEncoded)) {
+		return Fail("protected message body decoded overflowing timestamp");
 	}
 	return 0;
 }

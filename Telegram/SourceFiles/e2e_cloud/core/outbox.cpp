@@ -7,9 +7,32 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/core/outbox.h"
 
+#include <openssl/crypto.h>
+
+#include <QtCore/QScopeGuard>
+
 #include <utility>
 
 namespace E2ECloud {
+
+void CleansePendingMessage(PendingMessage &message) {
+	if (!message.plaintext.isEmpty()) {
+		OPENSSL_cleanse(
+			message.plaintext.data(),
+			message.plaintext.size());
+	}
+	message.plaintext.clear();
+	if (!message.authenticatedData.isEmpty()) {
+		OPENSSL_cleanse(
+			message.authenticatedData.data(),
+			message.authenticatedData.size());
+	}
+	message.authenticatedData.clear();
+}
+
+void CleanseOutboxItem(OutboxItem &item) {
+	CleansePendingMessage(item.draft);
+}
 
 OutboxCoordinator::OutboxCoordinator(
 		FreshnessGate &freshness,
@@ -73,7 +96,12 @@ OutboxDispatch OutboxCoordinator::dispatchNext() {
 		};
 	}
 	const auto conversationId = _freshness.knownCheckpoint().conversationId;
-	const auto item = _store.front(conversationId);
+	auto item = _store.front(conversationId);
+	const auto itemGuard = qScopeGuard([&] {
+		if (item) {
+			CleanseOutboxItem(*item);
+		}
+	});
 	if (!item) {
 		return {
 			.result = OutboxDispatchResult::Empty,

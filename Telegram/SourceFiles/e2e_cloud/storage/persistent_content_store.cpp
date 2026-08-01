@@ -145,6 +145,8 @@ void Cleanse(QByteArray &bytes) {
 		&& record.senderAccountId
 		&& record.senderClientId
 		&& record.unixTime
+		&& record.unixTime
+			<= std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		&& record.observedTelegramMessageId >= 0
 		&& !record.plaintext.isEmpty()
 		&& record.plaintext.size() <= kMaximumRecordPlaintextSize;

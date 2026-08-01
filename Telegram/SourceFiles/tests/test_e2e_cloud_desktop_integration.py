@@ -172,6 +172,34 @@ def verify_file_chunk_self_observation_uses_exact_ciphertext() -> None:
     assert "plaintextHash" not in matcher
 
 
+def verify_pending_plaintext_is_cleansed() -> None:
+    outbox = source("SourceFiles/e2e_cloud/storage/persistent_outbox.cpp")
+    coordinator = source("SourceFiles/e2e_cloud/core/outbox.cpp")
+    bootstrap = source(
+        "SourceFiles/e2e_cloud/protocol/group_bootstrap_transaction.cpp"
+    )
+
+    assert "PersistentOutboxStore::~PersistentOutboxStore()" in outbox
+    assert outbox.count("CleanseItems(_items);") >= 6
+    assert "CleansePendingMessage(i->draft);" in outbox
+    assert "CleanseOutboxItem(*item);" in coordinator
+    assert bootstrap.count("Cleanse(*_pending);") >= 2
+    assert bootstrap.count("Cleanse(transaction);") >= 2
+
+
+def verify_manifest_key_is_owned_before_variable_fields() -> None:
+    manifest = source("SourceFiles/e2e_cloud/files/private_file_manifest.cpp")
+    decode = function_body(
+        manifest,
+        "std::optional<PrivateFileManifest> "
+        "PrivateFileManifestCodecV1::decodePlaintext(",
+        "} // namespace E2ECloud",
+    )
+
+    assert decode.index("auto key = FileEncryptionKey") \
+        < decode.index("const auto filenameSize")
+
+
 def verify_control_sync_blocks_outgoing_races() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     pump = function_body(
@@ -235,6 +263,31 @@ def verify_freshness_wait_does_not_busy_poll() -> None:
     assert "beginGroupObservation(conversationId);" in manual_sync
 
 
+def verify_control_sync_uses_a_persistent_boundary() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    controller = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "public_bootstrap_sync_controller.cpp"
+    )
+    observation = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::beginContentObservation(",
+    )
+    result = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
+
+    assert 'u"control-sync.state"_q' in service
+    assert "ObservedSyncStream::Control" in service
+    assert "startFromBoundary(boundary)" in observation
+    assert "group.controlSyncState.advance(" in result
+    assert "messageId >= _lastObservedMessageId" in controller
+    assert "messageId < _boundaryMessageId" in controller
+
+
 def verify_protected_groups_layout_uses_own_visibility() -> None:
     box = source("SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp")
 
@@ -262,8 +315,11 @@ def main() -> None:
     verify_carrier_backfill_searches_documents()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
+    verify_pending_plaintext_is_cleansed()
+    verify_manifest_key_is_owned_before_variable_fields()
     verify_control_sync_blocks_outgoing_races()
     verify_freshness_wait_does_not_busy_poll()
+    verify_control_sync_uses_a_persistent_boundary()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
 

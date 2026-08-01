@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "e2e_cloud/protocol/public_group_bootstrap.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -16,6 +17,7 @@ namespace E2ECloud {
 
 enum class PublicBootstrapSyncStatus {
 	Verified,
+	Incremental,
 	Missing,
 	CapacityExceeded,
 	ObjectConflict,
@@ -32,6 +34,8 @@ struct PublicBootstrapSyncCompletion {
 	std::vector<TelegramTransport::UntrustedObject> untrustedObjects;
 	std::uint64_t pages = 0;
 	std::uint64_t objects = 0;
+	std::int64_t previousBoundaryMessageId = 0;
+	std::int64_t newestObservedMessageId = 0;
 };
 
 class PublicBootstrapSyncController final {
@@ -50,6 +54,7 @@ public:
 	~PublicBootstrapSyncController();
 
 	[[nodiscard]] bool start(QByteArray cursor = {});
+	[[nodiscard]] bool startFromBoundary(std::int64_t boundaryMessageId);
 	void cancel();
 	[[nodiscard]] bool running() const;
 
@@ -59,6 +64,9 @@ private:
 	void pumpRequests();
 	void pageReceived(TelegramTransport::DownloadResult result);
 	void finish(PublicBootstrapSyncCompletion completion);
+	[[nodiscard]] bool startInternal(
+		QByteArray cursor,
+		std::int64_t boundaryMessageId);
 
 	ConversationId _conversationId;
 	std::uint64_t _telegramPeerIdBinding = 0;
@@ -72,6 +80,9 @@ private:
 	QByteArray _cursor;
 	std::uint64_t _bytes = 0;
 	std::uint64_t _pages = 0;
+	std::int64_t _boundaryMessageId = 0;
+	std::int64_t _newestObservedMessageId = 0;
+	std::int64_t _lastObservedMessageId = 0;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	bool _running = false;
 	bool _requestActive = false;

@@ -223,6 +223,15 @@ public:
 			!= ContentSyncStateCommitResult::Committed) {
 		return Fail("content synchronization boundary did not survive restart");
 	}
+	auto wrongStream = PersistentContentSyncState(
+		blob,
+		protector,
+		ObservedSyncStream::Control);
+	if (wrongStream.load(conversationId)
+			!= ContentSyncStateLoadResult::AuthenticationFailed
+		|| wrongStream.loaded()) {
+		return Fail("content and control boundaries were not domain-separated");
+	}
 	auto tampered = *blob.bytes;
 	tampered[tampered.size() - 1] ^= 1;
 	blob.bytes = tampered;
@@ -487,6 +496,26 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioOutboxPlaintextCleanup() {
+	auto message = Message();
+	CleansePendingMessage(message);
+	if (!message.plaintext.isEmpty()
+		|| !message.authenticatedData.isEmpty()) {
+		return Fail("pending outbox message was not cleansed");
+	}
+	auto item = OutboxItem{
+		.draft = Message(),
+		.stage = OutboxItemStage::Draft,
+		.sealed = std::nullopt,
+	};
+	CleanseOutboxItem(item);
+	if (!item.draft.plaintext.isEmpty()
+		|| !item.draft.authenticatedData.isEmpty()) {
+		return Fail("outbox item plaintext was not cleansed");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioConversationMetadataRoundTrip() {
 	auto key = LocalRecordKey();
 	key.fill(12);
@@ -599,12 +628,13 @@ public:
 		return Fail("protected outbox setup failed");
 	}
 	(*blob.bytes)[blob.bytes->size() - 1] ^= 1;
-	auto corrupted = PersistentOutboxStore(blob, protector);
-	if (corrupted.load()
+	if (store.load()
 			!= PersistentOutboxLoadResult::AuthenticationFailed
-		|| corrupted.loaded()
-		|| corrupted.size()) {
-		return Fail("corrupted protected outbox did not fail closed");
+		|| store.loaded()
+		|| store.size()
+		|| store.revision()) {
+		return Fail(
+			"corrupted outbox reload retained pending plaintext");
 	}
 	return 0;
 }
@@ -1099,6 +1129,7 @@ int main(int, char *[]) {
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,
 		ScenarioPersistentDraftRoundTrip,
+		ScenarioOutboxPlaintextCleanup,
 		ScenarioSealedRetrySurvivesRestart,
 		ScenarioCorruptionFailsClosed,
 		ScenarioMlsStateTransaction,

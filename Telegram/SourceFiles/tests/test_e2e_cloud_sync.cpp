@@ -6,8 +6,10 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/core/envelope_codec.h"
+#include "e2e_cloud/identity/openssl_account_crypto.h"
 #include "e2e_cloud/transport/carrier_sync_controller.h"
 #include "e2e_cloud/transport/observed_content_sync_controller.h"
+#include "e2e_cloud/transport/public_bootstrap_sync_controller.h"
 
 #include <cstdio>
 #include <map>
@@ -165,6 +167,7 @@ struct Fixture {
 	}
 
 	EnvelopeCodecV1 codec;
+	OpenSslSha256Provider sha256;
 	TestTransport transport;
 	TestAuthenticator authenticator;
 	TestJournal journal;
@@ -396,6 +399,121 @@ struct Fixture {
 	return 0;
 }
 
+[[nodiscard]] int ScenarioControlSyncStopsAtBoundary() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(9),
+				fixture.object(8),
+			},
+			.nextCursor = QByteArray("next"),
+			.complete = false,
+		},
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(7),
+				fixture.object(6),
+				fixture.object(5),
+			},
+			.nextCursor = QByteArray("unused"),
+			.complete = false,
+		},
+	};
+	auto completion = std::optional<PublicBootstrapSyncCompletion>();
+	auto controller = PublicBootstrapSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		std::nullopt,
+		fixture.transport,
+		fixture.codec,
+		fixture.sha256,
+		[&](PublicBootstrapSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (!controller.startFromBoundary(6)
+		|| controller.running()
+		|| !completion
+		|| completion->status != PublicBootstrapSyncStatus::Incremental
+		|| completion->verified
+		|| completion->pages != 2
+		|| completion->objects != 3
+		|| completion->previousBoundaryMessageId != 6
+		|| completion->newestObservedMessageId != 9
+		|| completion->untrustedObjects.size() != 3
+		|| completion->untrustedObjects[0].observedMessageId != 9
+		|| completion->untrustedObjects[1].observedMessageId != 8
+		|| completion->untrustedObjects[2].observedMessageId != 7) {
+		return Fail("control synchronization crossed its saved boundary");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioControlSyncRejectsMissingBoundary() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(9),
+				fixture.object(7),
+				fixture.object(5),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto status = std::optional<PublicBootstrapSyncStatus>();
+	auto controller = PublicBootstrapSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		std::nullopt,
+		fixture.transport,
+		fixture.codec,
+		fixture.sha256,
+		[&](PublicBootstrapSyncCompletion result) {
+			status = result.status;
+		});
+	if (!controller.startFromBoundary(6)
+		|| status != PublicBootstrapSyncStatus::InvalidPagination) {
+		return Fail("control synchronization accepted a missing boundary");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioControlSyncRejectsReordering() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(8),
+				fixture.object(9),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto status = std::optional<PublicBootstrapSyncStatus>();
+	auto controller = PublicBootstrapSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		std::nullopt,
+		fixture.transport,
+		fixture.codec,
+		fixture.sha256,
+		[&](PublicBootstrapSyncCompletion result) {
+			status = result.status;
+		});
+	if (!controller.startFromBoundary(6)
+		|| status != PublicBootstrapSyncStatus::InvalidPagination) {
+		return Fail("reordered control carriers were accepted");
+	}
+	return 0;
+}
+
 } // namespace
 
 int main(int, char *[]) {
@@ -406,6 +524,9 @@ int main(int, char *[]) {
 		ScenarioCancellationIgnoresLatePage,
 		ScenarioObservedContentStopsAtBoundary,
 		ScenarioObservedContentRejectsReordering,
+		ScenarioControlSyncStopsAtBoundary,
+		ScenarioControlSyncRejectsMissingBoundary,
+		ScenarioControlSyncRejectsReordering,
 	}) {
 		if (const auto result = scenario()) {
 			return result;

@@ -74,6 +74,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 namespace {
 
+inline constexpr auto kControlSyncOverlap = std::size_t(32);
+
 [[nodiscard]] Argon2idConfig DesktopArgon2idConfig() {
 	return {
 		.parameterVersion = 1,
@@ -268,6 +270,7 @@ struct DesktopService::PendingGroupCreation {
 	, freshnessTrustBlob(this->directory + u"freshness-trust.state"_q)
 	, inboundJournalBlob(this->directory + u"content-inbound.state"_q)
 	, contentIndexBlob(this->directory + u"content-index.state"_q)
+	, controlSyncBlob(this->directory + u"control-sync.state"_q)
 	, contentSyncBlob(this->directory + u"content-sync.state"_q)
 	, fileTransferBlob(this->directory + u"file-transfer.state"_q)
 	, metadata(metadataBlob, protector)
@@ -290,6 +293,10 @@ struct DesktopService::PendingGroupCreation {
 		contentIndexBlob,
 		protector,
 		sha256)
+	, controlSyncState(
+		controlSyncBlob,
+		protector,
+		ObservedSyncStream::Control)
 	, contentSyncState(contentSyncBlob, protector)
 	, fileTransfer(fileTransferBlob, protector)
 	, chunkStore(this->directory + u"file-chunks"_q, protector)
@@ -337,6 +344,7 @@ struct DesktopService::PendingGroupCreation {
 	FileAtomicBlobStore freshnessTrustBlob;
 	FileAtomicBlobStore inboundJournalBlob;
 	FileAtomicBlobStore contentIndexBlob;
+	FileAtomicBlobStore controlSyncBlob;
 	FileAtomicBlobStore contentSyncBlob;
 	FileAtomicBlobStore fileTransferBlob;
 	EnvelopeCodecV1 envelopeCodec;
@@ -351,6 +359,7 @@ struct DesktopService::PendingGroupCreation {
 	PersistentFreshnessTrust freshnessTrust;
 	PersistentInboundJournal inboundJournal;
 	PersistentContentStore contentStore;
+	PersistentContentSyncState controlSyncState;
 	PersistentContentSyncState contentSyncState;
 	PersistentFileTransfer fileTransfer;
 	FileChunkFileStore chunkStore;
@@ -370,6 +379,7 @@ struct DesktopService::PendingGroupCreation {
 	std::unique_ptr<ObservedContentSyncController> contentObservation;
 	std::set<AccountId> safetyWitnesses;
 	std::uint64_t safetyWitnessGeneration = 0;
+	bool ownSafetyGossipObserved = false;
 	bool observationDirty = false;
 	bool contentObservationDirty = false;
 	bool vaultPreflightRequired = true;
@@ -673,6 +683,8 @@ bool DesktopService::createProtectedGroup(
 			!= InboundJournalLoadResult::Missing
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
+		|| operation->controlSyncState.load(*conversationId)
+			!= ContentSyncStateLoadResult::Missing
 		|| operation->contentSyncState.load(*conversationId)
 			!= ContentSyncStateLoadResult::Missing
 		|| operation->fileTransfer.load(*conversationId)
@@ -1628,8 +1640,13 @@ void DesktopService::publishNextBootstrapObject() {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
 	}
-	const auto item = _pendingGroupCreation->outbox.front(
+	auto item = _pendingGroupCreation->outbox.front(
 		_pendingGroupCreation->conversationId);
+	const auto itemGuard = qScopeGuard([&] {
+		if (item) {
+			CleanseOutboxItem(*item);
+		}
+	});
 	if (!item) {
 		const auto conversationId = _pendingGroupCreation->conversationId;
 		const auto phase = _pendingGroupCreation->phase;
@@ -1887,6 +1904,8 @@ bool DesktopService::prepareGroupJoin(
 			!= InboundJournalLoadResult::Missing
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
+		|| operation->controlSyncState.load(conversation.conversationId)
+			!= ContentSyncStateLoadResult::Missing
 		|| operation->contentSyncState.load(conversation.conversationId)
 			!= ContentSyncStateLoadResult::Missing
 		|| operation->fileTransfer.load(conversation.conversationId)
@@ -2133,8 +2152,13 @@ bool DesktopService::processObservedSafetyGossip(
 	if (!metadata || !state) {
 		return false;
 	}
-	auto witnesses = std::set<AccountId>();
-	auto ownCurrentGossipObserved = false;
+	const auto sameGeneration = group.safetyWitnessGeneration
+		== state->generation();
+	auto witnesses = sameGeneration
+		? group.safetyWitnesses
+		: std::set<AccountId>();
+	auto ownCurrentGossipObserved = sameGeneration
+		&& group.ownSafetyGossipObserved;
 	for (const auto &object : objects) {
 		const auto observed = VerifyObservedSafetyGossip(
 			object,
@@ -2174,6 +2198,7 @@ bool DesktopService::processObservedSafetyGossip(
 		|| group.safetyWitnesses != witnesses;
 	group.safetyWitnessGeneration = state->generation();
 	group.safetyWitnesses = std::move(witnesses);
+	group.ownSafetyGossipObserved = ownCurrentGossipObserved;
 	if (witnessChanged) {
 		const auto revision = _securityRevision.current();
 		if (revision != std::numeric_limits<std::uint64_t>::max()) {
@@ -2398,7 +2423,12 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 				DesktopContentState::LocalFailure);
 			return;
 		}
-		const auto item = group.outbox.front(conversationId);
+		auto item = group.outbox.front(conversationId);
+		const auto itemGuard = qScopeGuard([&] {
+			if (item) {
+				CleanseOutboxItem(*item);
+			}
+		});
 		const auto envelope = (item && item->sealed)
 			? group.envelopeCodec.decode(*item->sealed)
 			: std::nullopt;
@@ -2768,7 +2798,13 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 					std::move(result));
 			}
 		});
-	if (!group.observation->start()) {
+	const auto boundary = group.safetyWitnessGeneration
+		? group.controlSyncState.newestObservedMessageId()
+		: 0;
+	const auto started = boundary
+		? group.observation->startFromBoundary(boundary)
+		: group.observation->start();
+	if (!started) {
 		group.observation.reset();
 		group.observationDirty = true;
 	}
@@ -2948,7 +2984,8 @@ void DesktopService::applyGroupObservation(
 		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
-	} else if (result.status != PublicBootstrapSyncStatus::Verified) {
+	} else if (result.status != PublicBootstrapSyncStatus::Verified
+		&& result.status != PublicBootstrapSyncStatus::Incremental) {
 		i->second->observationDirty = true;
 		setContentState(
 			conversationId,
@@ -2966,36 +3003,100 @@ void DesktopService::applyGroupObservation(
 			conversationId,
 			result.untrustedObjects);
 	} else {
+		const auto processingFailed = [&] {
+			const auto state = contentState(conversationId);
+			return _vaultState.current()
+					== DesktopVaultState::SecurityBlocked
+				|| _groupCreationState.current()
+					== DesktopGroupCreationState::LocalFailure
+				|| state == DesktopContentState::SecurityBlocked
+				|| state == DesktopContentState::LocalFailure;
+		};
 		const auto synchronized = synchronizeObservedGroupChanges(
 			conversationId,
 			result.untrustedObjects);
 		if (synchronized
 			|| !_groups.contains(conversationId)
-			|| _vaultState.current() == DesktopVaultState::SecurityBlocked) {
+			|| processingFailed()) {
 			return;
 		}
 		const auto safetyChanged = processObservedSafetyGossip(
 			conversationId,
 			result.untrustedObjects);
-		if (_vaultState.current() == DesktopVaultState::SecurityBlocked) {
+		if (processingFailed()) {
 			return;
 		}
 		const auto freshnessChanged = processObservedFreshness(
 			conversationId,
 			result.untrustedObjects);
-		if (_vaultState.current() == DesktopVaultState::SecurityBlocked) {
+		if (processingFailed()) {
 			return;
 		}
 		const auto grantAccepted = acceptObservedHistoryGrant(
 			conversationId,
 			result.untrustedObjects);
+		if (processingFailed()) {
+			return;
+		}
 		const auto admitted = admitObservedClient(
 			conversationId,
 			result.untrustedObjects);
+		if (processingFailed() || !_groups.contains(conversationId)) {
+			return;
+		}
 		changed = safetyChanged
 			|| freshnessChanged
 			|| grantAccepted
 			|| admitted;
+		auto &group = *_groups.find(conversationId)->second;
+		if ((result.previousBoundaryMessageId
+				&& result.previousBoundaryMessageId
+					!= group.controlSyncState
+						.newestObservedMessageId())
+			|| !result.newestObservedMessageId) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			setContentState(
+				conversationId,
+				DesktopContentState::SecurityBlocked);
+			return;
+		}
+		auto nextBoundaryMessageId = result.previousBoundaryMessageId;
+		if (!nextBoundaryMessageId) {
+			if (result.untrustedObjects.empty()) {
+				_vaultState = DesktopVaultState::SecurityBlocked;
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				setContentState(
+					conversationId,
+					DesktopContentState::SecurityBlocked);
+				return;
+			}
+			const auto index = std::min(
+				kControlSyncOverlap,
+				result.untrustedObjects.size() - 1);
+			nextBoundaryMessageId = result.untrustedObjects[index]
+				.observedMessageId;
+		} else if (result.untrustedObjects.size() > kControlSyncOverlap) {
+			nextBoundaryMessageId = result.untrustedObjects[
+				kControlSyncOverlap].observedMessageId;
+		}
+		const auto committed = group.controlSyncState.advance(
+			nextBoundaryMessageId);
+		if (committed == ContentSyncStateCommitResult::InvalidBoundary) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			setContentState(
+				conversationId,
+				DesktopContentState::SecurityBlocked);
+			return;
+		} else if (committed
+				== ContentSyncStateCommitResult::PersistenceFailed) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			setContentState(
+				conversationId,
+				DesktopContentState::LocalFailure);
+			return;
+		}
 		if (rerun) {
 			beginGroupObservation(conversationId);
 			return;
@@ -3367,6 +3468,20 @@ bool DesktopService::acceptObservedHistoryGrant(
 		if (accepted == HistoryGrantServiceStatus::Accepted
 			|| accepted == HistoryGrantServiceStatus::AlreadyAccepted) {
 			return true;
+		} else if (accepted == HistoryGrantServiceStatus::ArchiveConflict) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			setContentState(
+				conversationId,
+				DesktopContentState::SecurityBlocked);
+			return false;
+		} else if (accepted
+				== HistoryGrantServiceStatus::PersistenceFailure) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			setContentState(
+				conversationId,
+				DesktopContentState::LocalFailure);
+			return false;
 		}
 	}
 	return false;
@@ -3811,6 +3926,8 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		conversationId);
 	const auto inboundJournalLoad = operation->inboundJournal.load();
 	const auto contentStoreLoad = operation->contentStore.load();
+	const auto controlSyncLoad = operation->controlSyncState.load(
+		conversationId);
 	const auto contentSyncLoad = operation->contentSyncState.load(
 		conversationId);
 	const auto fileTransferLoad = operation->fileTransfer.load(
@@ -3852,6 +3969,10 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		|| contentStoreLoad == ContentStoreLoadResult::ReadFailed
 		|| contentStoreLoad == ContentStoreLoadResult::AuthenticationFailed
 		|| contentStoreLoad == ContentStoreLoadResult::InvalidSnapshot
+		|| controlSyncLoad == ContentSyncStateLoadResult::ReadFailed
+		|| controlSyncLoad
+			== ContentSyncStateLoadResult::AuthenticationFailed
+		|| controlSyncLoad == ContentSyncStateLoadResult::InvalidSnapshot
 		|| contentSyncLoad == ContentSyncStateLoadResult::ReadFailed
 		|| contentSyncLoad
 			== ContentSyncStateLoadResult::AuthenticationFailed

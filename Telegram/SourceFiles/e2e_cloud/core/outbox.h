@@ -34,6 +34,9 @@ struct OutboxItem {
 	std::optional<EncodedEnvelope> sealed;
 };
 
+void CleansePendingMessage(PendingMessage &message);
+void CleanseOutboxItem(OutboxItem &item);
+
 class ProtectedOutboxStore {
 public:
 	virtual ~ProtectedOutboxStore() = default;

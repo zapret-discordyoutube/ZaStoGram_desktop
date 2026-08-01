@@ -65,9 +65,23 @@ PublicBootstrapSyncController::~PublicBootstrapSyncController() {
 }
 
 bool PublicBootstrapSyncController::start(QByteArray cursor) {
+	return startInternal(std::move(cursor), 0);
+}
+
+bool PublicBootstrapSyncController::startFromBoundary(
+		std::int64_t boundaryMessageId) {
+	return (boundaryMessageId > 0)
+		? startInternal({}, boundaryMessageId)
+		: false;
+}
+
+bool PublicBootstrapSyncController::startInternal(
+		QByteArray cursor,
+		std::int64_t boundaryMessageId) {
 	if (_running
 		|| !_conversationId
 		|| !_telegramPeerIdBinding
+		|| boundaryMessageId < 0
 		|| cursor.size() > kMaximumCursorSize) {
 		return false;
 	}
@@ -76,6 +90,9 @@ bool PublicBootstrapSyncController::start(QByteArray cursor) {
 	_cursor = std::move(cursor);
 	_bytes = 0;
 	_pages = 0;
+	_boundaryMessageId = boundaryMessageId;
+	_newestObservedMessageId = 0;
+	_lastObservedMessageId = 0;
 	_running = true;
 	_requestActive = false;
 	_requestQueued = true;
@@ -91,6 +108,8 @@ void PublicBootstrapSyncController::cancel() {
 			.untrustedObjects = {},
 			.pages = _pages,
 			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
 		});
 	}
 }
@@ -143,6 +162,8 @@ void PublicBootstrapSyncController::pageReceived(
 			.untrustedObjects = {},
 			.pages = _pages,
 			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
 		});
 		return;
 	} else if (_pages == kMaximumPages) {
@@ -152,11 +173,41 @@ void PublicBootstrapSyncController::pageReceived(
 			.untrustedObjects = {},
 			.pages = _pages,
 			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
 		});
 		return;
 	}
 	++_pages;
+	auto reachedBoundary = false;
 	for (auto &object : result.untrustedObjects) {
+		const auto messageId = object.observedMessageId;
+		if (object.observedTelegramPeerIdBinding
+				!= _telegramPeerIdBinding
+			|| messageId <= 0
+			|| (_lastObservedMessageId
+				&& messageId >= _lastObservedMessageId)
+			|| (_boundaryMessageId
+				&& messageId < _boundaryMessageId)) {
+			finish({
+				.status = PublicBootstrapSyncStatus::InvalidPagination,
+				.verified = std::nullopt,
+				.untrustedObjects = {},
+				.pages = _pages,
+				.objects = _objects.size(),
+				.previousBoundaryMessageId = _boundaryMessageId,
+				.newestObservedMessageId = _newestObservedMessageId,
+			});
+			return;
+		}
+		_lastObservedMessageId = messageId;
+		if (!_newestObservedMessageId) {
+			_newestObservedMessageId = messageId;
+		}
+		if (_boundaryMessageId && messageId == _boundaryMessageId) {
+			reachedBoundary = true;
+			break;
+		}
 		if (object.bytes.size() < 0
 			|| _objects.size() == kMaximumObjects
 			|| _bytes > kMaximumBytes
@@ -167,13 +218,38 @@ void PublicBootstrapSyncController::pageReceived(
 				.untrustedObjects = {},
 				.pages = _pages,
 				.objects = _objects.size(),
+				.previousBoundaryMessageId = _boundaryMessageId,
+				.newestObservedMessageId = _newestObservedMessageId,
 			});
 			return;
 		}
 		_bytes += std::uint64_t(object.bytes.size());
 		_objects.push_back(std::move(object));
 	}
-	if (result.complete) {
+	if (reachedBoundary) {
+		const auto objectCount = _objects.size();
+		finish({
+			.status = PublicBootstrapSyncStatus::Incremental,
+			.verified = std::nullopt,
+			.untrustedObjects = std::move(_objects),
+			.pages = _pages,
+			.objects = objectCount,
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
+		});
+		return;
+	} else if (result.complete && _boundaryMessageId) {
+		finish({
+			.status = PublicBootstrapSyncStatus::InvalidPagination,
+			.verified = std::nullopt,
+			.untrustedObjects = {},
+			.pages = _pages,
+			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
+		});
+		return;
+	} else if (result.complete) {
 		auto outcome = VerifyPublicGroupBootstrap(
 			_objects,
 			_telegramPeerIdBinding,
@@ -188,6 +264,8 @@ void PublicBootstrapSyncController::pageReceived(
 			.untrustedObjects = std::move(_objects),
 			.pages = _pages,
 			.objects = objectCount,
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
 		});
 		return;
 	} else if (result.nextCursor.isEmpty()
@@ -202,6 +280,8 @@ void PublicBootstrapSyncController::pageReceived(
 			.untrustedObjects = {},
 			.pages = _pages,
 			.objects = _objects.size(),
+			.previousBoundaryMessageId = _boundaryMessageId,
+			.newestObservedMessageId = _newestObservedMessageId,
 		});
 		return;
 	}

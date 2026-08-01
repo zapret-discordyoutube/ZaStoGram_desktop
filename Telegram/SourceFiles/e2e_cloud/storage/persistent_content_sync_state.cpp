@@ -20,7 +20,14 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 	'T', 'D', 'E', '2', 'E', 'C', 'S', 'Y',
 };
 inline constexpr auto kEncodedSize = 8 + 2 + 32 + 8 + 8;
-inline constexpr auto kPurpose = "e2e-cloud-content-sync-state-v1";
+inline constexpr auto kContentPurpose = "e2e-cloud-content-sync-state-v1";
+inline constexpr auto kControlPurpose = "e2e-cloud-control-sync-state-v1";
+
+[[nodiscard]] QByteArray Purpose(ObservedSyncStream stream) {
+	return QByteArray((stream == ObservedSyncStream::Control)
+		? kControlPurpose
+		: kContentPurpose);
+}
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -64,9 +71,11 @@ void Cleanse(QByteArray &bytes) {
 
 PersistentContentSyncState::PersistentContentSyncState(
 		AtomicBlobStore &blobStore,
-		const LocalRecordProtector &protector)
+		const LocalRecordProtector &protector,
+		ObservedSyncStream stream)
 : _blobStore(blobStore)
-, _protector(protector) {
+, _protector(protector)
+, _stream(stream) {
 }
 
 ContentSyncStateLoadResult PersistentContentSyncState::load(
@@ -86,7 +95,7 @@ ContentSyncStateLoadResult PersistentContentSyncState::load(
 	} else if (stored.status != BlobReadStatus::Found) {
 		return ContentSyncStateLoadResult::ReadFailed;
 	}
-	auto plaintext = _protector.open(QByteArray(kPurpose), stored.bytes);
+	auto plaintext = _protector.open(Purpose(_stream), stored.bytes);
 	if (!plaintext) {
 		return ContentSyncStateLoadResult::AuthenticationFailed;
 	}
@@ -166,7 +175,7 @@ bool PersistentContentSyncState::persist(
 	AppendUint64(plaintext, revision);
 	AppendUint64(plaintext, std::uint64_t(newestObservedMessageId));
 	const auto protectedBytes = _protector.seal(
-		QByteArray(kPurpose),
+		Purpose(_stream),
 		plaintext);
 	Cleanse(plaintext);
 	return protectedBytes && _blobStore.writeAtomic(*protectedBytes);

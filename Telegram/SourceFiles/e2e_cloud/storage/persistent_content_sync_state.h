@@ -29,11 +29,17 @@ enum class ContentSyncStateCommitResult {
 	PersistenceFailed,
 };
 
+enum class ObservedSyncStream {
+	Content,
+	Control,
+};
+
 class PersistentContentSyncState final {
 public:
 	PersistentContentSyncState(
 		AtomicBlobStore &blobStore,
-		const LocalRecordProtector &protector);
+		const LocalRecordProtector &protector,
+		ObservedSyncStream stream = ObservedSyncStream::Content);
 
 	[[nodiscard]] ContentSyncStateLoadResult load(
 		ConversationId conversationId);
@@ -50,6 +56,7 @@ private:
 
 	AtomicBlobStore &_blobStore;
 	const LocalRecordProtector &_protector;
+	ObservedSyncStream _stream = ObservedSyncStream::Content;
 	ConversationId _conversationId;
 	std::int64_t _newestObservedMessageId = 0;
 	std::uint64_t _revision = 0;

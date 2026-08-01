@@ -7,6 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/storage/persistent_outbox.h"
 
+#include <openssl/crypto.h>
+
+#include <QtCore/QScopeGuard>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -26,9 +30,34 @@ inline constexpr auto kMaximumAuthenticatedDataSize = 1024 * 1024;
 inline constexpr auto kMaximumSealedEnvelopeSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumSnapshotSize = 128 * 1024 * 1024;
 
+void CleanseItems(std::vector<OutboxItem> &items) {
+	for (auto &item : items) {
+		CleanseOutboxItem(item);
+	}
+	items.clear();
+}
+
 struct Snapshot {
+	Snapshot() = default;
+	Snapshot(Snapshot &&) = default;
+	Snapshot &operator=(Snapshot &&) = default;
+	Snapshot(const Snapshot &) = delete;
+	Snapshot &operator=(const Snapshot &) = delete;
+
+	~Snapshot() {
+		CleanseItems(items);
+	}
+
 	std::uint64_t revision = 0;
 	std::vector<OutboxItem> items;
+};
+
+struct SensitiveItem {
+	~SensitiveItem() {
+		CleanseOutboxItem(value);
+	}
+
+	OutboxItem value;
 };
 
 struct Reader {
@@ -238,7 +267,8 @@ template <typename Array>
 	result.items.reserve(count);
 	auto objectIds = std::set<ObjectId>();
 	for (auto index = std::uint32_t(); index != count; ++index) {
-		auto item = OutboxItem();
+		auto guarded = SensitiveItem();
+		auto &item = guarded.value;
 		auto stage = std::uint8_t();
 		auto sealed = EncodedEnvelope();
 		if (!ReadArray(reader, item.draft.conversationId.bytes)
@@ -288,15 +318,18 @@ PersistentOutboxStore::PersistentOutboxStore(
 , _protector(protector) {
 }
 
+PersistentOutboxStore::~PersistentOutboxStore() {
+	CleanseItems(_items);
+}
+
 PersistentOutboxLoadResult PersistentOutboxStore::load() {
-	_items.clear();
+	CleanseItems(_items);
 	_revision = 0;
 	_loaded = false;
 	const auto stored = _blobStore.read();
 	if (stored.status == BlobReadStatus::Error) {
 		return PersistentOutboxLoadResult::StorageError;
 	} else if (stored.status == BlobReadStatus::Missing) {
-		_items.clear();
 		_revision = 0;
 		_loaded = true;
 		return PersistentOutboxLoadResult::Empty;
@@ -305,12 +338,12 @@ PersistentOutboxLoadResult PersistentOutboxStore::load() {
 	if (!opened) {
 		return PersistentOutboxLoadResult::AuthenticationFailed;
 	}
-	const auto snapshot = DecodeSnapshot(*opened);
-	std::fill_n(opened->data(), opened->size(), char(0));
+	auto snapshot = DecodeSnapshot(*opened);
+	OPENSSL_cleanse(opened->data(), opened->size());
 	if (!snapshot) {
 		return PersistentOutboxLoadResult::InvalidSnapshot;
 	}
-	_items = snapshot->items;
+	_items = std::move(snapshot->items);
 	_revision = snapshot->revision;
 	_loaded = true;
 	return PersistentOutboxLoadResult::Loaded;
@@ -342,12 +375,18 @@ std::optional<OutboxItem> PersistentOutboxStore::item(
 }
 
 bool PersistentOutboxStore::append(PendingMessage message) {
+	const auto messageGuard = qScopeGuard([&] {
+		CleansePendingMessage(message);
+	});
 	if (!_loaded
 		|| _revision == std::numeric_limits<std::uint64_t>::max()
 		|| contains(message.objectId)) {
 		return false;
 	}
 	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
 	next.push_back({
 		.draft = std::move(message),
 		.stage = OutboxItemStage::Draft,
@@ -357,7 +396,9 @@ bool PersistentOutboxStore::append(PendingMessage message) {
 	if (!validItem(next.back()) || !persist(next, revision)) {
 		return false;
 	}
+	CleanseItems(_items);
 	_items = std::move(next);
+	nextGuard.dismiss();
 	_revision = revision;
 	return true;
 }
@@ -381,6 +422,9 @@ bool PersistentOutboxStore::appendSealed(EncodedEnvelope envelope) {
 			&& existing->sealed == envelope;
 	}
 	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
 	next.push_back({
 		.draft = {
 			.conversationId = envelope.conversationId,
@@ -395,7 +439,9 @@ bool PersistentOutboxStore::appendSealed(EncodedEnvelope envelope) {
 	if (!validItem(next.back()) || !persist(next, revision)) {
 		return false;
 	}
+	CleanseItems(_items);
 	_items = std::move(next);
+	nextGuard.dismiss();
 	_revision = revision;
 	return true;
 }
@@ -403,6 +449,9 @@ bool PersistentOutboxStore::appendSealed(EncodedEnvelope envelope) {
 bool PersistentOutboxStore::appendSealedThenDraft(
 		EncodedEnvelope envelope,
 		PendingMessage message) {
+	const auto messageGuard = qScopeGuard([&] {
+		CleansePendingMessage(message);
+	});
 	if (!_loaded
 		|| _revision == std::numeric_limits<std::uint64_t>::max()
 		|| contains(envelope.objectId)
@@ -412,6 +461,9 @@ bool PersistentOutboxStore::appendSealedThenDraft(
 		return false;
 	}
 	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
 	next.push_back({
 		.draft = {
 			.conversationId = envelope.conversationId,
@@ -433,7 +485,9 @@ bool PersistentOutboxStore::appendSealedThenDraft(
 		|| !persist(next, revision)) {
 		return false;
 	}
+	CleanseItems(_items);
 	_items = std::move(next);
+	nextGuard.dismiss();
 	_revision = revision;
 	return true;
 }
@@ -462,6 +516,9 @@ bool PersistentOutboxStore::replaceWithSealed(
 		return false;
 	}
 	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
 	const auto i = std::find_if(
 		begin(next),
 		end(next),
@@ -473,13 +530,14 @@ bool PersistentOutboxStore::replaceWithSealed(
 	}
 	i->stage = OutboxItemStage::Sealed;
 	i->sealed = std::move(envelope);
-	i->draft.plaintext.clear();
-	i->draft.authenticatedData.clear();
+	CleansePendingMessage(i->draft);
 	const auto revision = _revision + 1;
 	if (!validItem(*i) || !persist(next, revision)) {
 		return false;
 	}
+	CleanseItems(_items);
 	_items = std::move(next);
+	nextGuard.dismiss();
 	_revision = revision;
 	return true;
 }
@@ -490,6 +548,9 @@ bool PersistentOutboxStore::remove(ObjectId objectId) {
 		return false;
 	}
 	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
 	const auto i = std::find_if(
 		begin(next),
 		end(next),
@@ -504,7 +565,9 @@ bool PersistentOutboxStore::remove(ObjectId objectId) {
 	if (!persist(next, revision)) {
 		return false;
 	}
+	CleanseItems(_items);
 	_items = std::move(next);
+	nextGuard.dismiss();
 	_revision = revision;
 	return true;
 }
@@ -519,7 +582,7 @@ bool PersistentOutboxStore::persist(
 	const auto protectedBytes = _protector.seal(
 		QByteArray(kPurpose),
 		*encoded);
-	std::fill_n(encoded->data(), encoded->size(), char(0));
+	OPENSSL_cleanse(encoded->data(), encoded->size());
 	return protectedBytes && _blobStore.writeAtomic(*protectedBytes);
 }
 

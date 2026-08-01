@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace E2ECloud {
 namespace {
@@ -119,7 +120,10 @@ void AppendArray(QByteArray &result, const Array &value) {
 
 std::optional<QByteArray> ProtectedMessageBodyCodecV1::encodePlaintext(
 		const ProtectedMessageBody &body) const {
-	if (!body.unixTime || !ValidUtf8(body.textUtf8)) {
+	if (!body.unixTime
+		|| body.unixTime
+			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
+		|| !ValidUtf8(body.textUtf8)) {
 		return std::nullopt;
 	}
 	auto result = QByteArray();
@@ -145,6 +149,8 @@ ProtectedMessageBodyCodecV1::decodePlaintext(const QByteArray &bytes) const {
 	const auto unixTime = ReadUint64(bytes.constData() + 10);
 	const auto size = ReadUint32(bytes.constData() + 18);
 	if (!unixTime
+		|| unixTime
+			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		|| size > kMaximumProtectedMessageTextSize
 		|| bytes.size() != kHeaderSize + int(size)) {
 		return std::nullopt;

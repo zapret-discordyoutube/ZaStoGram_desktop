@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
+#include <QtCore/QScopeGuard>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -160,6 +162,11 @@ void Cleanse(QByteArray &bytes) {
 template <typename Value>
 void Cleanse(Value &value) {
 	OPENSSL_cleanse(value.data(), value.size());
+}
+
+void Cleanse(GroupBootstrapTransaction &transaction) {
+	Cleanse(transaction.mlsEngineState);
+	transaction.archiveEpoch.key = ArchiveKey32();
 }
 
 [[nodiscard]] bool SameArchiveEpoch(
@@ -509,6 +516,9 @@ GroupBootstrapJournalLoadResult PersistentGroupBootstrapJournal::load(
 
 GroupBootstrapJournalCommitResult PersistentGroupBootstrapJournal::prepare(
 		GroupBootstrapTransaction transaction) {
+	const auto transactionGuard = qScopeGuard([&] {
+		Cleanse(transaction);
+	});
 	if (!_loaded) {
 		return GroupBootstrapJournalCommitResult::NotLoaded;
 	} else if (!BasicTransactionStructure(transaction)
@@ -542,6 +552,7 @@ GroupBootstrapJournalCommitResult PersistentGroupBootstrapJournal::clear(
 	if (!persist(nullptr, revision)) {
 		return GroupBootstrapJournalCommitResult::PersistenceFailed;
 	}
+	Cleanse(*_pending);
 	_pending.reset();
 	_revision = revision;
 	return GroupBootstrapJournalCommitResult::Cleared;
@@ -574,6 +585,9 @@ bool PersistentGroupBootstrapJournal::persist(
 }
 
 void PersistentGroupBootstrapJournal::reset() {
+	if (_pending) {
+		Cleanse(*_pending);
+	}
 	_pending.reset();
 	_conversationId = {};
 	_revision = 0;
@@ -599,6 +613,9 @@ GroupBootstrapTransactionCoordinator::GroupBootstrapTransactionCoordinator(
 
 GroupBootstrapApplyStatus GroupBootstrapTransactionCoordinator::apply(
 		GroupBootstrapTransaction transaction) {
+	const auto transactionGuard = qScopeGuard([&] {
+		Cleanse(transaction);
+	});
 	if (!_journal.loaded()
 		|| !_mlsState.loaded()
 		|| !_outbox.loaded()) {
@@ -704,7 +721,12 @@ GroupBootstrapApplyStatus GroupBootstrapTransactionCoordinator::replay(
 			i != transaction->outboxEnvelopes.size();
 			++i) {
 		const auto &expected = transaction->outboxEnvelopes[i];
-		const auto existing = _outbox.item(expected.objectId);
+		auto existing = _outbox.item(expected.objectId);
+		const auto existingGuard = qScopeGuard([&] {
+			if (existing) {
+				CleanseOutboxItem(*existing);
+			}
+		});
 		if (existing) {
 			if (existing->stage != OutboxItemStage::Sealed
 				|| existing->sealed != expected) {

@@ -28,6 +28,7 @@ public:
 	PersistentOutboxStore(
 		AtomicBlobStore &blobStore,
 		const LocalRecordProtector &protector);
+	~PersistentOutboxStore() override;
 
 	[[nodiscard]] PersistentOutboxLoadResult load();
 	[[nodiscard]] bool loaded() const;

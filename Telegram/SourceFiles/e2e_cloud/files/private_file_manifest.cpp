@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace E2ECloud {
 namespace {
@@ -111,6 +112,8 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 		|| !manifest.key.valid()
 		|| !manifest.plaintextHash
 		|| !manifest.unixTime
+		|| manifest.unixTime
+			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		|| !ValidFilename(manifest.filenameUtf8)
 		|| !ValidMimeType(manifest.mimeTypeUtf8)) {
 		return std::nullopt;
@@ -160,6 +163,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 	ReadArray(bytes.constData() + 122, context.noncePrefix);
 	ReadArray(bytes.constData() + 130, hash.bytes);
 	const auto unixTime = ReadUint64(bytes.constData() + 162);
+	auto key = FileEncryptionKey(std::move(keyBytes));
 	const auto filenameSize = ReadUint16(bytes.constData() + 170);
 	if (filenameSize > kMaximumFilenameSize
 		|| bytes.size() < 174 + filenameSize) {
@@ -173,11 +177,12 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		return std::nullopt;
 	}
 	const auto mime = QByteArray(bytes.constData() + mimeOffset + 2, mimeSize);
-	auto key = FileEncryptionKey(std::move(keyBytes));
 	if (!IsValidFileChunkContext(context)
 		|| !key.valid()
 		|| !hash
 		|| !unixTime
+		|| unixTime
+			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		|| !ValidFilename(filename)
 		|| !ValidMimeType(mime)) {
 		return std::nullopt;
