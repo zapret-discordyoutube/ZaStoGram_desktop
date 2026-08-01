@@ -45,6 +45,11 @@ previous in-memory and on-disk state unchanged. Authentication failure,
 malformed lengths, duplicate object identifiers, invalid stages, or mismatched
 sealed identifiers fail closed.
 
+If Telegram accepts an upload but removing its local outbox item fails, the
+sealed item remains queued and only the transient in-flight marker is released.
+A later retry therefore sends the exact same envelope instead of leaving the
+conversation permanently stuck or resealing the plaintext.
+
 Content records deduplicate by the authenticated E2E object and plaintext, not
 by Telegram message id. Reposting identical carrier bytes under another
 Telegram id is harmless, while changing any protected content under the same

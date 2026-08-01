@@ -667,6 +667,53 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioUploadRetriesAfterAcknowledgeFailure() {
+	const auto conversationId = FilledId<ConversationId>(1);
+	const auto checkpoint = MakeCheckpoint(conversationId, 8, 2);
+	const auto nonce = FilledId<ChallengeNonce>(3);
+	auto gate = FreshnessGate(checkpoint);
+	auto verifier = TestVerifier();
+	auto store = TestOutboxStore();
+	auto protector = TestProtector();
+	auto transport = TestTransport();
+	auto completions = std::vector<UploadCompletion>();
+	auto coordinator = OutboxCoordinator(gate, store, protector);
+	auto controller = OutboxUploadController(
+		coordinator,
+		transport,
+		[&](UploadCompletion completion) {
+			completions.push_back(completion);
+		});
+	if (coordinator.enqueue(MakeMessage(conversationId))
+			!= EnqueueResult::Queued
+		|| !gate.beginChallenge(nonce)
+		|| gate.acceptResponse(MakeResponse(checkpoint, nonce), verifier)
+			!= FreshnessResponseResult::Accepted
+		|| controller.pump() != UploadPumpResult::Started) {
+		return Fail("acknowledgement failure retry setup failed");
+	}
+	store.failRemove = true;
+	transport.finish(0, TelegramTransport::UploadResult::Accepted);
+	store.failRemove = false;
+	if (completions.size() != 1
+		|| completions.front().outboxUpdated
+		|| controller.uploadInProgress()
+		|| controller.pump() != UploadPumpResult::Started
+		|| transport.uploads.size() != 2
+		|| transport.uploads[0] != transport.uploads[1]
+		|| protector.calls != 1) {
+		return Fail("failed local acknowledgement left upload stuck");
+	}
+	transport.finish(1, TelegramTransport::UploadResult::Accepted);
+	if (completions.size() != 2
+		|| !completions.back().outboxUpdated
+		|| !store.items.empty()
+		|| controller.pump() != UploadPumpResult::Empty) {
+		return Fail("acknowledgement retry did not clear the outbox");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioUploadCallbackCannotOutliveController() {
 	const auto conversationId = FilledId<ConversationId>(1);
 	const auto checkpoint = MakeCheckpoint(conversationId, 8, 2);
@@ -987,6 +1034,7 @@ int main(int, char *[]) {
 		ScenarioOutboxRejectsProtectorMismatch,
 		ScenarioUploadControllerAcknowledgesRpcSuccess,
 		ScenarioUploadControllerRetriesExactEnvelope,
+		ScenarioUploadRetriesAfterAcknowledgeFailure,
 		ScenarioUploadCallbackCannotOutliveController,
 		ScenarioCarrierAcknowledgesOnlyAfterSendMedia,
 		ScenarioCarrierPropagatesUploadFailure,

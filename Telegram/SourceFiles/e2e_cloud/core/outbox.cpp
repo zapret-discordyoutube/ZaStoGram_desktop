@@ -161,11 +161,10 @@ OutboxDispatch OutboxCoordinator::dispatchNext() {
 bool OutboxCoordinator::acknowledgeUploaded(ObjectId objectId) {
 	if (!_inFlightObjectId || *_inFlightObjectId != objectId) {
 		return false;
-	} else if (!_store.remove(objectId)) {
-		return false;
 	}
+	const auto removed = _store.remove(objectId);
 	_inFlightObjectId.reset();
-	return true;
+	return removed;
 }
 
 bool OutboxCoordinator::markUploadFailed(ObjectId objectId) {
