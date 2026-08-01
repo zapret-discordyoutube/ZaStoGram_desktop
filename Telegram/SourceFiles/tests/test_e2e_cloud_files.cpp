@@ -7,11 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/files/file_chunk_crypto.h"
 #include "e2e_cloud/files/file_chunk_envelope.h"
+#include "e2e_cloud/files/file_chunk_file_store.h"
 #include "e2e_cloud/files/idempotent_file_chunk_protector.h"
 #include "e2e_cloud/files/private_file_manifest.h"
 #include "e2e_cloud/core/envelope_codec.h"
 #include "e2e_cloud/content/protected_message_body.h"
 #include "e2e_cloud/identity/account_identity.h"
+#include "e2e_cloud/storage/aes_gcm_local_record_protector.h"
+
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QTemporaryDir>
 
 #include <algorithm>
 #include <cstdio>
@@ -332,6 +338,46 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioChunkStoreRejectsOversizedRecord() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file chunk temporary directory was unavailable");
+	}
+	const auto conversationId = FilledId<ConversationId>(43);
+	const auto fileId = FilledId<FileId>(44);
+	const auto hex = [](const auto &identifier) {
+		return QString::fromLatin1(QByteArray(
+			reinterpret_cast<const char*>(identifier.bytes.data()),
+			int(identifier.bytes.size())).toHex());
+	};
+	const auto chunkDirectory = QDir(directory.path()).filePath(
+		hex(conversationId) + QLatin1Char('/') + hex(fileId));
+	if (!QDir().mkpath(chunkDirectory)) {
+		return Fail("file chunk fixture directory could not be created");
+	}
+	const auto path = QDir(chunkDirectory).filePath("0.fcl");
+	auto file = QFile(path);
+	constexpr auto kMaximumProtectedChunkSize = qint64(
+		4 * 1024 * 1024 + 122 + 114 + 42);
+	if (!file.open(QIODevice::WriteOnly)
+		|| !file.seek(kMaximumProtectedChunkSize)
+		|| file.write("x", 1) != 1) {
+		return Fail("oversized file chunk fixture could not be created");
+	}
+	file.close();
+	const auto stored = FileChunkFileStore(
+		directory.path(),
+		protector).read(conversationId, fileId, 0);
+	if (stored.status != FileChunkReadStatus::Error
+		|| !stored.chunk.exactCiphertext.isEmpty()) {
+		return Fail("file chunk read allocated an oversized local record");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioSignedChunkEnvelope() {
 	const auto sha256 = OpenSslSha256Provider();
 	const auto codec = EnvelopeCodecV1();
@@ -441,6 +487,7 @@ int main(int, char *[]) {
 		ScenarioPrivateManifestRejectsUnsafeName,
 		ScenarioIdempotentChunkLedger,
 		ScenarioChunkLedgerFailsClosed,
+		ScenarioChunkStoreRejectsOversizedRecord,
 		ScenarioSignedChunkEnvelope,
 		ScenarioProtectedMessageBody,
 	}) {

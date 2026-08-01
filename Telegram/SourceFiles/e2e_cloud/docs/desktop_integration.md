@@ -117,9 +117,11 @@ observed Telegram message boundary. Every page remains untrusted. Telegram
 message IDs determine only where to resume scanning and never authorize,
 identify, or order protected content.
 
-The Desktop conversation initially renders the newest 200 authenticated local
-records. An in-place older-history action expands that window in 200-record
-pages without discarding or redownloading the earlier synchronized archive.
+The Desktop conversation initially decrypts and renders only the newest 200
+authenticated local records. An in-place older-history action expands that
+window in 200-record pages without discarding or redownloading the earlier
+synchronized archive. The separate files view uses the same bounded paging;
+opening either view no longer copies and sorts the complete decrypted history.
 
 ## Sending and freshness
 

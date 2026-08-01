@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QByteArray>
 #include <QtCore/QString>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -69,7 +70,12 @@ public:
 		ProtectedContentRecord record);
 	[[nodiscard]] std::optional<ProtectedContentRecord> record(
 		ObjectId eventObjectId) const;
-	[[nodiscard]] const std::vector<ProtectedContentRecord> &records() const;
+	[[nodiscard]] std::vector<ProtectedContentRecord> records(
+		std::size_t offset,
+		std::size_t limit,
+		std::optional<ObjectKind> kind = std::nullopt) const;
+	[[nodiscard]] std::size_t size(
+		std::optional<ObjectKind> kind = std::nullopt) const;
 	[[nodiscard]] std::uint64_t revision() const;
 	[[nodiscard]] bool loaded() const;
 
@@ -77,10 +83,15 @@ private:
 	struct IndexEntry {
 		ObjectId eventObjectId;
 		Digest recordHash;
+		ObjectKind objectKind = ObjectKind::EncryptedMessageBody;
+		std::uint64_t unixTime = 0;
 	};
 
 	[[nodiscard]] QString recordPath(ObjectId eventObjectId) const;
 	[[nodiscard]] QByteArray recordPurpose(ObjectId eventObjectId) const;
+	[[nodiscard]] std::optional<ProtectedContentRecord> readRecord(
+		const IndexEntry &entry) const;
+	void rebuildOrderedEntries();
 	[[nodiscard]] bool persistIndex(
 		const std::vector<IndexEntry> &entries,
 		std::uint64_t revision) const;
@@ -90,8 +101,8 @@ private:
 	AtomicBlobStore &_indexBlobStore;
 	const LocalRecordProtector &_protector;
 	const Sha256Provider &_sha256;
-	std::vector<ProtectedContentRecord> _records;
 	std::vector<IndexEntry> _entries;
+	std::vector<std::size_t> _orderedEntries;
 	std::uint64_t _revision = 0;
 	bool _loaded = false;
 };

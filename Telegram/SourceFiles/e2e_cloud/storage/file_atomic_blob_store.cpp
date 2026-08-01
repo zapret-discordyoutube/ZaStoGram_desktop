@@ -15,6 +15,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <utility>
 
 namespace E2ECloud {
+namespace {
+
+inline constexpr auto kMaximumBlobSize = qint64(128 * 1024 * 1024 + 42);
+
+} // namespace
 
 FileAtomicBlobStore::FileAtomicBlobStore(QString path)
 : _path(std::move(path)) {
@@ -33,13 +38,30 @@ BlobReadResult FileAtomicBlobStore::read() const {
 			.bytes = {},
 		};
 	}
+	const auto size = file.size();
+	if (size <= 0 || size > kMaximumBlobSize) {
+		return {
+			.status = BlobReadStatus::Error,
+			.bytes = {},
+		};
+	}
+	auto bytes = file.read(size);
+	if (bytes.size() != size) {
+		return {
+			.status = BlobReadStatus::Error,
+			.bytes = {},
+		};
+	}
 	return {
 		.status = BlobReadStatus::Found,
-		.bytes = file.readAll(),
+		.bytes = std::move(bytes),
 	};
 }
 
 bool FileAtomicBlobStore::writeAtomic(const QByteArray &bytes) {
+	if (bytes.isEmpty() || bytes.size() > kMaximumBlobSize) {
+		return false;
+	}
 	const auto directory = QFileInfo(_path).absoluteDir();
 	if (!directory.exists() && !QDir().mkpath(directory.absolutePath())) {
 		return false;

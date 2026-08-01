@@ -27,6 +27,8 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 };
 inline constexpr auto kHeaderSize = 8 + 2 + 32 + 32 + 4 + 32 + 4;
 inline constexpr auto kMaximumCiphertextSize = 4 * 1024 * 1024 + 122;
+inline constexpr auto kMaximumProtectedSize = qint64(
+	kHeaderSize + kMaximumCiphertextSize + 42);
 inline constexpr auto kPurpose = "e2e-cloud-file-chunk-ledger-v1";
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
@@ -104,7 +106,14 @@ FileChunkReadResult FileChunkFileStore::read(
 	} else if (!file.open(QIODevice::ReadOnly)) {
 		return { .status = FileChunkReadStatus::Error, .chunk = {} };
 	}
-	const auto protectedBytes = file.readAll();
+	const auto size = file.size();
+	if (size <= 0 || size > kMaximumProtectedSize) {
+		return { .status = FileChunkReadStatus::Error, .chunk = {} };
+	}
+	const auto protectedBytes = file.read(size);
+	if (protectedBytes.size() != size) {
+		return { .status = FileChunkReadStatus::Error, .chunk = {} };
+	}
 	auto plaintext = _protector.open(QByteArray(kPurpose), protectedBytes);
 	const auto fail = [&] {
 		if (plaintext) {

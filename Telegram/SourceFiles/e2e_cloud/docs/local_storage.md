@@ -54,7 +54,21 @@ Content records deduplicate by the authenticated E2E object and plaintext, not
 by Telegram message id. Reposting identical carrier bytes under another
 Telegram id is harmless, while changing any protected content under the same
 event id remains a conflict. Reload failure clears previously decrypted
-in-memory records and returns the store to a not-loaded state.
+in-memory records and returns the store to a not-loaded state. The protected
+version-two index retains only each event identifier, record hash, kind, and
+timestamp in memory. Message and manifest plaintext remains in individually
+protected record files and is decrypted only for the requested interface page
+or exact file lookup. Version-one indexes are verified record by record and
+replaced atomically with version two when the migration write succeeds; a
+failed migration leaves the version-one index intact for retry without
+discarding history.
+
+Every file-backed protected blob checks its on-disk length before allocating.
+Generic local records cannot exceed the 128 MiB AEAD boundary, file-chunk
+ledger records cannot exceed their authenticated 4 MiB chunk layout, and a
+downloaded carrier file must match Telegram's declared size before it is read.
+Oversized or short local files fail closed instead of being passed to
+`readAll()`.
 
 The encrypted snapshot is bounded to 128 MiB and 4096 items. Attachments are not
 copied into it; they use the encrypted file pipeline.

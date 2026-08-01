@@ -776,7 +776,20 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 						TelegramTransport::UploadResult::RetryableError);
 					return;
 				}
-				bytes = file.readAll();
+				const auto size = file.size();
+				if (size <= 0
+					|| size != entry.document->size
+					|| size > maximumObjectSize) {
+					finishDownload(
+						TelegramTransport::UploadResult::RetryableError);
+					return;
+				}
+				bytes = file.read(size);
+				if (bytes.size() != size) {
+					finishDownload(
+						TelegramTransport::UploadResult::RetryableError);
+					return;
+				}
 			}
 			if (bytes.isEmpty()
 				|| bytes.size() > maximumObjectSize) {

@@ -883,7 +883,7 @@ DesktopService::protectedGroups() const {
 			.title = _session->data().peer(
 				PeerId(group->telegramPeerIdBinding))->name(),
 			.generation = state ? state->generation() : 0,
-			.contentCount = group->contentStore.records().size(),
+			.contentCount = group->contentStore.size(),
 			.active = group->phase == PendingGroupCreation::Phase::Active,
 			.removed = removed,
 			.sendingAllowed = !removed
@@ -941,21 +941,21 @@ std::optional<ConversationId> DesktopService::protectedConversationForPeer(
 }
 
 std::vector<ProtectedContentRecord> DesktopService::protectedContent(
-		ConversationId conversationId) const {
+		ConversationId conversationId,
+		std::size_t offset,
+		std::size_t limit,
+		std::optional<ObjectKind> kind) const {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
-		return {};
-	}
-	auto result = i->second->contentStore.records();
-	std::sort(
-		begin(result),
-		end(result),
-		[](const auto &a, const auto &b) {
-			return (a.unixTime != b.unixTime)
-				? a.unixTime < b.unixTime
-				: a.eventObjectId < b.eventObjectId;
-		});
-	return result;
+	return (i != end(_groups))
+		? i->second->contentStore.records(offset, limit, kind)
+		: std::vector<ProtectedContentRecord>();
+}
+
+std::size_t DesktopService::protectedContentCount(
+		ConversationId conversationId,
+		std::optional<ObjectKind> kind) const {
+	const auto i = _groups.find(conversationId);
+	return (i != end(_groups)) ? i->second->contentStore.size(kind) : 0;
 }
 
 std::optional<DesktopProtectedSecurity> DesktopService::protectedSecurity(

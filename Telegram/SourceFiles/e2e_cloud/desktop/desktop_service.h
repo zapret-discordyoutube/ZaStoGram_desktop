@@ -27,8 +27,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QString>
 
 #include <cstddef>
-#include <memory>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <vector>
@@ -144,7 +144,13 @@ public:
 		protectedConversationForPeer(
 			std::uint64_t telegramPeerIdBinding) const;
 	[[nodiscard]] std::vector<ProtectedContentRecord> protectedContent(
-		ConversationId conversationId) const;
+		ConversationId conversationId,
+		std::size_t offset,
+		std::size_t limit,
+		std::optional<ObjectKind> kind = std::nullopt) const;
+	[[nodiscard]] std::size_t protectedContentCount(
+		ConversationId conversationId,
+		std::optional<ObjectKind> kind = std::nullopt) const;
 	[[nodiscard]] std::optional<DesktopProtectedSecurity> protectedSecurity(
 		ConversationId conversationId) const;
 	[[nodiscard]] bool sendProtectedText(

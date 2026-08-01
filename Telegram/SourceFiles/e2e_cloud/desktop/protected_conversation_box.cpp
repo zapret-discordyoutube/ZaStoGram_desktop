@@ -149,11 +149,8 @@ void RebuildConversationRecords(
 		ConversationId conversationId,
 		not_null<std::size_t*> visibleLimit) {
 	container->clear();
-	auto records = service.protectedContent(conversationId);
-	const auto recordsGuard = qScopeGuard([&] {
-		CleanseRecords(records);
-	});
-	if (records.empty()) {
+	const auto total = service.protectedContentCount(conversationId);
+	if (!total) {
 		container->add(
 			object_ptr<Ui::FlatLabel>(
 				container,
@@ -163,8 +160,24 @@ void RebuildConversationRecords(
 		return;
 	}
 	constexpr auto kVisiblePageSize = std::size_t(200);
-	const auto visible = std::min(*visibleLimit, records.size());
-	const auto first = records.size() - visible;
+	const auto visible = std::min(*visibleLimit, total);
+	const auto first = total - visible;
+	auto records = service.protectedContent(
+		conversationId,
+		first,
+		visible);
+	const auto recordsGuard = qScopeGuard([&] {
+		CleanseRecords(records);
+	});
+	if (records.size() != visible) {
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				tr::lng_e2e_cloud_content_failed(),
+				st::boxLabel),
+			st::boxRowPadding);
+		return;
+	}
 	if (first) {
 		const auto count = std::min(kVisiblePageSize, first);
 		const auto button = container->add(
@@ -187,7 +200,7 @@ void RebuildConversationRecords(
 			});
 		});
 	}
-	const auto limited = (records.size() > kVisiblePageSize)
+	const auto limited = (total > kVisiblePageSize)
 		? visible
 		: 0;
 	if (limited) {
@@ -201,7 +214,7 @@ void RebuildConversationRecords(
 				st::boxLabel),
 			st::boxRowPadding);
 	}
-	for (auto index = first; index != records.size(); ++index) {
+	for (auto index = std::size_t(); index != records.size(); ++index) {
 		const auto &record = records[index];
 		const auto content = ContentText(record);
 		if (content.isEmpty()) {
@@ -236,6 +249,97 @@ void RebuildConversationRecords(
 			st::boxRowPadding,
 			style::al_top);
 		const auto eventObjectId = record.eventObjectId;
+		button->setClickedCallback([=, service = &service] {
+			SaveProtectedRecord(
+				service,
+				conversationId,
+				eventObjectId,
+				filename,
+				container.get());
+		});
+	}
+}
+
+void RebuildProtectedFiles(
+		not_null<Ui::VerticalLayout*> container,
+		const DesktopService &service,
+		ConversationId conversationId,
+		not_null<std::size_t*> visibleLimit) {
+	container->clear();
+	const auto kind = ObjectKind::EncryptedFileManifest;
+	const auto total = service.protectedContentCount(conversationId, kind);
+	if (!total) {
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				tr::lng_e2e_cloud_content_empty(),
+				st::boxLabel),
+			st::boxRowPadding);
+		return;
+	}
+	constexpr auto kVisiblePageSize = std::size_t(200);
+	const auto visible = std::min(*visibleLimit, total);
+	const auto first = total - visible;
+	if (first) {
+		const auto count = std::min(kVisiblePageSize, first);
+		const auto button = container->add(
+			object_ptr<Ui::SettingsButton>(
+				container,
+				tr::lng_e2e_cloud_show_older(
+					lt_count,
+					rpl::single(int(count)) | tr::to_count()),
+				st::settingsButton),
+			st::boxRowPadding,
+			style::al_top);
+		button->setClickedCallback([=, service = &service] {
+			*visibleLimit += count;
+			crl::on_main(container, [=] {
+				RebuildProtectedFiles(
+					container,
+					*service,
+					conversationId,
+					visibleLimit);
+			});
+		});
+	}
+	auto records = service.protectedContent(
+		conversationId,
+		first,
+		visible,
+		kind);
+	const auto recordsGuard = qScopeGuard([&] {
+		CleanseRecords(records);
+	});
+	if (records.size() != visible) {
+		container->add(
+			object_ptr<Ui::FlatLabel>(
+				container,
+				tr::lng_e2e_cloud_content_failed(),
+				st::boxLabel),
+			st::boxRowPadding);
+		return;
+	}
+	for (const auto &record : records) {
+		const auto manifest = PrivateFileManifestCodecV1()
+			.decodePlaintext(record.plaintext);
+		if (!manifest) {
+			continue;
+		}
+		const auto title = tr::lng_e2e_cloud_file(
+			tr::now,
+			lt_name,
+			QString::fromUtf8(manifest->filenameUtf8),
+			lt_size,
+			QString::number(manifest->context.plaintextSize));
+		const auto button = container->add(
+			object_ptr<Ui::SettingsButton>(
+				container,
+				rpl::single(title),
+				st::settingsButton),
+			st::boxRowPadding,
+			style::al_top);
+		const auto eventObjectId = record.eventObjectId;
+		const auto filename = QString::fromUtf8(manifest->filenameUtf8);
 		button->setClickedCallback([=, service = &service] {
 			SaveProtectedRecord(
 				service,
@@ -586,58 +690,15 @@ void ShowProtectedFiles(
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
 		box->setTitle(tr::lng_e2e_cloud_files());
-		auto records = service->protectedContent(conversationId);
-		const auto recordsGuard = qScopeGuard([&] {
-			CleanseRecords(records);
-		});
-		auto found = false;
-		for (const auto &record : records) {
-			if (record.objectKind != ObjectKind::EncryptedFileManifest) {
-				continue;
-			}
-			const auto manifest = PrivateFileManifestCodecV1()
-				.decodePlaintext(record.plaintext);
-			if (!manifest) {
-				continue;
-			}
-			found = true;
-			const auto title = tr::lng_e2e_cloud_file(
-				tr::now,
-				lt_name,
-				QString::fromUtf8(manifest->filenameUtf8),
-				lt_size,
-				QString::number(manifest->context.plaintextSize));
-			const auto button = box->addRow(
-				object_ptr<Ui::SettingsButton>(
-					box,
-					rpl::single(title),
-					st::settingsButton),
-				style::al_top);
-			const auto eventObjectId = record.eventObjectId;
-			const auto filename = QString::fromUtf8(
-				manifest->filenameUtf8);
-			button->setClickedCallback([=] {
-				FileDialog::GetWritePath(
-					Core::App().getFileDialogParent(),
-					tr::lng_e2e_cloud_save_file(tr::now),
-					FileDialog::AllFilesFilter(),
-					filename,
-					crl::guard(box, [=](QString &&path) {
-						if (!path.isEmpty()) {
-							(void)service->saveProtectedFile(
-								conversationId,
-								eventObjectId,
-								std::move(path));
-						}
-					}));
-			});
-		}
-		if (!found) {
-			box->addRow(object_ptr<Ui::FlatLabel>(
-				box,
-				tr::lng_e2e_cloud_content_empty(),
-				st::boxLabel));
-		}
+		const auto files = box->addRow(
+			object_ptr<Ui::VerticalLayout>(box),
+			style::margins());
+		const auto visible = box->lifetime().make_state<std::size_t>(200);
+		RebuildProtectedFiles(
+			files,
+			*service,
+			conversationId,
+			visible);
 		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 	}));
 }

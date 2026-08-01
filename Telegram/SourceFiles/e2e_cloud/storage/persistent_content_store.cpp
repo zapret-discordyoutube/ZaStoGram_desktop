@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <openssl/crypto.h>
 
 #include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QScopeGuard>
 
 #include <algorithm>
@@ -35,7 +36,8 @@ inline constexpr auto kIndexPurpose = "e2e-cloud-content-index-v1";
 inline constexpr auto kMaximumRecords = std::size_t(1'000'000);
 inline constexpr auto kMaximumRecordPlaintextSize = 16 * 1024 * 1024;
 inline constexpr auto kIndexHeaderSize = 8 + 2 + 32 + 8 + 4;
-inline constexpr auto kIndexEntrySize = 32 + 32;
+inline constexpr auto kIndexEntrySizeV1 = 32 + 32;
+inline constexpr auto kIndexEntrySize = 32 + 32 + 2 + 8;
 inline constexpr auto kRecordHeaderSize = 8 + 2 + 32 + 32 + 32 + 2
 	+ 8 + 32 + 16 + 8 + 8 + 4;
 
@@ -249,18 +251,11 @@ PersistentContentStore::PersistentContentStore(
 , _sha256(sha256) {
 }
 
-PersistentContentStore::~PersistentContentStore() {
-	for (auto &record : _records) {
-		Cleanse(record.plaintext);
-	}
-}
+PersistentContentStore::~PersistentContentStore() = default;
 
 ContentStoreLoadResult PersistentContentStore::load() {
-	for (auto &record : _records) {
-		Cleanse(record.plaintext);
-	}
-	_records.clear();
 	_entries.clear();
+	_orderedEntries.clear();
 	_revision = 0;
 	_loaded = false;
 	if (!_conversationId || _recordsDirectory.isEmpty()) {
@@ -293,12 +288,16 @@ ContentStoreLoadResult PersistentContentStore::load() {
 		|| !ReadUint64(reader, revision)
 		|| !ReadUint32(reader, count)
 		|| magic != kIndexMagic
-		|| version != 1
+		|| (version != 1 && version != 2)
 		|| conversationId != _conversationId
 		|| count > kMaximumRecords
-		|| reader.bytes.size() - reader.offset
-			!= int(count) * kIndexEntrySize
 		|| (count && !revision)) {
+		return fail();
+	}
+	const auto entrySize = (version == 1)
+		? kIndexEntrySizeV1
+		: kIndexEntrySize;
+	if (reader.bytes.size() - reader.offset != int(count) * entrySize) {
 		return fail();
 	}
 	auto entries = std::vector<IndexEntry>();
@@ -313,48 +312,42 @@ ContentStoreLoadResult PersistentContentStore::load() {
 			|| !identifiers.emplace(entry.eventObjectId).second) {
 			return fail();
 		}
+		if (version == 2) {
+			auto kind = std::uint16_t();
+			if (!ReadUint16(reader, kind)
+				|| !ReadUint64(reader, entry.unixTime)) {
+				return fail();
+			}
+			entry.objectKind = ObjectKind(kind);
+			if (!ValidKind(entry.objectKind)
+				|| !entry.unixTime
+				|| entry.unixTime > std::uint64_t(
+					std::numeric_limits<std::int64_t>::max())
+				|| !QFileInfo(recordPath(entry.eventObjectId)).isFile()) {
+				return fail();
+			}
+		}
 		entries.push_back(entry);
 	}
 	Cleanse(*plaintext);
-	auto records = std::vector<ProtectedContentRecord>();
-	const auto recordsGuard = qScopeGuard([&] {
-		for (auto &record : records) {
-			Cleanse(record.plaintext);
-		}
-	});
-	records.reserve(entries.size());
-	for (const auto &entry : entries) {
-		const auto storedRecord = FileAtomicBlobStore(
-			recordPath(entry.eventObjectId)).read();
-		if (storedRecord.status != BlobReadStatus::Found) {
-			return ContentStoreLoadResult::InvalidSnapshot;
-		}
-		auto recordBytes = _protector.open(
-			recordPurpose(entry.eventObjectId),
-			storedRecord.bytes);
-		if (!recordBytes) {
-			return ContentStoreLoadResult::AuthenticationFailed;
-		}
-		if (_sha256.digest(*recordBytes) != entry.recordHash) {
-			Cleanse(*recordBytes);
-			return ContentStoreLoadResult::AuthenticationFailed;
-		}
-		auto record = DecodeRecord(*recordBytes);
-		Cleanse(*recordBytes);
-		if (!record
-			|| record->conversationId != _conversationId
-			|| record->eventObjectId != entry.eventObjectId) {
-			if (record) {
-				Cleanse(record->plaintext);
+	if (version == 1) {
+		for (auto &entry : entries) {
+			auto record = readRecord(entry);
+			if (!record) {
+				return ContentStoreLoadResult::InvalidSnapshot;
 			}
-			return ContentStoreLoadResult::InvalidSnapshot;
+			entry.objectKind = record->objectKind;
+			entry.unixTime = record->unixTime;
+			Cleanse(record->plaintext);
 		}
-		records.push_back(std::move(*record));
 	}
-	_records = std::move(records);
 	_entries = std::move(entries);
 	_revision = revision;
 	_loaded = true;
+	rebuildOrderedEntries();
+	if (version == 1) {
+		(void)persistIndex(_entries, _revision);
+	}
 	return ContentStoreLoadResult::Loaded;
 }
 
@@ -369,16 +362,25 @@ ContentStoreAppendResult PersistentContentStore::append(
 		return ContentStoreAppendResult::InvalidRecord;
 	}
 	const auto existing = std::find_if(
-		begin(_records),
-		end(_records),
-		[&](const ProtectedContentRecord &value) {
+		begin(_entries),
+		end(_entries),
+		[&](const IndexEntry &value) {
 			return value.eventObjectId == record.eventObjectId;
 		});
-	if (existing != end(_records)) {
-		return SameProtectedContent(*existing, record)
+	if (existing != end(_entries)) {
+		auto stored = readRecord(*existing);
+		const auto storedGuard = qScopeGuard([&] {
+			if (stored) {
+				Cleanse(stored->plaintext);
+			}
+		});
+		if (!stored) {
+			return ContentStoreAppendResult::PersistenceFailed;
+		}
+		return SameProtectedContent(*stored, record)
 			? ContentStoreAppendResult::AlreadyStored
 			: ContentStoreAppendResult::Conflict;
-	} else if (_records.size() == kMaximumRecords
+	} else if (_entries.size() == kMaximumRecords
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return ContentStoreAppendResult::PersistenceFailed;
 	}
@@ -401,13 +403,27 @@ ContentStoreAppendResult PersistentContentStore::append(
 	entries.push_back({
 		.eventObjectId = record.eventObjectId,
 		.recordHash = recordHash,
+		.objectKind = record.objectKind,
+		.unixTime = record.unixTime,
 	});
 	const auto revision = _revision + 1;
 	if (!persistIndex(entries, revision)) {
 		return ContentStoreAppendResult::PersistenceFailed;
 	}
 	_entries = std::move(entries);
-	_records.push_back(std::move(record));
+	const auto newIndex = _entries.size() - 1;
+	const auto position = std::lower_bound(
+		begin(_orderedEntries),
+		end(_orderedEntries),
+		newIndex,
+		[&](std::size_t a, std::size_t b) {
+			const auto &left = _entries[a];
+			const auto &right = _entries[b];
+			return (left.unixTime != right.unixTime)
+				? left.unixTime < right.unixTime
+				: left.eventObjectId < right.eventObjectId;
+		});
+	_orderedEntries.insert(position, newIndex);
 	_revision = revision;
 	return ContentStoreAppendResult::Stored;
 }
@@ -415,19 +431,57 @@ ContentStoreAppendResult PersistentContentStore::append(
 std::optional<ProtectedContentRecord> PersistentContentStore::record(
 		ObjectId eventObjectId) const {
 	const auto i = std::find_if(
-		begin(_records),
-		end(_records),
-		[&](const ProtectedContentRecord &record) {
-			return record.eventObjectId == eventObjectId;
+		begin(_entries),
+		end(_entries),
+		[&](const IndexEntry &entry) {
+			return entry.eventObjectId == eventObjectId;
 		});
-	return (i != end(_records))
-		? std::optional<ProtectedContentRecord>(*i)
-		: std::nullopt;
+	return (i != end(_entries)) ? readRecord(*i) : std::nullopt;
 }
 
-const std::vector<ProtectedContentRecord>
-		&PersistentContentStore::records() const {
-	return _records;
+std::vector<ProtectedContentRecord> PersistentContentStore::records(
+		std::size_t offset,
+		std::size_t limit,
+		std::optional<ObjectKind> kind) const {
+	auto result = std::vector<ProtectedContentRecord>();
+	if (!_loaded || !limit || (kind && !ValidKind(*kind))) {
+		return result;
+	}
+	result.reserve(std::min(limit, _entries.size()));
+	auto skipped = std::size_t();
+	for (const auto index : _orderedEntries) {
+		const auto &entry = _entries[index];
+		if (kind && entry.objectKind != *kind) {
+			continue;
+		} else if (skipped != offset) {
+			++skipped;
+			continue;
+		}
+		auto value = readRecord(entry);
+		if (!value) {
+			for (auto &record : result) {
+				Cleanse(record.plaintext);
+			}
+			return {};
+		}
+		result.push_back(std::move(*value));
+		if (result.size() == limit) {
+			break;
+		}
+	}
+	return result;
+}
+
+std::size_t PersistentContentStore::size(
+		std::optional<ObjectKind> kind) const {
+	return kind
+		? std::count_if(
+			begin(_entries),
+			end(_entries),
+			[&](const IndexEntry &entry) {
+				return entry.objectKind == *kind;
+			})
+		: _entries.size();
 }
 
 std::uint64_t PersistentContentStore::revision() const {
@@ -456,6 +510,57 @@ QByteArray PersistentContentStore::recordPurpose(
 	return result;
 }
 
+std::optional<ProtectedContentRecord> PersistentContentStore::readRecord(
+		const IndexEntry &entry) const {
+	const auto stored = FileAtomicBlobStore(
+		recordPath(entry.eventObjectId)).read();
+	if (stored.status != BlobReadStatus::Found) {
+		return std::nullopt;
+	}
+	auto recordBytes = _protector.open(
+		recordPurpose(entry.eventObjectId),
+		stored.bytes);
+	if (!recordBytes) {
+		return std::nullopt;
+	}
+	const auto bytesGuard = qScopeGuard([&] {
+		Cleanse(*recordBytes);
+	});
+	if (_sha256.digest(*recordBytes) != entry.recordHash) {
+		return std::nullopt;
+	}
+	auto record = DecodeRecord(*recordBytes);
+	if (!record
+		|| record->conversationId != _conversationId
+		|| record->eventObjectId != entry.eventObjectId
+		|| (entry.unixTime && record->unixTime != entry.unixTime)
+		|| (entry.unixTime && record->objectKind != entry.objectKind)) {
+		if (record) {
+			Cleanse(record->plaintext);
+		}
+		return std::nullopt;
+	}
+	return record;
+}
+
+void PersistentContentStore::rebuildOrderedEntries() {
+	_orderedEntries.clear();
+	_orderedEntries.reserve(_entries.size());
+	for (auto index = std::size_t(); index != _entries.size(); ++index) {
+		_orderedEntries.push_back(index);
+	}
+	std::sort(
+		begin(_orderedEntries),
+		end(_orderedEntries),
+		[&](std::size_t a, std::size_t b) {
+			const auto &left = _entries[a];
+			const auto &right = _entries[b];
+			return (left.unixTime != right.unixTime)
+				? left.unixTime < right.unixTime
+				: left.eventObjectId < right.eventObjectId;
+		});
+}
+
 bool PersistentContentStore::persistIndex(
 		const std::vector<IndexEntry> &entries,
 		std::uint64_t revision) const {
@@ -468,17 +573,24 @@ bool PersistentContentStore::persistIndex(
 	plaintext.reserve(
 		kIndexHeaderSize + int(entries.size()) * kIndexEntrySize);
 	AppendArray(plaintext, kIndexMagic);
-	AppendUint16(plaintext, 1);
+	AppendUint16(plaintext, 2);
 	AppendArray(plaintext, _conversationId.bytes);
 	AppendUint64(plaintext, revision);
 	AppendUint32(plaintext, std::uint32_t(entries.size()));
 	for (const auto &entry : entries) {
-		if (!entry.eventObjectId || !entry.recordHash) {
+		if (!entry.eventObjectId
+			|| !entry.recordHash
+			|| !ValidKind(entry.objectKind)
+			|| !entry.unixTime
+			|| entry.unixTime > std::uint64_t(
+				std::numeric_limits<std::int64_t>::max())) {
 			Cleanse(plaintext);
 			return false;
 		}
 		AppendArray(plaintext, entry.eventObjectId.bytes);
 		AppendArray(plaintext, entry.recordHash.bytes);
+		AppendUint16(plaintext, std::uint16_t(entry.objectKind));
+		AppendUint64(plaintext, entry.unixTime);
 	}
 	const auto protectedBytes = _protector.seal(
 		QByteArray(kIndexPurpose),

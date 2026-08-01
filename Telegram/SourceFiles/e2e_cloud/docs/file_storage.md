@@ -75,7 +75,10 @@ active content.
 Desktop restoration writes through `QSaveFile`, decrypts chunks in order, and
 commits the destination only after the manifest's total size and full plaintext
 SHA-256 digest match. The encrypted manifest list exposes every locally
-authorized file rather than relying on Telegram-visible filenames.
+authorized file rather than relying on Telegram-visible filenames. Local chunk
+ledger reads validate the protected file length before allocation, so a damaged
+or oversized ledger file fails closed without consuming memory proportional to
+its claimed filesystem size.
 
 Previews must be generated locally from authenticated plaintext. The client must
 not upload plaintext thumbnails or media metadata to Telegram.

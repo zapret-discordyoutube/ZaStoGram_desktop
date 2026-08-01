@@ -570,6 +570,47 @@ def verify_protected_history_can_page_back() -> None:
     assert "*visibleLimit += count;" in conversation
 
 
+def verify_protected_plaintext_is_loaded_by_page() -> None:
+    store_header = source(
+        "SourceFiles/e2e_cloud/storage/persistent_content_store.h"
+    )
+    store = source(
+        "SourceFiles/e2e_cloud/storage/persistent_content_store.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    conversation = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
+
+    assert "std::vector<ProtectedContentRecord> _records" not in store_header
+    assert "std::vector<std::size_t> _orderedEntries;" in store_header
+    assert "AppendUint16(plaintext, 2);" in store
+    assert "version != 1 && version != 2" in store
+    assert "(void)persistIndex(_entries, _revision);" in store
+    assert "readRecord(entry);" in store
+    assert "contentStore.records(offset, limit, kind)" in service
+    assert conversation.count("protectedContentCount(") >= 2
+    assert conversation.count("protectedContent(\n") >= 2
+
+
+def verify_local_record_reads_are_bounded() -> None:
+    blob = source("SourceFiles/e2e_cloud/storage/file_atomic_blob_store.cpp")
+    chunks = source("SourceFiles/e2e_cloud/files/file_chunk_file_store.cpp")
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+
+    assert "readAll()" not in blob
+    assert "kMaximumBlobSize" in blob
+    assert "size > kMaximumBlobSize" in blob
+    assert "readAll()" not in chunks
+    assert "kMaximumProtectedSize" in chunks
+    assert "size > kMaximumProtectedSize" in chunks
+    assert "size != entry.document->size" in backend
+    assert "bytes = file.read(size);" in backend
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -595,6 +636,8 @@ def main() -> None:
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
+    verify_protected_plaintext_is_loaded_by_page()
+    verify_local_record_reads_are_bounded()
 
 
 if __name__ == "__main__":

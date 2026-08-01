@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/storage/aes_gcm_local_record_protector.h"
+#include "e2e_cloud/storage/file_atomic_blob_store.h"
 #include "e2e_cloud/storage/local_record_key_derivation.h"
 #include "e2e_cloud/storage/persistent_conversation_metadata.h"
 #include "e2e_cloud/storage/persistent_content_store.h"
@@ -26,9 +27,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/persistent_mls_state.h"
 #include "e2e_cloud/storage/persistent_outbox.h"
 
+#include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <optional>
 #include <string_view>
@@ -83,6 +86,54 @@ public:
 	bool writeError = false;
 
 };
+
+class CountingLocalRecordProtector final : public LocalRecordProtector {
+public:
+	explicit CountingLocalRecordProtector(LocalRecordKey &&key);
+
+	[[nodiscard]] std::optional<QByteArray> seal(
+			const QByteArray &purpose,
+			const QByteArray &plaintext) const override;
+
+	[[nodiscard]] std::optional<QByteArray> open(
+			const QByteArray &purpose,
+			const QByteArray &ciphertext) const override;
+
+	void resetOpenCalls() const;
+
+	[[nodiscard]] int openCalls() const;
+
+private:
+	AesGcmLocalRecordProtector _protector;
+	mutable int _openCalls = 0;
+
+};
+
+CountingLocalRecordProtector::CountingLocalRecordProtector(
+		LocalRecordKey &&key)
+: _protector(std::move(key)) {
+}
+
+std::optional<QByteArray> CountingLocalRecordProtector::seal(
+		const QByteArray &purpose,
+		const QByteArray &plaintext) const {
+	return _protector.seal(purpose, plaintext);
+}
+
+std::optional<QByteArray> CountingLocalRecordProtector::open(
+		const QByteArray &purpose,
+		const QByteArray &ciphertext) const {
+	++_openCalls;
+	return _protector.open(purpose, ciphertext);
+}
+
+void CountingLocalRecordProtector::resetOpenCalls() const {
+	_openCalls = 0;
+}
+
+int CountingLocalRecordProtector::openCalls() const {
+	return _openCalls;
+}
 
 [[nodiscard]] PendingMessage Message() {
 	return {
@@ -160,6 +211,28 @@ public:
 	const auto invalid = AesGcmLocalRecordProtector(std::move(emptyKey));
 	if (invalid.seal(purpose, plaintext)) {
 		return Fail("local AEAD accepted an empty record key");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioAtomicBlobRejectsOversizedFile() {
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("atomic blob temporary directory was unavailable");
+	}
+	const auto path = directory.filePath("oversized.blob");
+	auto file = QFile(path);
+	constexpr auto kMaximumProtectedBlobSize = qint64(
+		128 * 1024 * 1024 + 42);
+	if (!file.open(QIODevice::WriteOnly)
+		|| !file.seek(kMaximumProtectedBlobSize)
+		|| file.write("x", 1) != 1) {
+		return Fail("oversized atomic blob fixture could not be created");
+	}
+	file.close();
+	const auto stored = FileAtomicBlobStore(path).read();
+	if (stored.status != BlobReadStatus::Error || !stored.bytes.isEmpty()) {
+		return Fail("atomic blob read allocated an oversized local record");
 	}
 	return 0;
 }
@@ -398,7 +471,8 @@ public:
 	if (store.load() != ContentStoreLoadResult::AuthenticationFailed
 		|| store.loaded()
 		|| store.revision()
-		|| !store.records().empty()
+		|| store.size()
+		|| !store.records(0, 1).empty()
 		|| store.record(eventObjectId)) {
 		return Fail("failed content store reload retained plaintext state");
 	}
@@ -441,12 +515,120 @@ public:
 	record.observedTelegramMessageId = 101;
 	if (store.append(record) != ContentStoreAppendResult::AlreadyStored
 		|| store.revision() != 1
-		|| store.records().size() != 1) {
+		|| store.size() != 1) {
 		return Fail("same content under another carrier id was a conflict");
 	}
 	record.plaintext.append('!');
 	if (store.append(std::move(record)) != ContentStoreAppendResult::Conflict) {
 		return Fail("changed protected content escaped conflict detection");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioContentStorePagesAndMigratesLegacyIndex() {
+	auto key = LocalRecordKey();
+	key.fill(63);
+	const auto protector = CountingLocalRecordProtector(std::move(key));
+	const auto sha256 = OpenSslSha256Provider();
+	const auto conversationId = FilledId<ConversationId>(64);
+	auto indexBlob = MemoryBlobStore();
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("content paging temporary directory was unavailable");
+	}
+	auto store = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	if (store.load() != ContentStoreLoadResult::Missing) {
+		return Fail("content paging store did not start empty");
+	}
+	const auto times = std::array<std::uint64_t, 3>{ 300, 100, 200 };
+	for (auto index = std::size_t(); index != times.size(); ++index) {
+		if (store.append({
+			.conversationId = conversationId,
+			.eventObjectId = FilledId<ObjectId>(
+				std::uint8_t(65 + index)),
+			.contentObjectId = FilledId<ObjectId>(
+				std::uint8_t(68 + index)),
+			.objectKind = (index == 2)
+				? ObjectKind::EncryptedFileManifest
+				: ObjectKind::EncryptedMessageBody,
+			.groupGeneration = 7,
+			.senderAccountId = FilledId<AccountId>(71),
+			.senderClientId = FilledId<ClientId>(72),
+			.unixTime = times[index],
+			.observedTelegramMessageId = 100 + std::int64_t(index),
+			.plaintext = QByteArray("paged protected content"),
+		}) != ContentStoreAppendResult::Stored) {
+			return Fail("content paging fixture could not be persisted");
+		}
+	}
+	const auto purpose = QByteArray("e2e-cloud-content-index-v1");
+	auto versionTwo = indexBlob.bytes
+		? protector.open(purpose, *indexBlob.bytes)
+		: std::nullopt;
+	if (!versionTwo || versionTwo->size() != 54 + 3 * 74) {
+		return Fail("content paging index was not written as version two");
+	}
+	auto versionOne = QByteArray(versionTwo->constData(), 54);
+	versionOne[8] = 0;
+	versionOne[9] = 1;
+	for (auto index = 0; index != 3; ++index) {
+		versionOne.append(versionTwo->constData() + 54 + index * 74, 64);
+	}
+	indexBlob.bytes = protector.seal(purpose, versionOne);
+	if (!indexBlob.bytes) {
+		return Fail("legacy content index fixture could not be protected");
+	}
+	auto restored = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	if (restored.load() != ContentStoreLoadResult::Loaded
+		|| restored.size() != 3
+		|| restored.size(ObjectKind::EncryptedFileManifest) != 1) {
+		return Fail("legacy content index did not migrate");
+	}
+	const auto firstPage = restored.records(0, 2);
+	const auto secondPage = restored.records(2, 1);
+	const auto files = restored.records(
+		0,
+		1,
+		ObjectKind::EncryptedFileManifest);
+	if (firstPage.size() != 2
+		|| firstPage[0].unixTime != 100
+		|| firstPage[1].unixTime != 200
+		|| secondPage.size() != 1
+		|| secondPage[0].unixTime != 300
+		|| files.size() != 1
+		|| files[0].objectKind != ObjectKind::EncryptedFileManifest
+		|| files[0].unixTime != 200) {
+		return Fail("content store did not load only the requested sorted page");
+	}
+	const auto migrated = indexBlob.bytes
+		? protector.open(purpose, *indexBlob.bytes)
+		: std::nullopt;
+	if (!migrated
+		|| migrated->size() != 54 + 3 * 74
+		|| std::uint8_t((*migrated)[8]) != 0
+		|| std::uint8_t((*migrated)[9]) != 2) {
+		return Fail("legacy content index was not upgraded atomically");
+	}
+	protector.resetOpenCalls();
+	auto reloaded = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	if (reloaded.load() != ContentStoreLoadResult::Loaded
+		|| protector.openCalls() != 1) {
+		return Fail("version-two content load decrypted every message");
 	}
 	return 0;
 }
@@ -1523,12 +1705,14 @@ public:
 int main(int, char *[]) {
 	for (const auto scenario : {
 		ScenarioAeadProtection,
+		ScenarioAtomicBlobRejectsOversizedFile,
 		ScenarioConversationRecordKeyDerivation,
 		ScenarioContentSyncBoundarySurvivesRestart,
 		ScenarioControlObservationStateSurvivesRestart,
 		ScenarioLegacyControlBoundaryMigrates,
 		ScenarioContentStoreReloadFailureClearsPlaintext,
 		ScenarioContentStoreAcceptsCarrierDuplicates,
+		ScenarioContentStorePagesAndMigratesLegacyIndex,
 		ScenarioFileTransferSurvivesRestart,
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,
