@@ -57,12 +57,20 @@ enum class InboundApplyResult {
 	ForkDetected,
 };
 
+enum class InboundRecoveryResult {
+	Applied,
+	NotApplied,
+	Unknown,
+};
+
 class InboundEnvelopeApplier {
 public:
 	virtual ~InboundEnvelopeApplier() = default;
 
 	[[nodiscard]] virtual InboundApplyResult apply(
 		const TransportEnvelope &envelope) = 0;
+	[[nodiscard]] virtual InboundRecoveryResult recover(
+		const TransportEnvelope &envelope) const;
 
 };
 

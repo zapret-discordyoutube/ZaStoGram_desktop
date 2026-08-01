@@ -39,10 +39,11 @@ cryptographic proof by themselves.
 ## Carrier encoding
 
 Version one uses an ordinary Telegram document for every protocol envelope.
-The document body is the exact version-one envelope, the filename is always
-`protected.tde2e`, the MIME type is always `application/octet-stream`, and the
-caption is empty. The protected client does not upload previews or original
-application-file metadata.
+The document body is the exact version-one envelope. Control objects use the
+fixed filename `protected-control.tde2e`; messages, manifests, MLS content
+descriptors, and encrypted chunks use `protected-content.tde2e`. The MIME type
+is always `application/octet-stream`, and the caption is empty. The protected
+client does not upload previews or original application-file metadata.
 
 The carrier representation supports:
 
@@ -61,6 +62,30 @@ the exact persisted envelope bytes.
 Downloaded documents are delivered upward as untrusted byte strings. The
 transport does not infer a conversation identifier, object identifier, sender,
 or ordering guarantee from Telegram metadata.
+
+History download is paged. A page scans at most 100 Telegram history messages
+and retains at most 64 MiB of matching carrier documents. The cursor is an
+opaque availability hint derived from the oldest scanned Telegram message; it
+is neither signed nor trusted as evidence of completeness. Invalid cursor
+bytes fail locally. Every returned document still passes the envelope,
+carrier-binding, signature, replay, MLS, and group-chain checks above the
+transport. Initial backfill continues until `complete`; live updates feed the
+same untrusted-object pipeline.
+
+A control reconstruction retains at most 65,536 matching objects and 512 MiB.
+This bound includes untrusted and ultimately ignored objects because an active
+server must not obtain unbounded client memory. It is sized for the initial
+500-participant target, whose admissions also produce KeyPackages, commits,
+Welcomes, archive distributions, grants, freshness traffic, and safety gossip.
+Version one deliberately stops at the matching 65,536-generation ledger bound;
+longer-lived groups require a future signed snapshot/compaction protocol.
+
+The desktop adapter reuses Telegram Desktop's uploader, but does not create a
+visible local plaintext message. Upload readiness yields an in-memory
+`InputFile`; only a successful empty-caption, force-file `messages.sendMedia`
+acknowledges the protected outbox. Downloads use `messages.getHistory`, accept
+only the matching fixed filename and MIME type, and stage document bytes in an
+auto-removed temporary directory before handing them upward.
 
 This encoding must still be tested against server-side content transformations,
 document deduplication, forwarding, copying, deletion, and retention behavior.

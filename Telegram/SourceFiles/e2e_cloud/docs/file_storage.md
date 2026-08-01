@@ -49,6 +49,13 @@ supported opaque carrier. The transport adapter owns Telegram size limits,
 retry, resume, and reference expiry. Cryptographic file identity must not depend
 on a mutable Telegram file reference.
 
+The current Desktop pipeline uses 1 MiB chunks. Each stored chunk is wrapped in
+an account-signed content envelope that binds the carrier group, conversation,
+protected generation, sender account/client, file identifier, chunk index and
+count, ciphertext hash, and exact ciphertext. This provides sender binding even
+though the chunk is independently encrypted rather than an MLS application
+message.
+
 Global plaintext deduplication is excluded because it leaks equality across
 conversations. Any future conversation-local deduplication requires an explicit
 privacy review.
@@ -59,6 +66,11 @@ Successful decryption proves integrity, not safety. A legitimate participant
 can send malware. Clients must sanitize file names, prevent path traversal,
 respect operating-system quarantine facilities, and avoid automatically opening
 active content.
+
+Desktop restoration writes through `QSaveFile`, decrypts chunks in order, and
+commits the destination only after the manifest's total size and full plaintext
+SHA-256 digest match. The encrypted manifest list exposes every locally
+authorized file rather than relying on Telegram-visible filenames.
 
 Previews must be generated locally from authenticated plaintext. The client must
 not upload plaintext thumbnails or media metadata to Telegram.

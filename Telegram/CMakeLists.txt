@@ -26,6 +26,7 @@ get_filename_component(res_loc Resources REALPATH)
 
 include(cmake/telegram_options.cmake)
 include(cmake/lib_argon2.cmake)
+include(cmake/lib_openmls_bridge.cmake)
 include(cmake/lib_ffmpeg.cmake)
 include(cmake/lib_stripe.cmake)
 include(cmake/lib_tgcalls.cmake)
@@ -60,6 +61,7 @@ set_target_properties(Telegram PROPERTIES AUTOMOC ON)
 target_link_libraries(Telegram
 PRIVATE
     tdesktop::lib_argon2
+    tdesktop::lib_openmls_bridge
     tdesktop::lib_fido2
     tdesktop::lib_tgcalls
     tdesktop::td_e2e_cloud

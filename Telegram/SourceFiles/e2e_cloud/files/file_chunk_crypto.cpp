@@ -181,14 +181,17 @@ std::optional<FileEncryptionMaterial> GenerateFileEncryptionMaterial() {
 bool IsValidFileChunkContext(const FileChunkContext &context) {
 	if (!context.conversationId
 		|| !context.fileId
-		|| !context.plaintextSize
 		|| context.chunkSize < kMinimumChunkSize
 		|| context.chunkSize > kMaximumChunkSize
-		|| !context.chunkCount
 		|| !std::any_of(
 			begin(context.noncePrefix),
 			end(context.noncePrefix),
 			[](std::uint8_t byte) { return byte != 0; })) {
+		return false;
+	}
+	if (!context.plaintextSize) {
+		return !context.chunkCount;
+	} else if (!context.chunkCount) {
 		return false;
 	}
 	const auto expected = 1

@@ -19,6 +19,7 @@ struct PrivateFileManifest {
 	FileChunkContext context;
 	FileEncryptionKey key;
 	Digest plaintextHash;
+	std::uint64_t unixTime = 0;
 	QByteArray filenameUtf8;
 	QByteArray mimeTypeUtf8;
 };

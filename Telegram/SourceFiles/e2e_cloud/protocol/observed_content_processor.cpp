@@ -1,0 +1,329 @@
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
+#include "e2e_cloud/protocol/observed_content_processor.h"
+
+#include "e2e_cloud/archive/archived_content_reader.h"
+#include "e2e_cloud/archive/persistent_archive_state.h"
+#include "e2e_cloud/content/protected_message_body.h"
+#include "e2e_cloud/files/file_chunk_envelope.h"
+#include "e2e_cloud/files/idempotent_file_chunk_protector.h"
+#include "e2e_cloud/files/private_file_manifest.h"
+#include "e2e_cloud/group/persistent_group_ledger.h"
+#include "e2e_cloud/mls/openmls_bridge.h"
+#include "e2e_cloud/protocol/inbound_envelope_processor.h"
+#include "e2e_cloud/storage/persistent_content_store.h"
+#include "e2e_cloud/storage/persistent_inbound_journal.h"
+#include "e2e_cloud/storage/persistent_mls_state.h"
+
+#include <algorithm>
+#include <limits>
+#include <utility>
+
+namespace E2ECloud {
+namespace {
+
+[[nodiscard]] const GroupMember *ObservedSender(
+		const TelegramTransport::UntrustedObject &object,
+		const TransportEnvelope &envelope,
+		std::uint64_t groupGeneration,
+		const PersistentGroupLedger &groupLedger) {
+	const auto state = groupLedger.stateAt(groupGeneration);
+	const auto member = state
+		? state->member(envelope.senderAccountId)
+		: nullptr;
+	return (member
+		&& member->telegramUserIdBinding
+			== object.observedSenderTelegramUserIdBinding
+		&& std::find(
+			begin(member->clients),
+			end(member->clients),
+			envelope.senderClientId) != end(member->clients))
+		? member
+		: nullptr;
+}
+
+[[nodiscard]] bool ObservedCarrierMatches(
+		const TelegramTransport::UntrustedObject &object,
+		const TransportEnvelope &envelope,
+		const OpenMlsClientContext &local) {
+	return object.observedMessageId > 0
+		&& object.observedTelegramPeerIdBinding
+			== local.telegramPeerIdBinding
+		&& envelope.conversationId == local.conversationId
+		&& envelope.telegramPeerIdBinding == local.telegramPeerIdBinding;
+}
+
+[[nodiscard]] bool StoredChunkMatches(
+		const FileChunkReadResult &stored,
+		Digest payloadHash,
+		const QByteArray &payload) {
+	return stored.status == FileChunkReadStatus::Found
+		&& stored.chunk.plaintextHash == payloadHash
+		&& stored.chunk.exactCiphertext == payload;
+}
+
+} // namespace
+
+ObservedContentProcessOutcome ProcessObservedContentPage(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		OpenMlsClientContext local,
+		std::uint64_t localTelegramUserIdBinding,
+		const EnvelopeCodec &envelopeCodec,
+		const OpenMlsBridge &bridge,
+		const MlsContextCodecV1 &contextCodec,
+		const Sha256Provider &sha256,
+		PersistentMlsStateStore &mlsState,
+		PersistentArchiveState &archiveState,
+		PersistentGroupLedger &groupLedger,
+		PersistentInboundJournal &inboundJournal,
+		PersistentContentStore &contentStore,
+		FileChunkCiphertextStore &chunkStore) {
+	auto outcome = ObservedContentProcessOutcome{
+		.status = ObservedContentProcessStatus::Processed,
+		.stats = {},
+	};
+	if (!local.conversationId
+		|| !local.accountId
+		|| !local.clientId
+		|| !local.telegramPeerIdBinding
+		|| !localTelegramUserIdBinding
+		|| !mlsState.loaded()
+		|| !archiveState.loaded()
+		|| !groupLedger.loaded()
+		|| !groupLedger.state()
+		|| !contentStore.loaded()) {
+		outcome.status = ObservedContentProcessStatus::InvalidState;
+		return outcome;
+	}
+	auto applications = std::vector<std::pair<
+		const TelegramTransport::UntrustedObject*,
+		TransportEnvelope>>();
+	for (const auto &object : objects) {
+		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+		if (!envelope || !ObservedCarrierMatches(object, *envelope, local)) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		if (envelope->objectKind == ObjectKind::MlsApplication) {
+			applications.emplace_back(&object, *envelope);
+			continue;
+		} else if (envelope->objectKind == ObjectKind::EncryptedFileChunk) {
+			const auto credential = groupLedger.credential(
+				envelope->senderAccountId);
+			const auto verified = credential
+				? VerifyFileChunkEnvelope(*envelope, *credential, sha256)
+				: std::nullopt;
+			if (!verified) {
+				++outcome.stats.ignored;
+				continue;
+			} else if (!ObservedSender(
+					object,
+					*envelope,
+					envelope->epochOrGeneration,
+					groupLedger)) {
+				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+				return outcome;
+			}
+			const auto stored = chunkStore.storeIfAbsent(
+				local.conversationId,
+				verified->fileId,
+				verified->chunkIndex,
+				{
+					.plaintextHash = envelope->payloadHash,
+					.exactCiphertext = envelope->payload,
+				});
+			if (stored == FileChunkStoreResult::Error) {
+				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+				return outcome;
+			} else if (stored == FileChunkStoreResult::AlreadyExists
+				&& !StoredChunkMatches(
+					chunkStore.read(
+						local.conversationId,
+						verified->fileId,
+						verified->chunkIndex),
+					envelope->payloadHash,
+					envelope->payload)) {
+				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+				return outcome;
+			} else if (stored == FileChunkStoreResult::Stored) {
+				++outcome.stats.chunksStored;
+			}
+			continue;
+		} else if (envelope->objectKind != ObjectKind::EncryptedMessageBody
+			&& envelope->objectKind
+				!= ObjectKind::EncryptedFileManifest) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		auto opened = OpenStoredArchivedContent(
+			local.conversationId,
+			local.telegramPeerIdBinding,
+			*envelope,
+			groupLedger,
+			archiveState,
+			EncryptedArchivedContentCodecV1(),
+			sha256,
+			ArchiveEpochCrypto());
+		if (opened.status == ArchivedContentOpenStatus::ArchiveEpochUnavailable) {
+			++outcome.stats.ignored;
+			continue;
+		} else if (!opened.content) {
+			++outcome.stats.ignored;
+			continue;
+		} else if (!ObservedSender(
+				object,
+				*envelope,
+				opened.content->groupGeneration,
+				groupLedger)) {
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		}
+		auto openedContent = std::move(*opened.content);
+		auto record = ProtectedContentRecord{
+			.conversationId = local.conversationId,
+			.eventObjectId = openedContent.eventObjectId,
+			.contentObjectId = openedContent.contentObjectId,
+			.objectKind = openedContent.objectKind,
+			.groupGeneration = openedContent.groupGeneration,
+			.senderAccountId = openedContent.senderAccountId,
+			.senderClientId = openedContent.senderClientId,
+			.unixTime = 0,
+			.observedTelegramMessageId = object.observedMessageId,
+			.plaintext = std::move(openedContent.plaintext),
+		};
+		auto unixTime = std::uint64_t();
+		if (record.objectKind == ObjectKind::EncryptedMessageBody) {
+			const auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+				record.plaintext);
+			unixTime = body ? body->unixTime : 0;
+		} else {
+			const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+				record.plaintext);
+			unixTime = manifest ? manifest->unixTime : 0;
+		}
+		if (!unixTime) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		const auto kind = record.objectKind;
+		record.unixTime = unixTime;
+		const auto stored = contentStore.append(std::move(record));
+		if (stored == ContentStoreAppendResult::Conflict) {
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		} else if (stored == ContentStoreAppendResult::InvalidRecord
+			|| stored == ContentStoreAppendResult::PersistenceFailed) {
+			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+			return outcome;
+		} else if (stored == ContentStoreAppendResult::Stored) {
+			if (kind == ObjectKind::EncryptedMessageBody) {
+				++outcome.stats.messagesStored;
+			} else {
+				++outcome.stats.manifestsStored;
+			}
+		}
+	}
+	std::sort(
+		begin(applications),
+		end(applications),
+		[](const auto &a, const auto &b) {
+			return a.first->observedMessageId < b.first->observedMessageId;
+		});
+	auto applier = OpenMlsApplicationInboundApplier(
+		local,
+		bridge,
+		contextCodec,
+		sha256,
+		mlsState);
+	auto authenticator = OpenMlsEnvelopeAuthenticator(contextCodec, sha256);
+	auto processor = InboundEnvelopeProcessor(
+		local.conversationId,
+		local.telegramPeerIdBinding,
+		envelopeCodec,
+		authenticator,
+		inboundJournal,
+		applier);
+	for (const auto &[object, envelope] : applications) {
+		if (envelope.epochOrGeneration
+				== std::numeric_limits<std::uint64_t>::max()
+			|| !ObservedSender(
+				*object,
+				envelope,
+				envelope.epochOrGeneration + 1,
+				groupLedger)) {
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		}
+		const auto lookup = inboundJournal.lookup(
+			envelope.conversationId,
+			envelope.objectId,
+			envelope.payloadHash);
+		if (lookup == InboundJournalLookup::Accepted) {
+			continue;
+		} else if (lookup == InboundJournalLookup::ObjectIdConflict) {
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		} else if (lookup == InboundJournalLookup::StorageError) {
+			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+			return outcome;
+		}
+		const auto localEnvelope = envelope.senderAccountId == local.accountId
+			&& envelope.senderClientId == local.clientId
+			&& object->observedSenderTelegramUserIdBinding
+				== localTelegramUserIdBinding;
+		const auto receipt = localEnvelope
+			? mlsState.receipt(envelope.objectId)
+			: std::nullopt;
+		if (receipt) {
+			const auto exact = envelopeCodec.decode(receipt->envelope);
+			if (!exact || *exact != envelope) {
+				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+				return outcome;
+			}
+			if (lookup == InboundJournalLookup::Missing
+				&& (!inboundJournal.begin(envelope)
+					|| !inboundJournal.accept(
+						envelope.conversationId,
+						envelope.objectId))) {
+				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+				return outcome;
+			}
+			continue;
+		}
+		const auto processed = processor.process(object->bytes);
+		switch (processed) {
+		case InboundProcessResult::Accepted:
+			if (!applier.acknowledgeDelivered(envelope.objectId)) {
+				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+				return outcome;
+			}
+			++outcome.stats.applicationsProcessed;
+			break;
+		case InboundProcessResult::Duplicate:
+		case InboundProcessResult::Deferred:
+		case InboundProcessResult::InvalidEncoding:
+		case InboundProcessResult::WrongConversation:
+		case InboundProcessResult::WrongCarrier:
+		case InboundProcessResult::AuthenticationFailed:
+		case InboundProcessResult::Rejected:
+			++outcome.stats.ignored;
+			break;
+		case InboundProcessResult::ObjectIdConflict:
+		case InboundProcessResult::ForkDetected:
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		case InboundProcessResult::RecoveryRequired:
+		case InboundProcessResult::JournalFailure:
+			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+			return outcome;
+		}
+	}
+	return outcome;
+}
+
+} // namespace E2ECloud

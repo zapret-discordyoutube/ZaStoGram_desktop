@@ -43,6 +43,14 @@ jobs:
 
           sudo sed -i '' '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/ -g//' /opt/homebrew/share/cmake/Modules/Compiler/GNU.cmake
 
+      - name: Rust toolchain.
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup target add --toolchain 1.91.0 x86_64-apple-darwin
+          rustup target add --toolchain 1.91.0 aarch64-apple-darwin
+          rustc +1.91.0 --version
+          cargo +1.91.0 --version
+
       - name: Libraries cache.
         id: cache-libs
         uses: actions/cache@v6

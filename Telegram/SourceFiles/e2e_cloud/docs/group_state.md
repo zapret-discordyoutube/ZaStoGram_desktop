@@ -58,6 +58,20 @@ The state machine performs authorization and invariant checks. Cryptographic
 signature, KeyPackage, MLS transcript, and account-credential verification are
 performed before it receives a verified transition.
 
+The persistent representation is an append-only signed chain rooted in the
+creator genesis. A transition commits its predecessor checkpoint, exact MLS
+commit, next archive-key commitment, encrypted archive distribution, actor, and
+target authorization. Local storage also retains the account credential first
+admitted for every account, so historical membership, freshness witnesses,
+history grants, and identity gossip can be verified after removal.
+
+Admissions and client additions use MLS add commits; member/client removals use
+MLS remove commits; role, ownership, default-history, and member-history changes
+use MLS self-update commits. Every accepted transition advances the protected,
+MLS, and archive generations together. After applying the MLS object, clients
+require the resulting MLS account/client roster to match the protected state
+exactly.
+
 Version one transitions have one fixed binary representation. Unused fields are
 required to contain their defined defaults, generations advance by exactly one,
 and duplicate transition identifiers remain rejected even if an attacker places

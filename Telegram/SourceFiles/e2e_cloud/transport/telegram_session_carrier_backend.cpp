@@ -1,0 +1,668 @@
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
+#include "e2e_cloud/transport/telegram_session_carrier_backend.h"
+
+#include "apiwrap.h"
+#include "base/algorithm.h"
+#include "base/random.h"
+#include "base/unixtime.h"
+#include "base/weak_ptr.h"
+#include "data/data_channel.h"
+#include "data/data_document.h"
+#include "data/data_document_media.h"
+#include "data/data_file_origin.h"
+#include "data/data_session.h"
+#include "data/data_types.h"
+#include "core/file_location.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/instance/sender.h"
+#include "storage/file_upload.h"
+#include "storage/localimageloader.h"
+
+#include <QtCore/QFile>
+#include <QtCore/QTemporaryDir>
+
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <map>
+#include <optional>
+#include <utility>
+
+namespace E2ECloud {
+namespace {
+
+inline constexpr auto kLegacyCarrierFilename = "protected.tde2e";
+inline constexpr auto kControlCarrierFilename = "protected-control.tde2e";
+inline constexpr auto kContentCarrierFilename = "protected-content.tde2e";
+inline constexpr auto kCarrierMimeType = "application/octet-stream";
+inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
+inline constexpr auto kMaximumDownloadPageBytes = 64 * 1024 * 1024;
+
+[[nodiscard]] QByteArray EncodeCursor(MsgId messageId) {
+	if (!messageId) {
+		return {};
+	}
+	const auto value = std::uint32_t(messageId.bare);
+	auto result = QByteArray();
+	result.reserve(4);
+	result.append(char(value >> 24));
+	result.append(char(value >> 16));
+	result.append(char(value >> 8));
+	result.append(char(value));
+	return result;
+}
+
+[[nodiscard]] std::optional<MsgId> DecodeCursor(const QByteArray &cursor) {
+	if (cursor.isEmpty()) {
+		return MsgId();
+	} else if (cursor.size() != 4) {
+		return std::nullopt;
+	}
+	const auto data = reinterpret_cast<const std::uint8_t*>(
+		cursor.constData());
+	const auto value = (std::uint32_t(data[0]) << 24)
+		| (std::uint32_t(data[1]) << 16)
+		| (std::uint32_t(data[2]) << 8)
+		| std::uint32_t(data[3]);
+	return (value && value <= std::uint32_t(std::numeric_limits<int>::max()))
+		? std::optional<MsgId>(MsgId(int(value)))
+		: std::nullopt;
+}
+
+[[nodiscard]] TelegramTransport::UploadResult ErrorResult(
+		const MTP::Error &error) {
+	const auto &type = error.type();
+	return (type == u"CHAT_WRITE_FORBIDDEN"_q
+		|| type == u"PEER_ID_INVALID"_q
+		|| type == u"CHAT_ID_INVALID"_q
+		|| type == u"CHANNEL_PRIVATE"_q
+		|| type == u"MEDIA_INVALID"_q
+		|| type == u"FILE_PARTS_INVALID"_q
+		|| type == u"FILE_PART_INVALID"_q)
+		? TelegramTransport::UploadResult::PermanentError
+		: TelegramTransport::UploadResult::RetryableError;
+}
+
+[[nodiscard]] std::shared_ptr<FilePrepareResult> PrepareCarrierDocument(
+		MTP::DcId dcId,
+		const QString &filename,
+		const QString &mimeType,
+		const QByteArray &bytes) {
+	const auto id = base::RandomValue<DocumentId>();
+	auto result = MakePreparedFile({
+		.id = id,
+		.type = SendMediaType::File,
+	});
+	result->filename = filename;
+	result->content = bytes;
+	result->filesize = bytes.size();
+	result->setFileData(bytes);
+	result->document = MTP_document(
+		MTP_flags(0),
+		MTP_long(id),
+		MTP_long(0),
+		MTP_bytes(),
+		MTP_int(base::unixtime::now()),
+		MTP_string(mimeType),
+		MTP_long(bytes.size()),
+		MTP_vector<MTPPhotoSize>(),
+		MTPVector<MTPVideoSize>(),
+		MTP_int(dcId),
+		MTP_vector<MTPDocumentAttribute>(QVector<MTPDocumentAttribute>{
+			MTP_documentAttributeFilename(MTP_string(filename)),
+		}));
+	return result;
+}
+
+} // namespace
+
+struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
+	struct PendingUpload {
+		UploadCallback callback;
+	};
+
+	struct UploadedFile {
+		MTPInputFile file;
+	};
+
+	struct DownloadEntry {
+		not_null<DocumentData*> document;
+		std::shared_ptr<Data::DocumentMedia> media;
+		FullMsgId messageId;
+		QString path;
+		std::uint64_t senderTelegramUserIdBinding = 0;
+	};
+
+	struct PendingDownload {
+		DownloadCallback callback;
+		QByteArray nextCursor;
+		std::unique_ptr<QTemporaryDir> directory;
+		std::vector<DownloadEntry> entries;
+		std::vector<TelegramTransport::UntrustedObject> objects;
+		bool complete = false;
+	};
+
+	State(
+		not_null<Main::Session*> session,
+		not_null<History*> history,
+		std::uint64_t telegramPeerIdBinding,
+		QString filename,
+		QString mimeType,
+		int maximumObjectSize,
+		bool protectedCarrierFamily)
+	: session(session)
+	, peerId(history->peer->id)
+	, telegramPeerIdBinding(telegramPeerIdBinding)
+	, filename(std::move(filename))
+	, mimeType(std::move(mimeType))
+	, maximumObjectSize(maximumObjectSize)
+	, protectedCarrierFamily(protectedCarrierFamily)
+	, api(&session->mtp()) {
+		session->uploader().documentReady(
+		) | rpl::on_next([weak = base::weak_ptr(this)](
+				const Storage::UploadedMedia &media) {
+			if (weak) {
+				weak->uploadReady(media);
+			}
+		}, lifetime);
+		session->uploader().documentFailed(
+		) | rpl::on_next([weak = base::weak_ptr(this)](FullMsgId id) {
+			if (weak) {
+				weak->uploadFailed(id);
+			}
+		}, lifetime);
+		session->data().documentLoadProgress(
+		) | rpl::on_next([weak = base::weak_ptr(this)](
+				not_null<DocumentData*> document) {
+			if (weak) {
+				weak->downloadProgress(document);
+			}
+		}, lifetime);
+	}
+
+	[[nodiscard]] bool carrierMetadata(
+			const QString &candidateFilename,
+			const QString &candidateMimeType) const {
+		return candidateMimeType == mimeType
+			&& (protectedCarrierFamily
+				? (candidateFilename
+						== QString::fromLatin1(kLegacyCarrierFilename)
+					|| candidateFilename
+						== QString::fromLatin1(kControlCarrierFilename)
+					|| candidateFilename
+						== QString::fromLatin1(kContentCarrierFilename))
+				: candidateFilename == filename);
+	}
+
+	~State() {
+		for (const auto &entry : uploads) {
+			session->uploader().cancel(entry.first);
+		}
+		if (download) {
+			for (const auto &entry : download->entries) {
+				if (entry.document->loading()) {
+					entry.document->cancel();
+				}
+				entry.document->setLocation(Core::FileLocation());
+			}
+		}
+	}
+
+	void uploadDocument(
+			QByteArray bytes,
+			QString filename,
+			QString mimeType,
+			UploadCallback callback) {
+		if (!callback) {
+			return;
+		} else if (!carrierMetadata(filename, mimeType)
+			|| bytes.isEmpty()
+			|| bytes.size() > maximumObjectSize) {
+			callback(TelegramTransport::UploadResult::PermanentError, {});
+			return;
+		}
+		const auto id = FullMsgId(
+			session->userPeerId(),
+			session->data().nextLocalMessageId());
+		uploads.emplace(id, PendingUpload{ std::move(callback) });
+		session->uploader().upload(
+			id,
+			PrepareCarrierDocument(
+				session->mtp().mainDcId(),
+				filename,
+				mimeType,
+				bytes));
+	}
+
+	void uploadReady(const Storage::UploadedMedia &media) {
+		const auto i = uploads.find(media.fullId);
+		if (i == uploads.end()) {
+			return;
+		}
+		auto callback = std::move(i->second.callback);
+		uploads.erase(i);
+		auto token = QByteArray();
+		do {
+			const auto random = base::RandomValue<std::array<std::uint8_t, 16>>();
+			token = QByteArray(
+				reinterpret_cast<const char*>(random.data()),
+				random.size());
+		} while (uploaded.contains(token));
+		uploaded.emplace(token, UploadedFile{ media.info.file });
+		callback(
+			TelegramTransport::UploadResult::Accepted,
+			UploadedCarrierFile{ std::move(token) });
+	}
+
+	void uploadFailed(FullMsgId id) {
+		const auto i = uploads.find(id);
+		if (i == uploads.end()) {
+			return;
+		}
+		auto callback = std::move(i->second.callback);
+		uploads.erase(i);
+		callback(TelegramTransport::UploadResult::RetryableError, {});
+	}
+
+	void sendUploadedDocument(
+			std::uint64_t peerId,
+			UploadedCarrierFile carrierFile,
+			QString filename,
+			QString mimeType,
+			SendCallback callback) {
+		if (!callback) {
+			return;
+		}
+		const auto i = uploaded.find(carrierFile.backendToken);
+		if (peerId != telegramPeerIdBinding
+			|| !carrierMetadata(filename, mimeType)
+			|| i == uploaded.end()) {
+			callback(TelegramTransport::UploadResult::PermanentError);
+			return;
+		}
+		const auto file = i->second.file;
+		uploaded.erase(i);
+		using MediaFlag = MTPDinputMediaUploadedDocument::Flag;
+		const auto media = MTP_inputMediaUploadedDocument(
+			MTP_flags(MediaFlag::f_force_file),
+			file,
+			MTPInputFile(),
+			MTP_string(mimeType),
+			MTP_vector<MTPDocumentAttribute>(QVector<MTPDocumentAttribute>{
+				MTP_documentAttributeFilename(MTP_string(filename)),
+			}),
+			MTP_vector<MTPInputDocument>(),
+			MTPInputPhoto(),
+			MTP_int(0),
+			MTP_int(0));
+		const auto randomId = base::RandomValue<std::uint64_t>();
+		auto sharedCallback = std::make_shared<SendCallback>(
+			std::move(callback));
+		api.request(MTPmessages_SendMedia(
+			MTP_flags(MTPmessages_SendMedia::Flag(0)),
+			session->data().history(PeerId(peerId))->peer->input(),
+			MTPInputReplyTo(),
+			media,
+			MTP_string(QString()),
+			MTP_long(randomId),
+			MTPReplyMarkup(),
+			MTPVector<MTPMessageEntity>(),
+			MTPint(),
+			MTPint(),
+			MTPInputPeer(),
+			MTPInputQuickReplyShortcut(),
+			MTPlong(),
+			MTPlong(),
+			MTPSuggestedPost()
+		)).done([weak = base::weak_ptr(this), sharedCallback](
+				const MTPUpdates &updates) mutable {
+			if (weak) {
+				weak->session->api().applyUpdates(updates);
+				if (*sharedCallback) {
+					base::take(*sharedCallback)(
+						TelegramTransport::UploadResult::Accepted);
+				}
+			}
+		}).fail([weak = base::weak_ptr(this), sharedCallback](
+				const MTP::Error &error) mutable {
+			if (weak && *sharedCallback) {
+				base::take(*sharedCallback)(ErrorResult(error));
+			}
+		}).send();
+	}
+
+	void downloadDocuments(
+			std::uint64_t peerId,
+			QByteArray cursor,
+			int limit,
+			DownloadCallback callback) {
+		const auto offset = DecodeCursor(cursor);
+		if (!callback) {
+			return;
+		} else if (peerId != telegramPeerIdBinding
+			|| !offset
+			|| limit <= 0
+			|| limit > 100) {
+			callback(TelegramTransport::UploadResult::PermanentError, {});
+			return;
+		} else if (download) {
+			callback(TelegramTransport::UploadResult::RetryableError, {});
+			return;
+		}
+		download = PendingDownload{
+			.callback = std::move(callback),
+			.nextCursor = {},
+			.directory = std::make_unique<QTemporaryDir>(),
+			.entries = {},
+			.objects = {},
+			.complete = false,
+		};
+		if (!download->directory->isValid()) {
+			finishDownload(TelegramTransport::UploadResult::RetryableError);
+			return;
+		}
+		api.request(MTPmessages_GetHistory(
+			session->data().history(PeerId(peerId))->peer->input(),
+			MTP_int(*offset),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_int(limit),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_long(0)
+		)).done([weak = base::weak_ptr(this), limit](
+				const MTPmessages_Messages &result) {
+			if (weak) {
+				weak->historyLoaded(result, limit);
+			}
+		}).fail([weak = base::weak_ptr(this)](const MTP::Error &error) {
+			if (weak) {
+				weak->finishDownload(ErrorResult(error));
+			}
+		}).send();
+	}
+
+	void historyLoaded(const MTPmessages_Messages &result, int limit) {
+		if (!download) {
+			return;
+		}
+		auto messages = QVector<MTPMessage>();
+		result.match([&](const MTPDmessages_messages &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			messages = data.vmessages().v;
+		}, [&](const MTPDmessages_messagesSlice &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			messages = data.vmessages().v;
+		}, [&](const MTPDmessages_channelMessages &data) {
+			session->data().processUsers(data.vusers());
+			session->data().processChats(data.vchats());
+			if (const auto channel = session->data().peer(peerId)->asChannel()) {
+				channel->ptsReceived(data.vpts().v);
+			}
+			messages = data.vmessages().v;
+		}, [](const MTPDmessages_messagesNotModified &) {
+		});
+		download->complete = messages.size() < limit;
+		auto retainedBytes = std::int64_t();
+		for (const auto &message : messages) {
+			const auto messageId = IdFromMessage(message);
+			if (!messageId) {
+				continue;
+			}
+			const auto peerId = PeerFromMessage(message);
+			if (peerId != this->peerId
+				|| !session->data().peerLoaded(peerId)
+				|| !DateFromMessage(message)) {
+				download->nextCursor = EncodeCursor(messageId);
+				continue;
+			}
+			const auto item = session->data().addNewMessage(
+				message,
+				MessageFlags(),
+				NewMessageType::Existing);
+			if (!item) {
+				download->nextCursor = EncodeCursor(messageId);
+				continue;
+			}
+			const auto media = item->media();
+			const auto document = media ? media->document() : nullptr;
+			if (!document
+				|| !carrierMetadata(
+					document->filename(),
+					document->mimeString())
+				|| document->size <= 0
+				|| document->size > maximumObjectSize) {
+				download->nextCursor = EncodeCursor(messageId);
+				continue;
+			}
+			if (retainedBytes + document->size
+					> kMaximumDownloadPageBytes) {
+				download->complete = false;
+				break;
+			}
+			retainedBytes += document->size;
+			download->nextCursor = EncodeCursor(messageId);
+			const auto path = download->directory->filePath(
+				QString::number(download->entries.size()) + u".tde2e"_q);
+			auto documentMedia = document->createMediaView();
+			download->entries.push_back({
+				.document = document,
+				.media = std::move(documentMedia),
+				.messageId = item->fullId(),
+				.path = path,
+				.senderTelegramUserIdBinding = peerIsUser(item->from()->id)
+					? peerToUser(item->from()->id).bare
+					: 0,
+			});
+		}
+		if (download->entries.empty()) {
+			finishDownload(TelegramTransport::UploadResult::Accepted);
+			return;
+		}
+		startingDownloads = true;
+		for (const auto &entry : download->entries) {
+			entry.document->save(
+				Data::FileOrigin(entry.messageId),
+				entry.path);
+		}
+		startingDownloads = false;
+		collectDownloaded();
+	}
+
+	void downloadProgress(not_null<DocumentData*> document) {
+		if (!startingDownloads && download && std::any_of(
+			download->entries.begin(),
+			download->entries.end(),
+			[&](const DownloadEntry &entry) {
+				return entry.document == document;
+			})) {
+			collectDownloaded();
+		}
+	}
+
+	void collectDownloaded() {
+		if (!download) {
+			return;
+		}
+		auto objects = std::vector<TelegramTransport::UntrustedObject>();
+		objects.reserve(download->entries.size());
+		for (const auto &entry : download->entries) {
+			if (!entry.media->loaded(true)) {
+				if (!entry.document->loading()) {
+					finishDownload(
+						TelegramTransport::UploadResult::RetryableError);
+				}
+				return;
+			}
+			auto bytes = entry.media->bytes();
+			if (bytes.isEmpty()) {
+				auto file = QFile(entry.path);
+				if (!file.open(QIODevice::ReadOnly)) {
+					finishDownload(
+						TelegramTransport::UploadResult::RetryableError);
+					return;
+				}
+				bytes = file.readAll();
+			}
+			if (bytes.isEmpty()
+				|| bytes.size() > maximumObjectSize) {
+				finishDownload(
+					TelegramTransport::UploadResult::PermanentError);
+				return;
+			}
+			objects.push_back({
+				.bytes = std::move(bytes),
+				.observedTelegramPeerIdBinding = telegramPeerIdBinding,
+				.observedSenderTelegramUserIdBinding =
+					entry.senderTelegramUserIdBinding,
+				.observedMessageId = entry.messageId.msg.bare,
+			});
+		}
+		download->objects = std::move(objects);
+		finishDownload(TelegramTransport::UploadResult::Accepted);
+	}
+
+	void finishDownload(TelegramTransport::UploadResult result) {
+		if (!download) {
+			return;
+		}
+		auto pending = std::move(*download);
+		download.reset();
+		auto callback = std::move(pending.callback);
+		auto page = CarrierDownloadPage();
+		if (result == TelegramTransport::UploadResult::Accepted) {
+			page.untrustedObjects = std::move(pending.objects);
+			page.nextCursor = std::move(pending.nextCursor);
+			page.complete = pending.complete;
+		}
+		for (const auto &entry : pending.entries) {
+			if (result != TelegramTransport::UploadResult::Accepted
+				&& entry.document->loading()) {
+				entry.document->cancel();
+			}
+			entry.document->setLocation(Core::FileLocation());
+		}
+		callback(result, std::move(page));
+	}
+
+	const not_null<Main::Session*> session;
+	const PeerId peerId;
+	const std::uint64_t telegramPeerIdBinding = 0;
+	const QString filename;
+	const QString mimeType;
+	const int maximumObjectSize = 0;
+	const bool protectedCarrierFamily = false;
+	MTP::Sender api;
+	std::map<FullMsgId, PendingUpload> uploads;
+	std::map<QByteArray, UploadedFile> uploaded;
+	std::optional<PendingDownload> download;
+	bool startingDownloads = false;
+	rpl::lifetime lifetime;
+};
+
+TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
+		not_null<Main::Session*> session,
+		not_null<History*> history,
+		std::uint64_t telegramPeerIdBinding)
+: _state(std::make_unique<State>(
+	  session,
+	  history,
+	  telegramPeerIdBinding,
+	  QString::fromLatin1(kLegacyCarrierFilename),
+	  QString::fromLatin1(kCarrierMimeType),
+	  kMaximumCarrierObjectSize,
+	  true)) {
+}
+
+TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
+		not_null<Main::Session*> session,
+		not_null<History*> history,
+		std::uint64_t telegramPeerIdBinding,
+		QString filename,
+		QString mimeType,
+		int maximumObjectSize)
+: _state((!filename.isEmpty()
+		&& !mimeType.isEmpty()
+		&& maximumObjectSize > 0
+		&& maximumObjectSize <= kMaximumCarrierObjectSize)
+		? std::make_unique<State>(
+			session,
+			history,
+			telegramPeerIdBinding,
+			std::move(filename),
+			std::move(mimeType),
+			maximumObjectSize,
+			false)
+		: nullptr) {
+}
+
+TelegramSessionCarrierBackend::~TelegramSessionCarrierBackend() = default;
+
+void TelegramSessionCarrierBackend::uploadDocument(
+		QByteArray bytes,
+		QString filename,
+		QString mimeType,
+		UploadCallback callback) {
+	if (!_state) {
+		if (callback) {
+			callback(TelegramTransport::UploadResult::PermanentError, {});
+		}
+		return;
+	}
+	_state->uploadDocument(
+		std::move(bytes),
+		std::move(filename),
+		std::move(mimeType),
+		std::move(callback));
+}
+
+void TelegramSessionCarrierBackend::sendUploadedDocument(
+		std::uint64_t telegramPeerId,
+		UploadedCarrierFile file,
+		QString filename,
+		QString mimeType,
+		SendCallback callback) {
+	if (!_state) {
+		if (callback) {
+			callback(TelegramTransport::UploadResult::PermanentError);
+		}
+		return;
+	}
+	_state->sendUploadedDocument(
+		telegramPeerId,
+		std::move(file),
+		std::move(filename),
+		std::move(mimeType),
+		std::move(callback));
+}
+
+void TelegramSessionCarrierBackend::downloadDocuments(
+		std::uint64_t telegramPeerId,
+		QByteArray cursor,
+		int limit,
+		DownloadCallback callback) {
+	if (!_state) {
+		if (callback) {
+			callback(TelegramTransport::UploadResult::PermanentError, {});
+		}
+		return;
+	}
+	_state->downloadDocuments(
+		telegramPeerId,
+		std::move(cursor),
+		limit,
+		std::move(callback));
+}
+
+} // namespace E2ECloud

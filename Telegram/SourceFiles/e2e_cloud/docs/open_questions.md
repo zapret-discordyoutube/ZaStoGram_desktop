@@ -2,15 +2,12 @@
 
 ## Protocol and identity
 
-- Which RFC 9420 implementation will provide the production MLS engine?
 - Which reviewed hybrid post-quantum MLS suite and migration path will follow
   the mandatory version-one suite when implementations mature?
-- Which deterministic encodings will be used inside each application payload?
-- What signed gossip protocol detects Telegram split views without a custom
-  witness service?
-- How are valid concurrent commits and forks recovered?
-- How long are KeyPackages valid, and how are depleted packages replenished
-  through Telegram-only storage?
+- Which independent MLS implementation will be the long-term differential
+  interoperability oracle?
+- What reviewed signed snapshot format will compact groups that approach the
+  65,536-control-object and generation lifecycle bound?
 
 ## Telegram carrier
 
@@ -29,13 +26,15 @@
   stores wrap the locally remembered vault key?
 - What password strength and normalization policy is consistent across every
   platform?
-- How are stale encrypted vault generations detected on a brand-new installation?
+- Should a future independent transparency service be optional for users who
+  want stronger brand-new-installation rollback detection than the chosen
+  Telegram-only automatic freshness witness can provide?
 
 ## History and files
 
-- How often do archive epochs rotate?
 - How are large history grants compressed, paged, and authenticated?
-- Which streaming AEAD construction and chunk size are used for files?
+- What default chunk size best balances resumability, storage overhead, and
+  mobile memory use within the authenticated version-one chunk layout?
 - What padding policy is worth its bandwidth cost?
 - What deletion guarantees can be stated accurately for Telegram-held
   ciphertext and participant-held keys?
@@ -44,4 +43,7 @@
 
 - Should a visible multi-party quorum be added for selected operations after
   the initial owner-only authorization model ships?
-- What is the migration plan when mobile support is introduced after desktop?
+- Which desktop/mobile release sequence can reuse the same protocol core while
+  keeping platform credential-store and background-sync behavior testable?
+- What battery, background execution, and push-wakeup policy lets a phone answer
+  freshness challenges without requiring a connected Desktop client?

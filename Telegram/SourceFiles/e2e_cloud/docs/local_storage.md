@@ -46,12 +46,69 @@ sealed identifiers fail closed.
 The encrypted snapshot is bounded to 128 MiB and 4096 items. Attachments are not
 copied into it; they use the encrypted file pipeline.
 
+## Transactional MLS state
+
+Every protected conversation has its own encrypted MLS provider snapshot and
+monotonic local storage revision. The record identifies the exact engine and
+storage format, contains the complete opaque provider state, and retains exact
+outgoing-operation receipts while Telegram delivery is pending. Conversation
+identity is authenticated both in the record and in its protection purpose, so
+a valid state file cannot be swapped into another conversation.
+
+Mutating crypto runs on an isolated candidate state. The candidate state,
+request digest, operation identifier, and outgoing envelope are written as one
+atomic protected record before the live engine adopts the state. Failed writes
+leave both the old in-memory and on-disk ratchet authoritative. Committed
+operation identifiers are idempotent and return their exact recorded envelope;
+the same identifier with different content is rejected.
+
+The current full-snapshot transaction is deliberately simple and bounded to
+64 MiB of engine state and 128 MiB total. Performance and secure-deletion tests
+at 500 participants decide whether a future encrypted write-ahead log is
+needed. Such a change may optimize storage but may not weaken the single-commit
+state-and-ciphertext invariant.
+
 The inbound replay journal uses the same protected-record and atomic snapshot
 boundary. It stores a bounded recent set of conversation/object identifiers,
 payload hashes, and `pending` or `accepted` states. `Pending` survives a crash
 between object application and journal commit and forces explicit recovery
 instead of blind replay. MLS replay state remains authoritative for application
 messages; the bounded transport journal is not an unbounded message archive.
+
+## Cross-store group-change transaction
+
+Group changes span records that cannot be replaced in one filesystem rename:
+the OpenMLS provider, archive epochs, signed group ledger, and outgoing queue.
+Before touching any of them, the client writes a purpose-bound encrypted
+transaction containing their exact base revisions, signed transition, raw MLS
+commit, archive distribution, candidate provider state, archive key, and—only
+for locally created changes—exact outgoing envelopes.
+
+Recovery replays each mutation idempotently and checks already-written values
+byte-for-byte before continuing. The transaction is cleared only after every
+required store commits. Incoming and first-Welcome transactions contain no
+outbox envelopes, so recovery cannot republish remote objects. A first-Welcome
+transaction is also allowed to initialize the archive store directly at the
+current generation; older keys arrive only through authorized history grants.
+
+An inbound own-removal transaction is the deliberate exception to archive
+mutation. It atomically replaces provider state with a removal tombstone and
+advances the signed group ledger without storing the archive key that was sent
+only to the remaining roster. A later rejoin uses a fresh KeyPackage and keeps
+the missing archive generation as a real access gap rather than fabricating or
+copying a key.
+
+## Out-of-order group-change inbox
+
+The encrypted group-change inbox durably stages signed transitions, MLS
+commits, and encrypted archive-key distributions by application object ID.
+Telegram order is not trusted. The inbox assembles only the single next
+generation whose referenced IDs and hashes match the signed transition;
+multiple candidates at that generation are reported as a fork. Successfully
+applied bundles are removed after the cross-store transaction clears. If a
+crash occurs between inbox storage and replay-journal acceptance, recovery
+recognizes the already staged payload hash and does not process the MLS object
+twice.
 
 ## Rollback
 

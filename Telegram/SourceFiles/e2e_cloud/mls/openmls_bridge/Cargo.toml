@@ -1,0 +1,25 @@
+[package]
+name = "td_e2e_openmls_bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+hpke-rs = { version = "=0.7.0", features = ["hazmat"] }
+hpke-rs-rust-crypto = "=0.7.0"
+openmls = { git = "https://github.com/openmls/openmls.git", rev = "0e99bc8814d136f0bc7bc9ce86dd288eb32273ed", default-features = false, features = ["fork-resolution"] }
+openmls_basic_credential = { git = "https://github.com/openmls/openmls.git", rev = "0e99bc8814d136f0bc7bc9ce86dd288eb32273ed", features = ["clonable"] }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls.git", rev = "0e99bc8814d136f0bc7bc9ce86dd288eb32273ed" }
+openmls_traits = { git = "https://github.com/openmls/openmls.git", rev = "0e99bc8814d136f0bc7bc9ce86dd288eb32273ed" }
+tls_codec = "=0.5.0"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

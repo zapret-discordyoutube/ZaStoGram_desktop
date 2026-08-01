@@ -10,54 +10,181 @@ add_library(tdesktop::td_e2e_cloud ALIAS td_e2e_cloud)
 
 nice_target_sources(td_e2e_cloud ${src_loc}
 PRIVATE
+    e2e_cloud/archive/archived_content_crypto.cpp
+    e2e_cloud/archive/archived_content_crypto.h
+    e2e_cloud/archive/archived_content_outbox.cpp
+    e2e_cloud/archive/archived_content_outbox.h
+    e2e_cloud/archive/archived_content_reader.cpp
+    e2e_cloud/archive/archived_content_reader.h
+    e2e_cloud/archive/archive_epoch_crypto.cpp
+    e2e_cloud/archive/archive_epoch_crypto.h
+    e2e_cloud/archive/history_grant_crypto.cpp
+    e2e_cloud/archive/history_grant_crypto.h
+    e2e_cloud/archive/history_grant_service.cpp
+    e2e_cloud/archive/history_grant_service.h
+    e2e_cloud/archive/persistent_archive_state.cpp
+    e2e_cloud/archive/persistent_archive_state.h
     e2e_cloud/core/envelope.cpp
     e2e_cloud/core/envelope.h
     e2e_cloud/core/envelope_codec.cpp
     e2e_cloud/core/envelope_codec.h
     e2e_cloud/core/freshness_gate.cpp
     e2e_cloud/core/freshness_gate.h
+    e2e_cloud/core/freshness_crypto.cpp
+    e2e_cloud/core/freshness_crypto.h
     e2e_cloud/core/interfaces.h
     e2e_cloud/core/outbox.cpp
     e2e_cloud/core/outbox.h
     e2e_cloud/core/types.cpp
     e2e_cloud/core/types.h
+    e2e_cloud/content/protected_message_body.cpp
+    e2e_cloud/content/protected_message_body.h
     e2e_cloud/files/file_chunk_crypto.cpp
     e2e_cloud/files/file_chunk_crypto.h
+    e2e_cloud/files/file_chunk_envelope.cpp
+    e2e_cloud/files/file_chunk_envelope.h
     e2e_cloud/files/file_chunk_file_store.cpp
     e2e_cloud/files/file_chunk_file_store.h
     e2e_cloud/files/idempotent_file_chunk_protector.cpp
     e2e_cloud/files/idempotent_file_chunk_protector.h
     e2e_cloud/files/private_file_manifest.cpp
     e2e_cloud/files/private_file_manifest.h
+    e2e_cloud/files/persistent_file_transfer.cpp
+    e2e_cloud/files/persistent_file_transfer.h
     e2e_cloud/group/group_state.cpp
     e2e_cloud/group/group_state.h
+    e2e_cloud/group/group_state_codec.cpp
+    e2e_cloud/group/group_state_codec.h
+    e2e_cloud/group/signed_group_genesis.cpp
+    e2e_cloud/group/signed_group_genesis.h
     e2e_cloud/group/group_transition_codec.cpp
     e2e_cloud/group/group_transition_codec.h
+    e2e_cloud/group/persistent_group_ledger.cpp
+    e2e_cloud/group/persistent_group_ledger.h
+    e2e_cloud/group/signed_group_transition.cpp
+    e2e_cloud/group/signed_group_transition.h
     e2e_cloud/identity/account_identity.cpp
     e2e_cloud/identity/account_identity.h
     e2e_cloud/identity/openssl_account_crypto.cpp
     e2e_cloud/identity/openssl_account_crypto.h
+    e2e_cloud/identity/safety_gossip.cpp
+    e2e_cloud/identity/safety_gossip.h
+    e2e_cloud/mls/mls_context_codec.cpp
+    e2e_cloud/mls/mls_context_codec.h
+    e2e_cloud/mls/client_key_package.cpp
+    e2e_cloud/mls/client_key_package.h
+    e2e_cloud/mls/fork_recovery_manifest.cpp
+    e2e_cloud/mls/fork_recovery_manifest.h
+    e2e_cloud/mls/key_package_lifecycle.cpp
+    e2e_cloud/mls/key_package_lifecycle.h
+    e2e_cloud/mls/mls_outbox_reconciler.cpp
+    e2e_cloud/mls/mls_outbox_reconciler.h
+    e2e_cloud/mls/mls_roster_codec.cpp
+    e2e_cloud/mls/mls_roster_codec.h
+    e2e_cloud/mls/openmls_application_engine.cpp
+    e2e_cloud/mls/openmls_application_engine.h
+    e2e_cloud/mls/openmls_group_change_engine.cpp
+    e2e_cloud/mls/openmls_group_change_engine.h
+    e2e_cloud/mls/openmls_inbound_fork_recovery.cpp
+    e2e_cloud/mls/openmls_inbound_fork_recovery.h
+    e2e_cloud/mls/openmls_inbound_group_change.cpp
+    e2e_cloud/mls/openmls_inbound_group_change.h
+    e2e_cloud/mls/observed_key_package.cpp
+    e2e_cloud/mls/observed_key_package.h
+    e2e_cloud/mls/openmls_bridge.cpp
+    e2e_cloud/mls/openmls_bridge.h
+    e2e_cloud/mls/openmls_fork_recovery_engine.cpp
+    e2e_cloud/mls/openmls_fork_recovery_engine.h
+    e2e_cloud/mls/td_e2e_openmls.h
     e2e_cloud/protocol/inbound_envelope_processor.cpp
     e2e_cloud/protocol/inbound_envelope_processor.h
+    e2e_cloud/protocol/observed_group_change_sync.cpp
+    e2e_cloud/protocol/observed_group_change_sync.h
+    e2e_cloud/protocol/observed_content_processor.cpp
+    e2e_cloud/protocol/observed_content_processor.h
+    e2e_cloud/protocol/public_group_bootstrap.cpp
+    e2e_cloud/protocol/public_group_bootstrap.h
+    e2e_cloud/protocol/public_join_catchup.cpp
+    e2e_cloud/protocol/public_join_catchup.h
+    e2e_cloud/protocol/group_change_transaction.cpp
+    e2e_cloud/protocol/group_change_transaction.h
+    e2e_cloud/protocol/group_bootstrap.cpp
+    e2e_cloud/protocol/group_bootstrap.h
+    e2e_cloud/protocol/group_bootstrap_transaction.cpp
+    e2e_cloud/protocol/group_bootstrap_transaction.h
+    e2e_cloud/protocol/fork_recovery_transaction.cpp
+    e2e_cloud/protocol/fork_recovery_transaction.h
+    e2e_cloud/protocol/freshness_protocol.cpp
+    e2e_cloud/protocol/freshness_protocol.h
+    e2e_cloud/protocol/group_change_inbox.cpp
+    e2e_cloud/protocol/group_change_inbox.h
+    e2e_cloud/protocol/group_control_codec.cpp
+    e2e_cloud/protocol/group_control_codec.h
     e2e_cloud/storage/aes_gcm_local_record_protector.cpp
     e2e_cloud/storage/aes_gcm_local_record_protector.h
     e2e_cloud/storage/file_atomic_blob_store.cpp
     e2e_cloud/storage/file_atomic_blob_store.h
     e2e_cloud/storage/local_storage.h
+    e2e_cloud/storage/local_record_key_derivation.cpp
+    e2e_cloud/storage/local_record_key_derivation.h
+    e2e_cloud/storage/persistent_conversation_metadata.cpp
+    e2e_cloud/storage/persistent_conversation_metadata.h
+    e2e_cloud/storage/persistent_content_store.cpp
+    e2e_cloud/storage/persistent_content_store.h
+    e2e_cloud/storage/persistent_content_sync_state.cpp
+    e2e_cloud/storage/persistent_content_sync_state.h
+    e2e_cloud/storage/persistent_fork_recovery_ledger.cpp
+    e2e_cloud/storage/persistent_fork_recovery_ledger.h
+    e2e_cloud/storage/persistent_freshness_trust.cpp
+    e2e_cloud/storage/persistent_freshness_trust.h
     e2e_cloud/storage/persistent_inbound_journal.cpp
     e2e_cloud/storage/persistent_inbound_journal.h
+    e2e_cloud/storage/persistent_key_package_pool.cpp
+    e2e_cloud/storage/persistent_key_package_pool.h
+    e2e_cloud/storage/persistent_mls_state.cpp
+    e2e_cloud/storage/persistent_mls_state.h
     e2e_cloud/storage/persistent_outbox.cpp
     e2e_cloud/storage/persistent_outbox.h
     e2e_cloud/transport/outbox_upload_controller.cpp
     e2e_cloud/transport/outbox_upload_controller.h
+    e2e_cloud/transport/public_bootstrap_sync_controller.cpp
+    e2e_cloud/transport/public_bootstrap_sync_controller.h
+    e2e_cloud/transport/public_bootstrap_discovery_controller.cpp
+    e2e_cloud/transport/public_bootstrap_discovery_controller.h
+    e2e_cloud/transport/carrier_sync_controller.cpp
+    e2e_cloud/transport/carrier_sync_controller.h
+    e2e_cloud/transport/observed_content_sync_controller.cpp
+    e2e_cloud/transport/observed_content_sync_controller.h
+    e2e_cloud/transport/cloud_vault_transport.cpp
+    e2e_cloud/transport/cloud_vault_transport.h
+    e2e_cloud/transport/cloud_vault_sync_controller.cpp
+    e2e_cloud/transport/cloud_vault_sync_controller.h
     e2e_cloud/transport/telegram_carrier_transport.cpp
     e2e_cloud/transport/telegram_carrier_transport.h
     e2e_cloud/vault/password_kdf.cpp
     e2e_cloud/vault/password_kdf.h
     e2e_cloud/vault/argon2id_password_kdf.cpp
     e2e_cloud/vault/argon2id_password_kdf.h
+    e2e_cloud/vault/cloud_vault.cpp
+    e2e_cloud/vault/cloud_vault.h
+    e2e_cloud/vault/cloud_vault_selection.cpp
+    e2e_cloud/vault/cloud_vault_selection.h
     e2e_cloud/vault/password_vault.cpp
     e2e_cloud/vault/password_vault.h
+    e2e_cloud/vault/persistent_cloud_vault_anchor.cpp
+    e2e_cloud/vault/persistent_cloud_vault_anchor.h
+)
+
+nice_target_sources(Telegram ${src_loc}
+PRIVATE
+    e2e_cloud/desktop/desktop_service.cpp
+    e2e_cloud/desktop/desktop_service.h
+    e2e_cloud/desktop/protected_groups_box.cpp
+    e2e_cloud/desktop/protected_groups_box.h
+    e2e_cloud/desktop/protected_conversation_box.cpp
+    e2e_cloud/desktop/protected_conversation_box.h
+    e2e_cloud/transport/telegram_session_carrier_backend.cpp
+    e2e_cloud/transport/telegram_session_carrier_backend.h
 )
 
 target_include_directories(td_e2e_cloud
@@ -70,5 +197,6 @@ PUBLIC
     desktop-app::external_qt
 PRIVATE
     tdesktop::lib_argon2
+    tdesktop::lib_openmls_bridge
     desktop-app::external_openssl
 )

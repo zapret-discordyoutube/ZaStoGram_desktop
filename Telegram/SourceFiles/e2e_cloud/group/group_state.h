@@ -144,10 +144,25 @@ struct CreateGroupStateArgs {
 	GroupPolicy policy;
 };
 
+struct ProtectedGroupStateSnapshot {
+	ConversationId conversationId;
+	std::uint64_t generation = 0;
+	ObjectId lastTransitionId;
+	GroupPolicy policy;
+	std::vector<GroupMember> members;
+	std::vector<ObjectId> appliedTransitionIds;
+
+	friend inline bool operator==(
+		const ProtectedGroupStateSnapshot &,
+		const ProtectedGroupStateSnapshot &) = default;
+};
+
 class ProtectedGroupState final {
 public:
 	[[nodiscard]] static std::optional<ProtectedGroupState> Create(
 		CreateGroupStateArgs args);
+	[[nodiscard]] static std::optional<ProtectedGroupState> Restore(
+		ProtectedGroupStateSnapshot snapshot);
 
 	[[nodiscard]] GroupTransitionResult validate(
 		const GroupTransition &transition,
@@ -155,6 +170,9 @@ public:
 	[[nodiscard]] GroupTransitionResult applyVerified(
 		const GroupTransition &transition,
 		const GroupTransitionAuthentication &authentication);
+	[[nodiscard]] bool applyVerifiedForkRecovery(
+		ObjectId recoveryId,
+		std::uint64_t resolvedGeneration);
 
 	[[nodiscard]] ConversationId conversationId() const;
 	[[nodiscard]] std::uint64_t generation() const;
@@ -165,6 +183,7 @@ public:
 	[[nodiscard]] const GroupMember *memberByTelegramUserId(
 		std::uint64_t telegramUserId) const;
 	[[nodiscard]] const GroupMember *memberByClient(ClientId clientId) const;
+	[[nodiscard]] ProtectedGroupStateSnapshot snapshot() const;
 
 private:
 	[[nodiscard]] GroupMember *memberMutable(AccountId accountId);

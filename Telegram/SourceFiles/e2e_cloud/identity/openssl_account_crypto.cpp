@@ -38,6 +38,11 @@ void AppendUint32(QByteArray &result, std::uint32_t value) {
 	case AccountSignatureDomain::FreshnessResponse:
 	case AccountSignatureDomain::HistoryGrant:
 	case AccountSignatureDomain::VaultCheckpoint:
+	case AccountSignatureDomain::ArchivedContent:
+	case AccountSignatureDomain::GroupGenesis:
+	case AccountSignatureDomain::ForkRecovery:
+	case AccountSignatureDomain::FreshnessChallenge:
+	case AccountSignatureDomain::FileChunk:
 		return true;
 	}
 	return false;
@@ -85,6 +90,29 @@ void AppendUint32(QByteArray &result, std::uint32_t value) {
 	EVP_PKEY_free(key);
 	EVP_PKEY_CTX_free(context);
 	return ok;
+}
+
+[[nodiscard]] bool PublicKeyFromPrivate(
+		int type,
+		const SecureKey32 &privateKey,
+		std::array<std::uint8_t, 32> &publicKey) {
+	if (!privateKey.valid()) {
+		return false;
+	}
+	const auto key = EVP_PKEY_new_raw_private_key(
+		type,
+		nullptr,
+		privateKey.bytes().data(),
+		privateKey.bytes().size());
+	auto publicSize = publicKey.size();
+	const auto result = key
+		&& EVP_PKEY_get_raw_public_key(
+			key,
+			publicKey.data(),
+			&publicSize) == 1
+		&& publicSize == publicKey.size();
+	EVP_PKEY_free(key);
+	return result;
 }
 
 } // namespace
@@ -165,6 +193,23 @@ std::optional<AccountPrivateIdentity> GenerateAccountPrivateIdentity() {
 		.archiveHpkePrivateKey = SecureKey32(std::move(archivePrivate)),
 		.credential = credential,
 	};
+}
+
+bool ValidateAccountPrivateIdentity(
+		const AccountPrivateIdentity &identity) {
+	auto signingPublic = std::array<std::uint8_t, 32>();
+	auto archivePublic = std::array<std::uint8_t, 32>();
+	return AccountCredentialCodecV1().encode(identity.credential).has_value()
+		&& PublicKeyFromPrivate(
+			EVP_PKEY_ED25519,
+			identity.signingPrivateKey,
+			signingPublic)
+		&& PublicKeyFromPrivate(
+			EVP_PKEY_X25519,
+			identity.archiveHpkePrivateKey,
+			archivePublic)
+		&& signingPublic == identity.credential.signingPublicKey
+		&& archivePublic == identity.credential.archiveHpkePublicKey;
 }
 
 std::optional<AccountSignature> SignAccountData(

@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "main/main_session.h"
 
+#include "e2e_cloud/desktop/desktop_service.h"
+
 #include "api/api_bot.h"
 #include "api/api_peer_colors.h"
 #include "api/api_updates.h"
@@ -314,6 +316,7 @@ void Session::finishLogout() {
 }
 
 Session::~Session() {
+	_e2eCloud.reset();
 	unlockTerms();
 	botCallbacks().finishSession();
 	data().clear();
@@ -327,6 +330,13 @@ Account &Session::account() const {
 
 Storage::Account &Session::local() const {
 	return _account->local();
+}
+
+E2ECloud::DesktopService &Session::e2eCloud() {
+	if (!_e2eCloud) {
+		_e2eCloud = std::make_unique<E2ECloud::DesktopService>(this);
+	}
+	return *_e2eCloud;
 }
 
 Domain &Session::domain() const {

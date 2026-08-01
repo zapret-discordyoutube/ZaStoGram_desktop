@@ -62,9 +62,11 @@ jobs:
           - arch: x64_x86
             qt: ""
             generator: ""
+            rust_target: "i686-pc-windows-msvc"
           - arch: x64
             qt: "qt6"
             generator: ""
+            rust_target: "x86_64-pc-windows-msvc"
 
     env:
       UPLOAD_ARTIFACT: "true"
@@ -213,6 +215,13 @@ jobs:
           arch: ${{ matrix.arch }}
           sdk: ${{ env.SDK }}
           toolset: ${{ case(matrix.arch == 'arm64', '', '14.44') }}
+
+      - name: Rust toolchain.
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup target add --toolchain 1.91.0 ${{ matrix.rust_target }}
+          rustc +1.91.0 --version
+          cargo +1.91.0 --version
 
       - name: NuGet sources.
         run: |

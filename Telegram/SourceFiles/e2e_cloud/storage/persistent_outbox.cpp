@@ -328,6 +328,19 @@ int PersistentOutboxStore::size() const {
 	return int(_items.size());
 }
 
+std::optional<OutboxItem> PersistentOutboxStore::item(
+		ObjectId objectId) const {
+	const auto i = std::find_if(
+		std::begin(_items),
+		std::end(_items),
+		[&](const OutboxItem &item) {
+			return item.draft.objectId == objectId;
+		});
+	return (i == std::end(_items))
+		? std::nullopt
+		: std::optional<OutboxItem>(*i);
+}
+
 bool PersistentOutboxStore::append(PendingMessage message) {
 	if (!_loaded
 		|| _revision == std::numeric_limits<std::uint64_t>::max()
@@ -342,6 +355,82 @@ bool PersistentOutboxStore::append(PendingMessage message) {
 	});
 	const auto revision = _revision + 1;
 	if (!validItem(next.back()) || !persist(next, revision)) {
+		return false;
+	}
+	_items = std::move(next);
+	_revision = revision;
+	return true;
+}
+
+bool PersistentOutboxStore::appendSealed(EncodedEnvelope envelope) {
+	if (!_loaded
+		|| _revision == std::numeric_limits<std::uint64_t>::max()
+		|| !envelope.conversationId
+		|| !envelope.objectId
+		|| envelope.bytes.isEmpty()) {
+		return false;
+	}
+	const auto existing = std::find_if(
+		begin(_items),
+		end(_items),
+		[&](const OutboxItem &item) {
+			return item.draft.objectId == envelope.objectId;
+		});
+	if (existing != end(_items)) {
+		return existing->stage == OutboxItemStage::Sealed
+			&& existing->sealed == envelope;
+	}
+	auto next = _items;
+	next.push_back({
+		.draft = {
+			.conversationId = envelope.conversationId,
+			.objectId = envelope.objectId,
+			.plaintext = {},
+			.authenticatedData = {},
+		},
+		.stage = OutboxItemStage::Sealed,
+		.sealed = std::move(envelope),
+	});
+	const auto revision = _revision + 1;
+	if (!validItem(next.back()) || !persist(next, revision)) {
+		return false;
+	}
+	_items = std::move(next);
+	_revision = revision;
+	return true;
+}
+
+bool PersistentOutboxStore::appendSealedThenDraft(
+		EncodedEnvelope envelope,
+		PendingMessage message) {
+	if (!_loaded
+		|| _revision == std::numeric_limits<std::uint64_t>::max()
+		|| contains(envelope.objectId)
+		|| contains(message.objectId)
+		|| envelope.objectId == message.objectId
+		|| envelope.conversationId != message.conversationId) {
+		return false;
+	}
+	auto next = _items;
+	next.push_back({
+		.draft = {
+			.conversationId = envelope.conversationId,
+			.objectId = envelope.objectId,
+			.plaintext = {},
+			.authenticatedData = {},
+		},
+		.stage = OutboxItemStage::Sealed,
+		.sealed = std::move(envelope),
+	});
+	next.push_back({
+		.draft = std::move(message),
+		.stage = OutboxItemStage::Draft,
+		.sealed = std::nullopt,
+	});
+	const auto revision = _revision + 1;
+	if (!validItem(next[next.size() - 2])
+		|| !validItem(next.back())
+		|| !persist(next, revision)) {
 		return false;
 	}
 	_items = std::move(next);

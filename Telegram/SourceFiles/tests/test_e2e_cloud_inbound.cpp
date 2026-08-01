@@ -147,8 +147,16 @@ public:
 		return result;
 	}
 
+	[[nodiscard]] InboundRecoveryResult recover(
+			const TransportEnvelope &) const override {
+		++recoverCalls;
+		return recovery;
+	}
+
 	InboundApplyResult result = InboundApplyResult::Applied;
+	InboundRecoveryResult recovery = InboundRecoveryResult::Unknown;
 	int calls = 0;
+	mutable int recoverCalls = 0;
 	std::optional<TransportEnvelope> lastEnvelope;
 
 };
@@ -239,8 +247,53 @@ struct Fixture {
 	};
 	if (fixture.processor.process(fixture.encoded.bytes)
 			!= InboundProcessResult::RecoveryRequired
-		|| fixture.applier.calls) {
+		|| fixture.applier.calls
+		|| fixture.applier.recoverCalls != 1) {
 		return Fail("uncertain post-crash apply state was replayed blindly");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioPendingNotAppliedRetriesSafely() {
+	auto fixture = Fixture();
+	fixture.journal.entry = TestJournal::Entry{
+		.conversationId = fixture.envelope.conversationId,
+		.objectId = fixture.envelope.objectId,
+		.payloadHash = fixture.envelope.payloadHash,
+		.accepted = false,
+	};
+	fixture.applier.recovery = InboundRecoveryResult::NotApplied;
+	if (fixture.processor.process(fixture.encoded.bytes)
+			!= InboundProcessResult::Accepted
+		|| fixture.applier.recoverCalls != 1
+		|| fixture.applier.calls != 1
+		|| fixture.journal.abortCalls != 1
+		|| fixture.journal.beginCalls != 1
+		|| fixture.journal.acceptCalls != 1
+		|| !fixture.journal.entry
+		|| !fixture.journal.entry->accepted) {
+		return Fail("known pre-apply crash did not retry the inbound object");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioPendingAppliedCompletesJournal() {
+	auto fixture = Fixture();
+	fixture.journal.entry = TestJournal::Entry{
+		.conversationId = fixture.envelope.conversationId,
+		.objectId = fixture.envelope.objectId,
+		.payloadHash = fixture.envelope.payloadHash,
+		.accepted = false,
+	};
+	fixture.applier.recovery = InboundRecoveryResult::Applied;
+	if (fixture.processor.process(fixture.encoded.bytes)
+			!= InboundProcessResult::Accepted
+		|| fixture.applier.recoverCalls != 1
+		|| fixture.applier.calls
+		|| fixture.journal.acceptCalls != 1
+		|| !fixture.journal.entry
+		|| !fixture.journal.entry->accepted) {
+		return Fail("known post-apply crash replayed the inbound object");
 	}
 	return 0;
 }
@@ -283,6 +336,8 @@ int main(int, char *[]) {
 		ScenarioRejectsBeforeJournalMutation,
 		ScenarioDetectsAuthenticatedObjectIdConflict,
 		ScenarioPendingRequiresRecovery,
+		ScenarioPendingNotAppliedRetriesSafely,
+		ScenarioPendingAppliedCompletesJournal,
 		ScenarioDeferredApplyCanRetry,
 		ScenarioCommitFailureFailsClosed,
 	}) {

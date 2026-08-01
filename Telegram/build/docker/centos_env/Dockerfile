@@ -6,6 +6,9 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8
 ENV TOOLSET=gcc-toolset-15
 ENV PATH=/opt/rh/$TOOLSET/root/usr/bin:$PATH
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:$PATH
 ENV LIBRARY_PATH=/opt/rh/$TOOLSET/root/usr/lib64:/opt/rh/$TOOLSET/root/usr/lib:/usr/local/lib64:/usr/local/lib:/lib64:/lib:/usr/lib64:/usr/lib
 ENV LD_LIBRARY_PATH=$LIBRARY_PATH
 ENV PKG_CONFIG_PATH=/opt/rh/$TOOLSET/root/usr/lib64/pkgconfig:/opt/rh/$TOOLSET/root/usr/lib/pkgconfig:/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
@@ -28,6 +31,18 @@ EOF
 RUN <<EOF
 alternatives --set python3 /usr/bin/python3.11
 python3 -m pip install meson ninja
+EOF
+
+RUN <<EOF
+wget -q -O /tmp/rustup-init \
+	https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+echo '20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  /tmp/rustup-init' \
+	| sha256sum --check
+chmod 700 /tmp/rustup-init
+/tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.91.0
+rm /tmp/rustup-init
+rustc --version
+cargo --version
 EOF
 
 RUN <<EOF

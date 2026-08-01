@@ -10,9 +10,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/core/freshness_gate.h"
 #include "e2e_cloud/core/outbox.h"
 #include "e2e_cloud/group/group_state.h"
+#include "e2e_cloud/transport/cloud_vault_transport.h"
 #include "e2e_cloud/transport/outbox_upload_controller.h"
 #include "e2e_cloud/transport/telegram_carrier_transport.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <optional>
 #include <utility>
@@ -47,10 +49,14 @@ template <typename Id>
 
 [[nodiscard]] FreshnessResponse MakeResponse(
 		const Checkpoint &checkpoint,
-		ChallengeNonce nonce) {
+		ChallengeNonce nonce,
+		Checkpoint challengedCheckpoint = {}) {
 	return {
 		.conversationId = checkpoint.conversationId,
 		.nonce = nonce,
+		.challengedCheckpoint = challengedCheckpoint.conversationId
+			? challengedCheckpoint
+			: checkpoint,
 		.checkpoint = checkpoint,
 		.witnessAccountId = FilledId<AccountId>(4),
 		.witnessClientId = FilledId<ClientId>(5),
@@ -88,6 +94,35 @@ public:
 			.sealed = std::nullopt,
 		});
 		return true;
+	}
+
+	bool appendSealed(EncodedEnvelope envelope) override {
+		for (const auto &item : items) {
+			if (item.draft.objectId == envelope.objectId) {
+				return item.stage == OutboxItemStage::Sealed
+					&& item.sealed == envelope;
+			}
+		}
+		items.push_back({
+			.draft = {
+				.conversationId = envelope.conversationId,
+				.objectId = envelope.objectId,
+				.plaintext = {},
+				.authenticatedData = {},
+			},
+			.stage = OutboxItemStage::Sealed,
+			.sealed = std::move(envelope),
+		});
+		return true;
+	}
+
+	bool appendSealedThenDraft(
+			EncodedEnvelope envelope,
+			PendingMessage message) override {
+		if (!appendSealed(std::move(envelope))) {
+			return false;
+		}
+		return append(std::move(message));
 	}
 
 	[[nodiscard]] std::optional<OutboxItem> front(
@@ -131,6 +166,12 @@ public:
 		return false;
 	}
 
+	[[nodiscard]] bool contains(ObjectId objectId) const override {
+		return std::any_of(items.begin(), items.end(), [&](const auto &item) {
+			return item.draft.objectId == objectId;
+		});
+	}
+
 	std::vector<OutboxItem> items;
 	bool failAppend = false;
 	bool failReplace = false;
@@ -170,12 +211,14 @@ public:
 		callbacks.push_back(std::move(callback));
 	}
 
-	void download(
-			ConversationId,
+	void downloadPage(
+			DownloadRequest,
 			DownloadCallback callback) override {
 		callback({
 			.result = UploadResult::Accepted,
 			.untrustedObjects = {},
+			.nextCursor = {},
+			.complete = true,
 		});
 	}
 
@@ -216,8 +259,12 @@ public:
 
 	void downloadDocuments(
 			std::uint64_t telegramPeerId,
+			QByteArray cursor,
+			int limit,
 			DownloadCallback callback) override {
 		peerIds.push_back(telegramPeerId);
+		cursors.push_back(std::move(cursor));
+		limits.push_back(limit);
 		downloadCallbacks.push_back(std::move(callback));
 	}
 
@@ -226,6 +273,8 @@ public:
 	std::vector<QString> mimeTypes;
 	std::vector<std::uint64_t> peerIds;
 	std::vector<QByteArray> tokens;
+	std::vector<QByteArray> cursors;
+	std::vector<int> limits;
 	std::vector<UploadCallback> uploadCallbacks;
 	std::vector<SendCallback> sendCallbacks;
 	std::vector<DownloadCallback> downloadCallbacks;
@@ -373,7 +422,7 @@ public:
 	auto gate = FreshnessGate(known);
 	auto verifier = TestVerifier();
 	if (!gate.beginChallenge(nonce)
-		|| gate.acceptResponse(MakeResponse(current, nonce), verifier)
+		|| gate.acceptResponse(MakeResponse(current, nonce, known), verifier)
 			!= FreshnessResponseResult::ResynchronizationRequired
 		|| gate.sendingAllowed()
 		|| gate.administrationAllowed()
@@ -395,7 +444,7 @@ public:
 	auto gate = FreshnessGate(known);
 	auto verifier = TestVerifier();
 	if (!gate.beginChallenge(nonce)
-		|| gate.acceptResponse(MakeResponse(fork, nonce), verifier)
+		|| gate.acceptResponse(MakeResponse(fork, nonce, known), verifier)
 			!= FreshnessResponseResult::ForkDetected
 		|| gate.state() != FreshnessState::Forked
 		|| gate.sendingAllowed()
@@ -644,25 +693,28 @@ public:
 
 [[nodiscard]] int ScenarioCarrierAcknowledgesOnlyAfterSendMedia() {
 	const auto conversationId = FilledId<ConversationId>(1);
-	const auto objectId = FilledId<ObjectId>(7);
+	auto envelope = MakeEnvelope();
+	envelope.conversationId = conversationId;
+	const auto encoded = EnvelopeCodecV1().encode(envelope);
+	if (!encoded) {
+		return Fail("carrier test envelope could not be encoded");
+	}
 	auto backend = TestCarrierBackend();
 	auto results = std::vector<TelegramTransport::UploadResult>();
 	auto transport = TelegramCarrierTransport(
 		conversationId,
 		42,
 		backend);
-	transport.uploadExact({
-		.conversationId = conversationId,
-		.objectId = objectId,
-		.bytes = QByteArray("exact ciphertext"),
-	}, [&](TelegramTransport::UploadResult result) {
+	transport.uploadExact(*encoded, [&](TelegramTransport::UploadResult result) {
 		results.push_back(result);
 	});
 	if (backend.uploadedBytes != std::vector<QByteArray>{
-			QByteArray("exact ciphertext") }
+			encoded->bytes }
 		|| backend.uploadCallbacks.size() != 1
 		|| !backend.sendCallbacks.empty()
-		|| !results.empty()) {
+		|| !results.empty()
+		|| backend.filenames != std::vector<QString>{
+			ProtectedContentCarrierFilename() }) {
 		return Fail("carrier bypassed the Telegram upload stage");
 	}
 	backend.uploadCallbacks.front()(
@@ -690,19 +742,26 @@ public:
 
 [[nodiscard]] int ScenarioCarrierPropagatesUploadFailure() {
 	const auto conversationId = FilledId<ConversationId>(1);
+	auto envelope = MakeEnvelope();
+	envelope.conversationId = conversationId;
+	envelope.objectKind = ObjectKind::AccountCredential;
+	const auto encoded = EnvelopeCodecV1().encode(envelope);
+	if (!encoded) {
+		return Fail("carrier control envelope could not be encoded");
+	}
 	auto backend = TestCarrierBackend();
 	auto result = std::optional<TelegramTransport::UploadResult>();
 	auto transport = TelegramCarrierTransport(
 		conversationId,
 		42,
 		backend);
-	transport.uploadExact({
-		.conversationId = conversationId,
-		.objectId = FilledId<ObjectId>(7),
-		.bytes = QByteArray("ciphertext"),
-	}, [&](TelegramTransport::UploadResult value) {
+	transport.uploadExact(*encoded, [&](TelegramTransport::UploadResult value) {
 		result = value;
 	});
+	if (backend.filenames != std::vector<QString>{
+			ProtectedControlCarrierFilename() }) {
+		return Fail("carrier did not route control metadata separately");
+	}
 	backend.uploadCallbacks.front()(
 		TelegramTransport::UploadResult::RetryableError,
 		UploadedCarrierFile());
@@ -721,23 +780,125 @@ public:
 		conversationId,
 		42,
 		backend);
-	transport.download(
-		conversationId,
+	transport.downloadPage(
+		{
+			.conversationId = conversationId,
+			.cursor = QByteArray("page one"),
+			.limit = 37,
+		},
 		[&](TelegramTransport::DownloadResult value) {
 			result = std::move(value);
 		});
-	if (backend.downloadCallbacks.size() != 1 || result) {
+	if (backend.downloadCallbacks.size() != 1
+		|| backend.cursors != std::vector<QByteArray>{
+			QByteArray("page one") }
+		|| backend.limits != std::vector<int>{ 37 }
+		|| result) {
 		return Fail("carrier download did not remain asynchronous");
 	}
 	backend.downloadCallbacks.front()(
 		TelegramTransport::UploadResult::Accepted,
-		{ QByteArray("untrusted one"), QByteArray("untrusted two") });
+		{
+			.untrustedObjects = {
+				{
+					.bytes = QByteArray("untrusted one"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedSenderTelegramUserIdBinding = 1001,
+					.observedMessageId = 7,
+				},
+				{
+					.bytes = QByteArray("untrusted two"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedSenderTelegramUserIdBinding = 1002,
+					.observedMessageId = 8,
+				},
+			},
+			.nextCursor = QByteArray("page two"),
+			.complete = false,
+		});
 	if (!result
 		|| result->result != TelegramTransport::UploadResult::Accepted
-		|| result->untrustedObjects != std::vector<QByteArray>{
-			QByteArray("untrusted one"),
-			QByteArray("untrusted two") }) {
+		|| result->untrustedObjects
+			!= std::vector<TelegramTransport::UntrustedObject>{
+				{
+					.bytes = QByteArray("untrusted one"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedSenderTelegramUserIdBinding = 1001,
+					.observedMessageId = 7,
+				},
+				{
+					.bytes = QByteArray("untrusted two"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedSenderTelegramUserIdBinding = 1002,
+					.observedMessageId = 8,
+				} }
+		|| result->nextCursor != QByteArray("page two")
+		|| result->complete) {
 		return Fail("carrier transport interpreted untrusted protocol bytes");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioCloudVaultUsesSavedMessagesCarrier() {
+	auto backend = TestCarrierBackend();
+	auto transport = TelegramCloudVaultTransport(777, backend);
+	auto uploadResult = std::optional<TelegramTransport::UploadResult>();
+	transport.uploadExact(
+		QByteArray("password-protected vault"),
+		[&](TelegramTransport::UploadResult result) {
+			uploadResult = result;
+		});
+	if (backend.uploadedBytes != std::vector<QByteArray>{
+		QByteArray("password-protected vault") }
+		|| backend.filenames != std::vector<QString>{
+			CloudVaultCarrierFilename() }
+		|| backend.mimeTypes != std::vector<QString>{
+			CloudVaultCarrierMimeType() }
+		|| uploadResult) {
+		return Fail("cloud vault bypassed its opaque upload stage");
+	}
+	backend.uploadCallbacks.front()(
+		TelegramTransport::UploadResult::Accepted,
+		UploadedCarrierFile{ QByteArray("vault token") });
+	if (backend.peerIds != std::vector<std::uint64_t>{ 777 }
+		|| backend.sendCallbacks.size() != 1
+		|| uploadResult) {
+		return Fail("cloud vault was acknowledged before Saved Messages send");
+	}
+	backend.sendCallbacks.front()(
+		TelegramTransport::UploadResult::Accepted);
+	if (uploadResult != TelegramTransport::UploadResult::Accepted
+		|| backend.filenames.size() != 2
+		|| backend.filenames[0] != backend.filenames[1]) {
+		return Fail("cloud vault carrier did not complete exact upload");
+	}
+	auto page = std::optional<CarrierDownloadPage>();
+	transport.downloadPage(
+		QByteArray("cursor"),
+		50,
+		[&](
+				TelegramTransport::UploadResult result,
+				CarrierDownloadPage value) {
+			if (result == TelegramTransport::UploadResult::Accepted) {
+				page = std::move(value);
+			}
+		});
+	backend.downloadCallbacks.front()(
+		TelegramTransport::UploadResult::Accepted,
+		{
+			.untrustedObjects = {
+				{ .bytes = QByteArray("untrusted vault") },
+			},
+			.nextCursor = QByteArray("next"),
+			.complete = true,
+		});
+	if (!page
+		|| page->untrustedObjects
+			!= std::vector<TelegramTransport::UntrustedObject>{
+				{ .bytes = QByteArray("untrusted vault") } }
+		|| page->nextCursor != QByteArray("next")
+		|| !page->complete) {
+		return Fail("cloud vault carrier interpreted remote vault bytes");
 	}
 	return 0;
 }
@@ -762,6 +923,7 @@ int main(int, char *[]) {
 		ScenarioCarrierAcknowledgesOnlyAfterSendMedia,
 		ScenarioCarrierPropagatesUploadFailure,
 		ScenarioCarrierDownloadsOnlyUntrustedBytes,
+		ScenarioCloudVaultUsesSavedMessagesCarrier,
 	}) {
 		if (const auto result = scenario()) {
 			return result;

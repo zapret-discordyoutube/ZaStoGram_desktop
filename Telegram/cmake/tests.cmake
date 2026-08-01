@@ -314,6 +314,64 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_inbound)
 
+add_executable(test_e2e_cloud_sync WIN32)
+init_target(test_e2e_cloud_sync "(tests)")
+
+target_include_directories(test_e2e_cloud_sync PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_sync ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_sync.cpp
+)
+
+target_link_libraries(test_e2e_cloud_sync
+PRIVATE
+    tdesktop::td_e2e_cloud
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_sync
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_sync
+    COMMAND test_e2e_cloud_sync
+)
+
+add_dependencies(Telegram test_e2e_cloud_sync)
+
+add_executable(test_e2e_cloud_bootstrap WIN32)
+init_target(test_e2e_cloud_bootstrap "(tests)")
+
+target_include_directories(test_e2e_cloud_bootstrap PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_bootstrap ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_bootstrap.cpp
+)
+
+target_link_libraries(test_e2e_cloud_bootstrap
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_bootstrap
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_bootstrap
+    COMMAND test_e2e_cloud_bootstrap
+)
+
+add_dependencies(Telegram test_e2e_cloud_bootstrap)
+
 add_executable(test_e2e_cloud_files WIN32)
 init_target(test_e2e_cloud_files "(tests)")
 
@@ -337,3 +395,124 @@ set_target_properties(
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_dependencies(Telegram test_e2e_cloud_files)
+
+add_executable(test_e2e_cloud_openmls WIN32)
+init_target(test_e2e_cloud_openmls "(tests)")
+
+target_include_directories(test_e2e_cloud_openmls PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_openmls ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_openmls_abi.cpp
+)
+
+target_link_libraries(test_e2e_cloud_openmls
+PRIVATE
+    tdesktop::lib_openmls_bridge
+)
+
+set_target_properties(
+    test_e2e_cloud_openmls
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_openmls
+    COMMAND test_e2e_cloud_openmls
+)
+
+add_dependencies(Telegram test_e2e_cloud_openmls)
+
+add_executable(test_e2e_cloud_openmls_application WIN32)
+init_target(test_e2e_cloud_openmls_application "(tests)")
+
+target_include_directories(
+    test_e2e_cloud_openmls_application
+    PRIVATE
+    ${src_loc})
+
+nice_target_sources(test_e2e_cloud_openmls_application ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_openmls_application.cpp
+)
+
+target_link_libraries(test_e2e_cloud_openmls_application
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_openmls_application
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_openmls_application
+    COMMAND test_e2e_cloud_openmls_application
+)
+
+add_dependencies(Telegram test_e2e_cloud_openmls_application)
+
+add_executable(test_e2e_cloud_openmls_group_change WIN32)
+init_target(test_e2e_cloud_openmls_group_change "(tests)")
+
+target_include_directories(
+    test_e2e_cloud_openmls_group_change
+    PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_openmls_group_change ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_openmls_group_change.cpp
+)
+
+target_link_libraries(test_e2e_cloud_openmls_group_change
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+)
+
+set_target_properties(
+    test_e2e_cloud_openmls_group_change
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_openmls_group_change
+    COMMAND test_e2e_cloud_openmls_group_change
+)
+
+add_dependencies(Telegram test_e2e_cloud_openmls_group_change)
+
+add_executable(test_e2e_cloud_archive WIN32)
+init_target(test_e2e_cloud_archive "(tests)")
+
+target_include_directories(test_e2e_cloud_archive PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_archive ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_archive.cpp
+)
+
+target_link_libraries(test_e2e_cloud_archive
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_archive
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_archive
+    COMMAND test_e2e_cloud_archive
+)
+
+add_dependencies(Telegram test_e2e_cloud_archive)

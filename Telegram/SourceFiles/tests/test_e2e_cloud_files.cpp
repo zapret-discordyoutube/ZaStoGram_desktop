@@ -6,8 +6,12 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/files/file_chunk_crypto.h"
+#include "e2e_cloud/files/file_chunk_envelope.h"
 #include "e2e_cloud/files/idempotent_file_chunk_protector.h"
 #include "e2e_cloud/files/private_file_manifest.h"
+#include "e2e_cloud/core/envelope_codec.h"
+#include "e2e_cloud/content/protected_message_body.h"
+#include "e2e_cloud/identity/account_identity.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -135,11 +139,27 @@ template <typename Id>
 	return 0;
 }
 
+[[nodiscard]] int ScenarioEmptyFileLayout() {
+	auto context = MakeContext();
+	context.plaintextSize = 0;
+	context.chunkCount = 0;
+	if (!IsValidFileChunkContext(context)
+		|| AesGcmFileChunkCipher().encrypt(
+			MakeKey(),
+			context,
+			0,
+			QByteArray())) {
+		return Fail("empty file layout was not represented without chunks");
+	}
+	return 0;
+}
+
 [[nodiscard]] PrivateFileManifest MakeManifest() {
 	return {
 		.context = MakeContext(),
 		.key = MakeKey(),
 		.plaintextHash = FilledId<Digest>(8),
+		.unixTime = 1'725'000'000,
 		.filenameUtf8 = QByteArray("archive.any-extension"),
 		.mimeTypeUtf8 = QByteArray("application/x-private"),
 	};
@@ -164,6 +184,7 @@ template <typename Id>
 		|| decoded->context.noncePrefix != manifest.context.noncePrefix
 		|| decoded->key.bytes() != expectedKey
 		|| decoded->plaintextHash != manifest.plaintextHash
+		|| decoded->unixTime != manifest.unixTime
 		|| decoded->filenameUtf8 != manifest.filenameUtf8
 		|| decoded->mimeTypeUtf8 != manifest.mimeTypeUtf8) {
 		return Fail("private file manifest did not preserve file metadata");
@@ -279,6 +300,94 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioSignedChunkEnvelope() {
+	const auto sha256 = OpenSslSha256Provider();
+	const auto codec = EnvelopeCodecV1();
+	auto identity = GenerateAccountPrivateIdentity();
+	const auto accountId = identity
+		? DeriveAccountId(identity->credential, sha256)
+		: std::nullopt;
+	const auto context = MakeContext();
+	const auto key = MakeKey();
+	const auto ciphertext = AesGcmFileChunkCipher().encrypt(
+		key,
+		context,
+		1,
+		FilledBytes(13, 'z'));
+	const auto clientId = FilledId<ClientId>(4);
+	const auto prepared = (identity && accountId && ciphertext)
+		? PrepareFileChunkEnvelope({
+			.conversationId = context.conversationId,
+			.senderAccountId = *accountId,
+			.senderClientId = clientId,
+			.telegramPeerIdBinding = 12345,
+			.groupGeneration = 7,
+			.fileId = context.fileId,
+			.chunkIndex = 1,
+			.chunkCount = context.chunkCount,
+			.senderSigningPrivateKey = &identity->signingPrivateKey,
+			.exactCiphertext = *ciphertext,
+		}, codec, sha256)
+		: std::nullopt;
+	const auto decoded = prepared
+		? codec.decode(prepared->encoded)
+		: std::nullopt;
+	const auto verified = (identity && decoded)
+		? VerifyFileChunkEnvelope(*decoded, identity->credential, sha256)
+		: std::nullopt;
+	if (!prepared
+		|| !decoded
+		|| !verified
+		|| verified->fileId != context.fileId
+		|| verified->chunkIndex != 1
+		|| verified->chunkCount != context.chunkCount) {
+		return Fail("signed file chunk envelope did not round-trip");
+	}
+	auto tampered = *decoded;
+	tampered.epochOrGeneration++;
+	if (VerifyFileChunkEnvelope(tampered, identity->credential, sha256)) {
+		return Fail("signed file chunk accepted changed group generation");
+	}
+	tampered = *decoded;
+	tampered.payload[tampered.payload.size() - 1] ^= 1;
+	if (VerifyFileChunkEnvelope(tampered, identity->credential, sha256)) {
+		return Fail("signed file chunk accepted modified ciphertext");
+	}
+	tampered = *decoded;
+	tampered.authenticationData[42] ^= 1;
+	if (VerifyFileChunkEnvelope(tampered, identity->credential, sha256)) {
+		return Fail("signed file chunk accepted modified chunk index");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioProtectedMessageBody() {
+	const auto codec = ProtectedMessageBodyCodecV1();
+	const auto body = ProtectedMessageBody{
+		.unixTime = 1'725'000'000,
+		.textUtf8 = QByteArray("hello \xF0\x9F\x94\x92"),
+	};
+	const auto encoded = codec.encodePlaintext(body);
+	const auto decoded = encoded
+		? codec.decodePlaintext(*encoded)
+		: std::nullopt;
+	if (!encoded || !decoded || *decoded != body) {
+		return Fail("protected message body did not round-trip");
+	}
+	auto invalidUtf8 = body;
+	invalidUtf8.textUtf8 = QByteArray("\xC0\xAF", 2);
+	auto nul = body;
+	nul.textUtf8 = QByteArray("a\0b", 3);
+	auto trailing = *encoded;
+	trailing.append('x');
+	if (codec.encodePlaintext(invalidUtf8)
+		|| codec.encodePlaintext(nul)
+		|| codec.decodePlaintext(trailing)) {
+		return Fail("protected message body accepted malformed text");
+	}
+	return 0;
+}
+
 } // namespace
 
 int main(int, char *[]) {
@@ -287,10 +396,13 @@ int main(int, char *[]) {
 		ScenarioChunkRoundTripAndResume,
 		ScenarioChunkBindsContextAndTag,
 		ScenarioChunkRejectsInvalidLayout,
+		ScenarioEmptyFileLayout,
 		ScenarioPrivateManifestRoundTrip,
 		ScenarioPrivateManifestRejectsUnsafeName,
 		ScenarioIdempotentChunkLedger,
 		ScenarioChunkLedgerFailsClosed,
+		ScenarioSignedChunkEnvelope,
+		ScenarioProtectedMessageBody,
 	}) {
 		if (const auto result = scenario()) {
 			return result;

@@ -9,6 +9,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+InboundRecoveryResult InboundEnvelopeApplier::recover(
+		const TransportEnvelope &) const {
+	return InboundRecoveryResult::Unknown;
+}
+
 InboundEnvelopeProcessor::InboundEnvelopeProcessor(
 		ConversationId conversationId,
 		std::uint64_t telegramPeerId,
@@ -43,8 +48,22 @@ InboundProcessResult InboundEnvelopeProcessor::process(
 	switch (lookup) {
 	case InboundJournalLookup::Accepted:
 		return InboundProcessResult::Duplicate;
-	case InboundJournalLookup::Pending:
-		return InboundProcessResult::RecoveryRequired;
+	case InboundJournalLookup::Pending: {
+		const auto recovered = _applier.recover(*envelope);
+		if (recovered == InboundRecoveryResult::Applied) {
+			return _journal.accept(
+				envelope->conversationId,
+				envelope->objectId)
+				? InboundProcessResult::Accepted
+				: InboundProcessResult::RecoveryRequired;
+		} else if (recovered == InboundRecoveryResult::Unknown) {
+			return InboundProcessResult::RecoveryRequired;
+		} else if (!_journal.abort(
+				envelope->conversationId,
+				envelope->objectId)) {
+			return InboundProcessResult::JournalFailure;
+		}
+	} break;
 	case InboundJournalLookup::ObjectIdConflict:
 		return InboundProcessResult::ObjectIdConflict;
 	case InboundJournalLookup::StorageError:

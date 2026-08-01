@@ -71,8 +71,28 @@ uses the full 256-bit digest and versioned context.
 
 ## Gossip
 
-Signed gossip carries pinned `(telegram_user_id, account_id)` observations and
-the observer's protected generation. Conflicting observations create a visible
-security event and block automatic identity replacement. Gossip can reveal a
-split view after partitions reconnect, but Telegram can censor it and maintain
-permanent isolation.
+One signed gossip snapshot carries:
+
+```text
+conversation_id
+gossip_object_id
+protected_generation + checkpoint_hash
+reporter_account_id + reporter_client_id
+sorted repeated (
+  telegram_user_id,
+  account_id,
+  SHA-256(encoded_account_credential)
+)
+Ed25519 account signature over every preceding field
+```
+
+The reporter must have been an active client at the observed generation. A
+receiver reconstructs its own historical protected state and exact credential
+hashes at that generation. A checkpoint mismatch is a fork; a roster or
+credential mismatch is an identity conflict; a valid newer checkpoint requests
+resynchronization. None of these outcomes automatically replaces a pin.
+
+Gossip can reveal a split view after partitions reconnect, but Telegram can
+censor every crossing message and maintain permanent isolation. Out-of-band
+safety-code comparison remains the only way to detect a perfectly isolated
+first-contact substitution.

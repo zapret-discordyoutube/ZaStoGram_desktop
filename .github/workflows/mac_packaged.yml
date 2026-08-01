@@ -61,6 +61,14 @@ jobs:
           echo "RNNOISE=`curl -sSL --header 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' https://api.github.com/repos/xiph/rnnoise/git/refs/heads/master | jq -r .object.sha`" >> $GITHUB_ENV
           echo "WEBRTC=`curl -sSL --header 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' https://api.github.com/repos/desktop-app/tg_owt/git/refs/heads/master | jq -r .object.sha`" >> $GITHUB_ENV
 
+      - name: Rust toolchain.
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup target add --toolchain 1.91.0 x86_64-apple-darwin
+          rustup target add --toolchain 1.91.0 aarch64-apple-darwin
+          rustc +1.91.0 --version
+          cargo +1.91.0 --version
+
       - name: RNNoise cache.
         id: cache-rnnoise
         uses: actions/cache@v6

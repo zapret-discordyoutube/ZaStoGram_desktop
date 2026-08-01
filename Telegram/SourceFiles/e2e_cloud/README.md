@@ -38,9 +38,9 @@ password on each new installation.
   remain in a protected local queue, and no content or security-critical
   administration is sent until confirmation. Telegram-only delivery cannot
   prove that the witness sees the globally latest branch.
-- The MLS engine remains replaceable. Cisco MLS++, OpenMLS, another audited
-  implementation, or a separately reviewed RFC 9420 implementation may be
-  evaluated later.
+- Version one pins OpenMLS `0.8.1` at upstream security-dependency commit
+  `0e99bc8814d136f0bc7bc9ce86dd288eb32273ed`, uses its RustCrypto provider,
+  and exposes it only through a replaceable versioned C ABI.
 - The first performance target is 500 group participants, without making 500 a
   protocol limit.
 
@@ -52,51 +52,96 @@ The first core slice now contains:
 - a versioned logical transport envelope and strict structural validation;
 - a deterministic version-one binary envelope codec with bounded fields;
 - a freshness state machine that fails closed on conflicting checkpoints;
+- canonical signed freshness responses and identity-gossip snapshots bound to
+  protected checkpoints and active account clients;
 - a protected-outbox boundary that cannot seal or upload drafts before
   freshness confirmation and retries the exact persisted ciphertext;
 - an encrypted atomic outbox snapshot and purpose-bound AES-256-GCM local
   record protector;
 - an authoritative owner, capability-scoped administrator, membership, client,
   history-grant, and canonical-transition state machine;
+- a persistent signed genesis/transition ledger whose chain commits the exact
+  MLS commit, archive-key commitment, and encrypted key distribution;
 - canonical account credentials, safety-code derivation, real Ed25519/X25519
   account key generation, and domain-separated account signatures;
-- an authenticated password-vault wrapping format with a bounded Argon2id
-  provider boundary;
+- an authenticated password-vault wrapping format with the pinned Argon2id
+  reference implementation and a separate minimum policy for new vaults;
 - a two-stage opaque Telegram document carrier that acknowledges only after
   the final send operation succeeds;
+- a desktop Telegram-session carrier adapter that uses the existing uploader,
+  sends an empty-caption force-file document with `messages.sendMedia`, and
+  downloads bounded `messages.getHistory` pages through the existing file
+  loader;
+- separate fixed-name control and content carriers, Telegram update-driven
+  incremental content synchronization, and automatic protected-group discovery
+  from the carrier groups already visible to the signed-in account;
 - a two-phase authenticated inbound processor and protected replay journal that
   preserve uncertain crash state instead of replaying it blindly;
-- resumable AES-256-GCM file chunks, a canonical private manifest, and an
-  idempotent nonce ledger boundary that rejects changed source bytes;
+- resumable AES-256-GCM file chunks, a canonical private manifest, and a
+  protected persistent nonce ledger that rejects changed source bytes;
+- a protected per-conversation MLS state store that atomically commits a new
+  provider snapshot with the exact outgoing retry envelope or accepted inbound
+  plaintext;
+- real OpenMLS creation, inspection, add, remove, self-update, Welcome, and
+  application processing through ABI `0x00010006`, with roster reconciliation;
+- account-signed, carrier-bound, generation-bound client KeyPackage
+  publications with explicit 84-day MLS lifetimes;
+- one encrypted write-ahead transaction spanning MLS state, protected group
+  state, archive epochs, and outgoing publication for admissions, removals,
+  role/policy changes, ordinary inbound changes, and first-time Welcome joins;
+- a protected group-change inbox that accepts Telegram objects in arbitrary
+  order, detects competing transitions, survives restart, and never republishes
+  inbound objects;
+- a protected own-removal tombstone that destroys active MLS state, preserves
+  the verified removal checkpoint, and permits re-admission only through a new
+  account-authorized KeyPackage and Welcome;
+- RFC 9180 Base-mode history grants, signed by the granting account and sealed
+  to the recipient account archive key;
+- signed checkpoint gossip with automatic per-account witness reporting,
+  pairwise/account/group safety codes, and fail-closed fork or identity-conflict
+  handling;
+- an encrypted archive-epoch state store with fail-closed key-conflict and safe
+  `Full`, `FromJoin`, and epoch-boundary `Since` selection;
 - replaceable boundaries for MLS, the account vault, archive, files, envelope
   encoding, and Telegram transport;
+- a Desktop interface for vault creation/unlock, protected-group creation,
+  encrypted text and arbitrary-file transfer, file restoration with final hash
+  verification, participant safety details, E2E roles, removal, and history
+  administration;
 - focused state-machine and negative tests in the standard desktop test area.
 
-The test doubles do not implement encryption and are never part of the
-production target. A production MLS engine remains deliberately unselected.
+Test doubles remain outside the production target. Live carrier integration
+still needs end-to-end server transformation, multi-account update-stream, and
+large-group testing. Secure operating-system credential-store adapters, mobile
+integration, full interoperability/fuzz/load coverage, and independent
+cryptographic review are still required; the module is not ready for user data.
 
 ## Code layout
 
 ```text
 e2e_cloud/
-├── core/          types, envelopes, freshness, outbox, and service boundaries
-├── protocol/      replaceable MLS engine and wire envelopes
+├── core/          types, envelopes, signed freshness, and outbox boundaries
+├── group/         protected state and the signed persistent transition ledger
+├── identity/      account credentials, safety codes, and signed gossip
+├── mls/           OpenMLS ABI, roster validation, and group-change engines
+├── protocol/      inbound staging and cross-store transactions
+├── storage/       purpose-bound encrypted persistent records
 ├── vault/         password-unlocked account identity storage
 ├── archive/       history epochs and grants
 ├── files/         encrypted manifests and chunk streams
 ├── transport/     Telegram message and document carrier
-├── tests/         vectors, state-machine tests, fuzz targets, interoperability
+├── desktop/       Telegram Desktop service and protected-group interface
 └── docs/          architecture and security decisions
 ```
 
-Additional code directories are created only with their first reviewed
-implementation file. Empty directories would not be preserved by Git.
+Tests live with the existing Telegram Desktop tests in `SourceFiles/tests`.
 
 ## Documents
 
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat_model.md)
 - [Protocol model](docs/protocol.md)
+- [MLS engine and transaction boundary](docs/mls_engine.md)
 - [Protected group state](docs/group_state.md)
 - [Account identity and safety codes](docs/identity.md)
 - [Protected local storage](docs/local_storage.md)
@@ -104,6 +149,7 @@ implementation file. Empty directories would not be preserved by Git.
 - [History access](docs/history_access.md)
 - [Files](docs/file_storage.md)
 - [Telegram transport](docs/transport.md)
+- [Desktop integration](docs/desktop_integration.md)
 - [Decision record](docs/decisions.md)
 - [Architecture review](docs/review.md)
 - [Open questions](docs/open_questions.md)

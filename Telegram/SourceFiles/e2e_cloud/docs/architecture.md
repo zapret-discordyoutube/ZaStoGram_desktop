@@ -21,6 +21,13 @@ Presents the group, messages, members, history policy, safety codes, and
 security events. It maps a Telegram peer identifier to an E2E conversation but
 does not perform cryptographic operations itself.
 
+Telegram Desktop owns the orchestration service at `Main::Session` scope. The
+service coordinates vault selection, protected-group discovery, group and
+content backfill, exact-byte outboxes, freshness, and crash recovery. The UI
+reads only authenticated local records and invokes the same transactional group
+engines used by automatic admission; it has no direct mutation path around MLS
+or protected authorization.
+
 ### Account vault
 
 Stores the account identity, archive decryption identity, conversation index,
@@ -51,12 +58,42 @@ automatic after that proof is validated.
 
 Provides group creation, KeyPackage processing, proposals, commits, welcomes,
 application-message protection, member removal, epoch changes, persistence,
-and state validation. The application depends on a narrow engine interface and
-not on one concrete MLS library.
+and state validation. Version one uses OpenMLS `0.8.1`, pinned to upstream
+commit `0e99bc8814d136f0bc7bc9ce86dd288eb32273ed`, with its RustCrypto provider
+and only cipher suite `0x0001`. A narrow versioned C ABI keeps Rust and OpenMLS
+types out of the desktop and future mobile application layers.
 
-The production engine must implement RFC 9420 semantics, pass published test
-vectors, interoperate with another implementation, support fuzzing, and receive
-independent security review.
+The application-facing boundary remains replaceable so migrations and
+independent interoperability tests do not depend on OpenMLS types. Selection of
+the library does not waive the production gate: the integrated engine must pass
+published RFC vectors, interoperate with another implementation, support
+fuzzing, and receive independent security review.
+
+Each protected conversation owns an independent provider state. A mutating
+operation runs on an isolated copy and produces a candidate provider snapshot.
+Admissions, removals, policy changes, and ownership or role changes each create
+a real MLS commit and advance the MLS epoch. The same operation rotates the
+archive epoch and signs commitments to the exact commit and encrypted archive
+key distribution. The MLS snapshot, protected-group ledger, archive state, and
+outbox become authoritative through one encrypted recoverable write-ahead
+transaction. The application never sends ciphertext from an uncommitted state
+and never advances a live sender ratchet before the corresponding exact retry
+bytes are durable.
+
+Inbound commit, transition, and archive-distribution objects may arrive in any
+order. A purpose-bound encrypted inbox stages them by stable object identifier,
+detects competing next-generation transitions, and assembles a bundle only when
+all signed hashes match. Existing members process the commit and distribution
+on isolated OpenMLS state. A joining client processes the Welcome and
+distribution from its KeyPackage state. Both paths use the same cross-store
+transaction, but inbound transactions never enqueue the received objects for
+upload.
+
+If a processed commit removes the local client, it cannot decrypt the following
+archive distribution. The transaction instead destroys active provider bytes,
+stores a removal tombstone, advances the verified group chain, and leaves the
+archive state unchanged. Re-admission uses a fresh KeyPackage and Welcome; the
+archive store records the skipped generations as an access gap.
 
 ### Protected group state
 
@@ -65,6 +102,12 @@ credentials, E2E owner, capability-scoped administrators, history policy, and
 monotonic protected generation. It validates authorization again after
 cryptographic verification, so a Telegram role or malformed signed payload
 cannot directly mutate product state.
+
+The persistent ledger starts with a signed genesis and stores every canonical
+transition. Each checkpoint commits its predecessor, actor, authorization,
+exact MLS object, next archive-key commitment, and encrypted archive
+distribution. OpenMLS roster reconciliation requires the exact protected set
+of account/client pairs after every change.
 
 ### Archive service
 
@@ -85,6 +128,12 @@ It may retry, reorder, duplicate, delay, or lose data. The protocol layer must
 therefore validate every envelope independently and never rely on Telegram
 delivery as proof of authenticity.
 
+Control and content use distinct fixed generic filenames in the same private
+carrier group. Control reconstruction is bounded to 65,536 objects and 512 MiB,
+matching the version-one signed-ledger lifecycle bound. Content backfill keeps a
+protected newest-observed boundary and processes bounded pages without treating
+that Telegram message identifier as security state.
+
 ## Primary flows
 
 ### Create a protected group
@@ -104,19 +153,26 @@ delivery as proof of authenticity.
 3. An E2E owner or administrator validates the request and current pinned
    identity.
 4. The MLS engine produces the authenticated add transition and welcome.
-5. History keys are granted according to the group default and any signed
+5. The target applies the Welcome and current archive-key distribution in one
+   atomic local transaction. It starts with the current archive epoch only.
+6. Older history keys are granted according to the group default and any signed
    per-invitation override.
-6. The participant becomes active only after applying the valid MLS state.
+7. The participant becomes active only after the signed transition, archive
+   commitment, and resulting MLS roster all agree.
 
 ### Send a message
 
 1. The client creates a random content key.
 2. The body is encrypted once under that key.
-3. The live MLS application message carries the content key and authenticated
+3. The MLS engine seals the content key and authenticated metadata against an
+   isolated copy of the current provider state.
+4. The new provider snapshot and exact outgoing envelope are committed in one
+   protected local transaction.
+5. The live MLS application message carries the content key and authenticated
    metadata to current group members.
-4. An archive envelope wraps the same content key under the current archive
+6. An archive envelope wraps the same content key under the current archive
    epoch key.
-5. Telegram stores the encrypted body, MLS envelope, and archive envelope.
+7. Telegram stores the encrypted body, MLS envelope, and archive envelope.
 
 ### Add a new installation
 
@@ -148,7 +204,28 @@ installation.
 1. The client confirms freshness before constructing a local operation.
 2. The current protected state validates the actor client, role, capability,
    target credential, generation, and transition identifier.
-3. The MLS engine authenticates and commits the transition.
-4. Clients apply the verified transition and rotate live or archive epochs when
-   the operation requires it.
+3. The MLS engine creates an add, remove, or self-update commit authenticated
+   with the canonical transition prelude.
+4. Every protected transition advances both MLS and archive epochs. Clients
+   apply the MLS state, protected state, and archive key atomically.
 5. Telegram administrator state remains only an untrusted UI signal.
+
+The Desktop owner interface exposes promotion/demotion, member removal, the
+default history mode, and per-member history mode. Expanding a member's history
+also creates an account-scoped HPKE grant inside the same prepared transition;
+the group mutation, MLS self-update, archive rotation, grant publication, and
+vault checkpoint update either become recoverable together or do not publish.
+
+### Confirm freshness and gossip identity
+
+1. Before first send or protected administration, a client publishes a random
+   challenge containing its exact known checkpoint.
+2. Any account client active at that checkpoint may sign a response binding the
+   challenge nonce, challenged checkpoint, its observed checkpoint, and its
+   account/client identity.
+3. An equal checkpoint opens sending; a newer checkpoint requires
+   resynchronization; an equal-generation different hash permanently marks a
+   fork until explicit recovery.
+4. Signed gossip snapshots carry the reporter checkpoint plus the sorted
+   Telegram-user/account/credential-hash observations. A valid differing local
+   snapshot creates an identity security event instead of replacing a pin.

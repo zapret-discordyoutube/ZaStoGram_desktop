@@ -580,6 +580,7 @@ public:
 
 	void showAddContact();
 	void showNewGroup();
+	void showProtectedGroups();
 	void showNewChannel();
 
 	void showPassportForm(const Passport::FormRequest &request);

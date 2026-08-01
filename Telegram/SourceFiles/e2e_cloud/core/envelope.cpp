@@ -30,6 +30,9 @@ bool IsKnownObjectKind(ObjectKind kind) {
 	case ObjectKind::FreshnessChallenge:
 	case ObjectKind::FreshnessResponse:
 	case ObjectKind::ResynchronizationRequest:
+	case ObjectKind::SignedGroupTransition:
+	case ObjectKind::ForkRecoveryManifest:
+	case ObjectKind::MlsGroupInfo:
 		return true;
 	}
 	return false;

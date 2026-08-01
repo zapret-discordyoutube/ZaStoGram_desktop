@@ -33,22 +33,26 @@ public:
 	[[nodiscard]] bool loaded() const;
 	[[nodiscard]] std::uint64_t revision() const;
 	[[nodiscard]] int size() const;
+	[[nodiscard]] std::optional<OutboxItem> item(ObjectId objectId) const;
 
 	bool append(PendingMessage message) override;
+	bool appendSealed(EncodedEnvelope envelope) override;
+	bool appendSealedThenDraft(
+		EncodedEnvelope envelope,
+		PendingMessage message) override;
 	[[nodiscard]] std::optional<OutboxItem> front(
 		ConversationId conversationId) const override;
 	bool replaceWithSealed(
 		ObjectId objectId,
 		EncodedEnvelope envelope) override;
 	bool remove(ObjectId objectId) override;
+	[[nodiscard]] bool contains(ObjectId objectId) const override;
 
 private:
 	[[nodiscard]] bool persist(
 		const std::vector<OutboxItem> &items,
 		std::uint64_t revision) const;
 	[[nodiscard]] bool validItem(const OutboxItem &item) const;
-	[[nodiscard]] bool contains(ObjectId objectId) const;
-
 	AtomicBlobStore &_blobStore;
 	const LocalRecordProtector &_protector;
 	std::vector<OutboxItem> _items;

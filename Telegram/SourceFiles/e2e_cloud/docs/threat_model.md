@@ -76,6 +76,21 @@ server can censor up-to-date witnesses and maintain a stale partition. Absolute
 rollback prevention on a brand-new installation is therefore outside the
 no-backend, no-out-of-band design.
 
+The selected product behavior accepts that residual availability/freshness
+risk for usability. A brand-new installation may unlock and read archive keys
+already present in its authenticated vault, and may prepare local outgoing
+work. Before the first actual send or security-critical administration it
+publishes a random challenge and waits for any currently active participant
+client to sign a checkpoint response. An equal checkpoint opens the queue, a
+newer checkpoint forces resynchronization, and an equal-generation different
+hash blocks as a fork. An active server can delay this gate or keep an isolated
+witness stale, but cannot make the gated client sign a transition for a
+different checkpoint without detection.
+
+Current-checkpoint safety gossip is deterministic and account-signed. A valid
+future checkpoint, conflicting state hash, or credential/Telegram binding
+conflict blocks the conversation instead of silently changing a TOFU pin.
+
 ## Explicit non-goals
 
 - hiding who belongs to the carrier group from Telegram;

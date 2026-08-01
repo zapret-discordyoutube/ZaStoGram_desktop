@@ -16,7 +16,7 @@ namespace {
 inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 	'T', 'D', 'E', '2', 'E', 'F', 'M', 'F',
 };
-inline constexpr auto kFixedSize = 166;
+inline constexpr auto kFixedSize = 174;
 inline constexpr auto kMaximumFilenameSize = 1024;
 inline constexpr auto kMaximumMimeTypeSize = 255;
 
@@ -105,6 +105,7 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 	if (!IsValidFileChunkContext(manifest.context)
 		|| !manifest.key.valid()
 		|| !manifest.plaintextHash
+		|| !manifest.unixTime
 		|| !ValidFilename(manifest.filenameUtf8)
 		|| !ValidMimeType(manifest.mimeTypeUtf8)) {
 		return std::nullopt;
@@ -115,7 +116,7 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 		+ manifest.filenameUtf8.size()
 		+ manifest.mimeTypeUtf8.size());
 	AppendArray(result, kMagic);
-	AppendUint16(result, 1);
+	AppendUint16(result, 2);
 	AppendArray(result, manifest.context.conversationId.bytes);
 	AppendArray(result, manifest.context.fileId.bytes);
 	AppendArray(result, manifest.key.bytes());
@@ -124,6 +125,7 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 	AppendUint32(result, manifest.context.chunkCount);
 	AppendArray(result, manifest.context.noncePrefix);
 	AppendArray(result, manifest.plaintextHash.bytes);
+	AppendUint64(result, manifest.unixTime);
 	AppendUint16(result, std::uint16_t(manifest.filenameUtf8.size()));
 	result.append(manifest.filenameUtf8);
 	AppendUint16(result, std::uint16_t(manifest.mimeTypeUtf8.size()));
@@ -138,7 +140,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 			begin(kMagic),
 			end(kMagic),
 			reinterpret_cast<const std::uint8_t*>(bytes.constData()))
-		|| ReadUint16(bytes.constData() + 8) != 1) {
+		|| ReadUint16(bytes.constData() + 8) != 2) {
 		return std::nullopt;
 	}
 	auto context = FileChunkContext();
@@ -152,13 +154,14 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 	context.chunkCount = ReadUint32(bytes.constData() + 118);
 	ReadArray(bytes.constData() + 122, context.noncePrefix);
 	ReadArray(bytes.constData() + 130, hash.bytes);
-	const auto filenameSize = ReadUint16(bytes.constData() + 162);
+	const auto unixTime = ReadUint64(bytes.constData() + 162);
+	const auto filenameSize = ReadUint16(bytes.constData() + 170);
 	if (filenameSize > kMaximumFilenameSize
-		|| bytes.size() < 166 + filenameSize) {
+		|| bytes.size() < 174 + filenameSize) {
 		return std::nullopt;
 	}
-	const auto filename = QByteArray(bytes.constData() + 164, filenameSize);
-	const auto mimeOffset = 164 + filenameSize;
+	const auto filename = QByteArray(bytes.constData() + 172, filenameSize);
+	const auto mimeOffset = 172 + filenameSize;
 	const auto mimeSize = ReadUint16(bytes.constData() + mimeOffset);
 	if (mimeSize > kMaximumMimeTypeSize
 		|| bytes.size() != mimeOffset + 2 + mimeSize) {
@@ -169,6 +172,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 	if (!IsValidFileChunkContext(context)
 		|| !key.valid()
 		|| !hash
+		|| !unixTime
 		|| !ValidFilename(filename)
 		|| !ValidMimeType(mime)) {
 		return std::nullopt;
@@ -177,6 +181,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		.context = context,
 		.key = std::move(key),
 		.plaintextHash = hash,
+		.unixTime = unixTime,
 		.filenameUtf8 = filename,
 		.mimeTypeUtf8 = mime,
 	};

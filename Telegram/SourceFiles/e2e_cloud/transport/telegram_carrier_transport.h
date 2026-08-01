@@ -20,8 +20,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+[[nodiscard]] QString ProtectedControlCarrierFilename();
+[[nodiscard]] QString ProtectedContentCarrierFilename();
+[[nodiscard]] QString ProtectedCarrierMimeType();
+[[nodiscard]] int ProtectedCarrierMaximumObjectSize();
+
 struct UploadedCarrierFile {
 	QByteArray backendToken;
+};
+
+struct CarrierDownloadPage {
+	std::vector<TelegramTransport::UntrustedObject> untrustedObjects;
+	QByteArray nextCursor;
+	bool complete = false;
 };
 
 class TelegramCarrierBackend {
@@ -33,7 +44,7 @@ public:
 	using SendCallback = std::function<void(Result)>;
 	using DownloadCallback = std::function<void(
 		Result,
-		std::vector<QByteArray>)>;
+		CarrierDownloadPage)>;
 
 	virtual ~TelegramCarrierBackend() = default;
 
@@ -50,6 +61,8 @@ public:
 		SendCallback callback) = 0;
 	virtual void downloadDocuments(
 		std::uint64_t telegramPeerId,
+		QByteArray cursor,
+		int limit,
 		DownloadCallback callback) = 0;
 
 };
@@ -65,14 +78,15 @@ public:
 	void uploadExact(
 		EncodedEnvelope envelope,
 		UploadCallback callback) override;
-	void download(
-		ConversationId conversationId,
+	void downloadPage(
+		DownloadRequest request,
 		DownloadCallback callback) override;
 
 private:
 	struct CallbackGuard;
 	struct ActiveUpload {
 		ObjectId objectId;
+		QString filename;
 		UploadCallback callback;
 	};
 

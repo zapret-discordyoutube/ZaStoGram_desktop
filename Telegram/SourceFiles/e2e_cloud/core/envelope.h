@@ -41,6 +41,9 @@ enum class ObjectKind : std::uint16_t {
 	FreshnessChallenge = 17,
 	FreshnessResponse = 18,
 	ResynchronizationRequest = 19,
+	SignedGroupTransition = 20,
+	ForkRecoveryManifest = 21,
+	MlsGroupInfo = 22,
 };
 
 struct TransportEnvelope {

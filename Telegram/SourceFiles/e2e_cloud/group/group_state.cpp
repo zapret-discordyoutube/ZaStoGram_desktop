@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <utility>
 
 namespace E2ECloud {
@@ -40,6 +41,83 @@ std::optional<ProtectedGroupState> ProtectedGroupState::Create(
 		.joinedGeneration = result._generation,
 		.clients = { args.ownerClientId },
 	});
+	return result;
+}
+
+std::optional<ProtectedGroupState> ProtectedGroupState::Restore(
+		ProtectedGroupStateSnapshot snapshot) {
+	if (!snapshot.conversationId
+		|| !snapshot.generation
+		|| !IsValidHistoryAccess(snapshot.policy.defaultHistoryAccess)
+		|| snapshot.members.empty()
+		|| snapshot.appliedTransitionIds.size()
+			!= snapshot.generation - 1) {
+		return std::nullopt;
+	}
+	auto accountIds = std::set<AccountId>();
+	auto telegramUserIds = std::set<std::uint64_t>();
+	auto clientIds = std::set<ClientId>();
+	auto ownerCount = 0;
+	for (const auto &member : snapshot.members) {
+		if (!member.accountId
+			|| !member.telegramUserIdBinding
+			|| !member.joinedGeneration
+			|| member.joinedGeneration > snapshot.generation
+			|| member.clients.empty()
+			|| !IsValidHistoryAccess(member.historyAccess)
+			|| !accountIds.emplace(member.accountId).second
+			|| !telegramUserIds.emplace(
+				member.telegramUserIdBinding).second
+			|| (member.adminPermissions & ~kAllAdminPermissions)) {
+			return std::nullopt;
+		}
+		switch (member.role) {
+		case GroupRole::Member:
+			if (member.adminPermissions) {
+				return std::nullopt;
+			}
+			break;
+		case GroupRole::Administrator:
+			break;
+		case GroupRole::Owner:
+			if (member.adminPermissions) {
+				return std::nullopt;
+			}
+			++ownerCount;
+			break;
+		default:
+			return std::nullopt;
+		}
+		for (const auto &clientId : member.clients) {
+			if (!clientId || !clientIds.emplace(clientId).second) {
+				return std::nullopt;
+			}
+		}
+	}
+	if (ownerCount != 1) {
+		return std::nullopt;
+	}
+	auto transitionIds = std::set<ObjectId>();
+	for (const auto &transitionId : snapshot.appliedTransitionIds) {
+		if (!transitionId || !transitionIds.emplace(transitionId).second) {
+			return std::nullopt;
+		}
+	}
+	if ((snapshot.generation == 1
+			&& (snapshot.lastTransitionId
+				|| !transitionIds.empty()))
+		|| (snapshot.generation > 1
+			&& (!snapshot.lastTransitionId
+				|| !transitionIds.contains(snapshot.lastTransitionId)))) {
+		return std::nullopt;
+	}
+	auto result = ProtectedGroupState();
+	result._conversationId = snapshot.conversationId;
+	result._generation = snapshot.generation;
+	result._lastTransitionId = snapshot.lastTransitionId;
+	result._policy = snapshot.policy;
+	result._members = std::move(snapshot.members);
+	result._appliedTransitionIds = std::move(transitionIds);
 	return result;
 }
 
@@ -124,10 +202,11 @@ GroupTransitionResult ProtectedGroupState::validate(
 			return GroupTransitionResult::TargetNotMember;
 		} else if (!transition.targetClientId) {
 			return GroupTransitionResult::InvalidTarget;
-		} else if (!credential
-			|| credential->accountId != transition.targetAccountId
-			|| credential->clientId != transition.targetClientId) {
-			return GroupTransitionResult::InvalidTargetCredential;
+		} else if (actor->accountId != transition.targetAccountId
+			&& !actorHasPermission(
+				*actor,
+				AdminPermission::RemoveMembers)) {
+			return GroupTransitionResult::PermissionDenied;
 		} else if (std::find(
 				begin(target->clients),
 				end(target->clients),
@@ -255,6 +334,21 @@ GroupTransitionResult ProtectedGroupState::applyVerified(
 	return GroupTransitionResult::Allowed;
 }
 
+bool ProtectedGroupState::applyVerifiedForkRecovery(
+		ObjectId recoveryId,
+		std::uint64_t resolvedGeneration) {
+	if (!recoveryId
+		|| resolvedGeneration != _generation
+		|| _generation == std::numeric_limits<std::uint64_t>::max()
+		|| _appliedTransitionIds.contains(recoveryId)) {
+		return false;
+	}
+	++_generation;
+	_lastTransitionId = recoveryId;
+	_appliedTransitionIds.emplace(recoveryId);
+	return true;
+}
+
 ConversationId ProtectedGroupState::conversationId() const {
 	return _conversationId;
 }
@@ -307,6 +401,20 @@ const GroupMember *ProtectedGroupState::memberByClient(ClientId clientId) const 
 				clientId) != end(member.clients);
 		});
 	return (i != end(_members)) ? &*i : nullptr;
+}
+
+ProtectedGroupStateSnapshot ProtectedGroupState::snapshot() const {
+	return {
+		.conversationId = _conversationId,
+		.generation = _generation,
+		.lastTransitionId = _lastTransitionId,
+		.policy = _policy,
+		.members = _members,
+		.appliedTransitionIds = {
+			_appliedTransitionIds.begin(),
+			_appliedTransitionIds.end(),
+		},
+	};
 }
 
 GroupMember *ProtectedGroupState::memberMutable(AccountId accountId) {

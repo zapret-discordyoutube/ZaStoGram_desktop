@@ -19,15 +19,24 @@ struct FreshnessChallenge {
 	ConversationId conversationId;
 	Checkpoint knownCheckpoint;
 	ChallengeNonce nonce;
+
+	friend inline bool operator==(
+		const FreshnessChallenge &,
+		const FreshnessChallenge &) = default;
 };
 
 struct FreshnessResponse {
 	ConversationId conversationId;
 	ChallengeNonce nonce;
+	Checkpoint challengedCheckpoint;
 	Checkpoint checkpoint;
 	AccountId witnessAccountId;
 	ClientId witnessClientId;
 	QByteArray authenticatedProof;
+
+	friend inline bool operator==(
+		const FreshnessResponse &,
+		const FreshnessResponse &) = default;
 };
 
 class FreshnessResponseVerifier {
@@ -52,6 +61,7 @@ enum class FreshnessResponseResult {
 	NotWaiting,
 	WrongConversation,
 	WrongChallenge,
+	WrongCheckpoint,
 	InvalidWitness,
 	InvalidProof,
 	StaleResponse,
@@ -61,7 +71,9 @@ enum class FreshnessResponseResult {
 
 class FreshnessGate final {
 public:
-	explicit FreshnessGate(Checkpoint knownCheckpoint);
+	explicit FreshnessGate(
+		Checkpoint knownCheckpoint,
+		bool initiallyTrusted = false);
 
 	[[nodiscard]] bool beginChallenge(ChallengeNonce nonce);
 	[[nodiscard]] FreshnessResponseResult acceptResponse(
@@ -69,6 +81,8 @@ public:
 		const FreshnessResponseVerifier &verifier);
 	[[nodiscard]] bool completeResynchronization(
 		const Checkpoint &appliedCheckpoint);
+	[[nodiscard]] bool advanceTrustedCheckpoint(
+		Checkpoint appliedCheckpoint);
 	void requireFreshness(Checkpoint knownCheckpoint);
 
 	[[nodiscard]] FreshnessState state() const;

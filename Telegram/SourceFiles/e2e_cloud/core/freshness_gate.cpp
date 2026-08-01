@@ -11,8 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
-FreshnessGate::FreshnessGate(Checkpoint knownCheckpoint)
-: _knownCheckpoint(std::move(knownCheckpoint)) {
+FreshnessGate::FreshnessGate(
+		Checkpoint knownCheckpoint,
+		bool initiallyTrusted)
+: _knownCheckpoint(std::move(knownCheckpoint))
+, _state(initiallyTrusted ? FreshnessState::Ready : FreshnessState::Required) {
 }
 
 bool FreshnessGate::beginChallenge(ChallengeNonce nonce) {
@@ -38,10 +41,15 @@ FreshnessResponseResult FreshnessGate::acceptResponse(
 	if (_state != FreshnessState::WaitingForWitness || !_challenge) {
 		return FreshnessResponseResult::NotWaiting;
 	} else if (response.conversationId != _challenge->conversationId
+		|| response.challengedCheckpoint.conversationId
+			!= _challenge->conversationId
 		|| response.checkpoint.conversationId != _challenge->conversationId) {
 		return FreshnessResponseResult::WrongConversation;
 	} else if (response.nonce != _challenge->nonce) {
 		return FreshnessResponseResult::WrongChallenge;
+	} else if (response.challengedCheckpoint
+			!= _challenge->knownCheckpoint) {
+		return FreshnessResponseResult::WrongCheckpoint;
 	} else if (!response.witnessAccountId || !response.witnessClientId) {
 		return FreshnessResponseResult::InvalidWitness;
 	} else if (!response.checkpoint.stateHash
@@ -77,6 +85,22 @@ bool FreshnessGate::completeResynchronization(
 	_knownCheckpoint = appliedCheckpoint;
 	_resynchronizationTarget.reset();
 	_state = FreshnessState::Ready;
+	return true;
+}
+
+bool FreshnessGate::advanceTrustedCheckpoint(
+		Checkpoint appliedCheckpoint) {
+	if (_state != FreshnessState::Ready
+		|| !appliedCheckpoint.conversationId
+		|| !appliedCheckpoint.stateHash
+		|| appliedCheckpoint.conversationId
+			!= _knownCheckpoint.conversationId
+		|| appliedCheckpoint.generation < _knownCheckpoint.generation
+		|| (appliedCheckpoint.generation == _knownCheckpoint.generation
+			&& appliedCheckpoint != _knownCheckpoint)) {
+		return false;
+	}
+	_knownCheckpoint = std::move(appliedCheckpoint);
 	return true;
 }
 

@@ -686,6 +686,13 @@ void MainMenu::setupMenu() {
 			}
 		});
 
+		addAction(
+			tr::lng_e2e_cloud_title(),
+			{ &st::menuIconLock }
+		)->setClickedCallback([=] {
+			controller->showProtectedGroups();
+		});
+
 		AddMyChannelsBox(addAction(
 			tr::lng_create_channel_title(),
 			{ &st::menuIconChannel }

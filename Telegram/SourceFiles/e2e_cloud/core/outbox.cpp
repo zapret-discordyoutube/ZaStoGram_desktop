@@ -29,6 +29,37 @@ EnqueueResult OutboxCoordinator::enqueue(PendingMessage message) {
 		: EnqueueResult::PersistenceFailed;
 }
 
+EnqueueResult OutboxCoordinator::enqueueSealed(EncodedEnvelope envelope) {
+	if (!envelope.conversationId
+		|| !envelope.objectId
+		|| envelope.bytes.isEmpty()
+		|| envelope.conversationId
+			!= _freshness.knownCheckpoint().conversationId) {
+		return EnqueueResult::InvalidMessage;
+	}
+	return _store.appendSealed(std::move(envelope))
+		? EnqueueResult::Queued
+		: EnqueueResult::PersistenceFailed;
+}
+
+EnqueueResult OutboxCoordinator::enqueueSealedThenDraft(
+		EncodedEnvelope envelope,
+		PendingMessage message) {
+	if (!envelope.conversationId
+		|| !envelope.objectId
+		|| envelope.bytes.isEmpty()
+		|| !validDraft(message)
+		|| envelope.conversationId != message.conversationId
+		|| envelope.objectId == message.objectId) {
+		return EnqueueResult::InvalidMessage;
+	}
+	return _store.appendSealedThenDraft(
+		std::move(envelope),
+		std::move(message))
+		? EnqueueResult::Queued
+		: EnqueueResult::PersistenceFailed;
+}
+
 OutboxDispatch OutboxCoordinator::dispatchNext() {
 	if (!_freshness.sendingAllowed()) {
 		return {

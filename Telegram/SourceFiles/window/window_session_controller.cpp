@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/add_contact_box.h"
 #include "boxes/delete_messages_box.h"
 #include "boxes/star_gift_auction_box.h"
+#include "e2e_cloud/desktop/protected_groups_box.h"
 #include "window/window_chat_preview.h"
 #include "window/window_chat_switch_process.h"
 #include "window/window_controller.h"
@@ -3315,6 +3316,10 @@ void SessionController::showAddContact() {
 
 void SessionController::showNewGroup() {
 	_window->show(Box<GroupInfoBox>(this, GroupInfoBox::Type::Group));
+}
+
+void SessionController::showProtectedGroups() {
+	_window->show(Box<E2ECloud::ProtectedGroupsBox>(this));
 }
 
 void SessionController::showNewChannel() {

@@ -109,9 +109,26 @@ public:
 	};
 
 	using UploadCallback = std::function<void(UploadResult)>;
+	struct UntrustedObject {
+		QByteArray bytes;
+		std::uint64_t observedTelegramPeerIdBinding = 0;
+		std::uint64_t observedSenderTelegramUserIdBinding = 0;
+		std::int64_t observedMessageId = 0;
+
+		friend inline bool operator==(
+			const UntrustedObject &,
+			const UntrustedObject &) = default;
+	};
+	struct DownloadRequest {
+		ConversationId conversationId;
+		QByteArray cursor;
+		int limit = 50;
+	};
 	struct DownloadResult {
 		UploadResult result = UploadResult::RetryableError;
-		std::vector<QByteArray> untrustedObjects;
+		std::vector<UntrustedObject> untrustedObjects;
+		QByteArray nextCursor;
+		bool complete = false;
 	};
 	using DownloadCallback = std::function<void(DownloadResult)>;
 
@@ -120,8 +137,8 @@ public:
 	virtual void uploadExact(
 		EncodedEnvelope envelope,
 		UploadCallback callback) = 0;
-	virtual void download(
-		ConversationId conversationId,
+	virtual void downloadPage(
+		DownloadRequest request,
 		DownloadCallback callback) = 0;
 
 };

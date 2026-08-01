@@ -537,6 +537,19 @@ GroupInfoBox::GroupInfoBox(
 GroupInfoBox::GroupInfoBox(
 	QWidget*,
 	not_null<Window::SessionNavigation*> navigation,
+	Type type,
+	const QString &title,
+	Fn<void(not_null<PeerData*>)> done)
+: _navigation(navigation)
+, _api(&_navigation->session().mtp())
+, _type(type)
+, _initialTitle(title)
+, _done(std::move(done)) {
+}
+
+GroupInfoBox::GroupInfoBox(
+	QWidget*,
+	not_null<Window::SessionNavigation*> navigation,
 	not_null<UserData*> bot,
 	RequestPeerQuery query,
 	Fn<void(not_null<PeerData*>)> done)

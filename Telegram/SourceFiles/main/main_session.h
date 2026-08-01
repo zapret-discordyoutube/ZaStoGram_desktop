@@ -84,6 +84,10 @@ namespace Ui {
 struct ColorIndicesCompressed;
 } // namespace Ui
 
+namespace E2ECloud {
+class DesktopService;
+} // namespace E2ECloud
+
 namespace Main {
 
 class Account;
@@ -118,6 +122,7 @@ public:
 
 	[[nodiscard]] Account &account() const;
 	[[nodiscard]] Storage::Account &local() const;
+	[[nodiscard]] E2ECloud::DesktopService &e2eCloud();
 	[[nodiscard]] Domain &domain() const;
 	[[nodiscard]] Storage::Domain &domainLocal() const;
 
@@ -368,6 +373,7 @@ private:
 	TimeId _tmpPasswordValidUntil = 0;
 
 	rpl::lifetime _lifetime;
+	std::unique_ptr<E2ECloud::DesktopService> _e2eCloud;
 
 };
 

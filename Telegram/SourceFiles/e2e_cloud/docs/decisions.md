@@ -49,11 +49,12 @@ history, history from join, history from a boundary, and full history.
 The group owner and explicitly appointed E2E administrators may manage E2E
 admission and history policy. Telegram administrator status alone is not enough.
 
-### D010: Replaceable MLS implementation
+### D010: Replaceable MLS implementation (superseded by D024)
 
-Do not select Cisco MLS++, OpenMLS, or a custom engine yet. Define an
-implementation-independent engine boundary and require RFC 9420 vectors,
-interoperability, fuzzing, and security review before production use.
+Define an implementation-independent engine boundary and require RFC 9420
+vectors, interoperability, fuzzing, and security review before production use.
+The original deferral of the concrete implementation is superseded by D024;
+the boundary remains.
 
 ### D011: Initial scale target
 
@@ -140,11 +141,12 @@ directly from the password and never fall back to plaintext storage.
 ### D022: Opaque document carrier with two-stage acknowledgement
 
 Carry every version-one protocol envelope as an ordinary Telegram document
-whose bytes are the exact encoded envelope. Use the fixed filename
-`protected.tde2e`, MIME type `application/octet-stream`, an empty caption, no
-preview, and no original application-file metadata. Treat both upload and
-`messages.sendMedia` as one transport operation. Remove an outbox item only
-after the final send RPC succeeds; an uploaded file token alone is not delivery.
+whose bytes are the exact encoded envelope. Use the fixed control/content
+filenames defined by D035, MIME type `application/octet-stream`, an empty
+caption, no preview, and no original application-file metadata. Treat both
+upload and `messages.sendMedia` as one transport operation. Remove an outbox
+item only after the final send RPC succeeds; an uploaded file token alone is
+not delivery.
 
 Downloaded documents remain untrusted byte strings until the protocol codec,
 carrier binding, signature or MLS authentication, generation rules, and replay
@@ -165,3 +167,188 @@ private metadata values are copied into Telegram document metadata. A
 persistent nonce ledger must retain the exact ciphertext or plaintext digest
 for every allocated `(file key, chunk index)` before upload; changed source
 bytes may never be encrypted under an already allocated nonce.
+
+### D024: OpenMLS production engine
+
+Use the MIT-licensed OpenMLS `0.8.1` code line at upstream commit
+`0e99bc8814d136f0bc7bc9ce86dd288eb32273ed` behind a narrow versioned C ABI.
+That commit carries the upstream July 2026 HPKE and cryptographic dependency
+updates. Enable only RFC 9420 cipher suite `0x0001` and the RustCrypto provider
+for version one. Do not expose draft protocol extensions. Rust ownership, panics,
+allocations, and library types never cross the ABI; callers exchange bounded
+byte strings and numeric status codes.
+
+OpenMLS is selected because its `StorageProvider` is designed to persist the
+complete long-lived group state after successful operations and the upstream
+project builds the required desktop targets plus future Android and iOS
+targets. The evaluated unmodified Cisco MLS++ interface does not expose a
+supported complete persistence format for all private TreeKEM, key-schedule,
+and sender/receiver ratchet state. Maintaining a private serialization fork of
+cryptographic internals is a larger and less reviewable risk.
+
+The pin is a dependency baseline, not a claim that the application is ready for
+production. Updating it requires review of security advisories, storage-format
+changes, RFC vectors, differential interoperability against an independent MLS
+implementation, fuzzing, and migration tests. The bridge build pins Rust 1.91
+and a checked Cargo lockfile so the toolchain and transitive graph do not drift.
+
+The earlier release-tag dependency graph was rejected after RustSec reported
+six vulnerabilities in the selected cryptographic transitive graph. The
+replacement lockfile has no reported vulnerability as of 2026-07-31. Its sole
+maintenance warning is an unmaintained build-time proc-macro reached through
+the verified SHA3 implementation; it is tracked but is not runtime crypto code.
+
+### D025: Transactional MLS state and outgoing bytes
+
+Run every mutating MLS operation against an isolated copy of the current
+per-conversation provider state. The engine returns a candidate state snapshot
+and any exact outgoing wire message without publishing either. Commit the new
+snapshot, request digest, operation identifier, and complete outgoing envelope
+as one purpose-bound encrypted atomic local record. Only then may the in-memory
+state advance or Telegram upload begin.
+
+A failed local commit leaves the previous provider state authoritative and
+exposes no candidate ciphertext. A retry with an already committed operation
+identifier returns the recorded exact envelope. Reusing that identifier with a
+different request digest or ciphertext fails closed. Receipts remain until the
+outbox acknowledges Telegram delivery; stale receipts may be compacted only
+after the outbox no longer references them.
+
+### D026: Transactional inbound MLS plaintext
+
+Process every incoming MLS message against an isolated provider copy. Commit
+the resulting provider snapshot and the authenticated decrypted application
+record in one encrypted atomic local write before releasing plaintext. A
+separate replay journal may remain pending across that write: restart recovery
+checks the committed application record and either delivers it without replay,
+retries an operation known not to have committed, or fails closed when neither
+state can be proven. Never process uncertain ciphertext twice against a mutable
+receiver ratchet.
+
+### D027: Strict archive boundaries
+
+Every retained archive epoch records its own monotonically increasing archive
+generation, the protected-group generation at which it became active, and the
+authenticated event identifier that activated it. Rotate the archive epoch on
+each admission, removal, and history-policy boundary. `FromJoin` grants begin
+only at an epoch whose activation generation exactly equals the member's join
+generation. `Since` accepts only an archive-activation event, never an arbitrary
+Telegram timestamp or an event in the middle of an epoch. The interface may
+resolve a requested date to the nearest later safe boundary, but may not grant
+an earlier epoch and silently reveal extra history.
+
+Persist archive keys in a purpose-bound encrypted atomic snapshot. Importing a
+history grant is idempotent only when every repeated generation has identical
+activation metadata and key bytes; any conflict blocks the conversation for
+recovery rather than replacing a key.
+
+### D028: Signed group chain binds MLS and archive state
+
+Every transition signs its predecessor checkpoint, canonical protected
+mutation, actor account/client, exact MLS object ID and hash, next archive-key
+commitment, encrypted archive-distribution object ID and hash, and any target
+client authorization. A transition is accepted only after the account
+signature, MLS sender/AAD, archive key, and resulting OpenMLS roster all agree.
+Telegram cannot substitute a participant, commit, or archive key independently.
+
+### D029: One recoverable transaction across group stores
+
+Persist each group change through an encrypted write-ahead transaction spanning
+the OpenMLS provider, archive epoch store, signed group ledger, and—only for a
+local change—outbox. Recovery checks base revisions and exact already-written
+values and replays only missing steps. Inbound and first-Welcome transactions
+never contain outgoing envelopes. A new member initializes its local archive at
+the current epoch and obtains any older authorized epochs through history
+grants.
+
+### D030: Telegram delivery order is untrusted
+
+Stage signed transitions, commits, and archive distributions in a bounded
+encrypted inbox keyed by stable application object identifiers. Assemble only
+the unique next-generation bundle whose signed IDs and hashes match. Preserve
+the bundle over restart, accept exact duplicates, treat object-ID reuse as a
+conflict, and report multiple next-generation transitions as a fork. Never use
+Telegram message order as protocol order.
+
+### D031: Every protected transition advances MLS and archive epochs
+
+Admissions use an MLS add commit, removals use one batch remove commit, and
+role, ownership, and history-policy changes use an MLS self-update commit.
+Every protected generation also creates a new archive epoch whose key is sent
+inside an MLS application message after the commit. Keeping these three
+generations aligned removes ambiguous unsigned policy boundaries and ensures a
+removed client cannot decrypt the next archive key.
+
+### D032: Account-signed freshness and identity gossip
+
+A freshness response signs the random nonce, exact challenged checkpoint,
+witness checkpoint, and witness account/client under the stable account key.
+Only a client active at the challenged generation is a valid witness. Equal
+checkpoints open sending, newer checkpoints force resynchronization, and an
+equal-generation different hash signals a fork.
+
+Identity gossip signs a checkpoint plus the sorted Telegram-user, account-ID,
+and credential-hash observations for the full protected roster. Valid gossip
+is compared with the reconstructed local state at that generation. A mismatch
+creates a security event and never replaces a TOFU pin automatically. Telegram
+can still censor all witnesses and preserve permanent isolation.
+
+### D033: Own removal destroys active MLS state
+
+After a valid removal commit excludes the local client, atomically replace its
+active OpenMLS provider state with a protected tombstone bound to the signed
+transition, resulting checkpoint, commit hash, account, and client. Advance the
+signed group ledger but do not decrypt or append the new archive epoch. A later
+admission requires a fresh account-authorized KeyPackage and Welcome. Preserve
+the absent archive generations as an explicit access gap, and authenticate
+stored content against the exact protected generation that activated its epoch.
+
+### D034: KeyPackages are bounded, one-time admission tickets
+
+Each client publishes account-signed, conversation-scoped KeyPackages for one
+exact protected-group generation. Their MLS lifetime is 84 days and renewal
+starts seven days before expiry or immediately after a generation change.
+Still-valid replaced private packages remain in a bounded encrypted local pool
+until a Welcome consumes one or they expire. Telegram stores only the signed
+public publication and may suppress it, but cannot substitute a package,
+move it to another protected conversation, or make a stale-generation package
+authorize admission.
+
+### D035: Separate control and content carrier streams
+
+Use `protected-control.tde2e` for group authority, credentials, KeyPackages,
+freshness, and safety gossip, and `protected-content.tde2e` for encrypted
+messages, MLS content descriptors, file manifests, and chunks. Keep both in the
+same private Telegram carrier group with the same generic MIME type and empty
+caption. This lets content use a protected incremental observation boundary
+without allowing Telegram message order to become group authority.
+
+### D036: Signed deterministic checkpoint gossip
+
+After observing a current group checkpoint, each active account/client publishes
+at most one deterministic account-signed gossip object for that checkpoint.
+Count distinct reporter accounts as automatic witnesses. A valid future
+checkpoint, equal-generation fork, or credential/Telegram binding conflict
+blocks security-sensitive operation; malformed or unauthenticated gossip is
+ignored. Human group, account, and pairwise safety codes remain available for
+out-of-band comparison.
+
+### D037: Desktop administration uses canonical transitions
+
+Expose member removal, owner-controlled role changes, signed default-history
+changes, and per-member history changes in the Desktop protected-group surface.
+Do not mutate UI or Telegram membership as authority. Every action first passes
+the freshness gate and protected capability checks, then uses the existing
+OpenMLS removal or policy-change engine, archive rotation, write-ahead
+transaction, exact-byte outbox, and vault-checkpoint update. A per-member
+history change includes its HPKE history grant in that prepared transition.
+
+### D038: Bound version-one large-group reconstruction
+
+Permit at most 65,536 matching control objects and 512 MiB in one public
+bootstrap/discovery/group-change reconstruction. Keep the signed local ledger
+at the same 65,536-generation limit and retain the 4,096-member protocol ceiling
+while testing for 500 participants. These are denial-of-service and lifecycle
+bounds, not target group sizes. A protocol version that needs longer-lived
+groups must add reviewed signed state snapshots and compaction instead of
+silently increasing untrusted memory.

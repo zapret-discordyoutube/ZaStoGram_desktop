@@ -48,6 +48,11 @@ enum class AccountSignatureDomain : std::uint16_t {
 	FreshnessResponse = 4,
 	HistoryGrant = 5,
 	VaultCheckpoint = 6,
+	ArchivedContent = 7,
+	GroupGenesis = 8,
+	ForkRecovery = 9,
+	FreshnessChallenge = 10,
+	FileChunk = 11,
 };
 
 using AccountSignature = std::array<std::uint8_t, 64>;
@@ -59,6 +64,8 @@ public:
 
 [[nodiscard]] std::optional<AccountPrivateIdentity>
 	GenerateAccountPrivateIdentity();
+[[nodiscard]] bool ValidateAccountPrivateIdentity(
+	const AccountPrivateIdentity &identity);
 [[nodiscard]] std::optional<AccountSignature> SignAccountData(
 	const SecureKey32 &privateKey,
 	AccountSignatureDomain domain,

@@ -39,12 +39,17 @@ public:
 	virtual ~ProtectedOutboxStore() = default;
 
 	virtual bool append(PendingMessage message) = 0;
+	virtual bool appendSealed(EncodedEnvelope envelope) = 0;
+	virtual bool appendSealedThenDraft(
+		EncodedEnvelope envelope,
+		PendingMessage message) = 0;
 	[[nodiscard]] virtual std::optional<OutboxItem> front(
 		ConversationId conversationId) const = 0;
 	virtual bool replaceWithSealed(
 		ObjectId objectId,
 		EncodedEnvelope envelope) = 0;
 	virtual bool remove(ObjectId objectId) = 0;
+	[[nodiscard]] virtual bool contains(ObjectId objectId) const = 0;
 
 };
 
@@ -77,6 +82,10 @@ public:
 		OutboundMessageProtector &protector);
 
 	[[nodiscard]] EnqueueResult enqueue(PendingMessage message);
+	[[nodiscard]] EnqueueResult enqueueSealed(EncodedEnvelope envelope);
+	[[nodiscard]] EnqueueResult enqueueSealedThenDraft(
+		EncodedEnvelope envelope,
+		PendingMessage message);
 	[[nodiscard]] OutboxDispatch dispatchNext();
 	[[nodiscard]] bool acknowledgeUploaded(ObjectId objectId);
 	[[nodiscard]] bool markUploadFailed(ObjectId objectId);
