@@ -172,7 +172,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_mtproxy_tls_socket)
 
-add_executable(test_e2e_cloud WIN32)
+add_executable(test_e2e_cloud)
 init_target(test_e2e_cloud "(tests)")
 
 target_include_directories(test_e2e_cloud PRIVATE ${src_loc})
@@ -195,7 +195,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud)
 
-add_executable(test_e2e_cloud_group WIN32)
+add_executable(test_e2e_cloud_group)
 init_target(test_e2e_cloud_group "(tests)")
 
 target_include_directories(test_e2e_cloud_group PRIVATE ${src_loc})
@@ -218,7 +218,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_group)
 
-add_executable(test_e2e_cloud_identity WIN32)
+add_executable(test_e2e_cloud_identity)
 init_target(test_e2e_cloud_identity "(tests)")
 
 target_include_directories(test_e2e_cloud_identity PRIVATE ${src_loc})
@@ -242,7 +242,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_identity)
 
-add_executable(test_e2e_cloud_storage WIN32)
+add_executable(test_e2e_cloud_storage)
 init_target(test_e2e_cloud_storage "(tests)")
 
 target_include_directories(test_e2e_cloud_storage PRIVATE ${src_loc})
@@ -266,7 +266,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_storage)
 
-add_executable(test_e2e_cloud_vault WIN32)
+add_executable(test_e2e_cloud_vault)
 init_target(test_e2e_cloud_vault "(tests)")
 
 target_include_directories(test_e2e_cloud_vault PRIVATE ${src_loc})
@@ -291,7 +291,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_vault)
 
-add_executable(test_e2e_cloud_inbound WIN32)
+add_executable(test_e2e_cloud_inbound)
 init_target(test_e2e_cloud_inbound "(tests)")
 
 target_include_directories(test_e2e_cloud_inbound PRIVATE ${src_loc})
@@ -314,7 +314,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_inbound)
 
-add_executable(test_e2e_cloud_sync WIN32)
+add_executable(test_e2e_cloud_sync)
 init_target(test_e2e_cloud_sync "(tests)")
 
 target_include_directories(test_e2e_cloud_sync PRIVATE ${src_loc})
@@ -342,7 +342,7 @@ add_test(
 
 add_dependencies(Telegram test_e2e_cloud_sync)
 
-add_executable(test_e2e_cloud_bootstrap WIN32)
+add_executable(test_e2e_cloud_bootstrap)
 init_target(test_e2e_cloud_bootstrap "(tests)")
 
 target_include_directories(test_e2e_cloud_bootstrap PRIVATE ${src_loc})
@@ -372,7 +372,7 @@ add_test(
 
 add_dependencies(Telegram test_e2e_cloud_bootstrap)
 
-add_executable(test_e2e_cloud_files WIN32)
+add_executable(test_e2e_cloud_files)
 init_target(test_e2e_cloud_files "(tests)")
 
 target_include_directories(test_e2e_cloud_files PRIVATE ${src_loc})
@@ -396,7 +396,7 @@ set_target_properties(
 
 add_dependencies(Telegram test_e2e_cloud_files)
 
-add_executable(test_e2e_cloud_openmls WIN32)
+add_executable(test_e2e_cloud_openmls)
 init_target(test_e2e_cloud_openmls "(tests)")
 
 target_include_directories(test_e2e_cloud_openmls PRIVATE ${src_loc})
@@ -423,7 +423,7 @@ add_test(
 
 add_dependencies(Telegram test_e2e_cloud_openmls)
 
-add_executable(test_e2e_cloud_openmls_application WIN32)
+add_executable(test_e2e_cloud_openmls_application)
 init_target(test_e2e_cloud_openmls_application "(tests)")
 
 target_include_directories(
@@ -456,7 +456,7 @@ add_test(
 
 add_dependencies(Telegram test_e2e_cloud_openmls_application)
 
-add_executable(test_e2e_cloud_openmls_group_change WIN32)
+add_executable(test_e2e_cloud_openmls_group_change)
 init_target(test_e2e_cloud_openmls_group_change "(tests)")
 
 target_include_directories(
@@ -487,7 +487,7 @@ add_test(
 
 add_dependencies(Telegram test_e2e_cloud_openmls_group_change)
 
-add_executable(test_e2e_cloud_archive WIN32)
+add_executable(test_e2e_cloud_archive)
 init_target(test_e2e_cloud_archive "(tests)")
 
 target_include_directories(test_e2e_cloud_archive PRIVATE ${src_loc})
@@ -516,3 +516,67 @@ add_test(
 )
 
 add_dependencies(Telegram test_e2e_cloud_archive)
+
+add_executable(test_e2e_cloud_fork_recovery)
+init_target(test_e2e_cloud_fork_recovery "(tests)")
+
+target_include_directories(
+    test_e2e_cloud_fork_recovery
+    PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_fork_recovery ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_fork_recovery.cpp
+)
+
+target_link_libraries(test_e2e_cloud_fork_recovery
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_fork_recovery
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_fork_recovery
+    COMMAND test_e2e_cloud_fork_recovery
+)
+
+add_dependencies(Telegram test_e2e_cloud_fork_recovery)
+
+add_executable(test_e2e_cloud_openmls_fork_recovery)
+init_target(test_e2e_cloud_openmls_fork_recovery "(tests)")
+
+target_include_directories(
+    test_e2e_cloud_openmls_fork_recovery
+    PRIVATE ${src_loc})
+
+nice_target_sources(test_e2e_cloud_openmls_fork_recovery ${src_loc}
+PRIVATE
+    tests/test_e2e_cloud_openmls_fork_recovery.cpp
+)
+
+target_link_libraries(test_e2e_cloud_openmls_fork_recovery
+PRIVATE
+    tdesktop::td_e2e_cloud
+    tdesktop::lib_openmls_bridge
+    desktop-app::external_openssl
+    desktop-app::external_qt
+)
+
+set_target_properties(
+    test_e2e_cloud_openmls_fork_recovery
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_openmls_fork_recovery
+    COMMAND test_e2e_cloud_openmls_fork_recovery
+)
+
+add_dependencies(Telegram test_e2e_cloud_openmls_fork_recovery)

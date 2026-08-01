@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/vault/persistent_cloud_vault_anchor.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <optional>
 
@@ -345,9 +346,9 @@ public:
 	if (!created) {
 		return Fail("cloud vault tamper fixture could not be created");
 	}
-	for (const auto offset : {
-		0,
-		20,
+	for (const auto offset : std::array{
+		qsizetype(0),
+		qsizetype(20),
 		created->encoded.size() / 2,
 		created->encoded.size() - 1,
 	}) {
