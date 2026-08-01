@@ -141,6 +141,35 @@ def verify_carrier_backfill_searches_documents() -> None:
     assert "MTPmessages_GetHistory(" not in download
 
 
+def verify_ambiguous_search_results_fail_closed() -> None:
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    discovery = function_body(
+        backend,
+        "void discoveryLoaded(const MTPmessages_Messages &result)",
+        "void finishDiscovery(",
+    )
+    history = function_body(
+        backend,
+        "void historyLoaded(const MTPmessages_Messages &result, int limit)",
+        "void downloadProgress(",
+    )
+
+    for body in (discovery, history):
+        assert "MTPDmessages_messagesNotModified" in body
+        not_modified = body.index("MTPDmessages_messagesNotModified")
+        assert "valid = false;" in body[not_modified:]
+        assert "if (!valid)" in body
+        assert "UploadResult::RetryableError" in body
+    assert "complete = true;" in discovery
+    assert discovery.count("data.vcount().v >= int(messages.size())") == 2
+    assert "complete\n\t\t\t\t? UploadResult::Accepted" not in discovery
+    assert "complete\n\t\t\t\t? TelegramTransport::UploadResult::Accepted" \
+        in discovery
+
+
 def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
     header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
@@ -702,6 +731,7 @@ def main() -> None:
     verify_discovery_has_a_timeout()
     verify_all_carrier_operations_have_timeouts()
     verify_carrier_backfill_searches_documents()
+    verify_ambiguous_search_results_fail_closed()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
     verify_pending_plaintext_is_cleansed()

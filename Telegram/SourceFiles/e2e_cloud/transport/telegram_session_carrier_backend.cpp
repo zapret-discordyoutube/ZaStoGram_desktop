@@ -604,20 +604,34 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		auto messages = QVector<MTPMessage>();
+		auto complete = false;
+		auto valid = true;
 		result.match([&](const MTPDmessages_messages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
+			complete = true;
 		}, [&](const MTPDmessages_messagesSlice &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
+			valid = data.vcount().v >= int(messages.size());
+			complete = valid && data.vcount().v == int(messages.size());
 		}, [&](const MTPDmessages_channelMessages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
-		}, [](const MTPDmessages_messagesNotModified &) {
+			valid = data.vcount().v >= int(messages.size());
+			complete = valid && data.vcount().v == int(messages.size());
+		}, [&](const MTPDmessages_messagesNotModified &) {
+			valid = false;
 		});
+		if (!valid) {
+			finishDiscovery(
+				TelegramTransport::UploadResult::RetryableError,
+				false);
+			return;
+		}
 		for (const auto &message : messages) {
 			const auto messagePeerId = PeerFromMessage(message);
 			if (!IdFromMessage(message)
@@ -643,7 +657,11 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				return;
 			}
 		}
-		finishDiscovery(TelegramTransport::UploadResult::Accepted, false);
+		finishDiscovery(
+			complete
+				? TelegramTransport::UploadResult::Accepted
+				: TelegramTransport::UploadResult::RetryableError,
+			false);
 	}
 
 	void finishDiscovery(
@@ -663,6 +681,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		auto messages = QVector<MTPMessage>();
+		auto valid = true;
 		result.match([&](const MTPDmessages_messages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
@@ -671,6 +690,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
 			messages = data.vmessages().v;
+			valid = data.vcount().v >= int(messages.size());
 		}, [&](const MTPDmessages_channelMessages &data) {
 			session->data().processUsers(data.vusers());
 			session->data().processChats(data.vchats());
@@ -678,8 +698,14 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				channel->ptsReceived(data.vpts().v);
 			}
 			messages = data.vmessages().v;
-		}, [](const MTPDmessages_messagesNotModified &) {
+			valid = data.vcount().v >= int(messages.size());
+		}, [&](const MTPDmessages_messagesNotModified &) {
+			valid = false;
 		});
+		if (!valid) {
+			finishDownload(TelegramTransport::UploadResult::RetryableError);
+			return;
+		}
 		download->complete = messages.size() < limit;
 		auto retainedBytes = std::int64_t();
 		for (const auto &message : messages) {

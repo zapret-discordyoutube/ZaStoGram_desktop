@@ -400,3 +400,15 @@ bounded `protected-content.tde2e` fallback for chunks uploaded by older clients.
 This prevents a large file or hostile member from turning every chat refresh
 into gigabytes of automatic downloads without changing Telegram's role as the
 only opaque remote store.
+
+### D042: Ambiguous Telegram searches fail closed
+
+Treat `messages.messagesNotModified` as an unexpected retryable transport
+failure for protected-carrier searches because every such request uses a zero
+hash. Never interpret it as an empty result or a completed history page. During
+passwordless vault discovery, accept absence only from a complete
+`messages.messages` response or from a slice whose declared total equals the
+returned first page. A malformed count or a partial first page without a valid
+vault carrier exposes Retry only, never identity creation. The same malformed or
+not-modified responses interrupt protected history synchronization instead of
+silently truncating it.
