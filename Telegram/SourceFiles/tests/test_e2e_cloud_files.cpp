@@ -268,9 +268,19 @@ public:
 		|| !first.exactCiphertext
 		|| retry.result != FileChunkPrepareResult::Ready
 		|| retry.exactCiphertext != first.exactCiphertext
+		|| !HasExactFileChunkCiphertext(
+			store.read(context.conversationId, context.fileId, 1),
+			*first.exactCiphertext)
 		|| store.storeCalls != 1) {
 		return Fail("file chunk ledger did not reuse exact ciphertext");
 	}
+	store.chunk->plaintextHash.bytes[0] ^= 1;
+	if (!HasExactFileChunkCiphertext(
+			store.read(context.conversationId, context.fileId, 1),
+			*first.exactCiphertext)) {
+		return Fail("file chunk self-observation depended on hash meaning");
+	}
+	store.chunk->plaintextHash.bytes[0] ^= 1;
 	const auto changed = protector.prepare(
 		key,
 		context,

@@ -467,10 +467,18 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			++downloadToken;
 		}
 		const auto token = downloadToken;
-		downloadRequestId = api.request(MTPmessages_GetHistory(
+		downloadRequestId = api.request(MTPmessages_Search(
+			MTP_flags(MTPmessages_Search::Flag(0)),
 			session->data().history(PeerId(peerId))->peer->input(),
-			MTP_int(*offset),
+			MTP_string(protectedCarrierFamily ? QString() : filename),
+			MTP_inputPeerEmpty(),
+			MTPInputPeer(),
+			MTPVector<MTPReaction>(),
 			MTP_int(0),
+			MTP_inputMessagesFilterDocument(),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_int(*offset),
 			MTP_int(0),
 			MTP_int(limit),
 			MTP_int(0),

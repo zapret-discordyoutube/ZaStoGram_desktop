@@ -293,6 +293,31 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioVaultRejectsExcessiveKdfBeforeDerivation() {
+	auto kdf = TestPasswordKdf();
+	const auto vault = PasswordVault(kdf);
+	auto key = MakeMasterKey();
+	const auto wrapped = vault.wrap(
+		std::move(key),
+		QByteArray("password"),
+		MakeConfig(),
+		1);
+	if (!wrapped) {
+		return Fail("vault KDF limit test setup failed");
+	}
+	auto excessive = *wrapped;
+	excessive[14] = char(0x00);
+	excessive[15] = char(0x10);
+	excessive[16] = char(0x00);
+	excessive[17] = char(0x00);
+	const auto callsBefore = kdf.calls;
+	if (vault.unwrap(excessive, QByteArray("password"))
+		|| kdf.calls != callsBefore) {
+		return Fail("vault performed an attacker-controlled excessive KDF");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioArgon2idReferenceVector() {
 	auto parameters = Argon2idParameters{
 		.parameterVersion = 1,
@@ -701,6 +726,7 @@ int main(int, char *[]) {
 		ScenarioVaultRejectsWrongPasswordAndTampering,
 		ScenarioVaultUsesFreshNonce,
 		ScenarioVaultBoundsKdfBeforeDerivation,
+		ScenarioVaultRejectsExcessiveKdfBeforeDerivation,
 		ScenarioArgon2idReferenceVector,
 		ScenarioCloudVaultRoundTripAndUpdate,
 		ScenarioCloudVaultRejectsTamperingAndKeyMismatch,

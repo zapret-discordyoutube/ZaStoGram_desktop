@@ -67,8 +67,10 @@ Downloaded documents are delivered upward as untrusted byte strings. The
 transport does not infer a conversation identifier, object identifier, sender,
 or ordering guarantee from Telegram metadata.
 
-History download is paged. A page scans at most 100 Telegram history messages
-and retains at most 64 MiB of matching carrier documents. The cursor is an
+History download is paged. The adapter uses Telegram document search, narrowed
+to the exact carrier filename when the transport has one, instead of walking
+ordinary chat messages. A page returns at most 100 search results and retains
+at most 64 MiB of matching carrier documents. The cursor is an
 opaque availability hint derived from the oldest scanned Telegram message; it
 is neither signed nor trusted as evidence of completeness. Invalid cursor
 bytes fail locally. Every returned document still passes the envelope,
@@ -87,13 +89,19 @@ longer-lived groups require a future signed snapshot/compaction protocol.
 The desktop adapter reuses Telegram Desktop's uploader, but does not create a
 visible local plaintext message. Upload readiness yields an in-memory
 `InputFile`; only a successful empty-caption, force-file `messages.sendMedia`
-acknowledges the protected outbox. Downloads use `messages.getHistory`, accept
-only the matching fixed filename and MIME type, and stage document bytes in an
-auto-removed temporary directory before handing them upward.
+acknowledges the protected outbox. Downloads use `messages.search` with the
+document filter, accept only the matching fixed filename and MIME type, and
+stage document bytes in an auto-removed temporary directory before handing
+them upward.
 
 The passwordless Saved Messages metadata search has a 15-second client timeout.
 On expiry the in-flight RPC is cancelled and discovery reports a retryable
 transport error; a later explicit retry starts a fresh request.
+
+Uploader, `sendMedia`, document-search, and document-download phases each have
+a 120-second client timeout. Exact carrier bytes and the Telegram peer derive a
+stable nonzero `random_id`, so retry after an ambiguous `sendMedia` timeout is
+idempotent at Telegram as well as in the protected outbox.
 
 This encoding must still be tested against server-side content transformations,
 document deduplication, forwarding, copying, deletion, and retention behavior.

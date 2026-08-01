@@ -30,6 +30,13 @@ void AppendUint32(QByteArray &result, std::uint32_t value) {
 	result.append(char(value));
 }
 
+void Cleanse(QByteArray &bytes) {
+	if (!bytes.isEmpty()) {
+		OPENSSL_cleanse(bytes.data(), bytes.size());
+	}
+	bytes.clear();
+}
+
 [[nodiscard]] bool ValidDomain(AccountSignatureDomain domain) {
 	switch (domain) {
 	case AccountSignatureDomain::GroupTransition:
@@ -216,8 +223,11 @@ std::optional<AccountSignature> SignAccountData(
 		const SecureKey32 &privateKey,
 		AccountSignatureDomain domain,
 		const QByteArray &data) {
-	const auto input = SignatureInput(domain, data);
+	auto input = SignatureInput(domain, data);
 	if (!privateKey.valid() || !input) {
+		if (input) {
+			Cleanse(*input);
+		}
 		return std::nullopt;
 	}
 	const auto key = EVP_PKEY_new_raw_private_key(
@@ -229,6 +239,7 @@ std::optional<AccountSignature> SignAccountData(
 	if (!key || !context) {
 		EVP_MD_CTX_free(context);
 		EVP_PKEY_free(key);
+		Cleanse(*input);
 		return std::nullopt;
 	}
 	auto result = AccountSignature();
@@ -248,6 +259,7 @@ std::optional<AccountSignature> SignAccountData(
 		&& resultSize == result.size();
 	EVP_MD_CTX_free(context);
 	EVP_PKEY_free(key);
+	Cleanse(*input);
 	return ok ? std::optional<AccountSignature>(result) : std::nullopt;
 }
 
@@ -256,8 +268,11 @@ bool VerifyAccountSignature(
 		AccountSignatureDomain domain,
 		const QByteArray &data,
 		const AccountSignature &signature) {
-	const auto input = SignatureInput(domain, data);
+	auto input = SignatureInput(domain, data);
 	if (!input || !AccountCredentialCodecV1().encode(credential)) {
+		if (input) {
+			Cleanse(*input);
+		}
 		return false;
 	}
 	const auto key = EVP_PKEY_new_raw_public_key(
@@ -269,6 +284,7 @@ bool VerifyAccountSignature(
 	if (!key || !context) {
 		EVP_MD_CTX_free(context);
 		EVP_PKEY_free(key);
+		Cleanse(*input);
 		return false;
 	}
 	const auto result = EVP_DigestVerifyInit(
@@ -285,6 +301,7 @@ bool VerifyAccountSignature(
 			input->size()) == 1;
 	EVP_MD_CTX_free(context);
 	EVP_PKEY_free(key);
+	Cleanse(*input);
 	return result;
 }
 

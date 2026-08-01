@@ -32,6 +32,10 @@ struct FileChunkReadResult {
 	StoredFileChunk chunk;
 };
 
+[[nodiscard]] bool HasExactFileChunkCiphertext(
+	const FileChunkReadResult &stored,
+	const QByteArray &ciphertext);
+
 enum class FileChunkStoreResult {
 	Stored,
 	AlreadyExists,

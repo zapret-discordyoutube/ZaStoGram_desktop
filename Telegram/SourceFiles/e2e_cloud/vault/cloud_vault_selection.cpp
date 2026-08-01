@@ -20,7 +20,7 @@ namespace {
 
 inline constexpr auto kMaximumCandidates = std::size_t(65536);
 inline constexpr auto kMaximumCandidateBytes = std::uint64_t(64 * 1024 * 1024);
-inline constexpr auto kMaximumWrappedMasterKeys = std::size_t(16);
+inline constexpr auto kMaximumWrappedMasterKeys = std::size_t(4);
 
 void Cleanse(QByteArray &bytes) {
 	if (!bytes.isEmpty()) {

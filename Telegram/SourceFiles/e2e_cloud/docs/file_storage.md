@@ -56,7 +56,10 @@ an account-signed content envelope that binds the carrier group, conversation,
 protected generation, sender account/client, file identifier, chunk index and
 count, ciphertext hash, and exact ciphertext. This provides sender binding even
 though the chunk is independently encrypted rather than an MLS application
-message.
+message. When the sender later observes its own carrier, local deduplication
+compares the exact ciphertext bytes. It deliberately does not compare the
+ledger's plaintext digest with the envelope's ciphertext digest because those
+fields have different meanings.
 
 Global plaintext deduplication is excluded because it leaks equality across
 conversations. Any future conversation-local deduplication requires an explicit

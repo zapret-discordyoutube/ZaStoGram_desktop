@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/files/file_chunk_file_store.h"
 
+#include <openssl/crypto.h>
+
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -73,6 +75,13 @@ void ReadArray(const char *data, Array &value) {
 		identifier.bytes.size());
 }
 
+void Cleanse(QByteArray &bytes) {
+	if (!bytes.isEmpty()) {
+		OPENSSL_cleanse(bytes.data(), bytes.size());
+	}
+	bytes.clear();
+}
+
 } // namespace
 
 FileChunkFileStore::FileChunkFileStore(
@@ -96,7 +105,16 @@ FileChunkReadResult FileChunkFileStore::read(
 		return { .status = FileChunkReadStatus::Error, .chunk = {} };
 	}
 	const auto protectedBytes = file.readAll();
-	const auto plaintext = _protector.open(QByteArray(kPurpose), protectedBytes);
+	auto plaintext = _protector.open(QByteArray(kPurpose), protectedBytes);
+	const auto fail = [&] {
+		if (plaintext) {
+			Cleanse(*plaintext);
+		}
+		return FileChunkReadResult{
+			.status = FileChunkReadStatus::Error,
+			.chunk = {},
+		};
+	};
 	if (!plaintext
 		|| plaintext->size() < kHeaderSize
 		|| !std::equal(
@@ -104,7 +122,7 @@ FileChunkReadResult FileChunkFileStore::read(
 			end(kMagic),
 			reinterpret_cast<const std::uint8_t*>(plaintext->constData()))
 		|| ReadUint16(plaintext->constData() + 8) != 1) {
-		return { .status = FileChunkReadStatus::Error, .chunk = {} };
+		return fail();
 	}
 	auto storedConversationId = ConversationId();
 	auto storedFileId = FileId();
@@ -121,9 +139,9 @@ FileChunkReadResult FileChunkFileStore::read(
 		|| !ciphertextSize
 		|| ciphertextSize > kMaximumCiphertextSize
 		|| plaintext->size() != kHeaderSize + int(ciphertextSize)) {
-		return { .status = FileChunkReadStatus::Error, .chunk = {} };
+		return fail();
 	}
-	return {
+	auto result = FileChunkReadResult{
 		.status = FileChunkReadStatus::Found,
 		.chunk = {
 			.plaintextHash = hash,
@@ -132,6 +150,8 @@ FileChunkReadResult FileChunkFileStore::read(
 				ciphertextSize),
 		},
 	};
+	Cleanse(*plaintext);
+	return result;
 }
 
 FileChunkStoreResult FileChunkFileStore::storeIfAbsent(
@@ -170,6 +190,7 @@ FileChunkStoreResult FileChunkFileStore::storeIfAbsent(
 	const auto protectedBytes = _protector.seal(
 		QByteArray(kPurpose),
 		plaintext);
+	Cleanse(plaintext);
 	if (!protectedBytes) {
 		return FileChunkStoreResult::Error;
 	}

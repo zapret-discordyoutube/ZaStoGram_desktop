@@ -10,15 +10,25 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 
 namespace E2ECloud {
+namespace {
+
+inline constexpr auto kMaximumMemoryKibibytes = std::uint32_t(128 * 1024);
+inline constexpr auto kMaximumIterations = std::uint32_t(4);
+inline constexpr auto kMaximumParallelism = std::uint32_t(4);
+inline constexpr auto kMaximumWorkKibibytes = std::uint64_t(256 * 1024);
+
+} // namespace
 
 bool IsValidArgon2idConfig(const Argon2idConfig &config) {
 	return config.parameterVersion == 1
 		&& config.parallelism >= 1
-		&& config.parallelism <= 16
+		&& config.parallelism <= kMaximumParallelism
 		&& config.memoryKibibytes >= 8 * config.parallelism
-		&& config.memoryKibibytes <= 1024 * 1024
+		&& config.memoryKibibytes <= kMaximumMemoryKibibytes
 		&& config.iterations >= 1
-		&& config.iterations <= 64;
+		&& config.iterations <= kMaximumIterations
+		&& std::uint64_t(config.memoryKibibytes) * config.iterations
+			<= kMaximumWorkKibibytes;
 }
 
 bool IsValidArgon2idParameters(const Argon2idParameters &parameters) {

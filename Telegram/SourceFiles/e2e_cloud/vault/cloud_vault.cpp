@@ -287,7 +287,7 @@ struct DecodedPlaintext {
 		return std::nullopt;
 	}
 	const auto credential = AccountCredentialCodecV1().decode(credentialBytes);
-	const auto signedBytes = QByteArray(
+	auto signedBytes = QByteArray(
 		plaintext.constData(),
 		plaintext.size() - int(signature.size()));
 	auto identity = AccountPrivateIdentity{
@@ -295,19 +295,21 @@ struct DecodedPlaintext {
 		.archiveHpkePrivateKey = SecureKey32(std::move(archivePrivate)),
 		.credential = credential.value_or(AccountCredentialPublic()),
 	};
-	if (magic != kPlaintextMagic
-		|| version != 1
-		|| !telegramUserIdBinding
-		|| !generation
-		|| (generation == 1) != !previousBlobDigest
-		|| !credential
-		|| !ValidConversations(conversations)
-		|| !ValidateAccountPrivateIdentity(identity)
-		|| !VerifyAccountSignature(
+	const auto valid = magic == kPlaintextMagic
+		&& version == 1
+		&& telegramUserIdBinding
+		&& generation
+		&& (generation == 1) == !previousBlobDigest
+		&& credential
+		&& ValidConversations(conversations)
+		&& ValidateAccountPrivateIdentity(identity)
+		&& VerifyAccountSignature(
 			*credential,
 			AccountSignatureDomain::VaultCheckpoint,
 			signedBytes,
-			signature)) {
+			signature);
+	Cleanse(signedBytes);
+	if (!valid) {
 		return std::nullopt;
 	}
 	return DecodedPlaintext{

@@ -45,6 +45,12 @@ previous in-memory and on-disk state unchanged. Authentication failure,
 malformed lengths, duplicate object identifiers, invalid stages, or mismatched
 sealed identifiers fail closed.
 
+Content records deduplicate by the authenticated E2E object and plaintext, not
+by Telegram message id. Reposting identical carrier bytes under another
+Telegram id is harmless, while changing any protected content under the same
+event id remains a conflict. Reload failure clears previously decrypted
+in-memory records and returns the store to a not-loaded state.
+
 The encrypted snapshot is bounded to 128 MiB and 4096 items. Attachments are not
 copied into it; they use the encrypted file pipeline.
 

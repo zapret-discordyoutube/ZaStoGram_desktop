@@ -125,6 +125,22 @@ def verify_all_carrier_operations_have_timeouts() -> None:
     assert "api.request(base::take(downloadRequestId)).cancel();" in backend
 
 
+def verify_carrier_backfill_searches_documents() -> None:
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    download = function_body(
+        backend,
+        "void downloadDocuments(\n",
+        "void downloadTimedOut(",
+    )
+
+    assert "MTPmessages_Search(" in download
+    assert "MTP_inputMessagesFilterDocument()" in download
+    assert "MTPmessages_GetHistory(" not in download
+
+
 def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
     header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
@@ -136,6 +152,87 @@ def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
         "void DesktopService::applyVaultDiscoveryResult(",
     )
     assert service.count("weak->_operationEpoch != operationEpoch") == 2
+
+
+def verify_file_chunk_self_observation_uses_exact_ciphertext() -> None:
+    processor = source(
+        "SourceFiles/e2e_cloud/protocol/observed_content_processor.cpp"
+    )
+    protector = source(
+        "SourceFiles/e2e_cloud/files/idempotent_file_chunk_protector.cpp"
+    )
+
+    assert "HasExactFileChunkCiphertext(" in processor
+    matcher = function_body(
+        protector,
+        "bool HasExactFileChunkCiphertext(",
+        "IdempotentFileChunkProtector::IdempotentFileChunkProtector(",
+    )
+    assert "stored.chunk.exactCiphertext == ciphertext" in matcher
+    assert "plaintextHash" not in matcher
+
+
+def verify_control_sync_blocks_outgoing_races() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "void DesktopService::completeActiveUpload(",
+    )
+    observation = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::beginContentObservation(",
+    )
+    result = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
+    text_send = function_body(
+        service,
+        "bool DesktopService::sendProtectedText(",
+        "bool DesktopService::sendProtectedFile(",
+    )
+    file_send = function_body(
+        service,
+        "bool DesktopService::sendProtectedFile(",
+        "bool DesktopService::saveProtectedFile(",
+    )
+
+    assert "group.observationDirty && !group.outbox.size()" in pump
+    assert "group.observationDirty = true;" in observation
+    assert "group.uploadInProgress" in observation
+    assert "i->second->observationDirty = true;" in result
+    assert "if (rerun) {\n\t\t\tbeginGroupObservation" in result
+    assert "i->second->observation" in text_send
+    assert "i->second->observationDirty" in text_send
+    assert "i->second->observation" in file_send
+    assert "i->second->observationDirty" in file_send
+
+
+def verify_freshness_wait_does_not_busy_poll() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "void DesktopService::completeActiveUpload(",
+    )
+    waiting = pump.index(
+        "DesktopContentState::AwaitingFreshness);\n\t\t\treturn;"
+    )
+    challenge_upload = pump.index(
+        "group.transport.uploadExact(",
+        waiting,
+    )
+
+    assert "beginGroupObservation" not in pump[waiting:challenge_upload]
+    manual_sync = function_body(
+        service,
+        "void DesktopService::synchronizeProtectedContent(",
+        "void DesktopService::lock()",
+    )
+    assert "beginGroupObservation(conversationId);" in manual_sync
 
 
 def verify_protected_groups_layout_uses_own_visibility() -> None:
@@ -162,7 +259,11 @@ def main() -> None:
     verify_all_e2e_tests_are_registered()
     verify_discovery_has_a_timeout()
     verify_all_carrier_operations_have_timeouts()
+    verify_carrier_backfill_searches_documents()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
+    verify_file_chunk_self_observation_uses_exact_ciphertext()
+    verify_control_sync_blocks_outgoing_races()
+    verify_freshness_wait_does_not_busy_poll()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
 

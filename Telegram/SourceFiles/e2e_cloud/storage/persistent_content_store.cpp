@@ -150,6 +150,20 @@ void Cleanse(QByteArray &bytes) {
 		&& record.plaintext.size() <= kMaximumRecordPlaintextSize;
 }
 
+[[nodiscard]] bool SameProtectedContent(
+		const ProtectedContentRecord &a,
+		const ProtectedContentRecord &b) {
+	return a.conversationId == b.conversationId
+		&& a.eventObjectId == b.eventObjectId
+		&& a.contentObjectId == b.contentObjectId
+		&& a.objectKind == b.objectKind
+		&& a.groupGeneration == b.groupGeneration
+		&& a.senderAccountId == b.senderAccountId
+		&& a.senderClientId == b.senderClientId
+		&& a.unixTime == b.unixTime
+		&& a.plaintext == b.plaintext;
+}
+
 [[nodiscard]] std::optional<QByteArray> EncodeRecord(
 		const ProtectedContentRecord &record) {
 	if (!ValidRecord(record)) {
@@ -359,7 +373,7 @@ ContentStoreAppendResult PersistentContentStore::append(
 			return value.eventObjectId == record.eventObjectId;
 		});
 	if (existing != end(_records)) {
-		return (*existing == record)
+		return SameProtectedContent(*existing, record)
 			? ContentStoreAppendResult::AlreadyStored
 			: ContentStoreAppendResult::Conflict;
 	} else if (_records.size() == kMaximumRecords

@@ -61,9 +61,12 @@ truncated or normalized by the cryptographic layer, and is cleansed after each
 derivation attempt. Version one uses the official Argon2 reference
 implementation at tag `20190702`, built from its portable sources rather than
 depending on the project's older bundled OpenSSL. New vaults require at least
-64 MiB and three iterations; parsers retain a broader bounded range so an older
-vault can be opened and migrated. Final platform presets may raise these values
-after benchmarking but may not silently lower this creation floor.
+64 MiB and three iterations. Version one accepts at most 128 MiB, four
+iterations, parallelism four, and 256 MiB-iterations of combined work. Vault
+selection evaluates at most four distinct wrapped master keys and derives once
+per wrapper regardless of the number of historical vault generations. These
+limits are applied before Argon2 runs so an untrusted Telegram container cannot
+turn unlock into an unbounded CPU or memory operation.
 
 ## Unlocked session
 

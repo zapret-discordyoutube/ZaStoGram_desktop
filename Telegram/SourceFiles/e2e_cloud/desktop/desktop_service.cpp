@@ -971,6 +971,8 @@ bool DesktopService::sendProtectedText(
 	if (i == end(_groups)
 		|| !_vault
 		|| text.isEmpty()
+		|| i->second->observation
+		|| i->second->observationDirty
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -1042,6 +1044,8 @@ bool DesktopService::sendProtectedFile(
 	if (i == end(_groups)
 		|| !_vault
 		|| path.isEmpty()
+		|| i->second->observation
+		|| i->second->observationDirty
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -1294,6 +1298,7 @@ rpl::producer<std::uint64_t> DesktopService::securityRevisionValue() const {
 
 void DesktopService::synchronizeProtectedContent(
 		ConversationId conversationId) {
+	beginGroupObservation(conversationId);
 	pumpActiveOutbox(conversationId);
 	beginContentObservation(conversationId);
 }
@@ -2374,6 +2379,16 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 		return;
 	}
 	auto &group = *i->second;
+	if (group.observation
+		|| (group.observationDirty && !group.outbox.size())) {
+		beginGroupObservation(conversationId);
+		if (group.observation || group.observationDirty) {
+			setContentState(
+				conversationId,
+				DesktopContentState::Synchronizing);
+			return;
+		}
+	}
 	if (!group.freshnessGate->sendingAllowed()) {
 		if (group.freshnessGate->state() == FreshnessState::Required
 			&& !group.outbox.size()
@@ -2395,7 +2410,6 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			setContentState(
 				conversationId,
 				DesktopContentState::AwaitingFreshness);
-			beginGroupObservation(conversationId);
 			return;
 		} else if (group.uploadInProgress) {
 			return;
@@ -2724,15 +2738,17 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 	if (i == end(_groups)
 		|| (i->second->phase != PendingGroupCreation::Phase::Active
 			&& i->second->phase
-				!= PendingGroupCreation::Phase::AwaitingAdmission)
-		|| i->second->uploadInProgress
-		|| (i->second->outbox.size()
-			&& (!i->second->freshnessGate
-				|| i->second->freshnessGate->sendingAllowed()))) {
+				!= PendingGroupCreation::Phase::AwaitingAdmission)) {
 		return;
 	}
 	auto &group = *i->second;
 	if (group.observation) {
+		group.observationDirty = true;
+		return;
+	} else if (group.uploadInProgress
+		|| (group.outbox.size()
+			&& (!group.freshnessGate
+				|| group.freshnessGate->sendingAllowed()))) {
 		group.observationDirty = true;
 		return;
 	}
@@ -2754,6 +2770,7 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 		});
 	if (!group.observation->start()) {
 		group.observation.reset();
+		group.observationDirty = true;
 	}
 }
 
@@ -2932,6 +2949,13 @@ void DesktopService::applyGroupObservation(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
 	} else if (result.status != PublicBootstrapSyncStatus::Verified) {
+		i->second->observationDirty = true;
+		setContentState(
+			conversationId,
+			(result.status
+					== PublicBootstrapSyncStatus::PermanentTransportError)
+				? DesktopContentState::PermanentTransportError
+				: DesktopContentState::RetryableTransportError);
 		return;
 	}
 	const auto awaiting = i->second->phase
@@ -2972,7 +2996,10 @@ void DesktopService::applyGroupObservation(
 			|| freshnessChanged
 			|| grantAccepted
 			|| admitted;
-		if (!admitted) {
+		if (rerun) {
+			beginGroupObservation(conversationId);
+			return;
+		} else if (!admitted) {
 			publishQueuedGroupOutbox(conversationId);
 		}
 	}
@@ -3368,6 +3395,8 @@ bool DesktopService::applyAdministrativeTransition(
 		|| !state
 		|| !metadata
 		|| !actorAccountId
+		|| group.observation
+		|| group.observationDirty
 		|| group.phase != PendingGroupCreation::Phase::Active
 		|| !group.freshnessGate
 		|| !group.freshnessGate->administrationAllowed()

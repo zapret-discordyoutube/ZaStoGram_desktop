@@ -124,6 +124,14 @@ resynchronization; an equal-generation different hash blocks the vault as a
 fork. Administrative controls are shown only when both E2E permission and the
 freshness gate allow the operation.
 
+The sender never races a running control reconstruction. A control carrier
+noticed during an upload marks the group dirty; the already sealed item may
+finish, then file chunks, new messages, and administrative changes pause until
+the control chain is synchronized. A freshness challenge starts one control
+observation after publication. If no witness has answered yet, the client waits
+for a live control item or an explicit synchronization request instead of
+polling the complete history in a tight loop.
+
 ## Files
 
 The Desktop sender hashes the source before allocating file encryption

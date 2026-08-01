@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/files/idempotent_file_chunk_protector.h"
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 
 #include <utility>
@@ -31,7 +32,21 @@ namespace {
 	return result;
 }
 
+void Cleanse(QByteArray &bytes) {
+	if (!bytes.isEmpty()) {
+		OPENSSL_cleanse(bytes.data(), bytes.size());
+	}
+	bytes.clear();
+}
+
 } // namespace
+
+bool HasExactFileChunkCiphertext(
+		const FileChunkReadResult &stored,
+		const QByteArray &ciphertext) {
+	return stored.status == FileChunkReadStatus::Found
+		&& stored.chunk.exactCiphertext == ciphertext;
+}
 
 IdempotentFileChunkProtector::IdempotentFileChunkProtector(
 		const AesGcmFileChunkCipher &cipher,
@@ -136,12 +151,16 @@ PreparedFileChunk IdempotentFileChunkProtector::fromStored(
 			.exactCiphertext = std::nullopt,
 		};
 	}
-	const auto opened = _cipher.decrypt(
+	auto opened = _cipher.decrypt(
 		key,
 		context,
 		chunkIndex,
 		stored.chunk.exactCiphertext);
-	if (!opened || *opened != plaintext) {
+	const auto matches = opened && *opened == plaintext;
+	if (opened) {
+		Cleanse(*opened);
+	}
+	if (!matches) {
 		return {
 			.result = FileChunkPrepareResult::StorageFailed,
 			.exactCiphertext = std::nullopt,

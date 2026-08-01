@@ -323,11 +323,13 @@ std::optional<UnwrappedVaultKey> PasswordVault::unwrap(
 		Cleanse(masterKey);
 		return std::nullopt;
 	}
-	return UnwrappedVaultKey{
+	auto result = UnwrappedVaultKey{
 		.masterKey = masterKey,
 		.generation = generation,
 		.parameters = parameters,
 	};
+	Cleanse(masterKey);
+	return result;
 }
 
 } // namespace E2ECloud

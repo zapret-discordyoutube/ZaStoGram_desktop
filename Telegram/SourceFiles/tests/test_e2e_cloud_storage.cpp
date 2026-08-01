@@ -283,6 +283,52 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioContentStoreAcceptsCarrierDuplicates() {
+	auto key = LocalRecordKey();
+	key.fill(57);
+	const auto protector = AesGcmLocalRecordProtector(std::move(key));
+	const auto sha256 = OpenSslSha256Provider();
+	const auto conversationId = FilledId<ConversationId>(58);
+	auto indexBlob = MemoryBlobStore();
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("content duplicate temporary directory was unavailable");
+	}
+	auto store = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	auto record = ProtectedContentRecord{
+		.conversationId = conversationId,
+		.eventObjectId = FilledId<ObjectId>(59),
+		.contentObjectId = FilledId<ObjectId>(60),
+		.objectKind = ObjectKind::EncryptedMessageBody,
+		.groupGeneration = 7,
+		.senderAccountId = FilledId<AccountId>(61),
+		.senderClientId = FilledId<ClientId>(62),
+		.unixTime = 1'725'000'000,
+		.observedTelegramMessageId = 100,
+		.plaintext = QByteArray("same protected message"),
+	};
+	if (store.load() != ContentStoreLoadResult::Missing
+		|| store.append(record) != ContentStoreAppendResult::Stored) {
+		return Fail("content duplicate fixture could not be persisted");
+	}
+	record.observedTelegramMessageId = 101;
+	if (store.append(record) != ContentStoreAppendResult::AlreadyStored
+		|| store.revision() != 1
+		|| store.records().size() != 1) {
+		return Fail("same content under another carrier id was a conflict");
+	}
+	record.plaintext.append('!');
+	if (store.append(std::move(record)) != ContentStoreAppendResult::Conflict) {
+		return Fail("changed protected content escaped conflict detection");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioFileTransferSurvivesRestart() {
 	auto localKey = LocalRecordKey();
 	localKey.fill(33);
@@ -1048,6 +1094,7 @@ int main(int, char *[]) {
 		ScenarioConversationRecordKeyDerivation,
 		ScenarioContentSyncBoundarySurvivesRestart,
 		ScenarioContentStoreReloadFailureClearsPlaintext,
+		ScenarioContentStoreAcceptsCarrierDuplicates,
 		ScenarioFileTransferSurvivesRestart,
 		ScenarioConversationMetadataRoundTrip,
 		ScenarioFreshnessTrustSurvivesRestart,

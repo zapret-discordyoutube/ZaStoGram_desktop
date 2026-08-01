@@ -20,6 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/persistent_inbound_journal.h"
 #include "e2e_cloud/storage/persistent_mls_state.h"
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -58,13 +60,11 @@ namespace {
 		&& envelope.telegramPeerIdBinding == local.telegramPeerIdBinding;
 }
 
-[[nodiscard]] bool StoredChunkMatches(
-		const FileChunkReadResult &stored,
-		Digest payloadHash,
-		const QByteArray &payload) {
-	return stored.status == FileChunkReadStatus::Found
-		&& stored.chunk.plaintextHash == payloadHash
-		&& stored.chunk.exactCiphertext == payload;
+void Cleanse(QByteArray &bytes) {
+	if (!bytes.isEmpty()) {
+		OPENSSL_cleanse(bytes.data(), bytes.size());
+	}
+	bytes.clear();
 }
 
 } // namespace
@@ -141,12 +141,11 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
 				return outcome;
 			} else if (stored == FileChunkStoreResult::AlreadyExists
-				&& !StoredChunkMatches(
+				&& !HasExactFileChunkCiphertext(
 					chunkStore.read(
 						local.conversationId,
 						verified->fileId,
 						verified->chunkIndex),
-					envelope->payloadHash,
 					envelope->payload)) {
 				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
 				return outcome;
@@ -198,15 +197,23 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 		};
 		auto unixTime = std::uint64_t();
 		if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-			const auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+			auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
 				record.plaintext);
 			unixTime = body ? body->unixTime : 0;
+			if (body) {
+				Cleanse(body->textUtf8);
+			}
 		} else {
-			const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+			auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
 				record.plaintext);
 			unixTime = manifest ? manifest->unixTime : 0;
+			if (manifest) {
+				Cleanse(manifest->filenameUtf8);
+				Cleanse(manifest->mimeTypeUtf8);
+			}
 		}
 		if (!unixTime) {
+			Cleanse(record.plaintext);
 			++outcome.stats.ignored;
 			continue;
 		}
