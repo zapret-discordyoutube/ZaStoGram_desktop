@@ -263,6 +263,13 @@ bool AccountFreshnessResponseVerifier::verify(
 		const FreshnessResponse &response) const {
 	const auto challenged = _groupLedger.checkpointAt(
 		response.challengedCheckpoint.generation);
+	const auto currentGeneration = _groupLedger.state()
+		? _groupLedger.state()->generation()
+		: 0;
+	const auto witnessed = (response.checkpoint.generation
+			<= currentGeneration)
+		? _groupLedger.checkpointAt(response.checkpoint.generation)
+		: std::nullopt;
 	if (!ValidResponse(response)
 		|| !_groupLedger.loaded()
 		|| !_groupLedger.state()
@@ -273,7 +280,14 @@ bool AccountFreshnessResponseVerifier::verify(
 		|| !_groupLedger.wasClientActiveAt(
 			response.witnessAccountId,
 			response.witnessClientId,
-			response.challengedCheckpoint.generation)) {
+			response.challengedCheckpoint.generation)
+		|| (response.checkpoint.generation <= currentGeneration
+			&& (!witnessed
+				|| *witnessed != response.checkpoint
+				|| !_groupLedger.wasClientActiveAt(
+					response.witnessAccountId,
+					response.witnessClientId,
+					response.checkpoint.generation)))) {
 		return false;
 	}
 	const auto credential = _groupLedger.credential(

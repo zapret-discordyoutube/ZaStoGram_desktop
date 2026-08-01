@@ -40,6 +40,7 @@ struct ObservedContentSyncCompletion {
 	std::uint64_t objects = 0;
 	std::int64_t previousBoundaryMessageId = 0;
 	std::int64_t newestObservedMessageId = 0;
+	std::int64_t nextBoundaryMessageId = 0;
 };
 
 class ObservedContentSyncController final {
@@ -78,6 +79,7 @@ private:
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	std::uint64_t _pages = 0;
 	std::uint64_t _objects = 0;
+	std::vector<std::int64_t> _boundaryCandidates;
 	std::int64_t _boundaryMessageId = 0;
 	std::int64_t _newestObservedMessageId = 0;
 	std::int64_t _lastObservedMessageId = 0;

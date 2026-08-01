@@ -288,6 +288,36 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     assert "messageId < _boundaryMessageId" in controller
 
 
+def verify_content_sync_requires_its_saved_boundary() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    controller = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "observed_content_sync_controller.cpp"
+    )
+    result = function_body(
+        service,
+        "void DesktopService::applyContentObservation(",
+        "void DesktopService::applyGroupObservation(",
+    )
+
+    assert "messageId < _boundaryMessageId" in controller
+    assert "result.complete && _boundaryMessageId" in controller
+    assert "kBoundaryOverlap" in controller
+    assert "completion.nextBoundaryMessageId" in result
+    assert "group.contentSyncState.advance(" in result
+
+
+def verify_freshness_witness_is_rechecked_after_catchup() -> None:
+    gate = source("SourceFiles/e2e_cloud/core/freshness_gate.cpp")
+    crypto = source("SourceFiles/e2e_cloud/core/freshness_crypto.cpp")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+
+    assert "_resynchronizationResponse = response;" in gate
+    assert "verifier.verify(*_resynchronizationResponse)" in gate
+    assert crypto.count("_groupLedger.wasClientActiveAt(") >= 2
+    assert service.count("completeResynchronization(") >= 2
+
+
 def verify_protected_groups_layout_uses_own_visibility() -> None:
     box = source("SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp")
 
@@ -320,6 +350,8 @@ def main() -> None:
     verify_control_sync_blocks_outgoing_races()
     verify_freshness_wait_does_not_busy_poll()
     verify_control_sync_uses_a_persistent_boundary()
+    verify_content_sync_requires_its_saved_boundary()
+    verify_freshness_witness_is_rechecked_after_catchup()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
 

@@ -362,8 +362,77 @@ struct Fixture {
 		|| completion->objects != 3
 		|| completion->previousBoundaryMessageId != 6
 		|| completion->newestObservedMessageId != 9
+		|| completion->nextBoundaryMessageId != 6
 		|| retained != std::vector<std::int64_t>({ 9, 8, 7 })) {
 		return Fail("observed content synchronization crossed its boundary");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedContentRejectsMissingBoundary() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(9),
+				fixture.object(7),
+				fixture.object(5),
+			},
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto status = std::optional<ObservedContentSyncStatus>();
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		[](std::vector<TelegramTransport::UntrustedObject>) {
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion result) {
+			status = result.status;
+		});
+	if (!controller.start(6)
+		|| status != ObservedContentSyncStatus::SecurityBlocked) {
+		return Fail("observed content accepted a missing saved boundary");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedContentKeepsOverlap() {
+	auto fixture = Fixture();
+	auto objects = std::vector<TelegramTransport::UntrustedObject>();
+	for (auto messageId = 100; messageId >= 60; --messageId) {
+		objects.push_back(fixture.object(std::uint8_t(messageId)));
+	}
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = std::move(objects),
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto completion = std::optional<ObservedContentSyncCompletion>();
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		[](std::vector<TelegramTransport::UntrustedObject>) {
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion result) {
+			completion = result;
+		});
+	if (!controller.start()
+		|| !completion
+		|| completion->status != ObservedContentSyncStatus::Complete
+		|| completion->objects != 41
+		|| completion->newestObservedMessageId != 100
+		|| completion->nextBoundaryMessageId != 68) {
+		return Fail("observed content did not retain a boundary overlap");
 	}
 	return 0;
 }
@@ -524,6 +593,8 @@ int main(int, char *[]) {
 		ScenarioCancellationIgnoresLatePage,
 		ScenarioObservedContentStopsAtBoundary,
 		ScenarioObservedContentRejectsReordering,
+		ScenarioObservedContentRejectsMissingBoundary,
+		ScenarioObservedContentKeepsOverlap,
 		ScenarioControlSyncStopsAtBoundary,
 		ScenarioControlSyncRejectsMissingBoundary,
 		ScenarioControlSyncRejectsReordering,

@@ -435,10 +435,20 @@ public:
 		|| gate.sendingAllowed()
 		|| gate.administrationAllowed()
 		|| gate.resynchronizationTarget() != current
-		|| gate.completeResynchronization(known)
-		|| !gate.completeResynchronization(current)
+		|| gate.completeResynchronization(known, verifier)) {
+		return Fail("newer witness state bypassed required resynchronization");
+	}
+	verifier.accept = false;
+	if (gate.completeResynchronization(current, verifier)
+		|| gate.sendingAllowed()
+		|| gate.state() != FreshnessState::ResynchronizationRequired) {
+		return Fail("untrusted witness survived freshness resynchronization");
+	}
+	verifier.accept = true;
+	if (!gate.completeResynchronization(current, verifier)
 		|| !gate.sendingAllowed()
-		|| gate.knownCheckpoint() != current) {
+		|| gate.knownCheckpoint() != current
+		|| verifier.calls != 3) {
 		return Fail("newer witness state bypassed required resynchronization");
 	}
 	return 0;

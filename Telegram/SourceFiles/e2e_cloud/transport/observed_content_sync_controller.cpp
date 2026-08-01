@@ -17,6 +17,7 @@ namespace {
 inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
 inline constexpr auto kMaximumPagesPerRun = std::uint64_t(1'000'000);
+inline constexpr auto kBoundaryOverlap = std::size_t(32);
 
 } // namespace
 
@@ -57,6 +58,7 @@ bool ObservedContentSyncController::start(std::int64_t boundaryMessageId) {
 	_cursor.clear();
 	_pages = 0;
 	_objects = 0;
+	_boundaryCandidates.clear();
 	_boundaryMessageId = boundaryMessageId;
 	_newestObservedMessageId = 0;
 	_lastObservedMessageId = 0;
@@ -130,7 +132,9 @@ void ObservedContentSyncController::pageReceived(
 				!= _telegramPeerIdBinding
 			|| messageId <= 0
 			|| (_lastObservedMessageId
-				&& messageId >= _lastObservedMessageId)) {
+				&& messageId >= _lastObservedMessageId)
+			|| (_boundaryMessageId
+				&& messageId < _boundaryMessageId)) {
 			finish(ObservedContentSyncStatus::SecurityBlocked);
 			return;
 		}
@@ -138,9 +142,12 @@ void ObservedContentSyncController::pageReceived(
 		if (!_newestObservedMessageId) {
 			_newestObservedMessageId = messageId;
 		}
-		if (_boundaryMessageId && messageId <= _boundaryMessageId) {
+		if (_boundaryMessageId && messageId == _boundaryMessageId) {
 			reachedBoundary = true;
 			break;
+		}
+		if (_boundaryCandidates.size() <= kBoundaryOverlap) {
+			_boundaryCandidates.push_back(messageId);
 		}
 		retained.push_back(std::move(object));
 	}
@@ -159,7 +166,13 @@ void ObservedContentSyncController::pageReceived(
 			return;
 		}
 	}
-	if (reachedBoundary || result.complete) {
+	if (reachedBoundary) {
+		finish(ObservedContentSyncStatus::Complete);
+		return;
+	} else if (result.complete && _boundaryMessageId) {
+		finish(ObservedContentSyncStatus::SecurityBlocked);
+		return;
+	} else if (result.complete) {
 		finish(ObservedContentSyncStatus::Complete);
 		return;
 	} else if (result.nextCursor.isEmpty()
@@ -185,12 +198,25 @@ void ObservedContentSyncController::finish(
 	_running = false;
 	_requestActive = false;
 	_requestQueued = false;
+	auto nextBoundaryMessageId = _boundaryMessageId;
+	if (status == ObservedContentSyncStatus::Complete
+		&& !_boundaryCandidates.empty()) {
+		if (!_boundaryMessageId) {
+			const auto index = std::min(
+				kBoundaryOverlap,
+				_boundaryCandidates.size() - 1);
+			nextBoundaryMessageId = _boundaryCandidates[index];
+		} else if (_objects > kBoundaryOverlap) {
+			nextBoundaryMessageId = _boundaryCandidates[kBoundaryOverlap];
+		}
+	}
 	_completionCallback({
 		.status = status,
 		.pages = _pages,
 		.objects = _objects,
 		.previousBoundaryMessageId = _boundaryMessageId,
 		.newestObservedMessageId = _newestObservedMessageId,
+		.nextBoundaryMessageId = nextBoundaryMessageId,
 	});
 }
 

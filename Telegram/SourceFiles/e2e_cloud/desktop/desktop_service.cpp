@@ -2110,7 +2110,9 @@ bool DesktopService::processObservedFreshness(
 				const auto caughtUp = target
 					&& knownTarget == target
 					&& group.freshnessGate
-						->completeResynchronization(*target)
+						->completeResynchronization(
+							*target,
+							verifier)
 					&& group.freshnessGate->advanceTrustedCheckpoint(
 						group.groupLedger.checkpoint());
 				if (caughtUp) {
@@ -2307,9 +2309,13 @@ bool DesktopService::synchronizeObservedGroupChanges(
 		const auto knownTarget = target
 			? group.groupLedger.checkpointAt(target->generation)
 			: std::nullopt;
+		const auto verifier = AccountFreshnessResponseVerifier(
+			group.groupLedger);
 		if (target
 			&& knownTarget == target
-			&& group.freshnessGate->completeResynchronization(*target)
+			&& group.freshnessGate->completeResynchronization(
+				*target,
+				verifier)
 			&& group.freshnessGate->advanceTrustedCheckpoint(checkpoint)) {
 			const auto committed = group.freshnessTrust.confirm();
 			if (committed != FreshnessTrustCommitResult::Committed
@@ -2919,9 +2925,21 @@ void DesktopService::applyContentObservation(
 	group.contentObservation.reset();
 	switch (completion.status) {
 	case ObservedContentSyncStatus::Complete:
-		if (completion.newestObservedMessageId) {
+		if (completion.previousBoundaryMessageId
+				!= group.contentSyncState.newestObservedMessageId()
+			|| (completion.nextBoundaryMessageId
+				&& (!completion.newestObservedMessageId
+					|| completion.nextBoundaryMessageId
+						> completion.newestObservedMessageId))) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			setContentState(
+				conversationId,
+				DesktopContentState::SecurityBlocked);
+			return;
+		}
+		if (completion.nextBoundaryMessageId) {
 			const auto committed = group.contentSyncState.advance(
-				completion.newestObservedMessageId);
+				completion.nextBoundaryMessageId);
 			if (committed == ContentSyncStateCommitResult::InvalidBoundary) {
 				_vaultState = DesktopVaultState::SecurityBlocked;
 				setContentState(

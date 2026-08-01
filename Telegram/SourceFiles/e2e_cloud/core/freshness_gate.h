@@ -80,7 +80,8 @@ public:
 		const FreshnessResponse &response,
 		const FreshnessResponseVerifier &verifier);
 	[[nodiscard]] bool completeResynchronization(
-		const Checkpoint &appliedCheckpoint);
+		const Checkpoint &appliedCheckpoint,
+		const FreshnessResponseVerifier &verifier);
 	[[nodiscard]] bool advanceTrustedCheckpoint(
 		Checkpoint appliedCheckpoint);
 	void requireFreshness(Checkpoint knownCheckpoint);
@@ -96,6 +97,7 @@ private:
 	Checkpoint _knownCheckpoint;
 	std::optional<FreshnessChallenge> _challenge;
 	std::optional<Checkpoint> _resynchronizationTarget;
+	std::optional<FreshnessResponse> _resynchronizationResponse;
 	FreshnessState _state = FreshnessState::Required;
 
 };

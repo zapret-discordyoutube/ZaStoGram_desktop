@@ -31,6 +31,7 @@ bool FreshnessGate::beginChallenge(ChallengeNonce nonce) {
 		.nonce = nonce,
 	};
 	_resynchronizationTarget.reset();
+	_resynchronizationResponse.reset();
 	_state = FreshnessState::WaitingForWitness;
 	return true;
 }
@@ -62,6 +63,7 @@ FreshnessResponseResult FreshnessGate::acceptResponse(
 	} else if (response.checkpoint.generation
 			== _knownCheckpoint.generation) {
 		_challenge.reset();
+		_resynchronizationResponse.reset();
 		if (response.checkpoint.stateHash != _knownCheckpoint.stateHash) {
 			_state = FreshnessState::Forked;
 			return FreshnessResponseResult::ForkDetected;
@@ -71,19 +73,25 @@ FreshnessResponseResult FreshnessGate::acceptResponse(
 	}
 	_challenge.reset();
 	_resynchronizationTarget = response.checkpoint;
+	_resynchronizationResponse = response;
 	_state = FreshnessState::ResynchronizationRequired;
 	return FreshnessResponseResult::ResynchronizationRequired;
 }
 
 bool FreshnessGate::completeResynchronization(
-		const Checkpoint &appliedCheckpoint) {
+		const Checkpoint &appliedCheckpoint,
+		const FreshnessResponseVerifier &verifier) {
 	if (_state != FreshnessState::ResynchronizationRequired
 		|| !_resynchronizationTarget
-		|| appliedCheckpoint != *_resynchronizationTarget) {
+		|| !_resynchronizationResponse
+		|| appliedCheckpoint != *_resynchronizationTarget
+		|| _resynchronizationResponse->checkpoint != appliedCheckpoint
+		|| !verifier.verify(*_resynchronizationResponse)) {
 		return false;
 	}
 	_knownCheckpoint = appliedCheckpoint;
 	_resynchronizationTarget.reset();
+	_resynchronizationResponse.reset();
 	_state = FreshnessState::Ready;
 	return true;
 }
@@ -108,6 +116,7 @@ void FreshnessGate::requireFreshness(Checkpoint knownCheckpoint) {
 	_knownCheckpoint = std::move(knownCheckpoint);
 	_challenge.reset();
 	_resynchronizationTarget.reset();
+	_resynchronizationResponse.reset();
 	_state = FreshnessState::Required;
 }
 
