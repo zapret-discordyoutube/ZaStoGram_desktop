@@ -318,6 +318,22 @@ def verify_freshness_witness_is_rechecked_after_catchup() -> None:
     assert service.count("completeResynchronization(") >= 2
 
 
+def verify_observed_mls_receipts_finish_crash_recovery() -> None:
+    reconciler = source(
+        "SourceFiles/e2e_cloud/mls/mls_outbox_reconciler.cpp"
+    )
+    processor = source(
+        "SourceFiles/e2e_cloud/protocol/observed_content_processor.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+
+    assert "case InboundJournalLookup::Pending:" in reconciler
+    assert "inboundJournal.accept(" in reconciler
+    assert "mlsState.acknowledgeReceipt(" in reconciler
+    assert "ReconcileObservedMlsReceipt(" in processor
+    assert "ReconcileObservedMlsReceipt(" in service
+
+
 def verify_protected_groups_layout_uses_own_visibility() -> None:
     box = source("SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp")
 
@@ -352,6 +368,7 @@ def main() -> None:
     verify_control_sync_uses_a_persistent_boundary()
     verify_content_sync_requires_its_saved_boundary()
     verify_freshness_witness_is_rechecked_after_catchup()
+    verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_can_page_back()
 

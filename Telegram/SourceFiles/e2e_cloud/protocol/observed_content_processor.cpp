@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/files/idempotent_file_chunk_protector.h"
 #include "e2e_cloud/files/private_file_manifest.h"
 #include "e2e_cloud/group/persistent_group_ledger.h"
+#include "e2e_cloud/mls/mls_outbox_reconciler.h"
 #include "e2e_cloud/mls/openmls_bridge.h"
 #include "e2e_cloud/protocol/inbound_envelope_processor.h"
 #include "e2e_cloud/storage/persistent_content_store.h"
@@ -270,9 +271,7 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 			envelope.conversationId,
 			envelope.objectId,
 			envelope.payloadHash);
-		if (lookup == InboundJournalLookup::Accepted) {
-			continue;
-		} else if (lookup == InboundJournalLookup::ObjectIdConflict) {
+		if (lookup == InboundJournalLookup::ObjectIdConflict) {
 			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
 			return outcome;
 		} else if (lookup == InboundJournalLookup::StorageError) {
@@ -287,19 +286,23 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 			? mlsState.receipt(envelope.objectId)
 			: std::nullopt;
 		if (receipt) {
-			const auto exact = envelopeCodec.decode(receipt->envelope);
-			if (!exact || *exact != envelope) {
+			const auto reconciled = ReconcileObservedMlsReceipt(
+				envelope,
+				envelopeCodec,
+				mlsState,
+				inboundJournal);
+			if (reconciled
+					== ObservedMlsReceiptReconcileResult::ObjectIdConflict) {
 				outcome.status = ObservedContentProcessStatus::SecurityBlocked;
 				return outcome;
-			}
-			if (lookup == InboundJournalLookup::Missing
-				&& (!inboundJournal.begin(envelope)
-					|| !inboundJournal.accept(
-						envelope.conversationId,
-						envelope.objectId))) {
+			} else if (reconciled
+					!= ObservedMlsReceiptReconcileResult::Reconciled) {
 				outcome.status = ObservedContentProcessStatus::PersistenceFailed;
 				return outcome;
 			}
+			continue;
+		}
+		if (lookup == InboundJournalLookup::Accepted) {
 			continue;
 		}
 		const auto processed = processor.process(object->bytes);

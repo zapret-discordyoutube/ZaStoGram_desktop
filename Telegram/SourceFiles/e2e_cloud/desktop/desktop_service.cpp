@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/group/persistent_group_ledger.h"
 #include "e2e_cloud/identity/safety_gossip.h"
 #include "e2e_cloud/mls/key_package_lifecycle.h"
+#include "e2e_cloud/mls/mls_outbox_reconciler.h"
 #include "e2e_cloud/mls/observed_key_package.h"
 #include "e2e_cloud/mls/openmls_application_engine.h"
 #include "e2e_cloud/mls/openmls_group_change_engine.h"
@@ -1700,6 +1701,24 @@ void DesktopService::publishNextBootstrapObject() {
 						= DesktopGroupCreationState::LocalFailure;
 					return;
 				}
+				const auto reconciled = ReconcileMlsOutboxReceipts(
+					weak->_pendingGroupCreation->mlsState,
+					weak->_pendingGroupCreation->outbox,
+					weak->_pendingGroupCreation->envelopeCodec,
+					weak->_pendingGroupCreation->inboundJournal);
+				if (reconciled == MlsReceiptReconcileResult::ObjectIdConflict) {
+					weak->_vaultState = DesktopVaultState::SecurityBlocked;
+					weak->_groupCreationState
+						= DesktopGroupCreationState::LocalFailure;
+					return;
+				} else if (reconciled
+						!= MlsReceiptReconcileResult::Reconciled
+					&& reconciled
+						!= MlsReceiptReconcileResult::NothingToDo) {
+					weak->_groupCreationState
+						= DesktopGroupCreationState::LocalFailure;
+					return;
+				}
 				weak->publishNextBootstrapObject();
 			} else if (result
 					== TelegramTransport::UploadResult::RetryableError) {
@@ -2543,25 +2562,16 @@ void DesktopService::completeActiveUpload(
 	const auto receipt = group.mlsState.receipt(completion.objectId);
 	if (receipt) {
 		const auto envelope = group.envelopeCodec.decode(receipt->envelope);
-		const auto lookup = envelope
-			? group.inboundJournal.lookup(
-				envelope->conversationId,
-				envelope->objectId,
-				envelope->payloadHash)
-			: InboundJournalLookup::StorageError;
-		const auto journaled = envelope
-			&& (lookup == InboundJournalLookup::Accepted
-				|| (lookup == InboundJournalLookup::Missing
-					&& group.inboundJournal.begin(*envelope)
-					&& group.inboundJournal.accept(
-						envelope->conversationId,
-						envelope->objectId)));
-		if (!journaled
-			|| !group.applicationEngine
-			|| !group.applicationEngine->acknowledgeUploaded(
-				completion.objectId)) {
-			const auto state = (lookup
-					== InboundJournalLookup::ObjectIdConflict)
+		const auto reconciled = envelope
+			? ReconcileObservedMlsReceipt(
+				*envelope,
+				group.envelopeCodec,
+				group.mlsState,
+				group.inboundJournal)
+			: ObservedMlsReceiptReconcileResult::ObjectIdConflict;
+		if (reconciled != ObservedMlsReceiptReconcileResult::Reconciled) {
+			const auto state = (reconciled
+					== ObservedMlsReceiptReconcileResult::ObjectIdConflict)
 				? DesktopContentState::SecurityBlocked
 				: DesktopContentState::LocalFailure;
 			setContentState(conversationId, state);
@@ -4027,6 +4037,15 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		if (coordinator.recover() != GroupChangeApplyStatus::Recovered) {
 			return LocalGroupRecoveryResult::Invalid;
 		}
+	}
+	const auto receiptReconciliation = ReconcileMlsOutboxReceipts(
+		operation->mlsState,
+		operation->outbox,
+		operation->envelopeCodec,
+		operation->inboundJournal);
+	if (receiptReconciliation != MlsReceiptReconcileResult::Reconciled
+		&& receiptReconciliation != MlsReceiptReconcileResult::NothingToDo) {
+		return LocalGroupRecoveryResult::Invalid;
 	}
 	const auto state = operation->groupLedger.state();
 	const auto localMember = state ? state->member(*accountId) : nullptr;

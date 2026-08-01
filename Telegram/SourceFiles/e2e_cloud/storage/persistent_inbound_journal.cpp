@@ -198,6 +198,10 @@ bool PersistentInboundJournal::begin(const TransportEnvelope &envelope) {
 			envelope.conversationId,
 			envelope.objectId,
 			envelope.payloadHash) != InboundJournalLookup::Missing
+		|| std::any_of(
+			std::begin(_entries),
+			std::end(_entries),
+			[](const Entry &entry) { return !entry.accepted; })
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return false;
 	}

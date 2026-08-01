@@ -812,12 +812,23 @@ public:
 	const auto protector = AesGcmLocalRecordProtector(std::move(key));
 	auto mlsBlob = MemoryBlobStore();
 	auto outboxBlob = MemoryBlobStore();
+	auto journalBlob = MemoryBlobStore();
 	auto mls = PersistentMlsStateStore(mlsBlob, protector);
 	auto outbox = PersistentOutboxStore(outboxBlob, protector);
-	const auto conversationId = FilledId<ConversationId>(20);
-	auto receipt = MlsReceipt();
-	receipt.envelope.conversationId = conversationId;
+	auto journal = PersistentInboundJournal(journalBlob, protector);
+	const auto envelopeCodec = EnvelopeCodecV1();
+	const auto envelope = Envelope();
+	const auto encoded = envelopeCodec.encode(envelope);
+	const auto conversationId = envelope.conversationId;
+	const auto receipt = encoded
+		? std::optional<MlsOperationReceipt>(MlsOperationReceipt{
+			.objectId = envelope.objectId,
+			.requestHash = FilledId<Digest>(20),
+			.envelope = *encoded,
+		})
+		: std::nullopt;
 	if (mls.load(conversationId) != MlsStateLoadResult::Missing
+		|| !receipt
 		|| mls.initialize(
 			QByteArray("openmls-0.8.1-0e99bc88-rustcrypto-v1"),
 			QByteArray("reconcile state"))
@@ -825,27 +836,153 @@ public:
 		|| mls.commit({
 			.baseRevision = mls.revision(),
 			.engineState = QByteArray("reconcile advanced state"),
-			.receipt = receipt,
+			.receipt = *receipt,
 			.inboundApplication = std::nullopt,
 			.removalTombstone = std::nullopt,
 		}) != MlsStateCommitResult::Committed
 		|| outbox.load() != PersistentOutboxLoadResult::Empty
+		|| journal.load() != InboundJournalLoadResult::Missing
 		|| !outbox.append({
 			.conversationId = conversationId,
-			.objectId = receipt.objectId,
+			.objectId = receipt->objectId,
 			.plaintext = QByteArray("descriptor"),
 			.authenticatedData = {},
 		})) {
 		return Fail("MLS receipt reconciliation setup failed");
 	}
-	if (ReconcileMlsOutboxReceipts(mls, outbox)
+	if (ReconcileMlsOutboxReceipts(
+			mls,
+			outbox,
+			envelopeCodec,
+			journal)
 			!= MlsReceiptReconcileResult::NothingToDo
 		|| mls.receiptCount() != 1
-		|| !outbox.remove(receipt.objectId)
-		|| ReconcileMlsOutboxReceipts(mls, outbox)
+		|| !outbox.remove(receipt->objectId)
+		|| ReconcileMlsOutboxReceipts(
+			mls,
+			outbox,
+			envelopeCodec,
+			journal)
 			!= MlsReceiptReconcileResult::Reconciled
-		|| mls.receiptCount()) {
+		|| mls.receiptCount()
+		|| journal.lookup(
+			envelope.conversationId,
+			envelope.objectId,
+			envelope.payloadHash) != InboundJournalLookup::Accepted) {
 		return Fail("MLS receipt was not tied to durable outbox delivery");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedMlsReceiptCrashRecovery() {
+	enum class JournalPhase {
+		Missing,
+		Pending,
+		Accepted,
+	};
+	enum class Failure {
+		None,
+		Journal,
+		MlsState,
+		Substitution,
+	};
+	const auto run = [&](JournalPhase phase, Failure failure) {
+		auto key = LocalRecordKey();
+		key.fill(21);
+		const auto protector = AesGcmLocalRecordProtector(std::move(key));
+		const auto envelopeCodec = EnvelopeCodecV1();
+		const auto envelope = Envelope();
+		const auto encoded = envelopeCodec.encode(envelope);
+		auto mlsBlob = MemoryBlobStore();
+		auto journalBlob = MemoryBlobStore();
+		auto mlsState = PersistentMlsStateStore(mlsBlob, protector);
+		auto journal = PersistentInboundJournal(journalBlob, protector);
+		if (!encoded
+			|| mlsState.load(envelope.conversationId)
+				!= MlsStateLoadResult::Missing
+			|| mlsState.initialize(
+				QByteArray("test-engine"),
+				QByteArray("initial state"))
+				!= MlsStateCommitResult::Committed
+			|| mlsState.commit({
+				.baseRevision = mlsState.revision(),
+				.engineState = QByteArray("state after local seal"),
+				.receipt = MlsOperationReceipt{
+					.objectId = envelope.objectId,
+					.requestHash = FilledId<Digest>(22),
+					.envelope = *encoded,
+				},
+				.inboundApplication = std::nullopt,
+				.removalTombstone = std::nullopt,
+			}) != MlsStateCommitResult::Committed
+			|| journal.load() != InboundJournalLoadResult::Missing) {
+			return false;
+		}
+		if (phase != JournalPhase::Missing && !journal.begin(envelope)) {
+			return false;
+		}
+		if (phase == JournalPhase::Accepted
+			&& !journal.accept(
+				envelope.conversationId,
+				envelope.objectId)) {
+			return false;
+		}
+		auto observed = envelope;
+		if (failure == Failure::Journal) {
+			journalBlob.writeError = true;
+		} else if (failure == Failure::MlsState) {
+			mlsBlob.writeError = true;
+		} else if (failure == Failure::Substitution) {
+			observed.authenticationData.append('x');
+		}
+		const auto first = ReconcileObservedMlsReceipt(
+			observed,
+			envelopeCodec,
+			mlsState,
+			journal);
+		if (failure == Failure::Substitution) {
+			return first
+					== ObservedMlsReceiptReconcileResult::ObjectIdConflict
+				&& mlsState.receiptCount() == 1
+				&& journal.lookup(
+					envelope.conversationId,
+					envelope.objectId,
+					envelope.payloadHash) == InboundJournalLookup::Missing;
+		}
+		const auto failed = failure == Failure::Journal
+			? ObservedMlsReceiptReconcileResult::JournalFailure
+			: ObservedMlsReceiptReconcileResult::MlsStateFailure;
+		if (failure != Failure::None) {
+			if (first != failed || mlsState.receiptCount() != 1) {
+				return false;
+			}
+			journalBlob.writeError = false;
+			mlsBlob.writeError = false;
+			if (ReconcileObservedMlsReceipt(
+					envelope,
+					envelopeCodec,
+					mlsState,
+					journal)
+					!= ObservedMlsReceiptReconcileResult::Reconciled) {
+				return false;
+			}
+		} else if (first
+				!= ObservedMlsReceiptReconcileResult::Reconciled) {
+			return false;
+		}
+		return !mlsState.receiptCount()
+			&& journal.lookup(
+				envelope.conversationId,
+				envelope.objectId,
+				envelope.payloadHash) == InboundJournalLookup::Accepted;
+	};
+	if (!run(JournalPhase::Missing, Failure::None)
+		|| !run(JournalPhase::Pending, Failure::None)
+		|| !run(JournalPhase::Accepted, Failure::None)
+		|| !run(JournalPhase::Pending, Failure::Journal)
+		|| !run(JournalPhase::Accepted, Failure::MlsState)
+		|| !run(JournalPhase::Missing, Failure::Substitution)) {
+		return Fail("observed MLS receipt did not close every crash window");
 	}
 	return 0;
 }
@@ -869,6 +1006,12 @@ public:
 			envelope.objectId,
 			envelope.payloadHash) != InboundJournalLookup::Pending) {
 		return Fail("inbound journal did not persist its pending phase");
+	}
+	auto concurrent = envelope;
+	concurrent.objectId = FilledId<ObjectId>(6);
+	concurrent.payloadHash = FilledId<Digest>(7);
+	if (journal.begin(concurrent)) {
+		return Fail("inbound journal admitted a second pending operation");
 	}
 	auto pending = PersistentInboundJournal(blob, protector);
 	if (pending.load() != InboundJournalLoadResult::Loaded
@@ -1135,6 +1278,7 @@ int main(int, char *[]) {
 		ScenarioMlsStateTransaction,
 		ScenarioMlsStateBindingAndCorruption,
 		ScenarioMlsReceiptOutboxReconciliation,
+		ScenarioObservedMlsReceiptCrashRecovery,
 		ScenarioInboundJournalSurvivesRestart,
 		ScenarioInboundJournalWriteFailureIsTransactional,
 		ScenarioInboundJournalCorruptionFailsClosed,
