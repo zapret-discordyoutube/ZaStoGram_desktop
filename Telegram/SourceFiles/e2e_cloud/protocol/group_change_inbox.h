@@ -96,7 +96,9 @@ public:
 	[[nodiscard]] std::vector<ForkRecoveryCandidate> candidates(
 		std::uint64_t previousGeneration) const;
 	bool discardBundle(ObjectId transitionId);
+	bool discardAppliedTransitions(std::uint64_t generation);
 	bool discardExpiredKeyPackages(std::uint64_t currentTime);
+	bool discardJoinOnlyObjects();
 
 	[[nodiscard]] bool loaded() const;
 	[[nodiscard]] std::size_t size() const;

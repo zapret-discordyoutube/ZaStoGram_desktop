@@ -318,12 +318,18 @@ public:
 		: std::nullopt;
 	auto catchupGroupBlob = MemoryBlobStore();
 	auto catchupPoolBlob = MemoryBlobStore();
+	auto catchupInboxBlob = MemoryBlobStore();
 	auto catchupLedger = PersistentGroupLedger(
 		catchupGroupBlob,
 		protector,
 		sha256);
 	auto catchupPool = PersistentKeyPackagePool(
 		catchupPoolBlob,
+		protector,
+		envelopeCodec,
+		sha256);
+	auto catchupInbox = PersistentGroupChangeInbox(
+		catchupInboxBlob,
 		protector,
 		envelopeCodec,
 		sha256);
@@ -347,7 +353,48 @@ public:
 			.observedMessageId = observedMessageId++,
 		});
 	}
+	const auto firstJoinObjects = observedObjects.size() >= 2
+		? std::vector<TelegramTransport::UntrustedObject>(
+			begin(observedObjects),
+			begin(observedObjects) + 2)
+		: std::vector<TelegramTransport::UntrustedObject>();
+	const auto secondJoinObjects = observedObjects.size() >= 2
+		? std::vector<TelegramTransport::UntrustedObject>(
+			begin(observedObjects) + 2,
+			end(observedObjects))
+		: std::vector<TelegramTransport::UntrustedObject>();
+	const auto firstJoinStaged = catchupInbox.load(conversationId)
+			== GroupChangeInboxLoadResult::Missing
+		&& StagePublicJoinObjects(
+			firstJoinObjects,
+			conversationId,
+			peerId,
+			envelopeCodec,
+			sha256,
+			catchupInbox) == PublicJoinInboxStageStatus::Staged;
+	auto reloadedCatchupInbox = PersistentGroupChangeInbox(
+		catchupInboxBlob,
+		protector,
+		envelopeCodec,
+		sha256);
+	const auto reloadedJoinObjects = firstJoinStaged
+		&& reloadedCatchupInbox.load(conversationId)
+			== GroupChangeInboxLoadResult::Loaded
+		&& StagePublicJoinObjects(
+			secondJoinObjects,
+			conversationId,
+			peerId,
+			envelopeCodec,
+			sha256,
+			reloadedCatchupInbox) == PublicJoinInboxStageStatus::Staged
+		? ReconstructPublicJoinObjects(
+			conversationId,
+			peerId,
+			envelopeCodec,
+			reloadedCatchupInbox)
+		: std::nullopt;
 	const auto catchupReady = publicationEnvelope
+		&& reloadedJoinObjects
 		&& catchupLedger.load(conversationId)
 			== GroupLedgerLoadResult::Missing
 		&& catchupLedger.initialize(
@@ -367,7 +414,7 @@ public:
 		}) == KeyPackagePoolMutationResult::Committed;
 	auto catchup = catchupReady
 		? CatchUpPublicJoin(
-			observedObjects,
+			*reloadedJoinObjects,
 			conversationId,
 			peerId,
 			*targetAccountId,
@@ -384,6 +431,11 @@ public:
 		|| catchup.bundle->targetKeyPackage != targetPackage.keyPackage
 		|| catchupLedger.state()->generation() != 1) {
 		return Fail("public join catch-up did not select exact admission");
+	}
+	if (!reloadedCatchupInbox.discardBundle(
+			catchup.bundle->transitionEnvelope.objectId)
+		|| reloadedCatchupInbox.size()) {
+		return Fail("public join inbox did not clear admitted bundle");
 	}
 	auto coordinator = GroupChangeTransactionCoordinator(
 		journal,

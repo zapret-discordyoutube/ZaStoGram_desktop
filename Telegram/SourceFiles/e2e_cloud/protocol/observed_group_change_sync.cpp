@@ -370,26 +370,11 @@ ObservedGroupChangeSyncOutcome SynchronizeObservedGroupChanges(
 		|| !groupLedger.state()->memberByClient(local.clientId)) {
 		return Outcome(ObservedGroupChangeSyncStatus::InvalidState, 0);
 	}
-	auto staleTransitions = std::vector<ObjectId>();
-	for (const auto &record : inbox.records()) {
-		if (record.envelope.objectKind
-				!= ObjectKind::SignedGroupTransition) {
-			continue;
-		}
-		const auto transition = SignedGroupTransitionCodecV1().decode(
-			record.envelope.payload);
-		if (transition
-			&& transition->transition.generation
-				<= groupLedger.checkpoint().generation) {
-			staleTransitions.push_back(record.envelope.objectId);
-		}
-	}
-	for (const auto transitionId : staleTransitions) {
-		if (!inbox.discardBundle(transitionId)) {
-			return Outcome(
-				ObservedGroupChangeSyncStatus::PersistenceFailure,
-				0);
-		}
+	if (!inbox.discardAppliedTransitions(
+			groupLedger.checkpoint().generation)) {
+		return Outcome(
+			ObservedGroupChangeSyncStatus::PersistenceFailure,
+			0);
 	}
 	if (!inbox.discardExpiredKeyPackages(currentTime)) {
 		return Outcome(

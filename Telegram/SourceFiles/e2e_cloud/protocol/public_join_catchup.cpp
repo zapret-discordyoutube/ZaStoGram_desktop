@@ -59,6 +59,20 @@ struct Candidate {
 	}
 }
 
+[[nodiscard]] bool JoinInboxKind(ObjectKind kind) {
+	switch (kind) {
+	case ObjectKind::ClientKeyPackage:
+	case ObjectKind::MlsCommit:
+	case ObjectKind::MlsWelcome:
+	case ObjectKind::ArchiveEpoch:
+	case ObjectKind::HistoryGrant:
+	case ObjectKind::SignedGroupTransition:
+		return true;
+	default:
+		return false;
+	}
+}
+
 [[nodiscard]] bool ValidPayload(const TransportEnvelope &envelope,
 		const Sha256Provider &sha256) {
 	return ValidateEnvelope(envelope) == EnvelopeValidationError::None
@@ -299,6 +313,87 @@ bool IsPublicJoinRelevantObject(
 		&& envelope->telegramPeerIdBinding == telegramPeerIdBinding
 		&& object.observedTelegramPeerIdBinding == telegramPeerIdBinding
 		&& object.observedMessageId > 0;
+}
+
+PublicJoinInboxStageStatus StagePublicJoinObjects(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		ConversationId conversationId,
+		std::uint64_t telegramPeerIdBinding,
+		const EnvelopeCodec &envelopeCodec,
+		const Sha256Provider &sha256,
+		PersistentGroupChangeInbox &inbox) {
+	if (!conversationId
+		|| !telegramPeerIdBinding
+		|| !inbox.loaded()) {
+		return PublicJoinInboxStageStatus::InvalidState;
+	}
+	for (const auto &object : objects) {
+		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+		if (!envelope
+			|| !JoinInboxKind(envelope->objectKind)
+			|| envelope->conversationId != conversationId
+			|| envelope->telegramPeerIdBinding
+				!= telegramPeerIdBinding
+			|| object.observedTelegramPeerIdBinding
+				!= telegramPeerIdBinding
+			|| !object.observedSenderTelegramUserIdBinding
+			|| object.observedMessageId <= 0
+			|| ValidateEnvelope(*envelope)
+				!= EnvelopeValidationError::None
+			|| envelope->payloadHash
+				!= sha256.digest(envelope->payload)) {
+			continue;
+		}
+		switch (inbox.stageObserved(
+			*envelope,
+			object.observedSenderTelegramUserIdBinding)) {
+		case GroupChangeInboxStageResult::Staged:
+		case GroupChangeInboxStageResult::Duplicate:
+		case GroupChangeInboxStageResult::InvalidEnvelope:
+			break;
+		case GroupChangeInboxStageResult::ObjectIdConflict:
+			return PublicJoinInboxStageStatus::ForkDetected;
+		case GroupChangeInboxStageResult::CapacityExceeded:
+		case GroupChangeInboxStageResult::NotLoaded:
+		case GroupChangeInboxStageResult::PersistenceFailed:
+			return PublicJoinInboxStageStatus::PersistenceFailure;
+		}
+	}
+	return PublicJoinInboxStageStatus::Staged;
+}
+
+auto ReconstructPublicJoinObjects(
+		ConversationId conversationId,
+		std::uint64_t telegramPeerIdBinding,
+		const EnvelopeCodec &envelopeCodec,
+		const PersistentGroupChangeInbox &inbox)
+-> std::optional<std::vector<TelegramTransport::UntrustedObject>> {
+	if (!conversationId
+		|| !telegramPeerIdBinding
+		|| !inbox.loaded()) {
+		return std::nullopt;
+	}
+	auto result = std::vector<TelegramTransport::UntrustedObject>();
+	result.reserve(inbox.records().size());
+	auto messageId = std::int64_t(1);
+	for (const auto &record : inbox.records()) {
+		if (!JoinInboxKind(record.envelope.objectKind)) {
+			continue;
+		}
+		const auto encoded = envelopeCodec.encode(record.envelope);
+		if (!encoded
+			|| !record.observedSenderTelegramUserIdBinding) {
+			return std::nullopt;
+		}
+		result.push_back({
+			.bytes = encoded->bytes,
+			.observedTelegramPeerIdBinding = telegramPeerIdBinding,
+			.observedSenderTelegramUserIdBinding
+				= record.observedSenderTelegramUserIdBinding,
+			.observedMessageId = messageId++,
+		});
+	}
+	return result;
 }
 
 PublicJoinCatchupOutcome CatchUpPublicJoin(

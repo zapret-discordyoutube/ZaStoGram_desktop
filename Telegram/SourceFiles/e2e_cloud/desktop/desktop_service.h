@@ -250,10 +250,12 @@ private:
 		DesktopContentState state);
 	[[nodiscard]] bool completeObservedJoin(
 		ConversationId conversationId,
-		const std::vector<TelegramTransport::UntrustedObject> &objects);
+		const PublicBootstrapSyncCompletion &result);
 	bool acceptObservedHistoryGrant(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects);
+	[[nodiscard]] bool resumeObservedJoinHistory(
+		ConversationId conversationId);
 	[[nodiscard]] bool admitObservedClient(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects);

@@ -293,6 +293,19 @@ public:
 			!= prepared.prepared->checkpoint) {
 		return Fail("observed public bootstrap was not verified");
 	}
+	auto laterCheckpoint = verified.verified->checkpoint;
+	++laterCheckpoint.generation;
+	laterCheckpoint.stateHash = FilledId<Digest>(77);
+	auto conflictingGenesisCheckpoint = verified.verified->checkpoint;
+	conflictingGenesisCheckpoint.stateHash = FilledId<Digest>(78);
+	if (!PublicGroupBootstrapCanReachCheckpoint(
+			*verified.verified,
+			laterCheckpoint)
+		|| PublicGroupBootstrapCanReachCheckpoint(
+			*verified.verified,
+			conflictingGenesisCheckpoint)) {
+		return Fail("public bootstrap rejected a later vault checkpoint");
+	}
 	auto substituted = objects;
 	substituted.front().observedSenderTelegramUserIdBinding = 2002;
 	const auto rejected = VerifyPublicGroupBootstrap(

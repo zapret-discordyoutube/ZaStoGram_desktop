@@ -150,7 +150,9 @@ void Cleanse(QByteArray &bytes) {
 	return kind == ObjectKind::SignedGroupTransition
 		|| kind == ObjectKind::MlsCommit
 		|| kind == ObjectKind::ArchiveEpoch
-		|| kind == ObjectKind::ClientKeyPackage;
+		|| kind == ObjectKind::ClientKeyPackage
+		|| kind == ObjectKind::MlsWelcome
+		|| kind == ObjectKind::HistoryGrant;
 }
 
 [[nodiscard]] const StagedGroupChangeEnvelope *FindRecord(
@@ -484,15 +486,78 @@ bool PersistentGroupChangeInbox::discardBundle(ObjectId transitionId) {
 		objectIds.emplace(
 			transition->targetClientAuthorization->authorizationId);
 	}
+	const auto transitionPayload = transitionRecord->envelope.payload;
 	auto records = _records;
 	records.erase(
 		std::remove_if(
 			std::begin(records),
 			std::end(records),
 			[&](const StagedGroupChangeEnvelope &record) {
-				return objectIds.contains(record.envelope.objectId);
+				return objectIds.contains(record.envelope.objectId)
+					|| (record.envelope.objectKind
+							== ObjectKind::MlsWelcome
+						&& record.envelope.authenticationData
+							== transitionPayload);
 			}),
 		std::end(records));
+	const auto revision = _revision + 1;
+	if (!persist(records, revision)) {
+		return false;
+	}
+	_records = std::move(records);
+	_revision = revision;
+	return true;
+}
+
+bool PersistentGroupChangeInbox::discardAppliedTransitions(
+		std::uint64_t generation) {
+	if (!_loaded || !generation) {
+		return false;
+	}
+	auto objectIds = std::set<ObjectId>();
+	auto transitionPayloads = std::vector<QByteArray>();
+	for (const auto &record : _records) {
+		if (record.envelope.objectKind
+				!= ObjectKind::SignedGroupTransition) {
+			continue;
+		}
+		const auto transition = SignedGroupTransitionCodecV1().decode(
+			record.envelope.payload);
+		if (!transition
+			|| transition->transition.generation > generation) {
+			continue;
+		}
+		objectIds.emplace(record.envelope.objectId);
+		objectIds.emplace(transition->mlsCommitObjectId);
+		objectIds.emplace(transition->archiveDistributionObjectId);
+		if (transition->targetClientAuthorization) {
+			objectIds.emplace(
+				transition->targetClientAuthorization->authorizationId);
+		}
+		transitionPayloads.push_back(record.envelope.payload);
+	}
+	if (objectIds.empty()) {
+		return true;
+	}
+	auto records = _records;
+	records.erase(
+		std::remove_if(
+			std::begin(records),
+			std::end(records),
+			[&](const StagedGroupChangeEnvelope &record) {
+				return objectIds.contains(record.envelope.objectId)
+					|| (record.envelope.objectKind
+							== ObjectKind::MlsWelcome
+						&& std::find(
+							std::begin(transitionPayloads),
+							std::end(transitionPayloads),
+							record.envelope.authenticationData)
+							!= std::end(transitionPayloads));
+			}),
+		std::end(records));
+	if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+		return false;
+	}
 	const auto revision = _revision + 1;
 	if (!persist(records, revision)) {
 		return false;
@@ -536,6 +601,35 @@ bool PersistentGroupChangeInbox::discardExpiredKeyPackages(
 						record.envelope.payload);
 				return !publication
 					|| publication->authorization.expiresAt <= currentTime;
+			}),
+		std::end(records));
+	if (records.size() == _records.size()) {
+		return true;
+	} else if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+		return false;
+	}
+	const auto revision = _revision + 1;
+	if (!persist(records, revision)) {
+		return false;
+	}
+	_records = std::move(records);
+	_revision = revision;
+	return true;
+}
+
+bool PersistentGroupChangeInbox::discardJoinOnlyObjects() {
+	if (!_loaded) {
+		return false;
+	}
+	auto records = _records;
+	records.erase(
+		std::remove_if(
+			std::begin(records),
+			std::end(records),
+			[](const StagedGroupChangeEnvelope &record) {
+				return record.envelope.objectKind == ObjectKind::MlsWelcome
+					|| record.envelope.objectKind
+						== ObjectKind::HistoryGrant;
 			}),
 		std::end(records));
 	if (records.size() == _records.size()) {

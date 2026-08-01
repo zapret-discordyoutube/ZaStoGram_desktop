@@ -86,8 +86,9 @@ the authenticated protocol pipeline will reject fabricated bytes.
 Saved Messages contains versioned opaque vault containers. A vault update is
 prepared locally, uploaded byte-for-byte, selected again from Telegram, and
 committed to the local rollback anchor before it becomes authoritative.
-Conversation-index updates therefore precede publication of newly prepared
-group objects.
+Newly prepared group objects are published before a conversation-index update
+can reference them. A crash after carrier publication but before the vault
+update resumes the exact local outbox or the pending locally-ahead checkpoint.
 
 The private carrier group uses two generic document names:
 
@@ -96,11 +97,20 @@ The private carrier group uses two generic document names:
 - `protected-content.tde2e` for MLS application descriptors, encrypted bodies,
   manifests, and encrypted file chunks.
 
-Control backfill accepts at most 65,536 matching objects and 512 MiB in one
-bounded reconstruction. This accommodates the 500-participant target including
-admission artifacts and safety traffic. The signed ledger itself has the same
-65,536-generation version-one lifecycle bound. A later protocol version needs
-signed state snapshots before raising either bound.
+Bootstrap discovery retains only the immutable genesis, owner credential, and
+initial MLS public object. Join catch-up retains only transition, KeyPackage,
+Welcome, archive, and grant material. The accepted join material is copied into
+a bounded encrypted inbox together with its observed Telegram sender before the
+Telegram scan boundary advances. A restart therefore resumes from the saved
+boundary without replaying unrelated freshness and safety traffic. Existing
+active groups use the same durable inbox for incomplete next-generation
+transitions.
+
+One reconstruction accepts at most 65,536 relevant objects and 512 MiB; the
+durable inbox is additionally bounded for the 500-participant target. The
+signed ledger itself has the same 65,536-generation version-one lifecycle
+bound. A later protocol version needs signed state snapshots before raising
+either bound.
 
 Content synchronization is paged and records a monotonically advancing newest
 observed Telegram message boundary. Every page remains untrusted. Telegram

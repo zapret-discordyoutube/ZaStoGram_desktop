@@ -28,7 +28,8 @@ not re-encrypt the complete message and file archive.
 - account signing identity;
 - account archive-decryption identity;
 - authorized client-instance records;
-- conversation identifiers and pinned peer identities;
+- conversation identifiers, pinned Telegram peers, and immutable genesis-owner
+  identities;
 - latest locally observed vault generation and group checkpoints;
 - password KDF algorithm, version, salt, and parameters;
 - safety-code state and identity-change acknowledgements.

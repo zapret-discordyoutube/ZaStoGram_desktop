@@ -81,6 +81,13 @@ bool PublicBootstrapSyncController::startFromBoundary(
 		: false;
 }
 
+bool PublicBootstrapSyncController::startForJoinFromBoundary(
+		std::int64_t boundaryMessageId) {
+	return (boundaryMessageId > 0)
+		? startInternal({}, boundaryMessageId, true)
+		: false;
+}
+
 bool PublicBootstrapSyncController::startInternal(
 		QByteArray cursor,
 		std::int64_t boundaryMessageId,

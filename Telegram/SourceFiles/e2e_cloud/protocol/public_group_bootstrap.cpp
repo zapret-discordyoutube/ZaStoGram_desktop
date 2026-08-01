@@ -77,6 +77,16 @@ bool IsPublicGroupBootstrapCandidate(
 			|| envelope->conversationId == *expectedConversationId);
 }
 
+bool PublicGroupBootstrapCanReachCheckpoint(
+		const VerifiedPublicGroupBootstrap &verified,
+		Checkpoint targetCheckpoint) {
+	return targetCheckpoint.conversationId
+			== verified.genesis.conversationId
+		&& targetCheckpoint.generation >= verified.checkpoint.generation
+		&& (targetCheckpoint.generation != verified.checkpoint.generation
+			|| targetCheckpoint == verified.checkpoint);
+}
+
 PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
 		std::uint64_t expectedTelegramPeerIdBinding,

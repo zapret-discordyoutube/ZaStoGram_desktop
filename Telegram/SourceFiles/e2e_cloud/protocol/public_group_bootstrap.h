@@ -43,6 +43,9 @@ struct PublicGroupBootstrapOutcome {
 	std::uint64_t expectedTelegramPeerIdBinding,
 	std::optional<ConversationId> expectedConversationId,
 	const EnvelopeCodec &envelopeCodec);
+[[nodiscard]] bool PublicGroupBootstrapCanReachCheckpoint(
+	const VerifiedPublicGroupBootstrap &verified,
+	Checkpoint targetCheckpoint);
 [[nodiscard]] PublicGroupBootstrapOutcome VerifyPublicGroupBootstrap(
 	const std::vector<TelegramTransport::UntrustedObject> &objects,
 	std::uint64_t expectedTelegramPeerIdBinding,

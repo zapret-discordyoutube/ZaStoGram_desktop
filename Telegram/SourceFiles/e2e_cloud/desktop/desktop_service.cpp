@@ -159,6 +159,20 @@ bool DiscardUncommittedConversationDirectory(const QString &directory) {
 	return !peer || peer->isChat() || peer->isMegagroup();
 }
 
+[[nodiscard]] bool BootstrapMatchesConversation(
+		const VerifiedPublicGroupBootstrap &verified,
+		const CloudVaultConversation &conversation) {
+	return verified.genesis.conversationId == conversation.conversationId
+		&& verified.genesis.telegramPeerIdBinding
+			== conversation.telegramPeerIdBinding
+		&& verified.genesis.ownerAccountId == conversation.ownerAccountId
+		&& verified.checkpoint.conversationId
+			== conversation.conversationId
+		&& PublicGroupBootstrapCanReachCheckpoint(
+			verified,
+			conversation.checkpoint);
+}
+
 [[nodiscard]] QString AccountDirectory(
 		std::uint64_t telegramUserIdBinding) {
 	return cWorkingDir()
@@ -426,6 +440,7 @@ struct DesktopService::PendingGroupCreation {
 	TelegramSessionCarrierBackend contentBackend;
 	TelegramCarrierTransport contentTransport;
 	CloudVaultConversation conversation;
+	Checkpoint joinTargetCheckpoint;
 	std::optional<PreparedCloudVaultUpdate> vaultUpdate;
 	std::unique_ptr<PublicBootstrapSyncController> observation;
 	std::unique_ptr<ObservedContentSyncController> contentObservation;
@@ -1726,7 +1741,8 @@ void DesktopService::publishNextBootstrapObject() {
 		_groups[conversationId] = std::move(_pendingGroupCreation);
 		if (_groups[conversationId]->phase
 				== PendingGroupCreation::Phase::Active
-			&& !initializeActivePipeline(*_groups[conversationId])) {
+			&& (!resumeObservedJoinHistory(conversationId)
+				|| !initializeActivePipeline(*_groups[conversationId]))) {
 			_groupCreationState = DesktopGroupCreationState::LocalFailure;
 			setContentState(
 				conversationId,
@@ -1983,8 +1999,7 @@ void DesktopService::applyPublicBootstrapSyncResult(
 	}
 	auto conversation = _pendingGroupJoin->conversation;
 	auto verified = std::move(*result.verified);
-	if (verified.checkpoint != conversation.checkpoint
-		|| verified.genesis.ownerAccountId != conversation.ownerAccountId) {
+	if (!BootstrapMatchesConversation(verified, conversation)) {
 		_pendingGroupJoin.reset();
 		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
@@ -2006,8 +2021,7 @@ bool DesktopService::prepareGroupJoin(
 	if (!_vault
 		|| _pendingGroupCreation
 		|| _groups.contains(conversation.conversationId)
-		|| verified.checkpoint != conversation.checkpoint
-		|| verified.genesis.ownerAccountId != conversation.ownerAccountId) {
+		|| !BootstrapMatchesConversation(verified, conversation)) {
 		return false;
 	}
 	const auto accountId = DeriveAccountId(
@@ -2122,8 +2136,9 @@ bool DesktopService::prepareGroupJoin(
 	}
 	(void)FinishConversationSetup(operation->directory);
 	operation->conversation = conversation;
+	operation->joinTargetCheckpoint = conversation.checkpoint;
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
-		conversation.checkpoint,
+		verified.checkpoint,
 		false);
 	operation->vaultPreflightRequired = discovered;
 	operation->phase = PendingGroupCreation::Phase::AwaitingAdmission;
@@ -3039,7 +3054,9 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 		});
 	const auto boundary = group.controlSyncState.newestObservedMessageId();
 	const auto started = boundary
-		? group.observation->startFromBoundary(boundary)
+		? (group.phase == PendingGroupCreation::Phase::AwaitingAdmission)
+			? group.observation->startForJoinFromBoundary(boundary)
+			: group.observation->startFromBoundary(boundary)
 		: (group.phase == PendingGroupCreation::Phase::AwaitingAdmission)
 		? group.observation->startForJoin()
 		: group.observation->start();
@@ -3252,7 +3269,7 @@ void DesktopService::applyGroupObservation(
 	if (awaiting) {
 		changed = completeObservedJoin(
 			conversationId,
-			result.untrustedObjects);
+			result);
 	} else {
 		const auto processingFailed = [&] {
 			const auto state = contentState(conversationId);
@@ -3532,7 +3549,7 @@ void DesktopService::applyGroupDiscovery(
 
 bool DesktopService::completeObservedJoin(
 		ConversationId conversationId,
-		const std::vector<TelegramTransport::UntrustedObject> &objects) {
+		const PublicBootstrapSyncCompletion &result) {
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)
 		|| !_vault
@@ -3553,8 +3570,63 @@ bool DesktopService::completeObservedJoin(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	const auto staged = StagePublicJoinObjects(
+		result.untrustedObjects,
+		conversationId,
+		group.telegramPeerIdBinding,
+		group.envelopeCodec,
+		_sha256,
+		group.changeInbox);
+	if (staged == PublicJoinInboxStageStatus::ForkDetected
+		|| staged == PublicJoinInboxStageStatus::InvalidState) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	} else if (staged != PublicJoinInboxStageStatus::Staged) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	const auto objects = ReconstructPublicJoinObjects(
+		conversationId,
+		group.telegramPeerIdBinding,
+		group.envelopeCodec,
+		group.changeInbox);
+	if (!objects) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	const auto persistObservation = [&] {
+		const auto previous
+			= group.controlSyncState.newestObservedMessageId();
+		if (!result.newestObservedMessageId
+			|| result.newestObservedMessageId < previous
+			|| result.previousBoundaryMessageId != previous) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return false;
+		}
+		group.safetyWitnessGeneration
+			= group.groupLedger.checkpoint().generation;
+		group.safetyWitnesses = { metadata->accountId };
+		group.ownSafetyGossipObserved = false;
+		const auto committed = group.controlSyncState.advance(
+			result.newestObservedMessageId,
+			group.groupLedger.checkpoint(),
+			group.safetyWitnesses,
+			false);
+		if (committed == ControlObservationStateCommitResult::InvalidState) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return false;
+		} else if (committed
+				== ControlObservationStateCommitResult::PersistenceFailed) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return false;
+		}
+		return true;
+	};
 	auto catchup = CatchUpPublicJoin(
-		objects,
+		*objects,
 		conversationId,
 		group.telegramPeerIdBinding,
 		*accountId,
@@ -3566,16 +3638,41 @@ bool DesktopService::completeObservedJoin(
 		group.groupLedger,
 		group.keyPackages);
 	if (catchup.status == PublicJoinCatchupStatus::Waiting) {
+		const auto current = group.groupLedger.checkpoint();
+		const auto target = group.joinTargetCheckpoint;
+		if (!target || target.conversationId != conversationId) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		} else if (current.generation >= target.generation) {
+			if (group.groupLedger.checkpointAt(target.generation) != target) {
+				_vaultState = DesktopVaultState::SecurityBlocked;
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			} else {
+				(void)persistObservation();
+			}
+		}
 		return false;
 	} else if (catchup.status == PublicJoinCatchupStatus::UpdatedWaiting) {
-		group.conversation.checkpoint = group.groupLedger.checkpoint();
-		group.freshnessGate->requireFreshness(
-			group.conversation.checkpoint);
-		_pendingGroupCreation = std::move(i->second);
-		_groups.erase(i);
-		_pendingGroupCreation->vaultPreflightRequired = true;
-		publishNextBootstrapObject();
-		return true;
+		if (!group.changeInbox.discardAppliedTransitions(
+				group.groupLedger.checkpoint().generation)) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return false;
+		}
+		const auto current = group.groupLedger.checkpoint();
+		const auto target = group.joinTargetCheckpoint;
+		if (!target
+			|| target.conversationId != conversationId
+			|| (current.generation >= target.generation
+				&& group.groupLedger.checkpointAt(target.generation)
+					!= target)) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return false;
+		} else if (current.generation < target.generation) {
+			return false;
+		}
+		(void)persistObservation();
+		return false;
 	} else if (catchup.status == PublicJoinCatchupStatus::ForkDetected
 		|| catchup.status == PublicJoinCatchupStatus::InvalidState) {
 		_vaultState = DesktopVaultState::SecurityBlocked;
@@ -3585,6 +3682,15 @@ bool DesktopService::completeObservedJoin(
 			== PublicJoinCatchupStatus::PersistenceFailure
 		|| catchup.status != PublicJoinCatchupStatus::Ready
 		|| !catchup.bundle) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	const auto target = group.joinTargetCheckpoint;
+	if (!target
+		|| target.conversationId != conversationId
+		|| group.groupLedger.checkpoint().generation < target.generation
+		|| group.groupLedger.checkpointAt(target.generation) != target) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
@@ -3656,7 +3762,26 @@ bool DesktopService::completeObservedJoin(
 	group.phase = PendingGroupCreation::Phase::Active;
 	group.conversation.checkpoint = group.groupLedger.checkpoint();
 	group.freshnessGate->requireFreshness(group.conversation.checkpoint);
-	acceptObservedHistoryGrant(conversationId, objects);
+	if (!group.changeInbox.discardAppliedTransitions(
+			group.groupLedger.checkpoint().generation)) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	(void)acceptObservedHistoryGrant(conversationId, *objects);
+	if (_vaultState.current() == DesktopVaultState::SecurityBlocked
+		|| _groupCreationState.current()
+			== DesktopGroupCreationState::LocalFailure
+		|| contentState(conversationId)
+			== DesktopContentState::SecurityBlocked
+		|| contentState(conversationId)
+			== DesktopContentState::LocalFailure) {
+		return false;
+	}
+	if (!group.changeInbox.discardJoinOnlyObjects()
+		|| !persistObservation()) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
@@ -3747,6 +3872,34 @@ bool DesktopService::acceptObservedHistoryGrant(
 		}
 	}
 	return false;
+}
+
+bool DesktopService::resumeObservedJoinHistory(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)) {
+		return false;
+	}
+	auto &group = *i->second;
+	const auto objects = ReconstructPublicJoinObjects(
+		conversationId,
+		group.telegramPeerIdBinding,
+		group.envelopeCodec,
+		group.changeInbox);
+	if (!objects) {
+		return false;
+	}
+	(void)acceptObservedHistoryGrant(conversationId, *objects);
+	if (_vaultState.current() == DesktopVaultState::SecurityBlocked
+		|| _groupCreationState.current()
+			== DesktopGroupCreationState::LocalFailure
+		|| contentState(conversationId)
+			== DesktopContentState::SecurityBlocked
+		|| contentState(conversationId)
+			== DesktopContentState::LocalFailure) {
+		return false;
+	}
+	return group.changeInbox.discardJoinOnlyObjects();
 }
 
 bool DesktopService::applyAdministrativeTransition(
@@ -4339,6 +4492,19 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 	if (owner == end(state->members())) {
 		return LocalGroupRecoveryResult::Invalid;
 	}
+	const auto genesisState = operation->groupLedger.stateAt(1);
+	if (!genesisState) {
+		return LocalGroupRecoveryResult::Invalid;
+	}
+	const auto genesisOwner = std::find_if(
+		begin(genesisState->members()),
+		end(genesisState->members()),
+		[](const GroupMember &member) {
+			return member.role == GroupRole::Owner;
+		});
+	if (genesisOwner == end(genesisState->members())) {
+		return LocalGroupRecoveryResult::Invalid;
+	}
 	if (controlSyncLoad == ControlObservationStateLoadResult::Loaded) {
 		const auto storedCheckpoint = operation->controlSyncState.checkpoint();
 		const auto expectedCheckpoint = operation->groupLedger.checkpointAt(
@@ -4378,7 +4544,7 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		.conversationId = conversationId,
 		.telegramPeerIdBinding = localMetadata.telegramPeerIdBinding,
 		.checkpoint = operation->groupLedger.checkpoint(),
-		.ownerAccountId = owner->accountId,
+		.ownerAccountId = genesisOwner->accountId,
 	};
 	if (awaitingAdmission) {
 		operation->phase = PendingGroupCreation::Phase::AwaitingAdmission;
@@ -4390,25 +4556,38 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
 		operation->groupLedger.checkpoint(),
 		operation->freshnessTrust.trusted() && !removed);
-	const auto localAhead = indexedConversation
+	const auto indexedMatches = indexedConversation
 		&& indexedConversation->conversationId
 			== localConversation.conversationId
 		&& indexedConversation->telegramPeerIdBinding
 			== localConversation.telegramPeerIdBinding
 		&& indexedConversation->ownerAccountId
-			== localConversation.ownerAccountId
+			== localConversation.ownerAccountId;
+	const auto localAhead = indexedMatches
 		&& indexedConversation->checkpoint.generation
 			< localConversation.checkpoint.generation;
+	const auto indexedAhead = indexedMatches
+		&& awaitingAdmission
+		&& indexedConversation->checkpoint.generation
+			> localConversation.checkpoint.generation;
 	if (indexedConversation
 		&& *indexedConversation != localConversation
-		&& !localAhead) {
+		&& !localAhead
+		&& !indexedAhead) {
 		return LocalGroupRecoveryResult::Invalid;
-	} else if (indexedConversation
+	}
+	operation->joinTargetCheckpoint = awaitingAdmission
+		? (indexedConversation
+			? indexedConversation->checkpoint
+			: localConversation.checkpoint)
+		: Checkpoint();
+	if (indexedConversation
 		&& !localAhead
 		&& operation->phase == PendingGroupCreation::Phase::Active) {
 		operation->conversation = *indexedConversation;
 		_groups[conversationId] = std::move(operation);
-		if (!initializeActivePipeline(*_groups[conversationId])) {
+		if (!resumeObservedJoinHistory(conversationId)
+			|| !initializeActivePipeline(*_groups[conversationId])) {
 			_groups.erase(conversationId);
 			return LocalGroupRecoveryResult::Invalid;
 		}
@@ -4437,7 +4616,8 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		_groups[conversationId] = std::move(operation);
 		if (!awaitingAdmission
 			&& !removed
-			&& !initializeActivePipeline(*_groups[conversationId])) {
+			&& (!resumeObservedJoinHistory(conversationId)
+				|| !initializeActivePipeline(*_groups[conversationId]))) {
 			_groups.erase(conversationId);
 			return LocalGroupRecoveryResult::Invalid;
 		}

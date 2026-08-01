@@ -307,6 +307,7 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     assert "kLegacyPurpose" in state
     assert "safetyWitnesses" in state
     assert "startForJoin()" in service
+    assert "startForJoinFromBoundary(boundary)" in observation
     assert "IsPublicJoinRelevantObject(" in controller
     assert "IsPublicGroupBootstrapCandidate(" in discovery
     assert "ObjectKind::SafetyCodeGossip" not in join[
@@ -318,6 +319,13 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     assert "inbox.stageObserved(" in group_sync
     assert "observedSenderTelegramUserIdBinding" in inbox
     assert "!synchronized.appliedTransitions" in service
+    assert "StagePublicJoinObjects(" in service
+    assert "ReconstructPublicJoinObjects(" in service
+    assert "resumeObservedJoinHistory(" in service
+    assert "joinTargetCheckpoint" in service
+    assert "PublicGroupBootstrapCanReachCheckpoint(" in service
+    assert "verified.checkpoint != conversation.checkpoint" not in service
+    assert "groupLedger.stateAt(1)" in service
 
 
 def verify_content_sync_requires_its_saved_boundary() -> None:

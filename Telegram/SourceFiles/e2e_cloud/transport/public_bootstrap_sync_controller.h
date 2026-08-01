@@ -56,6 +56,8 @@ public:
 	[[nodiscard]] bool start(QByteArray cursor = {});
 	[[nodiscard]] bool startForJoin(QByteArray cursor = {});
 	[[nodiscard]] bool startFromBoundary(std::int64_t boundaryMessageId);
+	[[nodiscard]] bool startForJoinFromBoundary(
+		std::int64_t boundaryMessageId);
 	void cancel();
 	[[nodiscard]] bool running() const;
 
