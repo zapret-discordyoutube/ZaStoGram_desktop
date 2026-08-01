@@ -158,7 +158,12 @@ void ObservedContentSyncController::pageReceived(
 			return;
 		}
 		_objects += retained.size();
-		const auto persisted = _pageCallback(std::move(retained));
+		const auto guard = _callbackGuard;
+		const auto callback = _pageCallback;
+		const auto persisted = callback(std::move(retained));
+		if (guard->controller != this || !_running) {
+			return;
+		}
 		if (persisted != ObservedContentPageResult::Persisted) {
 			finish((persisted == ObservedContentPageResult::SecurityBlocked)
 				? ObservedContentSyncStatus::SecurityBlocked

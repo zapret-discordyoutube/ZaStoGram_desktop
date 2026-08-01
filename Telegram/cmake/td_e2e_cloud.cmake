@@ -133,6 +133,8 @@ PRIVATE
     e2e_cloud/storage/persistent_content_store.h
     e2e_cloud/storage/persistent_content_sync_state.cpp
     e2e_cloud/storage/persistent_content_sync_state.h
+    e2e_cloud/storage/persistent_control_observation_state.cpp
+    e2e_cloud/storage/persistent_control_observation_state.h
     e2e_cloud/storage/persistent_fork_recovery_ledger.cpp
     e2e_cloud/storage/persistent_fork_recovery_ledger.h
     e2e_cloud/storage/persistent_freshness_trust.cpp

@@ -90,6 +90,20 @@ An exact accepted challenge is never answered twice, including after restart.
 Persisted outgoing MLS receipts are likewise reconciled with the exact inbound
 journal entry before the receipt is removed.
 
+The control-observation boundary, exact protected-group checkpoint, distinct
+safety-gossip witness accounts, and whether this client has observed its own
+deterministic gossip are committed in one encrypted atomic snapshot. A restart
+therefore resumes from the saved overlap instead of rescanning the complete
+Telegram carrier history and retains the same witness view. Legacy boundary-only
+records are migrated at unlock without discarding their monotonic boundary.
+
+Creation and join setup write a `setup.pending` marker before the first local
+mutation and commit conversation metadata last. A crash before that final
+metadata commit leaves an unambiguous disposable setup directory; a crash after
+it leaves a complete recoverable conversation. Carrier objects are published
+before the vault checkpoint that references them, and an empty outbox with a
+locally newer checkpoint resumes the pending vault update after restart.
+
 ## Cross-store group-change transaction
 
 Group changes span records that cannot be replaced in one filesystem rename:

@@ -42,6 +42,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/local_record_key_derivation.h"
 #include "e2e_cloud/storage/persistent_conversation_metadata.h"
 #include "e2e_cloud/storage/persistent_content_sync_state.h"
+#include "e2e_cloud/storage/persistent_control_observation_state.h"
 #include "e2e_cloud/storage/persistent_freshness_trust.h"
 #include "e2e_cloud/storage/persistent_inbound_journal.h"
 #include "e2e_cloud/storage/persistent_key_package_pool.h"
@@ -107,6 +108,41 @@ template <typename Id>
 		+ u"/"_q
 		+ QString::fromLatin1(encoded)
 		+ u"/"_q;
+}
+
+bool DiscardUncommittedConversationDirectory(const QString &directory) {
+	auto target = QDir(directory);
+	return !target.exists() || target.removeRecursively();
+}
+
+[[nodiscard]] QString ConversationSetupMarker(const QString &directory) {
+	return directory + u"setup.pending"_q;
+}
+
+[[nodiscard]] bool BeginConversationSetup(const QString &directory) {
+	if (!QDir().mkpath(directory)) {
+		return false;
+	}
+	auto file = QSaveFile(ConversationSetupMarker(directory));
+	if (!file.open(QIODevice::WriteOnly)) {
+		return false;
+	}
+	file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+	const auto marker = QByteArray("TDE2ESETUP1");
+	if (file.write(marker) != marker.size()) {
+		file.cancelWriting();
+		return false;
+	}
+	return file.commit();
+}
+
+[[nodiscard]] bool FinishConversationSetup(const QString &directory) {
+	const auto marker = ConversationSetupMarker(directory);
+	return !QFileInfo::exists(marker) || QFile::remove(marker);
+}
+
+[[nodiscard]] bool ConversationSetupPending(const QString &directory) {
+	return QFileInfo::exists(ConversationSetupMarker(directory));
 }
 
 [[nodiscard]] bool IsProtectedGroupPeerBinding(
@@ -302,8 +338,7 @@ struct DesktopService::PendingGroupCreation {
 		sha256)
 	, controlSyncState(
 		controlSyncBlob,
-		protector,
-		ObservedSyncStream::Control)
+		protector)
 	, contentSyncState(contentSyncBlob, protector)
 	, fileTransfer(fileTransferBlob, protector)
 	, chunkStore(this->directory + u"file-chunks"_q, protector)
@@ -368,7 +403,7 @@ struct DesktopService::PendingGroupCreation {
 	PersistentInboundJournal inboundJournal;
 	PersistentInboundJournal controlInboundJournal;
 	PersistentContentStore contentStore;
-	PersistentContentSyncState controlSyncState;
+	PersistentControlObservationState controlSyncState;
 	PersistentContentSyncState contentSyncState;
 	PersistentFileTransfer fileTransfer;
 	FileChunkFileStore chunkStore;
@@ -697,7 +732,7 @@ bool DesktopService::createProtectedGroup(
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
 		|| operation->controlSyncState.load(*conversationId)
-			!= ContentSyncStateLoadResult::Missing
+			!= ControlObservationStateLoadResult::Missing
 		|| operation->contentSyncState.load(*conversationId)
 			!= ContentSyncStateLoadResult::Missing
 		|| operation->fileTransfer.load(*conversationId)
@@ -734,18 +769,12 @@ bool DesktopService::createProtectedGroup(
 		.checkpoint = bootstrap.prepared->checkpoint,
 		.ownerAccountId = bootstrap.prepared->ownerAccountId,
 	};
-	if (operation->metadata.initialize({
-			.conversationId = *conversationId,
-			.telegramPeerIdBinding = peer->id.value,
-			.accountId = bootstrap.prepared->ownerAccountId,
-			.clientId = *clientId,
-		}) != ConversationMetadataCommitResult::Committed
-		|| operation->freshnessTrust.initialize(true)
-			!= FreshnessTrustCommitResult::Committed) {
+	const auto envelopeCodec = EnvelopeCodecV1();
+	if (!BeginConversationSetup(operation->directory)) {
+		DiscardUncommittedConversationDirectory(operation->directory);
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
-	const auto envelopeCodec = EnvelopeCodecV1();
 	auto coordinator = GroupBootstrapTransactionCoordinator(
 		operation->journal,
 		operation->mlsState,
@@ -760,15 +789,29 @@ bool DesktopService::createProtectedGroup(
 		operation->outbox.revision());
 	if (coordinator.apply(std::move(transaction))
 			!= GroupBootstrapApplyStatus::Applied) {
+		DiscardUncommittedConversationDirectory(operation->directory);
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	if (operation->freshnessTrust.initialize(true)
+			!= FreshnessTrustCommitResult::Committed
+		|| operation->metadata.initialize({
+			.conversationId = *conversationId,
+			.telegramPeerIdBinding = peer->id.value,
+			.accountId = conversation.ownerAccountId,
+			.clientId = *clientId,
+		}) != ConversationMetadataCommitResult::Committed) {
+		DiscardUncommittedConversationDirectory(operation->directory);
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	(void)FinishConversationSetup(operation->directory);
 	operation->conversation = conversation;
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
 		conversation.checkpoint,
 		true);
 	_pendingGroupCreation = std::move(operation);
-	beginGroupVaultPreflight();
+	publishNextBootstrapObject();
 	return true;
 }
 
@@ -785,9 +828,7 @@ bool DesktopService::retryProtectedGroupCreation() {
 	} else if (_pendingGroupCreation->uploadInProgress) {
 		return false;
 	}
-	if (_pendingGroupCreation->vaultPreflightRequired) {
-		beginGroupVaultPreflight();
-	} else if (_pendingGroupCreation->vaultUpdate) {
+	if (_pendingGroupCreation->vaultUpdate) {
 		uploadPendingConversationIndex();
 	} else {
 		publishNextBootstrapObject();
@@ -1623,6 +1664,7 @@ void DesktopService::uploadPendingConversationIndex() {
 				if (!weak->_vaultCodec.applyPublished(
 						*weak->_vault,
 						std::move(update))) {
+					weak->_vaultState = DesktopVaultState::SecurityBlocked;
 					weak->_groupCreationState
 						= DesktopGroupCreationState::LocalFailure;
 					return;
@@ -1662,6 +1704,10 @@ void DesktopService::publishNextBootstrapObject() {
 		}
 	});
 	if (!item) {
+		if (_pendingGroupCreation->vaultPreflightRequired) {
+			beginGroupVaultPreflight();
+			return;
+		}
 		const auto conversationId = _pendingGroupCreation->conversationId;
 		const auto phase = _pendingGroupCreation->phase;
 		if (phase == PendingGroupCreation::Phase::Creating) {
@@ -1766,6 +1812,13 @@ void DesktopService::resumePendingGroupCreation() {
 		if (_groups.contains(conversation.conversationId)) {
 			continue;
 		}
+		const auto directory = ConversationDirectory(
+			_telegramUserIdBinding,
+			conversation.conversationId);
+		if (QFileInfo::exists(directory + u"conversation.meta"_q)
+			&& ConversationSetupPending(directory)) {
+			(void)FinishConversationSetup(directory);
+		}
 		const auto result = restoreLocalGroup(
 			conversation.conversationId,
 			&conversation);
@@ -1773,6 +1826,17 @@ void DesktopService::resumePendingGroupCreation() {
 			publishNextBootstrapObject();
 			return;
 		} else if (result == LocalGroupRecoveryResult::Missing) {
+			if (ConversationSetupPending(directory)) {
+				if (!DiscardUncommittedConversationDirectory(directory)) {
+					_groupCreationState
+						= DesktopGroupCreationState::LocalFailure;
+					return;
+				}
+			} else if (QDir(directory).exists()) {
+				_vaultState = DesktopVaultState::SecurityBlocked;
+				_groupCreationState = DesktopGroupCreationState::LocalFailure;
+				return;
+			}
 			beginIndexedGroupJoin(conversation);
 			return;
 		} else if (result == LocalGroupRecoveryResult::Invalid) {
@@ -1781,11 +1845,44 @@ void DesktopService::resumePendingGroupCreation() {
 			return;
 		}
 	}
-	const auto entries = QDir(AccountDirectory(_telegramUserIdBinding))
+	auto entries = QDir(AccountDirectory(_telegramUserIdBinding))
 		.entryList(
 			QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
 			QDir::Name);
-	if (entries.size() > 512) {
+	auto cleanupFailed = false;
+	auto unexpectedDirectory = false;
+	entries.erase(
+		std::remove_if(
+			entries.begin(),
+			entries.end(),
+			[&](const QString &entry) {
+				const auto conversationId = DecodeConversationDirectory(entry);
+				if (!conversationId) {
+					return true;
+				}
+				const auto directory = ConversationDirectory(
+					_telegramUserIdBinding,
+					*conversationId);
+				if (QFileInfo::exists(directory + u"conversation.meta"_q)) {
+					if (ConversationSetupPending(directory)) {
+						(void)FinishConversationSetup(directory);
+					}
+					return false;
+				}
+				if (!ConversationSetupPending(directory)) {
+					unexpectedDirectory = true;
+					return false;
+				}
+				const auto discarded
+					= DiscardUncommittedConversationDirectory(directory);
+				cleanupFailed = cleanupFailed || !discarded;
+				return discarded;
+			}),
+		entries.end());
+	if (cleanupFailed) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return;
+	} else if (unexpectedDirectory || entries.size() > 512) {
 		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
@@ -1801,7 +1898,7 @@ void DesktopService::resumePendingGroupCreation() {
 		}
 		const auto result = restoreLocalGroup(*conversationId, nullptr);
 		if (result == LocalGroupRecoveryResult::Restored) {
-			beginGroupVaultPreflight();
+			publishNextBootstrapObject();
 			return;
 		} else if (result == LocalGroupRecoveryResult::Invalid) {
 			_vaultState = DesktopVaultState::SecurityBlocked;
@@ -1951,25 +2048,11 @@ bool DesktopService::prepareGroupJoin(
 		|| operation->contentStore.load()
 			!= ContentStoreLoadResult::Missing
 		|| operation->controlSyncState.load(conversation.conversationId)
-			!= ContentSyncStateLoadResult::Missing
+			!= ControlObservationStateLoadResult::Missing
 		|| operation->contentSyncState.load(conversation.conversationId)
 			!= ContentSyncStateLoadResult::Missing
 		|| operation->fileTransfer.load(conversation.conversationId)
-			!= FileTransferLoadResult::Empty
-		|| operation->metadata.initialize({
-			.conversationId = conversation.conversationId,
-			.telegramPeerIdBinding = conversation.telegramPeerIdBinding,
-			.accountId = *accountId,
-			.clientId = *clientId,
-		}) != ConversationMetadataCommitResult::Committed
-		|| operation->groupLedger.initialize(
-			verified.genesis,
-			verified.state,
-			verified.checkpoint,
-			verified.ownerCredential)
-			!= GroupLedgerCommitResult::Committed
-		|| operation->freshnessTrust.initialize(false)
-			!= FreshnessTrustCommitResult::Committed) {
+			!= FileTransferLoadResult::Empty) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
@@ -1993,15 +2076,39 @@ bool DesktopService::prepareGroupJoin(
 	operation->envelopeCodec,
 	_sha256);
 	if (keyPackage.status != PrepareClientKeyPackageStatus::Prepared
-		|| !keyPackage.entry
+		|| !keyPackage.entry) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	if (!BeginConversationSetup(operation->directory)) {
+		DiscardUncommittedConversationDirectory(operation->directory);
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	if (operation->groupLedger.initialize(
+			verified.genesis,
+			verified.state,
+			verified.checkpoint,
+			verified.ownerCredential)
+			!= GroupLedgerCommitResult::Committed
+		|| operation->freshnessTrust.initialize(false)
+			!= FreshnessTrustCommitResult::Committed
 		|| operation->keyPackages.add(std::move(*keyPackage.entry))
 			!= KeyPackagePoolMutationResult::Committed
 		|| operation->keyPackages.enqueuePending(
 			operation->outbox,
-			createdAt) != KeyPackagePoolEnqueueResult::Queued) {
+			createdAt) != KeyPackagePoolEnqueueResult::Queued
+		|| operation->metadata.initialize({
+			.conversationId = conversation.conversationId,
+			.telegramPeerIdBinding = conversation.telegramPeerIdBinding,
+			.accountId = *accountId,
+			.clientId = *clientId,
+		}) != ConversationMetadataCommitResult::Committed) {
+		DiscardUncommittedConversationDirectory(operation->directory);
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	(void)FinishConversationSetup(operation->directory);
 	operation->conversation = conversation;
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
 		conversation.checkpoint,
@@ -2009,12 +2116,7 @@ bool DesktopService::prepareGroupJoin(
 	operation->vaultPreflightRequired = discovered;
 	operation->phase = PendingGroupCreation::Phase::AwaitingAdmission;
 	_pendingGroupCreation = std::move(operation);
-	if (discovered) {
-		_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-		beginGroupVaultPreflight();
-	} else {
-		publishNextBootstrapObject();
-	}
+	publishNextBootstrapObject();
 	return true;
 }
 
@@ -2451,8 +2553,7 @@ bool DesktopService::synchronizeObservedGroupChanges(
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
-	_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-	beginGroupVaultPreflight();
+	publishNextBootstrapObject();
 	return true;
 }
 
@@ -2922,9 +3023,7 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 					std::move(result));
 			}
 		});
-	const auto boundary = group.safetyWitnessGeneration
-		? group.controlSyncState.newestObservedMessageId()
-		: 0;
+	const auto boundary = group.controlSyncState.newestObservedMessageId();
 	const auto started = boundary
 		? group.observation->startFromBoundary(boundary)
 		: group.observation->start();
@@ -3217,8 +3316,12 @@ void DesktopService::applyGroupObservation(
 				kControlSyncOverlap].observedMessageId;
 		}
 		const auto committed = group.controlSyncState.advance(
-			nextBoundaryMessageId);
-		if (committed == ContentSyncStateCommitResult::InvalidBoundary) {
+			nextBoundaryMessageId,
+			group.groupLedger.checkpoint(),
+			group.safetyWitnesses,
+			group.ownSafetyGossipObserved);
+		if (committed
+				== ControlObservationStateCommitResult::InvalidState) {
 			_vaultState = DesktopVaultState::SecurityBlocked;
 			_groupCreationState = DesktopGroupCreationState::LocalFailure;
 			setContentState(
@@ -3226,7 +3329,7 @@ void DesktopService::applyGroupObservation(
 				DesktopContentState::SecurityBlocked);
 			return;
 		} else if (committed
-				== ContentSyncStateCommitResult::PersistenceFailed) {
+				== ControlObservationStateCommitResult::PersistenceFailed) {
 			_groupCreationState = DesktopGroupCreationState::LocalFailure;
 			setContentState(
 				conversationId,
@@ -3455,8 +3558,7 @@ bool DesktopService::completeObservedJoin(
 		_pendingGroupCreation = std::move(i->second);
 		_groups.erase(i);
 		_pendingGroupCreation->vaultPreflightRequired = true;
-		_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-		beginGroupVaultPreflight();
+		publishNextBootstrapObject();
 		return true;
 	} else if (catchup.status == PublicJoinCatchupStatus::ForkDetected
 		|| catchup.status == PublicJoinCatchupStatus::InvalidState) {
@@ -3542,8 +3644,7 @@ bool DesktopService::completeObservedJoin(
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
-	_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-	beginGroupVaultPreflight();
+	publishNextBootstrapObject();
 	return true;
 }
 
@@ -3800,8 +3901,7 @@ bool DesktopService::applyAdministrativeTransition(
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
-	_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-	beginGroupVaultPreflight();
+	publishNextBootstrapObject();
 	return true;
 }
 
@@ -3994,8 +4094,7 @@ bool DesktopService::admitObservedClient(
 		_pendingGroupCreation = std::move(i->second);
 		_groups.erase(i);
 		_pendingGroupCreation->vaultPreflightRequired = true;
-		_groupCreationState = DesktopGroupCreationState::UpdatingVault;
-		beginGroupVaultPreflight();
+		publishNextBootstrapObject();
 		return true;
 	}
 	return false;
@@ -4120,10 +4219,11 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		|| contentStoreLoad == ContentStoreLoadResult::ReadFailed
 		|| contentStoreLoad == ContentStoreLoadResult::AuthenticationFailed
 		|| contentStoreLoad == ContentStoreLoadResult::InvalidSnapshot
-		|| controlSyncLoad == ContentSyncStateLoadResult::ReadFailed
+		|| controlSyncLoad == ControlObservationStateLoadResult::ReadFailed
 		|| controlSyncLoad
-			== ContentSyncStateLoadResult::AuthenticationFailed
-		|| controlSyncLoad == ContentSyncStateLoadResult::InvalidSnapshot
+			== ControlObservationStateLoadResult::AuthenticationFailed
+		|| controlSyncLoad
+			== ControlObservationStateLoadResult::InvalidSnapshot
 		|| contentSyncLoad == ContentSyncStateLoadResult::ReadFailed
 		|| contentSyncLoad
 			== ContentSyncStateLoadResult::AuthenticationFailed
@@ -4184,12 +4284,12 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		&& !operation->mlsState.revision()
 		&& !operation->archiveState.revision()
 		&& !operation->keyPackages.entries().empty();
+	const auto localIsGenesisOwner = state
+		&& state->generation() == 1
+		&& localMember
+		&& localMember->role == GroupRole::Owner
+		&& activeClient;
 	if (freshnessTrustLoad == FreshnessTrustLoadResult::Missing) {
-		const auto localIsGenesisOwner = state
-			&& state->generation() == 1
-			&& localMember
-			&& localMember->role == GroupRole::Owner
-			&& activeClient;
 		if (operation->freshnessTrust.initialize(localIsGenesisOwner)
 				!= FreshnessTrustCommitResult::Committed) {
 			return LocalGroupRecoveryResult::Invalid;
@@ -4217,6 +4317,41 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		});
 	if (owner == end(state->members())) {
 		return LocalGroupRecoveryResult::Invalid;
+	}
+	if (controlSyncLoad == ControlObservationStateLoadResult::Loaded) {
+		const auto storedCheckpoint = operation->controlSyncState.checkpoint();
+		const auto expectedCheckpoint = operation->groupLedger.checkpointAt(
+			storedCheckpoint.generation);
+		if (!expectedCheckpoint
+			|| *expectedCheckpoint != storedCheckpoint
+			|| !operation->controlSyncState.safetyWitnesses().contains(
+				localMetadata.accountId)) {
+			return LocalGroupRecoveryResult::Invalid;
+		}
+		if (storedCheckpoint == operation->groupLedger.checkpoint()) {
+			operation->safetyWitnessGeneration = storedCheckpoint.generation;
+			operation->safetyWitnesses
+				= operation->controlSyncState.safetyWitnesses();
+			operation->ownSafetyGossipObserved
+				= operation->controlSyncState.ownSafetyGossipObserved();
+		} else {
+			operation->safetyWitnessGeneration = state->generation();
+			operation->safetyWitnesses = { localMetadata.accountId };
+			operation->ownSafetyGossipObserved = false;
+		}
+	} else if (controlSyncLoad
+			== ControlObservationStateLoadResult::LegacyLoaded) {
+		operation->safetyWitnessGeneration = state->generation();
+		operation->safetyWitnesses = { localMetadata.accountId };
+		operation->ownSafetyGossipObserved = false;
+		const auto migrated = operation->controlSyncState.advance(
+			operation->controlSyncState.newestObservedMessageId(),
+			operation->groupLedger.checkpoint(),
+			operation->safetyWitnesses,
+			false);
+		if (migrated != ControlObservationStateCommitResult::Committed) {
+			return LocalGroupRecoveryResult::Invalid;
+		}
 	}
 	const auto localConversation = CloudVaultConversation{
 		.conversationId = conversationId,
@@ -4261,7 +4396,15 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		pumpActiveOutbox(conversationId);
 		return LocalGroupRecoveryResult::Complete;
 	} else if (!operation->outbox.size()) {
-		if (!indexedConversation || localAhead) {
+		const auto requiresVaultUpdate = localAhead
+			|| (!indexedConversation
+				&& (awaitingAdmission || localIsGenesisOwner));
+		if (requiresVaultUpdate) {
+			operation->conversation = localConversation;
+			operation->vaultPreflightRequired = true;
+			_pendingGroupCreation = std::move(operation);
+			return LocalGroupRecoveryResult::Restored;
+		} else if (!indexedConversation) {
 			return LocalGroupRecoveryResult::Invalid;
 		}
 		operation->conversation = *indexedConversation;

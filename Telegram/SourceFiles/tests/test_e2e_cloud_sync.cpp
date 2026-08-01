@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -468,6 +469,91 @@ struct Fixture {
 	return 0;
 }
 
+struct PageCallbackLifetimeState {
+	bool insideCallback = false;
+	bool activeProbeDestroyed = false;
+	std::uint64_t lastProbeId = 0;
+	std::uint64_t activeProbeId = 0;
+};
+
+class PageCallbackLifetimeProbe final {
+public:
+	explicit PageCallbackLifetimeProbe(
+		std::shared_ptr<PageCallbackLifetimeState> state)
+	: _state(std::move(state))
+	, _id(_state ? ++_state->lastProbeId : 0) {
+	}
+
+	PageCallbackLifetimeProbe(const PageCallbackLifetimeProbe &other)
+	: _state(other._state)
+	, _id(_state ? ++_state->lastProbeId : 0) {
+	}
+	PageCallbackLifetimeProbe(PageCallbackLifetimeProbe &&other) noexcept
+	= default;
+	PageCallbackLifetimeProbe &operator=(
+		const PageCallbackLifetimeProbe &) = delete;
+	PageCallbackLifetimeProbe &operator=(PageCallbackLifetimeProbe &&) = delete;
+
+	~PageCallbackLifetimeProbe() {
+		if (_state
+			&& _state->insideCallback
+			&& _state->activeProbeId == _id) {
+			_state->activeProbeDestroyed = true;
+		}
+	}
+
+	[[nodiscard]] std::shared_ptr<PageCallbackLifetimeState> state() const {
+		return _state;
+	}
+	[[nodiscard]] std::uint64_t id() const {
+		return _id;
+	}
+
+private:
+	std::shared_ptr<PageCallbackLifetimeState> _state;
+	std::uint64_t _id = 0;
+
+};
+
+[[nodiscard]] int ScenarioObservedPageCanDestroyController() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = { fixture.object(9) },
+			.nextCursor = {},
+			.complete = true,
+		},
+	};
+	auto lifetime = std::make_shared<PageCallbackLifetimeState>();
+	auto completionCalled = false;
+	auto controller = std::unique_ptr<ObservedContentSyncController>();
+	controller = std::make_unique<ObservedContentSyncController>(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		[&, probe = PageCallbackLifetimeProbe(lifetime)](
+				std::vector<TelegramTransport::UntrustedObject>) {
+			const auto state = probe.state();
+			state->activeProbeId = probe.id();
+			state->insideCallback = true;
+			controller.reset();
+			state->insideCallback = false;
+			return ObservedContentPageResult::Persisted;
+		},
+		[&](ObservedContentSyncCompletion) {
+			completionCalled = true;
+		});
+	const auto started = controller->start();
+	if (!started
+		|| controller
+		|| completionCalled
+		|| lifetime->activeProbeDestroyed) {
+		return Fail("observed page callback was destroyed while executing");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioControlSyncStopsAtBoundary() {
 	auto fixture = Fixture();
 	fixture.transport.pages = {
@@ -595,6 +681,7 @@ int main(int, char *[]) {
 		ScenarioObservedContentRejectsReordering,
 		ScenarioObservedContentRejectsMissingBoundary,
 		ScenarioObservedContentKeepsOverlap,
+		ScenarioObservedPageCanDestroyController,
 		ScenarioControlSyncStopsAtBoundary,
 		ScenarioControlSyncRejectsMissingBoundary,
 		ScenarioControlSyncRejectsReordering,

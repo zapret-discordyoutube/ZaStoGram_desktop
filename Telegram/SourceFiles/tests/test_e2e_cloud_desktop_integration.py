@@ -265,6 +265,10 @@ def verify_freshness_wait_does_not_busy_poll() -> None:
 
 def verify_control_sync_uses_a_persistent_boundary() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    state = source(
+        "SourceFiles/e2e_cloud/storage/"
+        "persistent_control_observation_state.cpp"
+    )
     controller = source(
         "SourceFiles/e2e_cloud/transport/"
         "public_bootstrap_sync_controller.cpp"
@@ -281,9 +285,14 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     )
 
     assert 'u"control-sync.state"_q' in service
-    assert "ObservedSyncStream::Control" in service
+    assert "PersistentControlObservationState controlSyncState" in service
     assert "startFromBoundary(boundary)" in observation
+    assert "safetyWitnessGeneration\n\t\t?" not in observation
     assert "group.controlSyncState.advance(" in result
+    assert "group.safetyWitnesses" in result
+    assert "group.ownSafetyGossipObserved" in result
+    assert "kLegacyPurpose" in state
+    assert "safetyWitnesses" in state
     assert "messageId >= _lastObservedMessageId" in controller
     assert "messageId < _boundaryMessageId" in controller
 
@@ -338,6 +347,18 @@ def verify_completion_callbacks_survive_owner_reset() -> None:
     assert "const auto callback = _completionCallback;" in complete
     assert "_completionCallback(" not in complete
 
+    observed = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "observed_content_sync_controller.cpp"
+    )
+    page = function_body(
+        observed,
+        "void ObservedContentSyncController::pageReceived(",
+        "void ObservedContentSyncController::finish(",
+    )
+    assert "const auto callback = _pageCallback;" in page
+    assert "guard->controller != this || !_running" in page
+
 
 def verify_group_discovery_retries_without_creation_races() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
@@ -356,6 +377,84 @@ def verify_group_discovery_retries_without_creation_races() -> None:
     assert "|| _pendingGroupDiscovery" in creation
     assert "PublicBootstrapSyncStatus::RetryableTransportError" in discovery
     assert "_groupDiscoveryQueue.emplace(peerId);" in discovery
+
+
+def verify_group_setup_commits_metadata_last() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    creation = function_body(
+        service,
+        "bool DesktopService::createProtectedGroup(",
+        "bool DesktopService::retryProtectedGroupCreation(",
+    )
+    join = function_body(
+        service,
+        "bool DesktopService::prepareGroupJoin(",
+        "bool DesktopService::queueFreshnessChallenge(",
+    )
+    recovery = function_body(
+        service,
+        "void DesktopService::resumePendingGroupCreation()",
+        "void DesktopService::beginIndexedGroupJoin(",
+    )
+
+    assert creation.index("coordinator.apply(") < creation.rindex(
+        "metadata.initialize("
+    )
+    assert creation.index("BeginConversationSetup(") < creation.index(
+        "coordinator.apply("
+    )
+    assert creation.rindex("metadata.initialize(") < creation.index(
+        "FinishConversationSetup("
+    )
+    assert creation.index("freshnessTrust.initialize(true)") < creation.rindex(
+        "metadata.initialize("
+    )
+    assert join.index("groupLedger.initialize(") < join.rindex(
+        "metadata.initialize("
+    )
+    assert join.index("keyPackages.enqueuePending(") < join.rindex(
+        "metadata.initialize("
+    )
+    assert join.index("BeginConversationSetup(") < join.index(
+        "groupLedger.initialize("
+    )
+    assert join.rindex("metadata.initialize(") < join.index(
+        "FinishConversationSetup("
+    )
+    assert creation.count("DiscardUncommittedConversationDirectory(") >= 2
+    assert join.count("DiscardUncommittedConversationDirectory(") >= 2
+    assert "DiscardUncommittedConversationDirectory(" in recovery
+    assert 'u"setup.pending"_q' in service
+    assert "ConversationSetupPending(directory)" in recovery
+
+
+def verify_group_carriers_publish_before_vault_index() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    creation = function_body(
+        service,
+        "bool DesktopService::createProtectedGroup(",
+        "bool DesktopService::retryProtectedGroupCreation(",
+    )
+    publisher = function_body(
+        service,
+        "void DesktopService::publishNextBootstrapObject()",
+        "void DesktopService::resumePendingGroupCreation()",
+    )
+    recovery = function_body(
+        service,
+        "DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(",
+        "bool DesktopService::commitVaultAnchor(",
+    )
+
+    assert "publishNextBootstrapObject();" in creation
+    assert "beginGroupVaultPreflight();" not in creation
+    assert publisher.index("if (!item) {") < publisher.index(
+        "beginGroupVaultPreflight();"
+    )
+    assert "_pendingGroupCreation->vaultPreflightRequired" in publisher
+    assert service.count("beginGroupVaultPreflight();") == 1
+    assert "const auto requiresVaultUpdate = localAhead" in recovery
+    assert "awaitingAdmission || localIsGenesisOwner" in recovery
 
 
 def verify_freshness_challenges_resume_and_replays_stop() -> None:
@@ -436,6 +535,8 @@ def main() -> None:
     verify_freshness_witness_is_rechecked_after_catchup()
     verify_completion_callbacks_survive_owner_reset()
     verify_group_discovery_retries_without_creation_races()
+    verify_group_setup_commits_metadata_last()
+    verify_group_carriers_publish_before_vault_index()
     verify_freshness_challenges_resume_and_replays_stop()
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()

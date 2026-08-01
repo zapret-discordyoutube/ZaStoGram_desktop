@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/persistent_conversation_metadata.h"
 #include "e2e_cloud/storage/persistent_content_store.h"
 #include "e2e_cloud/storage/persistent_content_sync_state.h"
+#include "e2e_cloud/storage/persistent_control_observation_state.h"
 #include "e2e_cloud/storage/persistent_freshness_trust.h"
 #include "e2e_cloud/files/persistent_file_transfer.h"
 #include "e2e_cloud/files/private_file_manifest.h"
@@ -244,6 +245,117 @@ public:
 		|| restored.advance(200)
 			!= ContentSyncStateCommitResult::InvalidBoundary) {
 		return Fail("content synchronization boundary accepted tampering");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioControlObservationStateSurvivesRestart() {
+	auto key = LocalRecordKey();
+	key.fill(33);
+	const auto protector = AesGcmLocalRecordProtector(std::move(key));
+	const auto conversationId = FilledId<ConversationId>(34);
+	const auto localAccountId = FilledId<AccountId>(35);
+	const auto remoteAccountId = FilledId<AccountId>(36);
+	const auto checkpoint = Checkpoint{
+		.conversationId = conversationId,
+		.generation = 7,
+		.stateHash = FilledId<Digest>(37),
+	};
+	const auto witnesses = std::set<AccountId>{
+		localAccountId,
+		remoteAccountId,
+	};
+	auto blob = MemoryBlobStore();
+	auto state = PersistentControlObservationState(blob, protector);
+	if (state.load(conversationId)
+			!= ControlObservationStateLoadResult::Missing
+		|| state.advance(100, checkpoint, witnesses, true)
+			!= ControlObservationStateCommitResult::Committed
+		|| state.advance(99, checkpoint, witnesses, true)
+			!= ControlObservationStateCommitResult::InvalidState
+		|| state.advance(100, checkpoint, witnesses, true)
+			!= ControlObservationStateCommitResult::AlreadyCommitted) {
+		return Fail("control observation state was not monotonic");
+	}
+	auto restored = PersistentControlObservationState(blob, protector);
+	if (restored.load(conversationId)
+			!= ControlObservationStateLoadResult::Loaded
+		|| restored.newestObservedMessageId() != 100
+		|| restored.checkpoint() != checkpoint
+		|| restored.safetyWitnesses() != witnesses
+		|| !restored.ownSafetyGossipObserved()
+		|| restored.revision() != 1
+		|| restored.legacy()) {
+		return Fail("control witnesses did not survive restart");
+	}
+	blob.writeError = true;
+	const auto nextWitnesses = std::set<AccountId>{ localAccountId };
+	if (restored.advance(150, checkpoint, nextWitnesses, false)
+			!= ControlObservationStateCommitResult::PersistenceFailed
+		|| restored.newestObservedMessageId() != 100
+		|| restored.safetyWitnesses() != witnesses
+		|| !restored.ownSafetyGossipObserved()) {
+		return Fail("failed control observation write changed live state");
+	}
+	blob.writeError = false;
+	auto contentState = PersistentContentSyncState(blob, protector);
+	if (contentState.load(conversationId)
+			!= ContentSyncStateLoadResult::AuthenticationFailed) {
+		return Fail("control observation state was not domain-separated");
+	}
+	auto tampered = *blob.bytes;
+	tampered[tampered.size() - 1] ^= 1;
+	blob.bytes = tampered;
+	if (restored.load(conversationId)
+			!= ControlObservationStateLoadResult::AuthenticationFailed
+		|| restored.loaded()
+		|| restored.newestObservedMessageId()
+		|| restored.revision()
+		|| !restored.safetyWitnesses().empty()) {
+		return Fail("control observation state accepted tampering");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioLegacyControlBoundaryMigrates() {
+	auto key = LocalRecordKey();
+	key.fill(38);
+	const auto protector = AesGcmLocalRecordProtector(std::move(key));
+	const auto conversationId = FilledId<ConversationId>(39);
+	const auto accountId = FilledId<AccountId>(40);
+	const auto checkpoint = Checkpoint{
+		.conversationId = conversationId,
+		.generation = 8,
+		.stateHash = FilledId<Digest>(41),
+	};
+	auto blob = MemoryBlobStore();
+	auto legacy = PersistentContentSyncState(
+		blob,
+		protector,
+		ObservedSyncStream::Control);
+	if (legacy.load(conversationId) != ContentSyncStateLoadResult::Missing
+		|| legacy.advance(75) != ContentSyncStateCommitResult::Committed) {
+		return Fail("legacy control boundary setup failed");
+	}
+	auto migrated = PersistentControlObservationState(blob, protector);
+	if (migrated.load(conversationId)
+			!= ControlObservationStateLoadResult::LegacyLoaded
+		|| !migrated.legacy()
+		|| migrated.newestObservedMessageId() != 75
+		|| migrated.revision() != 1
+		|| migrated.advance(75, checkpoint, { accountId }, false)
+			!= ControlObservationStateCommitResult::Committed
+		|| migrated.legacy()
+		|| migrated.revision() != 2) {
+		return Fail("legacy control boundary was not migrated");
+	}
+	auto restored = PersistentControlObservationState(blob, protector);
+	if (restored.load(conversationId)
+			!= ControlObservationStateLoadResult::Loaded
+		|| restored.checkpoint() != checkpoint
+		|| restored.safetyWitnesses()
+			!= std::set<AccountId>{ accountId }) {
+		return Fail("migrated control observation state did not reload");
 	}
 	return 0;
 }
@@ -1413,6 +1525,8 @@ int main(int, char *[]) {
 		ScenarioAeadProtection,
 		ScenarioConversationRecordKeyDerivation,
 		ScenarioContentSyncBoundarySurvivesRestart,
+		ScenarioControlObservationStateSurvivesRestart,
+		ScenarioLegacyControlBoundaryMigrates,
 		ScenarioContentStoreReloadFailureClearsPlaintext,
 		ScenarioContentStoreAcceptsCarrierDuplicates,
 		ScenarioFileTransferSurvivesRestart,
