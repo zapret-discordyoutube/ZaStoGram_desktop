@@ -2606,6 +2606,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_lock" = "Lock protected identity";
 "lng_e2e_cloud_recent_messages#one" = "Showing the latest {count} protected message.";
 "lng_e2e_cloud_recent_messages#other" = "Showing the latest {count} protected messages.";
+"lng_e2e_cloud_show_older#one" = "Show {count} earlier protected message";
+"lng_e2e_cloud_show_older#other" = "Show {count} earlier protected messages";
 "lng_create_channel_title" = "New Channel";
 "lng_create_public_channel_title" = "Public Channel";
 "lng_create_public_channel_about" = "Anyone can find the channel in search and join";

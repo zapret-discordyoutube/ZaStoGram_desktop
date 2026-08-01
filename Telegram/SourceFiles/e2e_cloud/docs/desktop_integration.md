@@ -11,7 +11,8 @@ The first Desktop surface supports:
 
 - creation and password unlock of the encrypted account vault in Saved
   Messages;
-- creation of a new private Telegram carrier group as a protected group;
+- creation of a new private Telegram supergroup as a protected group, avoiding
+  the basic-group participant ceiling and later automatic migration;
 - automatic discovery and enrollment when the account sees an existing
   protected carrier group;
 - encrypted text messages and arbitrary files;
@@ -28,6 +29,9 @@ label, and disables forwarding and clipboard export. A carrier peer shows one
 full-width action that opens the protected conversation instead of Telegram's
 text, attachment, voice, bot, edit, and forwarding controls. The protected
 window is fed only from locally authenticated and decrypted records.
+Reserved vault metadata is recognized only in Saved Messages, and reserved
+group metadata only in basic groups or supergroups. A same-named ordinary file
+in a direct chat or broadcast channel therefore remains an ordinary file.
 
 ## Session state
 
@@ -40,7 +44,9 @@ create-and-confirm-password flow; a matching opaque carrier exposes the unlock
 flow. Discovery never derives a password key or interprets carrier bytes. As
 elsewhere, an active server can hide or fabricate first-contact metadata, so
 the new-identity warning and the documented first-contact limitation still
-apply.
+apply. A search that receives no Telegram result within 15 seconds is cancelled
+and exposed as a retryable discovery error instead of leaving the modal in an
+unbounded checking state.
 
 Unlocking selects the newest valid cloud vault that is consistent with the
 local rollback anchor. The password derives only a wrapping key; it never
@@ -100,6 +106,10 @@ observed Telegram message boundary. Every page remains untrusted. Telegram
 message IDs determine only where to resume scanning and never authorize,
 identify, or order protected content.
 
+The Desktop conversation initially renders the newest 200 authenticated local
+records. An in-place older-history action expands that window in 200-record
+pages without discarding or redownloading the earlier synchronized archive.
+
 ## Sending and freshness
 
 A new installation may unlock, read locally authorized archive history, and
@@ -122,6 +132,11 @@ material, records a canonical encrypted manifest, and encrypts independent
 source identity, so a restart resumes without nonce reuse. Every chunk is also
 account-signed and bound to its Telegram sender, conversation, group generation,
 file ID, and index.
+
+If the source disappears or changes, the pending transfer remains available for
+retry. Selecting a replacement file atomically commits a new transfer with a
+new file identifier and key; a failed replacement write leaves the prior
+transfer intact.
 
 Saving a file reads only authenticated local chunks, decrypts them in order to
 a `QSaveFile`, verifies total length and the full plaintext SHA-256 digest, and

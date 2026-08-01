@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/files/private_file_manifest.h"
 
+#include <QtCore/QString>
+
 #include <algorithm>
 #include <array>
 
@@ -75,7 +77,9 @@ void ReadArray(const char *data, Array &value) {
 }
 
 [[nodiscard]] bool ValidFilename(const QByteArray &value) {
-	if (value.isEmpty() || value.size() > kMaximumFilenameSize) {
+	if (value.isEmpty()
+		|| value.size() > kMaximumFilenameSize
+		|| QString::fromUtf8(value).toUtf8() != value) {
 		return false;
 	}
 	for (auto i = 0; i != value.size(); ++i) {
@@ -87,7 +91,8 @@ void ReadArray(const char *data, Array &value) {
 }
 
 [[nodiscard]] bool ValidMimeType(const QByteArray &value) {
-	if (value.size() > kMaximumMimeTypeSize) {
+	if (value.size() > kMaximumMimeTypeSize
+		|| QString::fromUtf8(value).toUtf8() != value) {
 		return false;
 	}
 	for (auto i = 0; i != value.size(); ++i) {

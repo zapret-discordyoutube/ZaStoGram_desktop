@@ -111,9 +111,7 @@ public:
 
 	[[nodiscard]] bool isEmpty() const;
 	[[nodiscard]] bool isDisplayedEmpty() const;
-	[[nodiscard]] bool hasE2ECloudGroupCarrier() const {
-		return _hasE2ECloudGroupCarrier;
-	}
+	[[nodiscard]] bool hasE2ECloudGroupCarrier() const;
 	[[nodiscard]] Element *findFirstNonEmpty() const;
 	[[nodiscard]] Element *findFirstDisplayed() const;
 	[[nodiscard]] Element *findLastNonEmpty() const;
@@ -508,6 +506,7 @@ public:
 
 private:
 	friend class HistoryBlock;
+	friend class HistoryItem;
 
 	enum class Flag : ushort {
 		HasPendingResizedItems = (1 << 0),
@@ -527,6 +526,7 @@ private:
 	};
 
 	void cacheTopPromoted(bool promoted);
+	void refreshE2ECloudGroupCarrier(not_null<HistoryItem*> item);
 
 	// when this item is destroyed scrollTopItem just points to the next one
 	// and scrollTopOffset remains the same
@@ -663,7 +663,7 @@ private:
 	HistoryItem *_newPeerPhotoChange = nullptr;
 	bool _loadedAtTop = false;
 	bool _loadedAtBottom = true;
-	bool _hasE2ECloudGroupCarrier = false;
+	base::flat_set<not_null<HistoryItem*>> _e2eCloudGroupCarriers;
 
 	std::optional<Data::Folder*> _folder;
 	Data::CommunityInfo *_communityInfo = nullptr;

@@ -167,6 +167,7 @@ jobs:
         shell: bash
         run: |
           cd "$TBUILD/$REPO_NAME"
+          python Telegram/SourceFiles/tests/test_e2e_cloud_desktop_integration.py
           python Telegram/SourceFiles/tests/test_zastogram_branding.py
 
       - name: Proxy control-plane source guards.

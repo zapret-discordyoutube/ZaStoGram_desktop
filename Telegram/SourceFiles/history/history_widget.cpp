@@ -3867,7 +3867,9 @@ bool HistoryWidget::canWriteMessage() const {
 }
 
 bool HistoryWidget::isE2ECloudProtectedPeer() const {
-	if (!_history || !_peer) {
+	if (!_history
+		|| !_peer
+		|| (!_peer->isChat() && !_peer->isMegagroup())) {
 		return false;
 	}
 	return _history->hasE2ECloudGroupCarrier()

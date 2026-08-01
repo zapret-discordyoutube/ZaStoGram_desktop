@@ -40,7 +40,9 @@ supports exact resume, but the upload pipeline must not rely on that alone. A
 protected persistent nonce ledger records the first plaintext digest or exact
 ciphertext allocated to each `(file key, chunk index)`. Retry re-uploads that
 persisted ciphertext. If the source file changes, the pipeline starts a new
-file identifier and key instead of reusing any nonce.
+file identifier and key instead of reusing any nonce. Desktop keeps the failed
+transfer until the user selects a replacement; replacement is one authenticated
+local transaction, so persistence failure cannot erase the previous cursor.
 
 ## Telegram storage
 

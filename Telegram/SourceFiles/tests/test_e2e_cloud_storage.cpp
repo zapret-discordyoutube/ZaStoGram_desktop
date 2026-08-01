@@ -282,7 +282,51 @@ public:
 	} else if (!restored.pending()
 		|| restored.pending()->nextChunkIndex != 1) {
 		return Fail("resumable file transfer did not restore its chunk cursor");
-	} else if (restored.clear() != FileTransferCommitResult::Committed) {
+	}
+	auto replacementContext = context;
+	replacementContext.fileId = FilledId<FileId>(41);
+	auto replacementKey = std::array<std::uint8_t, 32>();
+	replacementKey.fill(42);
+	const auto replacementManifest = PrivateFileManifestCodecV1()
+		.encodePlaintext({
+			.context = replacementContext,
+			.key = FileEncryptionKey(std::move(replacementKey)),
+			.plaintextHash = FilledId<Digest>(43),
+			.unixTime = 1'725'000'001,
+			.filenameUtf8 = QByteArray("replacement.any"),
+			.mimeTypeUtf8 = QByteArray("application/octet-stream"),
+		});
+	const auto replacement = PendingFileTransfer{
+		.conversationId = context.conversationId,
+		.eventObjectId = FilledId<ObjectId>(44),
+		.contentObjectId = FilledId<ObjectId>(45),
+		.groupGeneration = 8,
+		.nextChunkIndex = 0,
+		.sourcePathUtf8 = QByteArray("/private/replacement.any"),
+		.manifestPlaintext = replacementManifest.value_or(QByteArray()),
+	};
+	blob.writeError = true;
+	if (!replacementManifest
+		|| restored.replace(replacement)
+			!= FileTransferCommitResult::PersistenceFailed
+		|| !restored.pending()
+		|| restored.pending()->eventObjectId != FilledId<ObjectId>(39)) {
+		return Fail("failed file transfer replacement changed pending state");
+	}
+	blob.writeError = false;
+	if (restored.replace(replacement) != FileTransferCommitResult::Committed
+		|| !restored.pending()
+		|| restored.pending()->eventObjectId != replacement.eventObjectId
+		|| restored.revision() != 3) {
+		return Fail("file transfer could not be replaced atomically");
+	}
+	auto replaced = PersistentFileTransfer(blob, protector);
+	if (replaced.load(context.conversationId)
+			!= FileTransferLoadResult::Loaded
+		|| !replaced.pending()
+		|| replaced.pending()->sourcePathUtf8
+			!= replacement.sourcePathUtf8
+		|| replaced.clear() != FileTransferCommitResult::Committed) {
 		return Fail("resumable file transfer could not be cleared");
 	}
 	auto completed = PersistentFileTransfer(blob, protector);

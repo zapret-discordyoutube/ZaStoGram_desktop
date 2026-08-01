@@ -24,6 +24,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_settings.h"
 #include "styles/style_widgets.h"
 
+#include <gsl/util>
+
+#include <openssl/crypto.h>
+
 #include <QtCore/QDateTime>
 #include <QtCore/QLocale>
 
@@ -58,9 +62,15 @@ namespace {
 [[nodiscard]] QString ContentText(
 		const ProtectedContentRecord &record) {
 	if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-		const auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+		auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
 			record.plaintext);
-		return body ? QString::fromUtf8(body->textUtf8) : QString();
+		if (!body) {
+			return QString();
+		}
+		auto result = QString::fromUtf8(body->textUtf8);
+		OPENSSL_cleanse(body->textUtf8.data(), body->textUtf8.size());
+		body->textUtf8.clear();
+		return result;
 	}
 	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
 		record.plaintext);
@@ -72,6 +82,17 @@ namespace {
 			lt_size,
 			QString::number(manifest->context.plaintextSize))
 		: QString();
+}
+
+void CleanseRecords(std::vector<ProtectedContentRecord> &records) {
+	for (auto &record : records) {
+		if (!record.plaintext.isEmpty()) {
+			OPENSSL_cleanse(
+				record.plaintext.data(),
+				record.plaintext.size());
+			record.plaintext.clear();
+		}
+	}
 }
 
 [[nodiscard]] QString RecordText(
@@ -126,9 +147,13 @@ void SaveProtectedRecord(
 void RebuildConversationRecords(
 		not_null<Ui::VerticalLayout*> container,
 		const DesktopService &service,
-		ConversationId conversationId) {
+		ConversationId conversationId,
+		not_null<std::size_t*> visibleLimit) {
 	container->clear();
-	const auto records = service.protectedContent(conversationId);
+	auto records = service.protectedContent(conversationId);
+	const auto recordsGuard = gsl::finally([&] {
+		CleanseRecords(records);
+	});
 	if (records.empty()) {
 		container->add(
 			object_ptr<Ui::FlatLabel>(
@@ -138,18 +163,42 @@ void RebuildConversationRecords(
 			st::boxRowPadding);
 		return;
 	}
-	constexpr auto kMaximumVisibleRecords = std::size_t(200);
-	const auto first = (records.size() > kMaximumVisibleRecords)
-		? records.size() - kMaximumVisibleRecords
-		: 0;
+	constexpr auto kVisiblePageSize = std::size_t(200);
+	const auto visible = std::min(*visibleLimit, records.size());
+	const auto first = records.size() - visible;
 	if (first) {
+		const auto count = std::min(kVisiblePageSize, first);
+		const auto button = container->add(
+			object_ptr<Ui::SettingsButton>(
+				container,
+				tr::lng_e2e_cloud_show_older(
+					lt_count,
+					rpl::single(int(count)) | tr::to_count()),
+				st::settingsButton),
+			st::boxRowPadding,
+			style::al_top);
+		button->setClickedCallback([=, service = &service] {
+			*visibleLimit += count;
+			crl::on_main(container, [=] {
+				RebuildConversationRecords(
+					container,
+					*service,
+					conversationId,
+					visibleLimit);
+			});
+		});
+	}
+	const auto limited = (records.size() > kVisiblePageSize)
+		? visible
+		: 0;
+	if (limited) {
 		container->add(
 			object_ptr<Ui::FlatLabel>(
 				container,
 				tr::lng_e2e_cloud_recent_messages(
 					tr::now,
 					lt_count,
-					int(kMaximumVisibleRecords)),
+					int(limited)),
 				st::boxLabel),
 			st::boxRowPadding);
 	}
@@ -538,7 +587,10 @@ void ShowProtectedFiles(
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
 		box->setTitle(tr::lng_e2e_cloud_files());
-		const auto records = service->protectedContent(conversationId);
+		auto records = service->protectedContent(conversationId);
+		const auto recordsGuard = gsl::finally([&] {
+			CleanseRecords(records);
+		});
 		auto found = false;
 		for (const auto &record : records) {
 			if (record.objectKind != ObjectKind::EncryptedFileManifest) {
@@ -654,6 +706,7 @@ void ShowProtectedConversation(
 			box,
 			st::defaultInputField,
 			tr::lng_e2e_cloud_message()));
+		const auto visibleRecords = box->lifetime().make_state<std::size_t>(200);
 		const auto refreshStatus = [=] {
 			status->setText(ContentStatusText(*service, conversationId));
 			const auto current = service->protectedGroups();
@@ -671,7 +724,8 @@ void ShowProtectedConversation(
 			RebuildConversationRecords(
 				messages,
 				*service,
-				conversationId);
+				conversationId,
+				visibleRecords);
 			refreshStatus();
 		}, box->lifetime());
 		service->contentStateValue(
@@ -722,7 +776,8 @@ void ShowProtectedConversation(
 		RebuildConversationRecords(
 			messages,
 			*service,
-			conversationId);
+			conversationId,
+			visibleRecords);
 		refreshStatus();
 	}));
 }

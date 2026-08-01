@@ -96,7 +96,7 @@ void ProtectedGroupsBox::prepare() {
 		refresh();
 	}, lifetime());
 	connect(_password, &Ui::MaskedInputField::submitted, [=] {
-		if (_confirm->isVisible() && !_confirm->hasFocus()) {
+		if (!_confirm->isHidden() && !_confirm->hasFocus()) {
 			_confirm->setFocusFast();
 		} else {
 			submit();
@@ -110,7 +110,7 @@ void ProtectedGroupsBox::prepare() {
 }
 
 void ProtectedGroupsBox::setInnerFocus() {
-	if (_password->isVisible()) {
+	if (!_password->isHidden()) {
 		_password->setFocusFast();
 	}
 }
@@ -128,12 +128,12 @@ void ProtectedGroupsBox::updateControlsGeometry() {
 	_status->moveToLeft(st::boxPadding.left(), top);
 	_status->resizeToWidth(available);
 	top += _status->height() + st::boxMediumSkip;
-	if (_password->isVisible()) {
+	if (!_password->isHidden()) {
 		_password->resize(available, _password->height());
 		_password->moveToLeft(st::boxPadding.left(), top);
 		top += _password->height() + st::boxMediumSkip;
 	}
-	if (_confirm->isVisible()) {
+	if (!_confirm->isHidden()) {
 		_confirm->resize(available, _confirm->height());
 		_confirm->moveToLeft(st::boxPadding.left(), top);
 		top += _confirm->height() + st::boxMediumSkip;
@@ -313,7 +313,7 @@ void ProtectedGroupsBox::showGroupCreation() {
 				controller->uiShow()->showBox(
 					Box<GroupInfoBox>(
 						controller,
-						GroupInfoBox::Type::Group,
+						GroupInfoBox::Type::Megagroup,
 						QString(),
 						Fn<void(not_null<PeerData*>)>([
 								controller,

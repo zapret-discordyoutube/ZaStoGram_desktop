@@ -4,8 +4,9 @@
 
 ### D001: New protected group
 
-Create a new protected-group mode backed by a normal private Telegram carrier
-group. Do not initially convert existing groups or create protected subrooms.
+Create a new protected-group mode backed by a private Telegram carrier
+supergroup. Do not initially convert existing groups or create protected
+subrooms.
 
 ### D002: Telegram-only remote infrastructure
 

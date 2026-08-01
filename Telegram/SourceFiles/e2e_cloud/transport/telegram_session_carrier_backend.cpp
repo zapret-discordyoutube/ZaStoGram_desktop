@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "apiwrap.h"
 #include "base/algorithm.h"
+#include "base/call_delayed.h"
 #include "base/random.h"
 #include "base/unixtime.h"
 #include "base/weak_ptr.h"
@@ -43,6 +44,7 @@ namespace {
 inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumDownloadPageBytes = 64 * 1024 * 1024;
 inline constexpr auto kDiscoverySearchLimit = 100;
+inline constexpr auto kDiscoveryTimeout = crl::time(15'000);
 
 [[nodiscard]] QByteArray EncodeCursor(MsgId messageId) {
 	if (!messageId) {
@@ -398,7 +400,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		discovery = std::move(callback);
-		api.request(MTPmessages_Search(
+		discoveryRequestId = api.request(MTPmessages_Search(
 			MTP_flags(MTPmessages_Search::Flag(0)),
 			session->data().history(PeerId(peerId))->peer->input(),
 			MTP_string(filename),
@@ -425,6 +427,24 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				weak->finishDiscovery(ErrorResult(error), false);
 			}
 		}).send();
+		const auto requestId = discoveryRequestId;
+		base::call_delayed(
+			kDiscoveryTimeout,
+			[weak = base::weak_ptr(this), requestId] {
+				if (weak) {
+					weak->discoveryTimedOut(requestId);
+				}
+			});
+	}
+
+	void discoveryTimedOut(mtpRequestId requestId) {
+		if (!discovery || discoveryRequestId != requestId) {
+			return;
+		}
+		api.request(base::take(discoveryRequestId)).cancel();
+		finishDiscovery(
+			TelegramTransport::UploadResult::RetryableError,
+			false);
 	}
 
 	void discoveryLoaded(const MTPmessages_Messages &result) {
@@ -482,6 +502,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		}
 		auto callback = std::move(*discovery);
 		discovery.reset();
+		discoveryRequestId = 0;
 		callback(result, present);
 	}
 
@@ -662,6 +683,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	std::map<QByteArray, UploadedFile> uploaded;
 	std::optional<PendingDownload> download;
 	std::optional<DiscoveryCallback> discovery;
+	mtpRequestId discoveryRequestId = 0;
 	bool startingDownloads = false;
 	rpl::lifetime lifetime;
 };

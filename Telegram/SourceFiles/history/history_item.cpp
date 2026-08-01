@@ -1174,6 +1174,7 @@ bool HistoryItem::notificationReady() const {
 }
 
 void HistoryItem::finishEdition(int oldKeyboardTop) {
+	_history->refreshE2ECloudGroupCarrier(this);
 	if (const auto group = _history->owner().groups().find(this)) {
 		for (const auto &item : group->items) {
 			_history->owner().requestItemViewRefresh(item);
@@ -1927,6 +1928,7 @@ void HistoryItem::returnSavedMedia() {
 	_media = std::move(data->media);
 	setText(data->text);
 	clearSavedMedia();
+	_history->refreshE2ECloudGroupCarrier(this);
 	if (wasGrouped) {
 		history()->owner().groups().refreshMessage(this, true);
 	} else {
@@ -2662,6 +2664,7 @@ void HistoryItem::updateSentContent(
 			refreshSentMedia(media);
 		}
 	}
+	_history->refreshE2ECloudGroupCarrier(this);
 	history()->owner().requestItemResize(this);
 }
 
@@ -4569,12 +4572,27 @@ TextWithEntities HistoryItem::notificationText(
 
 bool HistoryItem::isE2ECloudCarrier() const {
 	const auto document = _media ? _media->document() : nullptr;
-	return document && E2ECloud::IsProtectedCarrierMetadata(
-		document->filename(),
-		document->mimeString());
+	if (!document) {
+		return false;
+	}
+	const auto peer = _history->peer;
+	if (peer->isSelf()) {
+		return E2ECloud::IsProtectedVaultCarrierMetadata(
+			document->filename(),
+			document->mimeString());
+	} else if (peer->isChat() || peer->isMegagroup()) {
+		return E2ECloud::IsProtectedGroupCarrierMetadata(
+			document->filename(),
+			document->mimeString());
+	}
+	return false;
 }
 
 bool HistoryItem::isE2ECloudGroupCarrier() const {
+	const auto peer = _history->peer;
+	if (!peer->isChat() && !peer->isMegagroup()) {
+		return false;
+	}
 	const auto document = _media ? _media->document() : nullptr;
 	return document && E2ECloud::IsProtectedGroupCarrierMetadata(
 		document->filename(),
@@ -5233,6 +5251,7 @@ void HistoryItem::refreshMedia(const MTPMessageMedia *media) {
 			refreshRepliesText(views);
 		}
 	}
+	_history->refreshE2ECloudGroupCarrier(this);
 }
 
 void HistoryItem::refreshSentMedia(const MTPMessageMedia *media) {
@@ -8518,4 +8537,5 @@ void HistoryItem::overrideMedia(std::unique_ptr<Data::Media> media) {
 	Expects(!media || media->parent() == this);
 
 	_media = std::move(media);
+	_history->refreshE2ECloudGroupCarrier(this);
 }

@@ -53,6 +53,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 
+#include <gsl/util>
+
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -103,6 +105,20 @@ template <typename Id>
 		+ u"/"_q
 		+ QString::fromLatin1(encoded)
 		+ u"/"_q;
+}
+
+[[nodiscard]] bool IsProtectedGroupPeerBinding(
+		not_null<Main::Session*> session,
+		std::uint64_t telegramPeerIdBinding) {
+	if (!telegramPeerIdBinding) {
+		return false;
+	}
+	const auto peerId = PeerId(telegramPeerIdBinding);
+	if (!peerIsChat(peerId) && !peerIsChannel(peerId)) {
+		return false;
+	}
+	const auto peer = session->data().peerLoaded(peerId);
+	return !peer || peer->isChat() || peer->isMegagroup();
 }
 
 [[nodiscard]] QString AccountDirectory(
@@ -187,18 +203,21 @@ struct HashedFile {
 	auto processed = qint64();
 	auto ok = true;
 	while (processed != originalSize) {
-		const auto bytes = file.read(std::min<qint64>(
+		auto bytes = file.read(std::min<qint64>(
 			kDesktopFileChunkSize,
 			originalSize - processed));
-		if (bytes.isEmpty()
-			|| EVP_DigestUpdate(
+		const auto size = bytes.size();
+		const auto updated = !bytes.isEmpty()
+			&& EVP_DigestUpdate(
 				context,
 				bytes.constData(),
-				bytes.size()) != 1) {
+				bytes.size()) == 1;
+		Cleanse(bytes);
+		if (!updated) {
 			ok = false;
 			break;
 		}
-		processed += bytes.size();
+		processed += size;
 	}
 	auto result = HashedFile{
 		.size = std::uint64_t(originalSize),
@@ -588,7 +607,7 @@ bool DesktopService::createProtectedGroup(
 	if (!_vault
 		|| _vaultState.current() != DesktopVaultState::Ready
 		|| _pendingGroupCreation
-		|| !peer->isChat()
+		|| (!peer->isChat() && !peer->isMegagroup())
 		|| std::any_of(
 			begin(_vault->conversations),
 			end(_vault->conversations),
@@ -962,9 +981,14 @@ bool DesktopService::sendProtectedText(
 	const auto epoch = group.archiveState.currentEpoch();
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
-	const auto plaintext = ProtectedMessageBodyCodecV1().encodePlaintext({
+	auto plaintext = ProtectedMessageBodyCodecV1().encodePlaintext({
 		.unixTime = std::uint64_t(base::unixtime::now()),
 		.textUtf8 = text.toUtf8(),
+	});
+	const auto plaintextGuard = gsl::finally([&] {
+		if (plaintext) {
+			Cleanse(*plaintext);
+		}
 	});
 	if (!metadata
 		|| !state
@@ -1035,7 +1059,6 @@ bool DesktopService::sendProtectedFile(
 		|| !material
 		|| !eventObjectId
 		|| !contentObjectId
-		|| group.fileTransfer.pending()
 		|| group.outbox.size()
 		|| group.uploadInProgress
 		|| (group.uploadController
@@ -1068,15 +1091,20 @@ bool DesktopService::sendProtectedFile(
 			absolutePath,
 			QMimeDatabase::MatchExtension).name().toUtf8(),
 	};
-	const auto manifestPlaintext = PrivateFileManifestCodecV1()
+	auto manifestPlaintext = PrivateFileManifestCodecV1()
 		.encodePlaintext(manifest);
+	const auto manifestGuard = gsl::finally([&] {
+		if (manifestPlaintext) {
+			Cleanse(*manifestPlaintext);
+		}
+	});
 	if (!manifestPlaintext
 		|| (group.freshnessGate->state() == FreshnessState::Required
 			&& !queueFreshnessChallenge(group))) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
-	const auto queued = group.fileTransfer.begin({
+	auto transfer = PendingFileTransfer{
 		.conversationId = conversationId,
 		.eventObjectId = *eventObjectId,
 		.contentObjectId = *contentObjectId,
@@ -1084,7 +1112,10 @@ bool DesktopService::sendProtectedFile(
 		.nextChunkIndex = 0,
 		.sourcePathUtf8 = absolutePath.toUtf8(),
 		.manifestPlaintext = *manifestPlaintext,
-	});
+	};
+	const auto queued = group.fileTransfer.pending()
+		? group.fileTransfer.replace(std::move(transfer))
+		: group.fileTransfer.begin(std::move(transfer));
 	if (queued != FileTransferCommitResult::Committed) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
@@ -1098,9 +1129,14 @@ bool DesktopService::saveProtectedFile(
 		ObjectId eventObjectId,
 		QString path) const {
 	const auto i = _groups.find(conversationId);
-	const auto record = (i != end(_groups))
+	auto record = (i != end(_groups))
 		? i->second->contentStore.record(eventObjectId)
 		: std::nullopt;
+	const auto recordGuard = gsl::finally([&] {
+		if (record) {
+			Cleanse(record->plaintext);
+		}
+	});
 	const auto manifest = (record
 		&& record->objectKind == ObjectKind::EncryptedFileManifest)
 		? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
@@ -1707,6 +1743,13 @@ void DesktopService::beginIndexedGroupJoin(
 		|| _pendingGroupCreation
 		|| _groups.contains(conversation.conversationId)
 		|| !_vault) {
+		return;
+	}
+	if (!IsProtectedGroupPeerBinding(
+			_session,
+			conversation.telegramPeerIdBinding)) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
 	}
 	_pendingGroupJoin = std::make_unique<PendingGroupJoin>(
@@ -2930,6 +2973,10 @@ void DesktopService::applyGroupObservation(
 }
 
 void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
+	const auto peer = item->history()->peer;
+	if (!peer->isChat() && !peer->isMegagroup()) {
+		return;
+	}
 	const auto media = item->media();
 	const auto document = media ? media->document() : nullptr;
 	if (!document
@@ -2966,7 +3013,12 @@ void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
 
 void DesktopService::queueGroupDiscovery(
 		std::uint64_t telegramPeerIdBinding) {
+	const auto peer = telegramPeerIdBinding
+		? _session->data().peerLoaded(PeerId(telegramPeerIdBinding))
+		: nullptr;
 	if (!telegramPeerIdBinding
+		|| !peer
+		|| (!peer->isChat() && !peer->isMegagroup())
 		|| !_vault
 		|| _vaultState.current() != DesktopVaultState::Ready
 		|| std::any_of(
@@ -3684,6 +3736,9 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 	const auto &localMetadata = *metadata.metadata();
 	if (!accountId
 		|| localMetadata.accountId != *accountId
+		|| !IsProtectedGroupPeerBinding(
+			_session,
+			localMetadata.telegramPeerIdBinding)
 		|| (indexedConversation
 			&& indexedConversation->telegramPeerIdBinding
 				!= localMetadata.telegramPeerIdBinding)) {

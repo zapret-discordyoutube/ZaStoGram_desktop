@@ -193,6 +193,11 @@ set_target_properties(
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_test(
+    NAME test_e2e_cloud
+    COMMAND test_e2e_cloud
+)
+
 add_dependencies(Telegram test_e2e_cloud)
 
 add_executable(test_e2e_cloud_group)
@@ -215,6 +220,11 @@ set_target_properties(
     test_e2e_cloud_group
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_group
+    COMMAND test_e2e_cloud_group
+)
 
 add_dependencies(Telegram test_e2e_cloud_group)
 
@@ -240,6 +250,11 @@ set_target_properties(
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_test(
+    NAME test_e2e_cloud_identity
+    COMMAND test_e2e_cloud_identity
+)
+
 add_dependencies(Telegram test_e2e_cloud_identity)
 
 add_executable(test_e2e_cloud_storage)
@@ -263,6 +278,11 @@ set_target_properties(
     test_e2e_cloud_storage
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_storage
+    COMMAND test_e2e_cloud_storage
+)
 
 add_dependencies(Telegram test_e2e_cloud_storage)
 
@@ -289,6 +309,11 @@ set_target_properties(
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+add_test(
+    NAME test_e2e_cloud_vault
+    COMMAND test_e2e_cloud_vault
+)
+
 add_dependencies(Telegram test_e2e_cloud_vault)
 
 add_executable(test_e2e_cloud_inbound)
@@ -311,6 +336,11 @@ set_target_properties(
     test_e2e_cloud_inbound
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_inbound
+    COMMAND test_e2e_cloud_inbound
+)
 
 add_dependencies(Telegram test_e2e_cloud_inbound)
 
@@ -393,6 +423,11 @@ set_target_properties(
     test_e2e_cloud_files
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_e2e_cloud_files
+    COMMAND test_e2e_cloud_files
+)
 
 add_dependencies(Telegram test_e2e_cloud_files)
 

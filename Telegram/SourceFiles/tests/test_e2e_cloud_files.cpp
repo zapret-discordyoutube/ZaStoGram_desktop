@@ -204,10 +204,18 @@ template <typename Id>
 	if (codec.encodePlaintext(manifest)) {
 		return Fail("private file manifest accepted path traversal metadata");
 	}
+	manifest.filenameUtf8 = QByteArray("\xC0\xAF", 2);
+	if (codec.encodePlaintext(manifest)) {
+		return Fail("private file manifest accepted an invalid UTF-8 name");
+	}
 	manifest.filenameUtf8 = QByteArray("safe.bin");
 	manifest.mimeTypeUtf8 = QByteArray("text/plain\r\nInjected: yes");
 	if (codec.encodePlaintext(manifest)) {
 		return Fail("private file manifest accepted header injection metadata");
+	}
+	manifest.mimeTypeUtf8 = QByteArray("text/\xFF", 6);
+	if (codec.encodePlaintext(manifest)) {
+		return Fail("private file manifest accepted invalid UTF-8 metadata");
 	}
 	return 0;
 }

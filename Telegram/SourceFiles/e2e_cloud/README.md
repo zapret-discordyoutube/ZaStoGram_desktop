@@ -20,8 +20,8 @@ password on each new installation.
 - First contact uses trust on first use, signed key gossip, and a human-readable
   safety code. This cannot completely prevent first-contact substitution when
   Telegram is the only communication channel.
-- Protected groups are created as a new group mode. A normal private Telegram
-  group acts as the carrier, while the cryptographic membership is authoritative.
+- Protected groups are created as a new group mode. A private Telegram
+  supergroup acts as the carrier, while cryptographic membership is authoritative.
 - Clients without E2E support do not receive keys.
 - Group owners and explicitly appointed E2E administrators manage encryption
   policy.

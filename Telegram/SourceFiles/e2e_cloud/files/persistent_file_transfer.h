@@ -56,6 +56,8 @@ public:
 	[[nodiscard]] FileTransferLoadResult load(
 		ConversationId conversationId);
 	[[nodiscard]] FileTransferCommitResult begin(PendingFileTransfer transfer);
+	[[nodiscard]] FileTransferCommitResult replace(
+		PendingFileTransfer transfer);
 	[[nodiscard]] FileTransferCommitResult advance(
 		std::uint32_t completedChunkIndex);
 	[[nodiscard]] FileTransferCommitResult clear();

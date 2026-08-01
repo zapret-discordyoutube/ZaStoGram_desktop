@@ -62,6 +62,7 @@ public:
 		AtomicBlobStore &indexBlobStore,
 		const LocalRecordProtector &protector,
 		const Sha256Provider &sha256);
+	~PersistentContentStore();
 
 	[[nodiscard]] ContentStoreLoadResult load();
 	[[nodiscard]] ContentStoreAppendResult append(

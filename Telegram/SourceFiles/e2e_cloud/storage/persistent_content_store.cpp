@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/identity/account_identity.h"
 #include "e2e_cloud/storage/file_atomic_blob_store.h"
 
+#include <gsl/util>
+
 #include <openssl/crypto.h>
 
 #include <QtCore/QDir>
@@ -232,12 +234,21 @@ PersistentContentStore::PersistentContentStore(
 , _sha256(sha256) {
 }
 
+PersistentContentStore::~PersistentContentStore() {
+	for (auto &record : _records) {
+		Cleanse(record.plaintext);
+	}
+}
+
 ContentStoreLoadResult PersistentContentStore::load() {
 	if (!_conversationId || _recordsDirectory.isEmpty()) {
 		return ContentStoreLoadResult::InvalidSnapshot;
 	}
 	const auto stored = _indexBlobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
+		for (auto &record : _records) {
+			Cleanse(record.plaintext);
+		}
 		_records.clear();
 		_entries.clear();
 		_revision = 0;
@@ -290,6 +301,11 @@ ContentStoreLoadResult PersistentContentStore::load() {
 	}
 	Cleanse(*plaintext);
 	auto records = std::vector<ProtectedContentRecord>();
+	const auto recordsGuard = gsl::finally([&] {
+		for (auto &record : records) {
+			Cleanse(record.plaintext);
+		}
+	});
 	records.reserve(entries.size());
 	for (const auto &entry : entries) {
 		const auto storedRecord = FileAtomicBlobStore(
@@ -312,9 +328,15 @@ ContentStoreLoadResult PersistentContentStore::load() {
 		if (!record
 			|| record->conversationId != _conversationId
 			|| record->eventObjectId != entry.eventObjectId) {
+			if (record) {
+				Cleanse(record->plaintext);
+			}
 			return ContentStoreLoadResult::InvalidSnapshot;
 		}
 		records.push_back(std::move(*record));
+	}
+	for (auto &record : _records) {
+		Cleanse(record.plaintext);
 	}
 	_records = std::move(records);
 	_entries = std::move(entries);
@@ -325,6 +347,9 @@ ContentStoreLoadResult PersistentContentStore::load() {
 
 ContentStoreAppendResult PersistentContentStore::append(
 		ProtectedContentRecord record) {
+	const auto guard = gsl::finally([&] {
+		Cleanse(record.plaintext);
+	});
 	if (!_loaded
 		|| record.conversationId != _conversationId
 		|| !ValidRecord(record)) {

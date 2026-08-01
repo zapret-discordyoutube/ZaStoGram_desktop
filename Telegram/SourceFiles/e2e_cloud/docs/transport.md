@@ -5,7 +5,7 @@
 There is no custom delivery, key-directory, archive, or blob server. Telegram is
 the sole remote storage and delivery system.
 
-The carrier is a newly created normal private Telegram group. Protected clients
+The carrier is a newly created private Telegram supergroup. Protected clients
 interpret specially encoded messages and documents as E2E protocol objects.
 Stock clients do not receive keys and may display only opaque carrier objects.
 ZaStoGram recognizes the reserved filename/MIME pairs as presentation metadata,
@@ -90,6 +90,10 @@ visible local plaintext message. Upload readiness yields an in-memory
 acknowledges the protected outbox. Downloads use `messages.getHistory`, accept
 only the matching fixed filename and MIME type, and stage document bytes in an
 auto-removed temporary directory before handing them upward.
+
+The passwordless Saved Messages metadata search has a 15-second client timeout.
+On expiry the in-flight RPC is cancelled and discovery reports a retryable
+transport error; a later explicit retry starts a fresh request.
 
 This encoding must still be tested against server-side content transformations,
 document deduplication, forwarding, copying, deletion, and retention behavior.

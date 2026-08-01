@@ -666,9 +666,7 @@ not_null<HistoryItem*> History::insertItem(
 
 	const auto result = i->get();
 	owner().registerMessage(result);
-	if (result->isE2ECloudGroupCarrier()) {
-		_hasE2ECloudGroupCarrier = true;
-	}
+	refreshE2ECloudGroupCarrier(result);
 
 	Ensures(ok);
 	return result;
@@ -707,6 +705,9 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 
 	owner().unregisterMessage(item);
 	Core::App().notifications().clearFromItem(item);
+	if (_e2eCloudGroupCarriers.remove(item)) {
+		owner().notifyHistoryChangeDelayed(this);
+	}
 
 	auto hack = std::unique_ptr<HistoryItem>(item.get());
 	const auto i = _items.find(hack);
@@ -718,6 +719,24 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 	if (documentToCancel) {
 		session().data().documentMessageRemoved(documentToCancel);
 	}
+}
+
+bool History::hasE2ECloudGroupCarrier() const {
+	return !_e2eCloudGroupCarriers.empty();
+}
+
+void History::refreshE2ECloudGroupCarrier(
+		not_null<HistoryItem*> item) {
+	const auto present = _e2eCloudGroupCarriers.contains(item);
+	const auto carrier = item->isE2ECloudGroupCarrier();
+	if (carrier == present) {
+		return;
+	} else if (carrier) {
+		_e2eCloudGroupCarriers.emplace(item);
+	} else {
+		_e2eCloudGroupCarriers.remove(item);
+	}
+	owner().notifyHistoryChangeDelayed(this);
 }
 
 void History::destroyMessagesByDates(TimeId minDate, TimeId maxDate) {

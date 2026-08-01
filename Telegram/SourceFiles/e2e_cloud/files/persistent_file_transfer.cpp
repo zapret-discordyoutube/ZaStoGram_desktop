@@ -145,6 +145,11 @@ void Cleanse(QByteArray &bytes) {
 	bytes.clear();
 }
 
+void Cleanse(PendingFileTransfer &transfer) {
+	Cleanse(transfer.sourcePathUtf8);
+	Cleanse(transfer.manifestPlaintext);
+}
+
 } // namespace
 
 PersistentFileTransfer::PersistentFileTransfer(
@@ -156,8 +161,7 @@ PersistentFileTransfer::PersistentFileTransfer(
 
 PersistentFileTransfer::~PersistentFileTransfer() {
 	if (_pending) {
-		Cleanse(_pending->sourcePathUtf8);
-		Cleanse(_pending->manifestPlaintext);
+		Cleanse(*_pending);
 	}
 }
 
@@ -169,6 +173,9 @@ FileTransferLoadResult PersistentFileTransfer::load(
 	const auto stored = _blobStore.read();
 	if (stored.status == BlobReadStatus::Missing) {
 		_conversationId = conversationId;
+		if (_pending) {
+			Cleanse(*_pending);
+		}
 		_pending.reset();
 		_revision = 0;
 		_loaded = true;
@@ -180,7 +187,11 @@ FileTransferLoadResult PersistentFileTransfer::load(
 	if (!plaintext) {
 		return FileTransferLoadResult::AuthenticationFailed;
 	}
+	auto pending = std::optional<PendingFileTransfer>();
 	const auto fail = [&] {
+		if (pending) {
+			Cleanse(*pending);
+		}
 		Cleanse(*plaintext);
 		return FileTransferLoadResult::InvalidSnapshot;
 	};
@@ -205,7 +216,6 @@ FileTransferLoadResult PersistentFileTransfer::load(
 		|| (!revision && present)) {
 		return fail();
 	}
-	auto pending = std::optional<PendingFileTransfer>();
 	if (present) {
 		auto value = PendingFileTransfer{
 			.conversationId = conversationId,
@@ -216,20 +226,23 @@ FileTransferLoadResult PersistentFileTransfer::load(
 			.sourcePathUtf8 = {},
 			.manifestPlaintext = {},
 		};
-		if (reader.bytes.size() - reader.offset < kPendingFixedSize
-			|| !ReadArray(reader, value.eventObjectId.bytes)
-			|| !ReadArray(reader, value.contentObjectId.bytes)
-			|| !ReadUint64(reader, value.groupGeneration)
-			|| !ReadUint32(reader, value.nextChunkIndex)
-			|| !ReadBytes(
+		const auto parsed = reader.bytes.size() - reader.offset
+				>= kPendingFixedSize
+			&& ReadArray(reader, value.eventObjectId.bytes)
+			&& ReadArray(reader, value.contentObjectId.bytes)
+			&& ReadUint64(reader, value.groupGeneration)
+			&& ReadUint32(reader, value.nextChunkIndex)
+			&& ReadBytes(
 				reader,
 				kMaximumSourcePathSize,
 				value.sourcePathUtf8)
-			|| !ReadBytes(
+			&& ReadBytes(
 				reader,
 				kMaximumManifestSize,
 				value.manifestPlaintext)
-			|| !valid(value, conversationId)) {
+			&& valid(value, conversationId);
+		if (!parsed) {
+			Cleanse(value);
 			return fail();
 		}
 		pending = std::move(value);
@@ -240,8 +253,7 @@ FileTransferLoadResult PersistentFileTransfer::load(
 	Cleanse(*plaintext);
 	_conversationId = conversationId;
 	if (_pending) {
-		Cleanse(_pending->sourcePathUtf8);
-		Cleanse(_pending->manifestPlaintext);
+		Cleanse(*_pending);
 	}
 	_pending = std::move(pending);
 	_revision = revision;
@@ -258,12 +270,35 @@ FileTransferCommitResult PersistentFileTransfer::begin(
 		|| transfer.conversationId != _conversationId
 		|| !valid(transfer, _conversationId)
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
+		Cleanse(transfer);
 		return FileTransferCommitResult::InvalidMutation;
 	}
 	const auto revision = _revision + 1;
 	if (!persist(&transfer, revision)) {
+		Cleanse(transfer);
 		return FileTransferCommitResult::PersistenceFailed;
 	}
+	_pending = std::move(transfer);
+	_revision = revision;
+	return FileTransferCommitResult::Committed;
+}
+
+FileTransferCommitResult PersistentFileTransfer::replace(
+		PendingFileTransfer transfer) {
+	if (!_loaded
+		|| !_pending
+		|| transfer.conversationId != _conversationId
+		|| !valid(transfer, _conversationId)
+		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
+		Cleanse(transfer);
+		return FileTransferCommitResult::InvalidMutation;
+	}
+	const auto revision = _revision + 1;
+	if (!persist(&transfer, revision)) {
+		Cleanse(transfer);
+		return FileTransferCommitResult::PersistenceFailed;
+	}
+	Cleanse(*_pending);
 	_pending = std::move(transfer);
 	_revision = revision;
 	return FileTransferCommitResult::Committed;
@@ -286,10 +321,10 @@ FileTransferCommitResult PersistentFileTransfer::advance(
 	++next.nextChunkIndex;
 	const auto revision = _revision + 1;
 	if (!persist(&next, revision)) {
+		Cleanse(next);
 		return FileTransferCommitResult::PersistenceFailed;
 	}
-	Cleanse(_pending->sourcePathUtf8);
-	Cleanse(_pending->manifestPlaintext);
+	Cleanse(*_pending);
 	_pending = std::move(next);
 	_revision = revision;
 	return FileTransferCommitResult::Committed;
@@ -305,8 +340,7 @@ FileTransferCommitResult PersistentFileTransfer::clear() {
 	if (!persist(nullptr, revision)) {
 		return FileTransferCommitResult::PersistenceFailed;
 	}
-	Cleanse(_pending->sourcePathUtf8);
-	Cleanse(_pending->manifestPlaintext);
+	Cleanse(*_pending);
 	_pending.reset();
 	_revision = revision;
 	return FileTransferCommitResult::Committed;

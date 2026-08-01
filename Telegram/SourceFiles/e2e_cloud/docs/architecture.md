@@ -4,7 +4,7 @@
 
 A protected group consists of two related objects:
 
-1. A normal private Telegram group used only for delivery, ordering hints, and
+1. A private Telegram supergroup used only for delivery, ordering hints, and
    encrypted blob storage.
 2. An E2E conversation identified by a random conversation identifier and a
    cryptographically authenticated group state.
@@ -139,7 +139,7 @@ that Telegram message identifier as security state.
 ### Create a protected group
 
 1. The creator unlocks or creates the account vault.
-2. The client creates a normal private Telegram carrier group.
+2. The client creates a private Telegram carrier supergroup.
 3. The MLS engine creates a new cryptographic group and random conversation
    identifier.
 4. The creator publishes signed initial group state and transport metadata.
