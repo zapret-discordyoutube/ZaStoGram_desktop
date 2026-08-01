@@ -53,8 +53,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 
-#include <gsl/util>
-
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -64,6 +62,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeDatabase>
 #include <QtCore/QSaveFile>
+#include <QtCore/QScopeGuard>
 
 #include <algorithm>
 #include <array>
@@ -985,7 +984,7 @@ bool DesktopService::sendProtectedText(
 		.unixTime = std::uint64_t(base::unixtime::now()),
 		.textUtf8 = text.toUtf8(),
 	});
-	const auto plaintextGuard = gsl::finally([&] {
+	const auto plaintextGuard = qScopeGuard([&] {
 		if (plaintext) {
 			Cleanse(*plaintext);
 		}
@@ -1093,7 +1092,7 @@ bool DesktopService::sendProtectedFile(
 	};
 	auto manifestPlaintext = PrivateFileManifestCodecV1()
 		.encodePlaintext(manifest);
-	const auto manifestGuard = gsl::finally([&] {
+	const auto manifestGuard = qScopeGuard([&] {
 		if (manifestPlaintext) {
 			Cleanse(*manifestPlaintext);
 		}
@@ -1132,7 +1131,7 @@ bool DesktopService::saveProtectedFile(
 	auto record = (i != end(_groups))
 		? i->second->contentStore.record(eventObjectId)
 		: std::nullopt;
-	const auto recordGuard = gsl::finally([&] {
+	const auto recordGuard = qScopeGuard([&] {
 		if (record) {
 			Cleanse(record->plaintext);
 		}

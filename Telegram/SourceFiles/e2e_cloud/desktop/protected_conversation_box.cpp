@@ -24,12 +24,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_settings.h"
 #include "styles/style_widgets.h"
 
-#include <gsl/util>
-
 #include <openssl/crypto.h>
 
 #include <QtCore/QDateTime>
 #include <QtCore/QLocale>
+#include <QtCore/QScopeGuard>
 
 #include <algorithm>
 #include <utility>
@@ -151,7 +150,7 @@ void RebuildConversationRecords(
 		not_null<std::size_t*> visibleLimit) {
 	container->clear();
 	auto records = service.protectedContent(conversationId);
-	const auto recordsGuard = gsl::finally([&] {
+	const auto recordsGuard = qScopeGuard([&] {
 		CleanseRecords(records);
 	});
 	if (records.empty()) {
@@ -588,7 +587,7 @@ void ShowProtectedFiles(
 		const auto service = &controller->session().e2eCloud();
 		box->setTitle(tr::lng_e2e_cloud_files());
 		auto records = service->protectedContent(conversationId);
-		const auto recordsGuard = gsl::finally([&] {
+		const auto recordsGuard = qScopeGuard([&] {
 			CleanseRecords(records);
 		});
 		auto found = false;

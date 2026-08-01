@@ -11,11 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/identity/account_identity.h"
 #include "e2e_cloud/storage/file_atomic_blob_store.h"
 
-#include <gsl/util>
-
 #include <openssl/crypto.h>
 
 #include <QtCore/QDir>
+#include <QtCore/QScopeGuard>
 
 #include <algorithm>
 #include <array>
@@ -301,7 +300,7 @@ ContentStoreLoadResult PersistentContentStore::load() {
 	}
 	Cleanse(*plaintext);
 	auto records = std::vector<ProtectedContentRecord>();
-	const auto recordsGuard = gsl::finally([&] {
+	const auto recordsGuard = qScopeGuard([&] {
 		for (auto &record : records) {
 			Cleanse(record.plaintext);
 		}
@@ -347,7 +346,7 @@ ContentStoreLoadResult PersistentContentStore::load() {
 
 ContentStoreAppendResult PersistentContentStore::append(
 		ProtectedContentRecord record) {
-	const auto guard = gsl::finally([&] {
+	const auto guard = qScopeGuard([&] {
 		Cleanse(record.plaintext);
 	});
 	if (!_loaded
