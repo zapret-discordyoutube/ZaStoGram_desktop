@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "e2e_cloud/protocol/public_join_catchup.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace E2ECloud {
@@ -20,6 +19,8 @@ inline constexpr auto kMaximumCursorSize = 1024;
 inline constexpr auto kMaximumObjects = std::size_t(65'536);
 inline constexpr auto kMaximumBytes = std::uint64_t(512 * 1024 * 1024);
 inline constexpr auto kMaximumPages = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumStoredCursorBytes
+	= std::uint64_t(128 * 1024 * 1024);
 
 [[nodiscard]] PublicBootstrapSyncStatus MapStatus(
 		PublicGroupBootstrapStatus status) {
@@ -104,6 +105,7 @@ bool PublicBootstrapSyncController::startInternal(
 	_cursor = std::move(cursor);
 	_bytes = 0;
 	_pages = 0;
+	_storedCursorBytes = std::uint64_t(_cursor.size());
 	_boundaryMessageId = boundaryMessageId;
 	_newestObservedMessageId = 0;
 	_lastObservedMessageId = 0;
@@ -293,10 +295,9 @@ void PublicBootstrapSyncController::pageReceived(
 		return;
 	} else if (result.nextCursor.isEmpty()
 		|| result.nextCursor.size() > kMaximumCursorSize
-		|| std::find(
-			begin(_seenCursors),
-			end(_seenCursors),
-			result.nextCursor) != end(_seenCursors)) {
+		|| _seenCursors.contains(result.nextCursor)
+		|| _storedCursorBytes > kMaximumStoredCursorBytes
+			- std::uint64_t(result.nextCursor.size())) {
 		finish({
 			.status = PublicBootstrapSyncStatus::InvalidPagination,
 			.verified = std::nullopt,
@@ -309,7 +310,8 @@ void PublicBootstrapSyncController::pageReceived(
 		return;
 	}
 	_cursor = std::move(result.nextCursor);
-	_seenCursors.push_back(_cursor);
+	_storedCursorBytes += std::uint64_t(_cursor.size());
+	_seenCursors.emplace(_cursor);
 	_requestQueued = true;
 	pumpRequests();
 }

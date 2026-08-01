@@ -350,6 +350,25 @@ def verify_content_sync_requires_its_saved_boundary() -> None:
     assert "group.contentSyncState.advance(" in result
 
 
+def verify_pagination_cursor_tracking_is_bounded() -> None:
+    controllers = [
+        "carrier_sync_controller",
+        "cloud_vault_sync_controller",
+        "observed_content_sync_controller",
+        "public_bootstrap_discovery_controller",
+        "public_bootstrap_sync_controller",
+    ]
+    for name in controllers:
+        header = source(f"SourceFiles/e2e_cloud/transport/{name}.h")
+        implementation = source(
+            f"SourceFiles/e2e_cloud/transport/{name}.cpp"
+        )
+        assert "std::set<QByteArray> _seenCursors;" in header
+        assert "kMaximumStoredCursorBytes" in implementation
+        assert "_seenCursors.contains(" in implementation
+        assert "_storedCursorBytes +=" in implementation
+
+
 def verify_freshness_witness_is_rechecked_after_catchup() -> None:
     gate = source("SourceFiles/e2e_cloud/core/freshness_gate.cpp")
     crypto = source("SourceFiles/e2e_cloud/core/freshness_crypto.cpp")
@@ -566,6 +585,7 @@ def main() -> None:
     verify_freshness_wait_does_not_busy_poll()
     verify_control_sync_uses_a_persistent_boundary()
     verify_content_sync_requires_its_saved_boundary()
+    verify_pagination_cursor_tracking_is_bounded()
     verify_freshness_witness_is_rechecked_after_catchup()
     verify_completion_callbacks_survive_owner_reset()
     verify_group_discovery_retries_without_creation_races()

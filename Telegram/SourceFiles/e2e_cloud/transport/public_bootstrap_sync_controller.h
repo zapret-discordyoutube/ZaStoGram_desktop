@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 
 namespace E2ECloud {
 
@@ -80,10 +81,11 @@ private:
 	const Sha256Provider &_sha256;
 	CompletionCallback _completionCallback;
 	std::vector<TelegramTransport::UntrustedObject> _objects;
-	std::vector<QByteArray> _seenCursors;
+	std::set<QByteArray> _seenCursors;
 	QByteArray _cursor;
 	std::uint64_t _bytes = 0;
 	std::uint64_t _pages = 0;
+	std::uint64_t _storedCursorBytes = 0;
 	std::int64_t _boundaryMessageId = 0;
 	std::int64_t _newestObservedMessageId = 0;
 	std::int64_t _lastObservedMessageId = 0;

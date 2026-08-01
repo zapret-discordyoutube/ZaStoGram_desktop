@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
-#include <algorithm>
 #include <utility>
 
 namespace E2ECloud {
@@ -20,6 +19,8 @@ inline constexpr auto kMaximumCursorSize = 1024;
 inline constexpr auto kMaximumCandidates = std::size_t(65536);
 inline constexpr auto kMaximumCandidateBytes = std::uint64_t(64 * 1024 * 1024);
 inline constexpr auto kMaximumPages = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumStoredCursorBytes
+	= std::uint64_t(128 * 1024 * 1024);
 
 void Cleanse(QByteArray &bytes) {
 	if (!bytes.isEmpty()) {
@@ -96,6 +97,7 @@ bool CloudVaultSyncController::startDiscovery() {
 	_cursor.clear();
 	_candidateBytes = 0;
 	_pages = 0;
+	_storedCursorBytes = 0;
 	_running = true;
 	_requestActive = true;
 	_requestQueued = false;
@@ -119,6 +121,7 @@ bool CloudVaultSyncController::startRequests(
 	_cursor.clear();
 	_candidateBytes = 0;
 	_pages = 0;
+	_storedCursorBytes = std::uint64_t(_cursor.size());
 	_running = true;
 	_requestActive = false;
 	_requestQueued = true;
@@ -231,10 +234,9 @@ void CloudVaultSyncController::pageReceived(
 		return;
 	} else if (page.nextCursor.isEmpty()
 		|| page.nextCursor.size() > kMaximumCursorSize
-		|| std::find(
-			std::begin(_seenCursors),
-			std::end(_seenCursors),
-			page.nextCursor) != std::end(_seenCursors)) {
+		|| _seenCursors.contains(page.nextCursor)
+		|| _storedCursorBytes > kMaximumStoredCursorBytes
+			- std::uint64_t(page.nextCursor.size())) {
 		finish({
 			.status = CloudVaultSyncStatus::InvalidPagination,
 			.vault = std::nullopt,
@@ -244,7 +246,8 @@ void CloudVaultSyncController::pageReceived(
 		return;
 	}
 	_cursor = std::move(page.nextCursor);
-	_seenCursors.push_back(_cursor);
+	_storedCursorBytes += std::uint64_t(_cursor.size());
+	_seenCursors.emplace(_cursor);
 	_requestQueued = true;
 	pumpRequests();
 }

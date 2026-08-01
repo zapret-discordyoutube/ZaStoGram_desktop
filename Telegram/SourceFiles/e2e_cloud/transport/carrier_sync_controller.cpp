@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/transport/carrier_sync_controller.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace E2ECloud {
@@ -16,6 +15,8 @@ namespace {
 inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
 inline constexpr auto kMaximumPagesPerRun = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumStoredCursorBytes
+	= std::uint64_t(128 * 1024 * 1024);
 
 } // namespace
 
@@ -50,8 +51,8 @@ CarrierSyncStartResult CarrierSyncController::start(QByteArray cursor) {
 		return CarrierSyncStartResult::InvalidCursor;
 	}
 	_stats = CarrierSyncStats{ .nextCursor = std::move(cursor) };
-	_seenCursors.clear();
-	_seenCursors.push_back(_stats.nextCursor);
+	_seenCursors = { _stats.nextCursor };
+	_storedCursorBytes = std::uint64_t(_stats.nextCursor.size());
 	_running = true;
 	_requestActive = false;
 	_requestQueued = true;
@@ -164,15 +165,15 @@ void CarrierSyncController::pageReceived(
 		return;
 	} else if (result.nextCursor.isEmpty()
 		|| result.nextCursor.size() > kMaximumCursorSize
-		|| std::find(
-			std::begin(_seenCursors),
-			std::end(_seenCursors),
-			result.nextCursor) != std::end(_seenCursors)) {
+		|| _seenCursors.contains(result.nextCursor)
+		|| _storedCursorBytes > kMaximumStoredCursorBytes
+			- std::uint64_t(result.nextCursor.size())) {
 		finish(CarrierSyncFinishReason::InvalidPagination);
 		return;
 	}
 	_stats.nextCursor = std::move(result.nextCursor);
-	_seenCursors.push_back(_stats.nextCursor);
+	_storedCursorBytes += std::uint64_t(_stats.nextCursor.size());
+	_seenCursors.emplace(_stats.nextCursor);
 	_requestQueued = true;
 	pumpRequests();
 }

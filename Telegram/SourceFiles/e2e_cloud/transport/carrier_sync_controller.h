@@ -15,7 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <vector>
+#include <set>
 
 namespace E2ECloud {
 
@@ -81,8 +81,9 @@ private:
 	InboundEnvelopeProcessor &_processor;
 	CompletionCallback _completionCallback;
 	CarrierSyncStats _stats;
-	std::vector<QByteArray> _seenCursors;
+	std::set<QByteArray> _seenCursors;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
+	std::uint64_t _storedCursorBytes = 0;
 	bool _running = false;
 	bool _requestActive = false;
 	bool _pumping = false;

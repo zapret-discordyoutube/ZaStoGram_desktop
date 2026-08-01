@@ -78,18 +78,22 @@ carrier-binding, signature, replay, MLS, and group-chain checks above the
 transport. Initial backfill continues until `complete`; live updates feed the
 same untrusted-object pipeline.
 
+Every long-running pagination controller tracks cursor uniqueness with an
+ordered set and caps the encoded cursor bytes retained by one run at 128 MiB.
+This keeps duplicate detection sublinear per page and prevents an active server
+from turning syntactically valid unique cursors into unbounded client memory.
+
 Content backfill first scans the bounded Telegram pages from newest to oldest
 without applying them. It records only opaque cursors, per-page SHA-256
 fingerprints, and the newest page, whose retained bytes share the transport's
 64 MiB cap. Stable older-page cursors are then fetched in reverse page order,
 fingerprint-checked, and handed to the protocol from oldest to newest. The
 newest page is applied from the bounded scan copy because an empty Telegram
-cursor moves whenever a new carrier arrives. Cursor retention is capped at
-128 MiB and one million pages. Any mutation of an older page between the scan
-and replay fails closed, and the saved overlap boundary advances only after
-the entire replay is persisted. A crash before that point restarts from the
-previous boundary, while object IDs and the inbound journal make the replay
-idempotent.
+cursor moves whenever a new carrier arrives. Any mutation of an older page
+between the scan and replay fails closed, and the saved overlap boundary
+advances only after the entire replay is persisted. A crash before that point
+restarts from the previous boundary, while object IDs and the inbound journal
+make the replay idempotent.
 
 A control reconstruction retains at most 65,536 matching objects and 512 MiB.
 This bound includes untrusted and ultimately ignored objects because an active

@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 namespace E2ECloud {
@@ -83,10 +84,11 @@ private:
 	QByteArray _password;
 	std::optional<CloudVaultAnchor> _localAnchor;
 	std::vector<QByteArray> _candidates;
-	std::vector<QByteArray> _seenCursors;
+	std::set<QByteArray> _seenCursors;
 	QByteArray _cursor;
 	std::uint64_t _candidateBytes = 0;
 	std::uint64_t _pages = 0;
+	std::uint64_t _storedCursorBytes = 0;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	bool _running = false;
 	bool _requestActive = false;
