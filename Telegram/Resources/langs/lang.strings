@@ -2601,7 +2601,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_carrier_activity" = "Protected encrypted activity";
 "lng_e2e_cloud_open_conversation" = "Open protected conversation";
 "lng_e2e_cloud_lock" = "Lock protected identity";
-"lng_e2e_cloud_recent_messages" = "Showing the latest {count} protected messages.";
+"lng_e2e_cloud_recent_messages#one" = "Showing the latest {count} protected message.";
+"lng_e2e_cloud_recent_messages#other" = "Showing the latest {count} protected messages.";
 "lng_create_channel_title" = "New Channel";
 "lng_create_public_channel_title" = "Public Channel";
 "lng_create_public_channel_about" = "Anyone can find the channel in search and join";
