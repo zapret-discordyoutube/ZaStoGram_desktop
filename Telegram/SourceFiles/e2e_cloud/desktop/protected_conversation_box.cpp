@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "ui/layers/generic_box.h"
+#include "ui/toast/toast.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
@@ -123,7 +124,7 @@ void CleanseRecords(std::vector<ProtectedContentRecord> &records) {
 }
 
 void SaveProtectedRecord(
-		not_null<const DesktopService*> service,
+		not_null<DesktopService*> service,
 		ConversationId conversationId,
 		ObjectId eventObjectId,
 		QString filename,
@@ -138,14 +139,23 @@ void SaveProtectedRecord(
 				(void)service->saveProtectedFile(
 					conversationId,
 					eventObjectId,
-					std::move(path));
+					std::move(path),
+					crl::guard(guard, [](ProtectedFileSaveResult result) {
+						const auto text = (result
+								== ProtectedFileSaveResult::Saved)
+							? tr::lng_e2e_cloud_file_saved(tr::now)
+							: (result == ProtectedFileSaveResult::Busy)
+							? tr::lng_e2e_cloud_file_busy(tr::now)
+							: tr::lng_e2e_cloud_file_save_failed(tr::now);
+						Ui::Toast::Show({ .text = text });
+					}));
 			}
 		}));
 }
 
 void RebuildConversationRecords(
 		not_null<Ui::VerticalLayout*> container,
-		const DesktopService &service,
+		DesktopService &service,
 		ConversationId conversationId,
 		not_null<std::size_t*> visibleLimit) {
 	container->clear();
@@ -262,7 +272,7 @@ void RebuildConversationRecords(
 
 void RebuildProtectedFiles(
 		not_null<Ui::VerticalLayout*> container,
-		const DesktopService &service,
+		DesktopService &service,
 		ConversationId conversationId,
 		not_null<std::size_t*> visibleLimit) {
 	container->clear();

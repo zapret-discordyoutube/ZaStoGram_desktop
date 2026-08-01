@@ -51,6 +51,14 @@ supported opaque carrier. The transport adapter owns Telegram size limits,
 retry, resume, and reference expiry. Cryptographic file identity must not depend
 on a mutable Telegram file reference.
 
+Each new file uses a distinct carrier name derived from its random 256-bit file
+identifier. Ordinary message synchronization therefore fetches manifests but
+not bulk ciphertext. Chunks are fetched only after an explicit Save request;
+the client verifies every signed envelope and authorization before placing it
+in the bounded encrypted cache. A missing or malicious stream cannot make the
+client scan before the manifest, retain more than 16 MiB in one page, or exceed
+the manifest-derived total download budget.
+
 The current Desktop pipeline uses 1 MiB chunks. Each stored chunk is wrapped in
 an account-signed content envelope that binds the carrier group, conversation,
 protected generation, sender account/client, file identifier, chunk index and
@@ -96,6 +104,12 @@ authorized file rather than relying on Telegram-visible filenames. Local chunk
 ledger reads validate the protected file length before allocation, so a damaged
 or oversized ledger file fails closed without consuming memory proportional to
 its claimed filesystem size.
+
+Save is asynchronous when chunks are not cached. Only one file download per
+protected conversation runs at a time, and the UI reports success only after
+the atomic destination commit. Retryable transport failure, missing chunks,
+pagination manipulation, quota exhaustion, or digest failure leaves no partial
+destination file.
 
 Previews must be generated locally from authenticated plaintext. The client must
 not upload plaintext thumbnails or media metadata to Telegram.

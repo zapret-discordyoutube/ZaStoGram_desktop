@@ -659,6 +659,42 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     assert "|| !_pending->manifestPublished" in transfer
 
 
+def verify_file_chunks_download_only_on_demand() -> None:
+    carrier = source(
+        "SourceFiles/e2e_cloud/transport/telegram_carrier_transport.cpp"
+    )
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    upload = function_body(
+        service,
+        "bool DesktopService::pumpFileTransfer(",
+        "void DesktopService::completeFileChunkUpload(",
+    )
+    incoming = function_body(
+        service,
+        "void DesktopService::handleNewTelegramItem(",
+        "void DesktopService::queueGroupDiscovery(",
+    )
+    download = function_body(
+        service,
+        "bool DesktopService::beginFileChunkDownload(",
+        "FileChunkDownloadPageStatus "
+        "DesktopService::processFileChunkDownloadPage(",
+    )
+
+    assert "ProtectedFileChunkCarrierFilename(" in carrier
+    assert "DecodeFileChunkEnvelopeMetadata(" in carrier
+    assert "group.transport.uploadExact(" in upload
+    assert "group.contentTransport.uploadExact(" not in upload
+    assert "ProtectedFileChunkCarrierFilename(" not in incoming
+    assert "ProtectedFileChunkCarrierFilename(" in download
+    assert "kFileDownloadPageBytes" in download
+    assert "minimumMessageIdExclusive" in backend
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -687,6 +723,7 @@ def main() -> None:
     verify_protected_plaintext_is_loaded_by_page()
     verify_local_record_reads_are_bounded()
     verify_file_chunks_require_manifests_and_quota()
+    verify_file_chunks_download_only_on_demand()
 
 
 if __name__ == "__main__":

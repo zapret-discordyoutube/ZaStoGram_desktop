@@ -48,6 +48,8 @@ struct VerifiedFileChunkEnvelope {
 	std::uint32_t chunkCount = 0;
 };
 
+[[nodiscard]] std::optional<FileChunkEnvelopeMetadata>
+DecodeFileChunkEnvelopeMetadata(const TransportEnvelope &envelope);
 [[nodiscard]] ObjectId DeriveFileChunkObjectId(
 	ConversationId conversationId,
 	FileId fileId,

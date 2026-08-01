@@ -207,6 +207,8 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		QString filename,
 		QString mimeType,
 		int maximumObjectSize,
+		int maximumDownloadPageBytes,
+		int minimumMessageIdExclusive,
 		bool protectedCarrierFamily)
 	: session(session)
 	, peerId(history->peer->id)
@@ -214,6 +216,8 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	, filename(std::move(filename))
 	, mimeType(std::move(mimeType))
 	, maximumObjectSize(maximumObjectSize)
+	, maximumDownloadPageBytes(maximumDownloadPageBytes)
+	, minimumMessageIdExclusive(minimumMessageIdExclusive)
 	, protectedCarrierFamily(protectedCarrierFamily)
 	, api(&session->mtp()) {
 		session->uploader().documentReady(
@@ -482,7 +486,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			MTP_int(0),
 			MTP_int(limit),
 			MTP_int(0),
-			MTP_int(0),
+			MTP_int(minimumMessageIdExclusive),
 			MTP_long(0)
 		)).done([weak = base::weak_ptr(this), limit, token](
 				const MTPmessages_Messages &result) {
@@ -710,7 +714,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 				continue;
 			}
 			if (retainedBytes + document->size
-					> kMaximumDownloadPageBytes) {
+					> maximumDownloadPageBytes) {
 				download->complete = false;
 				break;
 			}
@@ -841,6 +845,8 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 	const QString filename;
 	const QString mimeType;
 	const int maximumObjectSize = 0;
+	const int maximumDownloadPageBytes = 0;
+	const int minimumMessageIdExclusive = 0;
 	const bool protectedCarrierFamily = false;
 	MTP::Sender api;
 	std::map<FullMsgId, PendingUpload> uploads;
@@ -866,6 +872,8 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 	  ProtectedLegacyCarrierFilename(),
 	  ProtectedCarrierMimeType(),
 	  kMaximumCarrierObjectSize,
+	  kMaximumDownloadPageBytes,
+	  0,
 	  true)) {
 }
 
@@ -875,11 +883,16 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 		std::uint64_t telegramPeerIdBinding,
 		QString filename,
 		QString mimeType,
-		int maximumObjectSize)
+		int maximumObjectSize,
+		int maximumDownloadPageBytes,
+		int minimumMessageIdExclusive)
 : _state((!filename.isEmpty()
 		&& !mimeType.isEmpty()
 		&& maximumObjectSize > 0
-		&& maximumObjectSize <= kMaximumCarrierObjectSize)
+		&& maximumObjectSize <= kMaximumCarrierObjectSize
+		&& maximumDownloadPageBytes >= maximumObjectSize
+		&& maximumDownloadPageBytes <= kMaximumDownloadPageBytes
+		&& minimumMessageIdExclusive >= 0)
 		? std::make_unique<State>(
 			session,
 			history,
@@ -887,6 +900,8 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 			std::move(filename),
 			std::move(mimeType),
 			maximumObjectSize,
+			maximumDownloadPageBytes,
+			minimumMessageIdExclusive,
 			false)
 		: nullptr) {
 }

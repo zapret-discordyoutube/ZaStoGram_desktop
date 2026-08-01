@@ -522,9 +522,15 @@ public:
 	const auto verified = (identity && decoded)
 		? VerifyFileChunkEnvelope(*decoded, identity->credential, sha256)
 		: std::nullopt;
+	const auto metadata = decoded
+		? DecodeFileChunkEnvelopeMetadata(*decoded)
+		: std::nullopt;
 	if (!prepared
 		|| !decoded
 		|| !verified
+		|| !metadata
+		|| metadata->fileId != context.fileId
+		|| metadata->chunkIndex != 1
 		|| verified->fileId != context.fileId
 		|| verified->chunkIndex != 1
 		|| verified->chunkCount != context.chunkCount) {

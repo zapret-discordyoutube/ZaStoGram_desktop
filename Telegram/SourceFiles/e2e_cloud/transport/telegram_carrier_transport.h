@@ -23,8 +23,12 @@ namespace E2ECloud {
 [[nodiscard]] QString ProtectedLegacyCarrierFilename();
 [[nodiscard]] QString ProtectedControlCarrierFilename();
 [[nodiscard]] QString ProtectedContentCarrierFilename();
+[[nodiscard]] QString ProtectedFileChunkCarrierFilename(FileId fileId);
+[[nodiscard]] std::optional<FileId> ProtectedFileChunkCarrierFileId(
+	const QString &filename);
 [[nodiscard]] QString ProtectedCarrierMimeType();
 [[nodiscard]] int ProtectedCarrierMaximumObjectSize();
+[[nodiscard]] int ProtectedFileChunkMaximumObjectSize();
 [[nodiscard]] bool IsProtectedGroupCarrierMetadata(
 	const QString &filename,
 	const QString &mimeType);

@@ -44,10 +44,13 @@ cryptographic proof by themselves.
 
 Version one uses an ordinary Telegram document for every protocol envelope.
 The document body is the exact version-one envelope. Control objects use the
-fixed filename `protected-control.tde2e`; messages, manifests, MLS content
-descriptors, and encrypted chunks use `protected-content.tde2e`. The MIME type
-is always `application/octet-stream`, and the caption is empty. The protected
-client does not upload previews or original application-file metadata.
+fixed filename `protected-control.tde2e`; messages, manifests, and MLS content
+descriptors use `protected-content.tde2e`. A file chunk uses
+`protected-file-<random-file-id>.tde2e`. The random identifier is already
+present in the chunk's signed authentication data and reveals neither the
+original filename nor its MIME type. The MIME type is always
+`application/octet-stream`, and the caption is empty. The protected client does
+not upload previews or original application-file metadata.
 
 The carrier representation supports:
 
@@ -78,6 +81,14 @@ carrier-binding, signature, replay, MLS, and group-chain checks above the
 transport. Initial backfill continues until `complete`; live updates feed the
 same untrusted-object pipeline.
 
+File chunks are excluded from ordinary content backfill. Selecting Save creates
+an exact-filename search for that file only, starts after the authenticated
+manifest's Telegram message identifier, and stops as soon as every authorized
+chunk is available. It caps each retained page at 16 MiB and independently caps
+pages, objects, and total bytes from the authenticated manifest layout. Older
+clients that used `protected-content.tde2e` remain readable through the same
+bounded search as a one-time fallback after the per-file search is empty.
+
 Every long-running pagination controller tracks cursor uniqueness with an
 ordered set and caps the encoded cursor bytes retained by one run at 128 MiB.
 This keeps duplicate detection sublinear per page and prevents an active server
@@ -107,7 +118,7 @@ The desktop adapter reuses Telegram Desktop's uploader, but does not create a
 visible local plaintext message. Upload readiness yields an in-memory
 `InputFile`; only a successful empty-caption, force-file `messages.sendMedia`
 acknowledges the protected outbox. Downloads use `messages.search` with the
-document filter, accept only the matching fixed filename and MIME type, and
+document filter, accept only the matching exact filename and MIME type, and
 stage document bytes in an auto-removed temporary directory before handing
 them upward.
 

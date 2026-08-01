@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/core/envelope_codec.h"
 #include "e2e_cloud/identity/openssl_account_crypto.h"
 #include "e2e_cloud/transport/carrier_sync_controller.h"
+#include "e2e_cloud/transport/file_chunk_download_controller.h"
 #include "e2e_cloud/transport/observed_content_sync_controller.h"
 #include "e2e_cloud/transport/public_bootstrap_sync_controller.h"
 
@@ -893,6 +894,132 @@ private:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioFileDownloadStopsWhenChunksArrive() {
+	auto transport = TestTransport();
+	transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				{
+					.bytes = QByteArray("chunk two"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedMessageId = 12,
+				},
+				{
+					.bytes = QByteArray("chunk one"),
+					.observedTelegramPeerIdBinding = 42,
+					.observedMessageId = 11,
+				},
+			},
+			.nextCursor = QByteArray("unused"),
+			.complete = false,
+		},
+	};
+	auto completion = std::optional<FileChunkDownloadCompletion>();
+	auto controller = FileChunkDownloadController(
+		FilledId<ConversationId>(1),
+		42,
+		10,
+		4,
+		4,
+		1024,
+		transport,
+		[](std::vector<TelegramTransport::UntrustedObject> objects) {
+			return (objects.size() == 2)
+				? FileChunkDownloadPageStatus::Complete
+				: FileChunkDownloadPageStatus::PersistenceFailed;
+		},
+		[&](FileChunkDownloadCompletion result) {
+			completion = result;
+		});
+	if (!controller.start()
+		|| !completion
+		|| completion->status != FileChunkDownloadStatus::Complete
+		|| completion->pages != 1
+		|| completion->objects != 2
+		|| transport.requests.size() != 1) {
+		return Fail("file download did not stop after all chunks arrived");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioFileDownloadRejectsOldOrReorderedObjects() {
+	for (const auto messages : {
+			std::vector<std::int64_t>{ 10 },
+			std::vector<std::int64_t>{ 12, 13 },
+		}) {
+		auto transport = TestTransport();
+		auto objects = std::vector<TelegramTransport::UntrustedObject>();
+		for (const auto messageId : messages) {
+			objects.push_back({
+				.bytes = QByteArray("chunk"),
+				.observedTelegramPeerIdBinding = 42,
+				.observedMessageId = messageId,
+			});
+		}
+		transport.pages = {{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = std::move(objects),
+			.nextCursor = {},
+			.complete = true,
+		}};
+		auto status = std::optional<FileChunkDownloadStatus>();
+		auto controller = FileChunkDownloadController(
+			FilledId<ConversationId>(1),
+			42,
+			10,
+			4,
+			4,
+			1024,
+			transport,
+			[](auto) {
+				return FileChunkDownloadPageStatus::Incomplete;
+			},
+			[&](FileChunkDownloadCompletion result) {
+				status = result.status;
+			});
+		if (!controller.start()
+			|| status != FileChunkDownloadStatus::SecurityBlocked) {
+			return Fail("file download accepted old or reordered objects");
+		}
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioFileDownloadEnforcesByteLimit() {
+	auto transport = TestTransport();
+	transport.pages = {{
+		.result = TelegramTransport::UploadResult::Accepted,
+		.untrustedObjects = {{
+			.bytes = QByteArray(17, 'x'),
+			.observedTelegramPeerIdBinding = 42,
+			.observedMessageId = 12,
+		}},
+		.nextCursor = {},
+		.complete = true,
+	}};
+	auto status = std::optional<FileChunkDownloadStatus>();
+	auto controller = FileChunkDownloadController(
+		FilledId<ConversationId>(1),
+		42,
+		10,
+		4,
+		4,
+		16,
+		transport,
+		[](auto) {
+			return FileChunkDownloadPageStatus::Incomplete;
+		},
+		[&](FileChunkDownloadCompletion result) {
+			status = result.status;
+		});
+	if (!controller.start()
+		|| status != FileChunkDownloadStatus::LimitExceeded) {
+		return Fail("file download exceeded its byte budget");
+	}
+	return 0;
+}
+
 } // namespace
 
 int main(int, char *[]) {
@@ -913,6 +1040,9 @@ int main(int, char *[]) {
 		ScenarioJoinSyncDropsUnboundedControlNoise,
 		ScenarioControlSyncRejectsMissingBoundary,
 		ScenarioControlSyncRejectsReordering,
+		ScenarioFileDownloadStopsWhenChunksArrive,
+		ScenarioFileDownloadRejectsOldOrReorderedObjects,
+		ScenarioFileDownloadEnforcesByteLimit,
 	}) {
 		if (const auto result = scenario()) {
 			return result;

@@ -323,10 +323,11 @@ authorize admission.
 
 Use `protected-control.tde2e` for group authority, credentials, KeyPackages,
 freshness, and safety gossip, and `protected-content.tde2e` for encrypted
-messages, MLS content descriptors, file manifests, and chunks. Keep both in the
-same private Telegram carrier group with the same generic MIME type and empty
-caption. This lets content use a protected incremental observation boundary
-without allowing Telegram message order to become group authority.
+messages, MLS content descriptors, and file manifests. File chunks use the
+per-file carrier selected in D041. Keep every stream in the same private
+Telegram carrier group with the same generic MIME type and empty caption. This
+lets content use a protected incremental observation boundary without allowing
+Telegram message order to become group authority.
 
 ### D036: Signed deterministic checkpoint gossip
 
@@ -387,3 +388,15 @@ after an empty result and show password unlock only after a carrier is present.
 Discovery never parses or accepts the encrypted bytes and cannot bypass normal
 vault selection after password entry. Retryable discovery failure exposes only
 a retry action, not an unsafe create-or-unlock guess.
+
+### D041: Fetch file ciphertext only on explicit Save
+
+Publish each new encrypted chunk under an exact carrier filename derived from
+the manifest's random file identifier. Do not route this carrier into ordinary
+content observation. An explicit Save performs a bounded, manifest-authorized
+search after the manifest message, verifies and caches only matching chunks,
+and atomically reconstructs the plaintext after all chunks arrive. Keep a
+bounded `protected-content.tde2e` fallback for chunks uploaded by older clients.
+This prevents a large file or hostile member from turning every chat refresh
+into gigabytes of automatic downloads without changing Telegram's role as the
+only opaque remote store.

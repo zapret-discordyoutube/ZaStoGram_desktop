@@ -2568,6 +2568,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_send" = "Send encrypted";
 "lng_e2e_cloud_send_file" = "Send encrypted file";
 "lng_e2e_cloud_save_file" = "Save encrypted file";
+"lng_e2e_cloud_file_saved" = "Encrypted file saved.";
+"lng_e2e_cloud_file_busy" = "Another encrypted file is already being downloaded.";
+"lng_e2e_cloud_file_save_failed" = "The encrypted file could not be downloaded or verified.";
 "lng_e2e_cloud_files" = "Encrypted files";
 "lng_e2e_cloud_security" = "Security and participants";
 "lng_e2e_cloud_group_code" = "Group safety code:\n{code}";

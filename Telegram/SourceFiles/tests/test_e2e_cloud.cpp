@@ -989,6 +989,8 @@ public:
 
 [[nodiscard]] int ScenarioCarrierMetadataRecognitionIsExact() {
 	const auto mime = ProtectedCarrierMimeType();
+	const auto fileId = FilledId<FileId>(9);
+	const auto fileChunk = ProtectedFileChunkCarrierFilename(fileId);
 	if (!IsProtectedGroupCarrierMetadata(
 			ProtectedLegacyCarrierFilename(),
 			mime)
@@ -998,6 +1000,13 @@ public:
 		|| !IsProtectedGroupCarrierMetadata(
 			ProtectedContentCarrierFilename(),
 			mime)
+		|| !IsProtectedGroupCarrierMetadata(fileChunk, mime)
+		|| ProtectedFileChunkCarrierFileId(fileChunk) != fileId
+		|| ProtectedFileChunkCarrierFilename(FileId()).size()
+		|| ProtectedFileChunkCarrierFileId(
+			fileChunk.toUpper()).has_value()
+		|| ProtectedFileChunkCarrierFileId(
+			fileChunk + QString::fromLatin1("x")).has_value()
 		|| !IsProtectedVaultCarrierMetadata(
 			CloudVaultCarrierFilename(),
 			mime)

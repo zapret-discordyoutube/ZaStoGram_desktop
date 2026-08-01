@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/transport/telegram_carrier_transport.h"
 
 #include "e2e_cloud/core/envelope_codec.h"
+#include "e2e_cloud/files/file_chunk_envelope.h"
 
 #include <algorithm>
 #include <array>
@@ -17,12 +18,14 @@ namespace E2ECloud {
 namespace {
 
 inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
+inline constexpr auto kMaximumFileChunkObjectSize = 5 * 1024 * 1024;
+inline constexpr auto kFileChunkPrefix = "protected-file-";
+inline constexpr auto kFileChunkSuffix = ".tde2e";
 
 [[nodiscard]] bool ContentKind(ObjectKind kind) {
 	return kind == ObjectKind::MlsApplication
 		|| kind == ObjectKind::EncryptedMessageBody
-		|| kind == ObjectKind::EncryptedFileManifest
-		|| kind == ObjectKind::EncryptedFileChunk;
+		|| kind == ObjectKind::EncryptedFileManifest;
 }
 
 } // namespace
@@ -39,12 +42,57 @@ QString ProtectedContentCarrierFilename() {
 	return QString::fromLatin1("protected-content.tde2e");
 }
 
+QString ProtectedFileChunkCarrierFilename(FileId fileId) {
+	if (!fileId) {
+		return {};
+	}
+	const auto bytes = QByteArray(
+		reinterpret_cast<const char*>(fileId.bytes.data()),
+		fileId.bytes.size());
+	return QString::fromLatin1(kFileChunkPrefix)
+		+ QString::fromLatin1(bytes.toHex())
+		+ QString::fromLatin1(kFileChunkSuffix);
+}
+
+std::optional<FileId> ProtectedFileChunkCarrierFileId(
+		const QString &filename) {
+	const auto prefix = QString::fromLatin1(kFileChunkPrefix);
+	const auto suffix = QString::fromLatin1(kFileChunkSuffix);
+	constexpr auto kEncodedFileIdSize = int(FileId().bytes.size() * 2);
+	if (filename.size() != prefix.size() + kEncodedFileIdSize + suffix.size()
+		|| !filename.startsWith(prefix)
+		|| !filename.endsWith(suffix)) {
+		return std::nullopt;
+	}
+	const auto encoded = filename.mid(prefix.size(), kEncodedFileIdSize);
+	if (!std::all_of(encoded.begin(), encoded.end(), [](QChar value) {
+			return (value >= u'0' && value <= u'9')
+				|| (value >= u'a' && value <= u'f');
+		})) {
+		return std::nullopt;
+	}
+	const auto decoded = QByteArray::fromHex(encoded.toLatin1());
+	auto result = FileId();
+	if (decoded.size() != int(result.bytes.size())) {
+		return std::nullopt;
+	}
+	std::copy_n(
+		reinterpret_cast<const std::uint8_t*>(decoded.constData()),
+		result.bytes.size(),
+		result.bytes.begin());
+	return result ? std::optional<FileId>(result) : std::nullopt;
+}
+
 QString ProtectedCarrierMimeType() {
 	return QString::fromLatin1("application/octet-stream");
 }
 
 int ProtectedCarrierMaximumObjectSize() {
 	return kMaximumCarrierObjectSize;
+}
+
+int ProtectedFileChunkMaximumObjectSize() {
+	return kMaximumFileChunkObjectSize;
 }
 
 bool IsProtectedGroupCarrierMetadata(
@@ -59,7 +107,8 @@ bool IsProtectedGroupCarrierMetadata(
 		ProtectedContentCarrierFilename(),
 	};
 	return std::find(begin(filenames), end(filenames), filename)
-		!= end(filenames);
+		!= end(filenames)
+		|| ProtectedFileChunkCarrierFileId(filename).has_value();
 }
 
 struct TelegramCarrierTransport::CallbackGuard {
@@ -103,9 +152,23 @@ void TelegramCarrierTransport::uploadExact(
 		return;
 	}
 	const auto objectId = envelope.objectId;
-	const auto filename = ContentKind(decoded->objectKind)
-		? ProtectedContentCarrierFilename()
-		: ProtectedControlCarrierFilename();
+	const auto chunkMetadata = DecodeFileChunkEnvelopeMetadata(*decoded);
+	if (decoded->objectKind == ObjectKind::EncryptedFileChunk
+		&& (!chunkMetadata
+			|| envelope.bytes.size() > kMaximumFileChunkObjectSize)) {
+		callback(UploadResult::PermanentError);
+		return;
+	}
+	const auto filename = chunkMetadata
+		? ProtectedFileChunkCarrierFilename(chunkMetadata->fileId)
+		: ContentKind(decoded->objectKind)
+			? ProtectedContentCarrierFilename()
+			: ProtectedControlCarrierFilename();
+	if (decoded->objectKind == ObjectKind::EncryptedFileChunk
+		&& filename.isEmpty()) {
+		callback(UploadResult::PermanentError);
+		return;
+	}
 	_activeUpload = ActiveUpload{
 		.objectId = objectId,
 		.filename = filename,

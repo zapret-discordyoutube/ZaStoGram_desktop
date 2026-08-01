@@ -45,6 +45,13 @@ struct ObservedContentProcessOutcome {
 	ObservedContentProcessStats stats;
 };
 
+struct ObservedFileChunkProcessOutcome {
+	ObservedContentProcessStatus status
+		= ObservedContentProcessStatus::InvalidState;
+	ObservedContentProcessStats stats;
+	std::vector<std::uint32_t> availableChunkIndices;
+};
+
 [[nodiscard]] ObservedContentProcessOutcome
 ProcessObservedFileManifestPreview(
 	const std::vector<TelegramTransport::UntrustedObject> &objects,
@@ -53,6 +60,16 @@ ProcessObservedFileManifestPreview(
 	const EnvelopeCodec &envelopeCodec,
 	const Sha256Provider &sha256,
 	PersistentArchiveState &archiveState,
+	PersistentGroupLedger &groupLedger,
+	PersistentContentStore &contentStore,
+	FileChunkCiphertextStore &chunkStore);
+
+[[nodiscard]] ObservedFileChunkProcessOutcome ProcessObservedFileChunkPage(
+	const std::vector<TelegramTransport::UntrustedObject> &objects,
+	FileId expectedFileId,
+	OpenMlsClientContext local,
+	const EnvelopeCodec &envelopeCodec,
+	const Sha256Provider &sha256,
 	PersistentGroupLedger &groupLedger,
 	PersistentContentStore &contentStore,
 	FileChunkCiphertextStore &chunkStore);

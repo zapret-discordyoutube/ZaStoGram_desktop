@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/desktop/desktop_service.h"
 
 #include "base/unixtime.h"
+#include "crl/crl.h"
 #include "core/application.h"
 #include "data/data_session.h"
 #include "data/data_peer.h"
@@ -49,6 +50,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/persistent_mls_state.h"
 #include "e2e_cloud/storage/persistent_outbox.h"
 #include "e2e_cloud/transport/telegram_carrier_transport.h"
+#include "e2e_cloud/transport/file_chunk_download_controller.h"
 #include "e2e_cloud/transport/observed_content_sync_controller.h"
 #include "e2e_cloud/transport/outbox_upload_controller.h"
 #include "main/main_session.h"
@@ -243,6 +245,11 @@ void Cleanse(QByteArray &bytes) {
 }
 
 inline constexpr auto kDesktopFileChunkSize = std::uint32_t(1024 * 1024);
+inline constexpr auto kFileDownloadPageBytes = 16 * 1024 * 1024;
+inline constexpr auto kFileDownloadExtraObjects = std::uint64_t(1024);
+inline constexpr auto kFileDownloadExtraPages = std::uint64_t(1024);
+inline constexpr auto kFileDownloadExtraBytes
+	= std::uint64_t(16) * 1024 * 1024;
 
 struct HashedFile {
 	std::uint64_t size = 0;
@@ -307,6 +314,15 @@ struct DesktopService::PendingGroupCreation {
 		AwaitingAdmission,
 		Active,
 		Removed,
+	};
+
+	struct PendingFileDownload {
+		ObjectId eventObjectId;
+		FileId fileId;
+		QString path;
+		std::set<std::uint32_t> missingChunkIndices;
+		std::function<void(ProtectedFileSaveResult)> callback;
+		bool legacyCarrier = false;
 	};
 
 	PendingGroupCreation(
@@ -454,6 +470,10 @@ struct DesktopService::PendingGroupCreation {
 	std::optional<PreparedCloudVaultUpdate> vaultUpdate;
 	std::unique_ptr<PublicBootstrapSyncController> observation;
 	std::unique_ptr<ObservedContentSyncController> contentObservation;
+	std::unique_ptr<TelegramSessionCarrierBackend> fileDownloadBackend;
+	std::unique_ptr<TelegramCarrierTransport> fileDownloadTransport;
+	std::unique_ptr<FileChunkDownloadController> fileDownloadController;
+	std::optional<PendingFileDownload> pendingFileDownload;
 	std::set<AccountId> safetyWitnesses;
 	std::uint64_t safetyWitnessGeneration = 0;
 	bool ownSafetyGossipObserved = false;
@@ -1234,7 +1254,8 @@ bool DesktopService::sendProtectedFile(
 bool DesktopService::saveProtectedFile(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
-		QString path) const {
+		QString path,
+		std::function<void(ProtectedFileSaveResult)> callback) {
 	const auto i = _groups.find(conversationId);
 	auto record = (i != end(_groups))
 		? i->second->contentStore.record(eventObjectId)
@@ -1248,10 +1269,260 @@ bool DesktopService::saveProtectedFile(
 		&& record->objectKind == ObjectKind::EncryptedFileManifest)
 		? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
 		: std::nullopt;
-	if (!manifest || path.isEmpty()) {
+	if (!manifest
+		|| path.isEmpty()
+		|| record->observedTelegramMessageId <= 0
+		|| record->observedTelegramMessageId
+			> std::numeric_limits<int>::max()) {
+		if (callback) {
+			callback(ProtectedFileSaveResult::InvalidRequest);
+		}
 		return false;
 	}
-	auto output = QSaveFile(path);
+	auto &group = *i->second;
+	if (group.pendingFileDownload) {
+		if (callback) {
+			callback(ProtectedFileSaveResult::Busy);
+		}
+		return false;
+	}
+	auto missing = std::set<std::uint32_t>();
+	for (auto index = std::uint32_t();
+		index != manifest->context.chunkCount;
+		++index) {
+		const auto stored = group.chunkStore.read(
+			conversationId,
+			manifest->context.fileId,
+			index);
+		if (stored.status == FileChunkReadStatus::Error) {
+			if (callback) {
+				callback(ProtectedFileSaveResult::LocalFailure);
+			}
+			return false;
+		} else if (stored.status == FileChunkReadStatus::Missing) {
+			missing.emplace(index);
+		}
+	}
+	group.pendingFileDownload = PendingGroupCreation::PendingFileDownload{
+		.eventObjectId = eventObjectId,
+		.fileId = manifest->context.fileId,
+		.path = std::move(path),
+		.missingChunkIndices = std::move(missing),
+		.callback = std::move(callback),
+		.legacyCarrier = false,
+	};
+	if (group.pendingFileDownload->missingChunkIndices.empty()) {
+		const auto saved = writePendingProtectedFile(conversationId);
+		finishFileChunkDownload(
+			conversationId,
+			saved
+				? ProtectedFileSaveResult::Saved
+				: ProtectedFileSaveResult::LocalFailure);
+		return saved;
+	}
+	if (!beginFileChunkDownload(conversationId, false)) {
+		finishFileChunkDownload(
+			conversationId,
+			ProtectedFileSaveResult::LocalFailure);
+		return false;
+	}
+	return true;
+}
+
+bool DesktopService::beginFileChunkDownload(
+		ConversationId conversationId,
+		bool legacyCarrier) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !i->second->pendingFileDownload) {
+		return false;
+	}
+	auto &group = *i->second;
+	auto record = group.contentStore.record(
+		group.pendingFileDownload->eventObjectId);
+	const auto recordGuard = qScopeGuard([&] {
+		if (record) {
+			Cleanse(record->plaintext);
+		}
+	});
+	const auto manifest = (record
+		&& record->objectKind == ObjectKind::EncryptedFileManifest)
+		? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
+		: std::nullopt;
+	if (!manifest
+		|| manifest->context.fileId != group.pendingFileDownload->fileId
+		|| record->observedTelegramMessageId <= 0
+		|| record->observedTelegramMessageId
+			> std::numeric_limits<int>::max()) {
+		return false;
+	}
+	const auto chunkCount = std::uint64_t(manifest->context.chunkCount);
+	if (chunkCount > std::numeric_limits<std::uint64_t>::max()
+			- kFileDownloadExtraObjects
+		|| chunkCount > (std::numeric_limits<std::uint64_t>::max()
+			- kFileDownloadExtraBytes
+			- manifest->context.plaintextSize) / 2048) {
+		return false;
+	}
+	const auto maximumObjects = chunkCount + kFileDownloadExtraObjects;
+	const auto maximumPages = (maximumObjects + 99) / 100
+		+ kFileDownloadExtraPages;
+	const auto maximumBytes = manifest->context.plaintextSize
+		+ (chunkCount * 2048)
+		+ kFileDownloadExtraBytes;
+	const auto filename = legacyCarrier
+		? ProtectedContentCarrierFilename()
+		: ProtectedFileChunkCarrierFilename(manifest->context.fileId);
+	group.pendingFileDownload->legacyCarrier = legacyCarrier;
+	group.fileDownloadController.reset();
+	group.fileDownloadTransport.reset();
+	group.fileDownloadBackend = std::make_unique<
+		TelegramSessionCarrierBackend>(
+			_session,
+			_session->data().history(PeerId(group.telegramPeerIdBinding)),
+			group.telegramPeerIdBinding,
+			filename,
+			ProtectedCarrierMimeType(),
+			ProtectedFileChunkMaximumObjectSize(),
+			kFileDownloadPageBytes,
+			int(record->observedTelegramMessageId));
+	group.fileDownloadTransport = std::make_unique<TelegramCarrierTransport>(
+		conversationId,
+		group.telegramPeerIdBinding,
+		*group.fileDownloadBackend);
+	group.fileDownloadController = std::make_unique<
+		FileChunkDownloadController>(
+			conversationId,
+			group.telegramPeerIdBinding,
+			record->observedTelegramMessageId,
+			maximumPages,
+			maximumObjects,
+			maximumBytes,
+			*group.fileDownloadTransport,
+			[weak = base::weak_ptr(this), conversationId](
+					std::vector<TelegramTransport::UntrustedObject> objects) {
+				return weak
+					? weak->processFileChunkDownloadPage(
+						conversationId,
+						std::move(objects))
+					: FileChunkDownloadPageStatus::PersistenceFailed;
+			},
+			[weak = base::weak_ptr(this), conversationId](
+					FileChunkDownloadCompletion completion) {
+				crl::on_main([weak, conversationId, completion] {
+					if (weak) {
+						weak->applyFileChunkDownload(
+							conversationId,
+							completion);
+					}
+				});
+			});
+	return group.fileDownloadController->start();
+}
+
+FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
+		ConversationId conversationId,
+		std::vector<TelegramTransport::UntrustedObject> objects) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !i->second->pendingFileDownload) {
+		return FileChunkDownloadPageStatus::PersistenceFailed;
+	}
+	auto &group = *i->second;
+	const auto metadata = group.metadata.metadata();
+	if (!metadata) {
+		return FileChunkDownloadPageStatus::PersistenceFailed;
+	}
+	const auto processed = ProcessObservedFileChunkPage(
+		objects,
+		group.pendingFileDownload->fileId,
+		{
+			.conversationId = conversationId,
+			.accountId = metadata->accountId,
+			.clientId = metadata->clientId,
+			.telegramPeerIdBinding = group.telegramPeerIdBinding,
+		},
+		group.envelopeCodec,
+		_sha256,
+		group.groupLedger,
+		group.contentStore,
+		group.chunkStore);
+	if (processed.status == ObservedContentProcessStatus::SecurityBlocked) {
+		return FileChunkDownloadPageStatus::SecurityBlocked;
+	} else if (processed.status != ObservedContentProcessStatus::Processed) {
+		return FileChunkDownloadPageStatus::PersistenceFailed;
+	}
+	for (const auto index : processed.availableChunkIndices) {
+		group.pendingFileDownload->missingChunkIndices.erase(index);
+	}
+	return group.pendingFileDownload->missingChunkIndices.empty()
+		? FileChunkDownloadPageStatus::Complete
+		: FileChunkDownloadPageStatus::Incomplete;
+}
+
+void DesktopService::applyFileChunkDownload(
+		ConversationId conversationId,
+		FileChunkDownloadCompletion completion) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !i->second->pendingFileDownload) {
+		return;
+	}
+	auto &group = *i->second;
+	const auto wasLegacy = group.pendingFileDownload->legacyCarrier;
+	group.fileDownloadController.reset();
+	group.fileDownloadTransport.reset();
+	group.fileDownloadBackend.reset();
+	if (completion.status == FileChunkDownloadStatus::Complete) {
+		const auto saved = writePendingProtectedFile(conversationId);
+		finishFileChunkDownload(
+			conversationId,
+			saved
+				? ProtectedFileSaveResult::Saved
+				: ProtectedFileSaveResult::LocalFailure);
+		return;
+	} else if (completion.status == FileChunkDownloadStatus::Missing
+		&& !wasLegacy) {
+		if (beginFileChunkDownload(conversationId, true)) {
+			return;
+		}
+	}
+	const auto result = (completion.status
+			== FileChunkDownloadStatus::RetryableTransportError)
+		? ProtectedFileSaveResult::RetryableTransportError
+		: (completion.status
+			== FileChunkDownloadStatus::PermanentTransportError)
+		? ProtectedFileSaveResult::PermanentTransportError
+		: (completion.status == FileChunkDownloadStatus::SecurityBlocked
+			|| completion.status == FileChunkDownloadStatus::InvalidPagination
+			|| completion.status == FileChunkDownloadStatus::LimitExceeded)
+		? ProtectedFileSaveResult::SecurityBlocked
+		: (completion.status == FileChunkDownloadStatus::Missing)
+		? ProtectedFileSaveResult::MissingChunks
+		: ProtectedFileSaveResult::LocalFailure;
+	finishFileChunkDownload(conversationId, result);
+}
+
+bool DesktopService::writePendingProtectedFile(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !i->second->pendingFileDownload) {
+		return false;
+	}
+	auto &group = *i->second;
+	auto record = group.contentStore.record(
+		group.pendingFileDownload->eventObjectId);
+	const auto recordGuard = qScopeGuard([&] {
+		if (record) {
+			Cleanse(record->plaintext);
+		}
+	});
+	const auto manifest = (record
+		&& record->objectKind == ObjectKind::EncryptedFileManifest)
+		? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
+		: std::nullopt;
+	if (!manifest
+		|| manifest->context.fileId != group.pendingFileDownload->fileId) {
+		return false;
+	}
+	auto output = QSaveFile(group.pendingFileDownload->path);
 	if (!output.open(QIODevice::WriteOnly)) {
 		return false;
 	}
@@ -1267,7 +1538,7 @@ bool DesktopService::saveProtectedFile(
 	for (auto index = std::uint32_t();
 			index != manifest->context.chunkCount;
 			++index) {
-		const auto stored = i->second->chunkStore.read(
+		const auto stored = group.chunkStore.read(
 			conversationId,
 			manifest->context.fileId,
 			index);
@@ -1309,6 +1580,24 @@ bool DesktopService::saveProtectedFile(
 		return false;
 	}
 	return output.commit();
+}
+
+void DesktopService::finishFileChunkDownload(
+		ConversationId conversationId,
+		ProtectedFileSaveResult result) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !i->second->pendingFileDownload) {
+		return;
+	}
+	auto &group = *i->second;
+	group.fileDownloadController.reset();
+	group.fileDownloadTransport.reset();
+	group.fileDownloadBackend.reset();
+	auto callback = std::move(group.pendingFileDownload->callback);
+	group.pendingFileDownload.reset();
+	if (callback) {
+		callback(result);
+	}
 }
 
 bool DesktopService::setProtectedDefaultHistory(
@@ -2939,7 +3228,7 @@ bool DesktopService::pumpFileTransfer(ConversationId conversationId) {
 	}
 	group.uploadInProgress = true;
 	setContentState(conversationId, DesktopContentState::Synchronizing);
-	group.contentTransport.uploadExact(
+	group.transport.uploadExact(
 		envelope->encoded,
 		[weak = base::weak_ptr(this), conversationId, index](
 				TelegramTransport::UploadResult result) {

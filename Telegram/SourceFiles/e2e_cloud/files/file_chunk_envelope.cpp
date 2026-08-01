@@ -149,6 +149,13 @@ DecodeAuthenticationData(const QByteArray &bytes) {
 
 } // namespace
 
+std::optional<FileChunkEnvelopeMetadata> DecodeFileChunkEnvelopeMetadata(
+		const TransportEnvelope &envelope) {
+	return (envelope.objectKind == ObjectKind::EncryptedFileChunk)
+		? DecodeAuthenticationData(envelope.authenticationData)
+		: std::nullopt;
+}
+
 ObjectId DeriveFileChunkObjectId(
 		ConversationId conversationId,
 		FileId fileId,
@@ -236,8 +243,7 @@ std::optional<VerifiedFileChunkEnvelope> VerifyFileChunkEnvelope(
 		const TransportEnvelope &envelope,
 		const AccountCredentialPublic &senderCredential,
 		const Sha256Provider &sha256) {
-	const auto metadata = DecodeAuthenticationData(
-		envelope.authenticationData);
+	const auto metadata = DecodeFileChunkEnvelopeMetadata(envelope);
 	const auto accountId = DeriveAccountId(senderCredential, sha256);
 	if (!metadata
 		|| envelope.objectKind != ObjectKind::EncryptedFileChunk

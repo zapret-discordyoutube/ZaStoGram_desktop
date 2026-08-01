@@ -33,7 +33,9 @@ public:
 		std::uint64_t telegramPeerIdBinding,
 		QString filename,
 		QString mimeType,
-		int maximumObjectSize);
+		int maximumObjectSize,
+		int maximumDownloadPageBytes = 64 * 1024 * 1024,
+		int minimumMessageIdExclusive = 0);
 	~TelegramSessionCarrierBackend();
 
 	void uploadDocument(

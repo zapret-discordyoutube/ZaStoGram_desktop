@@ -302,6 +302,106 @@ ObservedContentProcessOutcome ProcessObservedFileManifestPreview(
 	return outcome;
 }
 
+ObservedFileChunkProcessOutcome ProcessObservedFileChunkPage(
+		const std::vector<TelegramTransport::UntrustedObject> &objects,
+		FileId expectedFileId,
+		OpenMlsClientContext local,
+		const EnvelopeCodec &envelopeCodec,
+		const Sha256Provider &sha256,
+		PersistentGroupLedger &groupLedger,
+		PersistentContentStore &contentStore,
+		FileChunkCiphertextStore &chunkStore) {
+	auto outcome = ObservedFileChunkProcessOutcome{
+		.status = ObservedContentProcessStatus::Processed,
+		.stats = {},
+		.availableChunkIndices = {},
+	};
+	if (!expectedFileId
+		|| !local.conversationId
+		|| !local.accountId
+		|| !local.clientId
+		|| !local.telegramPeerIdBinding
+		|| !groupLedger.loaded()
+		|| !groupLedger.state()
+		|| !contentStore.loaded()) {
+		outcome.status = ObservedContentProcessStatus::InvalidState;
+		return outcome;
+	}
+	for (const auto &object : objects) {
+		const auto envelope = envelopeCodec.decodeUntrusted(object.bytes);
+		if (!envelope
+			|| !ObservedCarrierMatches(object, *envelope, local)
+			|| envelope->objectKind != ObjectKind::EncryptedFileChunk) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		const auto metadata = DecodeFileChunkEnvelopeMetadata(*envelope);
+		if (!metadata || metadata->fileId != expectedFileId) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		const auto credential = groupLedger.credential(
+			envelope->senderAccountId);
+		const auto verified = credential
+			? VerifyFileChunkEnvelope(*envelope, *credential, sha256)
+			: std::nullopt;
+		if (!verified || verified->fileId != expectedFileId) {
+			++outcome.stats.ignored;
+			continue;
+		} else if (!ObservedSender(
+				object,
+				*envelope,
+				envelope->epochOrGeneration,
+				groupLedger)) {
+			outcome.status = ObservedContentProcessStatus::SecurityBlocked;
+			return outcome;
+		}
+		const auto admission = AdmitObservedFileChunk(
+			*envelope,
+			*verified,
+			sha256,
+			contentStore,
+			chunkStore);
+		if (admission == FileChunkAdmissionStatus::Ignored) {
+			++outcome.stats.ignored;
+			continue;
+		} else if (admission
+				== FileChunkAdmissionStatus::PersistenceFailed) {
+			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+			return outcome;
+		}
+		const auto stored = chunkStore.storeIfAbsent(
+			local.conversationId,
+			verified->fileId,
+			verified->chunkIndex,
+			{
+				.plaintextHash = envelope->payloadHash,
+				.exactCiphertext = envelope->payload,
+			});
+		if (stored == FileChunkStoreResult::QuotaExceeded) {
+			++outcome.stats.ignored;
+			continue;
+		} else if (stored == FileChunkStoreResult::Error) {
+			outcome.status = ObservedContentProcessStatus::PersistenceFailed;
+			return outcome;
+		} else if (stored == FileChunkStoreResult::AlreadyExists
+			&& !HasExactFileChunkCiphertext(
+				chunkStore.read(
+					local.conversationId,
+					verified->fileId,
+					verified->chunkIndex),
+				envelope->payload)) {
+			++outcome.stats.ignored;
+			continue;
+		}
+		if (stored == FileChunkStoreResult::Stored) {
+			++outcome.stats.chunksStored;
+		}
+		outcome.availableChunkIndices.push_back(verified->chunkIndex);
+	}
+	return outcome;
+}
+
 ObservedContentProcessOutcome ProcessObservedContentPage(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
 		OpenMlsClientContext local,

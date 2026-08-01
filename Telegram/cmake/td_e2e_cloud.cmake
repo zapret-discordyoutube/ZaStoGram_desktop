@@ -161,6 +161,8 @@ PRIVATE
     e2e_cloud/transport/cloud_vault_transport.h
     e2e_cloud/transport/cloud_vault_sync_controller.cpp
     e2e_cloud/transport/cloud_vault_sync_controller.h
+    e2e_cloud/transport/file_chunk_download_controller.cpp
+    e2e_cloud/transport/file_chunk_download_controller.h
     e2e_cloud/transport/telegram_carrier_transport.cpp
     e2e_cloud/transport/telegram_carrier_transport.h
     e2e_cloud/vault/password_kdf.cpp

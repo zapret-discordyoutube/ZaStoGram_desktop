@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/file_atomic_blob_store.h"
 #include "e2e_cloud/storage/persistent_content_store.h"
 #include "e2e_cloud/transport/cloud_vault_sync_controller.h"
+#include "e2e_cloud/transport/file_chunk_download_controller.h"
 #include "e2e_cloud/transport/observed_content_sync_controller.h"
 #include "e2e_cloud/transport/outbox_upload_controller.h"
 #include "e2e_cloud/transport/public_bootstrap_discovery_controller.h"
@@ -27,6 +28,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QString>
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -80,6 +82,17 @@ enum class DesktopContentState {
 	PermanentTransportError,
 	LocalFailure,
 	SecurityBlocked,
+};
+
+enum class ProtectedFileSaveResult {
+	Saved,
+	Busy,
+	InvalidRequest,
+	RetryableTransportError,
+	PermanentTransportError,
+	MissingChunks,
+	SecurityBlocked,
+	LocalFailure,
 };
 
 struct DesktopProtectedGroupSummary {
@@ -162,7 +175,8 @@ public:
 	[[nodiscard]] bool saveProtectedFile(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
-		QString path) const;
+		QString path,
+		std::function<void(ProtectedFileSaveResult)> callback);
 	[[nodiscard]] bool setProtectedDefaultHistory(
 		ConversationId conversationId,
 		HistoryAccess historyAccess);
@@ -242,6 +256,20 @@ private:
 		ConversationId conversationId,
 		std::uint32_t chunkIndex,
 		TelegramTransport::UploadResult result);
+	[[nodiscard]] bool beginFileChunkDownload(
+		ConversationId conversationId,
+		bool legacyCarrier);
+	[[nodiscard]] FileChunkDownloadPageStatus processFileChunkDownloadPage(
+		ConversationId conversationId,
+		std::vector<TelegramTransport::UntrustedObject> objects);
+	void applyFileChunkDownload(
+		ConversationId conversationId,
+		FileChunkDownloadCompletion completion);
+	[[nodiscard]] bool writePendingProtectedFile(
+		ConversationId conversationId);
+	void finishFileChunkDownload(
+		ConversationId conversationId,
+		ProtectedFileSaveResult result);
 	[[nodiscard]] bool queuePendingFileManifest(
 		ConversationId conversationId);
 	[[nodiscard]] bool finalizeFileTransfer(
