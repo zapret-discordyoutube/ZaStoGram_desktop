@@ -216,8 +216,9 @@ void CarrierSyncController::finish(CarrierSyncFinishReason reason) {
 	_running = false;
 	_requestActive = false;
 	_requestQueued = false;
-	if (_completionCallback) {
-		_completionCallback({
+	const auto callback = _completionCallback;
+	if (callback) {
+		callback({
 			.reason = reason,
 			.stats = _stats,
 		});

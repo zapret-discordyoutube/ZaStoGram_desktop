@@ -16,6 +16,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -133,6 +135,82 @@ public:
 	bool discoveryPresent = false;
 	int discoveryCalls = 0;
 };
+
+struct CallbackLifetimeState {
+	bool insideCallback = false;
+	bool activeProbeDestroyed = false;
+	std::uint64_t lastProbeId = 0;
+	std::uint64_t activeProbeId = 0;
+	std::optional<CloudVaultSyncStatus> status;
+};
+
+class CallbackLifetimeProbe final {
+public:
+	explicit CallbackLifetimeProbe(
+		std::shared_ptr<CallbackLifetimeState> state)
+	: _state(std::move(state))
+	, _id(_state ? ++_state->lastProbeId : 0) {
+	}
+
+	CallbackLifetimeProbe(const CallbackLifetimeProbe &other)
+	: _state(other._state)
+	, _id(_state ? ++_state->lastProbeId : 0) {
+	}
+	CallbackLifetimeProbe(CallbackLifetimeProbe &&other) noexcept = default;
+	CallbackLifetimeProbe &operator=(
+		const CallbackLifetimeProbe &) = delete;
+	CallbackLifetimeProbe &operator=(CallbackLifetimeProbe &&) = delete;
+
+	~CallbackLifetimeProbe() {
+		if (_state
+			&& _state->insideCallback
+			&& _state->activeProbeId == _id) {
+			_state->activeProbeDestroyed = true;
+		}
+	}
+
+	[[nodiscard]] std::shared_ptr<CallbackLifetimeState> state() const {
+		return _state;
+	}
+	[[nodiscard]] std::uint64_t id() const {
+		return _id;
+	}
+
+private:
+	std::shared_ptr<CallbackLifetimeState> _state;
+	std::uint64_t _id = 0;
+};
+
+[[nodiscard]] int ScenarioVaultCompletionCanDestroyController() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto remote = TestCloudVaultRemote();
+	auto lifetime = std::make_shared<CallbackLifetimeState>();
+	auto controller = std::unique_ptr<CloudVaultSyncController>();
+	controller = std::make_unique<CloudVaultSyncController>(
+		777,
+		remote,
+		selector,
+		[&, probe = CallbackLifetimeProbe(lifetime)](
+				CloudVaultSyncCompletion result) {
+			const auto state = probe.state();
+			state->status = result.status;
+			state->activeProbeId = probe.id();
+			state->insideCallback = true;
+			controller.reset();
+			state->insideCallback = false;
+		});
+	const auto started = controller->startDiscovery();
+	if (!started
+		|| controller
+		|| lifetime->status != CloudVaultSyncStatus::Missing
+		|| lifetime->activeProbeDestroyed) {
+		return Fail("vault completion was destroyed during its own callback");
+	}
+	return 0;
+}
 
 [[nodiscard]] int ScenarioVaultDiscoveryFindsMissingIdentity() {
 	auto kdf = TestPasswordKdf();
@@ -720,6 +798,7 @@ public:
 
 int main(int, char *[]) {
 	for (const auto scenario : {
+		ScenarioVaultCompletionCanDestroyController,
 		ScenarioVaultDiscoveryFindsMissingIdentity,
 		ScenarioVaultDiscoveryFindsExistingAccount,
 		ScenarioVaultRoundTrip,

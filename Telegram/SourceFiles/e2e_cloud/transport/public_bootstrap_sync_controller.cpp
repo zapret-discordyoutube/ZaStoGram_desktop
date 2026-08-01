@@ -300,8 +300,9 @@ void PublicBootstrapSyncController::finish(
 	_requestActive = false;
 	_requestQueued = false;
 	_objects.clear();
-	if (_completionCallback) {
-		_completionCallback(std::move(completion));
+	const auto callback = _completionCallback;
+	if (callback) {
+		callback(std::move(completion));
 	}
 }
 

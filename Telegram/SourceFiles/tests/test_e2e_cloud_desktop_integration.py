@@ -318,6 +318,46 @@ def verify_freshness_witness_is_rechecked_after_catchup() -> None:
     assert service.count("completeResynchronization(") >= 2
 
 
+def verify_completion_callbacks_survive_owner_reset() -> None:
+    paths = [
+        "SourceFiles/e2e_cloud/transport/cloud_vault_sync_controller.cpp",
+        "SourceFiles/e2e_cloud/transport/public_bootstrap_sync_controller.cpp",
+        "SourceFiles/e2e_cloud/transport/carrier_sync_controller.cpp",
+        "SourceFiles/e2e_cloud/transport/observed_content_sync_controller.cpp",
+    ]
+    for path in paths:
+        controller = source(path)
+        finish = controller[controller.rfind("::finish("):]
+        assert "const auto callback = _completionCallback;" in finish
+        assert "_completionCallback(" not in finish
+
+    uploader = source(
+        "SourceFiles/e2e_cloud/transport/outbox_upload_controller.cpp"
+    )
+    complete = uploader[uploader.rfind("::complete("):]
+    assert "const auto callback = _completionCallback;" in complete
+    assert "_completionCallback(" not in complete
+
+
+def verify_group_discovery_retries_without_creation_races() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    creation = function_body(
+        service,
+        "bool DesktopService::createProtectedGroup(",
+        "bool DesktopService::retryProtectedGroupCreation(",
+    )
+    discovery = function_body(
+        service,
+        "void DesktopService::applyGroupDiscovery(",
+        "bool DesktopService::completeObservedJoin(",
+    )
+
+    assert "|| _pendingGroupJoin" in creation
+    assert "|| _pendingGroupDiscovery" in creation
+    assert "PublicBootstrapSyncStatus::RetryableTransportError" in discovery
+    assert "_groupDiscoveryQueue.emplace(peerId);" in discovery
+
+
 def verify_freshness_challenges_resume_and_replays_stop() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     protocol = source(
@@ -394,6 +434,8 @@ def main() -> None:
     verify_control_sync_uses_a_persistent_boundary()
     verify_content_sync_requires_its_saved_boundary()
     verify_freshness_witness_is_rechecked_after_catchup()
+    verify_completion_callbacks_survive_owner_reset()
+    verify_group_discovery_retries_without_creation_races()
     verify_freshness_challenges_resume_and_replays_stop()
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()

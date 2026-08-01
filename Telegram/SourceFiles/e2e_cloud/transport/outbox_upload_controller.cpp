@@ -83,8 +83,9 @@ void OutboxUploadController::complete(
 		? _outbox.acknowledgeUploaded(objectId)
 		: _outbox.markUploadFailed(objectId);
 	_activeObjectId.reset();
-	if (_completionCallback) {
-		_completionCallback({
+	const auto callback = _completionCallback;
+	if (callback) {
+		callback({
 			.objectId = objectId,
 			.transportResult = result,
 			.outboxUpdated = updated,

@@ -625,6 +625,8 @@ bool DesktopService::createProtectedGroup(
 	if (!_vault
 		|| _vaultState.current() != DesktopVaultState::Ready
 		|| _pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery
 		|| (!peer->isChat() && !peer->isMegagroup())
 		|| std::any_of(
 			begin(_vault->conversations),
@@ -777,6 +779,7 @@ bool DesktopService::retryProtectedGroupCreation() {
 		return false;
 	}
 	if (!_pendingGroupCreation) {
+		_groupCreationState = DesktopGroupCreationState::Ready;
 		resumePendingGroupCreation();
 		return true;
 	} else if (_pendingGroupCreation->uploadInProgress) {
@@ -3309,7 +3312,9 @@ void DesktopService::startNextGroupDiscovery() {
 		|| _pendingGroupCreation
 		|| _pendingGroupJoin
 		|| !_vault
-		|| _vaultState.current() != DesktopVaultState::Ready) {
+		|| _vaultState.current() != DesktopVaultState::Ready
+		|| _groupCreationState.current()
+			== DesktopGroupCreationState::RetryableTransportError) {
 		return;
 	}
 	while (!_groupDiscoveryQueue.empty()) {
@@ -3366,8 +3371,14 @@ void DesktopService::applyGroupDiscovery(
 		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
+	} else if (result.status
+			== PublicBootstrapSyncStatus::RetryableTransportError) {
+		_groupDiscoveryQueue.emplace(peerId);
+		_groupCreationState = DesktopGroupCreationState::RetryableTransportError;
+		return;
 	} else if (result.status != PublicBootstrapSyncStatus::Verified
 		|| !result.verified) {
+		_groupCreationState = DesktopGroupCreationState::Ready;
 		startNextGroupDiscovery();
 		return;
 	}
@@ -3381,6 +3392,7 @@ void DesktopService::applyGroupDiscovery(
 					== verified.genesis.conversationId
 					|| conversation.telegramPeerIdBinding == peerId;
 			})) {
+		_groupCreationState = DesktopGroupCreationState::Ready;
 		startNextGroupDiscovery();
 		return;
 	}

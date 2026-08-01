@@ -210,7 +210,8 @@ void ObservedContentSyncController::finish(
 			nextBoundaryMessageId = _boundaryCandidates[kBoundaryOverlap];
 		}
 	}
-	_completionCallback({
+	const auto callback = _completionCallback;
+	callback({
 		.status = status,
 		.pages = _pages,
 		.objects = _objects,
