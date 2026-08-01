@@ -79,6 +79,7 @@ def verify_group_scope() -> None:
 
 def verify_all_e2e_tests_are_registered() -> None:
     cmake = source("cmake/tests.cmake")
+    root_cmake = (ROOT.parent / "CMakeLists.txt").read_text(encoding="utf-8")
     executables = set(re.findall(
         r"add_executable\((test_e2e_cloud(?:_[a-z_]+)?)\)",
         cmake,
@@ -90,6 +91,8 @@ def verify_all_e2e_tests_are_registered() -> None:
 
     assert executables
     assert registered == executables
+    assert "if (DESKTOP_APP_TEST_APPS)\n    enable_testing()\nendif()" \
+        in root_cmake.replace("\r\n", "\n")
 
 
 def verify_discovery_has_a_timeout() -> None:

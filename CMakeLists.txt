@@ -57,6 +57,10 @@ include(cmake/target_prepare_qrc.cmake)
 include(cmake/options.cmake)
 include(cmake/external/qt/package.cmake)
 
+if (DESKTOP_APP_TEST_APPS)
+    enable_testing()
+endif()
+
 set(desktop_app_skip_libs
     glibmm
     variant
