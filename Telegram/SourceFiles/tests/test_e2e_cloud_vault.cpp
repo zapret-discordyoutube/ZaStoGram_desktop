@@ -608,11 +608,29 @@ private:
 		return Fail("cloud vault fork fixtures were not distinct");
 	}
 	const auto versionTwo = firstUpdate->encoded;
+	const auto competingVersionTwo = competingUpdate->encoded;
 	const auto versionTwoAnchor = CloudVaultAnchor{
 		.generation = firstUpdate->generation,
 		.blobDigest = firstUpdate->blobDigest,
 		.accountId = *accountId,
 	};
+	auto competingVault = codec.unlock(
+		versionOne,
+		QByteArray("selection password"),
+		777);
+	if (!competingVault
+		|| !codec.applyPublished(
+			*competingVault,
+			std::move(*competingUpdate))) {
+		return Fail("cloud vault competing branch could not be adopted");
+	}
+	auto competingThirdUpdate = codec.prepareUpdate(
+		*competingVault,
+		{ secondConversation });
+	if (!competingThirdUpdate) {
+		return Fail("cloud vault competing third version was not created");
+	}
+	const auto competingVersionThree = competingThirdUpdate->encoded;
 	if (!codec.applyPublished(
 		created->unlocked,
 		std::move(*firstUpdate))) {
@@ -635,13 +653,36 @@ private:
 		|| selected.vault->generation != 3) {
 		return Fail("cloud vault selector did not follow the signed chain");
 	}
+	auto unanchored = selector.select(
+		{ versionOne, versionTwo, versionThree },
+		QByteArray("selection password"),
+		777);
+	if (unanchored.status != CloudVaultSelectionStatus::Selected
+		|| !unanchored.vault
+		|| unanchored.vault->generation != 3) {
+		return Fail("unanchored cloud vault rejected a complete chain");
+	}
 	auto forked = selector.select(
-		{ versionTwo, competingUpdate->encoded },
+		{ versionTwo, competingVersionTwo },
 		QByteArray("selection password"),
 		777,
 		versionOneAnchor);
 	if (forked.status != CloudVaultSelectionStatus::ForkDetected) {
 		return Fail("cloud vault selector silently chose a concurrent update");
+	}
+	auto unanchoredGap = selector.select(
+		{ versionTwo, versionThree },
+		QByteArray("selection password"),
+		777);
+	if (unanchoredGap.status != CloudVaultSelectionStatus::ChainGap) {
+		return Fail("unanchored cloud vault accepted a missing genesis");
+	}
+	auto unanchoredBranch = selector.select(
+		{ versionOne, versionTwo, competingVersionThree },
+		QByteArray("selection password"),
+		777);
+	if (unanchoredBranch.status != CloudVaultSelectionStatus::ChainGap) {
+		return Fail("unanchored cloud vault crossed competing branches");
 	}
 	auto gap = selector.select(
 		{ versionThree },

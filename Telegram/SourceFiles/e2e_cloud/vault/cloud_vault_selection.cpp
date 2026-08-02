@@ -148,7 +148,28 @@ CloudVaultSelectionResult CloudVaultSelector::select(
 			};
 		}
 	}
-	if (localAnchor) {
+	if (!localAnchor) {
+		if (opened.front().generation != 1
+			|| opened.front().previousBlobDigest) {
+			return {
+				.status = CloudVaultSelectionStatus::ChainGap,
+				.vault = std::nullopt,
+			};
+		}
+		for (auto i = std::size_t(1); i != opened.size(); ++i) {
+			const auto &previous = opened[i - 1];
+			const auto &current = opened[i];
+			if (previous.generation
+					== std::numeric_limits<std::uint64_t>::max()
+				|| current.generation != previous.generation + 1
+				|| current.previousBlobDigest != previous.blobDigest) {
+				return {
+					.status = CloudVaultSelectionStatus::ChainGap,
+					.vault = std::nullopt,
+				};
+			}
+		}
+	} else {
 		if (!localAnchor->generation
 			|| !localAnchor->blobDigest
 			|| localAnchor->accountId != accountId) {

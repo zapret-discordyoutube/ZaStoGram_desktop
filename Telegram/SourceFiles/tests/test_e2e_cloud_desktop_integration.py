@@ -222,6 +222,18 @@ def verify_key_packages_bind_the_observed_telegram_author() -> None:
     assert ".telegramUserIdBinding = _telegramUserIdBinding" in service
 
 
+def verify_unanchored_vault_history_is_contiguous() -> None:
+    selector = source(
+        "SourceFiles/e2e_cloud/vault/cloud_vault_selection.cpp"
+    )
+
+    assert "if (!localAnchor)" in selector
+    assert "opened.front().generation != 1" in selector
+    assert "opened.front().previousBlobDigest" in selector
+    assert "current.generation != previous.generation + 1" in selector
+    assert "current.previousBlobDigest != previous.blobDigest" in selector
+
+
 def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
     header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
@@ -786,6 +798,7 @@ def main() -> None:
     verify_ambiguous_search_results_fail_closed()
     verify_download_pages_are_bounded_at_every_layer()
     verify_key_packages_bind_the_observed_telegram_author()
+    verify_unanchored_vault_history_is_contiguous()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
     verify_pending_plaintext_is_cleansed()

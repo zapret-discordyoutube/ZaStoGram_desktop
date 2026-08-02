@@ -432,3 +432,17 @@ present a consistently false account view before any identity is pinned. It
 does prevent independent relabeling of already signed package bytes. Legacy
 pending joins with an unbound ticket generate and publish a new bound ticket on
 local recovery; old unbound publications are never admitted.
+
+### D044: New installations require a complete visible vault chain
+
+When no local vault anchor exists, accept the Telegram history only if the
+decrypted candidates start at generation one and every subsequent generation
+increments by one and names the exact previous blob digest. Reject a missing
+genesis, an internal gap, a duplicate generation, or a transition between
+parallel branches. An existing local anchor continues to permit older history
+before the anchor while requiring an exact contiguous suffix from it.
+
+This does not solve absolute rollback on a new installation. Telegram may still
+show a complete stale prefix ending before the real latest generation. The rule
+does ensure that suppression cannot be hidden inside the visible history and
+that the selector never assembles a newest vault from incompatible branches.

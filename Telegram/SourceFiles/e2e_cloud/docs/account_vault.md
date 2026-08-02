@@ -106,6 +106,12 @@ gossip can reveal rollback after group synchronization, but no independent
 witness exists in the current no-backend design. This remains part of the stated
 active-server limitation.
 
+Even without a local checkpoint, every vault version returned by Telegram must
+form one authenticated chain beginning at generation one. A missing generation,
+missing genesis, or `previousBlobDigest` that crosses between concurrent branches
+blocks unlock. This catches selective holes and visible branch substitution, but
+it cannot detect a server that presents a complete, self-consistent stale prefix.
+
 The selected availability policy permits a new installation to unlock the vault,
 read available history, download ciphertext, and compose messages before it
 receives a fresh signed checkpoint. Composed messages are protected at rest in a
