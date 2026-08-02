@@ -18,9 +18,9 @@ inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
 inline constexpr auto kMaximumObjects = std::size_t(65'536);
 inline constexpr auto kMaximumBytes = std::uint64_t(512 * 1024 * 1024);
-inline constexpr auto kMaximumPages = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumPages = std::uint64_t(65'536);
 inline constexpr auto kMaximumStoredCursorBytes
-	= std::uint64_t(128 * 1024 * 1024);
+	= std::uint64_t(64 * 1024 * 1024);
 
 [[nodiscard]] PublicBootstrapSyncStatus MapStatus(
 		PublicGroupBootstrapStatus status) {

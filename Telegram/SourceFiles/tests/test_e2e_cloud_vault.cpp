@@ -128,12 +128,16 @@ public:
 			QByteArray,
 			int,
 			DownloadCallback callback) override {
-		callback(Result::PermanentError, {});
+		++downloadCalls;
+		callback(downloadResult, std::move(downloadPageResult));
 	}
 
 	Result discoveryResult = Result::Accepted;
+	Result downloadResult = Result::PermanentError;
+	CarrierDownloadPage downloadPageResult;
 	bool discoveryPresent = false;
 	int discoveryCalls = 0;
+	int downloadCalls = 0;
 };
 
 struct CallbackLifetimeState {
@@ -263,6 +267,59 @@ private:
 		|| kdf.calls != 0
 		|| remote.discoveryCalls != 1) {
 		return Fail("vault discovery requested a password before detection");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioVaultSelectionCanCompleteAsynchronously() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto remote = TestCloudVaultRemote();
+	remote.downloadResult = CloudVaultRemote::Result::Accepted;
+	remote.downloadPageResult.complete = true;
+	auto completion = std::optional<CloudVaultSyncCompletion>();
+	auto deferred = CloudVaultSyncController::SelectionCompletion();
+	auto validArguments = false;
+	auto controller = CloudVaultSyncController(
+		777,
+		remote,
+		selector,
+		[&](CloudVaultSyncCompletion result) {
+			completion = std::move(result);
+		},
+		[&](
+				std::vector<QByteArray> candidates,
+				QByteArray password,
+				std::uint64_t telegramUserIdBinding,
+				std::optional<CloudVaultAnchor> localAnchor,
+				CloudVaultSyncController::SelectionCompletion callback) {
+			validArguments = candidates.empty()
+				&& password == QByteArray("password")
+				&& telegramUserIdBinding == 777
+				&& !localAnchor;
+			deferred = std::move(callback);
+		});
+	if (!controller.start(QByteArray("password"))
+		|| !controller.running()
+		|| completion
+		|| !deferred
+		|| !validArguments
+		|| kdf.calls
+		|| remote.downloadCalls != 1) {
+		return Fail("vault selection did not leave expensive work deferred");
+	}
+	deferred({
+		.status = CloudVaultSelectionStatus::Missing,
+		.vault = std::nullopt,
+	});
+	if (controller.running()
+		|| !completion
+		|| completion->status != CloudVaultSyncStatus::Missing
+		|| completion->pages != 1
+		|| completion->candidates != 0) {
+		return Fail("deferred vault selection did not finish cleanly");
 	}
 	return 0;
 }
@@ -887,6 +944,7 @@ int main(int, char *[]) {
 		ScenarioVaultCompletionCanDestroyController,
 		ScenarioVaultDiscoveryFindsMissingIdentity,
 		ScenarioVaultDiscoveryFindsExistingAccount,
+		ScenarioVaultSelectionCanCompleteAsynchronously,
 		ScenarioVaultRoundTrip,
 		ScenarioVaultRejectsWrongPasswordAndTampering,
 		ScenarioVaultUsesFreshNonce,

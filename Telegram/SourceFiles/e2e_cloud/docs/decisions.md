@@ -966,3 +966,30 @@ This rule narrows only first-contact availability scope. No conflicting bytes
 are accepted, no peer is added to the vault, and another carrier notification
 may trigger a fresh bounded discovery later. The same conflict in an indexed or
 already authenticated group remains a fail-closed security block.
+
+### D082: Password KDF work never blocks the interface thread
+
+Run cloud-vault selection and first-vault creation on a background worker. The
+64 MiB Argon2id derivation is intentionally expensive and must not freeze the
+Protected Groups box, window painting, or its Close action while a password is
+being checked. A controller-owned completion guard discards selection results
+after cancellation or destruction; first creation additionally binds its result
+to the service operation epoch so locking or restarting cannot adopt stale key
+material.
+
+The worker owns independent crypto providers and all input copies. It returns
+only the completed move-only vault result to the main thread, where persistent
+anchors, uploads, UI state, and service-owned secrets continue to change.
+
+### D083: Pagination work shares the version-one lifecycle bound
+
+Limit every generic long-running carrier scan to 65,536 pages and 64 MiB of
+retained encoded cursors. The earlier million-page allowance was finite in a
+type-theoretic sense but still let an active server impose effectively
+unbounded network work and excessive duplicate-tracking memory. The new bound
+still exceeds the minimum pages needed for the existing 65,536-object control
+lifecycle and million-record content-store ceiling at the 100-object transport
+page size.
+
+Exhaustion remains an explicit invalid-pagination failure. No partial scan is
+committed as complete and no unauthenticated object becomes authoritative.

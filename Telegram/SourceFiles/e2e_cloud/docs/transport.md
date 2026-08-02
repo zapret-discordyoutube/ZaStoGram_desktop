@@ -99,9 +99,11 @@ index conservatively starts per-file recovery after identifier one because it
 cannot prove whether its stored identifier belonged to the first copy.
 
 Every long-running pagination controller tracks cursor uniqueness with an
-ordered set and caps the encoded cursor bytes retained by one run at 128 MiB.
-This keeps duplicate detection sublinear per page and prevents an active server
-from turning syntactically valid unique cursors into unbounded client memory.
+ordered set, accepts at most 65,536 pages in one run, and caps the encoded
+cursor bytes retained by that run at 64 MiB. This keeps duplicate detection
+sublinear per page and prevents an active server from turning syntactically
+valid unique cursors into unbounded client memory or effectively unbounded
+network work.
 
 Content backfill first scans the bounded Telegram pages from newest to oldest
 without applying them. It records only opaque cursors, per-page SHA-256

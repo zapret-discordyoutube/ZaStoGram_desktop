@@ -182,6 +182,68 @@ void AppendUint64(QByteArray &result, std::uint64_t value) {
 	};
 }
 
+void SelectCloudVaultOffMain(
+		std::vector<QByteArray> candidates,
+		QByteArray password,
+		std::uint64_t telegramUserIdBinding,
+		std::optional<CloudVaultAnchor> localAnchor,
+		CloudVaultSyncController::SelectionCompletion completion) {
+	crl::async([
+		candidates = std::move(candidates),
+		password = std::move(password),
+		telegramUserIdBinding,
+		localAnchor,
+		completion = std::move(completion)
+	]() mutable {
+		auto passwordKdf = Argon2idPasswordKdf();
+		auto sha256 = OpenSslSha256Provider();
+		auto codec = CloudVaultCodecV1(passwordKdf, sha256);
+		auto selector = CloudVaultSelector(codec, sha256);
+		auto result = selector.select(
+			std::move(candidates),
+			std::move(password),
+			telegramUserIdBinding,
+			localAnchor);
+		crl::on_main([
+			completion = std::move(completion),
+			result = std::move(result)
+		]() mutable {
+			completion(std::move(result));
+		});
+	});
+}
+
+void CreateCloudVaultOffMain(
+		std::uint64_t telegramUserIdBinding,
+		QByteArray password,
+		Argon2idConfig config,
+		std::function<void(std::optional<CreatedCloudVault>)> completion) {
+	crl::async([
+		telegramUserIdBinding,
+		password = std::move(password),
+		config,
+		completion = std::move(completion)
+	]() mutable {
+		auto passwordKdf = Argon2idPasswordKdf();
+		auto sha256 = OpenSslSha256Provider();
+		auto codec = CloudVaultCodecV1(passwordKdf, sha256);
+		auto identity = GenerateAccountPrivateIdentity();
+		auto result = identity
+			? codec.create(
+				telegramUserIdBinding,
+				std::move(*identity),
+				std::move(password),
+				config)
+			: std::nullopt;
+		crl::on_main([
+			completion = std::move(completion),
+			result = std::move(result)
+		]() mutable {
+			completion(std::move(result));
+		});
+	});
+}
+
 template <typename Id>
 [[nodiscard]] std::optional<Id> RandomId() {
 	auto result = Id();
@@ -812,7 +874,8 @@ void DesktopService::ensureVaultDiscovery() {
 			if (weak) {
 				weak->applyVaultDiscoveryResult(std::move(result));
 			}
-		});
+		},
+		SelectCloudVaultOffMain);
 	if (!_sync->startDiscovery()) {
 		_sync.reset();
 		_vaultState = DesktopVaultState::DiscoveryRetryableError;
@@ -843,7 +906,8 @@ bool DesktopService::unlock(QByteArray password) {
 			if (weak) {
 				weak->applySyncResult(std::move(result));
 			}
-		});
+		},
+		SelectCloudVaultOffMain);
 	if (!_sync->start(std::move(password), _vaultAnchor.anchor())) {
 		_sync.reset();
 		Cleanse(_pendingUnlockPassword);
@@ -875,7 +939,8 @@ bool DesktopService::createVault(QByteArray password) {
 				weak->applyVaultCreationDiscoveryResult(
 					std::move(result));
 			}
-		});
+		},
+		SelectCloudVaultOffMain);
 	const auto started = _sync->startDiscovery();
 	if (!started) {
 		_sync.reset();
@@ -2278,21 +2343,31 @@ void DesktopService::applyVaultCreationDiscoveryResult(
 		CloudVaultSyncCompletion result) {
 	_sync.reset();
 	if (result.status == CloudVaultSyncStatus::Missing) {
-		auto identity = GenerateAccountPrivateIdentity();
-		auto password = _pendingUnlockPassword;
-		_pendingCreation = identity
-			? _vaultCodec.create(
-				_telegramUserIdBinding,
-				std::move(*identity),
-				std::move(password),
-				DesktopArgon2idConfig())
-			: std::nullopt;
-		if (_pendingCreation) {
-			uploadPendingCreation();
-			return;
-		}
-		Cleanse(password);
-		_vaultState = DesktopVaultState::WrongPasswordOrDamaged;
+		const auto operationEpoch = _operationEpoch;
+		CreateCloudVaultOffMain(
+			_telegramUserIdBinding,
+			_pendingUnlockPassword,
+			DesktopArgon2idConfig(),
+			[weak = base::weak_ptr(this), operationEpoch](
+					std::optional<CreatedCloudVault> created) mutable {
+				if (!weak
+					|| weak->_operationEpoch != operationEpoch
+					|| weak->_vaultState.current()
+						!= DesktopVaultState::Creating
+					|| weak->_sync
+					|| weak->_pendingCreation) {
+					return;
+				}
+				weak->_pendingCreation = std::move(created);
+				if (weak->_pendingCreation) {
+					weak->uploadPendingCreation();
+				} else {
+					Cleanse(weak->_pendingUnlockPassword);
+					weak->_vaultState
+						= DesktopVaultState::WrongPasswordOrDamaged;
+				}
+			});
+		return;
 	} else if (result.status == CloudVaultSyncStatus::Present) {
 		_vaultState = DesktopVaultState::Locked;
 	} else if (result.status
@@ -2427,7 +2502,8 @@ void DesktopService::beginGroupVaultPreflight() {
 			if (weak) {
 				weak->applyGroupVaultSyncResult(std::move(result));
 			}
-		});
+		},
+		SelectCloudVaultOffMain);
 	if (!_sync->start(_unlockedPassword, _vaultAnchor.anchor())) {
 		_sync.reset();
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;

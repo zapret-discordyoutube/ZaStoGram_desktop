@@ -181,10 +181,33 @@ def verify_vault_creation_rechecks_remote_identity() -> None:
     assert "_sync->startDiscovery()" in create
     assert "GenerateAccountPrivateIdentity()" not in create
     assert "result.status == CloudVaultSyncStatus::Missing" in preflight
-    assert "GenerateAccountPrivateIdentity()" in preflight
+    assert "CreateCloudVaultOffMain(" in preflight
     assert "uploadPendingCreation();" in preflight
     assert "result.status == CloudVaultSyncStatus::Present" in preflight
     assert "_vaultState = DesktopVaultState::Locked;" in preflight
+
+
+def verify_password_crypto_runs_off_the_main_thread() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    controller = source(
+        "SourceFiles/e2e_cloud/transport/cloud_vault_sync_controller.cpp"
+    )
+    preflight = function_body(
+        service,
+        "void DesktopService::applyVaultCreationDiscoveryResult(",
+        "void DesktopService::applySyncResult(",
+    )
+
+    assert "void SelectCloudVaultOffMain(" in service
+    assert "void CreateCloudVaultOffMain(" in service
+    assert service.count("SelectCloudVaultOffMain);") == 4
+    assert "crl::async([" in service
+    assert "crl::on_main([" in service
+    assert "_vaultCodec.create(" not in preflight
+    assert "_selector.select(" not in controller[
+        controller.index("if (_selectionExecutor)"):
+        controller.index("} else {", controller.index("if (_selectionExecutor)"))
+    ]
 
 
 def verify_all_carrier_operations_have_timeouts() -> None:
@@ -277,6 +300,19 @@ def verify_download_pages_are_bounded_at_every_layer() -> None:
         )
         assert "untrustedObjects.size()" in implementation
         assert "> std::size_t(kDownloadPageLimit)" in implementation
+
+    long_running = [name for name in controllers
+                    if name != "file_chunk_download_controller"]
+    for name in long_running:
+        implementation = source(
+            f"SourceFiles/e2e_cloud/transport/{name}.cpp"
+        )
+        assert re.search(
+            r"kMaximumPages(?:PerRun)? = std::uint64_t\(65'536\)",
+            implementation,
+        )
+        assert "std::uint64_t(64 * 1024 * 1024)" in implementation
+        assert "std::uint64_t(1'000'000)" not in implementation
 
 
 def verify_key_packages_bind_the_observed_telegram_author() -> None:
@@ -1847,6 +1883,7 @@ def main() -> None:
     verify_all_e2e_tests_are_registered()
     verify_discovery_has_a_timeout()
     verify_vault_creation_rechecks_remote_identity()
+    verify_password_crypto_runs_off_the_main_thread()
     verify_all_carrier_operations_have_timeouts()
     verify_carrier_backfill_searches_documents()
     verify_ambiguous_search_results_fail_closed()

@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QByteArray>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -47,12 +48,20 @@ struct CloudVaultSyncCompletion {
 class CloudVaultSyncController final {
 public:
 	using CompletionCallback = std::function<void(CloudVaultSyncCompletion)>;
+	using SelectionCompletion = std::function<void(CloudVaultSelectionResult)>;
+	using SelectionExecutor = std::function<void(
+		std::vector<QByteArray>,
+		QByteArray,
+		std::uint64_t,
+		std::optional<CloudVaultAnchor>,
+		SelectionCompletion)>;
 
 	CloudVaultSyncController(
 		std::uint64_t telegramUserIdBinding,
 		CloudVaultRemote &remote,
 		const CloudVaultSelector &selector,
-		CompletionCallback completionCallback);
+		CompletionCallback completionCallback,
+		SelectionExecutor selectionExecutor = {});
 	~CloudVaultSyncController();
 
 	[[nodiscard]] bool start(
@@ -75,12 +84,16 @@ private:
 	void discoveryReceived(
 		CloudVaultRemote::Result result,
 		bool present);
+	void selectionFinished(
+		std::size_t candidateCount,
+		CloudVaultSelectionResult selection);
 	void finish(CloudVaultSyncCompletion completion);
 
 	std::uint64_t _telegramUserIdBinding = 0;
 	CloudVaultRemote &_remote;
 	const CloudVaultSelector &_selector;
 	CompletionCallback _completionCallback;
+	SelectionExecutor _selectionExecutor;
 	QByteArray _password;
 	std::optional<CloudVaultAnchor> _localAnchor;
 	std::vector<QByteArray> _candidates;
@@ -92,6 +105,7 @@ private:
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	bool _running = false;
 	bool _requestActive = false;
+	bool _selectionActive = false;
 	bool _pumping = false;
 	bool _requestQueued = false;
 };

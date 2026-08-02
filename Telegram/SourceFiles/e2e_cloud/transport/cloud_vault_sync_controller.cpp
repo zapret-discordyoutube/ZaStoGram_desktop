@@ -16,11 +16,11 @@ namespace {
 
 inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
-inline constexpr auto kMaximumCandidates = std::size_t(65536);
+inline constexpr auto kMaximumCandidates = std::size_t(65'536);
 inline constexpr auto kMaximumCandidateBytes = std::uint64_t(64 * 1024 * 1024);
-inline constexpr auto kMaximumPages = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumPages = std::uint64_t(65'536);
 inline constexpr auto kMaximumStoredCursorBytes
-	= std::uint64_t(128 * 1024 * 1024);
+	= std::uint64_t(64 * 1024 * 1024);
 
 void Cleanse(QByteArray &bytes) {
 	if (!bytes.isEmpty()) {
@@ -62,11 +62,13 @@ CloudVaultSyncController::CloudVaultSyncController(
 		std::uint64_t telegramUserIdBinding,
 		CloudVaultRemote &remote,
 		const CloudVaultSelector &selector,
-		CompletionCallback completionCallback)
+		CompletionCallback completionCallback,
+		SelectionExecutor selectionExecutor)
 : _telegramUserIdBinding(telegramUserIdBinding)
 , _remote(remote)
 , _selector(selector)
 , _completionCallback(std::move(completionCallback))
+, _selectionExecutor(std::move(selectionExecutor))
 , _callbackGuard(std::make_shared<CallbackGuard>(CallbackGuard{ this })) {
 }
 
@@ -229,17 +231,33 @@ void CloudVaultSyncController::pageReceived(
 	}
 	if (page.complete) {
 		const auto candidateCount = _candidates.size();
-		auto selection = _selector.select(
-			std::move(_candidates),
-			std::move(_password),
-			_telegramUserIdBinding,
-			_localAnchor);
-		finish({
-			.status = MapStatus(selection.status),
-			.vault = std::move(selection.vault),
-			.pages = _pages,
-			.candidates = candidateCount,
-		});
+		_selectionActive = true;
+		if (_selectionExecutor) {
+			const auto executor = _selectionExecutor;
+			const auto guard = _callbackGuard;
+			const auto weak = std::weak_ptr<CallbackGuard>(guard);
+			executor(
+				std::move(_candidates),
+				std::move(_password),
+				_telegramUserIdBinding,
+				_localAnchor,
+				[weak, candidateCount](CloudVaultSelectionResult result) {
+					if (const auto guard = weak.lock();
+						guard && guard->controller) {
+						guard->controller->selectionFinished(
+							candidateCount,
+							std::move(result));
+					}
+				});
+		} else {
+			selectionFinished(
+				candidateCount,
+				_selector.select(
+					std::move(_candidates),
+					std::move(_password),
+					_telegramUserIdBinding,
+					_localAnchor));
+		}
 		return;
 	} else if (page.nextCursor.isEmpty()
 		|| page.nextCursor.size() > kMaximumCursorSize
@@ -259,6 +277,21 @@ void CloudVaultSyncController::pageReceived(
 	_seenCursors.emplace(_cursor);
 	_requestQueued = true;
 	pumpRequests();
+}
+
+void CloudVaultSyncController::selectionFinished(
+		std::size_t candidateCount,
+		CloudVaultSelectionResult selection) {
+	if (!_running || !_selectionActive) {
+		return;
+	}
+	_selectionActive = false;
+	finish({
+		.status = MapStatus(selection.status),
+		.vault = std::move(selection.vault),
+		.pages = _pages,
+		.candidates = candidateCount,
+	});
 }
 
 void CloudVaultSyncController::discoveryReceived(
@@ -292,6 +325,7 @@ void CloudVaultSyncController::finish(
 	}
 	_running = false;
 	_requestActive = false;
+	_selectionActive = false;
 	_requestQueued = false;
 	Cleanse(_password);
 	_candidates.clear();

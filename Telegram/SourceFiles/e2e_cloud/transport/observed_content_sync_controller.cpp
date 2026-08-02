@@ -18,9 +18,9 @@ namespace {
 
 inline constexpr auto kDownloadPageLimit = 100;
 inline constexpr auto kMaximumCursorSize = 1024;
-inline constexpr auto kMaximumPagesPerRun = std::uint64_t(1'000'000);
+inline constexpr auto kMaximumPagesPerRun = std::uint64_t(65'536);
 inline constexpr auto kMaximumStoredCursorBytes
-	= std::uint64_t(128 * 1024 * 1024);
+	= std::uint64_t(64 * 1024 * 1024);
 inline constexpr auto kMaximumRetainedNewestPageBytes
 	= std::uint64_t(64 * 1024 * 1024);
 inline constexpr auto kBoundaryOverlap = std::size_t(32);
