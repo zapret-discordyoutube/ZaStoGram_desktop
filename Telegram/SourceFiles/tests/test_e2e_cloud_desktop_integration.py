@@ -1014,6 +1014,59 @@ def verify_transient_file_work_serializes_control_changes() -> None:
         < administration.index("_pendingGroupCreation = std::move(i->second)")
 
 
+def verify_control_precedes_content_observation() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "bool DesktopService::prepareActiveUploadAcknowledgement(",
+    )
+    control = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::beginContentObservation(",
+    )
+    content = function_body(
+        service,
+        "void DesktopService::beginContentObservation(",
+        "ObservedContentPageResult DesktopService::previewObservedFileManifests(",
+    )
+    apply_content = function_body(
+        service,
+        "void DesktopService::applyContentObservation(",
+        "void DesktopService::applyGroupObservation(",
+    )
+    administration = function_body(
+        service,
+        "bool DesktopService::applyAdministrativeTransition(",
+        "bool DesktopService::admitObservedClient(",
+    )
+
+    assert control.index("group.contentObservation") \
+        < control.index(
+            "group.observation = std::make_unique<PublicBootstrapSyncController>"
+        )
+    assert content.index("group.observation") \
+        < content.index(
+            "std::make_unique<ObservedContentSyncController>"
+        )
+    assert content.index("group.observationDirty") \
+        < content.index(
+            "std::make_unique<ObservedContentSyncController>"
+        )
+    assert "const auto resumeControlObservation = qScopeGuard" \
+        in apply_content
+    assert "beginGroupObservation(conversationId);" in apply_content
+    assert administration.index("group.contentObservation") \
+        < administration.index("_pendingGroupCreation = std::move(i->second)")
+    active = pump.index("if (group.observation)")
+    dirty = pump.index(
+        "else if (group.observationDirty && !group.outbox.size())"
+    )
+    assert active < dirty
+    assert "beginGroupObservation(conversationId);" not in pump[active:dirty]
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1052,6 +1105,7 @@ def main() -> None:
     verify_failed_file_transfer_can_be_cancelled_durably()
     verify_administration_waits_for_outgoing_work()
     verify_transient_file_work_serializes_control_changes()
+    verify_control_precedes_content_observation()
 
 
 if __name__ == "__main__":

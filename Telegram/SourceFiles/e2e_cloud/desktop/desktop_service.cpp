@@ -3094,8 +3094,12 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 		return;
 	}
 	auto &group = *i->second;
-	if (group.observation
-		|| (group.observationDirty && !group.outbox.size())) {
+	if (group.observation) {
+		setContentState(
+			conversationId,
+			DesktopContentState::Synchronizing);
+		return;
+	} else if (group.observationDirty && !group.outbox.size()) {
 		beginGroupObservation(conversationId);
 		if (group.observation || group.observationDirty) {
 			setContentState(
@@ -3753,7 +3757,8 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 	if (group.observation) {
 		group.observationDirty = true;
 		return;
-	} else if (group.uploadInProgress
+	} else if (group.contentObservation
+		|| group.uploadInProgress
 		|| group.fileHashInProgress
 		|| group.fileFinalHashInProgress
 		|| group.pendingFileDownload
@@ -3802,7 +3807,9 @@ void DesktopService::beginContentObservation(
 		return;
 	}
 	auto &group = *i->second;
-	if (group.contentObservation) {
+	if (group.contentObservation
+		|| group.observation
+		|| group.observationDirty) {
 		group.contentObservationDirty = true;
 		return;
 	}
@@ -3967,6 +3974,15 @@ void DesktopService::applyContentObservation(
 	const auto rerun = group.contentObservationDirty;
 	group.contentObservationDirty = false;
 	group.contentObservation.reset();
+	const auto resumeControlObservation = qScopeGuard([&] {
+		const auto current = _groups.find(conversationId);
+		if (_vaultState.current() == DesktopVaultState::Ready
+			&& current != end(_groups)
+			&& current->second->observationDirty
+			&& !current->second->observation) {
+			beginGroupObservation(conversationId);
+		}
+	});
 	switch (completion.status) {
 	case ObservedContentSyncStatus::Complete:
 		if (completion.previousBoundaryMessageId
@@ -4721,6 +4737,7 @@ bool DesktopService::applyAdministrativeTransition(
 		|| !actorAccountId
 		|| group.observation
 		|| group.observationDirty
+		|| group.contentObservation
 		|| group.phase != PendingGroupCreation::Phase::Active
 		|| group.fileHashInProgress
 		|| !group.filePreparationPath.isEmpty()

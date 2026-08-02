@@ -578,9 +578,8 @@ has work. An administrative transition moves the group into the vault-update
 state machine, so an older upload callback would otherwise target a group that
 is no longer in the active-group map and fail to acknowledge accepted bytes.
 
-The user may retry the role, removal, or history-policy action after outgoing
-work reaches its durability boundary. Incoming content download remains
-independent and does not block administration.
+The user may retry the role, removal, or history-policy action after the active
+operation reaches its durability or callback boundary.
 
 ### D055: Transient file work serializes control transitions
 
@@ -597,3 +596,18 @@ arrives during transient file work remains dirty and automatically starts after
 the file operation finishes. Durable outgoing file transfers may still cross a
 remote transition because their manifest, cursor, and source path survive the
 state-machine move and resume from persistent state.
+
+### D056: Control observation precedes content observation
+
+Run at most one control or content observation for a conversation at a time.
+Control has priority because it may replace the MLS roster and archive epoch,
+then temporarily move the conversation through the vault-update state machine.
+A content callback that completed during that move would otherwise miss the
+active-group map and leave its finished controller permanently installed.
+
+Coalesce content notifications while control is active. If a control
+notification arrives during content observation, keep it dirty and start it as
+soon as the content controller finishes, including after a retryable content
+failure. The normal outgoing pump restarts deferred content after control is
+settled. Local administration waits for an active content observation for the
+same callback-lifetime reason.
