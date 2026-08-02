@@ -1444,7 +1444,11 @@ def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
     assert "manifest->context.chunkCount" in finalize
     assert "group.chunkStore.removeChunksBefore(" in finalize
     assert "tryLock(5000)" not in chunk_store
-    assert chunk_store.count("tryLock(0)") == 3
+    assert chunk_store.count("auto lock = ChunkRecordLock(target);") == 3
+    assert "WaitForSingleObject(_mutex, 0)" in chunk_store
+    assert "wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED" in chunk_store
+    assert "RemoveLegacyChunkRecordLock(lockPath)" in chunk_store
+    assert "_locked = _file->tryLock(0);" in chunk_store
 
 
 def verify_new_file_cannot_replace_pending_transfer() -> None:

@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
 #include <QtCore/QFile>
@@ -18,9 +19,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QScopeGuard>
 #include <QtCore/QStorageInfo>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif // Q_OS_WIN
+
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace E2ECloud {
@@ -45,6 +51,99 @@ inline constexpr auto kAuthorizationPurpose
 	= "e2e-cloud-file-chunk-authorization-v1";
 inline constexpr auto kMinimumFreeBytes
 	= std::uint64_t(1024) * 1024 * 1024;
+
+#ifdef Q_OS_WIN
+[[nodiscard]] QString ChunkRecordMutexName(const QString &target) {
+	const auto normalized = QDir::cleanPath(
+		QFileInfo(target).absoluteFilePath()).toCaseFolded();
+	const auto digest = QCryptographicHash::hash(
+		normalized.toUtf8(),
+		QCryptographicHash::Sha256).toHex();
+	return QString::fromLatin1("Local\\ZaStoGram.E2EChunk.")
+		+ QString::fromLatin1(digest);
+}
+
+[[nodiscard]] bool RemoveLegacyChunkRecordLock(const QString &lockPath) {
+	auto removalPath = lockPath;
+	for (auto depth = 0; depth != 16; ++depth) {
+		removalPath += QString::fromLatin1(".rmlock");
+	}
+	for (auto depth = 16; depth != 0; --depth) {
+		const auto info = QFileInfo(removalPath);
+		if (info.exists()
+			&& (!info.isFile()
+				|| info.isSymLink()
+				|| !QFile::remove(removalPath))) {
+			return false;
+		}
+		removalPath.chop(7);
+	}
+	const auto info = QFileInfo(lockPath);
+	if (!info.exists()) {
+		return true;
+	} else if (!info.isFile() || info.isSymLink()) {
+		return false;
+	}
+	auto legacy = QLockFile(lockPath);
+	legacy.setStaleLockTime(0);
+	return legacy.removeStaleLockFile() || !QFile::exists(lockPath);
+}
+#endif // Q_OS_WIN
+
+class ChunkRecordLock final {
+public:
+	explicit ChunkRecordLock(const QString &target) {
+		const auto lockPath = target + QString::fromLatin1(".lock");
+#ifdef Q_OS_WIN
+		const auto mutexName = ChunkRecordMutexName(target);
+		_mutex = CreateMutexW(
+			nullptr,
+			FALSE,
+			reinterpret_cast<LPCWSTR>(mutexName.utf16()));
+		if (!_mutex) {
+			return;
+		}
+		const auto wait = WaitForSingleObject(_mutex, 0);
+		if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+			return;
+		}
+		_owned = true;
+		if (!RemoveLegacyChunkRecordLock(lockPath)) {
+			ReleaseMutex(_mutex);
+			_owned = false;
+			return;
+		}
+		_locked = true;
+#else // Q_OS_WIN
+		_file = std::make_unique<QLockFile>(lockPath);
+		_locked = _file->tryLock(0);
+#endif // !Q_OS_WIN
+	}
+
+	~ChunkRecordLock() {
+#ifdef Q_OS_WIN
+		if (_owned) {
+			ReleaseMutex(_mutex);
+		}
+		if (_mutex) {
+			CloseHandle(_mutex);
+		}
+#endif // Q_OS_WIN
+	}
+
+	[[nodiscard]] bool locked() const {
+		return _locked;
+	}
+
+private:
+#ifdef Q_OS_WIN
+	HANDLE _mutex = nullptr;
+	bool _owned = false;
+#else // Q_OS_WIN
+	std::unique_ptr<QLockFile> _file;
+#endif // !Q_OS_WIN
+	bool _locked = false;
+};
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -361,8 +460,8 @@ FileChunkAuthorizeResult FileChunkFileStore::authorize(
 	if (!directory.exists() && !QDir().mkpath(directory.absolutePath())) {
 		return FileChunkAuthorizeResult::Error;
 	}
-	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(0)) {
+	auto lock = ChunkRecordLock(target);
+	if (!lock.locked()) {
 		return FileChunkAuthorizeResult::Error;
 	} else if (QFile::exists(target)) {
 		const auto existing = this->authorization(
@@ -423,8 +522,8 @@ FileChunkStoreResult FileChunkFileStore::storeIfAbsent(
 	if (!directory.exists() && !QDir().mkpath(directory.absolutePath())) {
 		return FileChunkStoreResult::Error;
 	}
-	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(0)) {
+	auto lock = ChunkRecordLock(target);
+	if (!lock.locked()) {
 		return FileChunkStoreResult::Error;
 	} else if (QFile::exists(target)) {
 		return FileChunkStoreResult::AlreadyExists;
@@ -481,8 +580,8 @@ bool FileChunkFileStore::removeChunk(
 	if (!directory.exists()) {
 		return true;
 	}
-	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(0)) {
+	auto lock = ChunkRecordLock(target);
+	if (!lock.locked()) {
 		return false;
 	}
 	const auto info = QFileInfo(target);

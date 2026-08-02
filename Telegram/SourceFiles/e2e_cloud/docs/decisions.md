@@ -1111,3 +1111,17 @@ The retry belongs to the protected-group control plane. It does not admit,
 delay, pace, or own MTProto media/upload sessions. Once observation succeeds,
 the existing durable transfer continues from its saved chunk cursor and exact
 manifest instead of replacing the transfer or regenerating ciphertext.
+
+### D092: Windows chunk locks cannot leave restart-blocking files
+
+Use a non-waiting per-record Windows kernel mutex for protected chunk cache
+authorization, storage, and cleanup. The kernel releases mutex ownership when
+the client exits or crashes, so a forced restart cannot strand `QLockFile`
+artifacts that recursively grow `.rmlock` suffixes and permanently block a
+durable transfer. Retain the existing non-waiting `QLockFile` on other systems.
+
+While holding the mutex, remove only exact legacy lock paths left by earlier
+Windows builds. Windows refuses that removal while another process still owns
+the old file handle, preserving contention safety. The migration changes only
+the local encrypted chunk cache; Telegram upload sessions and their MTProto
+connection lifecycle remain untouched.
