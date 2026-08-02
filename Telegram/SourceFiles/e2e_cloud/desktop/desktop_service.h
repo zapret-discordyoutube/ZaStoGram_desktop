@@ -41,6 +41,7 @@ class Session;
 
 class PeerData;
 class HistoryItem;
+class QImage;
 
 namespace E2ECloud {
 
@@ -180,6 +181,9 @@ public:
 	[[nodiscard]] bool sendProtectedFile(
 		ConversationId conversationId,
 		QString path);
+	[[nodiscard]] bool sendProtectedImage(
+		ConversationId conversationId,
+		const QImage &image);
 	[[nodiscard]] bool cancelProtectedFileTransfer(
 		ConversationId conversationId);
 	[[nodiscard]] bool saveProtectedFile(

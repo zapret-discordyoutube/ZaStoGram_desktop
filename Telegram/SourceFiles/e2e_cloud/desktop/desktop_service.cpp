@@ -274,6 +274,72 @@ template <typename Id>
 		+ u"/"_q;
 }
 
+[[nodiscard]] QString StagedProtectedImageDirectory(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId) {
+	return ConversationDirectory(telegramUserIdBinding, conversationId)
+		+ u"staged-images/"_q;
+}
+
+[[nodiscard]] bool IsStagedProtectedImage(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId,
+		const QString &path) {
+	const auto info = QFileInfo(path);
+	const auto directory = QDir::cleanPath(
+		StagedProtectedImageDirectory(
+			telegramUserIdBinding,
+			conversationId));
+	return QDir::cleanPath(info.absolutePath()) == directory
+		&& info.fileName().startsWith(u"image-"_q)
+		&& info.fileName().endsWith(u".png"_q);
+}
+
+void RemoveStagedProtectedImage(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId,
+		const QString &path) {
+	if (IsStagedProtectedImage(
+			telegramUserIdBinding,
+			conversationId,
+			path)) {
+		QFile::remove(path);
+	}
+}
+
+[[nodiscard]] std::optional<QString> StageProtectedImage(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId,
+		const QImage &image) {
+	const auto id = RandomId<ObjectId>();
+	if (!id || image.isNull() || !image.size().isValid()) {
+		return std::nullopt;
+	}
+	const auto directory = StagedProtectedImageDirectory(
+		telegramUserIdBinding,
+		conversationId);
+	if (!QDir().mkpath(directory)) {
+		return std::nullopt;
+	}
+	const auto encoded = QByteArray(
+		reinterpret_cast<const char*>(id->bytes.data()),
+		int(id->bytes.size())).toHex();
+	const auto path = directory
+		+ u"image-"_q
+		+ QString::fromLatin1(encoded)
+		+ u".png"_q;
+	auto output = QSaveFile(path);
+	if (!output.open(QIODevice::WriteOnly)) {
+		return std::nullopt;
+	}
+	output.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+	if (!image.save(&output, "PNG") || !output.commit()) {
+		output.cancelWriting();
+		return std::nullopt;
+	}
+	return path;
+}
+
 bool DiscardUncommittedConversationDirectory(const QString &directory) {
 	auto target = QDir(directory);
 	return !target.exists() || target.removeRecursively();
@@ -996,6 +1062,12 @@ DesktopService::~DesktopService() {
 	}
 	for (const auto &entry : _groups) {
 		clearMaterializedProtectedHistory(*entry.second);
+		if (!entry.second->fileTransfer.pending()) {
+			RemoveStagedProtectedImage(
+				_telegramUserIdBinding,
+				entry.first,
+				entry.second->filePreparationPath);
+		}
 	}
 	Cleanse(_pendingUnlockPassword);
 	Cleanse(_unlockedPassword);
@@ -2007,12 +2079,20 @@ bool DesktopService::sendProtectedFile(
 			group.fileHashCancellation.reset();
 			if (group.fileHashCancelRequested) {
 				group.fileHashCancelRequested = false;
+				RemoveStagedProtectedImage(
+					weak->_telegramUserIdBinding,
+					conversationId,
+					group.filePreparationPath);
 				group.filePreparationPath.clear();
 				group.filePreparationSource.reset();
 				weak->notifyFileTransferRevision();
 				weak->pumpActiveOutbox(conversationId);
 				return;
 			} else if (!source) {
+				RemoveStagedProtectedImage(
+					weak->_telegramUserIdBinding,
+					conversationId,
+					group.filePreparationPath);
 				group.filePreparationPath.clear();
 				group.filePreparationSource.reset();
 				weak->notifyFileTransferRevision();
@@ -2025,6 +2105,25 @@ bool DesktopService::sendProtectedFile(
 			weak->pumpActiveOutbox(conversationId);
 		});
 	});
+	return true;
+}
+
+bool DesktopService::sendProtectedImage(
+		ConversationId conversationId,
+		const QImage &image) {
+	const auto path = StageProtectedImage(
+		_telegramUserIdBinding,
+		conversationId,
+		image);
+	if (!path) {
+		return false;
+	} else if (!sendProtectedFile(conversationId, *path)) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			*path);
+		return false;
+	}
 	return true;
 }
 
@@ -2047,6 +2146,10 @@ bool DesktopService::cancelProtectedFileTransfer(
 		setContentState(conversationId, DesktopContentState::Synchronizing);
 		return true;
 	} else if (!group.filePreparationPath.isEmpty()) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			group.filePreparationPath);
 		group.filePreparationPath.clear();
 		group.filePreparationSource.reset();
 		notifyFileTransferRevision();
@@ -2690,6 +2793,12 @@ void DesktopService::lock() {
 	}
 	for (const auto &entry : _groups) {
 		clearMaterializedProtectedHistory(*entry.second);
+		if (!entry.second->fileTransfer.pending()) {
+			RemoveStagedProtectedImage(
+				_telegramUserIdBinding,
+				entry.first,
+				entry.second->filePreparationPath);
+		}
 	}
 	_pendingGroupCreation.reset();
 	_pendingGroupJoin.reset();
@@ -4276,6 +4385,10 @@ bool DesktopService::commitPreparedFileTransfer(
 		|| (group.uploadController
 			&& group.uploadController->uploadInProgress())
 		|| source->size > kMaximumProtectedFileSize) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			group.filePreparationPath);
 		group.filePreparationPath.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
@@ -4285,6 +4398,12 @@ bool DesktopService::commitPreparedFileTransfer(
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
 	if (!material || !eventObjectId || !contentObjectId) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			group.filePreparationPath);
+		group.filePreparationPath.clear();
+		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
@@ -4319,6 +4438,10 @@ bool DesktopService::commitPreparedFileTransfer(
 		}
 	});
 	if (!manifestPlaintext) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			group.filePreparationPath);
 		group.filePreparationPath.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
@@ -4342,12 +4465,23 @@ bool DesktopService::commitPreparedFileTransfer(
 	};
 	const auto queued = group.fileTransfer.begin(std::move(transfer));
 	if (queued != FileTransferCommitResult::Committed) {
+		RemoveStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			sourcePath);
+		group.filePreparationPath.clear();
+		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
-	group.localProtectedFilePaths.insert_or_assign(
-		*eventObjectId,
-		sourcePath);
+	if (!IsStagedProtectedImage(
+			_telegramUserIdBinding,
+			conversationId,
+			sourcePath)) {
+		group.localProtectedFilePaths.insert_or_assign(
+			*eventObjectId,
+			sourcePath);
+	}
 	group.filePreparationPath.clear();
 	group.filePreparationSource.reset();
 	notifyFileTransferRevision();
@@ -4373,6 +4507,7 @@ bool DesktopService::finishFileTransferCancellation(
 			pending->contentObjectId)) {
 		return false;
 	}
+	const auto sourcePath = QString::fromUtf8(pending->sourcePathUtf8);
 	if (!group.chunkStore.removeChunksBefore(
 		group.conversationId,
 		manifest->context.fileId,
@@ -4385,6 +4520,10 @@ bool DesktopService::finishFileTransferCancellation(
 		&& cleared != FileTransferCommitResult::AlreadyCommitted) {
 		return false;
 	}
+	RemoveStagedProtectedImage(
+		_telegramUserIdBinding,
+		group.conversationId,
+		sourcePath);
 	notifyFileTransferRevision();
 	return true;
 }
@@ -4779,6 +4918,10 @@ bool DesktopService::finalizeFileTransfer(
 					DesktopContentState::LocalFailure);
 				return;
 			}
+			RemoveStagedProtectedImage(
+				weak->_telegramUserIdBinding,
+				conversationId,
+				sourcePath);
 			weak->notifyFileTransferRevision();
 			weak->pumpActiveOutbox(conversationId);
 		});

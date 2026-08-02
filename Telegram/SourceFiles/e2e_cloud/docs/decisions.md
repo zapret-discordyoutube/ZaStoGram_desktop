@@ -1055,3 +1055,16 @@ protected-file restoration flow and opens only the hash-verified result. Keep
 manifest revision 2 readable without a preview and emit revision 3 for new
 files. Previously sent revision-2 files remain generic because no thumbnail
 exists in their authenticated ciphertext.
+
+### D088: Clipboard images use the protected file pipeline
+
+Supersede D086's rejection of in-memory media for non-animated images. Encode a
+pasted image as an owner-only staged PNG, then pass it through the ordinary
+protected-file hash, encrypted manifest, chunk encryption, freshness, and
+authenticated upload flow. Never upload the staged PNG through Telegram's
+ordinary photo API and never expose its path as a durable local history cache.
+
+Remove the staged plaintext after successful final hash verification, durable
+cancellation, or any preparation failure. A staged source that belongs to a
+persisted transfer remains available across a restart until that exact transfer
+finishes or is cancelled.

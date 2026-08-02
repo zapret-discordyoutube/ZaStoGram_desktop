@@ -6348,8 +6348,18 @@ void HistoryWidget::chooseAttach(
 		}
 		if (isE2ECloudProtectedPeer()) {
 			if (!result.remoteContent.isEmpty()) {
-				controller()->showToast(
-					tr::lng_e2e_cloud_send_failed(tr::now));
+				auto read = Images::Read({
+					.content = result.remoteContent,
+				});
+				if (!read.image.isNull() && !read.animated) {
+					confirmSendingFiles(
+						std::move(read.image),
+						std::move(result.remoteContent),
+						overrideSendImagesAsPhotos);
+				} else {
+					controller()->showToast(
+						tr::lng_e2e_cloud_send_failed(tr::now));
+				}
 			} else {
 				(void)sendE2ECloudProtectedFiles(result.paths);
 			}
@@ -7912,8 +7922,18 @@ bool HistoryWidget::confirmSendingFiles(
 		std::optional<bool> overrideSendImagesAsPhotos,
 		const QString &insertTextOnCancel) {
 	if (isE2ECloudProtectedPeer()) {
-		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
-		return false;
+		const auto conversationId = e2eCloudProtectedConversation();
+		if (!conversationId) {
+			openE2ECloudProtectedConversation();
+			return false;
+		} else if (image.isNull()
+			|| !session().e2eCloud().sendProtectedImage(
+				*conversationId,
+				image)) {
+			controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+			return false;
+		}
+		return true;
 	}
 	if (image.isNull()) {
 		return false;
@@ -7961,6 +7981,13 @@ bool HistoryWidget::confirmSendingFiles(
 				paths.push_back(url.toLocalFile());
 			}
 			return sendE2ECloudProtectedFiles(paths);
+		}
+		if (auto read = Core::ReadMimeImage(data)) {
+			return confirmSendingFiles(
+				std::move(read.image),
+				std::move(read.content),
+				overrideSendImagesAsPhotos,
+				insertTextOnCancel);
 		}
 		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
 		return false;

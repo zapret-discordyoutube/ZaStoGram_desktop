@@ -202,6 +202,12 @@ source identity, so a restart resumes without nonce reuse. Every chunk is also
 account-signed and bound to its Telegram sender, conversation, group generation,
 file ID, and index.
 
+An image pasted from the clipboard has no source path. Desktop encodes it as an
+owner-only PNG in the conversation staging directory and sends that path through
+the same hashing, manifest, and chunk pipeline. The staging file is never used
+as a Telegram media upload or retained as a local history shortcut; it is
+removed after authenticated completion, cancellation, or preparation failure.
+
 If the source disappears or changes, the pending transfer remains available for
 retry. Selecting a replacement file atomically commits a new transfer with a
 new file identifier and key; a failed replacement write leaves the prior

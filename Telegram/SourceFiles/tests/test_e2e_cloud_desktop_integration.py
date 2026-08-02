@@ -1069,6 +1069,48 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     assert "sendProtectedFile(" not in details
 
 
+def verify_protected_clipboard_images_use_encrypted_files() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    widget = source("SourceFiles/history/history_widget.cpp")
+    send_image = function_body(
+        service,
+        "bool DesktopService::sendProtectedImage(",
+        "bool DesktopService::cancelProtectedFileTransfer(",
+    )
+    image_input = function_body(
+        widget,
+        "bool HistoryWidget::confirmSendingFiles(\n\t\tQImage &&image,",
+        "bool HistoryWidget::canSendFiles(",
+    )
+    mime_input = function_body(
+        widget,
+        "bool HistoryWidget::confirmSendingFiles(\n"
+        "\t\tnot_null<const QMimeData*> data,",
+        "void HistoryWidget::uploadFile(",
+    )
+    cancel = function_body(
+        service,
+        "bool DesktopService::finishFileTransferCancellation(",
+        "void DesktopService::completeActiveUpload(",
+    )
+    finalize = function_body(
+        service,
+        "bool DesktopService::finalizeFileTransfer(",
+        "void DesktopService::beginGroupObservation(",
+    )
+
+    assert "bool sendProtectedImage(" in header
+    assert "StageProtectedImage(" in send_image
+    assert "sendProtectedFile(conversationId, *path)" in send_image
+    assert "sendProtectedImage(" in image_input
+    assert "Core::ReadMimeImage(data)" in mime_input
+    assert "RemoveStagedProtectedImage(" in cancel
+    assert "RemoveStagedProtectedImage(" in finalize
+    assert "group.localProtectedFilePaths.insert_or_assign(" in service
+    assert "if (!IsStagedProtectedImage(" in service
+
+
 def verify_protected_composer_has_no_plaintext_side_channels() -> None:
     widget = source("SourceFiles/history/history_widget.cpp")
     cloud_draft = function_body(
@@ -2093,6 +2135,7 @@ def main() -> None:
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_uses_the_native_timeline_and_composer()
+    verify_protected_clipboard_images_use_encrypted_files()
     verify_protected_composer_has_no_plaintext_side_channels()
     verify_protected_history_can_page_back()
     verify_protected_plaintext_is_loaded_by_page()
