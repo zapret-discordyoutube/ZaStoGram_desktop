@@ -928,6 +928,21 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
         "void DesktopService::pumpActiveOutbox(",
         "bool DesktopService::prepareActiveUploadAcknowledgement(",
     )
+    cancel = function_body(
+        service,
+        "bool DesktopService::cancelProtectedFileTransfer(",
+        "bool DesktopService::saveProtectedFile(",
+    )
+    complete_upload = function_body(
+        service,
+        "void DesktopService::completeActiveUpload(",
+        "bool DesktopService::pumpFileTransfer(",
+    )
+    complete_chunk = function_body(
+        service,
+        "void DesktopService::completeFileChunkUpload(",
+        "bool DesktopService::queuePendingFileManifest(",
+    )
     restore = function_body(
         service,
         "DesktopService::LocalGroupRecoveryResult "
@@ -940,9 +955,32 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
     assert "AppendUint16(plaintext, 3);" in transfer
     assert "AppendUint8(plaintext, pending->cancelRequested ? 1 : 0)" \
         in transfer
+    mark_manifest = function_body(
+        transfer,
+        "FileTransferCommitResult "
+        "PersistentFileTransfer::markManifestPublished(",
+        "FileTransferCommitResult PersistentFileTransfer::requestCancel()",
+    )
+    assert "_pending->cancelRequested" not in mark_manifest
     assert "bool PersistentOutboxStore::removePair(" in outbox
     assert pump.index("pending->cancelRequested") \
         < pump.index("queuePendingFileManifest(conversationId)")
+    assert "uploadInProgress" not in cancel
+    cancel_branch = pump[
+        pump.index("pending && pending->cancelRequested"):
+        pump.index("if (group.fileHashInProgress)")
+    ]
+    assert "group.uploadInProgress" in cancel_branch
+    assert "uploadController->uploadInProgress()" in cancel_branch
+    assert "DesktopContentState::Synchronizing" in cancel_branch
+    assert complete_upload.index("pending->cancelRequested") \
+        < complete_upload.index(
+            "TelegramTransport::UploadResult::RetryableError"
+        )
+    assert complete_chunk.index("pending->cancelRequested") \
+        < complete_chunk.index(
+            "TelegramTransport::UploadResult::RetryableError"
+        )
     assert restore.index("finishFileTransferCancellation(*operation)") \
         < restore.index("else if (!operation->outbox.size())")
     assert "cancelProtectedFileTransfer(" in box

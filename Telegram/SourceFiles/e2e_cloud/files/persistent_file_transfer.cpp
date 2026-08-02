@@ -331,7 +331,6 @@ FileTransferCommitResult PersistentFileTransfer::markManifestPublished(
 		std::uint64_t archiveEpochGeneration) {
 	if (!_loaded
 		|| !_pending
-		|| _pending->cancelRequested
 		|| !archiveEpochGeneration
 		|| (_pending->archiveEpochGeneration
 			&& _pending->archiveEpochGeneration != archiveEpochGeneration)) {

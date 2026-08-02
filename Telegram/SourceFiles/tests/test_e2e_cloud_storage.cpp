@@ -849,7 +849,11 @@ int CountingLocalRecordProtector::openCalls() const {
 		|| !replaced.pending()
 		|| !replaced.pending()->cancelRequested
 		|| replaced.markManifestPublished(4)
-			!= FileTransferCommitResult::InvalidMutation) {
+			!= FileTransferCommitResult::Committed
+		|| !replaced.pending()
+		|| !replaced.pending()->cancelRequested
+		|| !replaced.pending()->manifestPublished
+		|| replaced.revision() != 6) {
 		return Fail("file transfer cancellation was not durable");
 	}
 	auto cancelling = PersistentFileTransfer(blob, protector);

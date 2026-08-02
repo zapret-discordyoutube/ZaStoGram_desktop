@@ -1262,10 +1262,7 @@ bool DesktopService::cancelProtectedFileTransfer(
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)
 		|| i->second->phase != PendingGroupCreation::Phase::Active
-		|| !i->second->fileTransfer.pending()
-		|| i->second->uploadInProgress
-		|| (i->second->uploadController
-			&& i->second->uploadController->uploadInProgress())) {
+		|| !i->second->fileTransfer.pending()) {
 		return false;
 	}
 	const auto requested = i->second->fileTransfer.requestCancel();
@@ -3110,7 +3107,13 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 	}
 	if (const auto pending = group.fileTransfer.pending();
 		pending && pending->cancelRequested) {
-		if (!finishFileTransferCancellation(group)) {
+		if (group.uploadInProgress
+			|| (group.uploadController
+				&& group.uploadController->uploadInProgress())) {
+			setContentState(
+				conversationId,
+				DesktopContentState::Synchronizing);
+		} else if (!finishFileTransferCancellation(group)) {
 			setContentState(
 				conversationId,
 				DesktopContentState::LocalFailure);
@@ -3204,6 +3207,10 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 					weak->setContentState(
 						conversationId,
 						DesktopContentState::PermanentTransportError);
+				}
+				if (const auto pending = group.fileTransfer.pending();
+					pending && pending->cancelRequested) {
+					weak->pumpActiveOutbox(conversationId);
 				}
 			});
 		return;
@@ -3413,6 +3420,10 @@ void DesktopService::completeActiveUpload(
 	if (!completion.outboxUpdated) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return;
+	} else if (const auto pending = group.fileTransfer.pending();
+		pending && pending->cancelRequested) {
+		pumpActiveOutbox(conversationId);
+		return;
 	} else if (completion.transportResult
 			== TelegramTransport::UploadResult::RetryableError) {
 		setContentState(
@@ -3552,6 +3563,11 @@ void DesktopService::completeFileChunkUpload(
 	}
 	auto &group = *i->second;
 	group.uploadInProgress = false;
+	if (const auto pending = group.fileTransfer.pending();
+		pending && pending->cancelRequested) {
+		pumpActiveOutbox(conversationId);
+		return;
+	}
 	if (result == TelegramTransport::UploadResult::RetryableError) {
 		setContentState(
 			conversationId,

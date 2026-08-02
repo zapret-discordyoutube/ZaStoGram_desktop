@@ -611,3 +611,19 @@ soon as the content controller finishes, including after a retryable content
 failure. The normal outgoing pump restarts deferred content after control is
 settled. Local administration waits for an active content observation for the
 same callback-lifetime reason.
+
+### D057: Cancellation survives an in-flight carrier upload
+
+Persist a file-transfer cancellation request even while the manifest outbox or
+one direct chunk upload is active. Do not report a false rejection merely
+because Telegram has not completed its current callback. Keep the transfer in a
+synchronizing state until that callback reaches its durability boundary, then
+remove the manifest pair and current retry chunk before clearing the transfer.
+
+If Telegram accepted a chunk after cancellation was requested, do not advance
+the durable chunk cursor. The accepted ciphertext becomes an unusable opaque
+orphan and local cleanup removes its retry copy. Manifest acknowledgement still
+finishes normally before cancellation cleanup, so an accepted Telegram object
+is never confused with an unacknowledged local outbox entry. Retryable and
+permanent callback results also resume the durable cleanup instead of leaving
+the cancellation marker stuck until restart.
