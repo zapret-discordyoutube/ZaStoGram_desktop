@@ -322,6 +322,30 @@ def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
     assert service.count("weak->_operationEpoch != operationEpoch") >= 2
 
 
+def verify_late_file_downloads_cannot_cross_lock_boundary() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    download = function_body(
+        service,
+        "bool DesktopService::beginFileChunkDownload(",
+        "FileChunkDownloadPageStatus "
+        "DesktopService::processFileChunkDownloadPage(",
+    )
+    completion = function_body(
+        service,
+        "void DesktopService::applyFileChunkDownload(",
+        "bool DesktopService::writePendingProtectedFile(",
+    )
+
+    assert "const auto eventObjectId = " \
+        "group.pendingFileDownload->eventObjectId;" in download
+    assert "const auto operationEpoch = _operationEpoch;" in download
+    assert "eventObjectId," in download
+    assert "operationEpoch," in download
+    assert "_operationEpoch != operationEpoch" in completion
+    assert "pendingFileDownload->eventObjectId" in completion
+    assert "!= eventObjectId" in completion
+
+
 def verify_file_chunk_self_observation_uses_exact_ciphertext() -> None:
     processor = source(
         "SourceFiles/e2e_cloud/protocol/observed_content_processor.cpp"
@@ -1742,6 +1766,7 @@ def main() -> None:
     verify_key_packages_bind_the_observed_telegram_author()
     verify_unanchored_vault_history_is_contiguous()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
+    verify_late_file_downloads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
     verify_pending_plaintext_is_cleansed()
     verify_manifest_key_is_owned_before_variable_fields()

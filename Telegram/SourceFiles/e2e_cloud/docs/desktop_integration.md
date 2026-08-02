@@ -179,6 +179,9 @@ transfer intact.
 Saving a file reads only authenticated local chunks, decrypts them in order to
 a `QSaveFile`, verifies total length and the full plaintext SHA-256 digest, and
 atomically commits the destination only after all checks pass.
+Its deferred completion remains bound to the lock epoch and manifest event that
+started the request, so a result queued before lock cannot affect a new Save
+operation after the same conversation is restored.
 
 ## Mobile reuse boundary
 

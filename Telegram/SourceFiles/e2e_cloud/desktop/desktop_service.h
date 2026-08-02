@@ -287,6 +287,8 @@ private:
 		std::vector<TelegramTransport::UntrustedObject> objects);
 	void applyFileChunkDownload(
 		ConversationId conversationId,
+		ObjectId eventObjectId,
+		std::uint64_t operationEpoch,
 		FileChunkDownloadCompletion completion);
 	[[nodiscard]] bool writePendingProtectedFile(
 		ConversationId conversationId);

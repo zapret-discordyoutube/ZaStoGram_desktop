@@ -911,3 +911,16 @@ publishing a competing account identity.
 This preflight narrows honest multi-device races but does not claim an atomic
 compare-and-swap from Telegram storage. A server that hides first-contact
 metadata remains covered by the documented first-contact limitation.
+
+### D078: Deferred file completions stay inside one lock epoch
+
+Bind every Desktop file-download completion to both the service operation epoch
+and the manifest event that started the Save request. The transport controller
+can finish on a non-interface thread and defer its completion to the next main
+turn. A lock destroys the old group runtime, but the service object survives and
+can later restore the same conversation identifier. Without both bindings, a
+late old completion could mistake a new Save request in that conversation for
+its own operation, reset its controller, or begin writing the wrong manifest.
+
+An epoch mismatch or event mismatch now drops the stale callback without
+touching the restored group or its user callback.

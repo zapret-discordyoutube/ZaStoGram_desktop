@@ -1738,6 +1738,8 @@ bool DesktopService::beginFileChunkDownload(
 		conversationId,
 		group.telegramPeerIdBinding,
 		*group.fileDownloadBackend);
+	const auto eventObjectId = group.pendingFileDownload->eventObjectId;
+	const auto operationEpoch = _operationEpoch;
 	group.fileDownloadController = std::make_unique<
 		FileChunkDownloadController>(
 			conversationId,
@@ -1755,12 +1757,21 @@ bool DesktopService::beginFileChunkDownload(
 						std::move(objects))
 					: FileChunkDownloadPageStatus::PersistenceFailed;
 			},
-			[weak = base::weak_ptr(this), conversationId](
+			[weak = base::weak_ptr(this),
+					conversationId,
+					eventObjectId,
+					operationEpoch](
 					FileChunkDownloadCompletion completion) {
-				crl::on_main([weak, conversationId, completion] {
+				crl::on_main([weak,
+						conversationId,
+						eventObjectId,
+						operationEpoch,
+						completion] {
 					if (weak) {
 						weak->applyFileChunkDownload(
 							conversationId,
+							eventObjectId,
+							operationEpoch,
 							completion);
 					}
 				});
@@ -1812,12 +1823,17 @@ FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 
 void DesktopService::applyFileChunkDownload(
 		ConversationId conversationId,
+		ObjectId eventObjectId,
+		std::uint64_t operationEpoch,
 		FileChunkDownloadCompletion completion) {
-	if (!vaultReady()) {
+	if (!vaultReady() || _operationEpoch != operationEpoch) {
 		return;
 	}
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !i->second->pendingFileDownload) {
+	if (i == end(_groups)
+		|| !i->second->pendingFileDownload
+		|| i->second->pendingFileDownload->eventObjectId
+			!= eventObjectId) {
 		return;
 	}
 	auto &group = *i->second;
