@@ -528,3 +528,17 @@ Never replace the persisted transfer implicitly. Its manifest or some of its
 chunks may already be present in Telegram, and replacing its local cursor would
 make that authenticated file permanently incomplete while leaving no state from
 which upload recovery could resume.
+
+### D051: Full-file hashing never blocks the interface thread
+
+Hash a newly selected source on a worker before creating its durable transfer.
+Keep the prepared path and digest attached to the conversation while control
+synchronization finishes, then construct the manifest from the latest accepted
+group state. Reject another file selection until that preparation is consumed.
+
+Do not synchronously hash the same source again before queuing its manifest; a
+size and readability check is sufficient because chunk encryption reads the
+source afterward and recipients verify the manifest's full plaintext hash. Once
+all chunks are accepted, verify the source hash again on a worker before clearing
+the durable transfer. Operation epochs and transfer identity prevent late worker
+results from mutating a relocked or different conversation state.

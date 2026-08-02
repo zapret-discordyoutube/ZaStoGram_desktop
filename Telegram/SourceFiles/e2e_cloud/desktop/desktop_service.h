@@ -254,6 +254,8 @@ private:
 	[[nodiscard]] bool prepareFileManifestAcknowledgement(
 		PendingGroupCreation &group,
 		ObjectId objectId);
+	[[nodiscard]] bool commitPreparedFileTransfer(
+		ConversationId conversationId);
 	void completeActiveUpload(
 		ConversationId conversationId,
 		UploadCompletion completion);

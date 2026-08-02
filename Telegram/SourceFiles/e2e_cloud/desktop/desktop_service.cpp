@@ -474,6 +474,8 @@ struct DesktopService::PendingGroupCreation {
 	std::unique_ptr<TelegramCarrierTransport> fileDownloadTransport;
 	std::unique_ptr<FileChunkDownloadController> fileDownloadController;
 	std::optional<PendingFileDownload> pendingFileDownload;
+	QString filePreparationPath;
+	std::optional<HashedFile> filePreparationSource;
 	std::set<AccountId> safetyWitnesses;
 	std::uint64_t safetyWitnessGeneration = 0;
 	bool ownSafetyGossipObserved = false;
@@ -481,6 +483,8 @@ struct DesktopService::PendingGroupCreation {
 	bool contentObservationDirty = false;
 	bool vaultPreflightRequired = true;
 	bool uploadInProgress = false;
+	bool fileHashInProgress = false;
+	bool fileFinalHashInProgress = false;
 	Phase phase = Phase::Creating;
 };
 
@@ -1168,85 +1172,62 @@ bool DesktopService::sendProtectedFile(
 		|| path.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
+		|| i->second->fileHashInProgress
+		|| !i->second->filePreparationPath.isEmpty()
 		|| i->second->fileTransfer.pending()
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
 	auto &group = *i->second;
-	const auto metadata = group.metadata.metadata();
-	const auto state = group.groupLedger.state();
-	const auto epoch = group.archiveState.currentEpoch();
-	const auto source = HashFile(path);
-	const auto material = GenerateFileEncryptionMaterial();
-	const auto eventObjectId = RandomId<ObjectId>();
-	const auto contentObjectId = RandomId<ObjectId>();
-	if (!metadata
-		|| !state
-		|| !epoch
-		|| !source
-		|| !material
-		|| !eventObjectId
-		|| !contentObjectId
-		|| group.outbox.size()
+	if (group.outbox.size()
 		|| group.uploadInProgress
 		|| (group.uploadController
-			&& group.uploadController->uploadInProgress())
-		|| source->size > kMaximumProtectedFileSize) {
+			&& group.uploadController->uploadInProgress())) {
 		return false;
 	}
-	const auto chunkCount = source->size
-		? std::uint32_t(1 + ((source->size - 1) / kDesktopFileChunkSize))
-		: 0;
 	const auto sourceInfo = QFileInfo(path);
 	const auto absolutePath = sourceInfo.absoluteFilePath();
-	const auto manifest = PrivateFileManifest{
-		.context = {
-			.conversationId = conversationId,
-			.fileId = material->fileId,
-			.plaintextSize = source->size,
-			.chunkSize = kDesktopFileChunkSize,
-			.chunkCount = chunkCount,
-			.noncePrefix = material->noncePrefix,
-		},
-		.key = FileEncryptionKey(std::array<std::uint8_t, 32>(
-			material->key.bytes())),
-		.plaintextHash = source->hash,
-		.unixTime = std::uint64_t(base::unixtime::now()),
-		.filenameUtf8 = sourceInfo.fileName().toUtf8(),
-		.mimeTypeUtf8 = QMimeDatabase().mimeTypeForFile(
+	if (absolutePath.isEmpty()) {
+		return false;
+	}
+	group.filePreparationPath = absolutePath;
+	group.filePreparationSource.reset();
+	group.fileHashInProgress = true;
+	setContentState(conversationId, DesktopContentState::Synchronizing);
+	const auto operationEpoch = _operationEpoch;
+	crl::async([weak = base::weak_ptr(this),
+			conversationId,
 			absolutePath,
-			QMimeDatabase::MatchExtension).name().toUtf8(),
-	};
-	auto manifestPlaintext = PrivateFileManifestCodecV1()
-		.encodePlaintext(manifest);
-	const auto manifestGuard = qScopeGuard([&] {
-		if (manifestPlaintext) {
-			Cleanse(*manifestPlaintext);
-		}
+			operationEpoch] {
+		const auto source = HashFile(absolutePath);
+		crl::on_main([weak,
+				conversationId,
+				absolutePath,
+				operationEpoch,
+				source] {
+			if (!weak || weak->_operationEpoch != operationEpoch) {
+				return;
+			}
+			const auto i = weak->_groups.find(conversationId);
+			if (i == end(weak->_groups)
+				|| !i->second->fileHashInProgress
+				|| i->second->filePreparationPath != absolutePath) {
+				return;
+			}
+			auto &group = *i->second;
+			group.fileHashInProgress = false;
+			if (!source) {
+				group.filePreparationPath.clear();
+				group.filePreparationSource.reset();
+				weak->setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return;
+			}
+			group.filePreparationSource = source;
+			weak->pumpActiveOutbox(conversationId);
+		});
 	});
-	if (!manifestPlaintext
-		|| (group.freshnessGate->state() == FreshnessState::Required
-			&& !queueFreshnessChallenge(group))) {
-		setContentState(conversationId, DesktopContentState::LocalFailure);
-		return false;
-	}
-	auto transfer = PendingFileTransfer{
-		.conversationId = conversationId,
-		.eventObjectId = *eventObjectId,
-		.contentObjectId = *contentObjectId,
-		.groupGeneration = state->generation(),
-		.archiveEpochGeneration = epoch->generation,
-		.manifestPublished = false,
-		.nextChunkIndex = 0,
-		.sourcePathUtf8 = absolutePath.toUtf8(),
-		.manifestPlaintext = *manifestPlaintext,
-	};
-	const auto queued = group.fileTransfer.begin(std::move(transfer));
-	if (queued != FileTransferCommitResult::Committed) {
-		setContentState(conversationId, DesktopContentState::LocalFailure);
-		return false;
-	}
-	pumpActiveOutbox(conversationId);
 	return true;
 }
 
@@ -2988,6 +2969,19 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			return;
 		}
 	}
+	if (group.fileHashInProgress) {
+		setContentState(
+			conversationId,
+			DesktopContentState::Synchronizing);
+		return;
+	} else if (group.filePreparationSource
+		&& !group.outbox.size()
+		&& !group.uploadInProgress
+		&& (!group.uploadController
+			|| !group.uploadController->uploadInProgress())
+		&& !commitPreparedFileTransfer(conversationId)) {
+		return;
+	}
 	if (!group.freshnessGate->sendingAllowed()) {
 		if (group.freshnessGate->state() == FreshnessState::Required
 			&& !group.outbox.size()
@@ -3128,6 +3122,100 @@ bool DesktopService::prepareFileManifestAcknowledgement(
 		archiveEpochGeneration);
 	return marked == FileTransferCommitResult::Committed
 		|| marked == FileTransferCommitResult::AlreadyCommitted;
+}
+
+bool DesktopService::commitPreparedFileTransfer(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups) || !_vault) {
+		return false;
+	}
+	auto &group = *i->second;
+	const auto metadata = group.metadata.metadata();
+	const auto state = group.groupLedger.state();
+	const auto epoch = group.archiveState.currentEpoch();
+	const auto source = group.filePreparationSource;
+	if (!metadata
+		|| !state
+		|| !epoch
+		|| !source
+		|| group.filePreparationPath.isEmpty()
+		|| group.fileTransfer.pending()
+		|| group.outbox.size()
+		|| group.uploadInProgress
+		|| (group.uploadController
+			&& group.uploadController->uploadInProgress())
+		|| source->size > kMaximumProtectedFileSize) {
+		group.filePreparationPath.clear();
+		group.filePreparationSource.reset();
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	const auto material = GenerateFileEncryptionMaterial();
+	const auto eventObjectId = RandomId<ObjectId>();
+	const auto contentObjectId = RandomId<ObjectId>();
+	if (!material || !eventObjectId || !contentObjectId) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	const auto chunkCount = source->size
+		? std::uint32_t(1 + ((source->size - 1) / kDesktopFileChunkSize))
+		: 0;
+	const auto sourceInfo = QFileInfo(group.filePreparationPath);
+	const auto manifest = PrivateFileManifest{
+		.context = {
+			.conversationId = conversationId,
+			.fileId = material->fileId,
+			.plaintextSize = source->size,
+			.chunkSize = kDesktopFileChunkSize,
+			.chunkCount = chunkCount,
+			.noncePrefix = material->noncePrefix,
+		},
+		.key = FileEncryptionKey(std::array<std::uint8_t, 32>(
+			material->key.bytes())),
+		.plaintextHash = source->hash,
+		.unixTime = std::uint64_t(base::unixtime::now()),
+		.filenameUtf8 = sourceInfo.fileName().toUtf8(),
+		.mimeTypeUtf8 = QMimeDatabase().mimeTypeForFile(
+			group.filePreparationPath,
+			QMimeDatabase::MatchExtension).name().toUtf8(),
+	};
+	auto manifestPlaintext = PrivateFileManifestCodecV1()
+		.encodePlaintext(manifest);
+	const auto manifestGuard = qScopeGuard([&] {
+		if (manifestPlaintext) {
+			Cleanse(*manifestPlaintext);
+		}
+	});
+	if (!manifestPlaintext) {
+		group.filePreparationPath.clear();
+		group.filePreparationSource.reset();
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	} else if (group.freshnessGate->state() == FreshnessState::Required
+		&& !queueFreshnessChallenge(group)) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	auto transfer = PendingFileTransfer{
+		.conversationId = conversationId,
+		.eventObjectId = *eventObjectId,
+		.contentObjectId = *contentObjectId,
+		.groupGeneration = state->generation(),
+		.archiveEpochGeneration = epoch->generation,
+		.manifestPublished = false,
+		.nextChunkIndex = 0,
+		.sourcePathUtf8 = group.filePreparationPath.toUtf8(),
+		.manifestPlaintext = *manifestPlaintext,
+	};
+	const auto queued = group.fileTransfer.begin(std::move(transfer));
+	if (queued != FileTransferCommitResult::Committed) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	group.filePreparationPath.clear();
+	group.filePreparationSource.reset();
+	return true;
 }
 
 void DesktopService::completeActiveUpload(
@@ -3324,18 +3412,22 @@ bool DesktopService::queuePendingFileManifest(
 		? PrivateFileManifestCodecV1().decodePlaintext(
 			pending->manifestPlaintext)
 		: std::nullopt;
-	const auto source = pending
-		? HashFile(QString::fromUtf8(pending->sourcePathUtf8))
-		: std::nullopt;
+	auto source = QFile(pending
+		? QString::fromUtf8(pending->sourcePathUtf8)
+		: QString());
+	const auto sourceMatches = pending
+		&& manifest
+		&& source.open(QIODevice::ReadOnly)
+		&& source.size() >= 0
+		&& std::uint64_t(source.size())
+			== manifest->context.plaintextSize;
 	const auto metadata = group.metadata.metadata();
 	const auto epoch = (pending && pending->archiveEpochGeneration)
 		? group.archiveState.epoch(pending->archiveEpochGeneration)
 		: group.archiveState.currentEpoch();
 	if (!pending
 		|| !manifest
-		|| !source
-		|| source->size != manifest->context.plaintextSize
-		|| source->hash != manifest->plaintextHash
+		|| !sourceMatches
 		|| !metadata
 		|| !epoch
 		|| !group.groupLedger.wasClientActiveAt(
@@ -3395,25 +3487,71 @@ bool DesktopService::finalizeFileTransfer(
 		? PrivateFileManifestCodecV1().decodePlaintext(
 			pending->manifestPlaintext)
 		: std::nullopt;
-	const auto source = pending
-		? HashFile(QString::fromUtf8(pending->sourcePathUtf8))
-		: std::nullopt;
 	if (!pending
 		|| !pending->manifestPublished
 		|| !manifest
-		|| !source
-		|| source->size != manifest->context.plaintextSize
-		|| source->hash != manifest->plaintextHash) {
+		|| pending->nextChunkIndex != manifest->context.chunkCount) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
+	} else if (group.fileFinalHashInProgress) {
+		return true;
 	}
-	const auto cleared = group.fileTransfer.clear();
-	if (cleared != FileTransferCommitResult::Committed
-		&& cleared != FileTransferCommitResult::AlreadyCommitted) {
-		setContentState(conversationId, DesktopContentState::LocalFailure);
-		return false;
-	}
-	pumpActiveOutbox(conversationId);
+	const auto eventObjectId = pending->eventObjectId;
+	const auto sourcePath = QString::fromUtf8(pending->sourcePathUtf8);
+	const auto operationEpoch = _operationEpoch;
+	group.fileFinalHashInProgress = true;
+	setContentState(conversationId, DesktopContentState::Synchronizing);
+	crl::async([weak = base::weak_ptr(this),
+			conversationId,
+			eventObjectId,
+			sourcePath,
+			operationEpoch] {
+		const auto source = HashFile(sourcePath);
+		crl::on_main([weak,
+				conversationId,
+				eventObjectId,
+				sourcePath,
+				operationEpoch,
+				source] {
+			if (!weak || weak->_operationEpoch != operationEpoch) {
+				return;
+			}
+			const auto i = weak->_groups.find(conversationId);
+			if (i == end(weak->_groups)) {
+				return;
+			}
+			auto &group = *i->second;
+			group.fileFinalHashInProgress = false;
+			const auto pending = group.fileTransfer.pending();
+			const auto manifest = pending
+				? PrivateFileManifestCodecV1().decodePlaintext(
+					pending->manifestPlaintext)
+				: std::nullopt;
+			if (!pending
+				|| pending->eventObjectId != eventObjectId
+				|| QString::fromUtf8(pending->sourcePathUtf8) != sourcePath
+				|| !manifest
+				|| pending->nextChunkIndex
+					!= manifest->context.chunkCount
+				|| !source
+				|| source->size != manifest->context.plaintextSize
+				|| source->hash != manifest->plaintextHash) {
+				weak->setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return;
+			}
+			const auto cleared = group.fileTransfer.clear();
+			if (cleared != FileTransferCommitResult::Committed
+				&& cleared != FileTransferCommitResult::AlreadyCommitted) {
+				weak->setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return;
+			}
+			weak->pumpActiveOutbox(conversationId);
+		});
+	});
 	return true;
 }
 

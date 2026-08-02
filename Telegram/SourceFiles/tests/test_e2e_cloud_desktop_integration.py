@@ -244,7 +244,7 @@ def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
         "void DesktopService::lock()",
         "void DesktopService::applyVaultDiscoveryResult(",
     )
-    assert service.count("weak->_operationEpoch != operationEpoch") == 2
+    assert service.count("weak->_operationEpoch != operationEpoch") >= 2
 
 
 def verify_file_chunk_self_observation_uses_exact_ciphertext() -> None:
@@ -883,11 +883,28 @@ def verify_new_file_cannot_replace_pending_transfer() -> None:
         "bool DesktopService::sendProtectedFile(",
         "bool DesktopService::saveProtectedFile(",
     )
+    queue_manifest = function_body(
+        service,
+        "bool DesktopService::queuePendingFileManifest(",
+        "bool DesktopService::finalizeFileTransfer(",
+    )
+    finalize = function_body(
+        service,
+        "bool DesktopService::finalizeFileTransfer(",
+        "void DesktopService::beginGroupObservation(",
+    )
 
     assert file_send.index("i->second->fileTransfer.pending()") \
-        < file_send.index("const auto source = HashFile(path)")
-    assert "group.fileTransfer.begin(std::move(transfer))" in file_send
+        < file_send.index("crl::async(")
+    assert file_send.index("crl::async(") \
+        < file_send.index("HashFile(absolutePath)")
+    assert "group.fileHashInProgress = true;" in file_send
+    assert "commitPreparedFileTransfer(conversationId)" in service
+    assert "group.fileTransfer.begin(std::move(transfer))" in service
     assert "group.fileTransfer.replace(" not in file_send
+    assert "HashFile(" not in queue_manifest
+    assert finalize.index("crl::async(") \
+        < finalize.index("HashFile(sourcePath)")
 
 
 def main() -> None:
