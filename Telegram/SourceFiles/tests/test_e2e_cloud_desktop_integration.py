@@ -764,6 +764,11 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
         "[[nodiscard]] FileChunkAdmissionStatus AdmitObservedFileChunk(",
         "} // namespace",
     )
+    manifest = function_body(
+        processor,
+        "[[nodiscard]] ObservedContentProcessStatus ProcessObservedManifest(",
+        "enum class FileChunkAdmissionStatus",
+    )
     page = function_body(
         sync,
         "void ObservedContentSyncController::pageReceived(",
@@ -781,6 +786,9 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     assert processor.index("AesGcmFileChunkCipher().decrypt(") \
         < processor.index("chunkStore.storeIfAbsent(")
     assert "FileChunkStoreResult::QuotaExceeded" in processor
+    assert "authorized == FileChunkAuthorizeResult::QuotaExceeded" in processor
+    assert manifest.index("chunkStore.authorize(authorization)") \
+        < manifest.index("contentStore.append(")
     assert "kMinimumFreeBytes" in chunk_store
     assert "_storedBytes > _maximumStoredBytes - size" in chunk_store
     assert page.index("previewPage(result.untrustedObjects") \

@@ -474,3 +474,16 @@ authenticated index, leaving the immutable content record and its hash
 unchanged. Legacy file-manifest indexes migrate to the conservative boundary
 one so already stored files remain recoverable even when an older client kept
 only a later duplicate position.
+
+### D047: Manifest authorization failure stops content synchronization
+
+Advance content synchronization past a file manifest only after both its
+immutable content record and protected chunk authorization are durable. Treat
+authorization quota exhaustion like any other local persistence failure rather
+than silently reporting the manifest as processed. A later retry may reuse the
+already stored content record and finish authorization without losing the
+manifest behind the saved Telegram boundary.
+
+Chunk-cache quota exhaustion during an explicit Save remains a bounded download
+failure: it cannot advance ordinary content synchronization and the user may
+retry after recovering local capacity.

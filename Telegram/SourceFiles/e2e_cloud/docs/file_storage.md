@@ -78,6 +78,9 @@ Exact manifest duplicates retain their earliest positive Telegram message
 identifier in the protected content index. Chunk download uses that identifier
 as its exclusive lower search boundary, so a later duplicate cannot hide
 chunks published after the original manifest.
+Content synchronization advances past a manifest only after its local chunk
+authorization is durable. Authorization quota exhaustion is a persistence
+failure and leaves the previous synchronization boundary unchanged for retry.
 During history synchronization, manifests are previewed while Telegram pages
 are scanned and ordinary content is still replayed oldest-first. This preserves
 files written by the earlier chunk-first sender without reopening orphan-chunk

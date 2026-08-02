@@ -142,6 +142,17 @@ void Cleanse(QByteArray &bytes) {
 		++stats.ignored;
 		return ObservedContentProcessStatus::Processed;
 	}
+	const auto authorized = chunkStore.authorize(authorization);
+	if (authorized == FileChunkAuthorizeResult::Conflict) {
+		++stats.ignored;
+		return ObservedContentProcessStatus::Processed;
+	} else if (authorized == FileChunkAuthorizeResult::QuotaExceeded
+		|| authorized == FileChunkAuthorizeResult::Error) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	} else if (authorized != FileChunkAuthorizeResult::Authorized
+		&& authorized != FileChunkAuthorizeResult::AlreadyAuthorized) {
+		return ObservedContentProcessStatus::PersistenceFailed;
+	}
 	const auto stored = contentStore.append({
 		.conversationId = local.conversationId,
 		.eventObjectId = openedContent.eventObjectId,
@@ -161,13 +172,6 @@ void Cleanse(QByteArray &bytes) {
 		return ObservedContentProcessStatus::PersistenceFailed;
 	} else if (stored == ContentStoreAppendResult::Stored) {
 		++stats.manifestsStored;
-	}
-	const auto authorized = chunkStore.authorize(authorization);
-	if (authorized == FileChunkAuthorizeResult::Conflict) {
-		++stats.ignored;
-		return ObservedContentProcessStatus::Processed;
-	} else if (authorized == FileChunkAuthorizeResult::Error) {
-		return ObservedContentProcessStatus::PersistenceFailed;
 	}
 	return ObservedContentProcessStatus::Processed;
 }
