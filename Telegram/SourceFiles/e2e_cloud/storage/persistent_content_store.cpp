@@ -626,7 +626,7 @@ bool PersistentContentStore::persistIndex(
 	plaintext.reserve(
 		kIndexHeaderSize + int(entries.size()) * kIndexEntrySize);
 	AppendArray(plaintext, kIndexMagic);
-	AppendUint16(plaintext, 2);
+	AppendUint16(plaintext, 3);
 	AppendArray(plaintext, _conversationId.bytes);
 	AppendUint64(plaintext, revision);
 	AppendUint32(plaintext, std::uint32_t(entries.size()));

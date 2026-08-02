@@ -715,8 +715,10 @@ def verify_protected_plaintext_is_loaded_by_page() -> None:
 
     assert "std::vector<ProtectedContentRecord> _records" not in store_header
     assert "std::vector<std::size_t> _orderedEntries;" in store_header
-    assert "AppendUint16(plaintext, 2);" in store
-    assert "version != 1 && version != 2" in store
+    assert "AppendUint16(plaintext, 3);" in store
+    assert "version != 1 && version != 2 && version != 3" in store
+    assert "EarliestObservedMessageId(" in store
+    assert "std::optional<std::int64_t> observedTelegramMessageId;" in store_header
     assert "(void)persistIndex(_entries, _revision);" in store
     assert "readRecord(entry);" in store
     assert "contentStore.records(offset, limit, kind)" in service
