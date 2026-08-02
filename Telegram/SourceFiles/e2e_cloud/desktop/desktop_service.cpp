@@ -365,27 +365,32 @@ void RemoveStagedProtectedSource(
 		+ u".source"_q;
 }
 
-void CleanupStagedProtectedFiles(
+void CleanupStagedProtectedSources(
 		const QString &conversationDirectory,
 		const QString &keepPath) {
-	auto directory = QDir(conversationDirectory + u"staged-files/"_q);
-	if (!directory.exists()) {
-		return;
-	}
 	const auto keep = keepPath.isEmpty()
 		? QString()
 		: QDir::cleanPath(QFileInfo(keepPath).absoluteFilePath());
-	const auto entries = directory.entryInfoList(
-		QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
-	for (const auto &entry : entries) {
-		if (keep.isEmpty()
-			|| QDir::cleanPath(entry.absoluteFilePath()) != keep) {
-			QFile::remove(entry.absoluteFilePath());
+	for (const auto &name : { u"staged-files"_q, u"staged-images"_q }) {
+		auto directory = QDir(conversationDirectory + name + u"/"_q);
+		if (!directory.exists()) {
+			continue;
 		}
-	}
-	if (directory.entryList(
+		const auto entries = directory.entryInfoList(
+			QDir::Files
+				| QDir::Hidden
+				| QDir::System
+				| QDir::NoDotAndDotDot);
+		for (const auto &entry : entries) {
+			if (keep.isEmpty()
+				|| QDir::cleanPath(entry.absoluteFilePath()) != keep) {
+				QFile::remove(entry.absoluteFilePath());
+			}
+		}
+		if (directory.entryList(
 			QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty()) {
-		QDir(conversationDirectory).rmdir(u"staged-files"_q);
+			QDir(conversationDirectory).rmdir(name);
+		}
 	}
 }
 
@@ -972,12 +977,6 @@ struct DesktopService::PendingGroupCreation {
 		conversationId,
 		telegramPeerIdBinding,
 		contentBackend) {
-		const auto pending = fileTransfer.pending();
-		CleanupStagedProtectedFiles(
-			this->directory,
-			pending
-				? QString::fromUtf8(pending->sourcePathUtf8)
-				: QString());
 	}
 
 	~PendingGroupCreation() {
@@ -1475,6 +1474,7 @@ bool DesktopService::createProtectedGroup(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	CleanupStagedProtectedSources(operation->directory, QString());
 	auto bootstrap = PrepareProtectedGroupBootstrap({
 		.conversationId = *conversationId,
 		.telegramPeerIdBinding = peer->id.value,
@@ -4035,6 +4035,7 @@ bool DesktopService::prepareGroupJoin(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	CleanupStagedProtectedSources(operation->directory, QString());
 	const auto createdAt = std::uint64_t(base::unixtime::now());
 	auto keyPackage = PrepareClientKeyPackage({
 		.client = {
@@ -7312,6 +7313,12 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		|| fileTransferLoad == FileTransferLoadResult::InvalidSnapshot) {
 		return LocalGroupRecoveryResult::Invalid;
 	}
+	const auto pendingFileTransfer = operation->fileTransfer.pending();
+	CleanupStagedProtectedSources(
+		operation->directory,
+		pendingFileTransfer
+			? QString::fromUtf8(pendingFileTransfer->sourcePathUtf8)
+			: QString());
 	if (journalLoad == GroupBootstrapJournalLoadResult::Pending) {
 		const auto envelopeCodec = EnvelopeCodecV1();
 		auto coordinator = GroupBootstrapTransactionCoordinator(

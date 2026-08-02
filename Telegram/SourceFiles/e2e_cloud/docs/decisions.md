@@ -1200,3 +1200,16 @@ the outbox. Local history must already contain the corresponding authenticated
 record at that boundary; otherwise recovery fails closed. File-transfer state
 remains an additional manifest recovery journal and continues to resume the
 same staged source and chunk cursor.
+
+### D098: Staging cleanup follows durable transfer recovery
+
+Never clean a conversation's staged source directories from the group runtime
+constructor, because the protected file-transfer journal has not been loaded at
+that point. After the journal is authenticated, preserve its exact active
+source path and remove only unrelated files from both `staged-files` and
+`staged-images`.
+
+New groups with an authenticated empty journal may clean every orphan after the
+empty state is established. Restored groups keep the full staged source across
+restart, so manifest and chunk retry continues from the durable cursor instead
+of failing after startup with a missing file.

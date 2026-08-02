@@ -1140,6 +1140,17 @@ def verify_protected_files_keep_a_stable_source_and_retry() -> None:
         "void DesktopService::applyFileChunkDownload(",
         "bool DesktopService::writePendingProtectedFile(",
     )
+    constructor = function_body(
+        service,
+        "\tPendingGroupCreation(\n",
+        "\t~PendingGroupCreation()",
+    )
+    restore = function_body(
+        service,
+        "DesktopService::LocalGroupRecoveryResult "
+        "DesktopService::restoreLocalGroup(",
+        "bool DesktopService::commitVaultAnchor(",
+    )
 
     assert "PrepareStagedProtectedFile(" in send_file
     assert "ownedSource ? QString() : stagedPath" in send_file
@@ -1153,6 +1164,12 @@ def verify_protected_files_keep_a_stable_source_and_retry() -> None:
     assert "base::call_delayed(delay" in service
     assert "kFileDownloadMaximumRetries" in download
     assert "scheduleFileDownloadRetry(" in download
+    assert "CleanupStagedProtectedSources(" not in constructor
+    assert service.count("CleanupStagedProtectedSources(") == 4
+    assert "u\"staged-files\"_q, u\"staged-images\"_q" in service
+    assert restore.index("operation->fileTransfer.load(") \
+        < restore.index("CleanupStagedProtectedSources(")
+    assert "pendingFileTransfer->sourcePathUtf8" in restore
 
 
 def verify_protected_composer_has_no_plaintext_side_channels() -> None:

@@ -78,7 +78,10 @@ staged source rather than a picker, drag-and-drop, cache, or temporary path.
 Restarting the client or removing the original selection therefore cannot leave
 only the first uploaded chunk. The staging file is removed only after final
 hash verification or durable cancellation. Retryable upload failures continue
-automatically with bounded exponential delay.
+automatically with bounded exponential delay. Startup loads and authenticates
+the durable transfer before cleaning staging directories, preserves the one
+source path named by that transfer, and only then removes unrelated staged file
+or image orphans.
 
 The authenticated manifest is published and acknowledged before the first
 chunk. A receiver persists a protected local authorization record derived from
