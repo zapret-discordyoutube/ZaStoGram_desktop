@@ -275,6 +275,10 @@ private:
 		FileChunkDownloadCompletion completion);
 	[[nodiscard]] bool writePendingProtectedFile(
 		ConversationId conversationId);
+	void continuePendingProtectedFileWrite(
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		std::uint64_t operationEpoch);
 	void finishFileChunkDownload(
 		ConversationId conversationId,
 		ProtectedFileSaveResult result);

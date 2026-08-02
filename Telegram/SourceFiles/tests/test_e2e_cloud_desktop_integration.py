@@ -870,8 +870,15 @@ def verify_file_chunks_download_only_on_demand() -> None:
     assert "minimumMessageIdExclusive" in backend
     assert complete.index("fileTransfer.advance(chunkIndex)") \
         < complete.index("group.chunkStore.removeChunk(")
-    assert write_file.index("output.commit()") \
+    assert write_file.index("if (write.committed)") \
         < write_file.index("group.chunkStore.removeChunk(")
+    assert write_file.index("write.output->commit()") \
+        < write_file.index("write.committed = true;")
+    assert "write.nextChunkIndex" in write_file
+    assert "scheduleNext();" in write_file
+    assert "kFileCleanupChunksPerTurn" in write_file
+    assert "group.chunkStore.hasChunk(" in service
+    assert "bool FileChunkFileStore::hasChunk(" in chunk_store
     assert "bool FileChunkFileStore::removeChunk(" in chunk_store
     assert "releaseStorage(std::uint64_t(size));" in chunk_store
 

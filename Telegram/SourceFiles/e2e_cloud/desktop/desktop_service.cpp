@@ -250,6 +250,7 @@ inline constexpr auto kFileDownloadExtraObjects = std::uint64_t(1024);
 inline constexpr auto kFileDownloadExtraPages = std::uint64_t(1024);
 inline constexpr auto kFileDownloadExtraBytes
 	= std::uint64_t(16) * 1024 * 1024;
+inline constexpr auto kFileCleanupChunksPerTurn = std::uint32_t(64);
 
 struct HashedFile {
 	std::uint64_t size = 0;
@@ -317,11 +318,35 @@ struct DesktopService::PendingGroupCreation {
 	};
 
 	struct PendingFileDownload {
+		struct PendingWrite {
+			PendingWrite(
+					std::unique_ptr<QSaveFile> output,
+					EVP_MD_CTX *digest,
+					PrivateFileManifest manifest)
+			: output(std::move(output))
+			, digest(digest)
+			, manifest(std::move(manifest)) {
+			}
+
+			~PendingWrite() {
+				EVP_MD_CTX_free(digest);
+			}
+
+			std::unique_ptr<QSaveFile> output;
+			EVP_MD_CTX *digest = nullptr;
+			PrivateFileManifest manifest;
+			std::uint64_t written = 0;
+			std::uint32_t nextChunkIndex = 0;
+			std::uint32_t cleanupChunkIndex = 0;
+			bool committed = false;
+		};
+
 		ObjectId eventObjectId;
 		FileId fileId;
 		QString path;
 		std::set<std::uint32_t> missingChunkIndices;
 		std::function<void(ProtectedFileSaveResult)> callback;
+		std::unique_ptr<PendingWrite> write;
 		bool legacyCarrier = false;
 	};
 
@@ -1268,18 +1293,12 @@ bool DesktopService::saveProtectedFile(
 	}
 	auto missing = std::set<std::uint32_t>();
 	for (auto index = std::uint32_t();
-		index != manifest->context.chunkCount;
-		++index) {
-		const auto stored = group.chunkStore.read(
+			index != manifest->context.chunkCount;
+			++index) {
+		if (!group.chunkStore.hasChunk(
 			conversationId,
 			manifest->context.fileId,
-			index);
-		if (stored.status == FileChunkReadStatus::Error) {
-			if (callback) {
-				callback(ProtectedFileSaveResult::LocalFailure);
-			}
-			return false;
-		} else if (stored.status == FileChunkReadStatus::Missing) {
+			index)) {
 			missing.emplace(index);
 		}
 	}
@@ -1292,13 +1311,13 @@ bool DesktopService::saveProtectedFile(
 		.legacyCarrier = false,
 	};
 	if (group.pendingFileDownload->missingChunkIndices.empty()) {
-		const auto saved = writePendingProtectedFile(conversationId);
-		finishFileChunkDownload(
-			conversationId,
-			saved
-				? ProtectedFileSaveResult::Saved
-				: ProtectedFileSaveResult::LocalFailure);
-		return saved;
+		const auto started = writePendingProtectedFile(conversationId);
+		if (!started) {
+			finishFileChunkDownload(
+				conversationId,
+				ProtectedFileSaveResult::LocalFailure);
+		}
+		return started;
 	}
 	if (!beginFileChunkDownload(conversationId, false)) {
 		finishFileChunkDownload(
@@ -1451,12 +1470,11 @@ void DesktopService::applyFileChunkDownload(
 	group.fileDownloadTransport.reset();
 	group.fileDownloadBackend.reset();
 	if (completion.status == FileChunkDownloadStatus::Complete) {
-		const auto saved = writePendingProtectedFile(conversationId);
-		finishFileChunkDownload(
-			conversationId,
-			saved
-				? ProtectedFileSaveResult::Saved
-				: ProtectedFileSaveResult::LocalFailure);
+		if (!writePendingProtectedFile(conversationId)) {
+			finishFileChunkDownload(
+				conversationId,
+				ProtectedFileSaveResult::LocalFailure);
+		}
 		return;
 	} else if (completion.status == FileChunkDownloadStatus::Missing
 		&& !wasLegacy) {
@@ -1483,7 +1501,9 @@ void DesktopService::applyFileChunkDownload(
 bool DesktopService::writePendingProtectedFile(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !i->second->pendingFileDownload) {
+	if (i == end(_groups)
+		|| !i->second->pendingFileDownload
+		|| i->second->pendingFileDownload->write) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -1494,7 +1514,7 @@ bool DesktopService::writePendingProtectedFile(
 			Cleanse(record->plaintext);
 		}
 	});
-	const auto manifest = (record
+	auto manifest = (record
 		&& record->objectKind == ObjectKind::EncryptedFileManifest)
 		? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
 		: std::nullopt;
@@ -1502,75 +1522,150 @@ bool DesktopService::writePendingProtectedFile(
 		|| manifest->context.fileId != group.pendingFileDownload->fileId) {
 		return false;
 	}
-	auto output = QSaveFile(group.pendingFileDownload->path);
-	if (!output.open(QIODevice::WriteOnly)) {
+	auto output = std::make_unique<QSaveFile>(
+		group.pendingFileDownload->path);
+	if (!output->open(QIODevice::WriteOnly)) {
 		return false;
 	}
 	const auto digest = EVP_MD_CTX_new();
 	if (!digest || EVP_DigestInit_ex(digest, EVP_sha256(), nullptr) != 1) {
 		EVP_MD_CTX_free(digest);
-		output.cancelWriting();
+		output->cancelWriting();
 		return false;
 	}
-	auto written = std::uint64_t();
-	auto ok = true;
-	const auto cipher = AesGcmFileChunkCipher();
-	for (auto index = std::uint32_t();
-			index != manifest->context.chunkCount;
-			++index) {
+	const auto eventObjectId = group.pendingFileDownload->eventObjectId;
+	group.pendingFileDownload->write = std::make_unique<
+		PendingGroupCreation::PendingFileDownload::PendingWrite>(
+			std::move(output),
+			digest,
+			std::move(*manifest));
+	const auto operationEpoch = _operationEpoch;
+	crl::on_main([weak = base::weak_ptr(this),
+			conversationId,
+			eventObjectId,
+			operationEpoch] {
+		if (weak) {
+			weak->continuePendingProtectedFileWrite(
+				conversationId,
+				eventObjectId,
+				operationEpoch);
+		}
+	});
+	return true;
+}
+
+void DesktopService::continuePendingProtectedFileWrite(
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		std::uint64_t operationEpoch) {
+	if (_operationEpoch != operationEpoch) {
+		return;
+	}
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)
+		|| !i->second->pendingFileDownload
+		|| i->second->pendingFileDownload->eventObjectId != eventObjectId
+		|| !i->second->pendingFileDownload->write) {
+		return;
+	}
+	auto &group = *i->second;
+	auto &write = *group.pendingFileDownload->write;
+	const auto scheduleNext = [=] {
+		crl::on_main([weak = base::weak_ptr(this),
+				conversationId,
+				eventObjectId,
+				operationEpoch] {
+			if (weak) {
+				weak->continuePendingProtectedFileWrite(
+					conversationId,
+					eventObjectId,
+					operationEpoch);
+			}
+		});
+	};
+	if (write.committed) {
+		const auto remaining = write.manifest.context.chunkCount
+			- write.cleanupChunkIndex;
+		const auto endIndex = write.cleanupChunkIndex
+			+ std::min(remaining, kFileCleanupChunksPerTurn);
+		while (write.cleanupChunkIndex != endIndex) {
+			(void)group.chunkStore.removeChunk(
+				conversationId,
+				write.manifest.context.fileId,
+				write.cleanupChunkIndex++);
+		}
+		if (write.cleanupChunkIndex
+				!= write.manifest.context.chunkCount) {
+			scheduleNext();
+		} else {
+			finishFileChunkDownload(
+				conversationId,
+				ProtectedFileSaveResult::Saved);
+		}
+		return;
+	}
+	if (write.nextChunkIndex != write.manifest.context.chunkCount) {
+		const auto index = write.nextChunkIndex;
 		const auto stored = group.chunkStore.read(
 			conversationId,
-			manifest->context.fileId,
+			write.manifest.context.fileId,
 			index);
 		auto plaintext = (stored.status == FileChunkReadStatus::Found)
-			? cipher.decrypt(
-				manifest->key,
-				manifest->context,
+			? AesGcmFileChunkCipher().decrypt(
+				write.manifest.key,
+				write.manifest.context,
 				index,
 				stored.chunk.exactCiphertext)
 			: std::nullopt;
-		if (!plaintext
-			|| output.write(*plaintext) != plaintext->size()
-			|| EVP_DigestUpdate(
-				digest,
+		const auto written = plaintext
+			? write.output->write(*plaintext)
+			: -1;
+		const auto updated = plaintext
+			&& written == plaintext->size()
+			&& EVP_DigestUpdate(
+				write.digest,
 				plaintext->constData(),
-				plaintext->size()) != 1) {
+				plaintext->size()) == 1;
+		if (!updated) {
 			if (plaintext) {
 				Cleanse(*plaintext);
 			}
-			ok = false;
-			break;
+			(void)group.chunkStore.removeChunk(
+				conversationId,
+				write.manifest.context.fileId,
+				index);
+			finishFileChunkDownload(
+				conversationId,
+				ProtectedFileSaveResult::LocalFailure);
+			return;
 		}
-		written += plaintext->size();
+		write.written += std::uint64_t(plaintext->size());
+		++write.nextChunkIndex;
 		Cleanse(*plaintext);
+		scheduleNext();
+		return;
 	}
 	auto hash = Digest();
 	auto hashSize = 0U;
-	ok = ok
-		&& written == manifest->context.plaintextSize
+	const auto verified = write.written
+			== write.manifest.context.plaintextSize
 		&& EVP_DigestFinal_ex(
-			digest,
+			write.digest,
 			hash.bytes.data(),
 			&hashSize) == 1
 		&& hashSize == hash.bytes.size()
-		&& hash == manifest->plaintextHash;
-	EVP_MD_CTX_free(digest);
-	if (!ok) {
-		output.cancelWriting();
-		return false;
-	}
-	if (!output.commit()) {
-		return false;
-	}
-	for (auto index = std::uint32_t();
-		index != manifest->context.chunkCount;
-		++index) {
-		(void)group.chunkStore.removeChunk(
+		&& hash == write.manifest.plaintextHash;
+	EVP_MD_CTX_free(write.digest);
+	write.digest = nullptr;
+	if (!verified || !write.output->commit()) {
+		finishFileChunkDownload(
 			conversationId,
-			manifest->context.fileId,
-			index);
+			ProtectedFileSaveResult::LocalFailure);
+		return;
 	}
-	return true;
+	write.output.reset();
+	write.committed = true;
+	scheduleNext();
 }
 
 void DesktopService::finishFileChunkDownload(

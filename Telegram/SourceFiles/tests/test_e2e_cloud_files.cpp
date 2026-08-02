@@ -506,6 +506,10 @@ public:
 			context.fileId,
 			0,
 			chunk) != FileChunkStoreResult::Stored
+		|| !store.hasChunk(
+			context.conversationId,
+			context.fileId,
+			0)
 		|| store.storeIfAbsent(
 			context.conversationId,
 			context.fileId,
@@ -519,6 +523,10 @@ public:
 			context.conversationId,
 			context.fileId,
 			0).status != FileChunkReadStatus::Missing
+		|| store.hasChunk(
+			context.conversationId,
+			context.fileId,
+			0)
 		|| store.storeIfAbsent(
 			context.conversationId,
 			context.fileId,

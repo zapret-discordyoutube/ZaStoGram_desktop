@@ -542,3 +542,17 @@ source afterward and recipients verify the manifest's full plaintext hash. Once
 all chunks are accepted, verify the source hash again on a worker before clearing
 the durable transfer. Operation epochs and transfer identity prevent late worker
 results from mutating a relocked or different conversation state.
+
+### D052: Saved files are assembled cooperatively
+
+After all encrypted chunks are available, decrypt, hash, and append one chunk
+per interface-loop turn instead of assembling the complete file in one call.
+Keep the manifest, digest context, and atomic output owned by the pending Save
+operation, and bind every continuation to its event object and operation epoch.
+Discover cached chunks with bounded filesystem metadata probes; authenticate
+their full local records only when the cooperative writer consumes each chunk.
+
+Commit the destination only after the reconstructed plaintext size and SHA-256
+match the authenticated manifest. Release cached chunks afterward in bounded
+batches, then report success. Cancelling, locking, or destroying the group drops
+the pending atomic output without exposing a partial destination file.

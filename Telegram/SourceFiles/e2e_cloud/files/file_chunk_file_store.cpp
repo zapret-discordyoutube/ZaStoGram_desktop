@@ -279,6 +279,21 @@ FileChunkReadResult FileChunkFileStore::read(
 	return result;
 }
 
+bool FileChunkFileStore::hasChunk(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t chunkIndex) const {
+	if (!conversationId || !fileId) {
+		return false;
+	}
+	const auto info = QFileInfo(path(conversationId, fileId, chunkIndex));
+	return info.exists()
+		&& info.isFile()
+		&& !info.isSymLink()
+		&& info.size() > 0
+		&& info.size() <= kMaximumProtectedSize;
+}
+
 FileChunkAuthorizationReadResult FileChunkFileStore::authorization(
 		ConversationId conversationId,
 		FileId fileId) const {

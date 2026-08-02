@@ -36,6 +36,10 @@ public:
 		FileId fileId,
 		std::uint32_t chunkIndex,
 		StoredFileChunk chunk) override;
+	[[nodiscard]] bool hasChunk(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t chunkIndex) const;
 	[[nodiscard]] bool removeChunk(
 		ConversationId conversationId,
 		FileId fileId,
