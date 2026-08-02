@@ -104,18 +104,23 @@ void PublicBootstrapDiscoveryController::pumpRequests() {
 	while (_running && !_requestActive && _requestQueued) {
 		_requestQueued = false;
 		_requestActive = true;
+		if (++_requestToken == 0) {
+			++_requestToken;
+		}
+		const auto requestToken = _requestToken;
 		const auto guard = _callbackGuard;
 		const auto weak = std::weak_ptr<CallbackGuard>(guard);
 		_backend.downloadDocuments(
 			_telegramPeerIdBinding,
 			_cursor,
 			kDownloadPageLimit,
-			[weak](
+			[weak, requestToken](
 					TelegramTransport::UploadResult result,
 					CarrierDownloadPage page) {
 				if (const auto guard = weak.lock();
 						guard && guard->controller) {
 					guard->controller->pageReceived(
+						requestToken,
 						result,
 						std::move(page));
 				}
@@ -130,9 +135,12 @@ void PublicBootstrapDiscoveryController::pumpRequests() {
 }
 
 void PublicBootstrapDiscoveryController::pageReceived(
+		std::uint64_t requestToken,
 		TelegramTransport::UploadResult result,
 		CarrierDownloadPage page) {
-	if (!_running || !_requestActive) {
+	if (!_running
+		|| !_requestActive
+		|| requestToken != _requestToken) {
 		return;
 	}
 	_requestActive = false;

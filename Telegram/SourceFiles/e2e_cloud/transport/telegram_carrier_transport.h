@@ -103,17 +103,25 @@ private:
 	};
 
 	void uploadFinished(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		UploadResult result,
 		UploadedCarrierFile file);
-	void sendFinished(ObjectId objectId, UploadResult result);
-	void finish(ObjectId objectId, UploadResult result);
+	void sendFinished(
+		std::uint64_t uploadToken,
+		ObjectId objectId,
+		UploadResult result);
+	void finish(
+		std::uint64_t uploadToken,
+		ObjectId objectId,
+		UploadResult result);
 
 	ConversationId _conversationId;
 	std::uint64_t _telegramPeerId = 0;
 	TelegramCarrierBackend &_backend;
 	std::optional<ActiveUpload> _activeUpload;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
+	std::uint64_t _uploadToken = 0;
 
 };
 

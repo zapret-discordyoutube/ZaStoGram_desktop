@@ -56,6 +56,7 @@ private:
 	struct CallbackGuard;
 
 	void complete(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		TelegramTransport::UploadResult result);
 
@@ -65,6 +66,7 @@ private:
 	CompletionCallback _completionCallback;
 	std::optional<ObjectId> _activeObjectId;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
+	std::uint64_t _uploadToken = 0;
 
 };
 

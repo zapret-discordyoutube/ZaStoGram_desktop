@@ -993,3 +993,30 @@ page size.
 
 Exhaustion remains an explicit invalid-pagination failure. No partial scan is
 committed as complete and no unauthenticated object becomes authoritative.
+
+### D084: Every asynchronous transport attempt has a generation token
+
+Bind each page request, vault discovery, vault selection, outbox attempt, and
+two-stage carrier upload to a monotonically advancing in-memory token. Object
+identifiers and a generic `requestActive` flag are insufficient because a
+cancelled controller may restart with the same object or while a newer page is
+already active. A duplicated or delayed callback from the older operation must
+be ignored without consuming the new operation's active slot.
+
+Lifetime guards still prevent callbacks after destruction. Generation tokens
+cover the distinct case where the owner remains alive and deliberately retries
+the exact same authenticated ciphertext or reuses the controller.
+
+### D085: Carrier downloads do not own unrelated document loads
+
+Reuse a Telegram document that is already loaded or loading instead of changing
+its destination or cancelling it. Start at most one module-owned download for a
+shared `DocumentData`, even when Telegram returns duplicate messages for the
+same document. Only a download started by the protected transport may be
+cancelled and have its temporary location cleared when the page completes or
+the backend is destroyed.
+
+Clearing a module-owned temporary location removes both the live document
+location and its account-local location record, including filename-pair and
+alias bookkeeping. This prevents deleted temporary paths from accumulating in
+Telegram Desktop's persistent media-location map.

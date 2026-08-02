@@ -72,7 +72,9 @@ private:
 	struct CallbackGuard;
 
 	void pumpRequests();
-	void pageReceived(TelegramTransport::DownloadResult result);
+	void pageReceived(
+		std::uint64_t requestToken,
+		TelegramTransport::DownloadResult result);
 	void finish(FileChunkDownloadStatus status);
 
 	ConversationId _conversationId;
@@ -90,6 +92,7 @@ private:
 	std::uint64_t _pages = 0;
 	std::uint64_t _objects = 0;
 	std::uint64_t _bytes = 0;
+	std::uint64_t _requestToken = 0;
 	std::int64_t _lastObservedMessageId = 0;
 	bool _running = false;
 	bool _requestActive = false;

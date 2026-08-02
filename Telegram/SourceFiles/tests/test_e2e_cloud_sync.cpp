@@ -386,6 +386,53 @@ struct Fixture {
 	return 0;
 }
 
+[[nodiscard]] int ScenarioRestartIgnoresPreviousRunPage() {
+	auto fixture = Fixture();
+	fixture.transport.asynchronous = true;
+	auto completions = std::vector<CarrierSyncCompletion>();
+	auto controller = CarrierSyncController(
+		FilledId<ConversationId>(1),
+		fixture.transport,
+		fixture.processor,
+		[&](CarrierSyncCompletion result) {
+			completions.push_back(std::move(result));
+		});
+	if (controller.start() != CarrierSyncStartResult::Started
+		|| fixture.transport.callbacks.size() != 1) {
+		return Fail("carrier restart fixture did not start");
+	}
+	controller.cancel();
+	if (controller.start() != CarrierSyncStartResult::Started
+		|| fixture.transport.callbacks.size() != 2) {
+		return Fail("carrier controller could not restart after cancellation");
+	}
+	fixture.transport.callbacks[0]({
+		.result = TelegramTransport::UploadResult::Accepted,
+		.untrustedObjects = { fixture.object(4) },
+		.nextCursor = {},
+		.complete = true,
+	});
+	if (!controller.running()
+		|| completions.size() != 1
+		|| !fixture.journal.entries.empty()) {
+		return Fail("previous carrier run completed the replacement run");
+	}
+	fixture.transport.callbacks[1]({
+		.result = TelegramTransport::UploadResult::Accepted,
+		.untrustedObjects = { fixture.object(5) },
+		.nextCursor = {},
+		.complete = true,
+	});
+	if (controller.running()
+		|| completions.size() != 2
+		|| completions.back().reason != CarrierSyncFinishReason::Complete
+		|| fixture.journal.entries.contains(FilledId<ObjectId>(4))
+		|| !fixture.journal.entries.contains(FilledId<ObjectId>(5))) {
+		return Fail("replacement carrier run did not own its callback");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioObservedContentStopsAtBoundary() {
 	auto fixture = Fixture();
 	fixture.transport.pages = {
@@ -1171,6 +1218,7 @@ int main(int, char *[]) {
 		ScenarioStopsOnAuthenticatedFork,
 		ScenarioDeferredCarrierKeepsCursor,
 		ScenarioCancellationIgnoresLatePage,
+		ScenarioRestartIgnoresPreviousRunPage,
 		ScenarioObservedContentStopsAtBoundary,
 		ScenarioObservedContentRejectsReordering,
 		ScenarioObservedContentRejectsMissingBoundary,

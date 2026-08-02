@@ -660,9 +660,102 @@ public:
 		|| protector.calls != 1) {
 		return Fail("upload controller did not retry exact ciphertext");
 	}
+	transport.finish(0, TelegramTransport::UploadResult::Accepted);
+	if (!controller.uploadInProgress()
+		|| store.items.size() != 1) {
+		return Fail("stale upload callback acknowledged the active retry");
+	}
 	transport.finish(1, TelegramTransport::UploadResult::Accepted);
 	if (!store.items.empty()) {
 		return Fail("retried upload did not leave the outbox");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioCarrierRetryIgnoresStaleBackendUpload() {
+	const auto conversationId = FilledId<ConversationId>(1);
+	auto envelope = MakeEnvelope();
+	envelope.conversationId = conversationId;
+	const auto encoded = EnvelopeCodecV1().encode(envelope);
+	if (!encoded) {
+		return Fail("carrier stale callback fixture could not be encoded");
+	}
+	auto backend = TestCarrierBackend();
+	auto results = std::vector<TelegramTransport::UploadResult>();
+	auto transport = TelegramCarrierTransport(
+		conversationId,
+		42,
+		backend);
+	const auto upload = [&] {
+		transport.uploadExact(
+			*encoded,
+			[&](TelegramTransport::UploadResult result) {
+				results.push_back(result);
+			});
+	};
+	upload();
+	backend.uploadCallbacks[0](
+		TelegramTransport::UploadResult::RetryableError,
+		{});
+	upload();
+	backend.uploadCallbacks[0](
+		TelegramTransport::UploadResult::Accepted,
+		UploadedCarrierFile{ QByteArray("stale token") });
+	if (results != std::vector{
+			TelegramTransport::UploadResult::RetryableError }
+		|| !backend.sendCallbacks.empty()) {
+		return Fail("stale backend upload entered the replacement send stage");
+	}
+	backend.uploadCallbacks[1](
+		TelegramTransport::UploadResult::Accepted,
+		UploadedCarrierFile{ QByteArray("current token") });
+	if (backend.sendCallbacks.size() != 1) {
+		return Fail("current backend upload did not enter its send stage");
+	}
+	backend.sendCallbacks[0](TelegramTransport::UploadResult::Accepted);
+	if (results != std::vector{
+			TelegramTransport::UploadResult::RetryableError,
+			TelegramTransport::UploadResult::Accepted }) {
+		return Fail("current carrier retry did not complete");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioVaultRetryIgnoresStaleBackendUpload() {
+	auto backend = TestCarrierBackend();
+	auto results = std::vector<TelegramTransport::UploadResult>();
+	auto transport = TelegramCloudVaultTransport(777, backend);
+	const auto upload = [&] {
+		transport.uploadExact(
+			QByteArray("password-protected vault"),
+			[&](TelegramTransport::UploadResult result) {
+				results.push_back(result);
+			});
+	};
+	upload();
+	backend.uploadCallbacks[0](
+		TelegramTransport::UploadResult::RetryableError,
+		{});
+	upload();
+	backend.uploadCallbacks[0](
+		TelegramTransport::UploadResult::Accepted,
+		UploadedCarrierFile{ QByteArray("stale vault token") });
+	if (results != std::vector{
+		TelegramTransport::UploadResult::RetryableError }
+		|| !backend.sendCallbacks.empty()) {
+		return Fail("stale vault upload entered the replacement send stage");
+	}
+	backend.uploadCallbacks[1](
+		TelegramTransport::UploadResult::Accepted,
+		UploadedCarrierFile{ QByteArray("current vault token") });
+	if (backend.sendCallbacks.size() != 1) {
+		return Fail("current vault upload did not enter its send stage");
+	}
+	backend.sendCallbacks[0](TelegramTransport::UploadResult::Accepted);
+	if (results != std::vector{
+		TelegramTransport::UploadResult::RetryableError,
+		TelegramTransport::UploadResult::Accepted }) {
+		return Fail("current vault retry did not complete");
 	}
 	return 0;
 }
@@ -1103,6 +1196,8 @@ int main(int, char *[]) {
 		ScenarioUploadCallbackCannotOutliveController,
 		ScenarioCarrierAcknowledgesOnlyAfterSendMedia,
 		ScenarioCarrierPropagatesUploadFailure,
+		ScenarioCarrierRetryIgnoresStaleBackendUpload,
+		ScenarioVaultRetryIgnoresStaleBackendUpload,
 		ScenarioCarrierDownloadsOnlyUntrustedBytes,
 		ScenarioCloudVaultUsesSavedMessagesCarrier,
 		ScenarioCarrierMetadataRecognitionIsExact,

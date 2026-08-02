@@ -129,13 +129,19 @@ public:
 			int,
 			DownloadCallback callback) override {
 		++downloadCalls;
-		callback(downloadResult, std::move(downloadPageResult));
+		if (asynchronousDownloads) {
+			downloadCallbacks.push_back(std::move(callback));
+		} else {
+			callback(downloadResult, std::move(downloadPageResult));
+		}
 	}
 
 	Result discoveryResult = Result::Accepted;
 	Result downloadResult = Result::PermanentError;
 	CarrierDownloadPage downloadPageResult;
+	std::vector<DownloadCallback> downloadCallbacks;
 	bool discoveryPresent = false;
+	bool asynchronousDownloads = false;
 	int discoveryCalls = 0;
 	int downloadCalls = 0;
 };
@@ -320,6 +326,50 @@ private:
 		|| completion->pages != 1
 		|| completion->candidates != 0) {
 		return Fail("deferred vault selection did not finish cleanly");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioVaultRestartIgnoresPreviousDownload() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto selector = CloudVaultSelector(codec, sha256);
+	auto remote = TestCloudVaultRemote();
+	remote.asynchronousDownloads = true;
+	auto statuses = std::vector<CloudVaultSyncStatus>();
+	auto controller = CloudVaultSyncController(
+		777,
+		remote,
+		selector,
+		[&](CloudVaultSyncCompletion result) {
+			statuses.push_back(result.status);
+		});
+	if (!controller.start(QByteArray("first password"))
+		|| remote.downloadCallbacks.size() != 1) {
+		return Fail("vault restart fixture did not start");
+	}
+	controller.cancel();
+	if (!controller.start(QByteArray("second password"))
+		|| remote.downloadCallbacks.size() != 2) {
+		return Fail("vault controller could not restart after cancellation");
+	}
+	remote.downloadCallbacks[0](
+		CloudVaultRemote::Result::Accepted,
+		{ .untrustedObjects = {}, .nextCursor = {}, .complete = true });
+	if (!controller.running()
+		|| statuses != std::vector{ CloudVaultSyncStatus::Cancelled }
+		|| kdf.calls) {
+		return Fail("previous vault run completed the replacement run");
+	}
+	remote.downloadCallbacks[1](
+		CloudVaultRemote::Result::Accepted,
+		{ .untrustedObjects = {}, .nextCursor = {}, .complete = true });
+	if (controller.running()
+		|| statuses != std::vector{
+			CloudVaultSyncStatus::Cancelled,
+			CloudVaultSyncStatus::Missing }) {
+		return Fail("replacement vault run did not own its download callback");
 	}
 	return 0;
 }
@@ -945,6 +995,7 @@ int main(int, char *[]) {
 		ScenarioVaultDiscoveryFindsMissingIdentity,
 		ScenarioVaultDiscoveryFindsExistingAccount,
 		ScenarioVaultSelectionCanCompleteAsynchronously,
+		ScenarioVaultRestartIgnoresPreviousDownload,
 		ScenarioVaultRoundTrip,
 		ScenarioVaultRejectsWrongPasswordAndTampering,
 		ScenarioVaultUsesFreshNonce,

@@ -38,6 +38,7 @@ private:
 
 	void pumpRequests();
 	void pageReceived(
+		std::uint64_t requestToken,
 		TelegramTransport::UploadResult result,
 		CarrierDownloadPage page);
 	void finish(PublicBootstrapSyncCompletion completion);
@@ -53,6 +54,7 @@ private:
 	std::uint64_t _bytes = 0;
 	std::uint64_t _pages = 0;
 	std::uint64_t _storedCursorBytes = 0;
+	std::uint64_t _requestToken = 0;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	bool _running = false;
 	bool _requestActive = false;

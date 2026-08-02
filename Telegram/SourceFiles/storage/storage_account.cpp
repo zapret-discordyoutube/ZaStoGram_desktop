@@ -1798,14 +1798,37 @@ void Account::writeFileLocation(MediaKey location, const Core::FileLocation &loc
 }
 
 void Account::removeFileLocation(MediaKey location) {
+	auto changed = false;
+	if (const auto alias = _fileLocationAliases.find(location);
+		alias != _fileLocationAliases.end()) {
+		_fileLocationAliases.erase(alias);
+		changed = true;
+	}
 	auto i = _fileLocations.find(location);
-	if (i == _fileLocations.end()) {
-		return;
-	}
 	while (i != _fileLocations.end() && (i.key() == location)) {
+		if (!i.value().inMediaCache()) {
+			const auto pair = _fileLocationPairs.find(i.value().fname);
+			if (pair != _fileLocationPairs.end()
+				&& pair.value().first == location
+				&& pair.value().second == i.value()) {
+				_fileLocationPairs.erase(pair);
+			}
+		}
 		i = _fileLocations.erase(i);
+		changed = true;
 	}
-	writeLocationsQueued();
+	for (auto alias = _fileLocationAliases.begin();
+			alias != _fileLocationAliases.end();) {
+		if (alias.value() == location) {
+			alias = _fileLocationAliases.erase(alias);
+			changed = true;
+		} else {
+			++alias;
+		}
+	}
+	if (changed) {
+		writeLocationsQueued();
+	}
 }
 
 Core::FileLocation Account::readFileLocation(MediaKey location) {

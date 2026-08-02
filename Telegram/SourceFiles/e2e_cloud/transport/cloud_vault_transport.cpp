@@ -73,14 +73,21 @@ void TelegramCloudVaultTransport::uploadExact(
 		return;
 	}
 	_activeUpload = ActiveUpload{ .callback = std::move(callback) };
+	if (++_uploadToken == 0) {
+		++_uploadToken;
+	}
+	const auto uploadToken = _uploadToken;
 	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
 	_backend.uploadDocument(
 		std::move(bytes),
 		CloudVaultCarrierFilename(),
 		CloudVaultCarrierMimeType(),
-		[weak](Result result, UploadedCarrierFile file) {
+		[weak, uploadToken](Result result, UploadedCarrierFile file) {
 			if (const auto guard = weak.lock(); guard && guard->transport) {
-				guard->transport->uploadFinished(result, std::move(file));
+				guard->transport->uploadFinished(
+					uploadToken,
+					result,
+					std::move(file));
 			}
 		});
 }
@@ -132,15 +139,16 @@ void TelegramCloudVaultTransport::downloadPage(
 }
 
 void TelegramCloudVaultTransport::uploadFinished(
+		std::uint64_t uploadToken,
 		Result result,
 		UploadedCarrierFile file) {
-	if (!_activeUpload) {
+	if (!_activeUpload || uploadToken != _uploadToken) {
 		return;
 	} else if (result != Result::Accepted) {
-		finish(result);
+		finish(uploadToken, result);
 		return;
 	} else if (file.backendToken.isEmpty()) {
-		finish(Result::PermanentError);
+		finish(uploadToken, Result::PermanentError);
 		return;
 	}
 	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
@@ -149,19 +157,23 @@ void TelegramCloudVaultTransport::uploadFinished(
 		std::move(file),
 		CloudVaultCarrierFilename(),
 		CloudVaultCarrierMimeType(),
-		[weak](Result sendResult) {
+		[weak, uploadToken](Result sendResult) {
 			if (const auto guard = weak.lock(); guard && guard->transport) {
-				guard->transport->sendFinished(sendResult);
+				guard->transport->sendFinished(uploadToken, sendResult);
 			}
 		});
 }
 
-void TelegramCloudVaultTransport::sendFinished(Result result) {
-	finish(result);
+void TelegramCloudVaultTransport::sendFinished(
+		std::uint64_t uploadToken,
+		Result result) {
+	finish(uploadToken, result);
 }
 
-void TelegramCloudVaultTransport::finish(Result result) {
-	if (!_activeUpload) {
+void TelegramCloudVaultTransport::finish(
+		std::uint64_t uploadToken,
+		Result result) {
+	if (!_activeUpload || uploadToken != _uploadToken) {
 		return;
 	}
 	auto callback = std::move(_activeUpload->callback);

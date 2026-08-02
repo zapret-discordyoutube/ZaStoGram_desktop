@@ -315,6 +315,65 @@ def verify_download_pages_are_bounded_at_every_layer() -> None:
         assert "std::uint64_t(1'000'000)" not in implementation
 
 
+def verify_late_transport_callbacks_are_generation_fenced() -> None:
+    controllers = [
+        "carrier_sync_controller",
+        "cloud_vault_sync_controller",
+        "file_chunk_download_controller",
+        "observed_content_sync_controller",
+        "public_bootstrap_discovery_controller",
+        "public_bootstrap_sync_controller",
+    ]
+    for name in controllers:
+        implementation = source(
+            f"SourceFiles/e2e_cloud/transport/{name}.cpp"
+        )
+        header = source(f"SourceFiles/e2e_cloud/transport/{name}.h")
+        assert "_requestToken" in header
+        assert "if (++_requestToken == 0)" in implementation
+        assert "requestToken != _requestToken" in implementation
+
+    for name in (
+        "outbox_upload_controller",
+        "telegram_carrier_transport",
+        "cloud_vault_transport",
+    ):
+        implementation = source(
+            f"SourceFiles/e2e_cloud/transport/{name}.cpp"
+        )
+        header = source(f"SourceFiles/e2e_cloud/transport/{name}.h")
+        assert "_uploadToken" in header
+        assert "if (++_uploadToken == 0)" in implementation
+        assert "uploadToken != _uploadToken" in implementation
+
+
+def verify_carrier_downloads_do_not_take_over_shared_documents() -> None:
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    document_header = source("SourceFiles/data/data_document.h")
+    document = source("SourceFiles/data/data_document.cpp")
+    locations = source("SourceFiles/storage/storage_account.cpp")
+
+    assert "bool ownedDownload = false;" in backend
+    assert "i->media->loaded(true)" in backend
+    assert "i->document->loading()" in backend
+    assert "i->ownedDownload = true;" in backend
+    assert "entry.ownedDownload && entry.document->loading()" in backend
+    assert "entry.document->clearLocation();" in backend
+    assert "void clearLocation();" in document_header
+    assert "void DocumentData::clearLocation()" in document
+    assert "session().local().removeFileLocation(mediaKey());" in document
+    remove = function_body(
+        locations,
+        "void Account::removeFileLocation(MediaKey location)",
+        "Core::FileLocation Account::readFileLocation(",
+    )
+    assert "_fileLocationPairs.erase(pair);" in remove
+    assert "_fileLocationAliases.erase(alias);" in remove
+
+
 def verify_key_packages_bind_the_observed_telegram_author() -> None:
     lifecycle = source(
         "SourceFiles/e2e_cloud/mls/key_package_lifecycle.cpp"
@@ -1888,6 +1947,8 @@ def main() -> None:
     verify_carrier_backfill_searches_documents()
     verify_ambiguous_search_results_fail_closed()
     verify_download_pages_are_bounded_at_every_layer()
+    verify_late_transport_callbacks_are_generation_fenced()
+    verify_carrier_downloads_do_not_take_over_shared_documents()
     verify_key_packages_bind_the_observed_telegram_author()
     verify_unanchored_vault_history_is_contiguous()
     verify_late_vault_uploads_cannot_cross_lock_boundary()

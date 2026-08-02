@@ -32,6 +32,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <openssl/evp.h>
 
 #include <QtCore/QFile>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QTemporaryDir>
 
 #include <algorithm>
@@ -189,6 +190,7 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		FullMsgId messageId;
 		QString path;
 		std::uint64_t senderTelegramUserIdBinding = 0;
+		bool ownedDownload = false;
 	};
 
 	struct PendingDownload {
@@ -259,10 +261,12 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		}
 		if (download) {
 			for (const auto &entry : download->entries) {
-				if (entry.document->loading()) {
+				if (entry.ownedDownload && entry.document->loading()) {
 					entry.document->cancel();
 				}
-				entry.document->setLocation(Core::FileLocation());
+				if (entry.ownedDownload) {
+					entry.document->clearLocation();
+				}
 			}
 		}
 	}
@@ -770,10 +774,23 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			return;
 		}
 		startingDownloads = true;
-		for (const auto &entry : download->entries) {
-			entry.document->save(
-				Data::FileOrigin(entry.messageId),
-				entry.path);
+		for (auto i = download->entries.begin();
+				i != download->entries.end();
+				++i) {
+			if (std::any_of(
+					download->entries.begin(),
+					i,
+					[&](const DownloadEntry &entry) {
+						return entry.document == i->document;
+					})
+				|| i->media->loaded(true)
+				|| i->document->loading()) {
+				continue;
+			}
+			i->ownedDownload = true;
+			i->document->save(
+				Data::FileOrigin(i->messageId),
+				i->path);
 		}
 		startingDownloads = false;
 		collectDownloaded();
@@ -806,7 +823,24 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 			}
 			auto bytes = entry.media->bytes();
 			if (bytes.isEmpty()) {
-				auto file = QFile(entry.path);
+				auto location = Core::FileLocation();
+				auto path = entry.path;
+				const auto accessEnabled = !entry.ownedDownload;
+				if (accessEnabled) {
+					location = entry.document->location(true);
+					if (!location.accessEnable()) {
+						finishDownload(
+							TelegramTransport::UploadResult::RetryableError);
+						return;
+					}
+					path = location.name();
+				}
+				const auto accessGuard = qScopeGuard([&] {
+					if (accessEnabled) {
+						location.accessDisable();
+					}
+				});
+				auto file = QFile(path);
 				if (!file.open(QIODevice::ReadOnly)) {
 					finishDownload(
 						TelegramTransport::UploadResult::RetryableError);
@@ -863,10 +897,13 @@ struct TelegramSessionCarrierBackend::State final : base::has_weak_ptr {
 		}
 		for (const auto &entry : pending.entries) {
 			if (result != TelegramTransport::UploadResult::Accepted
+				&& entry.ownedDownload
 				&& entry.document->loading()) {
 				entry.document->cancel();
 			}
-			entry.document->setLocation(Core::FileLocation());
+			if (entry.ownedDownload) {
+				entry.document->clearLocation();
+			}
 		}
 		callback(result, std::move(page));
 	}

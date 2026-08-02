@@ -157,6 +157,7 @@ public:
 	[[nodiscard]] const Core::FileLocation &location(
 		bool check = false) const;
 	void setLocation(const Core::FileLocation &loc);
+	void clearLocation();
 
 	bool saveFromData();
 	bool saveFromDataSilent();

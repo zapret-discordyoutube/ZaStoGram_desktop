@@ -103,13 +103,20 @@ bool CloudVaultSyncController::startDiscovery() {
 	_running = true;
 	_requestActive = true;
 	_requestQueued = false;
+	if (++_requestToken == 0) {
+		++_requestToken;
+	}
+	const auto requestToken = _requestToken;
 	const auto guard = _callbackGuard;
 	const auto weak = std::weak_ptr<CallbackGuard>(guard);
-	_remote.discover([weak](
+	_remote.discover([weak, requestToken](
 			CloudVaultRemote::Result result,
 			bool present) {
 		if (const auto guard = weak.lock(); guard && guard->controller) {
-			guard->controller->discoveryReceived(result, present);
+			guard->controller->discoveryReceived(
+				requestToken,
+				result,
+				present);
 		}
 	});
 	return true;
@@ -154,16 +161,21 @@ void CloudVaultSyncController::pumpRequests() {
 	while (_running && !_requestActive && _requestQueued) {
 		_requestQueued = false;
 		_requestActive = true;
+		if (++_requestToken == 0) {
+			++_requestToken;
+		}
+		const auto requestToken = _requestToken;
 		const auto guard = _callbackGuard;
 		const auto weak = std::weak_ptr<CallbackGuard>(guard);
 		_remote.downloadPage(
 			_cursor,
 			kDownloadPageLimit,
-			[weak](
+			[weak, requestToken](
 					CloudVaultRemote::Result result,
 					CarrierDownloadPage page) {
 				if (const auto guard = weak.lock(); guard && guard->controller) {
 					guard->controller->pageReceived(
+						requestToken,
 						result,
 						std::move(page));
 				}
@@ -178,9 +190,12 @@ void CloudVaultSyncController::pumpRequests() {
 }
 
 void CloudVaultSyncController::pageReceived(
+		std::uint64_t requestToken,
 		CloudVaultRemote::Result result,
 		CarrierDownloadPage page) {
-	if (!_running || !_requestActive) {
+	if (!_running
+		|| !_requestActive
+		|| requestToken != _requestToken) {
 		return;
 	}
 	_requestActive = false;
@@ -241,16 +256,19 @@ void CloudVaultSyncController::pageReceived(
 				std::move(_password),
 				_telegramUserIdBinding,
 				_localAnchor,
-				[weak, candidateCount](CloudVaultSelectionResult result) {
+				[weak, requestToken, candidateCount](
+						CloudVaultSelectionResult result) {
 					if (const auto guard = weak.lock();
 						guard && guard->controller) {
 						guard->controller->selectionFinished(
+							requestToken,
 							candidateCount,
 							std::move(result));
 					}
 				});
 		} else {
 			selectionFinished(
+				requestToken,
 				candidateCount,
 				_selector.select(
 					std::move(_candidates),
@@ -280,9 +298,12 @@ void CloudVaultSyncController::pageReceived(
 }
 
 void CloudVaultSyncController::selectionFinished(
+		std::uint64_t requestToken,
 		std::size_t candidateCount,
 		CloudVaultSelectionResult selection) {
-	if (!_running || !_selectionActive) {
+	if (!_running
+		|| !_selectionActive
+		|| requestToken != _requestToken) {
 		return;
 	}
 	_selectionActive = false;
@@ -295,9 +316,12 @@ void CloudVaultSyncController::selectionFinished(
 }
 
 void CloudVaultSyncController::discoveryReceived(
+		std::uint64_t requestToken,
 		CloudVaultRemote::Result result,
 		bool present) {
-	if (!_running || !_requestActive) {
+	if (!_running
+		|| !_requestActive
+		|| requestToken != _requestToken) {
 		return;
 	}
 	_requestActive = false;

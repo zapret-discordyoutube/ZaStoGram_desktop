@@ -174,16 +174,21 @@ void TelegramCarrierTransport::uploadExact(
 		.filename = filename,
 		.callback = std::move(callback),
 	};
+	if (++_uploadToken == 0) {
+		++_uploadToken;
+	}
+	const auto uploadToken = _uploadToken;
 	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
 	_backend.uploadDocument(
 		std::move(envelope.bytes),
 		filename,
 		ProtectedCarrierMimeType(),
-		[weak, objectId](
+		[weak, uploadToken, objectId](
 				UploadResult result,
 				UploadedCarrierFile file) {
 			if (const auto guard = weak.lock(); guard && guard->transport) {
 				guard->transport->uploadFinished(
+					uploadToken,
 					objectId,
 					result,
 					std::move(file));
@@ -229,16 +234,19 @@ void TelegramCarrierTransport::downloadPage(
 }
 
 void TelegramCarrierTransport::uploadFinished(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		UploadResult result,
 		UploadedCarrierFile file) {
-	if (!_activeUpload || _activeUpload->objectId != objectId) {
+	if (!_activeUpload
+		|| _activeUpload->objectId != objectId
+		|| uploadToken != _uploadToken) {
 		return;
 	} else if (result != UploadResult::Accepted) {
-		finish(objectId, result);
+		finish(uploadToken, objectId, result);
 		return;
 	} else if (file.backendToken.isEmpty()) {
-		finish(objectId, UploadResult::PermanentError);
+		finish(uploadToken, objectId, UploadResult::PermanentError);
 		return;
 	}
 	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
@@ -248,23 +256,30 @@ void TelegramCarrierTransport::uploadFinished(
 		std::move(file),
 		filename,
 		ProtectedCarrierMimeType(),
-		[weak, objectId](UploadResult sendResult) {
+		[weak, uploadToken, objectId](UploadResult sendResult) {
 			if (const auto guard = weak.lock(); guard && guard->transport) {
-				guard->transport->sendFinished(objectId, sendResult);
+				guard->transport->sendFinished(
+					uploadToken,
+					objectId,
+					sendResult);
 			}
 		});
 }
 
 void TelegramCarrierTransport::sendFinished(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		UploadResult result) {
-	finish(objectId, result);
+	finish(uploadToken, objectId, result);
 }
 
 void TelegramCarrierTransport::finish(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		UploadResult result) {
-	if (!_activeUpload || _activeUpload->objectId != objectId) {
+	if (!_activeUpload
+		|| _activeUpload->objectId != objectId
+		|| uploadToken != _uploadToken) {
 		return;
 	}
 	auto callback = std::move(_activeUpload->callback);

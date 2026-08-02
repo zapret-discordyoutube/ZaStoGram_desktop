@@ -71,15 +71,17 @@ private:
 	};
 
 	void uploadFinished(
+		std::uint64_t uploadToken,
 		Result result,
 		UploadedCarrierFile file);
-	void sendFinished(Result result);
-	void finish(Result result);
+	void sendFinished(std::uint64_t uploadToken, Result result);
+	void finish(std::uint64_t uploadToken, Result result);
 
 	std::uint64_t _telegramSelfPeerId = 0;
 	TelegramCarrierBackend &_backend;
 	std::optional<ActiveUpload> _activeUpload;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
+	std::uint64_t _uploadToken = 0;
 };
 
 } // namespace E2ECloud

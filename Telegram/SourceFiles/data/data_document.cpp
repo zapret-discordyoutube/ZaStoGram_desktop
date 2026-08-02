@@ -1432,6 +1432,12 @@ void DocumentData::setLocation(const Core::FileLocation &loc) {
 	}
 }
 
+void DocumentData::clearLocation() {
+	_location = Core::FileLocation();
+	_flags &= ~Flag::LoadedInMediaCache;
+	session().local().removeFileLocation(mediaKey());
+}
+
 QString DocumentData::filepath(bool check) const {
 	return (check && _location.name().isEmpty())
 		? QString()

@@ -73,7 +73,9 @@ private:
 	struct CallbackGuard;
 
 	void pumpRequests();
-	void pageReceived(TelegramTransport::DownloadResult result);
+	void pageReceived(
+		std::uint64_t requestToken,
+		TelegramTransport::DownloadResult result);
 	[[nodiscard]] bool processObject(const QByteArray &bytes);
 	void finish(CarrierSyncFinishReason reason);
 
@@ -85,6 +87,7 @@ private:
 	std::set<QByteArray> _seenCursors;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	std::uint64_t _storedCursorBytes = 0;
+	std::uint64_t _requestToken = 0;
 	bool _running = false;
 	bool _requestActive = false;
 	bool _pumping = false;

@@ -82,7 +82,9 @@ private:
 	};
 
 	void pumpRequests();
-	void pageReceived(TelegramTransport::DownloadResult result);
+	void pageReceived(
+		std::uint64_t requestToken,
+		TelegramTransport::DownloadResult result);
 	bool previewPage(
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
 		std::size_t objectLimit);
@@ -104,6 +106,7 @@ private:
 	std::uint64_t _pages = 0;
 	std::uint64_t _objects = 0;
 	std::uint64_t _storedCursorBytes = 0;
+	std::uint64_t _requestToken = 0;
 	std::vector<std::int64_t> _boundaryCandidates;
 	std::size_t _replayPageIndex = 0;
 	std::int64_t _boundaryMessageId = 0;

@@ -143,15 +143,21 @@ void PublicBootstrapSyncController::pumpRequests() {
 	while (_running && !_requestActive && _requestQueued) {
 		_requestQueued = false;
 		_requestActive = true;
+		if (++_requestToken == 0) {
+			++_requestToken;
+		}
+		const auto requestToken = _requestToken;
 		const auto guard = _callbackGuard;
 		const auto weak = std::weak_ptr<CallbackGuard>(guard);
 		_transport.downloadPage({
 			.conversationId = _conversationId,
 			.cursor = _cursor,
 			.limit = kDownloadPageLimit,
-		}, [weak](TelegramTransport::DownloadResult result) {
+		}, [weak, requestToken](TelegramTransport::DownloadResult result) {
 			if (const auto guard = weak.lock(); guard && guard->controller) {
-				guard->controller->pageReceived(std::move(result));
+				guard->controller->pageReceived(
+					requestToken,
+					std::move(result));
 			}
 		});
 		if (guard->controller != this) {
@@ -164,8 +170,11 @@ void PublicBootstrapSyncController::pumpRequests() {
 }
 
 void PublicBootstrapSyncController::pageReceived(
+		std::uint64_t requestToken,
 		TelegramTransport::DownloadResult result) {
-	if (!_running || !_requestActive) {
+	if (!_running
+		|| !_requestActive
+		|| requestToken != _requestToken) {
 		return;
 	}
 	_requestActive = false;

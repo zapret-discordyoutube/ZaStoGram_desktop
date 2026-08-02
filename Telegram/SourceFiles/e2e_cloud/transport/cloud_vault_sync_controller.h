@@ -79,12 +79,15 @@ private:
 		std::optional<CloudVaultAnchor> localAnchor);
 	void pumpRequests();
 	void pageReceived(
+		std::uint64_t requestToken,
 		CloudVaultRemote::Result result,
 		CarrierDownloadPage page);
 	void discoveryReceived(
+		std::uint64_t requestToken,
 		CloudVaultRemote::Result result,
 		bool present);
 	void selectionFinished(
+		std::uint64_t requestToken,
 		std::size_t candidateCount,
 		CloudVaultSelectionResult selection);
 	void finish(CloudVaultSyncCompletion completion);
@@ -102,6 +105,7 @@ private:
 	std::uint64_t _candidateBytes = 0;
 	std::uint64_t _pages = 0;
 	std::uint64_t _storedCursorBytes = 0;
+	std::uint64_t _requestToken = 0;
 	std::shared_ptr<CallbackGuard> _callbackGuard;
 	bool _running = false;
 	bool _requestActive = false;

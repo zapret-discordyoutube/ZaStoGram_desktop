@@ -66,7 +66,9 @@ private:
 	struct CallbackGuard;
 
 	void pumpRequests();
-	void pageReceived(TelegramTransport::DownloadResult result);
+	void pageReceived(
+		std::uint64_t requestToken,
+		TelegramTransport::DownloadResult result);
 	void finish(PublicBootstrapSyncCompletion completion);
 	[[nodiscard]] bool startInternal(
 		QByteArray cursor,
@@ -86,6 +88,7 @@ private:
 	std::uint64_t _bytes = 0;
 	std::uint64_t _pages = 0;
 	std::uint64_t _storedCursorBytes = 0;
+	std::uint64_t _requestToken = 0;
 	std::int64_t _boundaryMessageId = 0;
 	std::int64_t _newestObservedMessageId = 0;
 	std::int64_t _lastObservedMessageId = 0;

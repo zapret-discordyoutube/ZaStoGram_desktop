@@ -71,12 +71,20 @@ UploadPumpResult OutboxUploadController::pump() {
 	}
 	const auto objectId = dispatch.envelope->objectId;
 	_activeObjectId = objectId;
+	if (++_uploadToken == 0) {
+		++_uploadToken;
+	}
+	const auto uploadToken = _uploadToken;
 	const auto weak = std::weak_ptr<CallbackGuard>(_callbackGuard);
 	_transport.uploadExact(
 		std::move(*dispatch.envelope),
-		[weak, objectId](TelegramTransport::UploadResult result) {
+		[weak, uploadToken, objectId](
+				TelegramTransport::UploadResult result) {
 			if (const auto guard = weak.lock(); guard && guard->controller) {
-				guard->controller->complete(objectId, result);
+				guard->controller->complete(
+					uploadToken,
+					objectId,
+					result);
 			}
 		});
 	return UploadPumpResult::Started;
@@ -87,9 +95,12 @@ bool OutboxUploadController::uploadInProgress() const {
 }
 
 void OutboxUploadController::complete(
+		std::uint64_t uploadToken,
 		ObjectId objectId,
 		TelegramTransport::UploadResult result) {
-	if (!_activeObjectId || *_activeObjectId != objectId) {
+	if (!_activeObjectId
+		|| *_activeObjectId != objectId
+		|| uploadToken != _uploadToken) {
 		return;
 	}
 	const auto guard = _callbackGuard;
