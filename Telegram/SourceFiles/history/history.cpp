@@ -910,6 +910,18 @@ not_null<HistoryItem*> History::addNewLocalMessage(
 		true);
 }
 
+not_null<HistoryItem*> History::addExistingLocalMessage(
+		HistoryItemCommonFields &&fields,
+		const TextWithEntities &text,
+		const MTPMessageMedia &media) {
+	const auto item = makeMessage(
+		WithLocalFlag(std::move(fields)),
+		text,
+		media);
+	insertMessageToBlocks(item);
+	return item;
+}
+
 not_null<HistoryItem*> History::addNewLocalMessage(
 		HistoryItemCommonFields &&fields,
 		not_null<HistoryItem*> forwardOriginal) {

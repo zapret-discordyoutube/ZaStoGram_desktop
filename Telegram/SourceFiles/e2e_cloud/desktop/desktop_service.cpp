@@ -1516,14 +1516,13 @@ void DesktopService::refreshMaterializedProtectedHistory(
 		}
 		const auto maximumTime = std::uint64_t(
 			std::numeric_limits<TimeId>::max());
-		const auto item = history->makeMessage({
+		const auto item = history->addExistingLocalMessage({
 			.id = _session->data().nextLocalMessageId(),
-			.flags = flags | MessageFlag::Local,
+			.flags = flags,
 			.from = from,
 			.date = TimeId(std::min(record.unixTime, maximumTime)),
 			.e2eCloudDecrypted = true,
 		}, TextWithEntities{ .text = record.text }, MTP_messageMediaEmpty());
-		history->insertMessageToBlocks(item);
 		group.materializedHistory.emplace_back(
 			record.eventObjectId,
 			item->fullId());

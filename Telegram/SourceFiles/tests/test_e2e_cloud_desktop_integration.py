@@ -1023,8 +1023,7 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     )
 
     assert "materializedHistoryPeerIdBinding" in materialize
-    assert "history->makeMessage({" in refresh
-    assert "history->insertMessageToBlocks(item);" in refresh
+    assert "history->addExistingLocalMessage({" in refresh
     assert ".e2eCloudDecrypted = true" in refresh
     assert 'u"🔒 "_q' in service
     assert "tr::lng_e2e_cloud_header_status(tr::now)" in widget
