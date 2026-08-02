@@ -662,7 +662,7 @@ inline constexpr auto kFileDownloadMaximumRetries = 20;
 	const auto shift = std::min(attempt, 5);
 	return std::min(
 		kFileRetryMaximumDelay,
-		kFileRetryInitialDelay * (1 << shift));
+		kFileRetryInitialDelay * (crl::time(1) << shift));
 }
 
 struct HashedFile {
