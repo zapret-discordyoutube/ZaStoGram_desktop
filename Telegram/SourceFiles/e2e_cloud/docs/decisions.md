@@ -674,3 +674,49 @@ write, acknowledge, or publish after a separate callback has already detected a
 security failure. A manual lock that wins the race makes the deferred cleanup a
 no-op, and assigning `SecurityBlocked` with no unlocked runtime does not create
 a lock loop.
+
+### D061: Admission and discovery failures remain retryable
+
+An incoming client waiting for admission has no protected conversation surface
+from which to request synchronization. If its control observation ends with a
+retryable or permanent transport error, publish the corresponding group state
+so the main protected-groups dialog exposes Retry instead of remaining forever
+in `AwaitingAdmission`.
+
+Retry restarts every stalled admission observation already restored in the
+active-group map. Collect conversation identifiers before starting controllers,
+because a synchronous completion may move a group into the vault-update state
+machine and invalidate map iterators. If an admission completes synchronously,
+preserve the state selected by that completion instead of writing the waiting
+state over it.
+
+Keep a peer in the discovery queue after both retryable and permanent transport
+failures. Neither state retries automatically; the existing explicit Retry
+action returns the group state to Ready and resumes the queued discovery. A
+missing or non-protected bootstrap is still a completed negative discovery and
+is not retried.
+
+Failure to start an admission observation or discovery request is retryable as
+well. Do not leave admission in a waiting state without a live controller, and
+do not discard a discovery peer before a request actually starts. In both
+cases, preserve the durable in-memory operation and restore the Retry action.
+
+Existing protected conversations remain accessible from the main dialog while
+another group is publishing, awaiting admission, retryable, or locally failed.
+The global creation state controls creation and retry actions, but it must not
+hide unrelated active groups or force a lock-and-unlock cycle merely to read
+them.
+
+### D062: Open protected views never keep stale authority data
+
+Close security and member-management dialogs when the verified security
+revision changes. Their action buttons and safety codes describe one atomic
+membership snapshot; updating only their text could leave a revoked action or
+an obsolete verification code visible. Reopening the dialog constructs every
+control from the new verified snapshot, while the service still rechecks
+authorization before accepting an action.
+
+Rebuild an open protected-file list whenever the content revision changes.
+The list remains bounded by the existing visible-page limit and therefore can
+show newly synchronized manifests without retaining an unbounded plaintext
+snapshot or requiring the user to close the conversation.

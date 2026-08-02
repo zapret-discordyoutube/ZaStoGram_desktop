@@ -949,6 +949,54 @@ bool DesktopService::retryProtectedGroupCreation() {
 		return false;
 	}
 	if (!_pendingGroupCreation) {
+		auto admissions = std::vector<ConversationId>();
+		for (const auto &[conversationId, group] : _groups) {
+			if (group->phase
+					== PendingGroupCreation::Phase::AwaitingAdmission) {
+				admissions.push_back(conversationId);
+			}
+		}
+		if (!admissions.empty()) {
+			_groupCreationState
+				= DesktopGroupCreationState::AwaitingAdmission;
+		}
+		auto restartedAdmission = false;
+		auto admissionRestartFailed = false;
+		for (const auto conversationId : admissions) {
+			auto i = _groups.find(conversationId);
+			if (i == end(_groups)
+				|| i->second->phase
+					!= PendingGroupCreation::Phase::AwaitingAdmission) {
+				continue;
+			}
+			if (!i->second->observation) {
+				beginGroupObservation(conversationId);
+			}
+			i = _groups.find(conversationId);
+			const auto stillAwaiting = i != end(_groups)
+				&& i->second->phase
+					== PendingGroupCreation::Phase::AwaitingAdmission;
+			const auto restarted = stillAwaiting
+				&& bool(i->second->observation);
+			restartedAdmission = restartedAdmission || restarted;
+			admissionRestartFailed = admissionRestartFailed
+				|| (stillAwaiting && !restarted);
+		}
+		if (!admissions.empty()) {
+			const auto stillAwaiting = std::any_of(
+				begin(_groups),
+				end(_groups),
+				[](const auto &entry) {
+					return entry.second->phase
+						== PendingGroupCreation::Phase::AwaitingAdmission;
+				});
+			if (stillAwaiting && admissionRestartFailed) {
+				_groupCreationState
+					= DesktopGroupCreationState::RetryableTransportError;
+				return false;
+			}
+			return restartedAdmission || !stillAwaiting;
+		}
 		_groupCreationState = DesktopGroupCreationState::Ready;
 		resumePendingGroupCreation();
 		return true;
@@ -4175,6 +4223,8 @@ void DesktopService::applyGroupObservation(
 	if (i == end(_groups)) {
 		return;
 	}
+	const auto awaiting = i->second->phase
+		== PendingGroupCreation::Phase::AwaitingAdmission;
 	const auto rerun = i->second->observationDirty;
 	i->second->observationDirty = false;
 	i->second->observation.reset();
@@ -4188,16 +4238,20 @@ void DesktopService::applyGroupObservation(
 	} else if (result.status != PublicBootstrapSyncStatus::Verified
 		&& result.status != PublicBootstrapSyncStatus::Incremental) {
 		i->second->observationDirty = true;
+		const auto permanent = result.status
+			== PublicBootstrapSyncStatus::PermanentTransportError;
 		setContentState(
 			conversationId,
-			(result.status
-					== PublicBootstrapSyncStatus::PermanentTransportError)
+			permanent
 				? DesktopContentState::PermanentTransportError
 				: DesktopContentState::RetryableTransportError);
+		if (awaiting) {
+			_groupCreationState = permanent
+				? DesktopGroupCreationState::PermanentTransportError
+				: DesktopGroupCreationState::RetryableTransportError;
+		}
 		return;
 	}
-	const auto awaiting = i->second->phase
-		== PendingGroupCreation::Phase::AwaitingAdmission;
 	auto changed = false;
 	if (awaiting) {
 		changed = completeObservedJoin(
@@ -4384,10 +4438,11 @@ void DesktopService::startNextGroupDiscovery() {
 	if (_pendingGroupDiscovery
 		|| _pendingGroupCreation
 		|| _pendingGroupJoin
-		|| !_vault
-		|| _vaultState.current() != DesktopVaultState::Ready
-		|| _groupCreationState.current()
-			== DesktopGroupCreationState::RetryableTransportError) {
+		|| !vaultReady()
+		|| (_groupCreationState.current()
+				== DesktopGroupCreationState::RetryableTransportError
+			|| _groupCreationState.current()
+				== DesktopGroupCreationState::PermanentTransportError)) {
 		return;
 	}
 	while (!_groupDiscoveryQueue.empty()) {
@@ -4423,7 +4478,10 @@ void DesktopService::startNextGroupDiscovery() {
 				});
 		if (!_pendingGroupDiscovery->sync->start()) {
 			_pendingGroupDiscovery.reset();
-			continue;
+			_groupDiscoveryQueue.emplace(peerId);
+			_groupCreationState
+				= DesktopGroupCreationState::RetryableTransportError;
+			return;
 		}
 		return;
 	}
@@ -4445,9 +4503,14 @@ void DesktopService::applyGroupDiscovery(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
 	} else if (result.status
-			== PublicBootstrapSyncStatus::RetryableTransportError) {
+				== PublicBootstrapSyncStatus::RetryableTransportError
+		|| result.status
+				== PublicBootstrapSyncStatus::PermanentTransportError) {
 		_groupDiscoveryQueue.emplace(peerId);
-		_groupCreationState = DesktopGroupCreationState::RetryableTransportError;
+		_groupCreationState = (result.status
+				== PublicBootstrapSyncStatus::PermanentTransportError)
+			? DesktopGroupCreationState::PermanentTransportError
+			: DesktopGroupCreationState::RetryableTransportError;
 		return;
 	} else if (result.status != PublicBootstrapSyncStatus::Verified
 		|| !result.verified) {

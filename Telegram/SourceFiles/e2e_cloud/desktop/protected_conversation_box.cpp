@@ -106,6 +106,15 @@ void CloseWhenVaultUnavailable(
 	}, box->lifetime());
 }
 
+void CloseWhenSecurityChanges(
+		not_null<Ui::GenericBox*> box,
+		not_null<DesktopService*> service) {
+	service->securityRevisionValue(
+	) | rpl::skip(1) | rpl::on_next([=](std::uint64_t) {
+		box->closeBox();
+	}, box->lifetime());
+}
+
 [[nodiscard]] QString RecordText(
 		const DesktopService &service,
 		const ProtectedContentRecord &record) {
@@ -506,6 +515,7 @@ void ShowProtectedMemberSecurity(
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
 		CloseWhenVaultUnavailable(box, service);
+		CloseWhenSecurityChanges(box, service);
 		const auto security = service->protectedSecurity(conversationId);
 		const auto member = security
 			? std::find_if(
@@ -628,6 +638,7 @@ void ShowProtectedSecurity(
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
 		CloseWhenVaultUnavailable(box, service);
+		CloseWhenSecurityChanges(box, service);
 		box->setTitle(tr::lng_e2e_cloud_security());
 		const auto text = box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
@@ -636,10 +647,6 @@ void ShowProtectedSecurity(
 		const auto refresh = [=] {
 			text->setText(SecurityText(*service, conversationId));
 		};
-		service->securityRevisionValue(
-		) | rpl::on_next([=](std::uint64_t) {
-			refresh();
-		}, box->lifetime());
 		const auto security = service->protectedSecurity(conversationId);
 		if (security && security->canChangeDefaultHistory) {
 			const auto addDefault = [=](
@@ -718,11 +725,14 @@ void ShowProtectedFiles(
 			object_ptr<Ui::VerticalLayout>(box),
 			style::margins());
 		const auto visible = box->lifetime().make_state<std::size_t>(200);
-		RebuildProtectedFiles(
-			files,
-			*service,
-			conversationId,
-			visible);
+		service->contentRevisionValue(
+		) | rpl::on_next([=](std::uint64_t) {
+			RebuildProtectedFiles(
+				files,
+				*service,
+				conversationId,
+				visible);
+		}, box->lifetime());
 		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 	}));
 }

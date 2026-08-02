@@ -685,10 +685,20 @@ def verify_observed_mls_receipts_finish_crash_recovery() -> None:
 
 def verify_protected_groups_layout_uses_own_visibility() -> None:
     box = source("SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp")
+    ready = box[
+        box.index("case DesktopVaultState::Ready:"):
+        box.index("case DesktopVaultState::WrongPasswordOrDamaged:")
+    ]
 
     assert "isVisible()" not in box
     assert box.count("isHidden()") >= 4
     assert "GroupInfoBox::Type::Megagroup" in box
+    open_chats = ready.index("tr::lng_e2e_cloud_open_chats()")
+    retryable = ready.index(
+        "creation == DesktopGroupCreationState::RetryableTransportError"
+    )
+    assert open_chats < retryable
+    assert ready.count("tr::lng_e2e_cloud_open_chats()") == 1
 
 
 def verify_protected_history_can_page_back() -> None:
@@ -1283,6 +1293,102 @@ def verify_security_failures_destroy_the_unlocked_runtime() -> None:
         assert "vaultReady()" in body, signature
 
 
+def verify_admission_and_discovery_failures_can_be_retried() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    retry = function_body(
+        service,
+        "bool DesktopService::retryProtectedGroupCreation()",
+        "std::vector<DesktopProtectedGroupSummary>",
+    )
+    start_discovery = function_body(
+        service,
+        "void DesktopService::startNextGroupDiscovery()",
+        "void DesktopService::applyGroupDiscovery(",
+    )
+    apply_discovery = function_body(
+        service,
+        "void DesktopService::applyGroupDiscovery(",
+        "bool DesktopService::completeObservedJoin(",
+    )
+    apply_observation = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
+
+    assert "auto admissions = std::vector<ConversationId>();" in retry
+    assert "PendingGroupCreation::Phase::AwaitingAdmission" in retry
+    assert "beginGroupObservation(conversationId);" in retry
+    assert "restartedAdmission || !stillAwaiting" in retry
+    assert "admissionRestartFailed" in retry
+    assert "if (stillAwaiting && admissionRestartFailed)" in retry
+    assert "DesktopGroupCreationState::AwaitingAdmission" in retry
+    assert retry.index("DesktopGroupCreationState::AwaitingAdmission") \
+        < retry.index("beginGroupObservation(conversationId);")
+    assert "DesktopGroupCreationState::RetryableTransportError" \
+        in start_discovery
+    assert "DesktopGroupCreationState::PermanentTransportError" \
+        in start_discovery
+    failed_start = start_discovery.index(
+        "if (!_pendingGroupDiscovery->sync->start())"
+    )
+    failed_start_body = start_discovery[failed_start:]
+    assert "_groupDiscoveryQueue.emplace(peerId);" in failed_start_body
+    assert "DesktopGroupCreationState::RetryableTransportError" \
+        in failed_start_body
+    assert "continue;" not in failed_start_body
+    permanent = apply_discovery.index(
+        "PublicBootstrapSyncStatus::PermanentTransportError"
+    )
+    queued = apply_discovery.index("_groupDiscoveryQueue.emplace(peerId);")
+    assert permanent < queued
+    assert "DesktopGroupCreationState::PermanentTransportError" \
+        in apply_discovery[permanent:]
+    assert "const auto awaiting = i->second->phase" in apply_observation
+    error = apply_observation.index(
+        "result.status != PublicBootstrapSyncStatus::Verified"
+    )
+    success = apply_observation.index("auto changed = false;")
+    admission_error = apply_observation[error:success]
+    assert "if (awaiting)" in admission_error
+    assert "DesktopGroupCreationState::RetryableTransportError" \
+        in admission_error
+    assert "DesktopGroupCreationState::PermanentTransportError" \
+        in admission_error
+
+
+def verify_open_protected_views_do_not_keep_stale_state() -> None:
+    conversation = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
+    member = function_body(
+        conversation,
+        "void ShowProtectedMemberSecurity(",
+        "void ShowProtectedSecurity(",
+    )
+    security = function_body(
+        conversation,
+        "void ShowProtectedSecurity(",
+        "void ShowProtectedFiles(",
+    )
+    files = function_body(
+        conversation,
+        "void ShowProtectedFiles(",
+        "} // namespace",
+    )
+
+    assert "void CloseWhenSecurityChanges(" in conversation
+    assert "rpl::skip(1)" in conversation
+    assert "box->closeBox();" in conversation[
+        conversation.index("void CloseWhenSecurityChanges("):
+        conversation.index("[[nodiscard]] QString RecordText(")
+    ]
+    assert "CloseWhenSecurityChanges(box, service);" in member
+    assert "CloseWhenSecurityChanges(box, service);" in security
+    assert "service->contentRevisionValue(" in files
+    assert "RebuildProtectedFiles(" in files
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1325,6 +1431,8 @@ def main() -> None:
     verify_transport_failures_can_be_retried_manually()
     verify_lock_closes_protected_plaintext_surfaces()
     verify_security_failures_destroy_the_unlocked_runtime()
+    verify_admission_and_discovery_failures_can_be_retried()
+    verify_open_protected_views_do_not_keep_stale_state()
 
 
 if __name__ == "__main__":

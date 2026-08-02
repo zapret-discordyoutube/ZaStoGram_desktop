@@ -186,6 +186,11 @@ void ProtectedGroupsBox::refresh() {
 			? VaultReadyText(*vault)
 			: tr::lng_e2e_cloud_damaged(tr::now));
 		const auto creation = service.groupCreationState();
+		if (!service.protectedGroups().empty()) {
+			addButton(tr::lng_e2e_cloud_open_chats(), [=] {
+				ShowProtectedGroupList(_controller);
+			});
+		}
 		if (creation == DesktopGroupCreationState::RetryableTransportError
 			|| creation
 				== DesktopGroupCreationState::PermanentTransportError) {
@@ -203,11 +208,6 @@ void ProtectedGroupsBox::refresh() {
 		} else if (creation == DesktopGroupCreationState::LocalFailure) {
 			_status->setText(tr::lng_e2e_cloud_group_failed(tr::now));
 		} else {
-			if (!service.protectedGroups().empty()) {
-				addButton(tr::lng_e2e_cloud_open_chats(), [=] {
-					ShowProtectedGroupList(_controller);
-				});
-			}
 			addButton(tr::lng_e2e_cloud_new_group(), [=] {
 				showGroupCreation();
 			});
