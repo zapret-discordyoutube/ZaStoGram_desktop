@@ -1307,7 +1307,9 @@ bool DesktopService::saveProtectedFile(
 		return false;
 	}
 	auto &group = *i->second;
-	if (group.pendingFileDownload) {
+	if (group.observation
+		|| group.observationDirty
+		|| group.pendingFileDownload) {
 		if (callback) {
 			callback(ProtectedFileSaveResult::Busy);
 		}
@@ -1703,6 +1705,9 @@ void DesktopService::finishFileChunkDownload(
 	group.fileDownloadBackend.reset();
 	auto callback = std::move(group.pendingFileDownload->callback);
 	group.pendingFileDownload.reset();
+	if (group.observationDirty) {
+		beginGroupObservation(conversationId);
+	}
 	if (callback) {
 		callback(result);
 	}
@@ -3749,6 +3754,9 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 		group.observationDirty = true;
 		return;
 	} else if (group.uploadInProgress
+		|| group.fileHashInProgress
+		|| group.fileFinalHashInProgress
+		|| group.pendingFileDownload
 		|| (group.outbox.size()
 			&& (!group.freshnessGate
 				|| group.freshnessGate->sendingAllowed()))) {
@@ -4718,6 +4726,7 @@ bool DesktopService::applyAdministrativeTransition(
 		|| !group.filePreparationPath.isEmpty()
 		|| group.fileFinalHashInProgress
 		|| group.fileTransfer.pending()
+		|| group.pendingFileDownload
 		|| group.uploadInProgress
 		|| group.outbox.size()
 		|| (group.uploadController

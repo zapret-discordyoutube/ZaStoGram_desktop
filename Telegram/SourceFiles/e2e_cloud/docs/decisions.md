@@ -581,3 +581,19 @@ is no longer in the active-group map and fail to acknowledge accepted bytes.
 The user may retry the role, removal, or history-policy action after outgoing
 work reaches its durability boundary. Incoming content download remains
 independent and does not block administration.
+
+### D055: Transient file work serializes control transitions
+
+Do not start control observation while a source hash, final source verification,
+or on-demand file Save is active. A verified control transition temporarily
+moves the conversation through the vault-update state machine, while those
+continuations deliberately resolve their conversation in the active-group map.
+Letting both proceed could drop a worker or cooperative-write continuation and
+leave the file operation permanently busy.
+
+Reject a new Save while control observation is active or already queued, and
+reject local administration while a Save is active. A control notification that
+arrives during transient file work remains dirty and automatically starts after
+the file operation finishes. Durable outgoing file transfers may still cross a
+remote transition because their manifest, cursor, and source path survive the
+state-machine move and resume from persistent state.

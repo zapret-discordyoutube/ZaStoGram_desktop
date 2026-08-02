@@ -972,6 +972,48 @@ def verify_administration_waits_for_outgoing_work() -> None:
         < move_to_creation
 
 
+def verify_transient_file_work_serializes_control_changes() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    save_file = function_body(
+        service,
+        "bool DesktopService::saveProtectedFile(",
+        "bool DesktopService::beginFileChunkDownload(",
+    )
+    finish_download = function_body(
+        service,
+        "void DesktopService::finishFileChunkDownload(",
+        "bool DesktopService::setProtectedDefaultHistory(",
+    )
+    observation = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::beginContentObservation(",
+    )
+    administration = function_body(
+        service,
+        "bool DesktopService::applyAdministrativeTransition(",
+        "bool DesktopService::admitObservedClient(",
+    )
+    observation_start = observation.index(
+        "group.observation = std::make_unique<PublicBootstrapSyncController>"
+    )
+
+    assert save_file.index("group.observation") \
+        < save_file.index("group.pendingFileDownload =")
+    assert save_file.index("group.observationDirty") \
+        < save_file.index("group.pendingFileDownload =")
+    assert observation.index("group.fileHashInProgress") \
+        < observation_start
+    assert observation.index("group.fileFinalHashInProgress") \
+        < observation_start
+    assert observation.index("group.pendingFileDownload") \
+        < observation_start
+    assert finish_download.index("group.pendingFileDownload.reset()") \
+        < finish_download.index("beginGroupObservation(conversationId)")
+    assert administration.index("group.pendingFileDownload") \
+        < administration.index("_pendingGroupCreation = std::move(i->second)")
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1009,6 +1051,7 @@ def main() -> None:
     verify_new_file_cannot_replace_pending_transfer()
     verify_failed_file_transfer_can_be_cancelled_durably()
     verify_administration_waits_for_outgoing_work()
+    verify_transient_file_work_serializes_control_changes()
 
 
 if __name__ == "__main__":
