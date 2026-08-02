@@ -207,7 +207,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 	const auto mimeOffset = 172 + filenameSize;
 	const auto mimeSize = ReadUint16(bytes.constData() + mimeOffset);
 	if (mimeSize > kMaximumMimeTypeSize
-		|| bytes.size() != mimeOffset + 2 + mimeSize) {
+		|| bytes.size() < mimeOffset + 2 + mimeSize) {
 		return std::nullopt;
 	}
 	const auto mime = QByteArray(bytes.constData() + mimeOffset + 2, mimeSize);
