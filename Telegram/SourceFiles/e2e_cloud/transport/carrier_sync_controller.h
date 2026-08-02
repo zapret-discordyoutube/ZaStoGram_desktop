@@ -27,6 +27,7 @@ enum class CarrierSyncStartResult {
 
 enum class CarrierSyncFinishReason {
 	Complete,
+	RetryRequired,
 	RetryableTransportError,
 	PermanentTransportError,
 	InvalidPagination,

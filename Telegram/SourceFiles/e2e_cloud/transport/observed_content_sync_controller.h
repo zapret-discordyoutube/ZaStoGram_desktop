@@ -24,12 +24,14 @@ class Sha256Provider;
 
 enum class ObservedContentPageResult {
 	Persisted,
+	RetryRequired,
 	SecurityBlocked,
 	PersistenceFailed,
 };
 
 enum class ObservedContentSyncStatus {
 	Complete,
+	RetryRequired,
 	RetryableTransportError,
 	PermanentTransportError,
 	InvalidPagination,

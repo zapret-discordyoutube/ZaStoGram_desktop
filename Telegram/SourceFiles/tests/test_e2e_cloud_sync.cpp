@@ -136,12 +136,16 @@ class TestApplier final : public InboundEnvelopeApplier {
 public:
 	[[nodiscard]] InboundApplyResult apply(
 			const TransportEnvelope &envelope) override {
-		return (forkObject && envelope.objectId == forkObject)
-			? InboundApplyResult::ForkDetected
-			: InboundApplyResult::Applied;
+		if (forkObject && envelope.objectId == forkObject) {
+			return InboundApplyResult::ForkDetected;
+		} else if (deferredObject && envelope.objectId == deferredObject) {
+			return InboundApplyResult::Deferred;
+		}
+		return InboundApplyResult::Applied;
 	}
 
 	ObjectId forkObject;
+	ObjectId deferredObject;
 };
 
 struct Fixture {
@@ -315,6 +319,42 @@ struct Fixture {
 	return 0;
 }
 
+[[nodiscard]] int ScenarioDeferredCarrierKeepsCursor() {
+	auto fixture = Fixture();
+	fixture.applier.deferredObject = FilledId<ObjectId>(5);
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(4),
+				fixture.object(5),
+				fixture.object(6),
+			},
+			.nextCursor = QByteArray("next"),
+			.complete = false,
+		},
+	};
+	auto completion = std::optional<CarrierSyncCompletion>();
+	auto controller = CarrierSyncController(
+		FilledId<ConversationId>(1),
+		fixture.transport,
+		fixture.processor,
+		[&](CarrierSyncCompletion result) {
+			completion = std::move(result);
+		});
+	if (controller.start() != CarrierSyncStartResult::Started
+		|| !completion
+		|| completion->reason != CarrierSyncFinishReason::RetryRequired
+		|| completion->stats.objects != 2
+		|| completion->stats.accepted != 1
+		|| completion->stats.deferred != 1
+		|| !completion->stats.nextCursor.isEmpty()
+		|| fixture.journal.entries.contains(FilledId<ObjectId>(6))) {
+		return Fail("deferred carrier object advanced its download cursor");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioCancellationIgnoresLatePage() {
 	auto fixture = Fixture();
 	fixture.transport.asynchronous = true;
@@ -477,6 +517,50 @@ struct Fixture {
 		|| completion->newestObservedMessageId != 100
 		|| completion->nextBoundaryMessageId != 68) {
 		return Fail("observed content did not retain a boundary overlap");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioObservedContentDeferralKeepsBoundary() {
+	auto fixture = Fixture();
+	fixture.transport.pages = {
+		{
+			.result = TelegramTransport::UploadResult::Accepted,
+			.untrustedObjects = {
+				fixture.object(9),
+				fixture.object(8),
+				fixture.object(7),
+				fixture.object(6),
+			},
+			.nextCursor = QByteArray("unused"),
+			.complete = false,
+		},
+	};
+	auto completion = std::optional<ObservedContentSyncCompletion>();
+	auto pageCalls = 0;
+	auto controller = ObservedContentSyncController(
+		FilledId<ConversationId>(1),
+		42,
+		fixture.transport,
+		fixture.sha256,
+		[&](std::vector<TelegramTransport::UntrustedObject>) {
+			++pageCalls;
+			return ObservedContentPageResult::RetryRequired;
+		},
+		[&](ObservedContentSyncCompletion result) {
+			completion = result;
+		});
+	if (!controller.start(6)
+		|| controller.running()
+		|| pageCalls != 1
+		|| !completion
+		|| completion->status != ObservedContentSyncStatus::RetryRequired
+		|| completion->pages != 1
+		|| completion->objects != 3
+		|| completion->previousBoundaryMessageId != 6
+		|| completion->newestObservedMessageId != 9
+		|| completion->nextBoundaryMessageId != 6) {
+		return Fail("deferred observed content advanced its saved boundary");
 	}
 	return 0;
 }
@@ -1085,11 +1169,13 @@ int main(int, char *[]) {
 		ScenarioRejectsCursorLoop,
 		ScenarioRejectsOversizedCarrierPage,
 		ScenarioStopsOnAuthenticatedFork,
+		ScenarioDeferredCarrierKeepsCursor,
 		ScenarioCancellationIgnoresLatePage,
 		ScenarioObservedContentStopsAtBoundary,
 		ScenarioObservedContentRejectsReordering,
 		ScenarioObservedContentRejectsMissingBoundary,
 		ScenarioObservedContentKeepsOverlap,
+		ScenarioObservedContentDeferralKeepsBoundary,
 		ScenarioObservedContentReplaysOldestPageFirst,
 		ScenarioObservedContentPreviewsBeforeReplay,
 		ScenarioObservedContentRejectsReplayMutation,

@@ -80,6 +80,7 @@ InboundProcessResult CarrierSyncController::ingestLive(
 			break;
 		case InboundProcessResult::Deferred:
 			++_stats.deferred;
+			finish(CarrierSyncFinishReason::RetryRequired);
 			break;
 		case InboundProcessResult::InvalidEncoding:
 		case InboundProcessResult::WrongConversation:
@@ -193,7 +194,8 @@ bool CarrierSyncController::processObject(const QByteArray &bytes) {
 		return true;
 	case InboundProcessResult::Deferred:
 		++_stats.deferred;
-		return true;
+		finish(CarrierSyncFinishReason::RetryRequired);
+		return false;
 	case InboundProcessResult::InvalidEncoding:
 	case InboundProcessResult::WrongConversation:
 	case InboundProcessResult::WrongCarrier:

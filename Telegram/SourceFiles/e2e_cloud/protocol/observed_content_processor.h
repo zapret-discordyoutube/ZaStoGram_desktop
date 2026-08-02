@@ -26,6 +26,7 @@ class Sha256Provider;
 
 enum class ObservedContentProcessStatus {
 	Processed,
+	RetryRequired,
 	SecurityBlocked,
 	PersistenceFailed,
 	InvalidState,

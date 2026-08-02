@@ -663,7 +663,6 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 			++outcome.stats.applicationsProcessed;
 			break;
 		case InboundProcessResult::Duplicate:
-		case InboundProcessResult::Deferred:
 		case InboundProcessResult::InvalidEncoding:
 		case InboundProcessResult::WrongConversation:
 		case InboundProcessResult::WrongCarrier:
@@ -671,6 +670,9 @@ ObservedContentProcessOutcome ProcessObservedContentPage(
 		case InboundProcessResult::Rejected:
 			++outcome.stats.ignored;
 			break;
+		case InboundProcessResult::Deferred:
+			outcome.status = ObservedContentProcessStatus::RetryRequired;
+			return outcome;
 		case InboundProcessResult::ObjectIdConflict:
 		case InboundProcessResult::ForkDetected:
 			outcome.status = ObservedContentProcessStatus::SecurityBlocked;

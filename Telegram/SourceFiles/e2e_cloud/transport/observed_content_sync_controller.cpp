@@ -64,6 +64,20 @@ void AppendDigest(QByteArray &result, Digest digest) {
 	return sha256.digest(input);
 }
 
+[[nodiscard]] ObservedContentSyncStatus PageFailureStatus(
+		ObservedContentPageResult result) {
+	switch (result) {
+	case ObservedContentPageResult::RetryRequired:
+		return ObservedContentSyncStatus::RetryRequired;
+	case ObservedContentPageResult::SecurityBlocked:
+		return ObservedContentSyncStatus::SecurityBlocked;
+	case ObservedContentPageResult::Persisted:
+	case ObservedContentPageResult::PersistenceFailed:
+		return ObservedContentSyncStatus::PersistenceFailed;
+	}
+	return ObservedContentSyncStatus::PersistenceFailed;
+}
+
 } // namespace
 
 struct ObservedContentSyncController::CallbackGuard {
@@ -340,9 +354,7 @@ bool ObservedContentSyncController::previewPage(
 	if (guard->controller != this || !_running) {
 		return false;
 	} else if (persisted != ObservedContentPageResult::Persisted) {
-		finish((persisted == ObservedContentPageResult::SecurityBlocked)
-			? ObservedContentSyncStatus::SecurityBlocked
-			: ObservedContentSyncStatus::PersistenceFailed);
+		finish(PageFailureStatus(persisted));
 		return false;
 	}
 	return true;
@@ -359,9 +371,7 @@ bool ObservedContentSyncController::deliverPage(
 	if (guard->controller != this || !_running) {
 		return false;
 	} else if (persisted != ObservedContentPageResult::Persisted) {
-		finish((persisted == ObservedContentPageResult::SecurityBlocked)
-			? ObservedContentSyncStatus::SecurityBlocked
-			: ObservedContentSyncStatus::PersistenceFailed);
+		finish(PageFailureStatus(persisted));
 		return false;
 	}
 	return true;

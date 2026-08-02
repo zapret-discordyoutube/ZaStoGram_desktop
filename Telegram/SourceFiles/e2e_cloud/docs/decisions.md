@@ -446,3 +446,16 @@ This does not solve absolute rollback on a new installation. Telegram may still
 show a complete stale prefix ending before the real latest generation. The rule
 does ensure that suppression cannot be hidden inside the visible history and
 that the selector never assembles a newest vault from incompatible branches.
+
+### D045: Deferred MLS content cannot advance synchronization
+
+Stop content replay when an authenticated MLS application reports a deferred
+result. Return a retry-required completion and keep the previous persisted
+Telegram boundary unchanged. On a later run, replay the complete suffix and
+rely on object IDs and the inbound journal to skip applications that were
+already committed before the deferred object.
+
+Never classify a deferred application as ignored. The overlap retains only a
+bounded recent suffix, so advancing the boundary after a deferred object could
+make older ciphertext permanently unreachable even though its failure was
+explicitly retryable.

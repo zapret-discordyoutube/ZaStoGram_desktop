@@ -106,6 +106,14 @@ advances only after the entire replay is persisted. A crash before that point
 restarts from the previous boundary, while object IDs and the inbound journal
 make the replay idempotent.
 
+An MLS application that returns a deferred result interrupts the replay without
+advancing the saved boundary. A later synchronization retries the complete
+suffix; already persisted applications are duplicates. Deferred objects are
+never counted as ignored because an object outside the retained overlap would
+otherwise become permanently unreachable after a successful boundary advance.
+The generic envelope pager follows the same rule and returns its current cursor
+rather than the uncommitted next-page cursor.
+
 A control reconstruction retains at most 65,536 matching objects and 512 MiB.
 This bound includes untrusted and ultimately ignored objects because an active
 server must not obtain unbounded client memory. It is sized for the initial

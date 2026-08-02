@@ -443,6 +443,44 @@ def verify_content_sync_requires_its_saved_boundary() -> None:
     assert "group.contentSyncState.advance(" in result
 
 
+def verify_deferred_content_keeps_its_saved_boundary() -> None:
+    processor = source(
+        "SourceFiles/e2e_cloud/protocol/observed_content_processor.cpp"
+    )
+    observed = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "observed_content_sync_controller.cpp"
+    )
+    carrier = source(
+        "SourceFiles/e2e_cloud/transport/carrier_sync_controller.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    content = function_body(
+        processor,
+        "ObservedContentProcessOutcome ProcessObservedContentPage(",
+        "} // namespace E2ECloud",
+    )
+    deferred = content.index("case InboundProcessResult::Deferred:")
+    conflict = content.index(
+        "case InboundProcessResult::ObjectIdConflict:",
+        deferred,
+    )
+    deferred_branch = content[deferred:conflict]
+    page = function_body(
+        service,
+        "ObservedContentPageResult DesktopService::processObservedContentPage(",
+        "void DesktopService::applyContentObservation(",
+    )
+
+    assert "ObservedContentProcessStatus::RetryRequired" in deferred_branch
+    assert "return outcome;" in deferred_branch
+    assert "outcome.stats.ignored" not in deferred_branch
+    assert "ObservedContentPageResult::RetryRequired" in page
+    assert "PageFailureStatus(persisted)" in observed
+    assert "ObservedContentSyncStatus::RetryRequired" in observed
+    assert "finish(CarrierSyncFinishReason::RetryRequired);" in carrier
+
+
 def verify_pagination_cursor_tracking_is_bounded() -> None:
     controllers = [
         "carrier_sync_controller",
@@ -807,6 +845,7 @@ def main() -> None:
     verify_freshness_wait_does_not_busy_poll()
     verify_control_sync_uses_a_persistent_boundary()
     verify_content_sync_requires_its_saved_boundary()
+    verify_deferred_content_keeps_its_saved_boundary()
     verify_pagination_cursor_tracking_is_bounded()
     verify_freshness_witness_is_rechecked_after_catchup()
     verify_completion_callbacks_survive_owner_reset()

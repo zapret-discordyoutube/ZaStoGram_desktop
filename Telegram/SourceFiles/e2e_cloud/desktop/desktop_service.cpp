@@ -3514,6 +3514,9 @@ ObservedContentPageResult DesktopService::previewObservedFileManifests(
 			DesktopContentState::SecurityBlocked);
 		return ObservedContentPageResult::SecurityBlocked;
 	} else if (processed.status
+			== ObservedContentProcessStatus::RetryRequired) {
+		return ObservedContentPageResult::RetryRequired;
+	} else if (processed.status
 			== ObservedContentProcessStatus::PersistenceFailed
 		|| processed.status == ObservedContentProcessStatus::InvalidState) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
@@ -3565,6 +3568,9 @@ ObservedContentPageResult DesktopService::processObservedContentPage(
 			conversationId,
 			DesktopContentState::SecurityBlocked);
 		return ObservedContentPageResult::SecurityBlocked;
+	} else if (processed.status
+			== ObservedContentProcessStatus::RetryRequired) {
+		return ObservedContentPageResult::RetryRequired;
 	} else if (processed.status
 			== ObservedContentProcessStatus::PersistenceFailed
 		|| processed.status == ObservedContentProcessStatus::InvalidState) {
@@ -3628,6 +3634,7 @@ void DesktopService::applyContentObservation(
 			beginContentObservation(conversationId);
 		}
 		break;
+	case ObservedContentSyncStatus::RetryRequired:
 	case ObservedContentSyncStatus::RetryableTransportError:
 		setContentState(
 			conversationId,
