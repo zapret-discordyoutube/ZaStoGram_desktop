@@ -914,6 +914,41 @@ def verify_new_file_cannot_replace_pending_transfer() -> None:
         < finalize.index("HashFile(sourcePath)")
 
 
+def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    transfer = source(
+        "SourceFiles/e2e_cloud/files/persistent_file_transfer.cpp"
+    )
+    outbox = source("SourceFiles/e2e_cloud/storage/persistent_outbox.cpp")
+    box = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "bool DesktopService::prepareActiveUploadAcknowledgement(",
+    )
+    restore = function_body(
+        service,
+        "DesktopService::LocalGroupRecoveryResult "
+        "DesktopService::restoreLocalGroup(",
+        "bool DesktopService::commitVaultAnchor(",
+    )
+
+    assert "FileTransferCommitResult " \
+        "PersistentFileTransfer::requestCancel()" in transfer
+    assert "AppendUint16(plaintext, 3);" in transfer
+    assert "AppendUint8(plaintext, pending->cancelRequested ? 1 : 0)" \
+        in transfer
+    assert "bool PersistentOutboxStore::removePair(" in outbox
+    assert pump.index("pending->cancelRequested") \
+        < pump.index("queuePendingFileManifest(conversationId)")
+    assert restore.index("finishFileTransferCancellation(*operation)") \
+        < restore.index("else if (!operation->outbox.size())")
+    assert "cancelProtectedFileTransfer(" in box
+    assert "fileTransferPending" in box
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -949,6 +984,7 @@ def main() -> None:
     verify_file_chunks_require_manifests_and_quota()
     verify_file_chunks_download_only_on_demand()
     verify_new_file_cannot_replace_pending_transfer()
+    verify_failed_file_transfer_can_be_cancelled_durably()
 
 
 if __name__ == "__main__":

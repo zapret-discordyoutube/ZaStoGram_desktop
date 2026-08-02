@@ -2567,6 +2567,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_e2e_cloud_message" = "Encrypted message";
 "lng_e2e_cloud_send" = "Send encrypted";
 "lng_e2e_cloud_send_file" = "Send encrypted file";
+"lng_e2e_cloud_cancel_file" = "Cancel file transfer";
+"lng_e2e_cloud_cancel_file_sure" = "Cancel this file transfer? Other participants may already see an incomplete encrypted file.";
+"lng_e2e_cloud_file_cancelled" = "File transfer cancelled.";
+"lng_e2e_cloud_file_cancel_failed" = "Could not cancel the file transfer yet. Try again after the current upload finishes.";
 "lng_e2e_cloud_save_file" = "Save encrypted file";
 "lng_e2e_cloud_file_saved" = "Encrypted file saved.";
 "lng_e2e_cloud_file_busy" = "Another encrypted file is already being downloaded.";

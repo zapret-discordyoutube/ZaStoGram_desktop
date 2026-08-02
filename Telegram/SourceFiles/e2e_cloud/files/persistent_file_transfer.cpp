@@ -28,6 +28,8 @@ inline constexpr auto kHeaderSize = 8 + 2 + 32 + 8 + 1;
 inline constexpr auto kPendingFixedSizeV1 = 32 + 32 + 8 + 4 + 4 + 4;
 inline constexpr auto kPendingFixedSizeV2
 	= 32 + 32 + 8 + 8 + 1 + 4 + 4 + 4;
+inline constexpr auto kPendingFixedSizeV3
+	= 32 + 32 + 8 + 8 + 1 + 1 + 4 + 4 + 4;
 
 struct Reader {
 	const QByteArray &bytes;
@@ -214,7 +216,7 @@ FileTransferLoadResult PersistentFileTransfer::load(
 		|| !ReadUint64(reader, revision)
 		|| !ReadUint8(reader, present)
 		|| magic != kMagic
-		|| (version != 1 && version != 2)
+		|| (version != 1 && version != 2 && version != 3)
 		|| storedConversationId != conversationId
 		|| present > 1
 		|| (!revision && present)) {
@@ -228,15 +230,19 @@ FileTransferLoadResult PersistentFileTransfer::load(
 			.groupGeneration = 0,
 			.archiveEpochGeneration = 0,
 			.manifestPublished = false,
+			.cancelRequested = false,
 			.nextChunkIndex = 0,
 			.sourcePathUtf8 = {},
 			.manifestPlaintext = {},
 		};
 		auto manifestPublished = std::uint8_t();
+		auto cancelRequested = std::uint8_t();
 		auto parsed = reader.bytes.size() - reader.offset
 				>= ((version == 1)
 					? kPendingFixedSizeV1
-					: kPendingFixedSizeV2)
+					: (version == 2)
+					? kPendingFixedSizeV2
+					: kPendingFixedSizeV3)
 			&& ReadArray(reader, value.eventObjectId.bytes)
 			&& ReadArray(reader, value.contentObjectId.bytes)
 			&& ReadUint64(reader, value.groupGeneration)
@@ -245,6 +251,8 @@ FileTransferLoadResult PersistentFileTransfer::load(
 				value.archiveEpochGeneration))
 			&& (version == 1 || (ReadUint8(reader, manifestPublished)
 				&& manifestPublished <= 1))
+			&& (version != 3 || (ReadUint8(reader, cancelRequested)
+				&& cancelRequested <= 1))
 			&& ReadUint32(reader, value.nextChunkIndex)
 			&& ReadBytes(
 				reader,
@@ -255,6 +263,7 @@ FileTransferLoadResult PersistentFileTransfer::load(
 				kMaximumManifestSize,
 				value.manifestPlaintext);
 		value.manifestPublished = (manifestPublished != 0);
+		value.cancelRequested = (cancelRequested != 0);
 		parsed = parsed && valid(value, conversationId);
 		if (!parsed) {
 			Cleanse(value);
@@ -279,6 +288,7 @@ FileTransferCommitResult PersistentFileTransfer::begin(
 		PendingFileTransfer transfer) {
 	if (!_loaded
 		|| _pending
+		|| transfer.cancelRequested
 		|| transfer.conversationId != _conversationId
 		|| !valid(transfer, _conversationId)
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -299,6 +309,7 @@ FileTransferCommitResult PersistentFileTransfer::replace(
 		PendingFileTransfer transfer) {
 	if (!_loaded
 		|| !_pending
+		|| transfer.cancelRequested
 		|| transfer.conversationId != _conversationId
 		|| !valid(transfer, _conversationId)
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -320,6 +331,7 @@ FileTransferCommitResult PersistentFileTransfer::markManifestPublished(
 		std::uint64_t archiveEpochGeneration) {
 	if (!_loaded
 		|| !_pending
+		|| _pending->cancelRequested
 		|| !archiveEpochGeneration
 		|| (_pending->archiveEpochGeneration
 			&& _pending->archiveEpochGeneration != archiveEpochGeneration)) {
@@ -343,6 +355,27 @@ FileTransferCommitResult PersistentFileTransfer::markManifestPublished(
 	return FileTransferCommitResult::Committed;
 }
 
+FileTransferCommitResult PersistentFileTransfer::requestCancel() {
+	if (!_loaded || !_pending) {
+		return FileTransferCommitResult::InvalidMutation;
+	} else if (_pending->cancelRequested) {
+		return FileTransferCommitResult::AlreadyCommitted;
+	} else if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+		return FileTransferCommitResult::PersistenceFailed;
+	}
+	auto next = *_pending;
+	next.cancelRequested = true;
+	const auto revision = _revision + 1;
+	if (!persist(&next, revision)) {
+		Cleanse(next);
+		return FileTransferCommitResult::PersistenceFailed;
+	}
+	Cleanse(*_pending);
+	_pending = std::move(next);
+	_revision = revision;
+	return FileTransferCommitResult::Committed;
+}
+
 FileTransferCommitResult PersistentFileTransfer::advance(
 		std::uint32_t completedChunkIndex) {
 	if (!_loaded || !_pending) {
@@ -352,6 +385,7 @@ FileTransferCommitResult PersistentFileTransfer::advance(
 		_pending->manifestPlaintext);
 	if (!manifest
 		|| !_pending->manifestPublished
+		|| _pending->cancelRequested
 		|| completedChunkIndex != _pending->nextChunkIndex
 		|| completedChunkIndex >= manifest->context.chunkCount
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -408,12 +442,12 @@ bool PersistentFileTransfer::persist(
 	}
 	auto plaintext = QByteArray();
 	plaintext.reserve(kHeaderSize + (pending
-		? kPendingFixedSizeV2
+		? kPendingFixedSizeV3
 			+ pending->sourcePathUtf8.size()
 			+ pending->manifestPlaintext.size()
 		: 0));
 	AppendArray(plaintext, kMagic);
-	AppendUint16(plaintext, 2);
+	AppendUint16(plaintext, 3);
 	AppendArray(plaintext, _conversationId.bytes);
 	AppendUint64(plaintext, revision);
 	AppendUint8(plaintext, pending ? 1 : 0);
@@ -423,6 +457,7 @@ bool PersistentFileTransfer::persist(
 		AppendUint64(plaintext, pending->groupGeneration);
 		AppendUint64(plaintext, pending->archiveEpochGeneration);
 		AppendUint8(plaintext, pending->manifestPublished ? 1 : 0);
+		AppendUint8(plaintext, pending->cancelRequested ? 1 : 0);
 		AppendUint32(plaintext, pending->nextChunkIndex);
 		AppendUint32(
 			plaintext,

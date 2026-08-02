@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/file_utilities.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/layers/generic_box.h"
 #include "ui/toast/toast.h"
 #include "ui/widgets/buttons.h"
@@ -787,7 +788,10 @@ void ShowProtectedConversation(
 					return value.conversationId == conversationId;
 				});
 			field->setDisabled(
-				found == end(current) || found->removed || !found->active);
+				found == end(current)
+				|| found->removed
+				|| !found->active
+				|| found->fileTransferPending);
 		};
 		service->contentRevisionValue(
 		) | rpl::on_next([=](std::uint64_t) {
@@ -832,6 +836,48 @@ void ShowProtectedConversation(
 					}
 				}));
 		});
+		const auto cancelFile = box->addButton(
+			tr::lng_e2e_cloud_cancel_file(),
+			[=] {
+				box->uiShow()->showBox(Ui::MakeConfirmBox({
+					.text = tr::lng_e2e_cloud_cancel_file_sure(),
+					.confirmed = [=] {
+						const auto cancelled
+							= service->cancelProtectedFileTransfer(
+								conversationId);
+						Ui::Toast::Show({
+							.text = cancelled
+								? tr::lng_e2e_cloud_file_cancelled(tr::now)
+								: tr::lng_e2e_cloud_file_cancel_failed(
+									tr::now),
+						});
+					},
+					.confirmText = tr::lng_e2e_cloud_cancel_file(),
+				}));
+			});
+		const auto updateCancelFile = [=] {
+			const auto current = service->protectedGroups();
+			const auto found = std::find_if(
+				begin(current),
+				end(current),
+				[&](const auto &value) {
+					return value.conversationId == conversationId;
+				});
+			cancelFile->setDisabled(
+				found == end(current)
+				|| !found->active
+				|| !found->fileTransferPending);
+		};
+		service->contentStateValue(
+		) | rpl::on_next([=](DesktopContentState) {
+			updateCancelFile();
+		}, cancelFile->lifetime());
+		service->fileTransferRevisionValue(
+		) | rpl::on_next([=](std::uint64_t) {
+			refreshStatus();
+			updateCancelFile();
+		}, cancelFile->lifetime());
+		updateCancelFile();
 		box->addButton(tr::lng_e2e_cloud_files(), [=] {
 			ShowProtectedFiles(controller, conversationId);
 		});

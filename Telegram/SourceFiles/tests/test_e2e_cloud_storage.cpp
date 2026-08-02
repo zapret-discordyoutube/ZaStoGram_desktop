@@ -833,8 +833,33 @@ int CountingLocalRecordProtector::openCalls() const {
 	}
 	blob.bytes = replacementSnapshot;
 	if (replaced.load(context.conversationId)
+			!= FileTransferLoadResult::Loaded) {
+		return Fail("file transfer cancellation fixture did not reload");
+	}
+	blob.writeError = true;
+	if (replaced.requestCancel()
+			!= FileTransferCommitResult::PersistenceFailed
+		|| !replaced.pending()
+		|| replaced.pending()->cancelRequested) {
+		return Fail("failed cancellation changed pending file transfer");
+	}
+	blob.writeError = false;
+	if (replaced.requestCancel()
+			!= FileTransferCommitResult::Committed
+		|| !replaced.pending()
+		|| !replaced.pending()->cancelRequested
+		|| replaced.markManifestPublished(4)
+			!= FileTransferCommitResult::InvalidMutation) {
+		return Fail("file transfer cancellation was not durable");
+	}
+	auto cancelling = PersistentFileTransfer(blob, protector);
+	if (cancelling.load(context.conversationId)
 			!= FileTransferLoadResult::Loaded
-		|| replaced.clear() != FileTransferCommitResult::Committed) {
+		|| !cancelling.pending()
+		|| !cancelling.pending()->cancelRequested
+		|| cancelling.requestCancel()
+			!= FileTransferCommitResult::AlreadyCommitted
+		|| cancelling.clear() != FileTransferCommitResult::Committed) {
 		return Fail("resumable file transfer could not be cleared");
 	}
 	auto completed = PersistentFileTransfer(blob, protector);
@@ -914,8 +939,9 @@ int CountingLocalRecordProtector::openCalls() const {
 			!= FileTransferLoadResult::Loaded
 		|| !restored.pending()
 		|| !restored.pending()->manifestPublished
+		|| restored.pending()->cancelRequested
 		|| restored.pending()->archiveEpochGeneration != 3) {
-		return Fail("migrated file transfer did not persist version two");
+		return Fail("migrated file transfer did not persist version three");
 	}
 	return 0;
 }
@@ -953,6 +979,30 @@ int CountingLocalRecordProtector::openCalls() const {
 		|| item->draft.plaintext != QByteArray("private draft")
 		|| restored.revision() != 1) {
 		return Fail("protected draft did not survive authenticated reload");
+	}
+	auto second = Message();
+	second.objectId = FilledId<ObjectId>(3);
+	if (!restored.append(std::move(second)) || restored.size() != 2) {
+		return Fail("protected outbox pair setup failed");
+	}
+	blob.writeError = true;
+	if (restored.removePair(
+			FilledId<ObjectId>(2),
+			FilledId<ObjectId>(3))
+		|| restored.size() != 2) {
+		return Fail("failed outbox pair removal changed live state");
+	}
+	blob.writeError = false;
+	if (!restored.removePair(
+			FilledId<ObjectId>(2),
+			FilledId<ObjectId>(3))
+		|| restored.size()
+		|| restored.revision() != 3
+		|| !restored.removePair(
+			FilledId<ObjectId>(2),
+			FilledId<ObjectId>(3))
+		|| restored.revision() != 3) {
+		return Fail("protected outbox pair was not removed atomically");
 	}
 	return 0;
 }

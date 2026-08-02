@@ -556,3 +556,16 @@ Commit the destination only after the reconstructed plaintext size and SHA-256
 match the authenticated manifest. Release cached chunks afterward in bounded
 batches, then report success. Cancelling, locking, or destroying the group drops
 the pending atomic output without exposing a partial destination file.
+
+### D053: File-transfer cancellation is durable and explicit
+
+Allow the user to cancel an unfinished outgoing file after confirmation. First
+persist `cancelRequested` in the protected transfer snapshot. A cancelled
+transfer cannot publish its manifest, advance its chunk cursor, or be replaced
+by another transfer.
+
+Remove the manifest event/content pair from the persistent outbox in one atomic
+rewrite, release the current retry chunk, and only then clear the transfer. If
+the app stops between these steps, startup observes the cancellation marker and
+finishes cleanup before any outbox recovery upload. Failed cleanup remains
+retryable and never silently resumes the cancelled file.

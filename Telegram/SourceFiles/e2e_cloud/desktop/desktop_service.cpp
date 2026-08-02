@@ -940,6 +940,7 @@ DesktopService::protectedGroups() const {
 			.sendingAllowed = !removed
 				&& group->freshnessGate
 				&& group->freshnessGate->sendingAllowed(),
+			.fileTransferPending = bool(group->fileTransfer.pending()),
 		});
 	}
 	std::sort(
@@ -1253,6 +1254,27 @@ bool DesktopService::sendProtectedFile(
 			weak->pumpActiveOutbox(conversationId);
 		});
 	});
+	return true;
+}
+
+bool DesktopService::cancelProtectedFileTransfer(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)
+		|| i->second->phase != PendingGroupCreation::Phase::Active
+		|| !i->second->fileTransfer.pending()
+		|| i->second->uploadInProgress
+		|| (i->second->uploadController
+			&& i->second->uploadController->uploadInProgress())) {
+		return false;
+	}
+	const auto requested = i->second->fileTransfer.requestCancel();
+	if (requested != FileTransferCommitResult::Committed
+		&& requested != FileTransferCommitResult::AlreadyCommitted) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	pumpActiveOutbox(conversationId);
 	return true;
 }
 
@@ -1771,6 +1793,18 @@ rpl::producer<std::uint64_t> DesktopService::contentRevisionValue() const {
 	return _contentRevision.value();
 }
 
+auto DesktopService::fileTransferRevisionValue() const
+-> rpl::producer<std::uint64_t> {
+	return _fileTransferRevision.value();
+}
+
+void DesktopService::notifyFileTransferRevision() {
+	const auto revision = _fileTransferRevision.current();
+	if (revision != std::numeric_limits<std::uint64_t>::max()) {
+		_fileTransferRevision = revision + 1;
+	}
+}
+
 rpl::producer<std::uint64_t> DesktopService::securityRevisionValue() const {
 	return _securityRevision.value();
 }
@@ -1809,6 +1843,7 @@ void DesktopService::lock() {
 	_groupCreationState = DesktopGroupCreationState::Idle;
 	_contentState = DesktopContentState::Idle;
 	_contentStates.clear();
+	_fileTransferRevision = 0;
 	_contentRevision = 0;
 	_securityRevision = 0;
 }
@@ -3064,6 +3099,17 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			return;
 		}
 	}
+	if (const auto pending = group.fileTransfer.pending();
+		pending && pending->cancelRequested) {
+		if (!finishFileTransferCancellation(group)) {
+			setContentState(
+				conversationId,
+				DesktopContentState::LocalFailure);
+		} else {
+			pumpActiveOutbox(conversationId);
+		}
+		return;
+	}
 	if (group.fileHashInProgress) {
 		setContentState(
 			conversationId,
@@ -3310,6 +3356,40 @@ bool DesktopService::commitPreparedFileTransfer(
 	}
 	group.filePreparationPath.clear();
 	group.filePreparationSource.reset();
+	notifyFileTransferRevision();
+	return true;
+}
+
+bool DesktopService::finishFileTransferCancellation(
+		PendingGroupCreation &group) {
+	const auto pending = group.fileTransfer.pending();
+	const auto manifest = pending
+		? PrivateFileManifestCodecV1().decodePlaintext(
+			pending->manifestPlaintext)
+		: std::nullopt;
+	if (!pending
+		|| !pending->cancelRequested
+		|| !manifest
+		|| group.uploadInProgress
+		|| (group.uploadController
+			&& group.uploadController->uploadInProgress())
+		|| !group.outbox.removePair(
+			pending->eventObjectId,
+			pending->contentObjectId)) {
+		return false;
+	}
+	if (pending->nextChunkIndex < manifest->context.chunkCount) {
+		(void)group.chunkStore.removeChunk(
+			group.conversationId,
+			manifest->context.fileId,
+			pending->nextChunkIndex);
+	}
+	const auto cleared = group.fileTransfer.clear();
+	if (cleared != FileTransferCommitResult::Committed
+		&& cleared != FileTransferCommitResult::AlreadyCommitted) {
+		return false;
+	}
+	notifyFileTransferRevision();
 	return true;
 }
 
@@ -3618,14 +3698,19 @@ bool DesktopService::finalizeFileTransfer(
 			auto &group = *i->second;
 			group.fileFinalHashInProgress = false;
 			const auto pending = group.fileTransfer.pending();
+			if (!pending
+				|| pending->eventObjectId != eventObjectId
+				|| QString::fromUtf8(pending->sourcePathUtf8) != sourcePath) {
+				return;
+			} else if (pending->cancelRequested) {
+				weak->pumpActiveOutbox(conversationId);
+				return;
+			}
 			const auto manifest = pending
 				? PrivateFileManifestCodecV1().decodePlaintext(
 					pending->manifestPlaintext)
 				: std::nullopt;
-			if (!pending
-				|| pending->eventObjectId != eventObjectId
-				|| QString::fromUtf8(pending->sourcePathUtf8) != sourcePath
-				|| !manifest
+			if (!manifest
 				|| pending->nextChunkIndex
 					!= manifest->context.chunkCount
 				|| !source
@@ -3644,6 +3729,7 @@ bool DesktopService::finalizeFileTransfer(
 					DesktopContentState::LocalFailure);
 				return;
 			}
+			weak->notifyFileTransferRevision();
 			weak->pumpActiveOutbox(conversationId);
 		});
 	});
@@ -5142,6 +5228,12 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		operation->inboundJournal);
 	if (receiptReconciliation != MlsReceiptReconcileResult::Reconciled
 		&& receiptReconciliation != MlsReceiptReconcileResult::NothingToDo) {
+		return LocalGroupRecoveryResult::Invalid;
+	}
+	if (const auto pending = operation->fileTransfer.pending();
+		pending
+		&& pending->cancelRequested
+		&& !finishFileTransferCancellation(*operation)) {
 		return LocalGroupRecoveryResult::Invalid;
 	}
 	const auto state = operation->groupLedger.state();

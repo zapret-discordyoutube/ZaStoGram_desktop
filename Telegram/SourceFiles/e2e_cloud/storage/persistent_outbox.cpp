@@ -572,6 +572,44 @@ bool PersistentOutboxStore::remove(ObjectId objectId) {
 	return true;
 }
 
+bool PersistentOutboxStore::removePair(
+		ObjectId firstObjectId,
+		ObjectId secondObjectId) {
+	if (!_loaded
+		|| !firstObjectId
+		|| !secondObjectId
+		|| firstObjectId == secondObjectId
+		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
+		return false;
+	}
+	auto next = _items;
+	auto nextGuard = qScopeGuard([&] {
+		CleanseItems(next);
+	});
+	const auto previousSize = next.size();
+	next.erase(
+		std::remove_if(
+			begin(next),
+			end(next),
+			[&](const OutboxItem &item) {
+				return item.draft.objectId == firstObjectId
+					|| item.draft.objectId == secondObjectId;
+			}),
+		end(next));
+	if (next.size() == previousSize) {
+		return true;
+	}
+	const auto revision = _revision + 1;
+	if (!persist(next, revision)) {
+		return false;
+	}
+	CleanseItems(_items);
+	_items = std::move(next);
+	nextGuard.dismiss();
+	_revision = revision;
+	return true;
+}
+
 bool PersistentOutboxStore::persist(
 		const std::vector<OutboxItem> &items,
 		std::uint64_t revision) const {

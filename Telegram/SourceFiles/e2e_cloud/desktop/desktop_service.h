@@ -104,6 +104,7 @@ struct DesktopProtectedGroupSummary {
 	bool active = false;
 	bool removed = false;
 	bool sendingAllowed = false;
+	bool fileTransferPending = false;
 };
 
 struct DesktopProtectedMember {
@@ -172,6 +173,8 @@ public:
 	[[nodiscard]] bool sendProtectedFile(
 		ConversationId conversationId,
 		QString path);
+	[[nodiscard]] bool cancelProtectedFileTransfer(
+		ConversationId conversationId);
 	[[nodiscard]] bool saveProtectedFile(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
@@ -197,6 +200,8 @@ public:
 		contentStateValue() const;
 	[[nodiscard]] rpl::producer<std::uint64_t>
 		contentRevisionValue() const;
+	[[nodiscard]] rpl::producer<std::uint64_t>
+		fileTransferRevisionValue() const;
 	[[nodiscard]] rpl::producer<std::uint64_t>
 		securityRevisionValue() const;
 	void synchronizeProtectedContent(ConversationId conversationId);
@@ -256,6 +261,8 @@ private:
 		ObjectId objectId);
 	[[nodiscard]] bool commitPreparedFileTransfer(
 		ConversationId conversationId);
+	[[nodiscard]] bool finishFileTransferCancellation(
+		PendingGroupCreation &group);
 	void completeActiveUpload(
 		ConversationId conversationId,
 		UploadCompletion completion);
@@ -300,6 +307,7 @@ private:
 	void setContentState(
 		ConversationId conversationId,
 		DesktopContentState state);
+	void notifyFileTransferRevision();
 	[[nodiscard]] bool completeObservedJoin(
 		ConversationId conversationId,
 		const PublicBootstrapSyncCompletion &result);
@@ -354,6 +362,7 @@ private:
 		= DesktopContentState::Idle;
 	std::map<ConversationId, DesktopContentState> _contentStates;
 	rpl::variable<std::uint64_t> _contentRevision = 0;
+	rpl::variable<std::uint64_t> _fileTransferRevision = 0;
 	rpl::variable<std::uint64_t> _securityRevision = 0;
 	std::uint64_t _operationEpoch = 1;
 };
