@@ -72,6 +72,14 @@ compares the exact ciphertext bytes. It deliberately does not compare the
 ledger's plaintext digest with the envelope's ciphertext digest because those
 fields have different meanings.
 
+Desktop copies a selected local source into an owner-only conversation staging
+file while computing its manifest hash. The durable transfer references that
+staged source rather than a picker, drag-and-drop, cache, or temporary path.
+Restarting the client or removing the original selection therefore cannot leave
+only the first uploaded chunk. The staging file is removed only after final
+hash verification or durable cancellation. Retryable upload failures continue
+automatically with bounded exponential delay.
+
 The authenticated manifest is published and acknowledged before the first
 chunk. A receiver persists a protected local authorization record derived from
 that manifest and accepts a chunk only when its file identifier, layout,
@@ -130,6 +138,9 @@ protected conversation runs at a time, and the UI reports success only after
 the atomic destination commit. Retryable transport failure, missing chunks,
 pagination manipulation, quota exhaustion, or digest failure leaves no partial
 destination file.
+While the sender is still publishing chunks, Desktop repeats bounded missing-
+chunk and retryable transport scans before reporting failure. Every retry keeps
+the authenticated manifest limits and already verified encrypted cache entries.
 
 Previews are generated locally from authenticated plaintext, scaled to a
 320-pixel bound, and carried only inside the encrypted manifest. The client does

@@ -300,8 +300,14 @@ private:
 		ConversationId conversationId,
 		std::uint32_t chunkIndex,
 		TelegramTransport::UploadResult result);
+	void scheduleFileTransferRetry(ConversationId conversationId);
+	void resetFileTransferRetry(PendingGroupCreation &group);
 	[[nodiscard]] bool beginFileChunkDownload(
 		ConversationId conversationId,
+		bool legacyCarrier);
+	void scheduleFileDownloadRetry(
+		ConversationId conversationId,
+		ObjectId eventObjectId,
 		bool legacyCarrier);
 	[[nodiscard]] FileChunkDownloadPageStatus processFileChunkDownloadPage(
 		ConversationId conversationId,

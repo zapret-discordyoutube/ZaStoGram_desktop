@@ -1084,3 +1084,17 @@ participants cannot forge the operation. Editing is limited to text; deletion
 also applies to protected files. The ordinary Telegram edit field and delete
 confirmation route to these events and never call Telegram's edit or delete
 message APIs for decrypted protected items.
+
+### D090: Selected files use durable staging and automatic retries
+
+Copy every selected local file into an owner-only conversation staging path
+while computing the manifest hash, and persist that staging path as the source
+of the outgoing transfer. Temporary picker paths and later removal of the
+original file must not truncate a multi-chunk upload. Remove the staged source
+only after full source-hash verification or durable cancellation.
+
+Retry transient manifest and chunk uploads automatically with bounded
+exponential delay. A Save operation also retries transient downloads and
+temporarily missing chunks while an authenticated sender may still be
+publishing them. Keep retries bounded, retain already authenticated chunks, and
+commit the destination only after its exact size and full hash match.

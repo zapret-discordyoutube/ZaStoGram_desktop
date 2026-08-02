@@ -1105,10 +1105,48 @@ def verify_protected_clipboard_images_use_encrypted_files() -> None:
     assert "sendProtectedFile(conversationId, *path)" in send_image
     assert "sendProtectedImage(" in image_input
     assert "Core::ReadMimeImage(data)" in mime_input
-    assert "RemoveStagedProtectedImage(" in cancel
-    assert "RemoveStagedProtectedImage(" in finalize
+    assert "RemoveStagedProtectedSource(" in cancel
+    assert "RemoveStagedProtectedSource(" in finalize
     assert "group.localProtectedFilePaths.insert_or_assign(" in service
-    assert "if (!IsStagedProtectedImage(" in service
+    assert "if (!IsStagedProtectedSource(" in service
+
+
+def verify_protected_files_keep_a_stable_source_and_retry() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    send_file = function_body(
+        service,
+        "bool DesktopService::sendProtectedFile(",
+        "bool DesktopService::sendProtectedImage(",
+    )
+    commit = function_body(
+        service,
+        "bool DesktopService::commitPreparedFileTransfer(",
+        "bool DesktopService::finishFileTransferCancellation(",
+    )
+    upload = function_body(
+        service,
+        "void DesktopService::completeFileChunkUpload(",
+        "bool DesktopService::queuePendingFileManifest(",
+    )
+    download = function_body(
+        service,
+        "void DesktopService::applyFileChunkDownload(",
+        "bool DesktopService::writePendingProtectedFile(",
+    )
+
+    assert "PrepareStagedProtectedFile(" in send_file
+    assert "ownedSource ? QString() : stagedPath" in send_file
+    assert "staged->write(bytes) == bytes.size()" in service
+    assert "staged->commit()" in service
+    assert ".sourcePathUtf8 = group.filePreparationPath.toUtf8()" in commit
+    assert ".filenameUtf8 = group.filePreparationFilename.toUtf8()" in commit
+    assert ".mimeTypeUtf8 = group.filePreparationMimeType.toUtf8()" in commit
+    assert "void scheduleFileTransferRetry(" in header
+    assert "scheduleFileTransferRetry(conversationId);" in upload
+    assert "base::call_delayed(delay" in service
+    assert "kFileDownloadMaximumRetries" in download
+    assert "scheduleFileDownloadRetry(" in download
 
 
 def verify_protected_composer_has_no_plaintext_side_channels() -> None:
@@ -1430,7 +1468,7 @@ def verify_new_file_cannot_replace_pending_transfer() -> None:
     assert file_send.index("i->second->fileTransfer.pending()") \
         < file_send.index("crl::async(")
     assert file_send.index("crl::async(") \
-        < file_send.index("HashFile(absolutePath, cancellation, true)")
+        < file_send.index("const auto source = HashFile(")
     assert "group.fileHashInProgress = true;" in file_send
     assert "commitPreparedFileTransfer(conversationId)" in service
     assert "group.fileTransfer.begin(std::move(transfer))" in service
@@ -2178,6 +2216,7 @@ def main() -> None:
     verify_protected_groups_layout_uses_own_visibility()
     verify_protected_history_uses_the_native_timeline_and_composer()
     verify_protected_clipboard_images_use_encrypted_files()
+    verify_protected_files_keep_a_stable_source_and_retry()
     verify_protected_composer_has_no_plaintext_side_channels()
     verify_protected_history_can_page_back()
     verify_protected_plaintext_is_loaded_by_page()

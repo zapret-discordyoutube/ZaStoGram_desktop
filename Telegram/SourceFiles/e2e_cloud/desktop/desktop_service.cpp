@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/desktop/desktop_service.h"
 
+#include "base/call_delayed.h"
 #include "base/unixtime.h"
 #include "crl/crl.h"
 #include "core/application.h"
@@ -281,6 +282,13 @@ template <typename Id>
 		+ u"staged-images/"_q;
 }
 
+[[nodiscard]] QString StagedProtectedFileDirectory(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId) {
+	return ConversationDirectory(telegramUserIdBinding, conversationId)
+		+ u"staged-files/"_q;
+}
+
 [[nodiscard]] bool IsStagedProtectedImage(
 		std::uint64_t telegramUserIdBinding,
 		ConversationId conversationId,
@@ -295,15 +303,88 @@ template <typename Id>
 		&& info.fileName().endsWith(u".png"_q);
 }
 
-void RemoveStagedProtectedImage(
+[[nodiscard]] bool IsStagedProtectedFile(
 		std::uint64_t telegramUserIdBinding,
 		ConversationId conversationId,
 		const QString &path) {
-	if (IsStagedProtectedImage(
+	const auto info = QFileInfo(path);
+	const auto directory = QDir::cleanPath(
+		StagedProtectedFileDirectory(
+			telegramUserIdBinding,
+			conversationId));
+	return QDir::cleanPath(info.absolutePath()) == directory
+		&& info.fileName().startsWith(u"file-"_q)
+		&& info.fileName().endsWith(u".source"_q);
+}
+
+[[nodiscard]] bool IsStagedProtectedSource(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId,
+		const QString &path) {
+	return IsStagedProtectedImage(
+		telegramUserIdBinding,
+		conversationId,
+		path) || IsStagedProtectedFile(
+		telegramUserIdBinding,
+		conversationId,
+		path);
+}
+
+void RemoveStagedProtectedSource(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId,
+		const QString &path) {
+	if (IsStagedProtectedSource(
 			telegramUserIdBinding,
 			conversationId,
 			path)) {
 		QFile::remove(path);
+	}
+}
+
+[[nodiscard]] std::optional<QString> PrepareStagedProtectedFile(
+		std::uint64_t telegramUserIdBinding,
+		ConversationId conversationId) {
+	const auto id = RandomId<ObjectId>();
+	if (!id) {
+		return std::nullopt;
+	}
+	const auto directory = StagedProtectedFileDirectory(
+		telegramUserIdBinding,
+		conversationId);
+	if (!QDir().mkpath(directory)) {
+		return std::nullopt;
+	}
+	const auto encoded = QByteArray(
+		reinterpret_cast<const char*>(id->bytes.data()),
+		int(id->bytes.size())).toHex();
+	return directory
+		+ u"file-"_q
+		+ QString::fromLatin1(encoded)
+		+ u".source"_q;
+}
+
+void CleanupStagedProtectedFiles(
+		const QString &conversationDirectory,
+		const QString &keepPath) {
+	auto directory = QDir(conversationDirectory + u"staged-files/"_q);
+	if (!directory.exists()) {
+		return;
+	}
+	const auto keep = keepPath.isEmpty()
+		? QString()
+		: QDir::cleanPath(QFileInfo(keepPath).absoluteFilePath());
+	const auto entries = directory.entryInfoList(
+		QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+	for (const auto &entry : entries) {
+		if (keep.isEmpty()
+			|| QDir::cleanPath(entry.absoluteFilePath()) != keep) {
+			QFile::remove(entry.absoluteFilePath());
+		}
+	}
+	if (directory.entryList(
+			QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty()) {
+		QDir(conversationDirectory).rmdir(u"staged-files"_q);
 	}
 }
 
@@ -573,6 +654,16 @@ inline constexpr auto kFileDownloadExtraPages = std::uint64_t(1024);
 inline constexpr auto kFileDownloadExtraBytes
 	= std::uint64_t(16) * 1024 * 1024;
 inline constexpr auto kFileCleanupChunksPerTurn = std::uint32_t(64);
+inline constexpr auto kFileRetryInitialDelay = crl::time(1000);
+inline constexpr auto kFileRetryMaximumDelay = crl::time(30'000);
+inline constexpr auto kFileDownloadMaximumRetries = 20;
+
+[[nodiscard]] crl::time FileRetryDelay(int attempt) {
+	const auto shift = std::min(attempt, 5);
+	return std::min(
+		kFileRetryMaximumDelay,
+		kFileRetryInitialDelay * (1 << shift));
+}
 
 struct HashedFile {
 	std::uint64_t size = 0;
@@ -581,10 +672,13 @@ struct HashedFile {
 };
 
 [[nodiscard]] std::optional<PrivateFilePreview> PrepareFilePreview(
-		const QString &path) {
-	const auto mime = QMimeDatabase().mimeTypeForFile(
-		path,
-		QMimeDatabase::MatchExtension).name();
+		const QString &path,
+		const QString &mimeType = QString()) {
+	const auto mime = mimeType.isEmpty()
+		? QMimeDatabase().mimeTypeForFile(
+			path,
+			QMimeDatabase::MatchExtension).name()
+		: mimeType;
 	auto information = FileLoadTask::ReadMediaInformation(
 		path,
 		QByteArray(),
@@ -640,7 +734,9 @@ struct HashedFile {
 [[nodiscard]] std::optional<HashedFile> HashFile(
 		const QString &path,
 		std::shared_ptr<std::atomic_bool> cancellation = nullptr,
-		bool preparePreview = false) {
+		bool preparePreview = false,
+		const QString &stagedPath = QString(),
+		const QString &previewMimeType = QString()) {
 	auto file = QFile(path);
 	if (!file.open(QIODevice::ReadOnly)
 		|| file.size() < 0
@@ -648,9 +744,21 @@ struct HashedFile {
 		return std::nullopt;
 	}
 	const auto originalSize = file.size();
+	auto staged = std::unique_ptr<QSaveFile>();
+	if (!stagedPath.isEmpty()) {
+		staged = std::make_unique<QSaveFile>(stagedPath);
+		if (!staged->open(QIODevice::WriteOnly)) {
+			return std::nullopt;
+		}
+		staged->setPermissions(
+			QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+	}
 	const auto context = EVP_MD_CTX_new();
 	if (!context || EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
 		EVP_MD_CTX_free(context);
+		if (staged) {
+			staged->cancelWriting();
+		}
 		return std::nullopt;
 	}
 	auto processed = qint64();
@@ -665,7 +773,10 @@ struct HashedFile {
 			kDesktopFileChunkSize,
 			originalSize - processed));
 		const auto size = bytes.size();
-		const auto updated = !bytes.isEmpty()
+		const auto copied = !staged
+			|| staged->write(bytes) == bytes.size();
+		const auto updated = copied
+			&& !bytes.isEmpty()
 			&& EVP_DigestUpdate(
 				context,
 				bytes.constData(),
@@ -693,10 +804,22 @@ struct HashedFile {
 			&hashSize) == 1
 		&& hashSize == result.hash.bytes.size();
 	EVP_MD_CTX_free(context);
+	auto stagedCommitted = false;
+	if (ok && staged) {
+		stagedCommitted = staged->commit();
+		ok = stagedCommitted;
+	} else if (staged) {
+		staged->cancelWriting();
+	}
 	if (ok && preparePreview) {
-		result.preview = PrepareFilePreview(path);
+		result.preview = PrepareFilePreview(
+			stagedCommitted ? stagedPath : path,
+			previewMimeType);
 		ok = !cancellation
 			|| !cancellation->load(std::memory_order_relaxed);
+	}
+	if (!ok && stagedCommitted) {
+		QFile::remove(stagedPath);
 	}
 	return (ok && result.hash)
 		? std::optional<HashedFile>(result)
@@ -743,6 +866,9 @@ struct DesktopService::PendingGroupCreation {
 		std::set<std::uint32_t> missingChunkIndices;
 		std::function<void(ProtectedFileSaveResult)> callback;
 		std::unique_ptr<PendingWrite> write;
+		std::uint64_t retryToken = 0;
+		int retryAttempt = 0;
+		int retryCount = 0;
 		bool legacyCarrier = false;
 	};
 
@@ -836,6 +962,12 @@ struct DesktopService::PendingGroupCreation {
 		conversationId,
 		telegramPeerIdBinding,
 		contentBackend) {
+		const auto pending = fileTransfer.pending();
+		CleanupStagedProtectedFiles(
+			this->directory,
+			pending
+				? QString::fromUtf8(pending->sourcePathUtf8)
+				: QString());
 	}
 
 	~PendingGroupCreation() {
@@ -905,6 +1037,8 @@ struct DesktopService::PendingGroupCreation {
 	std::unique_ptr<FileChunkDownloadController> fileDownloadController;
 	std::optional<PendingFileDownload> pendingFileDownload;
 	QString filePreparationPath;
+	QString filePreparationFilename;
+	QString filePreparationMimeType;
 	std::optional<HashedFile> filePreparationSource;
 	std::set<AccountId> safetyWitnesses;
 	struct MaterializedHistoryEntry {
@@ -917,6 +1051,7 @@ struct DesktopService::PendingGroupCreation {
 	std::uint64_t materializedHistoryPeerIdBinding = 0;
 	std::size_t materializedHistoryLimit = 0;
 	std::uint64_t safetyWitnessGeneration = 0;
+	std::uint64_t fileRetryToken = 0;
 	bool ownSafetyGossipObserved = false;
 	bool observationDirty = false;
 	bool contentObservationDirty = false;
@@ -925,6 +1060,7 @@ struct DesktopService::PendingGroupCreation {
 	bool fileHashInProgress = false;
 	bool fileHashCancelRequested = false;
 	bool fileFinalHashInProgress = false;
+	int fileRetryAttempt = 0;
 	std::shared_ptr<std::atomic_bool> fileHashCancellation;
 	std::shared_ptr<std::atomic_bool> fileFinalHashCancellation;
 	Phase phase = Phase::Creating;
@@ -1053,7 +1189,7 @@ DesktopService::~DesktopService() {
 	for (const auto &entry : _groups) {
 		clearMaterializedProtectedHistory(*entry.second);
 		if (!entry.second->fileTransfer.pending()) {
-			RemoveStagedProtectedImage(
+			RemoveStagedProtectedSource(
 				_telegramUserIdBinding,
 				entry.first,
 				entry.second->filePreparationPath);
@@ -2214,10 +2350,32 @@ bool DesktopService::sendProtectedFile(
 	}
 	const auto sourceInfo = QFileInfo(path);
 	const auto absolutePath = sourceInfo.absoluteFilePath();
-	if (absolutePath.isEmpty()) {
+	if (absolutePath.isEmpty() || !sourceInfo.isFile()) {
 		return false;
 	}
-	group.filePreparationPath = absolutePath;
+	const auto ownedSource = IsStagedProtectedSource(
+		_telegramUserIdBinding,
+		conversationId,
+		absolutePath);
+	const auto stagedPath = ownedSource
+		? std::optional<QString>(absolutePath)
+		: PrepareStagedProtectedFile(
+			_telegramUserIdBinding,
+			conversationId);
+	if (!stagedPath) {
+		return false;
+	}
+	const auto mimeType = QMimeDatabase().mimeTypeForFile(
+		absolutePath,
+		QMimeDatabase::MatchExtension).name();
+	group.filePreparationPath = *stagedPath;
+	group.filePreparationFilename = IsStagedProtectedImage(
+		_telegramUserIdBinding,
+		conversationId,
+		absolutePath)
+		? u"image.png"_q
+		: sourceInfo.fileName();
+	group.filePreparationMimeType = mimeType;
 	group.filePreparationSource.reset();
 	group.fileHashCancelRequested = false;
 	group.fileHashInProgress = true;
@@ -2229,12 +2387,20 @@ bool DesktopService::sendProtectedFile(
 	crl::async([weak = base::weak_ptr(this),
 			conversationId,
 			absolutePath,
+			stagedPath = *stagedPath,
+			mimeType,
+			ownedSource,
 			cancellation,
 			operationEpoch] {
-		const auto source = HashFile(absolutePath, cancellation, true);
+		const auto source = HashFile(
+			absolutePath,
+			cancellation,
+			true,
+			ownedSource ? QString() : stagedPath,
+			mimeType);
 		crl::on_main([weak,
 				conversationId,
-				absolutePath,
+				stagedPath,
 				cancellation,
 				operationEpoch,
 				source] {
@@ -2245,7 +2411,7 @@ bool DesktopService::sendProtectedFile(
 			if (i == end(weak->_groups)
 				|| !i->second->fileHashInProgress
 				|| i->second->fileHashCancellation != cancellation
-				|| i->second->filePreparationPath != absolutePath) {
+				|| i->second->filePreparationPath != stagedPath) {
 				return;
 			}
 			auto &group = *i->second;
@@ -2253,21 +2419,25 @@ bool DesktopService::sendProtectedFile(
 			group.fileHashCancellation.reset();
 			if (group.fileHashCancelRequested) {
 				group.fileHashCancelRequested = false;
-				RemoveStagedProtectedImage(
+				RemoveStagedProtectedSource(
 					weak->_telegramUserIdBinding,
 					conversationId,
 					group.filePreparationPath);
 				group.filePreparationPath.clear();
+				group.filePreparationFilename.clear();
+				group.filePreparationMimeType.clear();
 				group.filePreparationSource.reset();
 				weak->notifyFileTransferRevision();
 				weak->pumpActiveOutbox(conversationId);
 				return;
 			} else if (!source) {
-				RemoveStagedProtectedImage(
+				RemoveStagedProtectedSource(
 					weak->_telegramUserIdBinding,
 					conversationId,
 					group.filePreparationPath);
 				group.filePreparationPath.clear();
+				group.filePreparationFilename.clear();
+				group.filePreparationMimeType.clear();
 				group.filePreparationSource.reset();
 				weak->notifyFileTransferRevision();
 				weak->setContentState(
@@ -2292,7 +2462,7 @@ bool DesktopService::sendProtectedImage(
 	if (!path) {
 		return false;
 	} else if (!sendProtectedFile(conversationId, *path)) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			*path);
@@ -2320,11 +2490,13 @@ bool DesktopService::cancelProtectedFileTransfer(
 		setContentState(conversationId, DesktopContentState::Synchronizing);
 		return true;
 	} else if (!group.filePreparationPath.isEmpty()) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			group.filePreparationPath);
 		group.filePreparationPath.clear();
+		group.filePreparationFilename.clear();
+		group.filePreparationMimeType.clear();
 		group.filePreparationSource.reset();
 		notifyFileTransferRevision();
 		pumpActiveOutbox(conversationId);
@@ -2530,6 +2702,51 @@ bool DesktopService::beginFileChunkDownload(
 	return group.fileDownloadController->start();
 }
 
+void DesktopService::scheduleFileDownloadRetry(
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		bool legacyCarrier) {
+	const auto i = _groups.find(conversationId);
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| !i->second->pendingFileDownload
+		|| i->second->pendingFileDownload->eventObjectId != eventObjectId) {
+		return;
+	}
+	auto &pending = *i->second->pendingFileDownload;
+	const auto delay = FileRetryDelay(pending.retryAttempt);
+	pending.retryAttempt = std::min(pending.retryAttempt + 1, 6);
+	++pending.retryCount;
+	if (++pending.retryToken == 0) {
+		++pending.retryToken;
+	}
+	const auto token = pending.retryToken;
+	base::call_delayed(delay, [weak = base::weak_ptr(this),
+			conversationId,
+			eventObjectId,
+			legacyCarrier,
+			token] {
+		if (!weak || !weak->vaultReady()) {
+			return;
+		}
+		const auto i = weak->_groups.find(conversationId);
+		if (i == end(weak->_groups)
+			|| !i->second->pendingFileDownload
+			|| i->second->pendingFileDownload->eventObjectId
+				!= eventObjectId
+			|| i->second->pendingFileDownload->retryToken != token) {
+			return;
+		}
+		if (!weak->beginFileChunkDownload(
+				conversationId,
+				legacyCarrier)) {
+			weak->finishFileChunkDownload(
+				conversationId,
+				ProtectedFileSaveResult::LocalFailure);
+		}
+	});
+}
+
 FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 		ConversationId conversationId,
 		std::vector<TelegramTransport::UntrustedObject> objects) {
@@ -2564,8 +2781,15 @@ FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 	} else if (processed.status != ObservedContentProcessStatus::Processed) {
 		return FileChunkDownloadPageStatus::PersistenceFailed;
 	}
+	const auto missingBefore = group.pendingFileDownload
+		->missingChunkIndices.size();
 	for (const auto index : processed.availableChunkIndices) {
 		group.pendingFileDownload->missingChunkIndices.erase(index);
+	}
+	if (group.pendingFileDownload->missingChunkIndices.size()
+			< missingBefore) {
+		group.pendingFileDownload->retryAttempt = 0;
+		group.pendingFileDownload->retryCount = 0;
 	}
 	return group.pendingFileDownload->missingChunkIndices.empty()
 		? FileChunkDownloadPageStatus::Complete
@@ -2604,6 +2828,9 @@ void DesktopService::applyFileChunkDownload(
 			ProtectedFileSaveResult::SecurityBlocked);
 		return;
 	} else if (completion.status == FileChunkDownloadStatus::Complete) {
+		if (++group.pendingFileDownload->retryToken == 0) {
+			++group.pendingFileDownload->retryToken;
+		}
 		if (!writePendingProtectedFile(conversationId)) {
 			finishFileChunkDownload(
 				conversationId,
@@ -2615,6 +2842,19 @@ void DesktopService::applyFileChunkDownload(
 		if (beginFileChunkDownload(conversationId, true)) {
 			return;
 		}
+	} else if ((completion.status
+				== FileChunkDownloadStatus::RetryableTransportError
+			|| completion.status == FileChunkDownloadStatus::Missing)
+		&& group.pendingFileDownload->retryCount
+			< kFileDownloadMaximumRetries) {
+		scheduleFileDownloadRetry(
+			conversationId,
+			eventObjectId,
+			(completion.status
+				== FileChunkDownloadStatus::RetryableTransportError)
+				? wasLegacy
+				: false);
+		return;
 	}
 	const auto result = (completion.status
 			== FileChunkDownloadStatus::RetryableTransportError)
@@ -2968,7 +3208,7 @@ void DesktopService::lock() {
 	for (const auto &entry : _groups) {
 		clearMaterializedProtectedHistory(*entry.second);
 		if (!entry.second->fileTransfer.pending()) {
-			RemoveStagedProtectedImage(
+			RemoveStagedProtectedSource(
 				_telegramUserIdBinding,
 				entry.first,
 				entry.second->filePreparationPath);
@@ -4444,6 +4684,9 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 				auto &group = *i->second;
 				group.uploadInProgress = false;
 				if (result == TelegramTransport::UploadResult::Accepted) {
+					if (group.fileTransfer.pending()) {
+						weak->resetFileTransferRetry(group);
+					}
 					if (!group.outbox.remove(objectId)) {
 						weak->setContentState(
 							conversationId,
@@ -4459,6 +4702,9 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 					weak->setContentState(
 						conversationId,
 						DesktopContentState::RetryableTransportError);
+					if (group.fileTransfer.pending()) {
+						weak->scheduleFileTransferRetry(conversationId);
+					}
 				} else {
 					weak->setContentState(
 						conversationId,
@@ -4553,17 +4799,21 @@ bool DesktopService::commitPreparedFileTransfer(
 		|| !epoch
 		|| !source
 		|| group.filePreparationPath.isEmpty()
+		|| group.filePreparationFilename.isEmpty()
+		|| group.filePreparationMimeType.isEmpty()
 		|| group.fileTransfer.pending()
 		|| group.outbox.size()
 		|| group.uploadInProgress
 		|| (group.uploadController
 			&& group.uploadController->uploadInProgress())
 		|| source->size > kMaximumProtectedFileSize) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			group.filePreparationPath);
 		group.filePreparationPath.clear();
+		group.filePreparationFilename.clear();
+		group.filePreparationMimeType.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
@@ -4572,11 +4822,13 @@ bool DesktopService::commitPreparedFileTransfer(
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
 	if (!material || !eventObjectId || !contentObjectId) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			group.filePreparationPath);
 		group.filePreparationPath.clear();
+		group.filePreparationFilename.clear();
+		group.filePreparationMimeType.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
@@ -4584,7 +4836,6 @@ bool DesktopService::commitPreparedFileTransfer(
 	const auto chunkCount = source->size
 		? std::uint32_t(1 + ((source->size - 1) / kDesktopFileChunkSize))
 		: 0;
-	const auto sourceInfo = QFileInfo(group.filePreparationPath);
 	const auto manifest = PrivateFileManifest{
 		.context = {
 			.conversationId = conversationId,
@@ -4598,10 +4849,8 @@ bool DesktopService::commitPreparedFileTransfer(
 			material->key.bytes())),
 		.plaintextHash = source->hash,
 		.unixTime = std::uint64_t(base::unixtime::now()),
-		.filenameUtf8 = sourceInfo.fileName().toUtf8(),
-		.mimeTypeUtf8 = QMimeDatabase().mimeTypeForFile(
-			group.filePreparationPath,
-			QMimeDatabase::MatchExtension).name().toUtf8(),
+		.filenameUtf8 = group.filePreparationFilename.toUtf8(),
+		.mimeTypeUtf8 = group.filePreparationMimeType.toUtf8(),
 		.preview = source->preview,
 	};
 	auto manifestPlaintext = PrivateFileManifestCodecV1()
@@ -4612,11 +4861,13 @@ bool DesktopService::commitPreparedFileTransfer(
 		}
 	});
 	if (!manifestPlaintext) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			group.filePreparationPath);
 		group.filePreparationPath.clear();
+		group.filePreparationFilename.clear();
+		group.filePreparationMimeType.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
@@ -4639,16 +4890,18 @@ bool DesktopService::commitPreparedFileTransfer(
 	};
 	const auto queued = group.fileTransfer.begin(std::move(transfer));
 	if (queued != FileTransferCommitResult::Committed) {
-		RemoveStagedProtectedImage(
+		RemoveStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			sourcePath);
 		group.filePreparationPath.clear();
+		group.filePreparationFilename.clear();
+		group.filePreparationMimeType.clear();
 		group.filePreparationSource.reset();
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
-	if (!IsStagedProtectedImage(
+	if (!IsStagedProtectedSource(
 			_telegramUserIdBinding,
 			conversationId,
 			sourcePath)) {
@@ -4657,6 +4910,8 @@ bool DesktopService::commitPreparedFileTransfer(
 			sourcePath);
 	}
 	group.filePreparationPath.clear();
+	group.filePreparationFilename.clear();
+	group.filePreparationMimeType.clear();
 	group.filePreparationSource.reset();
 	notifyFileTransferRevision();
 	return true;
@@ -4694,7 +4949,8 @@ bool DesktopService::finishFileTransferCancellation(
 		&& cleared != FileTransferCommitResult::AlreadyCommitted) {
 		return false;
 	}
-	RemoveStagedProtectedImage(
+	resetFileTransferRetry(group);
+	RemoveStagedProtectedSource(
 		_telegramUserIdBinding,
 		group.conversationId,
 		sourcePath);
@@ -4722,6 +4978,9 @@ void DesktopService::completeActiveUpload(
 		setContentState(
 			conversationId,
 			DesktopContentState::RetryableTransportError);
+		if (group.fileTransfer.pending()) {
+			scheduleFileTransferRetry(conversationId);
+		}
 		return;
 	} else if (completion.transportResult
 			== TelegramTransport::UploadResult::PermanentError) {
@@ -4751,6 +5010,9 @@ void DesktopService::completeActiveUpload(
 			}
 			return;
 		}
+	}
+	if (group.fileTransfer.pending()) {
+		resetFileTransferRetry(group);
 	}
 	pumpActiveOutbox(conversationId);
 }
@@ -4871,6 +5133,7 @@ void DesktopService::completeFileChunkUpload(
 		setContentState(
 			conversationId,
 			DesktopContentState::RetryableTransportError);
+		scheduleFileTransferRetry(conversationId);
 		return;
 	} else if (result == TelegramTransport::UploadResult::PermanentError) {
 		setContentState(
@@ -4892,11 +5155,53 @@ void DesktopService::completeFileChunkUpload(
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return;
 	}
+	resetFileTransferRetry(group);
 	(void)group.chunkStore.removeChunk(
 		conversationId,
 		manifest->context.fileId,
 		chunkIndex);
 	pumpActiveOutbox(conversationId);
+}
+
+void DesktopService::scheduleFileTransferRetry(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| !i->second->fileTransfer.pending()
+		|| i->second->fileTransfer.pending()->cancelRequested) {
+		return;
+	}
+	auto &group = *i->second;
+	const auto delay = FileRetryDelay(group.fileRetryAttempt);
+	group.fileRetryAttempt = std::min(group.fileRetryAttempt + 1, 6);
+	if (++group.fileRetryToken == 0) {
+		++group.fileRetryToken;
+	}
+	const auto token = group.fileRetryToken;
+	base::call_delayed(delay, [weak = base::weak_ptr(this),
+			conversationId,
+			token] {
+		if (!weak || !weak->vaultReady()) {
+			return;
+		}
+		const auto i = weak->_groups.find(conversationId);
+		if (i == end(weak->_groups)
+			|| i->second->fileRetryToken != token
+			|| !i->second->fileTransfer.pending()
+			|| i->second->fileTransfer.pending()->cancelRequested) {
+			return;
+		}
+		weak->pumpActiveOutbox(conversationId);
+	});
+}
+
+void DesktopService::resetFileTransferRetry(
+		PendingGroupCreation &group) {
+	group.fileRetryAttempt = 0;
+	if (++group.fileRetryToken == 0) {
+		++group.fileRetryToken;
+	}
 }
 
 bool DesktopService::queuePendingFileManifest(
@@ -5092,7 +5397,8 @@ bool DesktopService::finalizeFileTransfer(
 					DesktopContentState::LocalFailure);
 				return;
 			}
-			RemoveStagedProtectedImage(
+			weak->resetFileTransferRetry(group);
+			RemoveStagedProtectedSource(
 				weak->_telegramUserIdBinding,
 				conversationId,
 				sourcePath);
