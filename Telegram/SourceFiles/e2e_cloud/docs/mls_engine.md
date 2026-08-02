@@ -59,7 +59,11 @@ KeyPackages have an explicit 84-day lifetime (the OpenMLS maximum accepted
 range, including its one-hour clock-skew margin). A client starts replacement
 seven days before expiry and after every protected-group generation change.
 Publications are account-signed and valid only for the exact generation they
-name. Replacement does not delete an older private package immediately: a
+name. Their signed object identifier is derived from the conversation,
+account, client, generation, credential, KeyPackage, and publishing Telegram
+user ID. A receiver recomputes it from the Telegram author observed at receipt,
+so the server cannot relabel another user's valid publication. Replacement does
+not delete an older private package immediately: a
 small encrypted local pool retains every still-valid publication until one is
 consumed by a Welcome or expires. This lets an administrator use any package
 that Telegram delivered without creating an unrecoverable ghost client.

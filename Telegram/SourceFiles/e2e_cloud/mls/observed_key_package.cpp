@@ -60,6 +60,21 @@ VerifyObservedClientKeyPackageOutcome VerifyObservedClientKeyPackage(
 			.verified = std::nullopt,
 		};
 	}
+	const auto expectedObjectId = DeriveClientKeyPackageObjectId(
+		envelope->conversationId,
+		envelope->senderAccountId,
+		envelope->senderClientId,
+		envelope->epochOrGeneration,
+		object.observedSenderTelegramUserIdBinding,
+		publication.publication->accountCredential,
+		publication.publication->keyPackage,
+		sha256);
+	if (!expectedObjectId || envelope->objectId != *expectedObjectId) {
+		return {
+			.status = ObservedClientKeyPackageStatus::InvalidTelegramAuthorBinding,
+			.verified = std::nullopt,
+		};
+	}
 	if (!ClientAuthorizationUsableAt(
 			publication.publication->authorization,
 			currentTime)) {

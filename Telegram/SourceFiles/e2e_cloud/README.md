@@ -86,7 +86,8 @@ The first core slice now contains:
 - real OpenMLS creation, inspection, add, remove, self-update, Welcome, and
   application processing through ABI `0x00010006`, with roster reconciliation;
 - account-signed, carrier-bound, generation-bound client KeyPackage
-  publications with explicit 84-day MLS lifetimes;
+  publications whose signed object IDs commit to the observed Telegram author,
+  with explicit 84-day MLS lifetimes;
 - one encrypted write-ahead transaction spanning MLS state, protected group
   state, archive epochs, and outgoing publication for admissions, removals,
   role/policy changes, ordinary inbound changes, and first-time Welcome joins;

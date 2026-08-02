@@ -1369,7 +1369,7 @@ public:
 	auto rejoinPackage = PrepareClientKeyPackage({
 		.client = targetContext,
 		.currentGeneration = 5,
-		.publicationObjectId = FilledId<ObjectId>(31),
+		.telegramUserIdBinding = 2002,
 		.createdAt = rejoinCreatedAt,
 		.accountCredential = &target->credential,
 		.accountSigningPrivateKey = &target->signingPrivateKey,

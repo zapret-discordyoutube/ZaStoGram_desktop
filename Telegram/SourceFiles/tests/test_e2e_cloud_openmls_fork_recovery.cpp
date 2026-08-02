@@ -319,7 +319,7 @@ public:
 	const auto bobRecovery = PrepareClientKeyPackage({
 		.client = bobContext,
 		.currentGeneration = 2,
-		.publicationObjectId = FilledId<ObjectId>(15),
+		.telegramUserIdBinding = 4003,
 		.createdAt = 1'000'000,
 		.accountCredential = &bob->credential,
 		.accountSigningPrivateKey = &bob->signingPrivateKey,

@@ -204,6 +204,24 @@ def verify_download_pages_are_bounded_at_every_layer() -> None:
         assert "> std::size_t(kDownloadPageLimit)" in implementation
 
 
+def verify_key_packages_bind_the_observed_telegram_author() -> None:
+    lifecycle = source(
+        "SourceFiles/e2e_cloud/mls/key_package_lifecycle.cpp"
+    )
+    observed = source(
+        "SourceFiles/e2e_cloud/mls/observed_key_package.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+
+    assert "DeriveClientKeyPackageObjectId(" in lifecycle
+    assert "args.telegramUserIdBinding" in lifecycle
+    assert "object.observedSenderTelegramUserIdBinding" in observed
+    assert "envelope->objectId != *expectedObjectId" in observed
+    assert "InvalidTelegramAuthorBinding" in observed
+    assert service.count("DeriveClientKeyPackageObjectId(") >= 1
+    assert ".telegramUserIdBinding = _telegramUserIdBinding" in service
+
+
 def verify_late_vault_uploads_cannot_cross_lock_boundary() -> None:
     header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
@@ -767,6 +785,7 @@ def main() -> None:
     verify_carrier_backfill_searches_documents()
     verify_ambiguous_search_results_fail_closed()
     verify_download_pages_are_bounded_at_every_layer()
+    verify_key_packages_bind_the_observed_telegram_author()
     verify_late_vault_uploads_cannot_cross_lock_boundary()
     verify_file_chunk_self_observation_uses_exact_ciphertext()
     verify_pending_plaintext_is_cleansed()

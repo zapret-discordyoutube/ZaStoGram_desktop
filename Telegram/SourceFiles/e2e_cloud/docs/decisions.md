@@ -417,3 +417,18 @@ Every MTP search response must also contain no more messages than the requested
 page limit. Enforce the same limit again in every pagination controller before
 parsing, retaining, or authenticating an object so future transport adapters
 cannot accidentally weaken the boundary.
+
+### D043: KeyPackage tickets commit to the Telegram author
+
+Derive every client KeyPackage publication object ID from its conversation,
+account, client, generation, account credential, KeyPackage bytes, and the
+publishing Telegram user ID. The account authorization signs that object ID.
+Before automatic admission, recompute the ID using the Telegram sender observed
+for the carrier message and reject any mismatch. This prevents an active server
+from transplanting a valid Alice publication into a message attributed to Bob.
+
+This binding does not remove the first-contact limitation: Telegram can still
+present a consistently false account view before any identity is pinned. It
+does prevent independent relabeling of already signed package bytes. Legacy
+pending joins with an unbound ticket generate and publish a new bound ticket on
+local recovery; old unbound publications are never admitted.

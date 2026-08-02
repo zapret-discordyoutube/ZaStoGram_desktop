@@ -29,7 +29,7 @@ enum class PrepareClientKeyPackageStatus {
 struct PrepareClientKeyPackageArgs {
 	OpenMlsClientContext client;
 	std::uint64_t currentGeneration = 0;
-	ObjectId publicationObjectId;
+	std::uint64_t telegramUserIdBinding = 0;
 	std::uint64_t createdAt = 0;
 	const AccountCredentialPublic *accountCredential = nullptr;
 	const SecureKey32 *accountSigningPrivateKey = nullptr;

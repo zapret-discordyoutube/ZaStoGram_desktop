@@ -48,7 +48,7 @@ PrepareClientKeyPackageOutcome PrepareClientKeyPackage(
 		|| !args.client.clientId
 		|| !args.client.telegramPeerIdBinding
 		|| !args.currentGeneration
-		|| !args.publicationObjectId
+		|| !args.telegramUserIdBinding
 		|| !args.createdAt
 		|| args.createdAt
 			> std::numeric_limits<std::uint64_t>::max()
@@ -77,9 +77,21 @@ PrepareClientKeyPackageOutcome PrepareClientKeyPackage(
 		|| !bridge.isKeyPackageState(generated.state)) {
 		return failure(PrepareClientKeyPackageStatus::MlsFailure);
 	}
+	const auto publicationObjectId = DeriveClientKeyPackageObjectId(
+		args.client.conversationId,
+		args.client.accountId,
+		args.client.clientId,
+		args.currentGeneration,
+		args.telegramUserIdBinding,
+		*args.accountCredential,
+		generated.keyPackage,
+		sha256);
+	if (!publicationObjectId) {
+		return failure(PrepareClientKeyPackageStatus::EncodingFailure);
+	}
 	const auto authorization = CreateClientAuthorizationProof({
 		.conversationId = args.client.conversationId,
-		.authorizationId = args.publicationObjectId,
+		.authorizationId = *publicationObjectId,
 		.accountId = args.client.accountId,
 		.clientId = args.client.clientId,
 		.requestedAfterGeneration = args.currentGeneration,
@@ -106,7 +118,7 @@ PrepareClientKeyPackageOutcome PrepareClientKeyPackage(
 		.senderClientId = args.client.clientId,
 		.telegramPeerIdBinding = args.client.telegramPeerIdBinding,
 		.epochOrGeneration = args.currentGeneration,
-		.objectId = args.publicationObjectId,
+		.objectId = *publicationObjectId,
 		.payloadHash = sha256.digest(*payload),
 		.payload = *payload,
 		.authenticationData = SignatureBytes(authorization->signature),

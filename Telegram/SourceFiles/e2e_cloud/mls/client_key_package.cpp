@@ -18,6 +18,8 @@ namespace {
 inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 	'T', 'D', 'E', '2', 'E', 'K', 'P', 'B',
 };
+inline constexpr auto kObjectIdPurpose
+	= "TDE2E/client-key-package-object/v1";
 inline constexpr auto kFixedSize = 8 + 2
 	+ kAccountCredentialEncodedSize
 	+ kClientAuthorizationProofEncodedSize
@@ -38,6 +40,12 @@ void AppendUint32(QByteArray &result, std::uint32_t value) {
 	result.append(char(value >> 16));
 	result.append(char(value >> 8));
 	result.append(char(value));
+}
+
+void AppendUint64(QByteArray &result, std::uint64_t value) {
+	for (auto shift = 56; shift >= 0; shift -= 8) {
+		result.append(char(value >> shift));
+	}
 }
 
 template <typename Array>
@@ -95,6 +103,46 @@ template <typename Array>
 }
 
 } // namespace
+
+std::optional<ObjectId> DeriveClientKeyPackageObjectId(
+		ConversationId conversationId,
+		AccountId accountId,
+		ClientId clientId,
+		std::uint64_t generation,
+		std::uint64_t telegramUserIdBinding,
+		const AccountCredentialPublic &accountCredential,
+		const QByteArray &keyPackage,
+		const Sha256Provider &sha256) {
+	const auto credential = AccountCredentialCodecV1().encode(
+		accountCredential);
+	if (!conversationId
+		|| !accountId
+		|| !clientId
+		|| !generation
+		|| !telegramUserIdBinding
+		|| keyPackage.isEmpty()
+		|| !credential) {
+		return std::nullopt;
+	}
+	auto material = QByteArray(kObjectIdPurpose);
+	AppendArray(material, conversationId.bytes);
+	AppendArray(material, accountId.bytes);
+	AppendArray(material, clientId.bytes);
+	AppendUint64(material, generation);
+	AppendUint64(material, telegramUserIdBinding);
+	AppendArray(material, sha256.digest(*credential).bytes);
+	AppendArray(material, sha256.digest(keyPackage).bytes);
+	const auto digest = sha256.digest(material);
+	if (!digest) {
+		return std::nullopt;
+	}
+	auto result = ObjectId();
+	std::copy_n(
+		digest.bytes.data(),
+		result.bytes.size(),
+		result.bytes.data());
+	return result ? std::optional<ObjectId>(result) : std::nullopt;
+}
 
 std::optional<QByteArray> ClientKeyPackagePublicationCodecV1::encode(
 		const ClientKeyPackagePublication &publication) const {

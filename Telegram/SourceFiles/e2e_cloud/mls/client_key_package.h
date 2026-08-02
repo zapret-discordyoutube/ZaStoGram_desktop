@@ -33,6 +33,16 @@ struct ClientKeyPackagePublication {
 		const ClientKeyPackagePublication &) = default;
 };
 
+[[nodiscard]] std::optional<ObjectId> DeriveClientKeyPackageObjectId(
+	ConversationId conversationId,
+	AccountId accountId,
+	ClientId clientId,
+	std::uint64_t generation,
+	std::uint64_t telegramUserIdBinding,
+	const AccountCredentialPublic &accountCredential,
+	const QByteArray &keyPackage,
+	const Sha256Provider &sha256);
+
 class ClientKeyPackagePublicationCodecV1 final {
 public:
 	[[nodiscard]] std::optional<QByteArray> encode(

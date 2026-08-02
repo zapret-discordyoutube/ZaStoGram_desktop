@@ -506,7 +506,7 @@ public:
 	auto first = PrepareClientKeyPackage({
 		.client = context,
 		.currentGeneration = generation,
-		.publicationObjectId = FilledId<ObjectId>(74),
+		.telegramUserIdBinding = 7401,
 		.createdAt = createdAt,
 		.accountCredential = &identity->credential,
 		.accountSigningPrivateKey = &identity->signingPrivateKey,
@@ -514,7 +514,7 @@ public:
 	auto second = PrepareClientKeyPackage({
 		.client = context,
 		.currentGeneration = generation,
-		.publicationObjectId = FilledId<ObjectId>(75),
+		.telegramUserIdBinding = 7401,
 		.createdAt = createdAt,
 		.accountCredential = &identity->credential,
 		.accountSigningPrivateKey = &identity->signingPrivateKey,

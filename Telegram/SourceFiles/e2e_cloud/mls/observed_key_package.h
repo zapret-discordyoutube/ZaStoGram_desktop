@@ -20,6 +20,7 @@ enum class ObservedClientKeyPackageStatus {
 	InvalidTransportMetadata,
 	InvalidEnvelope,
 	InvalidPublication,
+	InvalidTelegramAuthorBinding,
 	NotCurrentlyUsable,
 };
 

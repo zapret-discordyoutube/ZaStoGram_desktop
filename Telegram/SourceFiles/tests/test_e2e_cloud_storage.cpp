@@ -1652,6 +1652,7 @@ int CountingLocalRecordProtector::openCalls() const {
 	const auto peerBinding = std::uint64_t(63);
 	const auto generation = std::uint64_t(7);
 	const auto createdAt = std::uint64_t(1'000'000);
+	const auto telegramUserIdBinding = std::uint64_t(7001);
 	auto identity = GenerateAccountPrivateIdentity();
 	const auto accountId = identity
 		? DeriveAccountId(identity->credential, sha256)
@@ -1659,12 +1660,21 @@ int CountingLocalRecordProtector::openCalls() const {
 	if (!identity || !accountId) {
 		return Fail("KeyPackage pool identity setup failed");
 	}
-	const auto makeEntry = [&](std::uint8_t id, const char *package) {
-		const auto objectId = FilledId<ObjectId>(id);
+	const auto makeEntry = [&](const char *package) {
 		const auto keyPackage = QByteArray(package);
-		const auto authorization = CreateClientAuthorizationProof({
+		const auto objectId = DeriveClientKeyPackageObjectId(
+			conversationId,
+			*accountId,
+			clientId,
+			generation,
+			telegramUserIdBinding,
+			identity->credential,
+			keyPackage,
+			sha256);
+		const auto authorization = objectId
+			? CreateClientAuthorizationProof({
 			.conversationId = conversationId,
-			.authorizationId = objectId,
+			.authorizationId = *objectId,
 			.accountId = *accountId,
 			.clientId = clientId,
 			.requestedAfterGeneration = generation,
@@ -1672,7 +1682,8 @@ int CountingLocalRecordProtector::openCalls() const {
 			.accountCredential = &identity->credential,
 			.accountSigningPrivateKey = &identity->signingPrivateKey,
 			.keyPackage = keyPackage,
-		}, sha256);
+		}, sha256)
+			: std::nullopt;
 		const auto payload = authorization
 			? ClientKeyPackagePublicationCodecV1().encode({
 				.accountCredential = identity->credential,
@@ -1694,7 +1705,7 @@ int CountingLocalRecordProtector::openCalls() const {
 				.senderClientId = clientId,
 				.telegramPeerIdBinding = peerBinding,
 				.epochOrGeneration = generation,
-				.objectId = objectId,
+				.objectId = *objectId,
 				.payloadHash = sha256.digest(*payload),
 				.payload = *payload,
 				.authenticationData = signature,
@@ -1712,13 +1723,28 @@ int CountingLocalRecordProtector::openCalls() const {
 			})
 			: std::nullopt;
 	};
-	auto first = makeEntry(64, "first-public-package");
-	auto second = makeEntry(65, "replacement-public-package");
+	auto first = makeEntry("first-public-package");
+	auto second = makeEntry("replacement-public-package");
 	const auto observed = first
 		? VerifyObservedClientKeyPackage({
 			.bytes = first->publicationEnvelope.bytes,
 			.observedTelegramPeerIdBinding = peerBinding,
-			.observedSenderTelegramUserIdBinding = 7001,
+			.observedSenderTelegramUserIdBinding = telegramUserIdBinding,
+			.observedMessageId = 91,
+		},
+		conversationId,
+		peerBinding,
+		generation,
+		createdAt,
+		envelopeCodec,
+		sha256)
+		: VerifyObservedClientKeyPackageOutcome();
+	const auto substitutedAuthor = first
+		? VerifyObservedClientKeyPackage({
+			.bytes = first->publicationEnvelope.bytes,
+			.observedTelegramPeerIdBinding = peerBinding,
+			.observedSenderTelegramUserIdBinding
+				= telegramUserIdBinding + 1,
 			.observedMessageId = 91,
 		},
 		conversationId,
@@ -1732,7 +1758,7 @@ int CountingLocalRecordProtector::openCalls() const {
 		? VerifyObservedClientKeyPackage({
 			.bytes = first->publicationEnvelope.bytes,
 			.observedTelegramPeerIdBinding = peerBinding + 1,
-			.observedSenderTelegramUserIdBinding = 7001,
+			.observedSenderTelegramUserIdBinding = telegramUserIdBinding,
 			.observedMessageId = 91,
 		},
 		conversationId,
@@ -1744,8 +1770,11 @@ int CountingLocalRecordProtector::openCalls() const {
 		: VerifyObservedClientKeyPackageOutcome();
 	if (observed.status != ObservedClientKeyPackageStatus::Verified
 		|| !observed.verified
-		|| observed.verified->telegramUserIdBinding != 7001
+		|| observed.verified->telegramUserIdBinding
+			!= telegramUserIdBinding
 		|| observed.verified->publication.authorization.clientId != clientId
+		|| substitutedAuthor.status
+			!= ObservedClientKeyPackageStatus::InvalidTelegramAuthorBinding
 		|| wrongCarrier.status
 			!= ObservedClientKeyPackageStatus::InvalidTransportMetadata) {
 		return Fail("KeyPackage did not bind observed Telegram authorship");

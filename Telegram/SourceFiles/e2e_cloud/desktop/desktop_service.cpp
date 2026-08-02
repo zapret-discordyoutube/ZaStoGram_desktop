@@ -2329,12 +2329,11 @@ bool DesktopService::prepareGroupJoin(
 		_vault->identity.credential,
 		_sha256);
 	const auto clientId = RandomId<ClientId>();
-	const auto publicationObjectId = RandomId<ObjectId>();
 	auto localRecordKey = DeriveConversationLocalRecordKey(
 		_vault->masterKey,
 		_telegramUserIdBinding,
 		conversation.conversationId);
-	if (!accountId || !clientId || !publicationObjectId || !localRecordKey) {
+	if (!accountId || !clientId || !localRecordKey) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
@@ -2392,7 +2391,7 @@ bool DesktopService::prepareGroupJoin(
 			.telegramPeerIdBinding = conversation.telegramPeerIdBinding,
 		},
 		.currentGeneration = verified.state.generation(),
-		.publicationObjectId = *publicationObjectId,
+		.telegramUserIdBinding = _telegramUserIdBinding,
 		.createdAt = createdAt,
 		.accountCredential = &_vault->identity.credential,
 		.accountSigningPrivateKey = &_vault->identity.signingPrivateKey,
@@ -4876,6 +4875,84 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		&& !operation->mlsState.revision()
 		&& !operation->archiveState.revision()
 		&& !operation->keyPackages.entries().empty();
+	if (awaitingAdmission) {
+		if (!state) {
+			return LocalGroupRecoveryResult::Invalid;
+		}
+		const auto currentTime = std::uint64_t(base::unixtime::now());
+		const auto boundPackage = std::any_of(
+			begin(operation->keyPackages.entries()),
+			end(operation->keyPackages.entries()),
+			[&](const StoredClientKeyPackage &entry) {
+				const auto envelope = operation->envelopeCodec.decode(
+					entry.publicationEnvelope);
+				const auto publication = envelope
+					? VerifyClientKeyPackageEnvelope(
+						*envelope,
+						conversationId,
+						localMetadata.telegramPeerIdBinding,
+						state->generation(),
+						_sha256)
+					: VerifyClientKeyPackageEnvelopeOutcome();
+				const auto expectedObjectId = (envelope
+						&& publication.publication)
+					? DeriveClientKeyPackageObjectId(
+						conversationId,
+						localMetadata.accountId,
+						localMetadata.clientId,
+						state->generation(),
+						_telegramUserIdBinding,
+						publication.publication->accountCredential,
+						publication.publication->keyPackage,
+						_sha256)
+					: std::nullopt;
+				return envelope
+					&& publication.result
+						== ClientKeyPackageEnvelopeResult::Verified
+					&& publication.publication
+					&& expectedObjectId
+					&& envelope->objectId == *expectedObjectId
+					&& ClientAuthorizationUsableAt(
+						publication.publication->authorization,
+						currentTime);
+			});
+		if (!boundPackage) {
+			auto keyPackage = PrepareClientKeyPackage({
+				.client = {
+					.conversationId = conversationId,
+					.accountId = localMetadata.accountId,
+					.clientId = localMetadata.clientId,
+					.telegramPeerIdBinding
+						= localMetadata.telegramPeerIdBinding,
+				},
+				.currentGeneration = state->generation(),
+				.telegramUserIdBinding = _telegramUserIdBinding,
+				.createdAt = currentTime,
+				.accountCredential = &_vault->identity.credential,
+				.accountSigningPrivateKey
+					= &_vault->identity.signingPrivateKey,
+			},
+			OpenMlsBridge(),
+			MlsContextCodecV1(),
+			ClientKeyPackagePublicationCodecV1(),
+			operation->envelopeCodec,
+			_sha256);
+			if (keyPackage.status
+					!= PrepareClientKeyPackageStatus::Prepared
+				|| !keyPackage.entry
+				|| operation->keyPackages.add(std::move(*keyPackage.entry))
+					!= KeyPackagePoolMutationResult::Committed) {
+				return LocalGroupRecoveryResult::Invalid;
+			}
+		}
+		const auto queued = operation->keyPackages.enqueuePending(
+			operation->outbox,
+			currentTime);
+		if (queued != KeyPackagePoolEnqueueResult::Queued
+			&& queued != KeyPackagePoolEnqueueResult::NothingToDo) {
+			return LocalGroupRecoveryResult::Invalid;
+		}
+	}
 	const auto localIsGenesisOwner = state
 		&& state->generation() == 1
 		&& localMember
