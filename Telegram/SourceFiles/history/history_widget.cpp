@@ -3992,10 +3992,24 @@ bool HistoryWidget::sendE2ECloudProtectedFiles(const QStringList &paths) {
 		|| !session().e2eCloud().sendProtectedFile(
 			*conversationId,
 			path)) {
-		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+		showE2ECloudProtectedSendFailure(*conversationId);
 		return false;
 	}
 	return true;
+}
+
+void HistoryWidget::showE2ECloudProtectedSendFailure(
+		E2ECloud::ConversationId conversationId) {
+	const auto groups = session().e2eCloud().protectedGroups();
+	const auto found = std::find_if(
+		begin(groups),
+		end(groups),
+		[&](const E2ECloud::DesktopProtectedGroupSummary &group) {
+			return group.conversationId == conversationId;
+		});
+	controller()->showToast((found != end(groups) && found->fileTransferPending)
+		? tr::lng_e2e_cloud_file_pending(tr::now)
+		: tr::lng_e2e_cloud_send_failed(tr::now));
 }
 
 void HistoryWidget::openE2ECloudProtectedConversation() {
@@ -5704,8 +5718,7 @@ void HistoryWidget::send(Api::SendOptions options) {
 					*conversationId,
 					*eventObjectId,
 					text)) {
-				controller()->showToast(
-					tr::lng_e2e_cloud_send_failed(tr::now));
+				showE2ECloudProtectedSendFailure(*conversationId);
 				return;
 			}
 			cancelEdit();
@@ -5717,7 +5730,7 @@ void HistoryWidget::send(Api::SendOptions options) {
 			|| !session().e2eCloud().sendProtectedText(
 				*conversationId,
 				text)) {
-			controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+			showE2ECloudProtectedSendFailure(*conversationId);
 			return;
 		}
 		clearFieldText();
@@ -7980,7 +7993,7 @@ bool HistoryWidget::confirmSendingFiles(
 			|| !session().e2eCloud().sendProtectedImage(
 				*conversationId,
 				image)) {
-			controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+			showE2ECloudProtectedSendFailure(*conversationId);
 			return false;
 		}
 		return true;

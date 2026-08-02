@@ -1125,3 +1125,18 @@ Windows builds. Windows refuses that removal while another process still owns
 the old file handle, preserving contention safety. The migration changes only
 the local encrypted chunk cache; Telegram upload sessions and their MTProto
 connection lifecycle remain untouched.
+
+### D093: A durable file transfer does not block protected messages
+
+Allow protected text, edit, and delete events to enter the persistent outbox
+while an already-durable file transfer is publishing chunks. Materialize those
+events locally at once and keep the existing file-transfer pump ahead of the
+ordinary outbox, so the file resumes from its committed cursor and queued chat
+events follow without replacing or regenerating any encrypted file object.
+
+Initial file staging and hashing remain exclusive because their durable transfer
+does not exist yet, and a second file remains rejected until the first transfer
+finishes or is cancelled. A busy-file rejection is an expected user-visible
+state, not a local cryptographic or persistence failure. This policy changes
+only protected-content queueing; it does not alter MTProto upload-session
+ownership, pacing, endpoints, or connection selection.

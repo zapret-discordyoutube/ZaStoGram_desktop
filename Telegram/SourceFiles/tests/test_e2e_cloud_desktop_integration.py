@@ -1235,6 +1235,11 @@ def verify_protected_message_mutations_are_authorized_and_native() -> None:
         "bool DesktopService::queueProtectedMessageBody(",
         "bool DesktopService::sendProtectedFile(",
     )
+    outbox_pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "bool DesktopService::prepareActiveUploadAcknowledgement(",
+    )
     refresh = function_body(
         service,
         "void DesktopService::refreshMaterializedProtectedHistory(",
@@ -1248,6 +1253,14 @@ def verify_protected_message_mutations_are_authorized_and_native() -> None:
     assert "bool deleteProtectedMessage(" in service_header
     assert "target->senderAccountId != metadata->accountId" \
         in mutation_queue
+    assert "group.fileTransfer.pending()" not in mutation_queue
+    assert "i->second->fileHashInProgress" in mutation_queue
+    assert "!i->second->filePreparationPath.isEmpty()" in mutation_queue
+    assert outbox_pump.index(
+        "if (const auto pending = group.fileTransfer.pending(); pending)"
+    ) < outbox_pump.index(
+        "const auto pumped = group.uploadController->pump();"
+    )
     assert "mutation.senderAccountId == entry.senderAccountId" \
         in refresh
     assert "entry.deleted = true;" in refresh
@@ -1256,6 +1269,7 @@ def verify_protected_message_mutations_are_authorized_and_native() -> None:
     assert "item->isE2ECloudDecrypted()" in field
     assert "editProtectedText(" in widget
     assert "deleteProtectedMessage(" in delete_box
+    assert "lng_e2e_cloud_file_pending" in widget
 
 
 def verify_local_record_reads_are_bounded() -> None:

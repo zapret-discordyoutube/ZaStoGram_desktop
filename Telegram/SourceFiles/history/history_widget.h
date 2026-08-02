@@ -589,6 +589,8 @@ private:
 	void refreshE2ECloudProtectedHistory(bool synchronize = false);
 	[[nodiscard]] bool sendE2ECloudProtectedFiles(
 		const QStringList &paths);
+	void showE2ECloudProtectedSendFailure(
+		E2ECloud::ConversationId conversationId);
 	void openE2ECloudProtectedConversation();
 	[[nodiscard]] bool hasEnoughLinesForAi() const;
 	[[nodiscard]] bool hasEnoughLinesForExpand() const;

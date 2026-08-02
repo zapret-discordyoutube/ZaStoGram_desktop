@@ -2264,7 +2264,6 @@ bool DesktopService::queueProtectedMessageBody(
 	if (!eventObjectId
 		|| !contentObjectId
 		|| !plaintext
-		|| group.fileTransfer.pending()
 		|| !initializeActivePipeline(group)) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
