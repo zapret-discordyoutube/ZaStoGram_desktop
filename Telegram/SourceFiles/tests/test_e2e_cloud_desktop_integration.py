@@ -1097,7 +1097,7 @@ def verify_protected_clipboard_images_use_encrypted_files() -> None:
     )
     cancel = function_body(
         service,
-        "bool DesktopService::finishFileTransferCancellation(",
+        "DesktopService::finishFileTransferCancellation(",
         "void DesktopService::completeActiveUpload(",
     )
     finalize = function_body(
@@ -1128,7 +1128,7 @@ def verify_protected_files_keep_a_stable_source_and_retry() -> None:
     commit = function_body(
         service,
         "bool DesktopService::commitPreparedFileTransfer(",
-        "bool DesktopService::finishFileTransferCancellation(",
+        "DesktopService::finishFileTransferCancellation(",
     )
     upload = function_body(
         service,
@@ -1442,8 +1442,13 @@ def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
     )
     cancel = function_body(
         service,
-        "bool DesktopService::finishFileTransferCancellation(",
+        "DesktopService::finishFileTransferCancellation(",
         "void DesktopService::completeActiveUpload(",
+    )
+    active_pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "bool DesktopService::prepareActiveUploadAcknowledgement(",
     )
     upload = function_body(
         service,
@@ -1455,14 +1460,30 @@ def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
         "bool DesktopService::finalizeFileTransfer(",
         "void DesktopService::beginGroupObservation(",
     )
+    retry = function_body(
+        service,
+        "void DesktopService::scheduleFileTransferRetry(",
+        "void DesktopService::resetFileTransferRetry(",
+    )
 
     assert "bool FileChunkFileStore::removeChunksBefore(" in chunk_store
     assert "pending->nextChunkIndex" in upload
     assert "group.chunkStore.removeChunksBefore(" in upload
+    assert upload.index("group.chunkStore.removeChunksBefore(") \
+        < upload.index("scheduleFileTransferRetry(conversationId);")
     assert "manifest->context.chunkCount" in cancel
     assert "group.chunkStore.removeChunksBefore(" in cancel
+    assert "FileTransferCancellationResult::RetryableCleanupFailure" \
+        in active_pump
+    assert active_pump.index(
+        "FileTransferCancellationResult::RetryableCleanupFailure"
+    ) < active_pump.index("scheduleFileTransferRetry(conversationId);")
     assert "manifest->context.chunkCount" in finalize
     assert "group.chunkStore.removeChunksBefore(" in finalize
+    assert "scheduleFileTransferRetry(conversationId);" in finalize
+    assert "pending()->cancelRequested" not in retry
+    assert "_pendingGroupCreation" in retry
+    assert "publishNextBootstrapObject();" in retry
     assert "tryLock(5000)" not in chunk_store
     assert chunk_store.count("auto lock = ChunkRecordLock(target);") == 3
     assert "WaitForSingleObject(_mutex, 0)" in chunk_store
@@ -1587,7 +1608,7 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
     assert "finishFileTransferCancellation(group)" in publisher
     finish = function_body(
         service,
-        "bool DesktopService::finishFileTransferCancellation(",
+        "DesktopService::finishFileTransferCancellation(",
         "void DesktopService::completeActiveUpload(",
     )
     assert "group.fileFinalHashInProgress" in finish

@@ -232,6 +232,7 @@ private:
 	struct PendingGroupJoin;
 	struct PendingGroupDiscovery;
 	enum class LocalGroupRecoveryResult;
+	enum class FileTransferCancellationResult;
 
 	[[nodiscard]] bool vaultReady() const;
 	[[nodiscard]] bool hasProtectedRuntimeState() const;
@@ -292,7 +293,8 @@ private:
 		ObjectId objectId);
 	[[nodiscard]] bool commitPreparedFileTransfer(
 		ConversationId conversationId);
-	[[nodiscard]] bool finishFileTransferCancellation(
+	[[nodiscard]] FileTransferCancellationResult
+	finishFileTransferCancellation(
 		PendingGroupCreation &group);
 	void completeActiveUpload(
 		ConversationId conversationId,

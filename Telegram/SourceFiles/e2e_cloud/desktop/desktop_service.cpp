@@ -1141,6 +1141,12 @@ enum class DesktopService::LocalGroupRecoveryResult {
 	Invalid,
 };
 
+enum class DesktopService::FileTransferCancellationResult {
+	Finished,
+	RetryableCleanupFailure,
+	Failure,
+};
+
 DesktopService::DesktopService(not_null<Main::Session*> session)
 : _session(session)
 , _telegramUserIdBinding(session->userId().bare)
@@ -3601,10 +3607,18 @@ void DesktopService::publishNextBootstrapObject() {
 	}
 	if (const auto pending = group.fileTransfer.pending();
 		pending
-		&& pending->cancelRequested
-		&& !finishFileTransferCancellation(group)) {
-		_groupCreationState = DesktopGroupCreationState::LocalFailure;
-		return;
+		&& pending->cancelRequested) {
+		const auto result = finishFileTransferCancellation(group);
+		if (result
+				== FileTransferCancellationResult::RetryableCleanupFailure) {
+			_groupCreationState
+				= DesktopGroupCreationState::PublishingBootstrap;
+			scheduleFileTransferRetry(group.conversationId);
+			return;
+		} else if (result == FileTransferCancellationResult::Failure) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return;
+		}
 	}
 	if (group.phase == PendingGroupCreation::Phase::Removed
 		&& !group.outbox.clear()) {
@@ -4619,7 +4633,13 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			setContentState(
 				conversationId,
 				DesktopContentState::Synchronizing);
-		} else if (!finishFileTransferCancellation(group)) {
+		} else if (const auto result = finishFileTransferCancellation(group);
+			result == FileTransferCancellationResult::RetryableCleanupFailure) {
+			setContentState(
+				conversationId,
+				DesktopContentState::Synchronizing);
+			scheduleFileTransferRetry(conversationId);
+		} else if (result == FileTransferCancellationResult::Failure) {
 			setContentState(
 				conversationId,
 				DesktopContentState::LocalFailure);
@@ -4927,7 +4947,8 @@ bool DesktopService::commitPreparedFileTransfer(
 	return true;
 }
 
-bool DesktopService::finishFileTransferCancellation(
+DesktopService::FileTransferCancellationResult
+DesktopService::finishFileTransferCancellation(
 		PendingGroupCreation &group) {
 	const auto pending = group.fileTransfer.pending();
 	const auto manifest = pending
@@ -4944,20 +4965,20 @@ bool DesktopService::finishFileTransferCancellation(
 		|| !group.outbox.removePair(
 			pending->eventObjectId,
 			pending->contentObjectId)) {
-		return false;
+		return FileTransferCancellationResult::Failure;
 	}
 	const auto sourcePath = QString::fromUtf8(pending->sourcePathUtf8);
 	if (!group.chunkStore.removeChunksBefore(
 		group.conversationId,
 		manifest->context.fileId,
 		manifest->context.chunkCount)) {
-		return false;
+		return FileTransferCancellationResult::RetryableCleanupFailure;
 	}
 	group.localProtectedFilePaths.erase(pending->eventObjectId);
 	const auto cleared = group.fileTransfer.clear();
 	if (cleared != FileTransferCommitResult::Committed
 		&& cleared != FileTransferCommitResult::AlreadyCommitted) {
-		return false;
+		return FileTransferCancellationResult::Failure;
 	}
 	resetFileTransferRetry(group);
 	RemoveStagedProtectedSource(
@@ -4965,7 +4986,7 @@ bool DesktopService::finishFileTransferCancellation(
 		group.conversationId,
 		sourcePath);
 	notifyFileTransferRevision();
-	return true;
+	return FileTransferCancellationResult::Finished;
 }
 
 void DesktopService::completeActiveUpload(
@@ -5061,7 +5082,10 @@ bool DesktopService::pumpFileTransfer(ConversationId conversationId) {
 		conversationId,
 		manifest->context.fileId,
 		pending->nextChunkIndex)) {
-		setContentState(conversationId, DesktopContentState::LocalFailure);
+		setContentState(
+			conversationId,
+			DesktopContentState::Synchronizing);
+		scheduleFileTransferRetry(conversationId);
 		return true;
 	} else if (pending->nextChunkIndex == manifest->context.chunkCount) {
 		(void)finalizeFileTransfer(conversationId);
@@ -5176,19 +5200,21 @@ void DesktopService::completeFileChunkUpload(
 void DesktopService::scheduleFileTransferRetry(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (!vaultReady()
-		|| i == end(_groups)
-		|| !i->second->fileTransfer.pending()
-		|| i->second->fileTransfer.pending()->cancelRequested) {
+	auto group = (i != end(_groups)) ? i->second.get() : nullptr;
+	if (!group
+		&& _pendingGroupCreation
+		&& _pendingGroupCreation->conversationId == conversationId) {
+		group = _pendingGroupCreation.get();
+	}
+	if (!vaultReady() || !group || !group->fileTransfer.pending()) {
 		return;
 	}
-	auto &group = *i->second;
-	const auto delay = FileRetryDelay(group.fileRetryAttempt);
-	group.fileRetryAttempt = std::min(group.fileRetryAttempt + 1, 6);
-	if (++group.fileRetryToken == 0) {
-		++group.fileRetryToken;
+	const auto delay = FileRetryDelay(group->fileRetryAttempt);
+	group->fileRetryAttempt = std::min(group->fileRetryAttempt + 1, 6);
+	if (++group->fileRetryToken == 0) {
+		++group->fileRetryToken;
 	}
-	const auto token = group.fileRetryToken;
+	const auto token = group->fileRetryToken;
 	base::call_delayed(delay, [weak = base::weak_ptr(this),
 			conversationId,
 			token] {
@@ -5196,13 +5222,23 @@ void DesktopService::scheduleFileTransferRetry(
 			return;
 		}
 		const auto i = weak->_groups.find(conversationId);
-		if (i == end(weak->_groups)
-			|| i->second->fileRetryToken != token
-			|| !i->second->fileTransfer.pending()
-			|| i->second->fileTransfer.pending()->cancelRequested) {
+		auto group = (i != end(weak->_groups)) ? i->second.get() : nullptr;
+		const auto publishing = !group
+			&& weak->_pendingGroupCreation
+			&& weak->_pendingGroupCreation->conversationId == conversationId;
+		if (publishing) {
+			group = weak->_pendingGroupCreation.get();
+		}
+		if (!group
+			|| group->fileRetryToken != token
+			|| !group->fileTransfer.pending()) {
 			return;
 		}
-		weak->pumpActiveOutbox(conversationId);
+		if (publishing) {
+			weak->publishNextBootstrapObject();
+		} else {
+			weak->pumpActiveOutbox(conversationId);
+		}
 	});
 }
 
@@ -5396,7 +5432,8 @@ bool DesktopService::finalizeFileTransfer(
 				manifest->context.chunkCount)) {
 				weak->setContentState(
 					conversationId,
-					DesktopContentState::LocalFailure);
+					DesktopContentState::Synchronizing);
+				weak->scheduleFileTransferRetry(conversationId);
 				return;
 			}
 			const auto cleared = group.fileTransfer.clear();

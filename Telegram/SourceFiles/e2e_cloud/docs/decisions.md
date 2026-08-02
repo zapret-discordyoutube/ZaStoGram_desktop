@@ -1172,3 +1172,16 @@ This prevents an otherwise valid high-resolution image or video from failing
 the entire send merely because its optional presentation dimensions exceed the
 manifest bound. Receivers continue to validate the normalized dimensions and
 the embedded preview before exposing either to the native timeline.
+
+### D096: Local chunk cleanup retries without user intervention
+
+Treat a failed removal of an authenticated local chunk-cache record as
+retryable while its durable file transfer still exists. Retry with the existing
+bounded exponential delay before the next chunk, after final hash validation,
+and while completing a cancellation. A cancellation remains the first branch
+of the pump, so a delayed callback can clean it up but can never resume upload.
+
+This covers antivirus, indexing, and legacy-lock migration races that outlive a
+single bounded deletion attempt. It changes only local encrypted-cache cleanup;
+it does not admit, pace, select, close, or otherwise own Telegram media or
+upload sessions.
