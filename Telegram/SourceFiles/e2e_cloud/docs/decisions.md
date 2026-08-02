@@ -829,3 +829,12 @@ Run the same cleanup from restored vault-update work. A transient cleanup or
 outbox persistence failure remains a local recoverable operation with its
 durable state intact; it no longer masquerades as authenticated vault damage
 and no longer forces a global security lock during unlock.
+
+### D071: Cancellation waits for final source verification
+
+Keep a cancelled transfer durable while its final source-hash worker is still
+running. The worker already owns the single `fileFinalHashInProgress` slot and
+will resume the outgoing pump after observing the cancellation marker. Clearing
+the transfer early would let a second file reach finalization while that slot
+still belonged to the first file, leaving the second transfer synchronized
+forever with no continuation able to restart it.

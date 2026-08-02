@@ -3304,7 +3304,8 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 	}
 	if (const auto pending = group.fileTransfer.pending();
 		pending && pending->cancelRequested) {
-		if (group.uploadInProgress
+		if (group.fileFinalHashInProgress
+			|| group.uploadInProgress
 			|| (group.uploadController
 				&& group.uploadController->uploadInProgress())) {
 			setContentState(
@@ -3583,6 +3584,7 @@ bool DesktopService::finishFileTransferCancellation(
 	if (!pending
 		|| !pending->cancelRequested
 		|| !manifest
+		|| group.fileFinalHashInProgress
 		|| group.uploadInProgress
 		|| (group.uploadController
 			&& group.uploadController->uploadInProgress())

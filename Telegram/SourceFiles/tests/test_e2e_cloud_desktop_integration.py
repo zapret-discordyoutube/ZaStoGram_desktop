@@ -1018,6 +1018,7 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
         pump.index("if (group.fileHashInProgress)")
     ]
     assert "group.uploadInProgress" in cancel_branch
+    assert "group.fileFinalHashInProgress" in cancel_branch
     assert "uploadController->uploadInProgress()" in cancel_branch
     assert "DesktopContentState::Synchronizing" in cancel_branch
     assert complete_upload.index("pending->cancelRequested") \
@@ -1030,6 +1031,12 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
         )
     assert "finishFileTransferCancellation(*operation)" not in restore
     assert "finishFileTransferCancellation(group)" in publisher
+    finish = function_body(
+        service,
+        "bool DesktopService::finishFileTransferCancellation(",
+        "void DesktopService::completeActiveUpload(",
+    )
+    assert "group.fileFinalHashInProgress" in finish
     assert "cancelProtectedFileTransfer(" in box
     assert "fileTransferPending" in box
 
