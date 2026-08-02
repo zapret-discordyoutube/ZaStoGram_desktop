@@ -488,6 +488,15 @@ std::optional<ProtectedContentRecord> PersistentContentStore::record(
 	return (i != end(_entries)) ? readRecord(*i) : std::nullopt;
 }
 
+bool PersistentContentStore::contains(ObjectId eventObjectId) const {
+	return _loaded && std::any_of(
+		begin(_entries),
+		end(_entries),
+		[&](const IndexEntry &entry) {
+			return entry.eventObjectId == eventObjectId;
+		});
+}
+
 std::vector<ProtectedContentRecord> PersistentContentStore::records(
 		std::size_t offset,
 		std::size_t limit,

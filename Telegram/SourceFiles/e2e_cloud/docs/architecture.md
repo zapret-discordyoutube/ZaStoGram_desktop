@@ -119,6 +119,12 @@ It stores encrypted content-key envelopes grouped into archive epochs. Archive
 epoch keys are granted to eligible account identities according to signed
 history policy.
 
+For outgoing content, the exact sealed content envelope and its still-live MLS
+descriptor form the recoverable write-ahead record. The client authenticates
+that pair and materializes any missing local history entry before allowing the
+outbox to upload either object. This closes the cross-store crash boundary
+without regenerating ciphertext or changing stable event identifiers.
+
 ### File service
 
 Encrypts arbitrary byte streams locally, creates authenticated manifests, and

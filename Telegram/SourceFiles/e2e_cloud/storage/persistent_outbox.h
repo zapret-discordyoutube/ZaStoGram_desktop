@@ -35,6 +35,8 @@ public:
 	[[nodiscard]] std::uint64_t revision() const;
 	[[nodiscard]] int size() const;
 	[[nodiscard]] std::optional<OutboxItem> item(ObjectId objectId) const;
+	[[nodiscard]] std::vector<OutboxItem> items(
+		ConversationId conversationId) const;
 
 	bool append(PendingMessage message) override;
 	bool appendSealed(EncodedEnvelope envelope) override;

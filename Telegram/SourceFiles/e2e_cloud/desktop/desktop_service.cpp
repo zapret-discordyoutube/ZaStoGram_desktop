@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_document.h"
 #include "data/data_document_media.h"
 #include "e2e_cloud/archive/archive_epoch_crypto.h"
+#include "e2e_cloud/archive/archived_content_reader.h"
 #include "e2e_cloud/archive/archived_content_outbox.h"
 #include "e2e_cloud/archive/history_grant_service.h"
 #include "e2e_cloud/archive/persistent_archive_state.h"
@@ -1070,6 +1071,7 @@ struct DesktopService::PendingGroupCreation {
 	bool fileHashInProgress = false;
 	bool fileHashCancelRequested = false;
 	bool fileFinalHashInProgress = false;
+	bool queuedContentReconciled = false;
 	int groupObservationRetryAttempt = 0;
 	int fileRetryAttempt = 0;
 	std::shared_ptr<std::atomic_bool> fileHashCancellation;
@@ -1145,6 +1147,13 @@ enum class DesktopService::FileTransferCancellationResult {
 	Finished,
 	RetryableCleanupFailure,
 	Failure,
+};
+
+enum class DesktopService::QueuedContentRecoveryResult {
+	Ready,
+	Recovered,
+	PersistenceFailed,
+	Invalid,
 };
 
 DesktopService::DesktopService(not_null<Main::Session*> session)
@@ -2280,7 +2289,11 @@ bool DesktopService::queueProtectedMessageBody(
 		|| !contentObjectId
 		|| !plaintext
 		|| !initializeActivePipeline(group)) {
-		setContentState(conversationId, DesktopContentState::LocalFailure);
+		setContentState(
+			conversationId,
+			(_vaultState == DesktopVaultState::SecurityBlocked)
+				? DesktopContentState::SecurityBlocked
+				: DesktopContentState::LocalFailure);
 		return false;
 	}
 	if (group.freshnessGate->state() == FreshnessState::Required
@@ -2314,6 +2327,7 @@ bool DesktopService::queueProtectedMessageBody(
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
+	group.queuedContentReconciled = false;
 	const auto stored = group.contentStore.append({
 		.conversationId = conversationId,
 		.eventObjectId = *eventObjectId,
@@ -2338,6 +2352,7 @@ bool DesktopService::queueProtectedMessageBody(
 	if (stored == ContentStoreAppendResult::Stored) {
 		notifyContentRevision();
 	}
+	group.queuedContentReconciled = true;
 	pumpActiveOutbox(conversationId);
 	return true;
 }
@@ -3594,6 +3609,18 @@ void DesktopService::publishNextBootstrapObject() {
 		return;
 	}
 	auto &group = *_pendingGroupCreation;
+	if (group.phase == PendingGroupCreation::Phase::Active) {
+		const auto recovered = recoverQueuedContentHistory(group);
+		if (recovered == QueuedContentRecoveryResult::Invalid) {
+			_vaultState = DesktopVaultState::SecurityBlocked;
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return;
+		} else if (recovered
+				== QueuedContentRecoveryResult::PersistenceFailed) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return;
+		}
+	}
 	if (const auto pending = group.fileTransfer.pending();
 		pending
 		&& group.phase == PendingGroupCreation::Phase::Removed
@@ -4534,9 +4561,185 @@ void DesktopService::publishQueuedGroupOutbox(
 	publishNextBootstrapObject();
 }
 
+DesktopService::QueuedContentRecoveryResult
+DesktopService::recoverQueuedContentHistory(
+		PendingGroupCreation &group) {
+	// The adjacent content-envelope/descriptor pair is the cross-store WAL.
+	// Materialize its local history record before either object can be sent;
+	// regenerating the pair would reuse stable IDs with different ciphertext.
+	if (group.queuedContentReconciled) {
+		return QueuedContentRecoveryResult::Ready;
+	} else if (!group.outbox.loaded() || !group.contentStore.loaded()) {
+		return QueuedContentRecoveryResult::PersistenceFailed;
+	}
+	auto items = group.outbox.items(group.conversationId);
+	const auto itemsGuard = qScopeGuard([&] {
+		for (auto &item : items) {
+			CleanseOutboxItem(item);
+		}
+	});
+	auto recovered = false;
+	for (auto index = std::size_t(); index != items.size();) {
+		const auto &contentItem = items[index];
+		if (contentItem.stage != OutboxItemStage::Sealed
+			|| !contentItem.sealed) {
+			++index;
+			continue;
+		}
+		const auto envelope = group.envelopeCodec.decode(
+			*contentItem.sealed);
+		if (!envelope) {
+			return QueuedContentRecoveryResult::Invalid;
+		} else if (envelope->objectKind
+				!= ObjectKind::EncryptedMessageBody
+			&& envelope->objectKind
+				!= ObjectKind::EncryptedFileManifest) {
+			++index;
+			continue;
+		}
+		const auto encrypted = EncryptedArchivedContentCodecV1().decode(
+			envelope->payload);
+		if (!encrypted
+			|| envelope->payloadHash != _sha256.digest(envelope->payload)
+			|| encrypted->conversationId != group.conversationId
+			|| encrypted->contentObjectId != envelope->objectId
+			|| encrypted->objectKind != envelope->objectKind
+			|| encrypted->groupGeneration != envelope->epochOrGeneration
+			|| encrypted->senderAccountId != envelope->senderAccountId
+			|| encrypted->senderClientId != envelope->senderClientId
+			|| QByteArray(
+				reinterpret_cast<const char*>(encrypted->signature.data()),
+				encrypted->signature.size()) != envelope->authenticationData
+			|| index + 1 == items.size()) {
+			return QueuedContentRecoveryResult::Invalid;
+		}
+		const auto &eventItem = items[index + 1];
+		if (eventItem.draft.conversationId != group.conversationId
+			|| eventItem.draft.objectId != encrypted->eventObjectId) {
+			return QueuedContentRecoveryResult::Invalid;
+		}
+		if (eventItem.stage == OutboxItemStage::Sealed) {
+			if (!eventItem.sealed
+				|| !group.contentStore.contains(encrypted->eventObjectId)) {
+				return QueuedContentRecoveryResult::Invalid;
+			}
+			auto stored = group.contentStore.record(
+				encrypted->eventObjectId);
+			const auto storedGuard = qScopeGuard([&] {
+				if (stored) {
+					Cleanse(stored->plaintext);
+				}
+			});
+			if (!stored) {
+				return QueuedContentRecoveryResult::PersistenceFailed;
+			} else if (stored->conversationId != group.conversationId
+				|| stored->eventObjectId != encrypted->eventObjectId
+				|| stored->contentObjectId != encrypted->contentObjectId
+				|| stored->objectKind != encrypted->objectKind
+				|| stored->groupGeneration != encrypted->groupGeneration
+				|| stored->senderAccountId != encrypted->senderAccountId
+				|| stored->senderClientId != encrypted->senderClientId) {
+				return QueuedContentRecoveryResult::Invalid;
+			}
+		} else if (eventItem.stage == OutboxItemStage::Draft
+			&& !eventItem.sealed
+			&& eventItem.draft.authenticatedData
+				== QByteArray("TDE2E/archived-content/v1")) {
+			auto opened = OpenLiveArchivedContent(
+				group.conversationId,
+				group.telegramPeerIdBinding,
+				{
+					.conversationId = group.conversationId,
+					.eventObjectId = eventItem.draft.objectId,
+					.senderAccountId = envelope->senderAccountId,
+					.senderClientId = envelope->senderClientId,
+					.plaintext = eventItem.draft.plaintext,
+				},
+				*envelope,
+				group.groupLedger,
+				EncryptedArchivedContentCodecV1(),
+				ArchivedContentDescriptorCodecV1(),
+				_sha256);
+			const auto openedGuard = qScopeGuard([&] {
+				if (opened.content) {
+					Cleanse(opened.content->plaintext);
+				}
+			});
+			if (opened.status != ArchivedContentOpenStatus::Opened
+				|| !opened.content) {
+				return QueuedContentRecoveryResult::Invalid;
+			}
+			auto unixTime = std::uint64_t();
+			if (opened.content->objectKind
+					== ObjectKind::EncryptedMessageBody) {
+				auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+					opened.content->plaintext);
+				if (!body) {
+					return QueuedContentRecoveryResult::Invalid;
+				}
+				unixTime = body->unixTime;
+				Cleanse(body->textUtf8);
+			} else {
+				auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+					opened.content->plaintext);
+				if (!manifest
+					|| manifest->context.conversationId
+						!= group.conversationId) {
+					return QueuedContentRecoveryResult::Invalid;
+				}
+				unixTime = manifest->unixTime;
+				Cleanse(manifest->filenameUtf8);
+				Cleanse(manifest->mimeTypeUtf8);
+				if (manifest->preview) {
+					Cleanse(manifest->preview->jpegBytes);
+				}
+			}
+			const auto stored = group.contentStore.append({
+				.conversationId = group.conversationId,
+				.eventObjectId = opened.content->eventObjectId,
+				.contentObjectId = opened.content->contentObjectId,
+				.objectKind = opened.content->objectKind,
+				.groupGeneration = opened.content->groupGeneration,
+				.senderAccountId = opened.content->senderAccountId,
+				.senderClientId = opened.content->senderClientId,
+				.unixTime = unixTime,
+				.observedTelegramMessageId = 0,
+				.plaintext = opened.content->plaintext,
+			});
+			if (stored == ContentStoreAppendResult::Conflict
+				|| stored == ContentStoreAppendResult::InvalidRecord) {
+				return QueuedContentRecoveryResult::Invalid;
+			} else if (stored
+					== ContentStoreAppendResult::PersistenceFailed) {
+				return QueuedContentRecoveryResult::PersistenceFailed;
+			} else if (stored == ContentStoreAppendResult::Stored) {
+				recovered = true;
+			}
+		} else {
+			return QueuedContentRecoveryResult::Invalid;
+		}
+		index += 2;
+	}
+	group.queuedContentReconciled = true;
+	if (recovered) {
+		notifyContentRevision();
+	}
+	return recovered
+		? QueuedContentRecoveryResult::Recovered
+		: QueuedContentRecoveryResult::Ready;
+}
+
 bool DesktopService::initializeActivePipeline(
 		PendingGroupCreation &group) {
 	if (!vaultReady()) {
+		return false;
+	}
+	const auto recovered = recoverQueuedContentHistory(group);
+	if (recovered == QueuedContentRecoveryResult::Invalid) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		return false;
+	} else if (recovered
+			== QueuedContentRecoveryResult::PersistenceFailed) {
 		return false;
 	}
 	if (group.applicationEngine
@@ -4594,8 +4797,15 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
-		|| i->second->phase != PendingGroupCreation::Phase::Active
-		|| !initializeActivePipeline(*i->second)) {
+		|| i->second->phase != PendingGroupCreation::Phase::Active) {
+		return;
+	}
+	if (!initializeActivePipeline(*i->second)) {
+		setContentState(
+			conversationId,
+			(_vaultState == DesktopVaultState::SecurityBlocked)
+				? DesktopContentState::SecurityBlocked
+				: DesktopContentState::LocalFailure);
 		return;
 	}
 	auto &group = *i->second;
@@ -5321,6 +5531,7 @@ bool DesktopService::queuePendingFileManifest(
 				DesktopContentState::LocalFailure);
 			return false;
 		}
+		group.queuedContentReconciled = false;
 	}
 	const auto stored = group.contentStore.append({
 		.conversationId = conversationId,
@@ -5346,6 +5557,7 @@ bool DesktopService::queuePendingFileManifest(
 	if (stored == ContentStoreAppendResult::Stored) {
 		notifyContentRevision();
 	}
+	group.queuedContentReconciled = true;
 	return true;
 }
 

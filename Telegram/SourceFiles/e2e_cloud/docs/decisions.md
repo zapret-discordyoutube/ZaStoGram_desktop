@@ -1185,3 +1185,18 @@ This covers antivirus, indexing, and legacy-lock migration races that outlive a
 single bounded deletion attempt. It changes only local encrypted-cache cleanup;
 it does not admit, pace, select, close, or otherwise own Telegram media or
 upload sessions.
+
+### D097: Queued content is the recovery source for missing local history
+
+Persist each outgoing archived-content envelope and its live MLS descriptor as
+one adjacent atomic outbox pair before updating the protected content index.
+Before any upload, authenticate that exact pair and idempotently reconstruct a
+missing message or manifest record. A crash between the two store commits then
+resumes with the original event IDs, content key, ciphertext, and plaintext;
+the client never regenerates a competing envelope under an existing object ID.
+
+Once the descriptor has been sealed, its plaintext content key is no longer in
+the outbox. Local history must already contain the corresponding authenticated
+record at that boundary; otherwise recovery fails closed. File-transfer state
+remains an additional manifest recovery journal and continues to resume the
+same staged source and chunk cursor.

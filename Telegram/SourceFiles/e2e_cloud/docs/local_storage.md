@@ -50,6 +50,15 @@ sealed item remains queued and only the transient in-flight marker is released.
 A later retry therefore sends the exact same envelope instead of leaving the
 conversation permanently stuck or resealing the plaintext.
 
+Archived content enters the outbox as one atomic adjacent pair: the already
+sealed content envelope followed by its live MLS descriptor draft. Before any
+outbox upload, recovery authenticates every such pair and idempotently
+materializes a missing content record from the exact queued plaintext. A crash
+after the outbox commit but before the content-index commit therefore cannot
+publish a message that is absent from local protected history. A missing record
+after the descriptor has already been sealed is not recoverable from plaintext
+and fails closed as an inconsistent local state.
+
 Content records deduplicate by the authenticated E2E object and plaintext, not
 by Telegram message id. Reposting identical carrier bytes under another
 Telegram id is harmless, while changing any protected content under the same

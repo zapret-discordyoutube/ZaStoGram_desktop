@@ -233,6 +233,7 @@ private:
 	struct PendingGroupDiscovery;
 	enum class LocalGroupRecoveryResult;
 	enum class FileTransferCancellationResult;
+	enum class QueuedContentRecoveryResult;
 
 	[[nodiscard]] bool vaultReady() const;
 	[[nodiscard]] bool hasProtectedRuntimeState() const;
@@ -279,6 +280,8 @@ private:
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects);
 	void publishQueuedGroupOutbox(ConversationId conversationId);
+	[[nodiscard]] QueuedContentRecoveryResult recoverQueuedContentHistory(
+		PendingGroupCreation &group);
 	[[nodiscard]] bool initializeActivePipeline(
 		PendingGroupCreation &group);
 	[[nodiscard]] bool queueProtectedMessageBody(

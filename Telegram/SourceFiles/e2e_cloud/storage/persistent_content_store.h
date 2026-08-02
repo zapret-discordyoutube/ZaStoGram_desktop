@@ -70,6 +70,7 @@ public:
 		ProtectedContentRecord record);
 	[[nodiscard]] std::optional<ProtectedContentRecord> record(
 		ObjectId eventObjectId) const;
+	[[nodiscard]] bool contains(ObjectId eventObjectId) const;
 	[[nodiscard]] std::vector<ProtectedContentRecord> records(
 		std::size_t offset,
 		std::size_t limit,

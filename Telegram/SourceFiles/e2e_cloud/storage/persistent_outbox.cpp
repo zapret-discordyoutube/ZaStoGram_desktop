@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <utility>
@@ -372,6 +373,23 @@ std::optional<OutboxItem> PersistentOutboxStore::item(
 	return (i == std::end(_items))
 		? std::nullopt
 		: std::optional<OutboxItem>(*i);
+}
+
+std::vector<OutboxItem> PersistentOutboxStore::items(
+		ConversationId conversationId) const {
+	auto result = std::vector<OutboxItem>();
+	if (!_loaded || !conversationId) {
+		return result;
+	}
+	result.reserve(_items.size());
+	std::copy_if(
+		begin(_items),
+		end(_items),
+		std::back_inserter(result),
+		[&](const OutboxItem &item) {
+			return item.draft.conversationId == conversationId;
+		});
+	return result;
 }
 
 bool PersistentOutboxStore::append(PendingMessage message) {
