@@ -2291,7 +2291,7 @@ bool DesktopService::queueProtectedMessageBody(
 		|| !initializeActivePipeline(group)) {
 		setContentState(
 			conversationId,
-			(_vaultState == DesktopVaultState::SecurityBlocked)
+			(_vaultState.current() == DesktopVaultState::SecurityBlocked)
 				? DesktopContentState::SecurityBlocked
 				: DesktopContentState::LocalFailure);
 		return false;
@@ -4803,7 +4803,7 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 	if (!initializeActivePipeline(*i->second)) {
 		setContentState(
 			conversationId,
-			(_vaultState == DesktopVaultState::SecurityBlocked)
+			(_vaultState.current() == DesktopVaultState::SecurityBlocked)
 				? DesktopContentState::SecurityBlocked
 				: DesktopContentState::LocalFailure);
 		return;
