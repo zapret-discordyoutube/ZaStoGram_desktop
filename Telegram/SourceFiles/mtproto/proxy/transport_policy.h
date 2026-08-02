@@ -53,13 +53,11 @@ void NoteProxyWssRemoteClosed(
 
 [[nodiscard]] WssDcCoverage WssDcCoverageForDc(
 	const ProxyStealthOptions &stealth,
-	int16 protocolDcId,
-	bool protocolForFiles);
+	int16 protocolDcId);
 
 [[nodiscard]] bool WssNeedsProxyRecommendation(
 	const ProxyData &proxy,
 	const ProxyStealthOptions &stealth,
-	int16 protocolDcId,
-	bool protocolForFiles);
+	int16 protocolDcId);
 
 } // namespace MTP

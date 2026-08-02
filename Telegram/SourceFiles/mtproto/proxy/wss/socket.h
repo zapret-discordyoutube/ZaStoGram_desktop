@@ -26,8 +26,7 @@ struct WssRoute {
 // Official MTProto-over-WebSocket route for a data center, mirroring the
 // web.telegram.org transport. The public web sockets exist only for DC2/DC4.
 [[nodiscard]] std::optional<WssRoute> WssOfficialRoute(
-	int16 protocolDcId,
-	bool protocolForFiles);
+	int16 protocolDcId);
 
 // Expert-only user-configured relay (ProxyStealthOptions.wssCustom*), used
 // for any DC when set and verified against the configured relay domain.

@@ -28,7 +28,7 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 	if (stealth.transport == ProxyTransport::Wss) {
 		auto route = WssCustomRoute(stealth);
 		if (!route) {
-			route = WssOfficialRoute(protocolDcId, protocolForFiles);
+			route = WssOfficialRoute(protocolDcId);
 		}
 		if (route) {
 			return std::make_unique<WssSocket>(

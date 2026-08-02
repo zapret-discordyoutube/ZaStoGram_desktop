@@ -210,7 +210,12 @@ def test_wss_dc_coverage_policy_is_centralized_and_soft():
     assert "[[nodiscard]] bool WssNeedsProxyRecommendation(" in header
     assert '#include "mtproto/proxy/wss/socket.h"' in source
     assert "WssCustomRoute(stealth)" in source
-    assert "WssOfficialRoute(protocolDcId, protocolForFiles)" in source
+    assert "WssOfficialRoute(protocolDcId)" in source
+    route_source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    route_body = function_body(
+        route_source, "std::optional<WssRoute> WssOfficialRoute(")
+    assert "route.domain = (raw < 0)" in route_body
+    assert "protocolForFiles" not in route_body
     assert "proxy.type == ProxyData::Type::None" in source
     assert "stealth.transport == ProxyTransport::Wss" in source
     assert "WssDcCoverage::Unavailable" in source

@@ -323,8 +323,7 @@ void SessionTransport::connectToServer(bool afterConfig) {
 	_owner->setConnectionNotice(WssNeedsProxyRecommendation(
 		_owner->_sessionState.options->proxy,
 		_owner->_sessionState.options->stealth,
-		protocolDcId,
-		protocolForFiles)
+		protocolDcId)
 		? MTP::ConnectionNotice::WssDirectFallback
 		: MTP::ConnectionNotice::None);
 	if (_owner->_sessionState.options->proxy.type == ProxyData::Type::Mtproto) {

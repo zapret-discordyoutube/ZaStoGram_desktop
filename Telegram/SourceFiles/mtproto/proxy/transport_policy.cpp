@@ -219,11 +219,10 @@ ProxyStealthOptions EffectiveProxyStealthOptions(
 
 WssDcCoverage WssDcCoverageForDc(
 		const ProxyStealthOptions &stealth,
-		int16 protocolDcId,
-		bool protocolForFiles) {
+		int16 protocolDcId) {
 	if (details::WssCustomRoute(stealth)) {
 		return WssDcCoverage::Custom;
-	} else if (details::WssOfficialRoute(protocolDcId, protocolForFiles)) {
+	} else if (details::WssOfficialRoute(protocolDcId)) {
 		return WssDcCoverage::Official;
 	}
 	return WssDcCoverage::Unavailable;
@@ -232,14 +231,12 @@ WssDcCoverage WssDcCoverageForDc(
 bool WssNeedsProxyRecommendation(
 		const ProxyData &proxy,
 		const ProxyStealthOptions &stealth,
-		int16 protocolDcId,
-		bool protocolForFiles) {
+		int16 protocolDcId) {
 	return proxy.type == ProxyData::Type::None
 		&& stealth.transport == ProxyTransport::Wss
 		&& (WssDcCoverageForDc(
 			stealth,
-			protocolDcId,
-			protocolForFiles) == WssDcCoverage::Unavailable);
+			protocolDcId) == WssDcCoverage::Unavailable);
 }
 
 } // namespace MTP

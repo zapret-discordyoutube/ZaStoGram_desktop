@@ -100,7 +100,7 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 
 } // namespace
 
-std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId, bool media) {
+std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	const auto raw = int(protocolDcId);
 	const auto positive = (raw < 0) ? -raw : raw;
 	if (positive >= kTestModeDcIdShift) {
@@ -113,7 +113,10 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId, bool media) {
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
 	const auto name = (positive == 4) ? u"kws4"_q : u"kws2"_q;
-	route.domain = media
+	// A file lane can bootstrap a regular key first. Route by the protocol
+	// DC sign, not by its large-buffer/file-lane classification, otherwise a
+	// positive DC id reaches a media-only relay and is rejected with -444.
+	route.domain = (raw < 0)
 		? (name + u"-1.web.telegram.org"_q)
 		: (name + u".web.telegram.org"_q);
 	// Fallback: if the hardcoded relay IP is unreachable, retry once via the
