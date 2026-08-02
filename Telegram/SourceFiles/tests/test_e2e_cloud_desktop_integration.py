@@ -1466,6 +1466,9 @@ def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
     assert "auto retryBudget = 500;" in chunk_store
     assert "--retryBudget;" in chunk_store
     assert "::Sleep(1);" in chunk_store
+    assert "LegacyChunkLockOwnerState(path)" in chunk_store
+    assert "OpenProcess(SYNCHRONIZE, FALSE, DWORD(pid))" in chunk_store
+    assert "LegacyLockOwnerState::Running" in chunk_store
     assert "legacy.removeStaleLockFile()" not in chunk_store
     assert "_locked = _file->tryLock(0);" in chunk_store
 

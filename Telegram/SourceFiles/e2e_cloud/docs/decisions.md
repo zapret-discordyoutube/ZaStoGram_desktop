@@ -1125,10 +1125,13 @@ Windows builds. Windows refuses that removal while another process still owns
 the old file handle, preserving contention safety. Retry each existing exact
 legacy file for at most 500 milliseconds because antivirus or indexing readers
 can make a single Windows deletion attempt fail even after the owner exited.
-Do not route this migration back through `QLockFile`, whose one-shot explicit
-stale removal recreated the permanent failure for the original base lock. The
-migration changes only the local encrypted chunk cache; Telegram upload sessions
-and their MTProto connection lifecycle remain untouched.
+Spend that bounded retry budget only after the legacy record identifies an
+exited process; live or unreadable owners fail immediately, retaining the
+non-blocking contention contract. Do not route deletion back through
+`QLockFile`, whose one-shot explicit stale removal recreated the permanent
+failure for the original base lock. The migration changes only the local
+encrypted chunk cache; Telegram upload sessions and their MTProto connection
+lifecycle remain untouched.
 
 ### D093: A durable file transfer does not block protected messages
 

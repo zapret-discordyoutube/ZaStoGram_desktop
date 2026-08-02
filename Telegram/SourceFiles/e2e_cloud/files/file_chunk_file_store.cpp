@@ -63,6 +63,38 @@ inline constexpr auto kMinimumFreeBytes
 		+ QString::fromLatin1(digest);
 }
 
+enum class LegacyLockOwnerState {
+	Dead,
+	Running,
+	Unknown,
+};
+
+[[nodiscard]] LegacyLockOwnerState LegacyChunkLockOwnerState(
+		const QString &path) {
+	auto legacy = QLockFile(path);
+	auto pid = qint64();
+	if (!legacy.getLockInfo(&pid, nullptr, nullptr)
+		|| pid <= 0
+		|| std::uint64_t(pid) > std::numeric_limits<DWORD>::max()) {
+		return LegacyLockOwnerState::Unknown;
+	}
+	const auto process = OpenProcess(SYNCHRONIZE, FALSE, DWORD(pid));
+	if (!process) {
+		return (GetLastError() == ERROR_INVALID_PARAMETER)
+			? LegacyLockOwnerState::Dead
+			: LegacyLockOwnerState::Unknown;
+	}
+	const auto processGuard = qScopeGuard([&] {
+		CloseHandle(process);
+	});
+	const auto wait = WaitForSingleObject(process, 0);
+	return (wait == WAIT_OBJECT_0)
+		? LegacyLockOwnerState::Dead
+		: (wait == WAIT_TIMEOUT)
+		? LegacyLockOwnerState::Running
+		: LegacyLockOwnerState::Unknown;
+}
+
 [[nodiscard]] bool RemoveLegacyChunkRecordLockFile(
 		const QString &path,
 		int &retryBudget) {
@@ -70,6 +102,12 @@ inline constexpr auto kMinimumFreeBytes
 	if (!info.exists()) {
 		return true;
 	} else if (!info.isFile() || info.isSymLink()) {
+		return false;
+	}
+	if (QFile::remove(path) || !QFile::exists(path)) {
+		return true;
+	} else if (LegacyChunkLockOwnerState(path)
+			!= LegacyLockOwnerState::Dead) {
 		return false;
 	}
 	while (true) {
