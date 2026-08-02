@@ -1094,6 +1094,11 @@ bool DesktopService::retryProtectedGroupCreation() {
 		auto restartedAdmission = false;
 		auto admissionRestartFailed = false;
 		for (const auto conversationId : admissions) {
+			if (_pendingGroupCreation
+				|| _pendingGroupJoin
+				|| _pendingGroupDiscovery) {
+				return true;
+			}
 			auto i = _groups.find(conversationId);
 			if (i == end(_groups)
 				|| i->second->phase
@@ -1102,6 +1107,15 @@ bool DesktopService::retryProtectedGroupCreation() {
 			}
 			if (!i->second->observation) {
 				beginGroupObservation(conversationId);
+			}
+			if (_pendingGroupCreation
+				|| _pendingGroupJoin
+				|| _pendingGroupDiscovery) {
+				return true;
+			} else if (!vaultReady()
+				|| _groupCreationState.current()
+					!= DesktopGroupCreationState::AwaitingAdmission) {
+				return false;
 			}
 			i = _groups.find(conversationId);
 			const auto stillAwaiting = i != end(_groups)
@@ -2375,6 +2389,7 @@ void DesktopService::uploadPendingCreation() {
 				weak->_unlockedPassword = std::move(
 					weak->_pendingUnlockPassword);
 				weak->_vaultState = DesktopVaultState::Ready;
+				weak->resumePendingGroupCreation();
 			} else if (result
 					== TelegramTransport::UploadResult::RetryableError) {
 				weak->_vaultState
@@ -4917,8 +4932,9 @@ void DesktopService::applyGroupDiscovery(
 		|| result.status == PublicBootstrapSyncStatus::Ambiguous
 		|| result.status == PublicBootstrapSyncStatus::CapacityExceeded
 		|| result.status == PublicBootstrapSyncStatus::InvalidPagination) {
-		_vaultState = DesktopVaultState::SecurityBlocked;
-		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		_groupCreationState = DesktopGroupCreationState::Ready;
+		resumeDeferredGroupObservations();
+		startNextGroupDiscovery();
 		return;
 	} else if (result.status
 				== PublicBootstrapSyncStatus::RetryableTransportError

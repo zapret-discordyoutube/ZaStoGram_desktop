@@ -685,6 +685,71 @@ def verify_loaded_carriers_are_discovered_after_unlock() -> None:
     assert "queueGroupDiscovery(peerId);" in loaded
 
 
+def verify_every_ready_vault_resumes_group_recovery() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    unlock = function_body(
+        service,
+        "void DesktopService::applySyncResult(",
+        "void DesktopService::uploadPendingCreation()",
+    )
+    creation = function_body(
+        service,
+        "void DesktopService::uploadPendingCreation()",
+        "void DesktopService::beginGroupVaultPreflight()",
+    )
+
+    for body in (unlock, creation):
+        ready = body.index(
+            "_vaultState = DesktopVaultState::Ready;"
+        )
+        resume = body.index("resumePendingGroupCreation();", ready)
+        assert ready < resume
+
+
+def verify_admission_retry_preserves_synchronous_results() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    retry = function_body(
+        service,
+        "bool DesktopService::retryProtectedGroupCreation()",
+        "std::vector<DesktopProtectedGroupSummary>",
+    )
+    begin = retry.index("beginGroupObservation(conversationId);")
+    pending = retry.index("if (_pendingGroupCreation", begin)
+    state = retry.index("_groupCreationState.current()", pending)
+    refind = retry.index("i = _groups.find(conversationId);", state)
+
+    assert begin < pending < state < refind
+    assert "return true;" in retry[pending:state]
+    assert "!= DesktopGroupCreationState::AwaitingAdmission" \
+        in retry[state:refind]
+    assert "return false;" in retry[state:refind]
+
+
+def verify_untrusted_discovery_conflicts_do_not_lock_vault() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    discovery = function_body(
+        service,
+        "void DesktopService::applyGroupDiscovery(",
+        "bool DesktopService::completeObservedJoin(",
+    )
+    conflict = discovery.index(
+        "PublicBootstrapSyncStatus::ObjectConflict"
+    )
+    transport = discovery.index(
+        "PublicBootstrapSyncStatus::RetryableTransportError",
+        conflict,
+    )
+    rejected = discovery[conflict:transport]
+
+    assert "PublicBootstrapSyncStatus::Ambiguous" in rejected
+    assert "PublicBootstrapSyncStatus::CapacityExceeded" in rejected
+    assert "PublicBootstrapSyncStatus::InvalidPagination" in rejected
+    assert "DesktopVaultState::SecurityBlocked" not in rejected
+    assert "DesktopGroupCreationState::Ready" in rejected
+    assert "resumeDeferredGroupObservations();" in rejected
+    assert "startNextGroupDiscovery();" in rejected
+
+
 def verify_group_setup_commits_metadata_last() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     creation = function_body(
@@ -1803,6 +1868,9 @@ def main() -> None:
     verify_completion_callbacks_survive_owner_reset()
     verify_group_discovery_retries_without_creation_races()
     verify_loaded_carriers_are_discovered_after_unlock()
+    verify_every_ready_vault_resumes_group_recovery()
+    verify_admission_retry_preserves_synchronous_results()
+    verify_untrusted_discovery_conflicts_do_not_lock_vault()
     verify_group_setup_commits_metadata_last()
     verify_group_carriers_publish_before_vault_index()
     verify_freshness_challenges_resume_and_replays_stop()

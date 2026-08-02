@@ -927,13 +927,42 @@ touching the restored group or its user callback.
 
 ### D079: Loaded carriers survive a locked-vault interval
 
-After authenticated vault unlock and local-group recovery, enumerate only the
-Telegram group histories already loaded in the session and queue ordinary
-protected-group discovery for histories that retain carrier metadata. A carrier
-received while the vault was locked would otherwise be forgotten because the
-new-item notification is not replayed merely by unlocking.
+After the vault becomes authenticated and ready through either unlock or first
+identity creation, run local-group recovery, enumerate only the Telegram group
+histories already loaded in the session, and queue ordinary protected-group
+discovery for histories that retain carrier metadata. A carrier received while
+the vault was unavailable would otherwise be forgotten because the new-item
+notification is not replayed merely by making the vault ready.
 
 The loaded metadata remains only a discovery trigger. It cannot decrypt,
 enroll, index, or advance protected state; the existing authenticated bootstrap
 pipeline still verifies every accepted byte. Do not turn this recovery into a
 full Telegram history scan.
+
+### D080: Admission retry preserves synchronous outcomes
+
+An admission observation may complete synchronously while Retry is starting
+it. Stop the retry loop immediately if that completion claims the global group
+operation slot; the remaining dirty admissions will resume when the slot is
+released. Likewise, retain a synchronous permanent, local, or security result
+instead of replacing it with a generic retryable failure merely because no live
+observer remains after `beginGroupObservation` returns.
+
+This is required for multiple waiting groups as well as test transports. A
+synchronous completion of the first group can move it into the vault-update
+state while later admission groups are still present in the active map.
+
+### D081: Unanchored discovery cannot block the account vault
+
+Object conflicts, ambiguous bootstraps, capacity excess, and invalid pagination
+while discovering an unindexed Telegram carrier group reject that discovery
+attempt and release the global operation slot. They do not security-block the
+authenticated account vault or destroy established protected-group runtimes.
+Before a verified bootstrap is accepted there is no cryptographic trust anchor
+linking that group to the account, so an ordinary group member or active server
+can construct these inputs at will.
+
+This rule narrows only first-contact availability scope. No conflicting bytes
+are accepted, no peer is added to the vault, and another carrier notification
+may trigger a fresh bounded discovery later. The same conflict in an indexed or
+already authenticated group remains a fail-closed security block.
