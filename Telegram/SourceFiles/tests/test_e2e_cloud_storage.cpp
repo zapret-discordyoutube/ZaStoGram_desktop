@@ -740,10 +740,14 @@ int CountingLocalRecordProtector::openCalls() const {
 	});
 	auto blob = MemoryBlobStore();
 	auto transfer = PersistentFileTransfer(blob, protector);
-	if (!manifest
-		|| transfer.load(context.conversationId)
-			!= FileTransferLoadResult::Empty
-		|| transfer.begin({
+	if (!manifest) {
+		return Fail("resumable file transfer manifest was not encoded");
+	}
+	if (transfer.load(context.conversationId)
+			!= FileTransferLoadResult::Empty) {
+		return Fail("resumable file transfer was not initially empty");
+	}
+	if (transfer.begin({
 			.conversationId = context.conversationId,
 			.eventObjectId = FilledId<ObjectId>(39),
 			.contentObjectId = FilledId<ObjectId>(40),
@@ -753,13 +757,18 @@ int CountingLocalRecordProtector::openCalls() const {
 			.nextChunkIndex = 0,
 			.sourcePathUtf8 = QByteArray("/private/source.any"),
 			.manifestPlaintext = manifest.value_or(QByteArray()),
-		}) != FileTransferCommitResult::Committed
-		|| transfer.advance(0)
-			!= FileTransferCommitResult::InvalidMutation
-		|| transfer.markManifestPublished(3)
-			!= FileTransferCommitResult::Committed
-		|| transfer.advance(0) != FileTransferCommitResult::Committed) {
-		return Fail("resumable file transfer was not persisted");
+		}) != FileTransferCommitResult::Committed) {
+		return Fail("resumable file transfer was not started");
+	}
+	if (transfer.advance(0) != FileTransferCommitResult::InvalidMutation) {
+		return Fail("resumable file transfer advanced before publication");
+	}
+	if (transfer.markManifestPublished(3)
+			!= FileTransferCommitResult::Committed) {
+		return Fail("resumable file transfer publication was not persisted");
+	}
+	if (transfer.advance(0) != FileTransferCommitResult::Committed) {
+		return Fail("resumable file transfer progress was not persisted");
 	}
 	auto restored = PersistentFileTransfer(blob, protector);
 	const auto restoredLoad = restored.load(context.conversationId);
