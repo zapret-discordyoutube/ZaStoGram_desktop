@@ -924,3 +924,16 @@ its own operation, reset its controller, or begin writing the wrong manifest.
 
 An epoch mismatch or event mismatch now drops the stale callback without
 touching the restored group or its user callback.
+
+### D079: Loaded carriers survive a locked-vault interval
+
+After authenticated vault unlock and local-group recovery, enumerate only the
+Telegram group histories already loaded in the session and queue ordinary
+protected-group discovery for histories that retain carrier metadata. A carrier
+received while the vault was locked would otherwise be forgotten because the
+new-item notification is not replayed merely by unlocking.
+
+The loaded metadata remains only a discovery trigger. It cannot decrypt,
+enroll, index, or advance protected state; the existing authenticated bootstrap
+pipeline still verifies every accepted byte. Do not turn this recovery into a
+full Telegram history scan.

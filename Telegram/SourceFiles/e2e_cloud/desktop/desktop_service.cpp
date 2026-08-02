@@ -2806,6 +2806,7 @@ void DesktopService::resumePendingGroupCreation() {
 			return;
 		}
 	}
+	queueLoadedGroupDiscoveries();
 	startNextGroupDiscovery();
 }
 
@@ -4800,6 +4801,22 @@ void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
 		beginGroupObservation(conversationId);
 	}
 	if (conversations.empty()) {
+		queueGroupDiscovery(peerId);
+	}
+}
+
+void DesktopService::queueLoadedGroupDiscoveries() {
+	if (!vaultReady()) {
+		return;
+	}
+	auto peerIds = std::vector<std::uint64_t>();
+	_session->data().enumerateGroups([&](not_null<PeerData*> peer) {
+		const auto history = _session->data().historyLoaded(peer);
+		if (history && history->hasE2ECloudGroupCarrier()) {
+			peerIds.push_back(peer->id.value);
+		}
+	});
+	for (const auto peerId : peerIds) {
 		queueGroupDiscovery(peerId);
 	}
 }

@@ -662,6 +662,29 @@ def verify_group_discovery_retries_without_creation_races() -> None:
     assert "_groupDiscoveryQueue.emplace(peerId);" in discovery
 
 
+def verify_loaded_carriers_are_discovered_after_unlock() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    recovery = function_body(
+        service,
+        "void DesktopService::resumePendingGroupCreation()",
+        "void DesktopService::beginIndexedGroupJoin(",
+    )
+    loaded = function_body(
+        service,
+        "void DesktopService::queueLoadedGroupDiscoveries()",
+        "void DesktopService::queueGroupDiscovery(",
+    )
+
+    assert "queueLoadedGroupDiscoveries();" in recovery
+    assert recovery.rindex("queueLoadedGroupDiscoveries();") \
+        < recovery.rindex("startNextGroupDiscovery();")
+    assert "_session->data().enumerateGroups(" in loaded
+    assert "_session->data().historyLoaded(peer)" in loaded
+    assert "history->hasE2ECloudGroupCarrier()" in loaded
+    assert "peerIds.push_back(peer->id.value);" in loaded
+    assert "queueGroupDiscovery(peerId);" in loaded
+
+
 def verify_group_setup_commits_metadata_last() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     creation = function_body(
@@ -1779,6 +1802,7 @@ def main() -> None:
     verify_freshness_witness_is_rechecked_after_catchup()
     verify_completion_callbacks_survive_owner_reset()
     verify_group_discovery_retries_without_creation_races()
+    verify_loaded_carriers_are_discovered_after_unlock()
     verify_group_setup_commits_metadata_last()
     verify_group_carriers_publish_before_vault_index()
     verify_freshness_challenges_resume_and_replays_stop()

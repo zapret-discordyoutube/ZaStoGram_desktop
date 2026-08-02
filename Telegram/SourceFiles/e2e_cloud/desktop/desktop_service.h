@@ -235,6 +235,7 @@ private:
 		CloudVaultConversation conversation,
 		VerifiedPublicGroupBootstrap verified,
 		bool discovered);
+	void queueLoadedGroupDiscoveries();
 	void queueGroupDiscovery(std::uint64_t telegramPeerIdBinding);
 	void startNextGroupDiscovery();
 	void applyGroupDiscovery(PublicBootstrapSyncCompletion result);

@@ -97,6 +97,11 @@ Desktop surface, because confidentiality takes priority over availability. It
 is never sufficient to decrypt, index, admit a participant, or advance state.
 An active server can fabricate the metadata and deny ordinary composition, but
 the authenticated protocol pipeline will reject fabricated bytes.
+After vault unlock and local-group recovery, Desktop also checks already loaded
+group histories for protected carrier metadata and queues their normal
+authenticated discovery. A carrier received while the vault was locked is
+therefore not forgotten merely because Telegram does not emit it as a new item
+again. This is a local loaded-state check, not an unbounded server-history scan.
 
 ## Cloud synchronization
 
