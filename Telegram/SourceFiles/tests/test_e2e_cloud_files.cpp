@@ -765,6 +765,45 @@ public:
 	if (codec.decodePlaintext(overflowingEncoded)) {
 		return Fail("protected message body decoded overflowing timestamp");
 	}
+	const auto target = FilledId<ObjectId>(44);
+	const auto edit = ProtectedMessageBody{
+		.action = ProtectedMessageAction::Edit,
+		.unixTime = body.unixTime + 1,
+		.targetEventObjectId = target,
+		.textUtf8 = QByteArray("edited"),
+	};
+	const auto encodedEdit = codec.encodePlaintext(edit);
+	const auto decodedEdit = encodedEdit
+		? codec.decodePlaintext(*encodedEdit)
+		: std::nullopt;
+	const auto deletion = ProtectedMessageBody{
+		.action = ProtectedMessageAction::Delete,
+		.unixTime = body.unixTime + 2,
+		.targetEventObjectId = target,
+	};
+	const auto encodedDeletion = codec.encodePlaintext(deletion);
+	const auto decodedDeletion = encodedDeletion
+		? codec.decodePlaintext(*encodedDeletion)
+		: std::nullopt;
+	if (!encodedEdit
+		|| !decodedEdit
+		|| *decodedEdit != edit
+		|| !encodedDeletion
+		|| !decodedDeletion
+		|| *decodedDeletion != deletion) {
+		return Fail("protected message mutation did not round-trip");
+	}
+	auto missingTarget = edit;
+	missingTarget.targetEventObjectId = {};
+	auto deleteWithText = deletion;
+	deleteWithText.textUtf8 = QByteArray("not empty");
+	auto unknownAction = *encodedEdit;
+	unknownAction[10] = char(3);
+	if (codec.encodePlaintext(missingTarget)
+		|| codec.encodePlaintext(deleteWithText)
+		|| codec.decodePlaintext(unknownAction)) {
+		return Fail("protected message mutation accepted malformed data");
+	}
 	return 0;
 }
 

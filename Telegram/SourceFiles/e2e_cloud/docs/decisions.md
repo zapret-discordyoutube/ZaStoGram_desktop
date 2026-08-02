@@ -1027,7 +1027,7 @@ Supersede the presentation part of D039 while retaining its carrier-hiding and
 fail-closed requirements. Materialize only authenticated records from the local
 protected content store as silent client-side items in the bound Telegram group
 history. Mark every item visibly as encrypted and prohibit Telegram reply,
-forward, edit, pin, delete, and reaction actions. Keep materialization bounded
+forward, pin, and reaction actions. Keep materialization bounded
 to the newest 200 records and extend it in 200-record pages when the native
 history approaches its top.
 
@@ -1037,7 +1037,7 @@ message or ordinary send processing and route it to `sendProtectedText`; route
 local file paths to `sendProtectedFile`. Disable Telegram cloud drafts and link
 preview resolution for the protected composer. Hide or reject voice, bots,
 stickers, GIFs, inline results, contacts, send-as, scheduling, forwarding,
-editing, in-memory media without a local path, and any stale stock send dialog.
+in-memory media without a local path, and any stale stock send dialog.
 If no authenticated conversation runtime is available, retain D039's single
 unlock or recovery action and never fall back to plaintext Telegram sending.
 
@@ -1068,3 +1068,19 @@ Remove the staged plaintext after successful final hash verification, durable
 cancellation, or any preparation failure. A staged source that belongs to a
 persisted transfer remains available across a restart until that exact transfer
 finishes or is cancelled.
+
+### D089: Message changes are immutable authenticated events
+
+Represent edits and deletions as encrypted version-two message-body events that
+reference the immutable original event identifier. Telegram retains the opaque
+original and mutation carriers; clients fold the authenticated events into the
+native timeline. A deletion is a permanent tombstone, while the newest valid
+edit supplies the visible text and native edited badge.
+
+Accept a mutation only when its authenticated account identifier equals the
+original message or file author's account identifier. Any authorized device of
+that account may therefore change its own content, while Telegram and other
+participants cannot forge the operation. Editing is limited to text; deletion
+also applies to protected files. The ordinary Telegram edit field and delete
+confirmation route to these events and never call Telegram's edit or delete
+message APIs for decrypted protected items.

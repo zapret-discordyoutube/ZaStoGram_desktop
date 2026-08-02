@@ -3062,10 +3062,15 @@ bool HistoryItem::isTooOldForEdit(TimeId now) const {
 }
 
 bool HistoryItem::allowsEdit(TimeId now) const {
+	if (isE2ECloudDecrypted()) {
+		return out()
+			&& !_media
+			&& !_e2eCloudConversationId.isEmpty()
+			&& !_e2eCloudEventObjectId.isEmpty();
+	}
 	const auto richPageSource = Get<HistoryMessageRichPageSource>();
 	const auto richPage = BestRichPage(richPageSource);
-	return !isE2ECloudDecrypted()
-		&& !isService()
+	return !isService()
 		&& canBeEdited()
 		&& !isTooOldForEdit(now)
 		&& (!richPage || richPageSource->canEdit)
@@ -3128,7 +3133,9 @@ bool HistoryItem::forbidsSaving() const {
 
 bool HistoryItem::canDelete() const {
 	if (isE2ECloudDecrypted()) {
-		return false;
+		return out()
+			&& !_e2eCloudConversationId.isEmpty()
+			&& !_e2eCloudEventObjectId.isEmpty();
 	} else if (isSponsored()) {
 		return false;
 	} else if (isEphemeral()) {
@@ -5052,6 +5059,7 @@ void HistoryItem::createComponentsHelper(HistoryItemCommonFields &&fields) {
 	auto config = CreateConfig();
 	config.viaBotId = fields.viaBotId;
 	config.scheduleRepeatPeriod = fields.scheduleRepeatPeriod;
+	config.editDate = fields.e2eCloudEditDate;
 	if (fields.flags & MessageFlag::HasReplyInfo) {
 		config.reply.messageId = replyTo.messageId.msg;
 		config.reply.storyId = replyTo.storyId.story;

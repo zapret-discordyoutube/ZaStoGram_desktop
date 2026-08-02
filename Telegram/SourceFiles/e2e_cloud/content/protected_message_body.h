@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "e2e_cloud/core/types.h"
+
 #include <QtCore/QByteArray>
 
 #include <cstdint>
@@ -16,8 +18,16 @@ namespace E2ECloud {
 
 inline constexpr auto kMaximumProtectedMessageTextSize = 256 * 1024;
 
+enum class ProtectedMessageAction : std::uint8_t {
+	Create = 0,
+	Edit = 1,
+	Delete = 2,
+};
+
 struct ProtectedMessageBody {
+	ProtectedMessageAction action = ProtectedMessageAction::Create;
 	std::uint64_t unixTime = 0;
+	ObjectId targetEventObjectId;
 	QByteArray textUtf8;
 
 	friend inline bool operator==(

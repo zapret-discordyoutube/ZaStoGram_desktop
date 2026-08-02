@@ -116,6 +116,13 @@ this canonical credential and protected context.
 - freshness challenge and response;
 - recovery and resynchronization request.
 
+Encrypted message-body plaintext revision one contains an original timestamp
+and UTF-8 message text. Revision two is an edit or delete event containing its
+action, timestamp, target original event identifier, and edit text when
+applicable. The encrypted descriptor authenticates the mutation sender. A
+client applies it only when that sender account is the original content author;
+a delete is a terminal tombstone and an edit is valid only for original text.
+
 ## Membership authority
 
 Telegram membership starts the workflow, but the protected group state is

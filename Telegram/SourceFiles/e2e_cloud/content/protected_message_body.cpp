@@ -17,7 +17,8 @@ namespace {
 inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 	'T', 'D', 'E', '2', 'E', 'M', 'S', 'G',
 };
-inline constexpr auto kHeaderSize = 8 + 2 + 8 + 4;
+inline constexpr auto kHeaderSizeV1 = 8 + 2 + 8 + 4;
+inline constexpr auto kHeaderSizeV2 = 8 + 2 + 1 + 8 + 32 + 4;
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -122,15 +123,37 @@ std::optional<QByteArray> ProtectedMessageBodyCodecV1::encodePlaintext(
 		const ProtectedMessageBody &body) const {
 	if (!body.unixTime
 		|| body.unixTime
-			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
-		|| !ValidUtf8(body.textUtf8)) {
+			> std::uint64_t(std::numeric_limits<std::int64_t>::max())) {
+		return std::nullopt;
+	}
+	if (body.action == ProtectedMessageAction::Create) {
+		if (body.targetEventObjectId || !ValidUtf8(body.textUtf8)) {
+			return std::nullopt;
+		}
+		auto result = QByteArray();
+		result.reserve(kHeaderSizeV1 + body.textUtf8.size());
+		AppendArray(result, kMagic);
+		AppendUint16(result, 1);
+		AppendUint64(result, body.unixTime);
+		AppendUint32(result, std::uint32_t(body.textUtf8.size()));
+		result.append(body.textUtf8);
+		return result;
+	} else if (!body.targetEventObjectId
+		|| (body.action == ProtectedMessageAction::Edit
+			&& !ValidUtf8(body.textUtf8))
+		|| (body.action == ProtectedMessageAction::Delete
+			&& !body.textUtf8.isEmpty())
+		|| (body.action != ProtectedMessageAction::Edit
+			&& body.action != ProtectedMessageAction::Delete)) {
 		return std::nullopt;
 	}
 	auto result = QByteArray();
-	result.reserve(kHeaderSize + body.textUtf8.size());
+	result.reserve(kHeaderSizeV2 + body.textUtf8.size());
 	AppendArray(result, kMagic);
-	AppendUint16(result, 1);
+	AppendUint16(result, 2);
+	result.append(char(body.action));
 	AppendUint64(result, body.unixTime);
+	AppendArray(result, body.targetEventObjectId.bytes);
 	AppendUint32(result, std::uint32_t(body.textUtf8.size()));
 	result.append(body.textUtf8);
 	return result;
@@ -138,28 +161,66 @@ std::optional<QByteArray> ProtectedMessageBodyCodecV1::encodePlaintext(
 
 std::optional<ProtectedMessageBody>
 ProtectedMessageBodyCodecV1::decodePlaintext(const QByteArray &bytes) const {
-	if (bytes.size() < kHeaderSize
+	if (bytes.size() < kHeaderSizeV1
 		|| !std::equal(
 			begin(kMagic),
 			end(kMagic),
-			reinterpret_cast<const std::uint8_t*>(bytes.constData()))
-		|| ReadUint16(bytes.constData() + 8) != 1) {
+			reinterpret_cast<const std::uint8_t*>(bytes.constData()))) {
 		return std::nullopt;
 	}
-	const auto unixTime = ReadUint64(bytes.constData() + 10);
-	const auto size = ReadUint32(bytes.constData() + 18);
+	const auto version = ReadUint16(bytes.constData() + 8);
+	if (version == 1) {
+		const auto unixTime = ReadUint64(bytes.constData() + 10);
+		const auto size = ReadUint32(bytes.constData() + 18);
+		if (!unixTime
+			|| unixTime
+				> std::uint64_t(std::numeric_limits<std::int64_t>::max())
+			|| size > kMaximumProtectedMessageTextSize
+			|| bytes.size() != kHeaderSizeV1 + int(size)) {
+			return std::nullopt;
+		}
+		auto body = ProtectedMessageBody{
+			.unixTime = unixTime,
+			.textUtf8 = QByteArray(
+				bytes.constData() + kHeaderSizeV1,
+				int(size)),
+		};
+		return ValidUtf8(body.textUtf8)
+			? std::optional<ProtectedMessageBody>(std::move(body))
+			: std::nullopt;
+	} else if (version != 2 || bytes.size() < kHeaderSizeV2) {
+		return std::nullopt;
+	}
+	const auto action = ProtectedMessageAction(
+		std::uint8_t(bytes.constData()[10]));
+	const auto unixTime = ReadUint64(bytes.constData() + 11);
+	auto targetEventObjectId = ObjectId();
+	std::copy_n(
+		reinterpret_cast<const std::uint8_t*>(bytes.constData() + 19),
+		targetEventObjectId.bytes.size(),
+		targetEventObjectId.bytes.begin());
+	const auto size = ReadUint32(bytes.constData() + 51);
 	if (!unixTime
 		|| unixTime
 			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
+		|| !targetEventObjectId
 		|| size > kMaximumProtectedMessageTextSize
-		|| bytes.size() != kHeaderSize + int(size)) {
+		|| bytes.size() != kHeaderSizeV2 + int(size)) {
 		return std::nullopt;
 	}
 	auto body = ProtectedMessageBody{
+		.action = action,
 		.unixTime = unixTime,
-		.textUtf8 = QByteArray(bytes.constData() + kHeaderSize, int(size)),
+		.targetEventObjectId = targetEventObjectId,
+		.textUtf8 = QByteArray(
+			bytes.constData() + kHeaderSizeV2,
+			int(size)),
 	};
-	return ValidUtf8(body.textUtf8)
+	const auto valid = (body.action == ProtectedMessageAction::Edit)
+		? ValidUtf8(body.textUtf8)
+		: (body.action == ProtectedMessageAction::Delete)
+			&& body.textUtf8.isEmpty();
+	return valid
 		? std::optional<ProtectedMessageBody>(std::move(body))
 		: std::nullopt;
 }

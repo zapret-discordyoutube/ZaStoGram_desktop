@@ -28,8 +28,10 @@ label, and disables forwarding and clipboard export. Locally authenticated and
 decrypted records are materialized as client-side messages in the ordinary
 Telegram group timeline. They have an explicit lock marker and reuse the native
 message layout, scrolling, selection, and copy behavior without becoming
-Telegram messages. They cannot be forwarded, replied to, edited, pinned,
-deleted, or reacted to through Telegram APIs.
+Telegram messages. They cannot be forwarded, replied to, pinned, or reacted
+to. An author can edit protected text and delete protected text or files using
+the native context menu; those actions append authenticated E2E mutations and
+never call Telegram's edit or delete message APIs.
 
 Protected files use native local document cards. New manifests include an
 encrypted thumbnail for images, videos, and supported artwork, so the ordinary
@@ -43,7 +45,7 @@ and attachment picker. Text submission is intercepted before all rich-message,
 preview, scheduling, payment, and ordinary send paths and is queued through the
 protected content service. Local file paths are routed through the protected
 file pipeline. Voice, bots, stickers, GIFs, inline results, contacts, cloud
-drafts, webpage previews, send-as, scheduling, forwarding, editing, and stale
+drafts, webpage previews, send-as, scheduling, forwarding, and stale
 ordinary send dialogs are hidden or fail closed. When the vault or authenticated
 group runtime is unavailable, the composer is replaced by the protected-groups
 unlock or recovery action.
@@ -170,6 +172,12 @@ archive. Materialization is silent: restoring archive records does not create
 Telegram unread counts or notifications. The separate files and security views
 remain management surfaces and use the same bounded content store; ordinary
 message composition no longer happens in a separate window.
+
+Message edits and deletions remain immutable encrypted archive events. Each
+mutation names an original event and is applied only when its authenticated
+account identifier matches the original author. The timeline reads pages from
+newest to oldest and continues only as needed to replace tombstoned entries, so
+folding mutations does not require loading all protected plaintext at once.
 
 ## Sending and freshness
 

@@ -45,6 +45,8 @@ class QImage;
 
 namespace E2ECloud {
 
+struct ProtectedMessageBody;
+
 enum class DesktopVaultState {
 	Uninitialized,
 	Discovering,
@@ -178,6 +180,13 @@ public:
 	[[nodiscard]] bool sendProtectedText(
 		ConversationId conversationId,
 		QString text);
+	[[nodiscard]] bool editProtectedText(
+		ConversationId conversationId,
+		ObjectId targetEventObjectId,
+		QString text);
+	[[nodiscard]] bool deleteProtectedMessage(
+		ConversationId conversationId,
+		ObjectId targetEventObjectId);
 	[[nodiscard]] bool sendProtectedFile(
 		ConversationId conversationId,
 		QString path);
@@ -269,6 +278,9 @@ private:
 	void publishQueuedGroupOutbox(ConversationId conversationId);
 	[[nodiscard]] bool initializeActivePipeline(
 		PendingGroupCreation &group);
+	[[nodiscard]] bool queueProtectedMessageBody(
+		ConversationId conversationId,
+		ProtectedMessageBody body);
 	void pumpActiveOutbox(ConversationId conversationId);
 	[[nodiscard]] bool prepareActiveUploadAcknowledgement(
 		ConversationId conversationId,

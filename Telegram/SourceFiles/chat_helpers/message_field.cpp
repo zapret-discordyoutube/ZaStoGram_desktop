@@ -380,6 +380,11 @@ TextWithTags PrepareEditText(not_null<HistoryItem*> item) {
 	auto original = item->history()->session().supportMode()
 		? StripSupportHashtag(item->originalText())
 		: item->originalText();
+	const auto protectedPrefix = u"🔒 "_q;
+	if (item->isE2ECloudDecrypted()
+		&& original.text.startsWith(protectedPrefix)) {
+		original.text.remove(0, protectedPrefix.size());
+	}
 	original = DropDisallowedCustomEmoji(
 		item->history()->peer,
 		std::move(original));

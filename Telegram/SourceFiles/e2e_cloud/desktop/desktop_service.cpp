@@ -458,21 +458,6 @@ void Cleanse(QByteArray &bytes) {
 inline constexpr auto kProtectedFilePreviewSide = 320;
 inline constexpr auto kProtectedFilePreviewQuality = 82;
 
-[[nodiscard]] QString ProtectedHistoryText(
-		const ProtectedContentRecord &record) {
-	if (record.objectKind != ObjectKind::EncryptedMessageBody) {
-		return QString();
-	}
-	auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
-		record.plaintext);
-	if (!body) {
-		return QString();
-	}
-	auto result = QString::fromUtf8(body->textUtf8);
-	Cleanse(body->textUtf8);
-	return u"🔒 "_q + result;
-}
-
 struct ProtectedHistoryFile {
 	QString filename;
 	QString mimeType;
@@ -922,7 +907,12 @@ struct DesktopService::PendingGroupCreation {
 	QString filePreparationPath;
 	std::optional<HashedFile> filePreparationSource;
 	std::set<AccountId> safetyWitnesses;
-	std::vector<std::pair<ObjectId, FullMsgId>> materializedHistory;
+	struct MaterializedHistoryEntry {
+		ObjectId eventObjectId;
+		ObjectId latestMutationEventObjectId;
+		FullMsgId fullId;
+	};
+	std::vector<MaterializedHistoryEntry> materializedHistory;
 	std::map<ObjectId, QString> localProtectedFilePaths;
 	std::uint64_t materializedHistoryPeerIdBinding = 0;
 	std::size_t materializedHistoryLimit = 0;
@@ -1656,8 +1646,7 @@ void DesktopService::materializeProtectedHistory(
 void DesktopService::clearMaterializedProtectedHistory(
 		PendingGroupCreation &group) {
 	for (const auto &entry : group.materializedHistory) {
-		const auto fullId = entry.second;
-		const auto item = _session->data().message(fullId);
+		const auto item = _session->data().message(entry.fullId);
 		if (item && item->isE2ECloudDecrypted()) {
 			item->history()->destroyMessage(item);
 		}
@@ -1671,38 +1660,101 @@ void DesktopService::refreshMaterializedProtectedHistory(
 		return;
 	}
 	const auto total = group.contentStore.size();
-	const auto count = std::min(total, group.materializedHistoryLimit);
-	auto records = group.contentStore.records(total - count, count);
-	const auto recordsGuard = qScopeGuard([&] {
-		for (auto &record : records) {
-			Cleanse(record.plaintext);
-		}
-	});
 	struct RenderedRecord {
 		ObjectId eventObjectId;
 		AccountId senderAccountId;
 		std::uint64_t unixTime = 0;
+		std::uint64_t editUnixTime = 0;
 		QString text;
 		std::optional<ProtectedHistoryFile> file;
+		ObjectId latestMutationEventObjectId;
+		bool deleted = false;
+	};
+	struct RenderedMutation {
+		ObjectId eventObjectId;
+		AccountId senderAccountId;
+		ProtectedMessageAction action = ProtectedMessageAction::Edit;
+		std::uint64_t unixTime = 0;
+		QString text;
 	};
 	auto rendered = std::vector<RenderedRecord>();
-	rendered.reserve(records.size());
-	for (const auto &record : records) {
-		if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-			auto text = ProtectedHistoryText(record);
-			if (!text.isEmpty()) {
-				rendered.push_back({
+	rendered.reserve(group.materializedHistoryLimit);
+	auto mutationsByTarget = std::map<
+		ObjectId,
+		std::vector<RenderedMutation>>();
+	const auto applyMutations = [&](RenderedRecord &entry) {
+		const auto i = mutationsByTarget.find(entry.eventObjectId);
+		if (i == end(mutationsByTarget)) {
+			return;
+		}
+		const auto deletion = std::find_if(
+			begin(i->second),
+			end(i->second),
+			[&](const RenderedMutation &mutation) {
+				return mutation.senderAccountId == entry.senderAccountId
+					&& mutation.action
+						== ProtectedMessageAction::Delete;
+			});
+		if (deletion != end(i->second)) {
+			entry.deleted = true;
+			entry.latestMutationEventObjectId = deletion->eventObjectId;
+		} else if (!entry.file) {
+			const auto edit = std::find_if(
+				begin(i->second),
+				end(i->second),
+				[&](const RenderedMutation &mutation) {
+					return mutation.senderAccountId == entry.senderAccountId
+						&& mutation.action
+							== ProtectedMessageAction::Edit;
+				});
+			if (edit != end(i->second)) {
+				entry.text = u"🔒 "_q + edit->text;
+				entry.editUnixTime = edit->unixTime;
+				entry.latestMutationEventObjectId = edit->eventObjectId;
+			}
+		}
+		mutationsByTarget.erase(i);
+	};
+	const auto processRecords = [&](
+			std::vector<ProtectedContentRecord> &records) {
+		for (auto i = records.rbegin(); i != records.rend(); ++i) {
+			const auto &record = *i;
+			if (record.objectKind == ObjectKind::EncryptedMessageBody) {
+				auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+					record.plaintext);
+				if (!body) {
+					continue;
+				}
+				const auto text = QString::fromUtf8(body->textUtf8);
+				Cleanse(body->textUtf8);
+				if (body->action != ProtectedMessageAction::Create) {
+					mutationsByTarget[body->targetEventObjectId].push_back({
+						.eventObjectId = record.eventObjectId,
+						.senderAccountId = record.senderAccountId,
+						.action = body->action,
+						.unixTime = record.unixTime,
+						.text = text,
+					});
+					continue;
+				}
+				auto entry = RenderedRecord{
 					.eventObjectId = record.eventObjectId,
 					.senderAccountId = record.senderAccountId,
 					.unixTime = record.unixTime,
-					.text = std::move(text),
-				});
-			}
-		} else if (record.objectKind == ObjectKind::EncryptedFileManifest) {
-			const auto manifest = PrivateFileManifestCodecV1()
-				.decodePlaintext(record.plaintext);
-			if (manifest) {
-				rendered.push_back({
+					.text = u"🔒 "_q + text,
+				};
+				applyMutations(entry);
+				if (!entry.deleted) {
+					rendered.push_back(std::move(entry));
+				}
+			} else if (record.objectKind
+					== ObjectKind::EncryptedFileManifest) {
+				const auto manifest = PrivateFileManifestCodecV1()
+					.decodePlaintext(record.plaintext);
+				if (!manifest) {
+					continue;
+				}
+				auto entry = RenderedRecord{
 					.eventObjectId = record.eventObjectId,
 					.senderAccountId = record.senderAccountId,
 					.unixTime = record.unixTime,
@@ -1715,17 +1767,42 @@ void DesktopService::refreshMaterializedProtectedHistory(
 						.size = manifest->context.plaintextSize,
 						.preview = manifest->preview,
 					},
-				});
+				};
+				applyMutations(entry);
+				if (!entry.deleted) {
+					rendered.push_back(std::move(entry));
+				}
+			}
+			if (rendered.size() == group.materializedHistoryLimit) {
+				break;
 			}
 		}
+		for (auto &record : records) {
+			Cleanse(record.plaintext);
+		}
+	};
+	const auto firstCount = std::min(total, group.materializedHistoryLimit);
+	auto offset = total - firstCount;
+	auto records = group.contentStore.records(
+		total - firstCount,
+		firstCount);
+	processRecords(records);
+	while (rendered.size() < group.materializedHistoryLimit && offset) {
+		const auto count = std::min(offset, group.materializedHistoryLimit);
+		offset -= count;
+		records = group.contentStore.records(offset, count);
+		processRecords(records);
 	}
+	std::reverse(begin(rendered), end(rendered));
 	auto appendFrom = std::size_t();
 	if (group.materializedHistory.size() <= rendered.size()) {
 		appendFrom = group.materializedHistory.size();
 		for (auto index = std::size_t(); index != appendFrom; ++index) {
-			const auto &[objectId, fullId] = group.materializedHistory[index];
-			const auto item = _session->data().message(fullId);
-			if (objectId != rendered[index].eventObjectId
+			const auto &entry = group.materializedHistory[index];
+			const auto item = _session->data().message(entry.fullId);
+			if (entry.eventObjectId != rendered[index].eventObjectId
+				|| entry.latestMutationEventObjectId
+					!= rendered[index].latestMutationEventObjectId
 				|| !item
 				|| !item->isE2ECloudDecrypted()) {
 				appendFrom = 0;
@@ -1772,6 +1849,9 @@ void DesktopService::refreshMaterializedProtectedHistory(
 			.flags = flags,
 			.from = from,
 			.date = TimeId(std::min(record.unixTime, maximumTime)),
+			.e2eCloudEditDate = TimeId(std::min(
+				record.editUnixTime,
+				maximumTime)),
 			.e2eCloudDecrypted = true,
 			.e2eCloudConversationId = ProtectedHistoryIdBytes(
 				group.conversationId),
@@ -1803,9 +1883,12 @@ void DesktopService::refreshMaterializedProtectedHistory(
 				document,
 				TextWithEntities{ .text = record.text });
 		}();
-		group.materializedHistory.emplace_back(
-			record.eventObjectId,
-			item->fullId());
+		group.materializedHistory.push_back({
+			.eventObjectId = record.eventObjectId,
+			.latestMutationEventObjectId
+				= record.latestMutationEventObjectId,
+			.fullId = item->fullId(),
+		});
 	}
 	_session->data().notifyHistoryChangeDelayed(history);
 }
@@ -1919,10 +2002,47 @@ std::optional<DesktopProtectedSecurity> DesktopService::protectedSecurity(
 bool DesktopService::sendProtectedText(
 		ConversationId conversationId,
 		QString text) {
+	return !text.isEmpty() && queueProtectedMessageBody(
+		conversationId,
+		{
+			.unixTime = std::uint64_t(base::unixtime::now()),
+			.textUtf8 = text.toUtf8(),
+		});
+}
+
+bool DesktopService::editProtectedText(
+		ConversationId conversationId,
+		ObjectId targetEventObjectId,
+		QString text) {
+	if (text.isEmpty()) {
+		return false;
+	}
+	return queueProtectedMessageBody(
+		conversationId,
+		{
+			.action = ProtectedMessageAction::Edit,
+			.targetEventObjectId = targetEventObjectId,
+			.textUtf8 = text.toUtf8(),
+		});
+}
+
+bool DesktopService::deleteProtectedMessage(
+		ConversationId conversationId,
+		ObjectId targetEventObjectId) {
+	return queueProtectedMessageBody(
+		conversationId,
+		{
+			.action = ProtectedMessageAction::Delete,
+			.targetEventObjectId = targetEventObjectId,
+		});
+}
+
+bool DesktopService::queueProtectedMessageBody(
+		ConversationId conversationId,
+		ProtectedMessageBody body) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
-		|| text.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
 		|| i->second->fileHashInProgress
@@ -1934,22 +2054,76 @@ bool DesktopService::sendProtectedText(
 	const auto metadata = group.metadata.metadata();
 	const auto state = group.groupLedger.state();
 	const auto epoch = group.archiveState.currentEpoch();
+	if (!metadata || !state || !epoch) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	if (body.action == ProtectedMessageAction::Create) {
+		if (!body.unixTime || body.targetEventObjectId) {
+			return false;
+		}
+	} else {
+		auto target = group.contentStore.record(body.targetEventObjectId);
+		const auto targetGuard = qScopeGuard([&] {
+			if (target) {
+				Cleanse(target->plaintext);
+			}
+		});
+		if (!target
+			|| target->senderAccountId != metadata->accountId
+			|| (body.action == ProtectedMessageAction::Edit
+				&& target->objectKind != ObjectKind::EncryptedMessageBody)
+			|| (target->objectKind != ObjectKind::EncryptedMessageBody
+				&& target->objectKind != ObjectKind::EncryptedFileManifest)) {
+			return false;
+		}
+		if (target->objectKind == ObjectKind::EncryptedMessageBody) {
+			auto targetBody = ProtectedMessageBodyCodecV1().decodePlaintext(
+				target->plaintext);
+			const auto targetIsCreate = targetBody
+				&& targetBody->action == ProtectedMessageAction::Create;
+			if (targetBody) {
+				Cleanse(targetBody->textUtf8);
+			}
+			if (!targetIsCreate) {
+				return false;
+			}
+		}
+		auto latestTime = target->unixTime;
+		auto records = group.contentStore.records(
+			0,
+			group.contentStore.size(),
+			ObjectKind::EncryptedMessageBody);
+		for (auto &record : records) {
+			auto mutation = ProtectedMessageBodyCodecV1().decodePlaintext(
+				record.plaintext);
+			if (mutation
+				&& mutation->action != ProtectedMessageAction::Create
+				&& mutation->targetEventObjectId
+					== body.targetEventObjectId) {
+			latestTime = std::max(latestTime, mutation->unixTime);
+			}
+			if (mutation) {
+				Cleanse(mutation->textUtf8);
+			}
+			Cleanse(record.plaintext);
+		}
+		const auto now = std::uint64_t(base::unixtime::now());
+		if (latestTime
+			== std::uint64_t(std::numeric_limits<std::int64_t>::max())) {
+			return false;
+		}
+		body.unixTime = std::max(now, latestTime + 1);
+	}
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
-	const auto unixTime = std::uint64_t(base::unixtime::now());
-	auto plaintext = ProtectedMessageBodyCodecV1().encodePlaintext({
-		.unixTime = unixTime,
-		.textUtf8 = text.toUtf8(),
-	});
+	auto plaintext = ProtectedMessageBodyCodecV1().encodePlaintext(body);
 	const auto plaintextGuard = qScopeGuard([&] {
 		if (plaintext) {
 			Cleanse(*plaintext);
 		}
 	});
-	if (!metadata
-		|| !state
-		|| !epoch
-		|| !eventObjectId
+	if (!eventObjectId
 		|| !contentObjectId
 		|| !plaintext
 		|| group.fileTransfer.pending()
@@ -1996,7 +2170,7 @@ bool DesktopService::sendProtectedText(
 		.groupGeneration = state->generation(),
 		.senderAccountId = metadata->accountId,
 		.senderClientId = metadata->clientId,
-		.unixTime = unixTime,
+		.unixTime = body.unixTime,
 		.observedTelegramMessageId = 0,
 		.plaintext = *plaintext,
 	});

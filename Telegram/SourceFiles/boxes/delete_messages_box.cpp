@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_histories.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
+#include "e2e_cloud/desktop/desktop_service.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "lang/lang_keys.h"
@@ -34,9 +35,61 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 namespace {
 
 constexpr auto kDeleteMessagesBoxAnimationDuration = crl::time(80);
+
+struct ProtectedDeleteTarget {
+	E2ECloud::ConversationId conversationId;
+	E2ECloud::ObjectId eventObjectId;
+};
+
+template <typename Id>
+[[nodiscard]] std::optional<Id> DecodeE2ECloudHistoryId(
+		const QByteArray &bytes) {
+	auto result = Id();
+	if (bytes.size() != int(result.bytes.size())) {
+		return std::nullopt;
+	}
+	std::copy_n(
+		reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+		result.bytes.size(),
+		result.bytes.begin());
+	return result ? std::optional<Id>(result) : std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::vector<ProtectedDeleteTarget>>
+ProtectedDeleteTargets(
+		not_null<Main::Session*> session,
+		const MessageIdsList &ids) {
+	if (ids.empty()) {
+		return std::nullopt;
+	}
+	auto result = std::vector<ProtectedDeleteTarget>();
+	result.reserve(ids.size());
+	for (const auto &id : ids) {
+		const auto item = session->data().message(id);
+		if (!item || !item->isE2ECloudDecrypted() || !item->canDelete()) {
+			return std::nullopt;
+		}
+		const auto conversationId
+			= DecodeE2ECloudHistoryId<E2ECloud::ConversationId>(
+				item->e2eCloudConversationId());
+		const auto eventObjectId
+			= DecodeE2ECloudHistoryId<E2ECloud::ObjectId>(
+				item->e2eCloudEventObjectId());
+		if (!conversationId || !eventObjectId) {
+			return std::nullopt;
+		}
+		result.push_back({ *conversationId, *eventObjectId });
+	}
+	return result;
+}
 
 } // namespace
 
@@ -183,7 +236,10 @@ void DeleteMessagesBox::prepare() {
 			: (_ids.size() == 1)
 			? tr::lng_selected_delete_sure_this(tr::now)
 			: tr::lng_selected_delete_sure(tr::now, lt_count, _ids.size());
-		if (const auto peer = checkFromSinglePeer()) {
+		const auto peer = ProtectedDeleteTargets(_session, _ids)
+			? nullptr
+			: checkFromSinglePeer();
+		if (peer) {
 			auto count = int(_ids.size());
 			if (hasScheduledMessages() || hasSavedMusicMessages()) {
 			} else if (auto revoke = revokeText(peer)) {
@@ -470,6 +526,31 @@ PaidPostType DeleteMessagesBox::paidPostType() const {
 }
 
 void DeleteMessagesBox::deleteAndClear() {
+	if (const auto targets = ProtectedDeleteTargets(_session, _ids)) {
+		const auto session = _session;
+		const auto callback = _deleteConfirmedCallback;
+		const auto weak = base::make_weak(this);
+		auto failed = false;
+		for (const auto &target : *targets) {
+			if (!session->e2eCloud().deleteProtectedMessage(
+					target.conversationId,
+					target.eventObjectId)) {
+				failed = true;
+			}
+		}
+		if (callback) {
+			callback();
+		}
+		if (const auto strong = weak.get()) {
+			strong->closeBox();
+		}
+		if (failed) {
+			Ui::Toast::Show({
+				.text = tr::lng_e2e_cloud_send_failed(tr::now),
+			});
+		}
+		return;
+	}
 	const auto warnPaidType = _confirmedDeletePaidSuggestedPosts
 		? PaidPostType::None
 		: paidPostType();

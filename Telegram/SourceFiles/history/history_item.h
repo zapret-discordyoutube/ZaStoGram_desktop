@@ -104,6 +104,7 @@ struct HistoryItemCommonFields {
 	bool ignoreForwardFrom = false;
 	bool ignoreForwardCaptions = false;
 	bool mediaSpoiler = false;
+	TimeId e2eCloudEditDate = 0;
 	bool e2eCloudDecrypted = false;
 	QByteArray e2eCloudConversationId;
 	QByteArray e2eCloudEventObjectId;
@@ -360,7 +361,8 @@ public:
 	}
 	[[nodiscard]] bool inSameSelectionGroup(
 			not_null<const HistoryItem*> other) const {
-		return isEphemeral() == other->isEphemeral();
+		return isEphemeral() == other->isEphemeral()
+			&& isE2ECloudDecrypted() == other->isE2ECloudDecrypted();
 	}
 	[[nodiscard]] bool isFakeAboutView() const {
 		return _flags & MessageFlag::FakeAboutView;

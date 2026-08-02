@@ -1171,11 +1171,53 @@ def verify_protected_plaintext_is_loaded_by_page() -> None:
     assert "(void)persistIndex(_entries, _revision);" in store
     assert "readRecord(entry);" in store
     assert "contentStore.records(offset, limit, kind)" in service
-    assert "group.contentStore.records(total - count, count)" in service
+    assert "group.contentStore.records(\n\t\ttotal - firstCount," in service
+    assert "while (rendered.size() < group.materializedHistoryLimit" \
+        in service
     assert "kE2ECloudHistoryPage = std::size_t(200)" in widget
     assert "_e2eCloudHistoryLimit + kE2ECloudHistoryPage" in widget
     assert "protectedContentCount(conversationId, kind)" in conversation
     assert "protectedContent(\n" in conversation
+
+
+def verify_protected_message_mutations_are_authorized_and_native() -> None:
+    body = source(
+        "SourceFiles/e2e_cloud/content/protected_message_body.cpp"
+    )
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    service_header = source(
+        "SourceFiles/e2e_cloud/desktop/desktop_service.h"
+    )
+    item = source("SourceFiles/history/history_item.cpp")
+    field = source("SourceFiles/chat_helpers/message_field.cpp")
+    widget = source("SourceFiles/history/history_widget.cpp")
+    delete_box = source("SourceFiles/boxes/delete_messages_box.cpp")
+    mutation_queue = function_body(
+        service,
+        "bool DesktopService::queueProtectedMessageBody(",
+        "bool DesktopService::sendProtectedFile(",
+    )
+    refresh = function_body(
+        service,
+        "void DesktopService::refreshMaterializedProtectedHistory(",
+        "std::optional<DesktopProtectedSecurity> ",
+    )
+
+    assert "AppendUint16(result, 2);" in body
+    assert "ProtectedMessageAction::Edit" in body
+    assert "ProtectedMessageAction::Delete" in body
+    assert "bool editProtectedText(" in service_header
+    assert "bool deleteProtectedMessage(" in service_header
+    assert "target->senderAccountId != metadata->accountId" \
+        in mutation_queue
+    assert "mutation.senderAccountId == entry.senderAccountId" \
+        in refresh
+    assert "entry.deleted = true;" in refresh
+    assert ".e2eCloudEditDate" in refresh
+    assert "isE2ECloudDecrypted()) {\n\t\treturn out()" in item
+    assert "item->isE2ECloudDecrypted()" in field
+    assert "editProtectedText(" in widget
+    assert "deleteProtectedMessage(" in delete_box
 
 
 def verify_local_record_reads_are_bounded() -> None:
@@ -2139,6 +2181,7 @@ def main() -> None:
     verify_protected_composer_has_no_plaintext_side_channels()
     verify_protected_history_can_page_back()
     verify_protected_plaintext_is_loaded_by_page()
+    verify_protected_message_mutations_are_authorized_and_native()
     verify_local_record_reads_are_bounded()
     verify_file_chunks_require_manifests_and_quota()
     verify_file_chunks_download_only_on_demand()

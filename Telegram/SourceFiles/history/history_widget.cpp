@@ -217,6 +217,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeData>
 
+#include <algorithm>
+#include <cstdint>
+#include <optional>
+
 namespace {
 
 constexpr auto kMessagesPerPageFirst = 30;
@@ -237,6 +241,20 @@ constexpr auto kCommonModifiers = 0
 	| Qt::MetaModifier
 	| Qt::ControlModifier;
 const auto kPsaAboutPrefix = "cloud_lng_about_psa_";
+
+template <typename Id>
+[[nodiscard]] std::optional<Id> DecodeE2ECloudHistoryId(
+		const QByteArray &bytes) {
+	auto result = Id();
+	if (bytes.size() != int(result.bytes.size())) {
+		return std::nullopt;
+	}
+	std::copy_n(
+		reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+		result.bytes.size(),
+		result.bytes.begin());
+	return result ? std::optional<Id>(result) : std::nullopt;
+}
 
 [[nodiscard]] rpl::producer<PeerData*> ActivePeerValue(
 		not_null<Window::SessionController*> controller) {
@@ -5661,6 +5679,38 @@ void HistoryWidget::send(Api::SendOptions options) {
 		if (!conversationId) {
 			openE2ECloudProtectedConversation();
 			return;
+		} else if (_editMsgId) {
+			const auto item = session().data().message(
+				_history->peer,
+				_editMsgId);
+			if (!item || !item->isE2ECloudDecrypted()) {
+				cancelEdit();
+				return;
+			} else if (text.isEmpty()) {
+				controller()->show(Box<DeleteMessagesBox>(item));
+				return;
+			}
+			const auto itemConversationId
+				= DecodeE2ECloudHistoryId<E2ECloud::ConversationId>(
+					item->e2eCloudConversationId());
+			const auto eventObjectId
+				= DecodeE2ECloudHistoryId<E2ECloud::ObjectId>(
+					item->e2eCloudEventObjectId());
+			if (!itemConversationId
+				|| *itemConversationId != *conversationId
+				|| !eventObjectId
+				|| options.scheduled
+				|| !session().e2eCloud().editProtectedText(
+					*conversationId,
+					*eventObjectId,
+					text)) {
+				controller()->showToast(
+					tr::lng_e2e_cloud_send_failed(tr::now));
+				return;
+			}
+			cancelEdit();
+			setInnerFocus();
+			return;
 		} else if (text.isEmpty()) {
 			return;
 		} else if (options.scheduled
@@ -10418,9 +10468,12 @@ void HistoryWidget::setReplyFieldsFromProcessing() {
 void HistoryWidget::editMessage(
 		not_null<HistoryItem*> item,
 		const TextSelection &selection) {
-	if (isE2ECloudProtectedPeer() || item->isE2ECloudDecrypted()) {
+	if ((isE2ECloudProtectedPeer() && !item->isE2ECloudDecrypted())
+		|| (item->isE2ECloudDecrypted()
+			&& !item->allowsEdit(base::unixtime::now()))) {
 		return;
-	} else if (Iv::Editor::ActivateEditWindowFor(&session(), item->fullId())) {
+	} else if (!item->isE2ECloudDecrypted()
+		&& Iv::Editor::ActivateEditWindowFor(&session(), item->fullId())) {
 		return;
 	}
 	if (item->richPage()) {
@@ -10483,7 +10536,9 @@ void HistoryWidget::editMessage(
 	updateReplyToName();
 	updateControlsGeometry();
 	updateField();
-	SelectTextInFieldWithMargins(_field, selection);
+	SelectTextInFieldWithMargins(
+		_field,
+		item->isE2ECloudDecrypted() ? TextSelection() : selection);
 
 	saveDraftWithTextNow();
 	setInnerFocus();
