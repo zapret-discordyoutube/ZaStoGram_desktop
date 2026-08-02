@@ -147,7 +147,8 @@ void ProtectedGroupsBox::refresh() {
 	const auto passwordVisible = state == DesktopVaultState::Locked
 		|| state == DesktopVaultState::Missing
 		|| state == DesktopVaultState::WrongPasswordOrDamaged
-		|| state == DesktopVaultState::RetryableTransportError;
+		|| state == DesktopVaultState::RetryableTransportError
+		|| state == DesktopVaultState::PermanentTransportError;
 	const auto confirmVisible = state == DesktopVaultState::Missing;
 	_password->setVisible(passwordVisible);
 	_confirm->setVisible(confirmVisible);
@@ -183,7 +184,9 @@ void ProtectedGroupsBox::refresh() {
 			? VaultReadyText(*vault)
 			: tr::lng_e2e_cloud_damaged(tr::now));
 		const auto creation = service.groupCreationState();
-		if (creation == DesktopGroupCreationState::RetryableTransportError) {
+		if (creation == DesktopGroupCreationState::RetryableTransportError
+			|| creation
+				== DesktopGroupCreationState::PermanentTransportError) {
 			addButton(tr::lng_e2e_cloud_retry(), [=] {
 				(void)_controller->session().e2eCloud()
 					.retryProtectedGroupCreation();
@@ -195,9 +198,7 @@ void ProtectedGroupsBox::refresh() {
 			|| creation
 				== DesktopGroupCreationState::PublishingBootstrap) {
 			_status->setText(tr::lng_e2e_cloud_group_publishing(tr::now));
-		} else if (creation == DesktopGroupCreationState::LocalFailure
-			|| creation
-				== DesktopGroupCreationState::PermanentTransportError) {
+		} else if (creation == DesktopGroupCreationState::LocalFailure) {
 			_status->setText(tr::lng_e2e_cloud_group_failed(tr::now));
 		} else {
 			if (!service.protectedGroups().empty()) {
@@ -228,6 +229,7 @@ void ProtectedGroupsBox::refresh() {
 		break;
 	case DesktopVaultState::PermanentTransportError:
 		_status->setText(tr::lng_e2e_cloud_transport_error(tr::now));
+		addButton(tr::lng_e2e_cloud_retry(), [=] { submit(); });
 		break;
 	case DesktopVaultState::DiscoveryRetryableError:
 		_status->setText(
@@ -239,6 +241,9 @@ void ProtectedGroupsBox::refresh() {
 	case DesktopVaultState::DiscoveryPermanentError:
 		_status->setText(
 			tr::lng_e2e_cloud_discovery_transport_error(tr::now));
+		addButton(tr::lng_e2e_cloud_retry(), [=] {
+			_controller->session().e2eCloud().ensureVaultDiscovery();
+		});
 		break;
 	case DesktopVaultState::SecurityBlocked:
 		_status->setText(tr::lng_e2e_cloud_security_blocked(tr::now));

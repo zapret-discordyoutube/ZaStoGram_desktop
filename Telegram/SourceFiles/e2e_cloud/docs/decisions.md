@@ -627,3 +627,17 @@ finishes normally before cancellation cleanup, so an accepted Telegram object
 is never confused with an unacknowledged local outbox entry. Retryable and
 permanent callback results also resume the durable cleanup instead of leaving
 the cancellation marker stuck until restart.
+
+### D058: Permanent transport failures remain manually retryable
+
+Treat `PermanentTransportError` as a prohibition on automatic retry, not as a
+requirement to restart the client. A peer can regain write access, an account
+can rejoin a group, and transport-side validation conditions can change while
+the process remains open. Expose an explicit Retry action for vault discovery,
+password-backed vault loading, and pending group publication or join.
+
+Retry the same durable group operation and identifiers when one exists. If a
+failed vault creation already discarded its pending identity, retry performs a
+fresh password-backed cloud selection; a still-missing vault then returns to
+the normal confirmed creation form. Security-blocked and local-persistence
+failures never use this path, and no transport state retries automatically.

@@ -1105,6 +1105,57 @@ def verify_control_precedes_content_observation() -> None:
     assert "beginGroupObservation(conversationId);" not in pump[active:dirty]
 
 
+def verify_transport_failures_can_be_retried_manually() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    box = source("SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp")
+    discovery = function_body(
+        service,
+        "void DesktopService::ensureVaultDiscovery()",
+        "bool DesktopService::unlock(",
+    )
+    unlock = function_body(
+        service,
+        "bool DesktopService::unlock(",
+        "bool DesktopService::createVault(",
+    )
+    retry_group = function_body(
+        service,
+        "bool DesktopService::retryProtectedGroupCreation()",
+        "std::vector<DesktopProtectedGroupSummary>",
+    )
+    refresh = function_body(
+        box,
+        "void ProtectedGroupsBox::refresh()",
+        "void ProtectedGroupsBox::submit()",
+    )
+
+    assert "DesktopVaultState::DiscoveryPermanentError" in discovery
+    assert "DesktopVaultState::PermanentTransportError" in unlock
+    assert "DesktopGroupCreationState::PermanentTransportError" \
+        in retry_group
+    assert refresh.count(
+        "case DesktopVaultState::PermanentTransportError:"
+    ) == 1
+    assert refresh.count(
+        "case DesktopVaultState::DiscoveryPermanentError:"
+    ) == 1
+    permanent = refresh[
+        refresh.index("case DesktopVaultState::PermanentTransportError:"):
+        refresh.index("case DesktopVaultState::DiscoveryRetryableError:")
+    ]
+    discovery_permanent = refresh[
+        refresh.index("case DesktopVaultState::DiscoveryPermanentError:"):
+        refresh.index("case DesktopVaultState::SecurityBlocked:")
+    ]
+    security_blocked = refresh[
+        refresh.index("case DesktopVaultState::SecurityBlocked:"):
+        refresh.index("addButton(tr::lng_close()")
+    ]
+    assert "tr::lng_e2e_cloud_retry()" in permanent
+    assert "tr::lng_e2e_cloud_retry()" in discovery_permanent
+    assert "tr::lng_e2e_cloud_retry()" not in security_blocked
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1144,6 +1195,7 @@ def main() -> None:
     verify_administration_waits_for_outgoing_work()
     verify_transient_file_work_serializes_control_changes()
     verify_control_precedes_content_observation()
+    verify_transport_failures_can_be_retried_manually()
 
 
 if __name__ == "__main__":

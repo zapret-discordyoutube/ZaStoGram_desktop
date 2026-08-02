@@ -637,7 +637,8 @@ void DesktopService::ensureVaultDiscovery() {
 	if (_sync
 		|| !_vaultAnchor.loaded()
 		|| (state != DesktopVaultState::Uninitialized
-			&& state != DesktopVaultState::DiscoveryRetryableError)) {
+			&& state != DesktopVaultState::DiscoveryRetryableError
+			&& state != DesktopVaultState::DiscoveryPermanentError)) {
 		return;
 	}
 	_vaultState = DesktopVaultState::Discovering;
@@ -663,7 +664,8 @@ bool DesktopService::unlock(QByteArray password) {
 		|| !_vaultAnchor.loaded()
 		|| (state != DesktopVaultState::Locked
 			&& state != DesktopVaultState::WrongPasswordOrDamaged
-			&& state != DesktopVaultState::RetryableTransportError)
+			&& state != DesktopVaultState::RetryableTransportError
+			&& state != DesktopVaultState::PermanentTransportError)
 		|| password.isEmpty()) {
 		return false;
 	}
@@ -900,8 +902,9 @@ bool DesktopService::createProtectedGroup(
 }
 
 bool DesktopService::retryProtectedGroupCreation() {
-	if (_groupCreationState.current()
-			!= DesktopGroupCreationState::RetryableTransportError
+	const auto state = _groupCreationState.current();
+	if ((state != DesktopGroupCreationState::RetryableTransportError
+			&& state != DesktopGroupCreationState::PermanentTransportError)
 		|| _pendingGroupJoin) {
 		return false;
 	}
