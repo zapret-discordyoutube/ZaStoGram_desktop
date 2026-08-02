@@ -168,6 +168,10 @@ public:
 	[[nodiscard]] std::size_t protectedContentCount(
 		ConversationId conversationId,
 		std::optional<ObjectKind> kind = std::nullopt) const;
+	void materializeProtectedHistory(
+		ConversationId conversationId,
+		std::uint64_t telegramPeerIdBinding,
+		std::size_t limit);
 	[[nodiscard]] std::optional<DesktopProtectedSecurity> protectedSecurity(
 		ConversationId conversationId) const;
 	[[nodiscard]] bool sendProtectedText(
@@ -319,6 +323,8 @@ private:
 		ConversationId conversationId,
 		DesktopContentState state);
 	void notifyContentRevision();
+	void clearMaterializedProtectedHistory(PendingGroupCreation &group);
+	void refreshMaterializedProtectedHistory(PendingGroupCreation &group);
 	void notifyFileTransferRevision();
 	void notifySecurityRevision();
 	void rememberProtectedPeerForPresentation(

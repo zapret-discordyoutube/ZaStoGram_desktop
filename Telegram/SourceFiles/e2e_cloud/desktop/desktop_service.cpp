@@ -56,6 +56,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "lang/lang_keys.h"
 #include "storage/storage_account.h"
 
 #include <openssl/crypto.h>
@@ -382,6 +383,30 @@ void Cleanse(QByteArray &bytes) {
 	bytes.clear();
 }
 
+[[nodiscard]] QString ProtectedHistoryText(
+		const ProtectedContentRecord &record) {
+	if (record.objectKind == ObjectKind::EncryptedMessageBody) {
+		auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
+			record.plaintext);
+		if (!body) {
+			return QString();
+		}
+		auto result = QString::fromUtf8(body->textUtf8);
+		Cleanse(body->textUtf8);
+		return u"🔒 "_q + result;
+	}
+	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+		record.plaintext);
+	return manifest
+		? u"🔒 📎 "_q + tr::lng_e2e_cloud_file(
+			tr::now,
+			lt_name,
+			QString::fromUtf8(manifest->filenameUtf8),
+			lt_size,
+			QString::number(manifest->context.plaintextSize))
+		: QString();
+}
+
 [[nodiscard]] ObjectId FreshnessResponseObjectId(
 		ObjectId challengeObjectId,
 		ClientId witnessClientId,
@@ -675,6 +700,9 @@ struct DesktopService::PendingGroupCreation {
 	QString filePreparationPath;
 	std::optional<HashedFile> filePreparationSource;
 	std::set<AccountId> safetyWitnesses;
+	std::vector<std::pair<ObjectId, FullMsgId>> materializedHistory;
+	std::uint64_t materializedHistoryPeerIdBinding = 0;
+	std::size_t materializedHistoryLimit = 0;
 	std::uint64_t safetyWitnessGeneration = 0;
 	bool ownSafetyGossipObserved = false;
 	bool observationDirty = false;
@@ -806,6 +834,12 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 }
 
 DesktopService::~DesktopService() {
+	if (_pendingGroupCreation) {
+		clearMaterializedProtectedHistory(*_pendingGroupCreation);
+	}
+	for (const auto &entry : _groups) {
+		clearMaterializedProtectedHistory(*entry.second);
+	}
 	Cleanse(_pendingUnlockPassword);
 	Cleanse(_unlockedPassword);
 }
@@ -1368,6 +1402,135 @@ std::size_t DesktopService::protectedContentCount(
 	return (i != end(_groups)) ? i->second->contentStore.size(kind) : 0;
 }
 
+void DesktopService::materializeProtectedHistory(
+		ConversationId conversationId,
+		std::uint64_t telegramPeerIdBinding,
+		std::size_t limit) {
+	const auto i = _groups.find(conversationId);
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| !telegramPeerIdBinding
+		|| !limit) {
+		return;
+	}
+	auto &group = *i->second;
+	if (group.materializedHistoryPeerIdBinding != telegramPeerIdBinding) {
+		clearMaterializedProtectedHistory(group);
+		group.materializedHistoryPeerIdBinding = telegramPeerIdBinding;
+	}
+	group.materializedHistoryLimit = std::max(
+		group.materializedHistoryLimit,
+		limit);
+	refreshMaterializedProtectedHistory(group);
+}
+
+void DesktopService::clearMaterializedProtectedHistory(
+		PendingGroupCreation &group) {
+	for (const auto &entry : group.materializedHistory) {
+		const auto fullId = entry.second;
+		const auto item = _session->data().message(fullId);
+		if (item && item->isE2ECloudDecrypted()) {
+			item->history()->destroyMessage(item);
+		}
+	}
+	group.materializedHistory.clear();
+}
+
+void DesktopService::refreshMaterializedProtectedHistory(
+		PendingGroupCreation &group) {
+	if (!group.materializedHistoryLimit) {
+		return;
+	}
+	const auto total = group.contentStore.size();
+	const auto count = std::min(total, group.materializedHistoryLimit);
+	auto records = group.contentStore.records(total - count, count);
+	const auto recordsGuard = qScopeGuard([&] {
+		for (auto &record : records) {
+			Cleanse(record.plaintext);
+		}
+	});
+	struct RenderedRecord {
+		ObjectId eventObjectId;
+		AccountId senderAccountId;
+		std::uint64_t unixTime = 0;
+		QString text;
+	};
+	auto rendered = std::vector<RenderedRecord>();
+	rendered.reserve(records.size());
+	for (const auto &record : records) {
+		auto text = ProtectedHistoryText(record);
+		if (!text.isEmpty()) {
+			rendered.push_back({
+				.eventObjectId = record.eventObjectId,
+				.senderAccountId = record.senderAccountId,
+				.unixTime = record.unixTime,
+				.text = std::move(text),
+			});
+		}
+	}
+	auto appendFrom = std::size_t();
+	if (group.materializedHistory.size() <= rendered.size()) {
+		appendFrom = group.materializedHistory.size();
+		for (auto index = std::size_t(); index != appendFrom; ++index) {
+			const auto &[objectId, fullId] = group.materializedHistory[index];
+			const auto item = _session->data().message(fullId);
+			if (objectId != rendered[index].eventObjectId
+				|| !item
+				|| !item->isE2ECloudDecrypted()) {
+				appendFrom = 0;
+				break;
+			}
+		}
+	} else {
+		appendFrom = 0;
+	}
+	if (!appendFrom && !group.materializedHistory.empty()) {
+		clearMaterializedProtectedHistory(group);
+	}
+	const auto security = protectedSecurity(group.conversationId);
+	const auto history = _session->data().history(PeerId(
+		group.materializedHistoryPeerIdBinding
+			? group.materializedHistoryPeerIdBinding
+			: group.telegramPeerIdBinding));
+	for (auto index = appendFrom; index != rendered.size(); ++index) {
+		const auto &record = rendered[index];
+		auto member = static_cast<const DesktopProtectedMember*>(nullptr);
+		if (security) {
+			const auto found = std::find_if(
+				begin(security->members),
+				end(security->members),
+				[&](const DesktopProtectedMember &value) {
+					return value.accountId == record.senderAccountId;
+				});
+			member = (found != end(security->members)) ? &*found : nullptr;
+		}
+		const auto knownMember = member && member->telegramUserIdBinding;
+		auto flags = MessageFlags();
+		auto from = PeerId();
+		if (knownMember) {
+			flags |= MessageFlag::HasFromId;
+			from = peerFromUser(UserId(member->telegramUserIdBinding));
+			if (member->local) {
+				flags |= MessageFlag::Outgoing;
+			}
+		}
+		const auto maximumTime = std::uint64_t(
+			std::numeric_limits<TimeId>::max());
+		const auto item = history->makeMessage({
+			.id = _session->data().nextLocalMessageId(),
+			.flags = flags | MessageFlag::Local,
+			.from = from,
+			.date = TimeId(std::min(record.unixTime, maximumTime)),
+			.e2eCloudDecrypted = true,
+		}, TextWithEntities{ .text = record.text }, MTP_messageMediaEmpty());
+		history->insertMessageToBlocks(item);
+		group.materializedHistory.emplace_back(
+			record.eventObjectId,
+			item->fullId());
+	}
+	_session->data().notifyHistoryChangeDelayed(history);
+}
+
 std::optional<DesktopProtectedSecurity> DesktopService::protectedSecurity(
 		ConversationId conversationId) const {
 	const auto i = _groups.find(conversationId);
@@ -1494,8 +1657,9 @@ bool DesktopService::sendProtectedText(
 	const auto epoch = group.archiveState.currentEpoch();
 	const auto eventObjectId = RandomId<ObjectId>();
 	const auto contentObjectId = RandomId<ObjectId>();
+	const auto unixTime = std::uint64_t(base::unixtime::now());
 	auto plaintext = ProtectedMessageBodyCodecV1().encodePlaintext({
-		.unixTime = std::uint64_t(base::unixtime::now()),
+		.unixTime = unixTime,
 		.textUtf8 = text.toUtf8(),
 	});
 	const auto plaintextGuard = qScopeGuard([&] {
@@ -1544,6 +1708,30 @@ bool DesktopService::sendProtectedText(
 	if (queued != ArchivedContentQueueResult::Queued) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
+	}
+	const auto stored = group.contentStore.append({
+		.conversationId = conversationId,
+		.eventObjectId = *eventObjectId,
+		.contentObjectId = *contentObjectId,
+		.objectKind = ObjectKind::EncryptedMessageBody,
+		.groupGeneration = state->generation(),
+		.senderAccountId = metadata->accountId,
+		.senderClientId = metadata->clientId,
+		.unixTime = unixTime,
+		.observedTelegramMessageId = 0,
+		.plaintext = *plaintext,
+	});
+	if (stored == ContentStoreAppendResult::Conflict) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		setContentState(conversationId, DesktopContentState::SecurityBlocked);
+		return false;
+	} else if (stored == ContentStoreAppendResult::InvalidRecord
+		|| stored == ContentStoreAppendResult::PersistenceFailed) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	if (stored == ContentStoreAppendResult::Stored) {
+		notifyContentRevision();
 	}
 	pumpActiveOutbox(conversationId);
 	return true;
@@ -2234,6 +2422,9 @@ rpl::producer<std::uint64_t> DesktopService::contentRevisionValue() const {
 }
 
 void DesktopService::notifyContentRevision() {
+	for (const auto &entry : _groups) {
+		refreshMaterializedProtectedHistory(*entry.second);
+	}
 	const auto revision = _contentRevision.current();
 	if (revision != std::numeric_limits<std::uint64_t>::max()) {
 		_contentRevision = revision + 1;
@@ -2282,6 +2473,12 @@ void DesktopService::lock() {
 	}
 	_sync.reset();
 	_pendingCreation.reset();
+	if (_pendingGroupCreation) {
+		clearMaterializedProtectedHistory(*_pendingGroupCreation);
+	}
+	for (const auto &entry : _groups) {
+		clearMaterializedProtectedHistory(*entry.second);
+	}
 	_pendingGroupCreation.reset();
 	_pendingGroupJoin.reset();
 	_pendingGroupDiscovery.reset();
@@ -4242,6 +4439,30 @@ bool DesktopService::queuePendingFileManifest(
 				DesktopContentState::LocalFailure);
 			return false;
 		}
+	}
+	const auto stored = group.contentStore.append({
+		.conversationId = conversationId,
+		.eventObjectId = pending->eventObjectId,
+		.contentObjectId = pending->contentObjectId,
+		.objectKind = ObjectKind::EncryptedFileManifest,
+		.groupGeneration = pending->groupGeneration,
+		.senderAccountId = metadata->accountId,
+		.senderClientId = metadata->clientId,
+		.unixTime = manifest->unixTime,
+		.observedTelegramMessageId = 0,
+		.plaintext = pending->manifestPlaintext,
+	});
+	if (stored == ContentStoreAppendResult::Conflict) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		setContentState(conversationId, DesktopContentState::SecurityBlocked);
+		return false;
+	} else if (stored == ContentStoreAppendResult::InvalidRecord
+		|| stored == ContentStoreAppendResult::PersistenceFailed) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return false;
+	}
+	if (stored == ContentStoreAppendResult::Stored) {
+		notifyContentRevision();
 	}
 	return true;
 }

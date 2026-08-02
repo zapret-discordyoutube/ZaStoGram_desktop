@@ -638,6 +638,7 @@ bool AddReplyToMessageAction(
 	const auto topic = item ? item->topic() : nullptr;
 	const auto peer = item ? item->history()->peer.get() : nullptr;
 	if (!item
+		|| item->isE2ECloudDecrypted()
 		|| (!item->isRegular()
 			&& (!item->isEphemeral() || item->out()))
 		|| (context != Context::History

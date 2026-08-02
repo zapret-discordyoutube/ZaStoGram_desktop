@@ -7,10 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "e2e_cloud/desktop/protected_conversation_box.h"
 
-#include "e2e_cloud/content/protected_message_body.h"
 #include "e2e_cloud/desktop/desktop_service.h"
 #include "e2e_cloud/files/private_file_manifest.h"
-#include "e2e_cloud/identity/account_identity.h"
 #include "core/application.h"
 #include "core/file_utilities.h"
 #include "lang/lang_keys.h"
@@ -19,7 +17,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/layers/generic_box.h"
 #include "ui/toast/toast.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
@@ -28,8 +25,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
-#include <QtCore/QDateTime>
-#include <QtCore/QLocale>
 #include <QtCore/QScopeGuard>
 
 #include <algorithm>
@@ -37,53 +32,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 namespace {
-
-[[nodiscard]] QString ShortAccountCode(AccountId accountId) {
-	auto digest = Digest();
-	digest.bytes = accountId.bytes;
-	const auto code = FormatSafetyCode(digest);
-	return code ? code->left(11) : QString();
-}
-
-[[nodiscard]] QString AuthorText(
-		const DesktopService &service,
-		AccountId senderAccountId) {
-	const auto vault = service.vault();
-	const auto localAccountId = vault
-		? DeriveAccountId(vault->identity.credential, OpenSslSha256Provider())
-		: std::nullopt;
-	return (localAccountId && *localAccountId == senderAccountId)
-		? tr::lng_e2e_cloud_you(tr::now)
-		: tr::lng_e2e_cloud_participant(
-			tr::now,
-			lt_code,
-			ShortAccountCode(senderAccountId));
-}
-
-[[nodiscard]] QString ContentText(
-		const ProtectedContentRecord &record) {
-	if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-		auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
-			record.plaintext);
-		if (!body) {
-			return QString();
-		}
-		auto result = QString::fromUtf8(body->textUtf8);
-		OPENSSL_cleanse(body->textUtf8.data(), body->textUtf8.size());
-		body->textUtf8.clear();
-		return result;
-	}
-	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
-		record.plaintext);
-	return manifest
-		? tr::lng_e2e_cloud_file(
-			tr::now,
-			lt_name,
-			QString::fromUtf8(manifest->filenameUtf8),
-			lt_size,
-			QString::number(manifest->context.plaintextSize))
-		: QString();
-}
 
 void CleanseRecords(std::vector<ProtectedContentRecord> &records) {
 	for (auto &record : records) {
@@ -115,34 +63,6 @@ void CloseWhenSecurityChanges(
 	}, box->lifetime());
 }
 
-[[nodiscard]] QString RecordText(
-		const DesktopService &service,
-		const ProtectedContentRecord &record) {
-	const auto content = ContentText(record);
-	if (content.isEmpty()) {
-		return QString();
-	}
-	const auto time = QLocale().toString(
-		QDateTime::fromSecsSinceEpoch(qint64(record.unixTime)),
-		QLocale::ShortFormat);
-	return AuthorText(service, record.senderAccountId)
-		+ u" · "_q
-		+ time
-		+ u"\n"_q
-		+ content;
-}
-
-[[nodiscard]] QString RecordHeaderText(
-		const DesktopService &service,
-		const ProtectedContentRecord &record) {
-	const auto time = QLocale().toString(
-		QDateTime::fromSecsSinceEpoch(qint64(record.unixTime)),
-		QLocale::ShortFormat);
-	return AuthorText(service, record.senderAccountId)
-		+ u" · "_q
-		+ time;
-}
-
 void SaveProtectedRecord(
 		not_null<DesktopService*> service,
 		ConversationId conversationId,
@@ -171,123 +91,6 @@ void SaveProtectedRecord(
 					}));
 			}
 		}));
-}
-
-void RebuildConversationRecords(
-		not_null<Ui::VerticalLayout*> container,
-		DesktopService &service,
-		ConversationId conversationId,
-		not_null<std::size_t*> visibleLimit) {
-	container->clear();
-	const auto total = service.protectedContentCount(conversationId);
-	if (!total) {
-		container->add(
-			object_ptr<Ui::FlatLabel>(
-				container,
-				tr::lng_e2e_cloud_content_empty(),
-				st::boxLabel),
-			st::boxRowPadding);
-		return;
-	}
-	constexpr auto kVisiblePageSize = std::size_t(200);
-	const auto visible = std::min(*visibleLimit, total);
-	const auto first = total - visible;
-	auto records = service.protectedContent(
-		conversationId,
-		first,
-		visible);
-	const auto recordsGuard = qScopeGuard([&] {
-		CleanseRecords(records);
-	});
-	if (records.size() != visible) {
-		container->add(
-			object_ptr<Ui::FlatLabel>(
-				container,
-				tr::lng_e2e_cloud_content_failed(),
-				st::boxLabel),
-			st::boxRowPadding);
-		return;
-	}
-	if (first) {
-		const auto count = std::min(kVisiblePageSize, first);
-		const auto button = container->add(
-			object_ptr<Ui::SettingsButton>(
-				container,
-				tr::lng_e2e_cloud_show_older(
-					lt_count,
-					rpl::single(int(count)) | tr::to_count()),
-				st::settingsButton),
-			st::boxRowPadding,
-			style::al_top);
-		button->setClickedCallback([=, service = &service] {
-			*visibleLimit += count;
-			crl::on_main(container, [=] {
-				RebuildConversationRecords(
-					container,
-					*service,
-					conversationId,
-					visibleLimit);
-			});
-		});
-	}
-	const auto limited = (total > kVisiblePageSize)
-		? visible
-		: 0;
-	if (limited) {
-		container->add(
-			object_ptr<Ui::FlatLabel>(
-				container,
-				tr::lng_e2e_cloud_recent_messages(
-					tr::now,
-					lt_count,
-					int(limited)),
-				st::boxLabel),
-			st::boxRowPadding);
-	}
-	for (auto index = std::size_t(); index != records.size(); ++index) {
-		const auto &record = records[index];
-		const auto content = ContentText(record);
-		if (content.isEmpty()) {
-			continue;
-		}
-		if (record.objectKind != ObjectKind::EncryptedFileManifest) {
-			container->add(
-				object_ptr<Ui::FlatLabel>(
-					container,
-					RecordText(service, record),
-					st::boxLabel),
-				st::boxRowPadding);
-			continue;
-		}
-		const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
-			record.plaintext);
-		if (!manifest) {
-			continue;
-		}
-		const auto filename = QString::fromUtf8(manifest->filenameUtf8);
-		container->add(
-			object_ptr<Ui::FlatLabel>(
-				container,
-				RecordHeaderText(service, record),
-				st::boxLabel),
-			st::boxRowPadding);
-		const auto button = container->add(
-			object_ptr<Ui::SettingsButton>(
-				container,
-				rpl::single(content),
-				st::settingsButton),
-			st::boxRowPadding,
-			style::al_top);
-		const auto eventObjectId = record.eventObjectId;
-		button->setClickedCallback([=, service = &service] {
-			SaveProtectedRecord(
-				service,
-				conversationId,
-				eventObjectId,
-				filename,
-				container.get());
-		});
-	}
 }
 
 void RebuildProtectedFiles(
@@ -795,38 +598,9 @@ void ShowProtectedConversation(
 			box,
 			QString(),
 			st::boxLabel));
-		const auto messages = box->addRow(
-			object_ptr<Ui::VerticalLayout>(box),
-			style::margins());
-		const auto field = box->addRow(object_ptr<Ui::InputField>(
-			box,
-			st::defaultInputField,
-			tr::lng_e2e_cloud_message()));
-		const auto visibleRecords = box->lifetime().make_state<std::size_t>(200);
 		const auto refreshStatus = [=] {
 			status->setText(ContentStatusText(*service, conversationId));
-			const auto current = service->protectedGroups();
-			const auto found = std::find_if(
-				begin(current),
-				end(current),
-				[&](const auto &value) {
-					return value.conversationId == conversationId;
-				});
-			field->setDisabled(
-				found == end(current)
-				|| found->removed
-				|| !found->active
-				|| found->fileTransferPending);
 		};
-		service->contentRevisionValue(
-		) | rpl::on_next([=](std::uint64_t) {
-			RebuildConversationRecords(
-				messages,
-				*service,
-				conversationId,
-				visibleRecords);
-			refreshStatus();
-		}, box->lifetime());
 		service->contentStateValue(
 		) | rpl::on_next([=](DesktopContentState) {
 			refreshStatus();
@@ -835,36 +609,6 @@ void ShowProtectedConversation(
 		) | rpl::on_next([=](std::uint64_t) {
 			refreshStatus();
 		}, box->lifetime());
-		box->setFocusCallback([=] { field->setFocusFast(); });
-		const auto send = [=] {
-			const auto text = field->getLastText();
-			if (text.isEmpty()) {
-				field->showError();
-				return;
-			}
-			if (service->sendProtectedText(conversationId, text)) {
-				field->setText(QString());
-			} else {
-				field->showError();
-			}
-		};
-		field->submits() | rpl::on_next([=](Qt::KeyboardModifiers) {
-			send();
-		}, field->lifetime());
-		box->addButton(tr::lng_e2e_cloud_send(), send);
-		box->addButton(tr::lng_e2e_cloud_send_file(), [=] {
-			FileDialog::GetOpenPath(
-				Core::App().getFileDialogParent(),
-				tr::lng_choose_file(tr::now),
-				FileDialog::AllFilesFilter(),
-				crl::guard(box, [=](FileDialog::OpenResult &&result) {
-					if (!result.paths.empty()) {
-						(void)service->sendProtectedFile(
-							conversationId,
-							result.paths.front());
-					}
-				}));
-		});
 		const auto cancelFile = box->addButton(
 			tr::lng_e2e_cloud_cancel_file(),
 			[=] {
@@ -918,11 +662,6 @@ void ShowProtectedConversation(
 		});
 		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 		service->synchronizeProtectedContent(conversationId);
-		RebuildConversationRecords(
-			messages,
-			*service,
-			conversationId,
-			visibleRecords);
 		refreshStatus();
 	}));
 }

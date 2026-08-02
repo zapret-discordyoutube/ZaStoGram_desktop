@@ -779,7 +779,9 @@ void TopBarWidget::paintStatus(
 		int outerWidth) {
 	using Section = Dialogs::EntryState::Section;
 	const auto section = _activeChat.section;
-	if (section == Section::Replies || section == Section::SavedSublist) {
+	if (section == Section::Replies
+		|| section == Section::SavedSublist
+		|| !_customTitleText.isEmpty()) {
 		p.setPen(st::historyStatusFg);
 		p.drawTextLeft(left, top, outerWidth, _customTitleText);
 	} else {

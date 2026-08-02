@@ -22,25 +22,37 @@ The first Desktop surface supports:
 - owner/administrator role, removal, default-history, and per-member-history
   changes.
 
-Stock Telegram message widgets are not reused for plaintext protected content.
 ZaStoGram hides exact reserved carrier documents from the ordinary timeline and
 shared-media index, replaces their preview with a generic encrypted-activity
-label, and disables forwarding and clipboard export. A carrier peer shows one
-full-width action that opens the protected conversation instead of Telegram's
-text, attachment, voice, bot, edit, and forwarding controls. The protected
-window is fed only from locally authenticated and decrypted records.
+label, and disables forwarding and clipboard export. Locally authenticated and
+decrypted records are materialized as client-side messages in the ordinary
+Telegram group timeline. They have an explicit lock marker and reuse the native
+message layout, scrolling, selection, and copy behavior without becoming
+Telegram messages. They cannot be forwarded, replied to, edited, pinned,
+deleted, or reacted to through Telegram APIs.
+
+An unlocked active protected group keeps the ordinary text field, send button,
+and attachment picker. Text submission is intercepted before all rich-message,
+preview, scheduling, payment, and ordinary send paths and is queued through the
+protected content service. Local file paths are routed through the protected
+file pipeline. Voice, bots, stickers, GIFs, inline results, contacts, cloud
+drafts, webpage previews, send-as, scheduling, forwarding, editing, and stale
+ordinary send dialogs are hidden or fail closed. When the vault or authenticated
+group runtime is unavailable, the composer is replaced by the protected-groups
+unlock or recovery action.
 Reserved vault metadata is recognized only in Saved Messages, and reserved
 group metadata only in basic groups or supergroups. A same-named ordinary file
 in a direct chat or broadcast channel therefore remains an ordinary file.
 Once a group is authenticated or restored as protected, an account-local
-durable peer marker permanently keeps Telegram's ordinary composer disabled for
-that peer, including before vault unlock and after carrier messages are unloaded
-or deleted. A basic-group marker is inherited and durably recorded by its
-migrated supergroup peer before Telegram's current peer classification is
-trusted. An authenticated marker also takes precedence if the server later
-classifies that peer as a broadcast channel. Markers are monotonic and are
-never removed by server-visible history changes. A malformed local marker
-record conservatively disables ordinary composition for all group peers until
+durable peer marker permanently keeps Telegram's ordinary sender disabled for
+that peer, including before vault unlock and after carrier messages are
+unloaded or deleted. The visible composer is enabled only when it can be routed
+to an authenticated protected runtime. A basic-group marker is inherited and
+durably recorded by its migrated supergroup peer before Telegram's current peer
+classification is trusted. An authenticated marker also takes precedence if
+the server later classifies that peer as a broadcast channel. Markers are
+monotonic and are never removed by server-visible history changes. A malformed
+local marker record conservatively blocks composition for all group peers until
 the protected state can be repaired. Reserved metadata alone blocks the
 currently observed peer but does not create a durable marker before
 cryptographic verification.
@@ -144,11 +156,13 @@ observed Telegram message boundary. Every page remains untrusted. Telegram
 message IDs determine only where to resume scanning and never authorize,
 identify, or order protected content.
 
-The Desktop conversation initially decrypts and renders only the newest 200
-authenticated local records. An in-place older-history action expands that
-window in 200-record pages without discarding or redownloading the earlier
-synchronized archive. The separate files view uses the same bounded paging;
-opening either view no longer copies and sorts the complete decrypted history.
+The native Telegram timeline initially materializes only the newest 200
+authenticated local records. Scrolling near its top expands that window in
+200-record pages without discarding or redownloading the earlier synchronized
+archive. Materialization is silent: restoring archive records does not create
+Telegram unread counts or notifications. The separate files and security views
+remain management surfaces and use the same bounded content store; ordinary
+message composition no longer happens in a separate window.
 
 ## Sending and freshness
 

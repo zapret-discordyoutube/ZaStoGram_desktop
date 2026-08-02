@@ -82,7 +82,20 @@ ProtectedGroupsBox::ProtectedGroupsBox(
 , _confirm(
 	this,
 	st::defaultInputField,
-	tr::lng_e2e_cloud_password_confirm()) {
+	tr::lng_e2e_cloud_password_confirm())
+, _manage(this, tr::lng_e2e_cloud_manage(), st::defaultBoxButton)
+, _newGroup(this, tr::lng_e2e_cloud_new_group(), st::defaultBoxButton)
+, _lock(this, tr::lng_e2e_cloud_lock(), st::defaultBoxButton) {
+	_manage->setClickedCallback([=] {
+		ShowProtectedGroupList(_controller);
+	});
+	_newGroup->setClickedCallback([=] { showGroupCreation(); });
+	_lock->setClickedCallback([=] {
+		_controller->session().e2eCloud().lock();
+	});
+	_manage->hide();
+	_newGroup->hide();
+	_lock->hide();
 }
 
 void ProtectedGroupsBox::prepare() {
@@ -138,6 +151,18 @@ void ProtectedGroupsBox::updateControlsGeometry() {
 		_confirm->moveToLeft(st::boxPadding.left(), top);
 		top += _confirm->height() + st::boxMediumSkip;
 	}
+	const auto placeButton = [&](
+			const object_ptr<Ui::RoundButton> &button) {
+		if (button->isHidden()) {
+			return;
+		}
+		button->resize(available, button->height());
+		button->moveToLeft(st::boxPadding.left(), top);
+		top += button->height() + st::boxMediumSkip;
+	};
+	placeButton(_manage);
+	placeButton(_newGroup);
+	placeButton(_lock);
 	setDimensions(st::boxWidth, top + st::boxPadding.bottom());
 }
 
@@ -156,6 +181,9 @@ void ProtectedGroupsBox::refresh() {
 		state == DesktopVaultState::Loading
 		|| state == DesktopVaultState::Creating);
 	_confirm->setDisabled(state == DesktopVaultState::Creating);
+	_manage->hide();
+	_newGroup->hide();
+	_lock->hide();
 	clearButtons();
 	switch (state) {
 	case DesktopVaultState::Uninitialized:
@@ -187,9 +215,7 @@ void ProtectedGroupsBox::refresh() {
 			: tr::lng_e2e_cloud_damaged(tr::now));
 		const auto creation = service.groupCreationState();
 		if (!service.protectedGroups().empty()) {
-			addButton(tr::lng_e2e_cloud_open_chats(), [=] {
-				ShowProtectedGroupList(_controller);
-			});
+			_manage->show();
 		}
 		if (creation == DesktopGroupCreationState::RetryableTransportError
 			|| creation
@@ -208,13 +234,9 @@ void ProtectedGroupsBox::refresh() {
 		} else if (creation == DesktopGroupCreationState::LocalFailure) {
 			_status->setText(tr::lng_e2e_cloud_group_failed(tr::now));
 		} else {
-			addButton(tr::lng_e2e_cloud_new_group(), [=] {
-				showGroupCreation();
-			});
+			_newGroup->show();
 		}
-		addButton(tr::lng_e2e_cloud_lock(), [=] {
-			_controller->session().e2eCloud().lock();
-		});
+		_lock->show();
 		break;
 	}
 	case DesktopVaultState::WrongPasswordOrDamaged:

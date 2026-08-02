@@ -112,7 +112,8 @@ The first core slice now contains:
   administration;
 - fail-closed Desktop carrier presentation that hides service containers from
   the ordinary timeline/shared media, removes ordinary export actions, and
-  replaces plaintext composition with the protected-conversation entry point;
+  routes the native group composer and local-file picker through the protected
+  service while rendering authenticated local records in the native timeline;
 - focused state-machine and negative tests in the standard desktop test area.
 
 Test doubles remain outside the production target. Live carrier integration

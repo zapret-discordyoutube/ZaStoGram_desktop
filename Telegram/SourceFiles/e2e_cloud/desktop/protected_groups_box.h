@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Ui {
 class FlatLabel;
 class PasswordInput;
+class RoundButton;
 } // namespace Ui
 
 namespace Window {
@@ -41,6 +42,9 @@ private:
 	object_ptr<Ui::FlatLabel> _status;
 	object_ptr<Ui::PasswordInput> _password;
 	object_ptr<Ui::PasswordInput> _confirm;
+	object_ptr<Ui::RoundButton> _manage;
+	object_ptr<Ui::RoundButton> _newGroup;
+	object_ptr<Ui::RoundButton> _lock;
 };
 
 } // namespace E2ECloud

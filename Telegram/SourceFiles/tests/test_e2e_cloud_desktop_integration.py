@@ -975,12 +975,103 @@ def verify_protected_groups_layout_uses_own_visibility() -> None:
     assert "isVisible()" not in box
     assert box.count("isHidden()") >= 4
     assert "GroupInfoBox::Type::Megagroup" in box
-    open_chats = ready.index("tr::lng_e2e_cloud_open_chats()")
-    retryable = ready.index(
-        "creation == DesktopGroupCreationState::RetryableTransportError"
+    assert "placeButton(_newGroup);" in box
+    assert "placeButton(_lock);" in box
+    assert "placeButton(_manage);" in box
+    assert "_manage->show();" in ready
+    assert "_newGroup->show();" in ready
+    assert "_lock->show();" in ready
+    assert "tr::lng_e2e_cloud_open_chats()" not in ready
+
+
+def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    item = source("SourceFiles/history/history_item.cpp")
+    widget = source("SourceFiles/history/history_widget.cpp")
+    top_bar = source(
+        "SourceFiles/history/view/history_view_top_bar_widget.cpp"
     )
-    assert open_chats < retryable
-    assert ready.count("tr::lng_e2e_cloud_open_chats()") == 1
+    conversation = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
+    materialize = function_body(
+        service,
+        "void DesktopService::materializeProtectedHistory(",
+        "void DesktopService::clearMaterializedProtectedHistory(",
+    )
+    refresh = function_body(
+        service,
+        "void DesktopService::refreshMaterializedProtectedHistory(",
+        "std::optional<DesktopProtectedSecurity> ",
+    )
+    send = function_body(
+        widget,
+        "void HistoryWidget::send(Api::SendOptions options)",
+        "void HistoryWidget::sendRichDraft(",
+    )
+    attach = function_body(
+        widget,
+        "bool HistoryWidget::confirmSendingFiles(\n"
+        "\t\tconst QStringList &files,",
+        "bool HistoryWidget::confirmSendingFiles(\n"
+        "\t\tUi::PreparedList &&list,",
+    )
+    can_send = function_body(
+        widget,
+        "bool HistoryWidget::updateCanSendMessage()",
+        "void HistoryWidget::forwardSelected()",
+    )
+
+    assert "materializedHistoryPeerIdBinding" in materialize
+    assert "history->makeMessage({" in refresh
+    assert "history->insertMessageToBlocks(item);" in refresh
+    assert ".e2eCloudDecrypted = true" in refresh
+    assert 'u"🔒 "_q' in service
+    assert "tr::lng_e2e_cloud_header_status(tr::now)" in widget
+    assert "|| !_customTitleText.isEmpty()" in top_bar
+    assert "sendProtectedText(" in send
+    assert "session().api().sendMessage(" not in send
+    assert "sendE2ECloudProtectedFiles(files)" in attach
+    assert "protectedCanSend" in can_send
+    assert "? protectedCanSend" in can_send
+    assert "isE2ECloudDecrypted() || !isRegular()" in item
+    assert "isE2ECloudDecrypted() || !isRegular() || isService()" in item
+    details = function_body(
+        conversation,
+        "void ShowProtectedConversation(",
+        "} // namespace E2ECloud",
+    )
+    assert "Ui::InputField" not in details
+    assert "sendProtectedText(" not in details
+    assert "sendProtectedFile(" not in details
+
+
+def verify_protected_composer_has_no_plaintext_side_channels() -> None:
+    widget = source("SourceFiles/history/history_widget.cpp")
+    cloud_draft = function_body(
+        widget,
+        "void HistoryWidget::saveCloudDraft()",
+        "void HistoryWidget::writeDraftTexts()",
+    )
+    menu = function_body(
+        widget,
+        "SendMenu::Details HistoryWidget::sendMenuDetails() const",
+        "SendMenu::Details HistoryWidget::saveMenuDetails() const",
+    )
+    preview = function_body(
+        widget,
+        "bool HistoryWidget::updateCanSendMessage()",
+        "void HistoryWidget::forwardSelected()",
+    )
+
+    assert "isE2ECloudProtectedPeer()" in cloud_draft
+    assert "isE2ECloudProtectedPeer()" in menu
+    assert "_preview->setDisabled(protectedPeer" in preview
+    assert "!isE2ECloudProtectedPeer()" in function_body(
+        widget,
+        "bool HistoryWidget::readyToForward() const",
+        "bool HistoryWidget::hasSilentToggle() const",
+    )
 
 
 def verify_protected_history_can_page_back() -> None:
@@ -1001,6 +1092,7 @@ def verify_protected_plaintext_is_loaded_by_page() -> None:
         "SourceFiles/e2e_cloud/storage/persistent_content_store.cpp"
     )
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    widget = source("SourceFiles/history/history_widget.cpp")
     conversation = source(
         "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
     )
@@ -1014,8 +1106,11 @@ def verify_protected_plaintext_is_loaded_by_page() -> None:
     assert "(void)persistIndex(_entries, _revision);" in store
     assert "readRecord(entry);" in store
     assert "contentStore.records(offset, limit, kind)" in service
-    assert conversation.count("protectedContentCount(") >= 2
-    assert conversation.count("protectedContent(\n") >= 2
+    assert "group.contentStore.records(total - count, count)" in service
+    assert "kE2ECloudHistoryPage = std::size_t(200)" in widget
+    assert "_e2eCloudHistoryLimit + kE2ECloudHistoryPage" in widget
+    assert "protectedContentCount(conversationId, kind)" in conversation
+    assert "protectedContent(\n" in conversation
 
 
 def verify_local_record_reads_are_bounded() -> None:
@@ -1769,7 +1864,7 @@ def verify_open_protected_views_do_not_keep_stale_state() -> None:
     assert "rpl::skip(1)" in conversation
     assert "box->closeBox();" in conversation[
         conversation.index("void CloseWhenSecurityChanges("):
-        conversation.index("[[nodiscard]] QString RecordText(")
+        conversation.index("void SaveProtectedRecord(")
     ]
     assert "CloseWhenSecurityChanges(box, service);" in member
     assert "CloseWhenSecurityChanges(box, service);" in security
@@ -1974,6 +2069,8 @@ def main() -> None:
     verify_freshness_challenges_resume_and_replays_stop()
     verify_observed_mls_receipts_finish_crash_recovery()
     verify_protected_groups_layout_uses_own_visibility()
+    verify_protected_history_uses_the_native_timeline_and_composer()
+    verify_protected_composer_has_no_plaintext_side_channels()
     verify_protected_history_can_page_back()
     verify_protected_plaintext_is_loaded_by_page()
     verify_local_record_reads_are_bounded()

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "history/view/controls/history_view_compose_media_edit_manager.h"
+#include "e2e_cloud/core/types.h"
 #include "history/view/history_view_corner_buttons.h"
 #include "history/history_drag_area.h"
 #include "history/history_item_helpers.h"
@@ -582,6 +583,12 @@ private:
 	[[nodiscard]] Data::ForumTopic *resolveReplyToTopic();
 	[[nodiscard]] bool canWriteMessage() const;
 	[[nodiscard]] bool isE2ECloudProtectedPeer() const;
+	[[nodiscard]] std::optional<E2ECloud::ConversationId>
+		e2eCloudProtectedConversation() const;
+	[[nodiscard]] bool canSendE2ECloudProtectedMessage() const;
+	void refreshE2ECloudProtectedHistory(bool synchronize = false);
+	[[nodiscard]] bool sendE2ECloudProtectedFiles(
+		const QStringList &paths);
 	void openE2ECloudProtectedConversation();
 	[[nodiscard]] bool hasEnoughLinesForAi() const;
 	[[nodiscard]] bool hasEnoughLinesForExpand() const;
@@ -1003,6 +1010,7 @@ private:
 
 	bool _sponsoredMessagesStateKnown = false;
 	bool _justMarkingAsRead = false;
+	std::size_t _e2eCloudHistoryLimit = 200;
 
 	object_ptr<Ui::PlainShadow> _topShadow;
 	bool _inGrab = false;

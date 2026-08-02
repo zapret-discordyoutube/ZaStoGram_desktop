@@ -214,12 +214,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_iv.h"
 
 #include <QtGui/QWindow>
+#include <QtCore/QFileInfo>
 #include <QtCore/QMimeData>
 
 namespace {
 
 constexpr auto kMessagesPerPageFirst = 30;
 constexpr auto kMessagesPerPage = 50;
+constexpr auto kE2ECloudHistoryPage = std::size_t(200);
 constexpr auto kPreloadHeightsCount = 3; // when 3 screens to scroll left make a preload request
 constexpr auto kScrollToVoiceAfterScrolledMs = 1000;
 constexpr auto kSkipRepaintWhileScrollMs = 100;
@@ -341,7 +343,7 @@ HistoryWidget::HistoryWidget(
 			Window::GifPauseReason::Any);
 	},
 	[=] {
-		if (_history) {
+		if (_history && !isE2ECloudProtectedPeer()) {
 			Iv::Editor::ShowComposeBox(
 				controller,
 				_history->peer,
@@ -706,6 +708,18 @@ HistoryWidget::HistoryWidget(
 		protectedService.vaultStateValue() | rpl::to_empty,
 		protectedService.groupCreationStateValue() | rpl::to_empty
 	) | rpl::on_next([=] {
+		refreshE2ECloudProtectedHistory(true);
+		if (_history && updateCanSendMessage()) {
+			updateControlsVisibility();
+			updateControlsGeometry();
+		}
+	}, lifetime());
+	protectedService.contentRevisionValue(
+	) | rpl::on_next([=](std::uint64_t) {
+		refreshE2ECloudProtectedHistory();
+	}, lifetime());
+	protectedService.fileTransferRevisionValue(
+	) | rpl::on_next([=](std::uint64_t) {
 		if (_history && updateCanSendMessage()) {
 			updateControlsVisibility();
 			updateControlsGeometry();
@@ -1436,7 +1450,7 @@ void HistoryWidget::initExpandButton() {
 	_expand->hide();
 	_expand->setAccessibleName(tr::lng_article_menu_item(tr::now));
 	_expand->setClickedCallback([=] {
-		if (!_history) {
+		if (!_history || isE2ECloudProtectedPeer()) {
 			return;
 		}
 		const auto window = controller();
@@ -1473,6 +1487,9 @@ void HistoryWidget::sendTextAsFile(
 		TextWithTags restoreText,
 		int restorePosition,
 		int restoreAnchor) {
+	if (isE2ECloudProtectedPeer()) {
+		return;
+	}
 	auto result = Ui::PrepareTextAsFile(fileText);
 
 	_field->setTextWithTags({});
@@ -1607,7 +1624,7 @@ void HistoryWidget::supportInsertText(const QString &text) {
 }
 
 void HistoryWidget::supportShareContact(Support::Contact contact) {
-	if (!_history) {
+	if (!_history || isE2ECloudProtectedPeer()) {
 		return;
 	}
 	supportInsertText(contact.comment);
@@ -1829,7 +1846,7 @@ void HistoryWidget::initFieldAutocomplete() {
 		return;
 	}
 	const auto processShortcut = [=](QString shortcut) {
-		if (!_peer) {
+		if (!_peer || isE2ECloudProtectedPeer()) {
 			return;
 		}
 		const auto messages = &_peer->owner().shortcutMessages();
@@ -1880,7 +1897,7 @@ void HistoryWidget::initFieldAutocomplete() {
 		},
 		.setText = [=](TextWithTags text) { if (_peer) setFieldText(text); },
 		.sendBotCommand = [=](QString command) {
-			if (_peer) {
+			if (_peer && !isE2ECloudProtectedPeer()) {
 				sendBotCommand({ _peer, command, FullMsgId(), replyTo() });
 				session().api().finishForwarding(prepareSendAction({}));
 			}
@@ -2319,6 +2336,9 @@ void HistoryWidget::migrateFieldToRichEditor() {
 
 void HistoryWidget::fileChosen(ChatHelpers::FileChosen &&data) {
 	controller()->hideLayer(anim::type::normal);
+	if (isE2ECloudProtectedPeer()) {
+		return;
+	}
 	if (const auto info = data.document->sticker()
 		; info && info->setType == Data::StickersType::Emoji) {
 		if (data.document->isPremiumEmoji()
@@ -2377,7 +2397,7 @@ bool HistoryWidget::processChosenSticker(ChatHelpers::FileChosen &&chosen) {
 }
 
 void HistoryWidget::saveCloudDraft() {
-	if (bypassNormalDraftHandling()) {
+	if (bypassNormalDraftHandling() || isE2ECloudProtectedPeer()) {
 		_saveCloudDraftTimer.cancel();
 		return;
 	}
@@ -2420,7 +2440,7 @@ void HistoryWidget::writeDrafts() {
 	}
 	_saveDraftText = false;
 
-	if (!_editMsgId && !_inlineBot) {
+	if (!_editMsgId && !_inlineBot && !isE2ECloudProtectedPeer()) {
 		_saveCloudDraftTimer.callOnce(kSaveCloudDraftIdleTimeout);
 	}
 }
@@ -2759,7 +2779,7 @@ bool HistoryWidget::applyDraft(FieldHistoryAction fieldHistoryAction) {
 		_canReplaceMedia = _canAddMedia = false;
 		if (_preview) {
 			_preview->apply({ .removed = true });
-			_preview->setDisabled(false);
+			_preview->setDisabled(isE2ECloudProtectedPeer());
 		}
 		_textUpdateEvents = TextUpdateEvent::SaveDraft
 			| TextUpdateEvent::SendTyping;
@@ -2829,10 +2849,11 @@ bool HistoryWidget::applyDraft(FieldHistoryAction fieldHistoryAction) {
 	}
 
 	if (_preview) {
-		_preview->setDisabled(_editMsgId
-			&& _replyEditMsg
-			&& _replyEditMsg->media()
-			&& !_replyEditMsg->media()->webpage());
+		_preview->setDisabled(isE2ECloudProtectedPeer()
+			|| (_editMsgId
+				&& _replyEditMsg
+				&& _replyEditMsg->media()
+				&& !_replyEditMsg->media()->webpage()));
 		if (!_editMsgId) {
 			_preview->apply(draft->webpage, true);
 		} else if (!_replyEditMsg
@@ -3348,6 +3369,7 @@ void HistoryWidget::setHistory(History *history) {
 	if (_history == history) {
 		return;
 	}
+	_e2eCloudHistoryLimit = 200;
 	_pullToNext->setHistory(history);
 
 	const auto was = _attachBotsMenu && _history && _history->peer->isUser();
@@ -3395,6 +3417,7 @@ void HistoryWidget::setHistory(History *history) {
 		}
 	}
 	refreshAttachBotsMenu();
+	refreshE2ECloudProtectedHistory(true);
 }
 
 void HistoryWidget::setupPreview() {
@@ -3402,6 +3425,7 @@ void HistoryWidget::setupPreview() {
 
 	using namespace HistoryView::Controls;
 	_preview = std::make_unique<WebpageProcessor>(_history, _field);
+	_preview->setDisabled(isE2ECloudProtectedPeer());
 	_preview->repaintRequests() | rpl::on_next([=] {
 		updateField();
 	}, _preview->lifetime());
@@ -3547,7 +3571,7 @@ void HistoryWidget::setEditMsgId(MsgId msgId) {
 		_mediaEditManager.cancel();
 		_canReplaceMedia = _canAddMedia = false;
 		if (_preview) {
-			_preview->setDisabled(false);
+			_preview->setDisabled(isE2ECloudProtectedPeer());
 		}
 	}
 	if (_history) {
@@ -3858,7 +3882,6 @@ bool HistoryWidget::contentOverlapped(const QRect &globalRect) {
 bool HistoryWidget::canWriteMessage() const {
 	return _history
 		&& _canSendMessages
-		&& !isE2ECloudProtectedPeer()
 		&& !isBlocked()
 		&& !isJoinChannel()
 		&& !isMuteUnmute()
@@ -3882,9 +3905,10 @@ bool HistoryWidget::isE2ECloudProtectedPeer() const {
 		|| (_migrated && _migrated->hasE2ECloudGroupCarrier());
 }
 
-void HistoryWidget::openE2ECloudProtectedConversation() {
+std::optional<E2ECloud::ConversationId>
+HistoryWidget::e2eCloudProtectedConversation() const {
 	if (!_peer) {
-		return;
+		return std::nullopt;
 	}
 	const auto &service = session().e2eCloud();
 	auto conversationId = service.protectedConversationForPeer(
@@ -3893,6 +3917,71 @@ void HistoryWidget::openE2ECloudProtectedConversation() {
 		conversationId = service.protectedConversationForPeer(
 			_migrated->peer->id.value);
 	}
+	return conversationId;
+}
+
+bool HistoryWidget::canSendE2ECloudProtectedMessage() const {
+	const auto conversationId = e2eCloudProtectedConversation();
+	if (!conversationId || !_peer) {
+		return false;
+	}
+	const auto groups = session().e2eCloud().protectedGroups();
+	const auto found = std::find_if(
+		begin(groups),
+		end(groups),
+		[&](const E2ECloud::DesktopProtectedGroupSummary &group) {
+			return group.conversationId == *conversationId;
+		});
+	return found != end(groups)
+		&& found->active
+		&& !found->removed
+		&& Data::CanSend(_peer, ChatRestriction::SendFiles);
+}
+
+void HistoryWidget::refreshE2ECloudProtectedHistory(bool synchronize) {
+	_topBar->setCustomTitle(isE2ECloudProtectedPeer()
+		? tr::lng_e2e_cloud_header_status(tr::now)
+		: QString());
+	const auto conversationId = e2eCloudProtectedConversation();
+	if (!conversationId) {
+		return;
+	}
+	auto &service = session().e2eCloud();
+	if (_historyInited) {
+		service.materializeProtectedHistory(
+			*conversationId,
+			_peer->id.value,
+			_e2eCloudHistoryLimit);
+	}
+	if (synchronize) {
+		service.synchronizeProtectedContent(*conversationId);
+	}
+}
+
+bool HistoryWidget::sendE2ECloudProtectedFiles(const QStringList &paths) {
+	const auto conversationId = e2eCloudProtectedConversation();
+	if (!conversationId) {
+		openE2ECloudProtectedConversation();
+		return false;
+	} else if (paths.isEmpty()) {
+		return false;
+	} else if (paths.size() != 1) {
+		controller()->showToast(tr::lng_e2e_cloud_attach_one(tr::now));
+		return false;
+	}
+	const auto path = QFileInfo(paths.front()).absoluteFilePath();
+	if (path.isEmpty()
+		|| !session().e2eCloud().sendProtectedFile(
+			*conversationId,
+			path)) {
+		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+		return false;
+	}
+	return true;
+}
+
+void HistoryWidget::openE2ECloudProtectedConversation() {
+	const auto conversationId = e2eCloudProtectedConversation();
 	if (conversationId) {
 		E2ECloud::ShowProtectedConversation(controller(), *conversationId);
 	} else {
@@ -3973,7 +4062,7 @@ void HistoryWidget::updateControlsVisibility() {
 		_subsectionTabs->show();
 	}
 	const auto protectedPeer = isE2ECloudProtectedPeer();
-	if (protectedPeer
+	if ((protectedPeer && !_canSendMessages)
 		|| isChoosingTheme()
 		|| (!editingMessage()
 			&& (isSearching()
@@ -4002,7 +4091,7 @@ void HistoryWidget::updateControlsVisibility() {
 			_chooseTheme->show();
 			setInnerFocus();
 			toggle(nullptr);
-		} else if (protectedPeer) {
+		} else if (protectedPeer && !_canSendMessages) {
 			toggle(_protectedOpen);
 		} else if (isReportMessages()) {
 			toggle(_reportMessages);
@@ -4070,7 +4159,11 @@ void HistoryWidget::updateControlsVisibility() {
 		hideField();
 	} else if (editingMessage() || _canSendMessages) {
 		if (_autocomplete) {
-			_autocomplete->requestRefresh();
+			if (protectedPeer) {
+				_autocomplete->hide();
+			} else {
+				_autocomplete->requestRefresh();
+			}
 		}
 		_unblock->hide();
 		_protectedOpen->hide();
@@ -4082,7 +4175,8 @@ void HistoryWidget::updateControlsVisibility() {
 		updateSendButtonType();
 
 		if (_canSendTexts || _editMsgId) {
-			const auto richDraft = !_voiceRecordBar->isActive()
+			const auto richDraft = !protectedPeer
+				&& !_voiceRecordBar->isActive()
 				&& _canSendTexts
 				&& shouldShowRichDraftPreview();
 			if (richDraft) {
@@ -4104,7 +4198,13 @@ void HistoryWidget::updateControlsVisibility() {
 			_fieldDisabled->show();
 			hideField();
 		}
-		if (_kbShown) {
+		if (protectedPeer) {
+			_kbScroll->hide();
+			_tabbedSelectorToggle->hide();
+			_botKeyboardHide->hide();
+			_botKeyboardShow->hide();
+			_botCommandStart->hide();
+		} else if (_kbShown) {
 			_kbScroll->show();
 			_tabbedSelectorToggle->hide();
 			showKeyboardHideButton();
@@ -4135,7 +4235,7 @@ void HistoryWidget::updateControlsVisibility() {
 			_attachToggle->show();
 		}
 		if (_botMenu.button) {
-			_botMenu.button->show();
+			_botMenu.button->setVisible(!protectedPeer);
 		}
 		if (_sendRestriction) {
 			_sendRestriction->hide();
@@ -4144,7 +4244,9 @@ void HistoryWidget::updateControlsVisibility() {
 			auto rightButtonsChanged = false;
 			if (_silent) {
 				const auto was = _silent->isVisible();
-				const auto now = (!_editMsgId) && (!hideExtra);
+				const auto now = !protectedPeer
+					&& (!_editMsgId)
+					&& (!hideExtra);
 				if (was != now) {
 					_silent->setVisible(now);
 					rightButtonsChanged = true;
@@ -4152,7 +4254,9 @@ void HistoryWidget::updateControlsVisibility() {
 			}
 			if (_scheduled) {
 				const auto was = _scheduled->isVisible();
-				const auto now = (!_editMsgId) && (!hideExtra);
+				const auto now = !protectedPeer
+					&& (!_editMsgId)
+					&& (!hideExtra);
 				if (was != now) {
 					_scheduled->setVisible(now);
 					rightButtonsChanged = true;
@@ -4160,7 +4264,7 @@ void HistoryWidget::updateControlsVisibility() {
 			}
 			if (_toggleSuggestPost) {
 				const auto was = _toggleSuggestPost->isVisible();
-				const auto now = !_suggestOptions;
+				const auto now = !protectedPeer && !_suggestOptions;
 				if (was != now) {
 					_toggleSuggestPost->setVisible(now);
 					rightButtonsChanged = true;
@@ -4168,7 +4272,9 @@ void HistoryWidget::updateControlsVisibility() {
 			}
 			if (_giftToUser) {
 				const auto was = _giftToUser->isVisible();
-				const auto now = (!_editMsgId) && (!hideExtra);
+				const auto now = !protectedPeer
+					&& (!_editMsgId)
+					&& (!hideExtra);
 				if (was != now) {
 					_giftToUser->setVisible(now);
 					rightButtonsChanged = true;
@@ -4176,7 +4282,9 @@ void HistoryWidget::updateControlsVisibility() {
 			}
 			if (_ttlInfo) {
 				const auto was = _ttlInfo->isVisible();
-				const auto now = (!_editMsgId) && (!hideExtra);
+				const auto now = !protectedPeer
+					&& (!_editMsgId)
+					&& (!hideExtra);
 				if (was != now) {
 					_ttlInfo->setVisible(now);
 					rightButtonsChanged = true;
@@ -4187,16 +4295,17 @@ void HistoryWidget::updateControlsVisibility() {
 			}
 		}
 		if (_sendAs) {
-			_sendAs->show();
+			_sendAs->setVisible(!protectedPeer);
 		}
 		updateFieldPlaceholder();
 
-		if (_editMsgId
+		if (!protectedPeer
+			&& (_editMsgId
 			|| _replyTo
 			|| readyToForward()
 			|| _previewDrawPreview
 			|| _kbReplyTo
-			|| _suggestOptions) {
+			|| _suggestOptions)) {
 			if (_fieldBarCancel->isHidden()) {
 				_fieldBarCancel->show();
 				updateControlsGeometry();
@@ -5095,6 +5204,19 @@ void HistoryWidget::preloadHistoryByScroll() {
 		loadMessagesDown();
 	}
 	if (scrollTop <= kPreloadHeightsCount * scrollHeight) {
+		if (const auto conversationId = e2eCloudProtectedConversation()) {
+			auto &service = session().e2eCloud();
+			const auto total = service.protectedContentCount(*conversationId);
+			if (_e2eCloudHistoryLimit < total) {
+				_e2eCloudHistoryLimit = std::min(
+					total,
+					_e2eCloudHistoryLimit + kE2ECloudHistoryPage);
+				service.materializeProtectedHistory(
+					*conversationId,
+					_peer->id.value,
+					_e2eCloudHistoryLimit);
+			}
+		}
 		loadMessages();
 	}
 	if (session().supportMode()) {
@@ -5288,7 +5410,7 @@ void HistoryWidget::triggerAiApplyInPlace() {
 void HistoryWidget::saveEditMessage(Api::SendOptions options) {
 	Expects(_history != nullptr);
 
-	if (_saveEditMsgRequestId) {
+	if (isE2ECloudProtectedPeer() || _saveEditMsgRequestId) {
 		return;
 	}
 
@@ -5500,7 +5622,10 @@ Api::SendAction HistoryWidget::prepareSendAction(
 }
 
 void HistoryWidget::sendVoice(const VoiceToSend &data) {
-	if (!canWriteMessage() || data.bytes.isEmpty() || !_history) {
+	if (isE2ECloudProtectedPeer()
+		|| !canWriteMessage()
+		|| data.bytes.isEmpty()
+		|| !_history) {
 		return;
 	}
 
@@ -5529,6 +5654,29 @@ void HistoryWidget::sendVoice(const VoiceToSend &data) {
 
 void HistoryWidget::send(Api::SendOptions options) {
 	if (!_history) {
+		return;
+	} else if (isE2ECloudProtectedPeer()) {
+		const auto conversationId = e2eCloudProtectedConversation();
+		const auto text = _field->getTextWithAppliedMarkdown().text;
+		if (!conversationId) {
+			openE2ECloudProtectedConversation();
+			return;
+		} else if (text.isEmpty()) {
+			return;
+		} else if (options.scheduled
+			|| !session().e2eCloud().sendProtectedText(
+				*conversationId,
+				text)) {
+			controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+			return;
+		}
+		clearFieldText();
+		if (_preview) {
+			_preview->apply({ .removed = true });
+		}
+		saveDraftWithTextNow();
+		hideSelectorControlsAnimated();
+		setInnerFocus();
 		return;
 	} else if (_editMsgId) {
 		saveEditMessage({});
@@ -5578,7 +5726,7 @@ void HistoryWidget::send(Api::SendOptions options) {
 void HistoryWidget::sendRichDraft(
 		std::shared_ptr<const Iv::RichPage> page,
 		Api::SendOptions options) {
-	if (!page) {
+	if (!page || isE2ECloudProtectedPeer()) {
 		return;
 	}
 	if (ShowEphemeralReplyTextOnlyError(
@@ -5677,7 +5825,7 @@ void HistoryWidget::sendRichDraft(
 void HistoryWidget::sendRichDraftWithoutFormatting(
 		std::shared_ptr<const Iv::RichPage> page,
 		Api::SendOptions options) {
-	if (!page || !_history) {
+	if (!page || !_history || isE2ECloudProtectedPeer()) {
 		return;
 	}
 	const auto flattened = Iv::FlattenRichPageToSimpleText(*page);
@@ -5697,6 +5845,9 @@ void HistoryWidget::sendTextWithTags(
 		bool useWebPageDraft,
 		Api::SendOptions options,
 		Fn<void()> done) {
+	if (isE2ECloudProtectedPeer()) {
+		return;
+	}
 	if (!options.scheduled) {
 		_cornerButtons.clearReplyReturns();
 	}
@@ -5788,7 +5939,7 @@ void HistoryWidget::sendWithModifiers(Qt::KeyboardModifiers modifiers) {
 }
 
 void HistoryWidget::sendScheduled(Api::SendOptions initialOptions) {
-	if (!_list) {
+	if (!_list || isE2ECloudProtectedPeer()) {
 		return;
 	}
 	const auto ignoreSlowmodeCountdown = true;
@@ -5811,7 +5962,9 @@ void HistoryWidget::sendScheduled(Api::SendOptions initialOptions) {
 SendMenu::Details HistoryWidget::sendMenuDetails() const {
 	const auto ephemeralReply = session().ephemeralMessages()
 		.isEphemeralBotReply(replyTo().messageId);
-	const auto type = (!_peer || ephemeralReply)
+	const auto type = (!_peer
+		|| ephemeralReply
+		|| isE2ECloudProtectedPeer())
 		? SendMenu::Type::Disabled
 		: _peer->starsPerMessageChecked()
 		? SendMenu::Type::SilentOnly
@@ -5837,7 +5990,9 @@ SendMenu::Details HistoryWidget::saveMenuDetails() const {
 auto HistoryWidget::computeSendButtonType() const {
 	using Type = Ui::SendButton::Type;
 
-	if (_editMsgId) {
+	if (isE2ECloudProtectedPeer()) {
+		return Type::Send;
+	} else if (_editMsgId) {
 		return Type::Save;
 	} else if (_isInlineBot) {
 		return Type::Cancel;
@@ -5855,6 +6010,7 @@ bool HistoryWidget::canSendAiComposeDirect() const {
 	using Type = Ui::SendButton::Type;
 	return _history
 		&& _peer
+		&& !isE2ECloudProtectedPeer()
 		&& (computeSendButtonType() == Type::Send)
 		&& !_peer->slowmodeSecondsLeft()
 		&& !(_peer->slowmodeApplied() && _history->latestSendingMessage())
@@ -6190,6 +6346,15 @@ void HistoryWidget::chooseAttach(
 		if (result.paths.isEmpty() && result.remoteContent.isEmpty()) {
 			return;
 		}
+		if (isE2ECloudProtectedPeer()) {
+			if (!result.remoteContent.isEmpty()) {
+				controller()->showToast(
+					tr::lng_e2e_cloud_send_failed(tr::now));
+			} else {
+				(void)sendE2ECloudProtectedFiles(result.paths);
+			}
+			return;
+		}
 
 		if (!result.remoteContent.isEmpty()) {
 			auto read = Images::Read({
@@ -6322,7 +6487,7 @@ void HistoryWidget::sendBotCommand(
 		const Bot::SendCommandRequest &request,
 		Api::SendOptions options) {
 	// replyTo != 0 from ReplyKeyboardMarkup, == 0 from command links
-	if (_peer != request.peer.get()) {
+	if (_peer != request.peer.get() || isE2ECloudProtectedPeer()) {
 		return;
 	}
 
@@ -6513,7 +6678,9 @@ QRect HistoryWidget::floatPlayerAvailableRect() {
 }
 
 bool HistoryWidget::readyToForward() const {
-	return _canSendMessages && !_forwardPanel->empty();
+	return _canSendMessages
+		&& !isE2ECloudProtectedPeer()
+		&& !_forwardPanel->empty();
 }
 
 bool HistoryWidget::hasSilentToggle() const {
@@ -6580,7 +6747,8 @@ bool HistoryWidget::isSearching() const {
 }
 
 bool HistoryWidget::showRecordButton() const {
-	return (_recordAvailability != Webrtc::RecordAvailability::None)
+	return !isE2ECloudProtectedPeer()
+		&& (_recordAvailability != Webrtc::RecordAvailability::None)
 		&& !_voiceRecordBar->isListenState()
 		&& !_voiceRecordBar->isRecordingByAnotherBar()
 		&& !hasSendableContent()
@@ -7108,7 +7276,8 @@ bool HistoryWidget::textExceedsMaxSize() const {
 }
 
 void HistoryWidget::updateAiButtonVisibility() {
-	const auto hidden = !hasEnoughLinesForAi()
+	const auto hidden = isE2ECloudProtectedPeer()
+		|| !hasEnoughLinesForAi()
 		|| !_send->isVisible()
 		|| !_field->isVisible();
 	if (_aiButton->isHidden() == hidden) {
@@ -7125,7 +7294,8 @@ void HistoryWidget::updateAiButtonVisibility() {
 }
 
 void HistoryWidget::updateExpandButtonVisibility() {
-	const auto hidden = !_send->isVisible()
+	const auto hidden = isE2ECloudProtectedPeer()
+		|| !_send->isVisible()
 		|| !_field->isVisible()
 		|| _voiceRecordBar->isActive()
 		|| !hasEnoughLinesForExpand()
@@ -7162,7 +7332,8 @@ void HistoryWidget::updateAiButtonGeometry() {
 }
 
 void HistoryWidget::updateSendAsFileVisibility() {
-	const auto hidden = !textExceedsMaxSize()
+	const auto hidden = isE2ECloudProtectedPeer()
+		|| !textExceedsMaxSize()
 		|| _send->isHidden()
 		|| _field->isHidden()
 		|| editingMessage();
@@ -7387,6 +7558,11 @@ void HistoryWidget::updateFieldPlaceholder() {
 	_voiceRecordBar->setPauseInsteadSend(_history
 		&& _history->peer->starsPerMessageChecked() > 0);
 
+	if (isE2ECloudProtectedPeer()) {
+		_field->setPlaceholder(tr::lng_e2e_cloud_message());
+		return;
+	}
+
 	if (!_editMsgId && _inlineBot && !_inlineLookingUpBot) {
 		_field->setPlaceholder(
 			rpl::single(_inlineBot->botInfo->inlinePlaceholder.mid(1)),
@@ -7586,6 +7762,9 @@ bool HistoryWidget::confirmSendingFiles(not_null<const QMimeData*> data) {
 bool HistoryWidget::confirmSendingFiles(
 		const QStringList &files,
 		const QString &insertTextOnCancel) {
+	if (isE2ECloudProtectedPeer()) {
+		return sendE2ECloudProtectedFiles(files);
+	}
 	const auto premium = controller()->session().user()->isPremium();
 	return confirmSendingFiles(
 		Storage::PrepareMediaList(files, st::sendMediaPreviewSize, premium),
@@ -7595,6 +7774,20 @@ bool HistoryWidget::confirmSendingFiles(
 bool HistoryWidget::confirmSendingFiles(
 		Ui::PreparedList &&list,
 		const QString &insertTextOnCancel) {
+	if (isE2ECloudProtectedPeer()) {
+		auto paths = QStringList();
+		for (const auto &file : list.files) {
+			if (!file.path.isEmpty()) {
+				paths.push_back(file.path);
+			}
+		}
+		for (const auto &file : list.filesToProcess) {
+			if (!file.path.isEmpty()) {
+				paths.push_back(file.path);
+			}
+		}
+		return sendE2ECloudProtectedFiles(paths);
+	}
 	if (_editMsgId) {
 		if (_canReplaceMedia || _canAddMedia) {
 			EditCaptionBox::StartMediaReplace(
@@ -7661,6 +7854,18 @@ bool HistoryWidget::confirmSendingFiles(
 void HistoryWidget::sendingFilesConfirmed(
 		std::shared_ptr<Ui::PreparedBundle> bundle,
 		Api::SendOptions options) {
+	if (isE2ECloudProtectedPeer()) {
+		auto paths = QStringList();
+		for (const auto &group : bundle->groups) {
+			for (const auto &file : group.list.files) {
+				if (!file.path.isEmpty()) {
+					paths.push_back(file.path);
+				}
+			}
+		}
+		(void)sendE2ECloudProtectedFiles(paths);
+		return;
+	}
 	if (!_peer || showSendingFilesError(*bundle)) {
 		return;
 	}
@@ -7706,6 +7911,10 @@ bool HistoryWidget::confirmSendingFiles(
 		QByteArray &&content,
 		std::optional<bool> overrideSendImagesAsPhotos,
 		const QString &insertTextOnCancel) {
+	if (isE2ECloudProtectedPeer()) {
+		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+		return false;
+	}
 	if (image.isNull()) {
 		return false;
 	}
@@ -7742,6 +7951,20 @@ bool HistoryWidget::confirmSendingFiles(
 			return false;
 		}
 	}
+	if (isE2ECloudProtectedPeer()) {
+		const auto urls = Core::ReadMimeUrls(data);
+		if (!urls.empty()
+			&& ranges::all_of(urls, &QUrl::isLocalFile)) {
+			auto paths = QStringList();
+			paths.reserve(int(urls.size()));
+			for (const auto &url : urls) {
+				paths.push_back(url.toLocalFile());
+			}
+			return sendE2ECloudProtectedFiles(paths);
+		}
+		controller()->showToast(tr::lng_e2e_cloud_send_failed(tr::now));
+		return false;
+	}
 
 	const auto hasImage = data->hasImage();
 	const auto premium = controller()->session().user()->isPremium();
@@ -7776,7 +7999,7 @@ bool HistoryWidget::confirmSendingFiles(
 void HistoryWidget::uploadFile(
 		const QByteArray &fileContent,
 		SendMediaType type) {
-	if (!canWriteMessage()) return;
+	if (!canWriteMessage() || isE2ECloudProtectedPeer()) return;
 
 	session().api().sendFile(fileContent, type, prepareSendAction({}));
 }
@@ -8220,7 +8443,7 @@ void HistoryWidget::updateHistoryGeometry(
 	if (_businessBotStatus) {
 		newScrollHeight -= _businessBotStatus->bar().height();
 	}
-	if (isE2ECloudProtectedPeer()) {
+	if (isE2ECloudProtectedPeer() && !_canSendMessages) {
 		newScrollHeight -= _protectedOpen->height();
 	} else if (isChoosingTheme()) {
 		newScrollHeight -= _chooseTheme->height();
@@ -8302,6 +8525,7 @@ void HistoryWidget::updateHistoryGeometry(
 	if (initial) {
 		newScrollTop = countInitialScrollTop();
 		_historyInited = true;
+		refreshE2ECloudProtectedHistory();
 		_scrollToAnimation.stop();
 	} else if (wasAtBottom && !loadedDown && !_history->unreadBar()) {
 		newScrollTop = countAutomaticScrollTop();
@@ -9069,7 +9293,7 @@ bool HistoryWidget::showSlowmodeError() {
 }
 
 void HistoryWidget::sendInlineResult(InlineBots::ResultSelected result) {
-	if (!_peer || !_canSendMessages) {
+	if (!_peer || !_canSendMessages || isE2ECloudProtectedPeer()) {
 		return;
 	} else if (showSlowmodeError()) {
 		return;
@@ -9728,6 +9952,9 @@ bool HistoryWidget::sendExistingDocument(
 		not_null<DocumentData*> document,
 		Api::MessageToSend messageToSend,
 		std::optional<MsgId> localId) {
+	if (isE2ECloudProtectedPeer()) {
+		return false;
+	}
 	const auto ephemeralReply = session().ephemeralMessages()
 		.isEphemeralBotReply(messageToSend.action.replyTo.messageId);
 	const auto error = (_peer && !ephemeralReply)
@@ -9779,6 +10006,9 @@ bool HistoryWidget::sendExistingDocument(
 bool HistoryWidget::sendExistingPhoto(
 		not_null<PhotoData*> photo,
 		Api::SendOptions options) {
+	if (isE2ECloudProtectedPeer()) {
+		return false;
+	}
 	const auto ephemeralReply = session().ephemeralMessages()
 		.isEphemeralBotReply(replyTo().messageId);
 	const auto error = (_peer && !ephemeralReply)
@@ -10000,6 +10230,9 @@ void HistoryWidget::clearFieldText(
 }
 
 void HistoryWidget::replyToMessage(FullReplyTo id) {
+	if (isE2ECloudProtectedPeer()) {
+		return;
+	}
 	if (const auto item = session().data().message(id.messageId)) {
 		if (CanSendReply(item) && !base::IsCtrlPressed()) {
 			replyToMessage(item, id);
@@ -10016,7 +10249,9 @@ void HistoryWidget::replyToMessage(FullReplyTo id) {
 void HistoryWidget::replyToMessage(
 		not_null<HistoryItem*> item,
 		FullReplyTo fields) {
-	if (isJoinChannel()) {
+	if (isE2ECloudProtectedPeer()
+		|| item->isE2ECloudDecrypted()
+		|| isJoinChannel()) {
 		return;
 	}
 	fields.messageId = item->fullId();
@@ -10156,7 +10391,9 @@ void HistoryWidget::setReplyFieldsFromProcessing() {
 void HistoryWidget::editMessage(
 		not_null<HistoryItem*> item,
 		const TextSelection &selection) {
-	if (Iv::Editor::ActivateEditWindowFor(&session(), item->fullId())) {
+	if (isE2ECloudProtectedPeer() || item->isE2ECloudDecrypted()) {
+		return;
+	} else if (Iv::Editor::ActivateEditWindowFor(&session(), item->fullId())) {
 		return;
 	}
 	if (item->richPage()) {
@@ -10510,16 +10747,29 @@ bool HistoryWidget::updateCanSendMessage() {
 	const auto restrictedOnlyReplies = onlyReplies
 		&& (!_replyTo.messageId || _replyTo.messageId.peer != _peer->id);
 	const auto protectedPeer = isE2ECloudProtectedPeer();
-	const auto newCanSendMessages = restrictedOnlyReplies || protectedPeer
+	const auto protectedCanSend = protectedPeer
+		&& canSendE2ECloudProtectedMessage();
+	const auto newCanSendMessages = protectedPeer
+		? protectedCanSend
+		: restrictedOnlyReplies
 		? false
 		: topic
 		? Data::CanSendAnyOf(topic, allWithoutPolls)
 		: Data::CanSendAnyOf(_peer, allWithoutPolls);
-	const auto newCanSendTexts = restrictedOnlyReplies || protectedPeer
+	const auto newCanSendTexts = protectedPeer
+		? protectedCanSend
+		: restrictedOnlyReplies
 		? false
 		: topic
 		? Data::CanSend(topic, ChatRestriction::SendOther)
 		: Data::CanSend(_peer, ChatRestriction::SendOther);
+	if (_preview) {
+		_preview->setDisabled(protectedPeer
+			|| (_editMsgId
+				&& _replyEditMsg
+				&& _replyEditMsg->media()
+				&& !_replyEditMsg->media()->webpage()));
+	}
 	if (_canSendMessages == newCanSendMessages
 		&& _canSendTexts == newCanSendTexts) {
 		return false;
@@ -10719,10 +10969,11 @@ void HistoryWidget::messageDataReceived(
 		|| (_replyTo.messageId == FullMsgId(peer->id, msgId))) {
 		updateReplyEditTexts(true);
 		if (_editMsgId == msgId) {
-			_preview->setDisabled(_editMsgId
-				&& _replyEditMsg
-				&& _replyEditMsg->media()
-				&& !_replyEditMsg->media()->webpage());
+			_preview->setDisabled(isE2ECloudProtectedPeer()
+				|| (_editMsgId
+					&& _replyEditMsg
+					&& _replyEditMsg->media()
+					&& !_replyEditMsg->media()->webpage()));
 		}
 	}
 }

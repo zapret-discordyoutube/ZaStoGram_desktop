@@ -876,7 +876,8 @@ HistoryItem::HistoryItem(
 , _date(fields.date)
 , _starsPaid(fields.starsPaid)
 , _shortcutId(fields.shortcutId)
-, _effectId(fields.effectId) {
+, _effectId(fields.effectId)
+, _e2eCloudDecrypted(fields.e2eCloudDecrypted) {
 	Expects(!_shortcutId
 		|| isSending()
 		|| _history->owner().shortcutMessages().lookupId(this));
@@ -3021,7 +3022,7 @@ void HistoryItem::setRealId(MsgId newId) {
 }
 
 bool HistoryItem::canPin() const {
-	if (!isRegular() || isService()) {
+	if (isE2ECloudDecrypted() || !isRegular() || isService()) {
 		return false;
 	} else if (const auto m = media(); m && m->call()) {
 		return false;
@@ -3044,6 +3045,7 @@ bool HistoryItem::allowsReschedule() const {
 
 bool HistoryItem::allowsForward() const {
 	return !isE2ECloudCarrier()
+		&& !isE2ECloudDecrypted()
 		&& !isService()
 		&& isRegular()
 		&& !forbidsForward()
@@ -3060,7 +3062,8 @@ bool HistoryItem::isTooOldForEdit(TimeId now) const {
 bool HistoryItem::allowsEdit(TimeId now) const {
 	const auto richPageSource = Get<HistoryMessageRichPageSource>();
 	const auto richPage = BestRichPage(richPageSource);
-	return !isService()
+	return !isE2ECloudDecrypted()
+		&& !isService()
 		&& canBeEdited()
 		&& !isTooOldForEdit(now)
 		&& (!richPage || richPageSource->canEdit)
@@ -3122,7 +3125,9 @@ bool HistoryItem::forbidsSaving() const {
 }
 
 bool HistoryItem::canDelete() const {
-	if (isSponsored()) {
+	if (isE2ECloudDecrypted()) {
+		return false;
+	} else if (isSponsored()) {
 		return false;
 	} else if (isEphemeral()) {
 		return false;
@@ -3395,7 +3400,7 @@ void HistoryItem::translationDone(
 }
 
 bool HistoryItem::canReact() const {
-	if (!isRegular()) {
+	if (isE2ECloudDecrypted() || !isRegular()) {
 		return false;
 	} else if (isService()) {
 		return (_flags & MessageFlag::ReactionsAllowed);

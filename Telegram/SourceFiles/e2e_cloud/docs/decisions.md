@@ -1020,3 +1020,23 @@ Clearing a module-owned temporary location removes both the live document
 location and its account-local location record, including filename-pair and
 alias bookkeeping. This prevents deleted temporary paths from accumulating in
 Telegram Desktop's persistent media-location map.
+
+### D086: Protected groups use the native history and composer
+
+Supersede the presentation part of D039 while retaining its carrier-hiding and
+fail-closed requirements. Materialize only authenticated records from the local
+protected content store as silent client-side items in the bound Telegram group
+history. Mark every item visibly as encrypted and prohibit Telegram reply,
+forward, edit, pin, delete, and reaction actions. Keep materialization bounded
+to the newest 200 records and extend it in 200-record pages when the native
+history approaches its top.
+
+For an unlocked active protected group, retain the ordinary Telegram text
+field, send button, and local-file attachment picker. Intercept text before rich
+message or ordinary send processing and route it to `sendProtectedText`; route
+local file paths to `sendProtectedFile`. Disable Telegram cloud drafts and link
+preview resolution for the protected composer. Hide or reject voice, bots,
+stickers, GIFs, inline results, contacts, send-as, scheduling, forwarding,
+editing, in-memory media without a local path, and any stale stock send dialog.
+If no authenticated conversation runtime is available, retain D039's single
+unlock or recovery action and never fall back to plaintext Telegram sending.

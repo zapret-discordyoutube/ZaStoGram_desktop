@@ -10,7 +10,8 @@ interpret specially encoded messages and documents as E2E protocol objects.
 Stock clients do not receive keys and may display only opaque carrier objects.
 ZaStoGram recognizes the reserved filename/MIME pairs as presentation metadata,
 hides them from its ordinary timeline and shared media, and routes the carrier
-peer to the protected interface. That recognition is fail-closed UI policy, not
+peer's native composer through the protected service only after authenticated
+conversation recovery. That recognition is fail-closed UI policy, not
 cryptographic acceptance.
 
 ## Transport responsibilities
