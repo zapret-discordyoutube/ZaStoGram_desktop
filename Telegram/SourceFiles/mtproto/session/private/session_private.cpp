@@ -130,7 +130,8 @@ void SessionPrivate::setConnectionNotice(ConnectionNotice notice) {
 void SessionPrivate::reportPingTime(crl::time time) {
 	const auto shiftedDcId = _shiftedDcId;
 	InvokeQueued(_runtime, [=, runtime = _runtime, delegate = _delegate] {
-		if (runtime->instance().connectionStatus) {
+		if (runtime->instance().connectionStatus
+			&& !delegate->isKeysDestroyer()) {
 			runtime->instance().connectionStatus->setSessionPingTime(
 				delegate->mainDcId(),
 				shiftedDcId,

@@ -534,7 +534,7 @@ Instance::Private::Private(
 	_runtime->bindInstance({
 		.connectionStatus = _connectionStatus.get(),
 		.mainDcId = [=] {
-			return mainDcId();
+			return hasMainDcId() ? mainDcId() : DcId();
 		},
 		.dcOptionsLookup = [=](
 				DcId dcId,
@@ -593,7 +593,9 @@ Instance::Private::Private(
 			_customDeviceModel = value;
 			lock.unlock();
 
-			reInitConnection(mainDcId());
+			if (hasMainDcId()) {
+				reInitConnection(mainDcId());
+			}
 		}, _lifetime);
 	}
 

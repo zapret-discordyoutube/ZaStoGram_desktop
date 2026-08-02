@@ -6,6 +6,8 @@ SOURCE_DIR = Path(__file__).resolve().parents[1]
 LANG = SOURCE_DIR.parent / "Resources" / "langs" / "lang.strings"
 INSTANCE_H = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.h"
 INSTANCE_CPP = SOURCE_DIR / "mtproto" / "instance" / "mtp_instance.cpp"
+SESSION_PRIVATE_CPP = (
+    SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp")
 CONNECTION_STATUS_H = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.h"
 CONNECTION_STATUS_CPP = SOURCE_DIR / "mtproto" / "runtime" / "connection_status.cpp"
 CONNECTION_STATUS_TYPES_H = (
@@ -287,6 +289,20 @@ def test_proxy_retry_with_error_uses_generated_argument_order():
         call.group(1))
 
 
+def test_key_destroyer_does_not_require_a_main_dc():
+    instance = INSTANCE_CPP.read_text(encoding="utf-8")
+    session = SESSION_PRIVATE_CPP.read_text(encoding="utf-8")
+    report_body = function_body(
+        session,
+        "void SessionPrivate::reportPingTime(crl::time time)")
+
+    assert "return hasMainDcId() ? mainDcId() : DcId();" in instance
+    assert "if (hasMainDcId()) {\n\t\t\t\treInitConnection(mainDcId());" in instance
+    assert "!delegate->isKeysDestroyer()" in report_body
+    assert report_body.index("!delegate->isKeysDestroyer()") < report_body.index(
+        "delegate->mainDcId()")
+
+
 if __name__ == "__main__":
     test_proxy_status_model_is_exposed_to_ui()
     test_connection_notice_model_is_visible_without_proxy()
@@ -297,3 +313,4 @@ if __name__ == "__main__":
     test_proxy_shield_replaces_left_spinner()
     test_visible_proxy_phrases_exist()
     test_proxy_retry_with_error_uses_generated_argument_order()
+    test_key_destroyer_does_not_require_a_main_dc()
