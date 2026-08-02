@@ -236,10 +236,10 @@ void DeleteMessagesBox::prepare() {
 			: (_ids.size() == 1)
 			? tr::lng_selected_delete_sure_this(tr::now)
 			: tr::lng_selected_delete_sure(tr::now, lt_count, _ids.size());
-		const auto peer = ProtectedDeleteTargets(_session, _ids)
+		const auto singlePeer = ProtectedDeleteTargets(_session, _ids)
 			? nullptr
 			: checkFromSinglePeer();
-		if (peer) {
+		if (const auto peer = singlePeer) {
 			auto count = int(_ids.size());
 			if (hasScheduledMessages() || hasSavedMusicMessages()) {
 			} else if (auto revoke = revokeText(peer)) {
