@@ -1215,11 +1215,24 @@ std::optional<ConversationId> DesktopService::protectedConversationForPeer(
 }
 
 bool DesktopService::isProtectedPeerForPresentation(
-		std::uint64_t telegramPeerIdBinding) const {
-	return telegramPeerIdBinding
-		&& (!_presentationProtectedPeersValid
-			|| _presentationProtectedPeers.contains(telegramPeerIdBinding)
-			|| protectedConversationForPeer(telegramPeerIdBinding).has_value());
+		std::uint64_t telegramPeerIdBinding,
+		std::uint64_t linkedTelegramPeerIdBinding) {
+	if (!telegramPeerIdBinding) {
+		return false;
+	}
+	const auto known = [&](std::uint64_t peerId) {
+		return peerId
+			&& (!_presentationProtectedPeersValid
+				|| _presentationProtectedPeers.contains(peerId)
+				|| protectedConversationForPeer(peerId).has_value());
+	};
+	if (known(telegramPeerIdBinding)) {
+		return true;
+	} else if (!known(linkedTelegramPeerIdBinding)) {
+		return false;
+	}
+	rememberProtectedPeerForPresentation(telegramPeerIdBinding);
+	return true;
 }
 
 void DesktopService::rememberProtectedPeerForPresentation(

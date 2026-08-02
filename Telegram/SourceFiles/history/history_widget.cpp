@@ -3867,23 +3867,32 @@ bool HistoryWidget::canWriteMessage() const {
 }
 
 bool HistoryWidget::isE2ECloudProtectedPeer() const {
-	if (!_history
-		|| !_peer
-		|| (!_peer->isChat() && !_peer->isMegagroup())) {
+	if (!_history || !_peer) {
+		return false;
+	}
+	auto &service = session().e2eCloud();
+	if (service.isProtectedPeerForPresentation(
+			_peer->id.value,
+			_migrated ? _migrated->peer->id.value : 0)) {
+		return true;
+	} else if (!_peer->isChat() && !_peer->isMegagroup()) {
 		return false;
 	}
 	return _history->hasE2ECloudGroupCarrier()
-		|| (_migrated && _migrated->hasE2ECloudGroupCarrier())
-		|| session().e2eCloud().isProtectedPeerForPresentation(
-			_peer->id.value);
+		|| (_migrated && _migrated->hasE2ECloudGroupCarrier());
 }
 
 void HistoryWidget::openE2ECloudProtectedConversation() {
 	if (!_peer) {
 		return;
 	}
-	const auto conversationId = session().e2eCloud()
-		.protectedConversationForPeer(_peer->id.value);
+	const auto &service = session().e2eCloud();
+	auto conversationId = service.protectedConversationForPeer(
+		_peer->id.value);
+	if (!conversationId && _migrated) {
+		conversationId = service.protectedConversationForPeer(
+			_migrated->peer->id.value);
+	}
 	if (conversationId) {
 		E2ECloud::ShowProtectedConversation(controller(), *conversationId);
 	} else {

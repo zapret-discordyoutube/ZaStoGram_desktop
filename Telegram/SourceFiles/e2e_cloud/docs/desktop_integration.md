@@ -35,11 +35,15 @@ in a direct chat or broadcast channel therefore remains an ordinary file.
 Once a group is authenticated or restored as protected, an account-local
 durable peer marker permanently keeps Telegram's ordinary composer disabled for
 that peer, including before vault unlock and after carrier messages are unloaded
-or deleted. Markers are monotonic and are never removed by server-visible
-history changes. A malformed local marker record conservatively disables
-ordinary composition for all group peers until the protected state can be
-repaired. Reserved metadata alone blocks the currently observed peer but does
-not create a durable marker before cryptographic verification.
+or deleted. A basic-group marker is inherited and durably recorded by its
+migrated supergroup peer before Telegram's current peer classification is
+trusted. An authenticated marker also takes precedence if the server later
+classifies that peer as a broadcast channel. Markers are monotonic and are
+never removed by server-visible history changes. A malformed local marker
+record conservatively disables ordinary composition for all group peers until
+the protected state can be repaired. Reserved metadata alone blocks the
+currently observed peer but does not create a durable marker before
+cryptographic verification.
 
 ## Session state
 

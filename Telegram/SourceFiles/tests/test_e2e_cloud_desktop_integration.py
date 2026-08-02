@@ -107,6 +107,16 @@ def verify_protected_peers_never_downgrade_to_plaintext() -> None:
     assert "!_presentationProtectedPeersValid" in presentation
     assert "_presentationProtectedPeers.contains(" in presentation
     assert "isProtectedPeerForPresentation(" in widget
+    assert "linkedTelegramPeerIdBinding" in presentation
+    assert "rememberProtectedPeerForPresentation(telegramPeerIdBinding)" in presentation
+    assert "_migrated ? _migrated->peer->id.value : 0" in widget
+    assert "if (!conversationId && _migrated)" in widget
+    marker_check = widget.index("service.isProtectedPeerForPresentation(")
+    peer_classification = widget.index(
+        "!_peer->isChat() && !_peer->isMegagroup()",
+        marker_check,
+    )
+    assert marker_check < peer_classification
     assert service.count("rememberProtectedPeerForPresentation(") >= 5
     assert "_presentationProtectedPeers.clear()" not in lock
     assert "_presentationProtectedPeers.erase(" not in service

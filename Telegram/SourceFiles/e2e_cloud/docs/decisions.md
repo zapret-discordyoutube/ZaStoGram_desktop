@@ -887,3 +887,13 @@ independent MLS and archive states must never observe the same Telegram carrier
 group as their authoritative transport. Reject an ambiguous index during both
 encoding and authenticated decoding, so the client blocks rather than choosing
 one conversation based on iteration or UI state.
+
+### D076: Authenticated markers survive Telegram peer migration
+
+Check the durable protected-peer marker before trusting the current Telegram
+peer classification. When Telegram Desktop links a migrated supergroup to an
+older basic group whose marker is authenticated, immediately persist the new
+peer as another monotonic protected presentation alias. The migrated chat then
+keeps its plaintext composer disabled even after the old carrier is unloaded or
+the server later hides that migration edge. Opening the protected surface also
+falls back through the migrated history binding to the original conversation.

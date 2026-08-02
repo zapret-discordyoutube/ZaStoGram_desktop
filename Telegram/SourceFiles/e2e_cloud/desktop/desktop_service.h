@@ -158,7 +158,8 @@ public:
 		protectedConversationForPeer(
 			std::uint64_t telegramPeerIdBinding) const;
 	[[nodiscard]] bool isProtectedPeerForPresentation(
-		std::uint64_t telegramPeerIdBinding) const;
+		std::uint64_t telegramPeerIdBinding,
+		std::uint64_t linkedTelegramPeerIdBinding = 0);
 	[[nodiscard]] std::vector<ProtectedContentRecord> protectedContent(
 		ConversationId conversationId,
 		std::size_t offset,
