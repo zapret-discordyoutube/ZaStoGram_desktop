@@ -873,11 +873,11 @@ HistoryItem::HistoryItem(
 	? history->owner().peer(fields.from)
 	: history->peer)
 , _flags(FinalizeMessageFlags(history, fields.flags))
+, _e2eCloudDecrypted(fields.e2eCloudDecrypted)
 , _date(fields.date)
 , _starsPaid(fields.starsPaid)
 , _shortcutId(fields.shortcutId)
-, _effectId(fields.effectId)
-, _e2eCloudDecrypted(fields.e2eCloudDecrypted) {
+, _effectId(fields.effectId) {
 	Expects(!_shortcutId
 		|| isSending()
 		|| _history->owner().shortcutMessages().lookupId(this));
