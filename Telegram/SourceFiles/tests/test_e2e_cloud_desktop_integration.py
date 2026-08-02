@@ -992,6 +992,9 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     manifest = source(
         "SourceFiles/e2e_cloud/files/private_file_manifest.cpp"
     )
+    manifest_header = source(
+        "SourceFiles/e2e_cloud/files/private_file_manifest.h"
+    )
     file_view = source(
         "SourceFiles/history/view/media/history_view_file.cpp"
     )
@@ -1044,6 +1047,8 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     assert ".e2eCloudEventObjectId" in refresh
     assert "PrepareFilePreview(" in service
     assert ".preview = source->preview" in service
+    assert "kMaximumPrivateFilePreviewDimension" in manifest_header
+    assert "dimensions.scale(" in service
     assert "AppendUint16(result, 3)" in manifest
     assert "version != 2 && version != 3" in manifest
     assert "kMaximumPrivateFilePreviewSize" in manifest

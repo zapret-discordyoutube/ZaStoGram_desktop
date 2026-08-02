@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 
 inline constexpr auto kMaximumPrivateFilePreviewSize = 128 * 1024;
+inline constexpr auto kMaximumPrivateFilePreviewDimension = 16 * 1024;
 
 struct PrivateFilePreview {
 	std::uint32_t width = 0;

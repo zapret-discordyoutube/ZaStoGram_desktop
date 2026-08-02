@@ -703,10 +703,19 @@ struct HashedFile {
 	if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
 		return std::nullopt;
 	}
-	const auto width = image.width();
-	const auto height = image.height();
-	if (width > kProtectedFilePreviewSide
-		|| height > kProtectedFilePreviewSide) {
+	auto dimensions = image.size();
+	if (dimensions.width() > kMaximumPrivateFilePreviewDimension
+		|| dimensions.height() > kMaximumPrivateFilePreviewDimension) {
+		dimensions.scale(
+			kMaximumPrivateFilePreviewDimension,
+			kMaximumPrivateFilePreviewDimension,
+			Qt::KeepAspectRatio);
+	}
+	if (!dimensions.isValid() || dimensions.isEmpty()) {
+		return std::nullopt;
+	}
+	if (image.width() > kProtectedFilePreviewSide
+		|| image.height() > kProtectedFilePreviewSide) {
 		image = image.scaled(
 			kProtectedFilePreviewSide,
 			kProtectedFilePreviewSide,
@@ -722,8 +731,8 @@ struct HashedFile {
 		return std::nullopt;
 	}
 	return PrivateFilePreview{
-		.width = std::uint32_t(width),
-		.height = std::uint32_t(height),
+		.width = std::uint32_t(dimensions.width()),
+		.height = std::uint32_t(dimensions.height()),
 		.durationMilliseconds = std::uint32_t(std::min<std::uint64_t>(
 			std::uint64_t(duration),
 			std::numeric_limits<std::uint32_t>::max())),

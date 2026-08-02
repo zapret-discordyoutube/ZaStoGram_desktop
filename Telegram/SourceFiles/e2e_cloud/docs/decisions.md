@@ -1160,3 +1160,15 @@ Keep protected-group discovery metadata-only so a new carrier can still prove
 that an unindexed group should enter protected presentation. Persisted monotonic
 peer markers and their fail-closed invalid-marker behavior continue to prevent
 a previously protected group from downgrading to plaintext presentation.
+
+### D095: Oversized media dimensions do not reject a protected file
+
+Normalize private preview dimensions to the manifest's authenticated maximum
+while preserving their aspect ratio. The encrypted JPEG thumbnail remains
+bounded independently, and the original file bytes, size, hash, MIME type, and
+encrypted chunk stream remain unchanged.
+
+This prevents an otherwise valid high-resolution image or video from failing
+the entire send merely because its optional presentation dimensions exceed the
+manifest bound. Receivers continue to validate the normalized dimensions and
+the embedded preview before exposing either to the native timeline.

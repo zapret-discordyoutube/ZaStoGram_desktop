@@ -23,7 +23,6 @@ inline constexpr auto kFixedSize = 174;
 inline constexpr auto kMaximumFilenameSize = 1024;
 inline constexpr auto kMaximumMimeTypeSize = 255;
 inline constexpr auto kPreviewFieldsSize = 16;
-inline constexpr auto kMaximumPreviewDimension = 16 * 1024;
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -112,9 +111,9 @@ void ReadArray(const char *data, Array &value) {
 		return true;
 	}
 	return preview->width > 0
-		&& preview->width <= kMaximumPreviewDimension
+		&& preview->width <= kMaximumPrivateFilePreviewDimension
 		&& preview->height > 0
-		&& preview->height <= kMaximumPreviewDimension
+		&& preview->height <= kMaximumPrivateFilePreviewDimension
 		&& !preview->jpegBytes.isEmpty()
 		&& preview->jpegBytes.size() <= kMaximumPrivateFilePreviewSize;
 }
