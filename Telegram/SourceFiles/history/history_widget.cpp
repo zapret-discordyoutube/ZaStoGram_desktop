@@ -3874,8 +3874,8 @@ bool HistoryWidget::isE2ECloudProtectedPeer() const {
 	}
 	return _history->hasE2ECloudGroupCarrier()
 		|| (_migrated && _migrated->hasE2ECloudGroupCarrier())
-		|| session().e2eCloud().protectedConversationForPeer(_peer->id.value)
-			.has_value();
+		|| session().e2eCloud().isProtectedPeerForPresentation(
+			_peer->id.value);
 }
 
 void HistoryWidget::openE2ECloudProtectedConversation() {

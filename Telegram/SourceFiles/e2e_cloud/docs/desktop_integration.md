@@ -32,6 +32,14 @@ window is fed only from locally authenticated and decrypted records.
 Reserved vault metadata is recognized only in Saved Messages, and reserved
 group metadata only in basic groups or supergroups. A same-named ordinary file
 in a direct chat or broadcast channel therefore remains an ordinary file.
+Once a group is authenticated or restored as protected, an account-local
+durable peer marker permanently keeps Telegram's ordinary composer disabled for
+that peer, including before vault unlock and after carrier messages are unloaded
+or deleted. Markers are monotonic and are never removed by server-visible
+history changes. A malformed local marker record conservatively disables
+ordinary composition for all group peers until the protected state can be
+repaired. Reserved metadata alone blocks the currently observed peer but does
+not create a durable marker before cryptographic verification.
 
 ## Session state
 

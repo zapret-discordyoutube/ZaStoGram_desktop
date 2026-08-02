@@ -157,6 +157,8 @@ public:
 	[[nodiscard]] std::optional<ConversationId>
 		protectedConversationForPeer(
 			std::uint64_t telegramPeerIdBinding) const;
+	[[nodiscard]] bool isProtectedPeerForPresentation(
+		std::uint64_t telegramPeerIdBinding) const;
 	[[nodiscard]] std::vector<ProtectedContentRecord> protectedContent(
 		ConversationId conversationId,
 		std::size_t offset,
@@ -314,6 +316,8 @@ private:
 	void notifyContentRevision();
 	void notifyFileTransferRevision();
 	void notifySecurityRevision();
+	void rememberProtectedPeerForPresentation(
+		std::uint64_t telegramPeerIdBinding);
 	[[nodiscard]] bool completeObservedJoin(
 		ConversationId conversationId,
 		const PublicBootstrapSyncCompletion &result);
@@ -359,6 +363,8 @@ private:
 	std::unique_ptr<PendingGroupDiscovery> _pendingGroupDiscovery;
 	std::set<std::uint64_t> _groupDiscoveryQueue;
 	std::map<ConversationId, std::unique_ptr<PendingGroupCreation>> _groups;
+	std::set<std::uint64_t> _presentationProtectedPeers;
+	bool _presentationProtectedPeersValid = true;
 	rpl::variable<DesktopVaultState> _vaultState
 		= DesktopVaultState::Uninitialized;
 	rpl::variable<DesktopGroupCreationState> _groupCreationState

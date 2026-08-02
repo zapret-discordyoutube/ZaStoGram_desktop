@@ -857,3 +857,21 @@ token; its callback must still match that token before changing group state, so
 a late completion can never finish a newer file operation. Destroying a group
 also signals both tokens, preventing lock or shutdown from continuing to read a
 large plaintext file in the background.
+
+### D074: Protected peers never downgrade after local recognition
+
+Persist a monotonic account-local set of Telegram peer bindings as soon as a
+protected group is created, restored, indexed by the authenticated unlocked
+vault, or accepted from a verified protected bootstrap. The ordinary Telegram
+composer must consult this set even while the E2E vault is locked. Removing,
+unloading, or hiding the carrier object therefore cannot turn a previously
+known protected group back into a plaintext chat.
+
+The marker contains no secret beyond a Telegram peer binding already known to
+the local account and lives in Telegram Desktop's encrypted account-local
+preferences. It is deliberately never pruned from server history. Invalid or
+oversized marker state fails toward confidentiality by treating every group
+peer as protected instead of silently re-enabling plaintext composition.
+Unauthenticated reserved metadata continues to block composition while present,
+but cannot write a permanent marker and give an ordinary group member a lasting
+local denial-of-service primitive.

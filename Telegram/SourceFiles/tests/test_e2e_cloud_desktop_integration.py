@@ -77,6 +77,41 @@ def verify_group_scope() -> None:
     assert service.count("IsProtectedGroupPeerBinding(") >= 3
 
 
+def verify_protected_peers_never_downgrade_to_plaintext() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    widget = source("SourceFiles/history/history_widget.cpp")
+    constructor = function_body(
+        service,
+        "DesktopService::DesktopService(not_null<Main::Session*> session)",
+        "DesktopService::~DesktopService()",
+    )
+    presentation = function_body(
+        service,
+        "bool DesktopService::isProtectedPeerForPresentation(",
+        "std::vector<ProtectedContentRecord> "
+        "DesktopService::protectedContent(",
+    )
+    lock = function_body(
+        service,
+        "void DesktopService::lock()",
+        "void DesktopService::applyVaultDiscoveryResult(",
+    )
+
+    assert "bool isProtectedPeerForPresentation(" in header
+    assert "_presentationProtectedPeers" in header
+    assert "_presentationProtectedPeersValid" in header
+    assert "readPref<QByteArray>(kProtectedPeersPref)" in constructor
+    assert "writePref<QByteArray>(" in presentation
+    assert "EncodeProtectedPeerMarkers(" in presentation
+    assert "!_presentationProtectedPeersValid" in presentation
+    assert "_presentationProtectedPeers.contains(" in presentation
+    assert "isProtectedPeerForPresentation(" in widget
+    assert service.count("rememberProtectedPeerForPresentation(") >= 5
+    assert "_presentationProtectedPeers.clear()" not in lock
+    assert "_presentationProtectedPeers.erase(" not in service
+
+
 def verify_all_e2e_tests_are_registered() -> None:
     cmake = source("cmake/tests.cmake")
     root_cmake = (ROOT.parent / "CMakeLists.txt").read_text(encoding="utf-8")
@@ -1656,6 +1691,7 @@ def verify_equal_content_states_notify_every_group() -> None:
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
+    verify_protected_peers_never_downgrade_to_plaintext()
     verify_all_e2e_tests_are_registered()
     verify_discovery_has_a_timeout()
     verify_all_carrier_operations_have_timeouts()

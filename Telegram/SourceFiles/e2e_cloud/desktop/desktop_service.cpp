@@ -56,6 +56,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "storage/storage_account.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -80,6 +81,97 @@ namespace E2ECloud {
 namespace {
 
 inline constexpr auto kControlSyncOverlap = std::size_t(32);
+inline constexpr auto kProtectedPeersPref = "e2e_cloud_protected_peers_v1";
+inline constexpr auto kMaximumProtectedPeerMarkers = std::size_t(65'536);
+inline constexpr auto kProtectedPeerMarkerMagic = std::array<std::uint8_t, 8>{
+	'T', 'D', 'E', '2', 'E', 'P', 'P', '1'
+};
+
+void AppendUint32(QByteArray &result, std::uint32_t value) {
+	result.append(char(value >> 24));
+	result.append(char(value >> 16));
+	result.append(char(value >> 8));
+	result.append(char(value));
+}
+
+void AppendUint64(QByteArray &result, std::uint64_t value) {
+	for (auto shift = 56; shift >= 0; shift -= 8) {
+		result.append(char(value >> shift));
+	}
+}
+
+[[nodiscard]] std::uint32_t ReadUint32(const std::uint8_t *bytes) {
+	return (std::uint32_t(bytes[0]) << 24)
+		| (std::uint32_t(bytes[1]) << 16)
+		| (std::uint32_t(bytes[2]) << 8)
+		| std::uint32_t(bytes[3]);
+}
+
+[[nodiscard]] std::uint64_t ReadUint64(const std::uint8_t *bytes) {
+	auto result = std::uint64_t();
+	for (auto i = 0; i != 8; ++i) {
+		result = (result << 8) | bytes[i];
+	}
+	return result;
+}
+
+[[nodiscard]] QByteArray EncodeProtectedPeerMarkers(
+		std::uint64_t telegramUserIdBinding,
+		const std::set<std::uint64_t> &peers) {
+	auto result = QByteArray();
+	result.reserve(int(
+		kProtectedPeerMarkerMagic.size()
+		+ 8
+		+ 4
+		+ (peers.size() * 8)));
+	result.append(
+		reinterpret_cast<const char*>(kProtectedPeerMarkerMagic.data()),
+		kProtectedPeerMarkerMagic.size());
+	AppendUint64(result, telegramUserIdBinding);
+	AppendUint32(result, std::uint32_t(peers.size()));
+	for (const auto peer : peers) {
+		AppendUint64(result, peer);
+	}
+	return result;
+}
+
+[[nodiscard]] auto DecodeProtectedPeerMarkers(
+		const QByteArray &encoded,
+		std::uint64_t telegramUserIdBinding)
+-> std::optional<std::set<std::uint64_t>> {
+	if (encoded.isEmpty()) {
+		return std::set<std::uint64_t>();
+	}
+	constexpr auto kHeaderSize = std::size_t(8 + 8 + 4);
+	if (encoded.size() < 0 || std::size_t(encoded.size()) < kHeaderSize) {
+		return std::nullopt;
+	}
+	const auto bytes = reinterpret_cast<const std::uint8_t*>(
+		encoded.constData());
+	if (!std::equal(
+			begin(kProtectedPeerMarkerMagic),
+			end(kProtectedPeerMarkerMagic),
+			bytes)
+		|| ReadUint64(bytes + 8) != telegramUserIdBinding) {
+		return std::nullopt;
+	}
+	const auto count = std::size_t(ReadUint32(bytes + 16));
+	if (count > kMaximumProtectedPeerMarkers
+		|| std::size_t(encoded.size()) != kHeaderSize + (count * 8)) {
+		return std::nullopt;
+	}
+	auto result = std::set<std::uint64_t>();
+	auto previous = std::uint64_t();
+	for (auto i = std::size_t(); i != count; ++i) {
+		const auto peer = ReadUint64(bytes + kHeaderSize + (i * 8));
+		if (!peer || (i && peer <= previous)) {
+			return std::nullopt;
+		}
+		result.emplace(peer);
+		previous = peer;
+	}
+	return result;
+}
 
 [[nodiscard]] Argon2idConfig DesktopArgon2idConfig() {
 	return {
@@ -617,6 +709,14 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 , _remote(std::make_unique<TelegramCloudVaultTransport>(
 	_telegramSelfPeerId,
 	*_backend)) {
+	auto protectedPeers = DecodeProtectedPeerMarkers(
+		_session->local().readPref<QByteArray>(kProtectedPeersPref),
+		_telegramUserIdBinding);
+	if (protectedPeers) {
+		_presentationProtectedPeers = std::move(*protectedPeers);
+	} else {
+		_presentationProtectedPeersValid = false;
+	}
 	const auto anchorLoad = _vaultAnchor.load();
 	if (anchorLoad == CloudVaultAnchorLoadResult::StorageError
 		|| anchorLoad == CloudVaultAnchorLoadResult::InvalidSnapshot) {
@@ -956,6 +1056,7 @@ bool DesktopService::createProtectedGroup(
 		return false;
 	}
 	(void)FinishConversationSetup(operation->directory);
+	rememberProtectedPeerForPresentation(peer->id.value);
 	operation->conversation = conversation;
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
 		conversation.checkpoint,
@@ -1111,6 +1212,39 @@ std::optional<ConversationId> DesktopService::protectedConversationForPeer(
 		return std::nullopt;
 	}
 	return result;
+}
+
+bool DesktopService::isProtectedPeerForPresentation(
+		std::uint64_t telegramPeerIdBinding) const {
+	return telegramPeerIdBinding
+		&& (!_presentationProtectedPeersValid
+			|| _presentationProtectedPeers.contains(telegramPeerIdBinding)
+			|| protectedConversationForPeer(telegramPeerIdBinding).has_value());
+}
+
+void DesktopService::rememberProtectedPeerForPresentation(
+		std::uint64_t telegramPeerIdBinding) {
+	if (!telegramPeerIdBinding
+		|| !_presentationProtectedPeersValid
+		|| _presentationProtectedPeers.contains(telegramPeerIdBinding)) {
+		return;
+	}
+	if (_presentationProtectedPeers.size()
+			>= kMaximumProtectedPeerMarkers) {
+		_presentationProtectedPeersValid = false;
+		_session->local().writePref<QByteArray>(
+			kProtectedPeersPref,
+			QByteArray("invalid"));
+		return;
+	}
+	_presentationProtectedPeers.emplace(telegramPeerIdBinding);
+	_session->local().writePref<QByteArray>(
+		kProtectedPeersPref,
+		EncodeProtectedPeerMarkers(
+			_telegramUserIdBinding,
+			_presentationProtectedPeers));
+	_session->data().notifyHistoryChangeDelayed(
+		_session->data().history(PeerId(telegramPeerIdBinding)));
 }
 
 std::vector<ProtectedContentRecord> DesktopService::protectedContent(
@@ -2502,6 +2636,10 @@ void DesktopService::resumePendingGroupCreation() {
 		return;
 	}
 	for (const auto &conversation : _vault->conversations) {
+		rememberProtectedPeerForPresentation(
+			conversation.telegramPeerIdBinding);
+	}
+	for (const auto &conversation : _vault->conversations) {
 		if (_groups.contains(conversation.conversationId)) {
 			continue;
 		}
@@ -2806,6 +2944,8 @@ bool DesktopService::prepareGroupJoin(
 		return false;
 	}
 	(void)FinishConversationSetup(operation->directory);
+	rememberProtectedPeerForPresentation(
+		conversation.telegramPeerIdBinding);
 	operation->conversation = conversation;
 	operation->joinTargetCheckpoint = conversation.checkpoint;
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
@@ -4554,9 +4694,6 @@ void DesktopService::applyGroupObservation(
 }
 
 void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
-	if (!vaultReady()) {
-		return;
-	}
 	const auto peer = item->history()->peer;
 	if (!peer->isChat() && !peer->isMegagroup()) {
 		return;
@@ -4570,6 +4707,9 @@ void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
 		return;
 	}
 	const auto peerId = item->history()->peer->id.value;
+	if (!vaultReady()) {
+		return;
+	}
 	if (document->filename() == ProtectedContentCarrierFilename()) {
 		for (const auto &[conversationId, group] : _groups) {
 			if (group->telegramPeerIdBinding == peerId) {
@@ -5524,6 +5664,8 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 				!= localMetadata.telegramPeerIdBinding)) {
 		return LocalGroupRecoveryResult::Invalid;
 	}
+	rememberProtectedPeerForPresentation(
+		localMetadata.telegramPeerIdBinding);
 	auto operationKey = DeriveConversationLocalRecordKey(
 		_vault->masterKey,
 		_telegramUserIdBinding,
