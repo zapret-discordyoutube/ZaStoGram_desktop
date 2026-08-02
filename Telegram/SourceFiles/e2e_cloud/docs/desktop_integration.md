@@ -59,6 +59,11 @@ the new-identity warning and the documented first-contact limitation still
 apply. A search that receives no Telegram result within 15 seconds is cancelled
 and exposed as a retryable discovery error instead of leaving the modal in an
 unbounded checking state.
+Opening a surface that previously observed no vault repeats discovery, because
+another device may have created the identity meanwhile. Create also performs a
+fresh passwordless preflight before generating identity keys; a newly observed
+vault switches the form to password unlock without publishing a competing
+identity.
 
 Unlocking selects the newest valid cloud vault that is consistent with the
 local rollback anchor. The password derives only a wrapping key; it never

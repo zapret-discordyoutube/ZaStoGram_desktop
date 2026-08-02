@@ -157,6 +157,36 @@ def verify_discovery_has_a_timeout() -> None:
     )
 
 
+def verify_vault_creation_rechecks_remote_identity() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    ensure = function_body(
+        service,
+        "void DesktopService::ensureVaultDiscovery()",
+        "bool DesktopService::unlock(",
+    )
+    create = function_body(
+        service,
+        "bool DesktopService::createVault(",
+        "bool DesktopService::retryCreateVault(",
+    )
+    preflight = function_body(
+        service,
+        "void DesktopService::applyVaultCreationDiscoveryResult(",
+        "void DesktopService::applySyncResult(",
+    )
+
+    assert "state != DesktopVaultState::Missing" in ensure
+    assert "applyVaultCreationDiscoveryResult(" in header
+    assert "_sync->startDiscovery()" in create
+    assert "GenerateAccountPrivateIdentity()" not in create
+    assert "result.status == CloudVaultSyncStatus::Missing" in preflight
+    assert "GenerateAccountPrivateIdentity()" in preflight
+    assert "uploadPendingCreation();" in preflight
+    assert "result.status == CloudVaultSyncStatus::Present" in preflight
+    assert "_vaultState = DesktopVaultState::Locked;" in preflight
+
+
 def verify_all_carrier_operations_have_timeouts() -> None:
     backend = source(
         "SourceFiles/e2e_cloud/transport/"
@@ -1704,6 +1734,7 @@ def main() -> None:
     verify_protected_peers_never_downgrade_to_plaintext()
     verify_all_e2e_tests_are_registered()
     verify_discovery_has_a_timeout()
+    verify_vault_creation_rechecks_remote_identity()
     verify_all_carrier_operations_have_timeouts()
     verify_carrier_backfill_searches_documents()
     verify_ambiguous_search_results_fail_closed()

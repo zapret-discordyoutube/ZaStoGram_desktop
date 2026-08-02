@@ -897,3 +897,17 @@ peer as another monotonic protected presentation alias. The migrated chat then
 keeps its plaintext composer disabled even after the old carrier is unloaded or
 the server later hides that migration edge. Opening the protected surface also
 falls back through the migrated history binding to the original conversation.
+
+### D077: Identity creation repeats passwordless discovery
+
+Treat a previous `Missing` result as a snapshot, not as durable proof that the
+Telegram account still has no protected identity. Opening the protected surface
+again repeats the bounded Saved Messages discovery. More importantly, pressing
+Create starts another passwordless discovery before generating any identity or
+uploading a vault. If another device has created an identity since the form was
+shown, switch to the unlock flow and discard the proposed password instead of
+publishing a competing account identity.
+
+This preflight narrows honest multi-device races but does not claim an atomic
+compare-and-swap from Telegram storage. A server that hides first-contact
+metadata remains covered by the documented first-contact limitation.

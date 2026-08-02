@@ -798,6 +798,7 @@ void DesktopService::ensureVaultDiscovery() {
 	if (_sync
 		|| !_vaultAnchor.loaded()
 		|| (state != DesktopVaultState::Uninitialized
+			&& state != DesktopVaultState::Missing
 			&& state != DesktopVaultState::DiscoveryRetryableError
 			&& state != DesktopVaultState::DiscoveryPermanentError)) {
 		return;
@@ -863,21 +864,25 @@ bool DesktopService::createVault(QByteArray password) {
 	}
 	Cleanse(_pendingUnlockPassword);
 	_pendingUnlockPassword = password;
-	auto identity = GenerateAccountPrivateIdentity();
-	_pendingCreation = identity
-		? _vaultCodec.create(
-			_telegramUserIdBinding,
-			std::move(*identity),
-			std::move(password),
-			DesktopArgon2idConfig())
-		: std::nullopt;
-	if (!_pendingCreation) {
+	Cleanse(password);
+	_vaultState = DesktopVaultState::Creating;
+	_sync = std::make_unique<CloudVaultSyncController>(
+		_telegramUserIdBinding,
+		*_remote,
+		_vaultSelector,
+		[weak = base::weak_ptr(this)](CloudVaultSyncCompletion result) {
+			if (weak) {
+				weak->applyVaultCreationDiscoveryResult(
+					std::move(result));
+			}
+		});
+	const auto started = _sync->startDiscovery();
+	if (!started) {
+		_sync.reset();
 		Cleanse(_pendingUnlockPassword);
-		_vaultState = DesktopVaultState::WrongPasswordOrDamaged;
-		return false;
+		_vaultState = DesktopVaultState::DiscoveryRetryableError;
 	}
-	uploadPendingCreation();
-	return true;
+	return started;
 }
 
 bool DesktopService::retryCreateVault() {
@@ -2237,6 +2242,41 @@ void DesktopService::applyVaultDiscoveryResult(
 		_vaultState = DesktopVaultState::Uninitialized;
 		break;
 	}
+}
+
+void DesktopService::applyVaultCreationDiscoveryResult(
+		CloudVaultSyncCompletion result) {
+	_sync.reset();
+	if (result.status == CloudVaultSyncStatus::Missing) {
+		auto identity = GenerateAccountPrivateIdentity();
+		auto password = _pendingUnlockPassword;
+		_pendingCreation = identity
+			? _vaultCodec.create(
+				_telegramUserIdBinding,
+				std::move(*identity),
+				std::move(password),
+				DesktopArgon2idConfig())
+			: std::nullopt;
+		if (_pendingCreation) {
+			uploadPendingCreation();
+			return;
+		}
+		Cleanse(password);
+		_vaultState = DesktopVaultState::WrongPasswordOrDamaged;
+	} else if (result.status == CloudVaultSyncStatus::Present) {
+		_vaultState = DesktopVaultState::Locked;
+	} else if (result.status
+			== CloudVaultSyncStatus::RetryableTransportError) {
+		_vaultState = DesktopVaultState::DiscoveryRetryableError;
+	} else if (result.status
+			== CloudVaultSyncStatus::PermanentTransportError) {
+		_vaultState = DesktopVaultState::DiscoveryPermanentError;
+	} else if (result.status == CloudVaultSyncStatus::Cancelled) {
+		_vaultState = DesktopVaultState::Missing;
+	} else {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+	}
+	Cleanse(_pendingUnlockPassword);
 }
 
 void DesktopService::applySyncResult(CloudVaultSyncCompletion result) {

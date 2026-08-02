@@ -220,6 +220,7 @@ private:
 	[[nodiscard]] bool hasProtectedRuntimeState() const;
 	void scheduleSecurityLock();
 	void applyVaultDiscoveryResult(CloudVaultSyncCompletion result);
+	void applyVaultCreationDiscoveryResult(CloudVaultSyncCompletion result);
 	void applySyncResult(CloudVaultSyncCompletion result);
 	void applyGroupVaultSyncResult(CloudVaultSyncCompletion result);
 	void uploadPendingCreation();
