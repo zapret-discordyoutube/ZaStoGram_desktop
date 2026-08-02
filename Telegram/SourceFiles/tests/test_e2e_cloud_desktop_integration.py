@@ -988,6 +988,18 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     item = source("SourceFiles/history/history_item.cpp")
     widget = source("SourceFiles/history/history_widget.cpp")
+    manifest = source(
+        "SourceFiles/e2e_cloud/files/private_file_manifest.cpp"
+    )
+    file_view = source(
+        "SourceFiles/history/view/media/history_view_file.cpp"
+    )
+    document_view = source(
+        "SourceFiles/history/view/media/history_view_document.cpp"
+    )
+    protected_box = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
     top_bar = source(
         "SourceFiles/history/view/history_view_top_bar_widget.cpp"
     )
@@ -1023,8 +1035,20 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     )
 
     assert "materializedHistoryPeerIdBinding" in materialize
-    assert "history->addExistingLocalMessage({" in refresh
+    assert "auto fields = HistoryItemCommonFields{" in refresh
+    assert refresh.count("history->addExistingLocalMessage(") >= 2
+    assert "CreateProtectedHistoryDocument(" in refresh
     assert ".e2eCloudDecrypted = true" in refresh
+    assert ".e2eCloudConversationId" in refresh
+    assert ".e2eCloudEventObjectId" in refresh
+    assert "PrepareFilePreview(" in service
+    assert ".preview = source->preview" in service
+    assert "AppendUint16(result, 3)" in manifest
+    assert "version != 2 && version != 3" in manifest
+    assert "kMaximumPrivateFilePreviewSize" in manifest
+    assert "realParent->isE2ECloudDecrypted()" in file_view
+    assert "_realParent->isE2ECloudDecrypted()" in document_view
+    assert "void OpenProtectedHistoryFile(" in protected_box
     assert 'u"🔒 "_q' in service
     assert "tr::lng_e2e_cloud_header_status(tr::now)" in widget
     assert "|| !_customTitleText.isEmpty()" in top_bar
@@ -1322,7 +1346,7 @@ def verify_new_file_cannot_replace_pending_transfer() -> None:
     assert file_send.index("i->second->fileTransfer.pending()") \
         < file_send.index("crl::async(")
     assert file_send.index("crl::async(") \
-        < file_send.index("HashFile(absolutePath, cancellation)")
+        < file_send.index("HashFile(absolutePath, cancellation, true)")
     assert "group.fileHashInProgress = true;" in file_send
     assert "commitPreparedFileTransfer(conversationId)" in service
     assert "group.fileTransfer.begin(std::move(transfer))" in service

@@ -874,6 +874,8 @@ HistoryItem::HistoryItem(
 	: history->peer)
 , _flags(FinalizeMessageFlags(history, fields.flags))
 , _e2eCloudDecrypted(fields.e2eCloudDecrypted)
+, _e2eCloudConversationId(fields.e2eCloudConversationId)
+, _e2eCloudEventObjectId(fields.e2eCloudEventObjectId)
 , _date(fields.date)
 , _starsPaid(fields.starsPaid)
 , _shortcutId(fields.shortcutId)

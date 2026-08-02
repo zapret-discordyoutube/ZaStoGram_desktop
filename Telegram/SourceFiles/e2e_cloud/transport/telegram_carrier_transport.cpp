@@ -20,6 +20,7 @@ namespace {
 inline constexpr auto kMaximumCarrierObjectSize = 18 * 1024 * 1024;
 inline constexpr auto kMaximumFileChunkObjectSize = 5 * 1024 * 1024;
 inline constexpr auto kFileChunkPrefix = "protected-file-";
+inline constexpr auto kLegacyFileChunkPrefix = "protected_file_";
 inline constexpr auto kFileChunkSuffix = ".tde2e";
 
 [[nodiscard]] bool ContentKind(ObjectKind kind) {
@@ -56,11 +57,18 @@ QString ProtectedFileChunkCarrierFilename(FileId fileId) {
 
 std::optional<FileId> ProtectedFileChunkCarrierFileId(
 		const QString &filename) {
-	const auto prefix = QString::fromLatin1(kFileChunkPrefix);
+	const auto currentPrefix = QString::fromLatin1(kFileChunkPrefix);
+	const auto legacyPrefix = QString::fromLatin1(kLegacyFileChunkPrefix);
+	const auto prefix = filename.startsWith(currentPrefix)
+		? currentPrefix
+		: filename.startsWith(legacyPrefix)
+		? legacyPrefix
+		: QString();
 	const auto suffix = QString::fromLatin1(kFileChunkSuffix);
 	constexpr auto kEncodedFileIdSize = int(FileId().bytes.size() * 2);
-	if (filename.size() != prefix.size() + kEncodedFileIdSize + suffix.size()
-		|| !filename.startsWith(prefix)
+	if (prefix.isEmpty()
+		|| filename.size()
+			!= prefix.size() + kEncodedFileIdSize + suffix.size()
 		|| !filename.endsWith(suffix)) {
 		return std::nullopt;
 	}

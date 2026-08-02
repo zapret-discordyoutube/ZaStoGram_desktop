@@ -120,16 +120,21 @@ void File::setDocumentLinks(
 		not_null<HistoryItem*> realParent,
 		Fn<bool()> openHook) {
 	const auto context = realParent->fullId();
-	setLinks(
-		std::make_shared<DocumentOpenClickHandler>(
+	const auto makeOpenLink = [=]() -> FileClickHandlerPtr {
+		return std::make_shared<DocumentOpenClickHandler>(
 			document,
 			crl::guard(this, [=](FullMsgId id) {
 				if (!openHook || !openHook()) {
 					_parent->delegate()->elementOpenDocument(document, id);
 				}
 			}),
-			context),
-		std::make_shared<DocumentSaveClickHandler>(document, context),
+			context);
+	};
+	setLinks(
+		makeOpenLink(),
+		realParent->isE2ECloudDecrypted()
+			? makeOpenLink()
+			: std::make_shared<DocumentSaveClickHandler>(document, context),
 		std::make_shared<DocumentCancelClickHandler>(
 			document,
 			crl::guard(this, [=](FullMsgId id) {

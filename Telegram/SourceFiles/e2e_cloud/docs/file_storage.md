@@ -21,10 +21,13 @@ names and MIME types must be generic and must not reveal the original metadata.
 The version-one private manifest plaintext is a canonical `TDE2EFMF` record. It
 contains the conversation and file identifiers, file key, total size, chunk
 layout, nonce prefix, full plaintext SHA-256 digest, bounded UTF-8 basename, and
-bounded declared MIME value. This record is never a Telegram document by
-itself: it must first be encrypted as authenticated group/archive content. The
-decoder rejects path separators, dot path components, NUL, CR/LF MIME injection,
-unknown versions, inconsistent layouts, and trailing bytes.
+bounded declared MIME value. Manifest revision 3 may additionally contain a
+JPEG preview of at most 128 KiB, original dimensions, and media duration;
+revision 2 remains readable and has no preview. This record is never a Telegram
+document by itself: it must first be encrypted as authenticated group/archive
+content. The decoder rejects path separators, dot path components, NUL, CR/LF
+MIME injection, unknown versions, inconsistent layouts, oversized previews,
+and trailing bytes.
 
 ## Encryption
 
@@ -128,5 +131,9 @@ the atomic destination commit. Retryable transport failure, missing chunks,
 pagination manipulation, quota exhaustion, or digest failure leaves no partial
 destination file.
 
-Previews must be generated locally from authenticated plaintext. The client must
-not upload plaintext thumbnails or media metadata to Telegram.
+Previews are generated locally from authenticated plaintext, scaled to a
+320-pixel bound, and carried only inside the encrypted manifest. The client does
+not upload plaintext thumbnails or media metadata to Telegram. A received
+preview is displayed only after manifest authentication and bounded image
+decoding; opening the item still requires full chunk authentication and final
+plaintext-hash verification.

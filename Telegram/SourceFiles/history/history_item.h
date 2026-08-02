@@ -105,6 +105,8 @@ struct HistoryItemCommonFields {
 	bool ignoreForwardCaptions = false;
 	bool mediaSpoiler = false;
 	bool e2eCloudDecrypted = false;
+	QByteArray e2eCloudConversationId;
+	QByteArray e2eCloudEventObjectId;
 };
 
 enum class HistoryReactionSource : char {
@@ -446,6 +448,12 @@ public:
 	[[nodiscard]] bool isE2ECloudGroupCarrier() const;
 	[[nodiscard]] bool isE2ECloudDecrypted() const {
 		return _e2eCloudDecrypted;
+	}
+	[[nodiscard]] const QByteArray &e2eCloudConversationId() const {
+		return _e2eCloudConversationId;
+	}
+	[[nodiscard]] const QByteArray &e2eCloudEventObjectId() const {
+		return _e2eCloudEventObjectId;
 	}
 
 	using ToPreviewOptions = HistoryView::ToPreviewOptions;
@@ -819,6 +827,8 @@ private:
 	// MessageFlag has no free bits left, so this mark lives outside _flags.
 	bool _deletedBySender = false;
 	bool _e2eCloudDecrypted = false;
+	QByteArray _e2eCloudConversationId;
+	QByteArray _e2eCloudEventObjectId;
 
 	TextWithEntities _text;
 

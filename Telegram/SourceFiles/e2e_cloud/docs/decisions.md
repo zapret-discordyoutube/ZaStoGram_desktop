@@ -1040,3 +1040,18 @@ stickers, GIFs, inline results, contacts, send-as, scheduling, forwarding,
 editing, in-memory media without a local path, and any stale stock send dialog.
 If no authenticated conversation runtime is available, retain D039's single
 unlock or recovery action and never fall back to plaintext Telegram sending.
+
+### D087: File previews are authenticated protected content
+
+Generate a bounded JPEG thumbnail locally while the original file is hashed.
+Store that thumbnail, its original dimensions, and media duration inside the
+encrypted file manifest. Telegram receives only the opaque manifest carrier
+and ciphertext chunks; it never receives a plaintext thumbnail, filename,
+MIME value, dimensions, or duration from the protected presentation.
+
+Materialize a protected file as a native local document item with the decrypted
+thumbnail and a lock caption. Clicking an uncached item runs the authenticated
+protected-file restoration flow and opens only the hash-verified result. Keep
+manifest revision 2 readable without a preview and emit revision 3 for new
+files. Previously sent revision-2 files remain generic because no thumbnail
+exists in their authenticated ciphertext.

@@ -179,6 +179,12 @@ template <typename Id>
 		.unixTime = 1'725'000'000,
 		.filenameUtf8 = QByteArray("archive.any-extension"),
 		.mimeTypeUtf8 = QByteArray("application/x-private"),
+		.preview = PrivateFilePreview{
+			.width = 320,
+			.height = 180,
+			.durationMilliseconds = 12'345,
+			.jpegBytes = QByteArray("jpeg-preview"),
+		},
 	};
 }
 
@@ -203,8 +209,16 @@ template <typename Id>
 		|| decoded->plaintextHash != manifest.plaintextHash
 		|| decoded->unixTime != manifest.unixTime
 		|| decoded->filenameUtf8 != manifest.filenameUtf8
-		|| decoded->mimeTypeUtf8 != manifest.mimeTypeUtf8) {
+		|| decoded->mimeTypeUtf8 != manifest.mimeTypeUtf8
+		|| decoded->preview != manifest.preview) {
 		return Fail("private file manifest did not preserve file metadata");
+	}
+	auto legacy = *encoded;
+	legacy[9] = 2;
+	legacy.chop(16 + manifest.preview->jpegBytes.size());
+	const auto legacyDecoded = codec.decodePlaintext(legacy);
+	if (!legacyDecoded || legacyDecoded->preview) {
+		return Fail("private file manifest did not accept legacy metadata");
 	}
 	auto trailing = *encoded;
 	trailing.append('x');
@@ -233,6 +247,13 @@ template <typename Id>
 	manifest.mimeTypeUtf8 = QByteArray("text/\xFF", 6);
 	if (codec.encodePlaintext(manifest)) {
 		return Fail("private file manifest accepted invalid UTF-8 metadata");
+	}
+	manifest = MakeManifest();
+	manifest.preview->jpegBytes = FilledBytes(
+		kMaximumPrivateFilePreviewSize + 1,
+		'x');
+	if (codec.encodePlaintext(manifest)) {
+		return Fail("private file manifest accepted an oversized preview");
 	}
 	manifest = MakeManifest();
 	manifest.unixTime = std::numeric_limits<std::uint64_t>::max();

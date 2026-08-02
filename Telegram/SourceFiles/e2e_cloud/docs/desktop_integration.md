@@ -31,6 +31,13 @@ message layout, scrolling, selection, and copy behavior without becoming
 Telegram messages. They cannot be forwarded, replied to, edited, pinned,
 deleted, or reacted to through Telegram APIs.
 
+Protected files use native local document cards. New manifests include an
+encrypted thumbnail for images, videos, and supported artwork, so the ordinary
+timeline can display a preview without exposing it to Telegram. Opening an
+uncached card asks for a destination, restores and verifies the protected file,
+then opens the verified local result. Revision-2 files created before thumbnail
+support remain readable with the generic document icon.
+
 An unlocked active protected group keeps the ordinary text field, send button,
 and attachment picker. Text submission is intercepted before all rich-message,
 preview, scheduling, payment, and ordinary send paths and is queued through the

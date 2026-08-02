@@ -58,17 +58,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "lang/lang_keys.h"
 #include "storage/storage_account.h"
+#include "storage/localimageloader.h"
+#include "ui/chat/attach/attach_prepare.h"
+#include "ui/image/image_location_factory.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <QtCore/QBuffer>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeDatabase>
 #include <QtCore/QSaveFile>
 #include <QtCore/QScopeGuard>
+#include <QtGui/QImage>
+#include <QtGui/QImageReader>
 
 #include <algorithm>
 #include <array>
@@ -383,28 +389,113 @@ void Cleanse(QByteArray &bytes) {
 	bytes.clear();
 }
 
+inline constexpr auto kProtectedFilePreviewSide = 320;
+inline constexpr auto kProtectedFilePreviewQuality = 82;
+
 [[nodiscard]] QString ProtectedHistoryText(
 		const ProtectedContentRecord &record) {
-	if (record.objectKind == ObjectKind::EncryptedMessageBody) {
-		auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
-			record.plaintext);
-		if (!body) {
-			return QString();
-		}
-		auto result = QString::fromUtf8(body->textUtf8);
-		Cleanse(body->textUtf8);
-		return u"🔒 "_q + result;
+	if (record.objectKind != ObjectKind::EncryptedMessageBody) {
+		return QString();
 	}
-	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
+	auto body = ProtectedMessageBodyCodecV1().decodePlaintext(
 		record.plaintext);
-	return manifest
-		? u"🔒 📎 "_q + tr::lng_e2e_cloud_file(
-			tr::now,
-			lt_name,
-			QString::fromUtf8(manifest->filenameUtf8),
-			lt_size,
-			QString::number(manifest->context.plaintextSize))
-		: QString();
+	if (!body) {
+		return QString();
+	}
+	auto result = QString::fromUtf8(body->textUtf8);
+	Cleanse(body->textUtf8);
+	return u"🔒 "_q + result;
+}
+
+struct ProtectedHistoryFile {
+	QString filename;
+	QString mimeType;
+	std::uint64_t size = 0;
+	std::optional<PrivateFilePreview> preview;
+};
+
+template <typename Id>
+[[nodiscard]] QByteArray ProtectedHistoryIdBytes(Id id) {
+	return QByteArray(
+		reinterpret_cast<const char*>(id.bytes.data()),
+		int(id.bytes.size()));
+}
+
+[[nodiscard]] DocumentId ProtectedHistoryDocumentId(
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		const Sha256Provider &sha256) {
+	auto input = QByteArray("TDE2E/protected-history-document/v1");
+	input.append(ProtectedHistoryIdBytes(conversationId));
+	input.append(ProtectedHistoryIdBytes(eventObjectId));
+	const auto digest = sha256.digest(input);
+	auto result = std::uint64_t();
+	for (auto index = 0; index != 8; ++index) {
+		result = (result << 8) | digest.bytes[index];
+	}
+	return result ? result : 1;
+}
+
+[[nodiscard]] not_null<DocumentData*> CreateProtectedHistoryDocument(
+		not_null<Main::Session*> session,
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		TimeId date,
+		const ProtectedHistoryFile &file,
+		const Sha256Provider &sha256) {
+	auto attributes = QVector<MTPDocumentAttribute>{
+		MTP_documentAttributeFilename(MTP_string(file.filename)),
+	};
+	auto thumbnail = ImageWithLocation();
+	if (file.preview) {
+		auto buffer = QBuffer();
+		buffer.setData(file.preview->jpegBytes);
+		if (buffer.open(QIODevice::ReadOnly)) {
+			auto reader = QImageReader(&buffer, "JPG");
+			const auto size = reader.size();
+			if (size.isValid()
+				&& size.width() <= kProtectedFilePreviewSide
+				&& size.height() <= kProtectedFilePreviewSide) {
+				auto image = reader.read();
+				if (!image.isNull()) {
+					thumbnail = Images::FromImageInMemory(
+						image,
+						"JPG",
+						file.preview->jpegBytes);
+				}
+			}
+		}
+		if (file.mimeType.startsWith(u"video/"_q)) {
+			attributes.push_back(MTP_documentAttributeVideo(
+				MTP_flags(MTPDdocumentAttributeVideo::Flags(0)),
+				MTP_double(file.preview->durationMilliseconds / 1000.),
+				MTP_int(file.preview->width),
+				MTP_int(file.preview->height),
+				MTPint(),
+				MTPdouble(),
+				MTPstring()));
+		} else {
+			attributes.push_back(MTP_documentAttributeImageSize(
+				MTP_int(file.preview->width),
+				MTP_int(file.preview->height)));
+		}
+	}
+	return session->data().document(
+		ProtectedHistoryDocumentId(
+			conversationId,
+			eventObjectId,
+			sha256),
+		0,
+		QByteArray(),
+		date,
+		attributes,
+		file.mimeType,
+		InlineImageLocation(),
+		thumbnail,
+		ImageWithLocation(),
+		false,
+		0,
+		file.size);
 }
 
 [[nodiscard]] ObjectId FreshnessResponseObjectId(
@@ -435,11 +526,70 @@ inline constexpr auto kFileCleanupChunksPerTurn = std::uint32_t(64);
 struct HashedFile {
 	std::uint64_t size = 0;
 	Digest hash;
+	std::optional<PrivateFilePreview> preview;
 };
+
+[[nodiscard]] std::optional<PrivateFilePreview> PrepareFilePreview(
+		const QString &path) {
+	const auto mime = QMimeDatabase().mimeTypeForFile(
+		path,
+		QMimeDatabase::MatchExtension).name();
+	auto information = FileLoadTask::ReadMediaInformation(
+		path,
+		QByteArray(),
+		mime);
+	if (!information) {
+		return std::nullopt;
+	}
+	auto image = QImage();
+	auto duration = crl::time();
+	if (const auto data = std::get_if<Ui::PreparedFileInformation::Image>(
+			&information->media)) {
+		image = data->data;
+	} else if (const auto data = std::get_if<
+			Ui::PreparedFileInformation::Video>(&information->media)) {
+		image = data->thumbnail;
+		duration = std::max(data->duration, crl::time());
+	} else if (const auto data = std::get_if<
+			Ui::PreparedFileInformation::Song>(&information->media)) {
+		image = data->cover;
+		duration = std::max(data->duration, crl::time());
+	}
+	if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
+		return std::nullopt;
+	}
+	const auto width = image.width();
+	const auto height = image.height();
+	if (width > kProtectedFilePreviewSide
+		|| height > kProtectedFilePreviewSide) {
+		image = image.scaled(
+			kProtectedFilePreviewSide,
+			kProtectedFilePreviewSide,
+			Qt::KeepAspectRatio,
+			Qt::SmoothTransformation);
+	}
+	auto bytes = QByteArray();
+	auto buffer = QBuffer(&bytes);
+	if (!buffer.open(QIODevice::WriteOnly)
+		|| !image.save(&buffer, "JPG", kProtectedFilePreviewQuality)
+		|| bytes.isEmpty()
+		|| bytes.size() > kMaximumPrivateFilePreviewSize) {
+		return std::nullopt;
+	}
+	return PrivateFilePreview{
+		.width = std::uint32_t(width),
+		.height = std::uint32_t(height),
+		.durationMilliseconds = std::uint32_t(std::min<std::uint64_t>(
+			std::uint64_t(duration),
+			std::numeric_limits<std::uint32_t>::max())),
+		.jpegBytes = std::move(bytes),
+	};
+}
 
 [[nodiscard]] std::optional<HashedFile> HashFile(
 		const QString &path,
-		std::shared_ptr<std::atomic_bool> cancellation = nullptr) {
+		std::shared_ptr<std::atomic_bool> cancellation = nullptr,
+		bool preparePreview = false) {
 	auto file = QFile(path);
 	if (!file.open(QIODevice::ReadOnly)
 		|| file.size() < 0
@@ -479,6 +629,7 @@ struct HashedFile {
 	auto result = HashedFile{
 		.size = std::uint64_t(originalSize),
 		.hash = {},
+		.preview = {},
 	};
 	auto hashSize = 0U;
 	ok = ok
@@ -491,6 +642,11 @@ struct HashedFile {
 			&hashSize) == 1
 		&& hashSize == result.hash.bytes.size();
 	EVP_MD_CTX_free(context);
+	if (ok && preparePreview) {
+		result.preview = PrepareFilePreview(path);
+		ok = !cancellation
+			|| !cancellation->load(std::memory_order_relaxed);
+	}
 	return (ok && result.hash)
 		? std::optional<HashedFile>(result)
 		: std::nullopt;
@@ -701,6 +857,7 @@ struct DesktopService::PendingGroupCreation {
 	std::optional<HashedFile> filePreparationSource;
 	std::set<AccountId> safetyWitnesses;
 	std::vector<std::pair<ObjectId, FullMsgId>> materializedHistory;
+	std::map<ObjectId, QString> localProtectedFilePaths;
 	std::uint64_t materializedHistoryPeerIdBinding = 0;
 	std::size_t materializedHistoryLimit = 0;
 	std::uint64_t safetyWitnessGeneration = 0;
@@ -1454,18 +1611,40 @@ void DesktopService::refreshMaterializedProtectedHistory(
 		AccountId senderAccountId;
 		std::uint64_t unixTime = 0;
 		QString text;
+		std::optional<ProtectedHistoryFile> file;
 	};
 	auto rendered = std::vector<RenderedRecord>();
 	rendered.reserve(records.size());
 	for (const auto &record : records) {
-		auto text = ProtectedHistoryText(record);
-		if (!text.isEmpty()) {
-			rendered.push_back({
-				.eventObjectId = record.eventObjectId,
-				.senderAccountId = record.senderAccountId,
-				.unixTime = record.unixTime,
-				.text = std::move(text),
-			});
+		if (record.objectKind == ObjectKind::EncryptedMessageBody) {
+			auto text = ProtectedHistoryText(record);
+			if (!text.isEmpty()) {
+				rendered.push_back({
+					.eventObjectId = record.eventObjectId,
+					.senderAccountId = record.senderAccountId,
+					.unixTime = record.unixTime,
+					.text = std::move(text),
+				});
+			}
+		} else if (record.objectKind == ObjectKind::EncryptedFileManifest) {
+			const auto manifest = PrivateFileManifestCodecV1()
+				.decodePlaintext(record.plaintext);
+			if (manifest) {
+				rendered.push_back({
+					.eventObjectId = record.eventObjectId,
+					.senderAccountId = record.senderAccountId,
+					.unixTime = record.unixTime,
+					.text = u"🔒"_q,
+					.file = ProtectedHistoryFile{
+						.filename = QString::fromUtf8(
+							manifest->filenameUtf8),
+						.mimeType = QString::fromUtf8(
+							manifest->mimeTypeUtf8),
+						.size = manifest->context.plaintextSize,
+						.preview = manifest->preview,
+					},
+				});
+			}
 		}
 	}
 	auto appendFrom = std::size_t();
@@ -1516,13 +1695,42 @@ void DesktopService::refreshMaterializedProtectedHistory(
 		}
 		const auto maximumTime = std::uint64_t(
 			std::numeric_limits<TimeId>::max());
-		const auto item = history->addExistingLocalMessage({
+		auto fields = HistoryItemCommonFields{
 			.id = _session->data().nextLocalMessageId(),
 			.flags = flags,
 			.from = from,
 			.date = TimeId(std::min(record.unixTime, maximumTime)),
 			.e2eCloudDecrypted = true,
-		}, TextWithEntities{ .text = record.text }, MTP_messageMediaEmpty());
+			.e2eCloudConversationId = ProtectedHistoryIdBytes(
+				group.conversationId),
+			.e2eCloudEventObjectId = ProtectedHistoryIdBytes(
+				record.eventObjectId),
+		};
+		const auto item = [&] {
+			if (!record.file) {
+				return history->addExistingLocalMessage(
+					std::move(fields),
+					TextWithEntities{ .text = record.text },
+					MTP_messageMediaEmpty());
+			}
+			const auto document = CreateProtectedHistoryDocument(
+				_session,
+				group.conversationId,
+				record.eventObjectId,
+				fields.date,
+				*record.file,
+				_sha256);
+			const auto local = group.localProtectedFilePaths.find(
+				record.eventObjectId);
+			if (local != end(group.localProtectedFilePaths)
+				&& QFileInfo(local->second).isFile()) {
+				document->setLocation(Core::FileLocation(local->second));
+			}
+			return history->addExistingLocalMessage(
+				std::move(fields),
+				document,
+				TextWithEntities{ .text = record.text });
+		}();
 		group.materializedHistory.emplace_back(
 			record.eventObjectId,
 			item->fullId());
@@ -1777,7 +1985,7 @@ bool DesktopService::sendProtectedFile(
 			absolutePath,
 			cancellation,
 			operationEpoch] {
-		const auto source = HashFile(absolutePath, cancellation);
+		const auto source = HashFile(absolutePath, cancellation, true);
 		crl::on_main([weak,
 				conversationId,
 				absolutePath,
@@ -2325,6 +2533,11 @@ void DesktopService::finishFileChunkDownload(
 	group.fileDownloadController.reset();
 	group.fileDownloadTransport.reset();
 	group.fileDownloadBackend.reset();
+	if (result == ProtectedFileSaveResult::Saved) {
+		group.localProtectedFilePaths.insert_or_assign(
+			group.pendingFileDownload->eventObjectId,
+			group.pendingFileDownload->path);
+	}
 	auto callback = std::move(group.pendingFileDownload->callback);
 	group.pendingFileDownload.reset();
 	if (group.observationDirty) {
@@ -4096,6 +4309,7 @@ bool DesktopService::commitPreparedFileTransfer(
 		.mimeTypeUtf8 = QMimeDatabase().mimeTypeForFile(
 			group.filePreparationPath,
 			QMimeDatabase::MatchExtension).name().toUtf8(),
+		.preview = source->preview,
 	};
 	auto manifestPlaintext = PrivateFileManifestCodecV1()
 		.encodePlaintext(manifest);
@@ -4114,6 +4328,7 @@ bool DesktopService::commitPreparedFileTransfer(
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
+	const auto sourcePath = group.filePreparationPath;
 	auto transfer = PendingFileTransfer{
 		.conversationId = conversationId,
 		.eventObjectId = *eventObjectId,
@@ -4130,6 +4345,9 @@ bool DesktopService::commitPreparedFileTransfer(
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
 	}
+	group.localProtectedFilePaths.insert_or_assign(
+		*eventObjectId,
+		sourcePath);
 	group.filePreparationPath.clear();
 	group.filePreparationSource.reset();
 	notifyFileTransferRevision();
@@ -4161,6 +4379,7 @@ bool DesktopService::finishFileTransferCancellation(
 		manifest->context.chunkCount)) {
 		return false;
 	}
+	group.localProtectedFilePaths.erase(pending->eventObjectId);
 	const auto cleared = group.fileTransfer.clear();
 	if (cleared != FileTransferCommitResult::Committed
 		&& cleared != FileTransferCommitResult::AlreadyCommitted) {

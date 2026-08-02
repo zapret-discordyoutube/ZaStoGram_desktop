@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/files/private_file_manifest.h"
 #include "core/application.h"
 #include "core/file_utilities.h"
+#include "data/data_document.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "ui/boxes/confirm_box.h"
@@ -42,6 +43,20 @@ void CleanseRecords(std::vector<ProtectedContentRecord> &records) {
 			record.plaintext.clear();
 		}
 	}
+}
+
+template <typename Id>
+[[nodiscard]] std::optional<Id> DecodeProtectedHistoryId(
+		const QByteArray &bytes) {
+	auto result = Id();
+	if (bytes.size() != int(result.bytes.size())) {
+		return std::nullopt;
+	}
+	std::copy_n(
+		reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+		result.bytes.size(),
+		result.bytes.begin());
+	return result ? std::optional<Id>(result) : std::nullopt;
 }
 
 void CloseWhenVaultUnavailable(
@@ -541,6 +556,60 @@ void ShowProtectedFiles(
 }
 
 } // namespace
+
+void OpenProtectedHistoryFile(
+		not_null<Window::SessionController*> controller,
+		not_null<DocumentData*> document,
+		FullMsgId context,
+		bool showInMediaView,
+		const QByteArray &conversationIdBytes,
+		const QByteArray &eventObjectIdBytes) {
+	const auto conversationId = DecodeProtectedHistoryId<ConversationId>(
+		conversationIdBytes);
+	const auto eventObjectId = DecodeProtectedHistoryId<ObjectId>(
+		eventObjectIdBytes);
+	if (!conversationId || !eventObjectId) {
+		Ui::Toast::Show({
+			.text = tr::lng_e2e_cloud_file_save_failed(tr::now),
+		});
+		return;
+	}
+	FileDialog::GetWritePath(
+		Core::App().getFileDialogParent(),
+		tr::lng_e2e_cloud_save_file(tr::now),
+		FileDialog::AllFilesFilter(),
+		document->filename(),
+		crl::guard(controller, [=](QString &&path) {
+			if (path.isEmpty()) {
+				return;
+			}
+			const auto savedPath = path;
+			(void)controller->session().e2eCloud().saveProtectedFile(
+					*conversationId,
+					*eventObjectId,
+					std::move(path),
+					crl::guard(controller, [=](
+							ProtectedFileSaveResult result) {
+						const auto saved
+							= (result == ProtectedFileSaveResult::Saved);
+						Ui::Toast::Show({
+							.text = saved
+								? tr::lng_e2e_cloud_file_saved(tr::now)
+								: (result == ProtectedFileSaveResult::Busy)
+								? tr::lng_e2e_cloud_file_busy(tr::now)
+								: tr::lng_e2e_cloud_file_save_failed(
+									tr::now),
+						});
+						if (saved) {
+							document->setLocation(Core::FileLocation(savedPath));
+							controller->openDocument(
+								document,
+								showInMediaView,
+								{ .id = context });
+						}
+					}));
+		}));
+}
 
 void ShowProtectedGroupList(
 		not_null<Window::SessionController*> controller) {

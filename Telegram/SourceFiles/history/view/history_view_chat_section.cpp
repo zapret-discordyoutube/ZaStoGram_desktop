@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h" // GetErrorForSending.
 #include "history/history_view_pull_to_next_channel.h"
+#include "e2e_cloud/desktop/protected_conversation_box.h"
 #include "iv/iv_rich_message_serializer.h"
 #include "iv/iv_rich_page.h"
 #include "ui/chat/pinned_bar.h"
@@ -3663,6 +3664,21 @@ void ChatWidget::listOpenDocument(
 		not_null<DocumentData*> document,
 		FullMsgId context,
 		bool showInMediaView) {
+	const auto item = session().data().message(context);
+	if (item
+		&& item->isE2ECloudDecrypted()
+		&& !item->e2eCloudConversationId().isEmpty()
+		&& !item->e2eCloudEventObjectId().isEmpty()
+		&& document->filepath(true).isEmpty()) {
+		E2ECloud::OpenProtectedHistoryFile(
+			controller(),
+			document,
+			context,
+			showInMediaView,
+			item->e2eCloudConversationId(),
+			item->e2eCloudEventObjectId());
+		return;
+	}
 	const auto showDrawButton = _topic
 		? Data::CanSendAnyOf(_topic, Data::FilesSendRestrictions())
 		: Data::CanSendAnyOf(_peer, Data::FilesSendRestrictions());

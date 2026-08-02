@@ -922,6 +922,18 @@ not_null<HistoryItem*> History::addExistingLocalMessage(
 	return item;
 }
 
+not_null<HistoryItem*> History::addExistingLocalMessage(
+		HistoryItemCommonFields &&fields,
+		not_null<DocumentData*> document,
+		const TextWithEntities &caption) {
+	const auto item = makeMessage(
+		WithLocalFlag(std::move(fields)),
+		document,
+		caption);
+	insertMessageToBlocks(item);
+	return item;
+}
+
 not_null<HistoryItem*> History::addNewLocalMessage(
 		HistoryItemCommonFields &&fields,
 		not_null<HistoryItem*> forwardOriginal) {

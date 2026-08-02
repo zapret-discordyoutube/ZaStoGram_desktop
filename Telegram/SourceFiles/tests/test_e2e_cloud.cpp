@@ -1139,6 +1139,9 @@ public:
 	const auto mime = ProtectedCarrierMimeType();
 	const auto fileId = FilledId<FileId>(9);
 	const auto fileChunk = ProtectedFileChunkCarrierFilename(fileId);
+	const auto legacyFileChunk = QString(fileChunk).replace(
+		QString::fromLatin1("protected-file-"),
+		QString::fromLatin1("protected_file_"));
 	if (!IsProtectedGroupCarrierMetadata(
 			ProtectedLegacyCarrierFilename(),
 			mime)
@@ -1150,6 +1153,8 @@ public:
 			mime)
 		|| !IsProtectedGroupCarrierMetadata(fileChunk, mime)
 		|| ProtectedFileChunkCarrierFileId(fileChunk) != fileId
+		|| !IsProtectedGroupCarrierMetadata(legacyFileChunk, mime)
+		|| ProtectedFileChunkCarrierFileId(legacyFileChunk) != fileId
 		|| ProtectedFileChunkCarrierFilename(FileId()).size()
 		|| ProtectedFileChunkCarrierFileId(
 			fileChunk.toUpper()).has_value()

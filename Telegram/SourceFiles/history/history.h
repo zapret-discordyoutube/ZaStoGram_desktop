@@ -172,6 +172,10 @@ public:
 		HistoryItemCommonFields &&fields,
 		const TextWithEntities &text,
 		const MTPMessageMedia &media);
+	not_null<HistoryItem*> addExistingLocalMessage(
+		HistoryItemCommonFields &&fields,
+		not_null<DocumentData*> document,
+		const TextWithEntities &caption);
 	not_null<HistoryItem*> addNewLocalMessage(
 		HistoryItemCommonFields &&fields,
 		not_null<HistoryItem*> forwardOriginal);

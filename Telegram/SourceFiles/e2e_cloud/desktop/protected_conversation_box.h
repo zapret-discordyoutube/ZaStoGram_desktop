@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/basic_types.h"
 #include "e2e_cloud/core/types.h"
 
+#include <QtCore/QByteArray>
+
+class DocumentData;
+
 namespace Window {
 class SessionController;
 } // namespace Window
@@ -21,5 +25,12 @@ void ShowProtectedGroupList(
 void ShowProtectedConversation(
 	not_null<Window::SessionController*> controller,
 	ConversationId conversationId);
+void OpenProtectedHistoryFile(
+	not_null<Window::SessionController*> controller,
+	not_null<DocumentData*> document,
+	FullMsgId context,
+	bool showInMediaView,
+	const QByteArray &conversationIdBytes,
+	const QByteArray &eventObjectIdBytes);
 
 } // namespace E2ECloud

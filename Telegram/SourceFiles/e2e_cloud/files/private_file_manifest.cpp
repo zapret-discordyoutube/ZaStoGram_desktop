@@ -22,6 +22,8 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 inline constexpr auto kFixedSize = 174;
 inline constexpr auto kMaximumFilenameSize = 1024;
 inline constexpr auto kMaximumMimeTypeSize = 255;
+inline constexpr auto kPreviewFieldsSize = 16;
+inline constexpr auto kMaximumPreviewDimension = 16 * 1024;
 
 void AppendUint16(QByteArray &result, std::uint16_t value) {
 	result.append(char(value >> 8));
@@ -104,6 +106,19 @@ void ReadArray(const char *data, Array &value) {
 	return true;
 }
 
+[[nodiscard]] bool ValidPreview(
+		const std::optional<PrivateFilePreview> &preview) {
+	if (!preview) {
+		return true;
+	}
+	return preview->width > 0
+		&& preview->width <= kMaximumPreviewDimension
+		&& preview->height > 0
+		&& preview->height <= kMaximumPreviewDimension
+		&& !preview->jpegBytes.isEmpty()
+		&& preview->jpegBytes.size() <= kMaximumPrivateFilePreviewSize;
+}
+
 } // namespace
 
 std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
@@ -115,16 +130,19 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 		|| manifest.unixTime
 			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		|| !ValidFilename(manifest.filenameUtf8)
-		|| !ValidMimeType(manifest.mimeTypeUtf8)) {
+		|| !ValidMimeType(manifest.mimeTypeUtf8)
+		|| !ValidPreview(manifest.preview)) {
 		return std::nullopt;
 	}
 	auto result = QByteArray();
 	result.reserve(
 		kFixedSize
 		+ manifest.filenameUtf8.size()
-		+ manifest.mimeTypeUtf8.size());
+		+ manifest.mimeTypeUtf8.size()
+		+ kPreviewFieldsSize
+		+ (manifest.preview ? manifest.preview->jpegBytes.size() : 0));
 	AppendArray(result, kMagic);
-	AppendUint16(result, 2);
+	AppendUint16(result, 3);
 	AppendArray(result, manifest.context.conversationId.bytes);
 	AppendArray(result, manifest.context.fileId.bytes);
 	AppendArray(result, manifest.key.bytes());
@@ -138,17 +156,33 @@ std::optional<QByteArray> PrivateFileManifestCodecV1::encodePlaintext(
 	result.append(manifest.filenameUtf8);
 	AppendUint16(result, std::uint16_t(manifest.mimeTypeUtf8.size()));
 	result.append(manifest.mimeTypeUtf8);
+	AppendUint32(result, manifest.preview ? manifest.preview->width : 0);
+	AppendUint32(result, manifest.preview ? manifest.preview->height : 0);
+	AppendUint32(
+		result,
+		manifest.preview ? manifest.preview->durationMilliseconds : 0);
+	AppendUint32(
+		result,
+		manifest.preview
+			? std::uint32_t(manifest.preview->jpegBytes.size())
+			: 0);
+	if (manifest.preview) {
+		result.append(manifest.preview->jpegBytes);
+	}
 	return result;
 }
 
 std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		const QByteArray &bytes) const {
+	const auto version = (bytes.size() >= 10)
+		? ReadUint16(bytes.constData() + 8)
+		: 0;
 	if (bytes.size() < kFixedSize
 		|| !std::equal(
 			begin(kMagic),
 			end(kMagic),
 			reinterpret_cast<const std::uint8_t*>(bytes.constData()))
-		|| ReadUint16(bytes.constData() + 8) != 2) {
+		|| (version != 2 && version != 3)) {
 		return std::nullopt;
 	}
 	auto context = FileChunkContext();
@@ -177,6 +211,37 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		return std::nullopt;
 	}
 	const auto mime = QByteArray(bytes.constData() + mimeOffset + 2, mimeSize);
+	const auto previewOffset = mimeOffset + 2 + mimeSize;
+	auto preview = std::optional<PrivateFilePreview>();
+	if (version == 2) {
+		if (bytes.size() != previewOffset) {
+			return std::nullopt;
+		}
+	} else {
+		if (bytes.size() < previewOffset + kPreviewFieldsSize) {
+			return std::nullopt;
+		}
+		const auto width = ReadUint32(bytes.constData() + previewOffset);
+		const auto height = ReadUint32(bytes.constData() + previewOffset + 4);
+		const auto duration = ReadUint32(bytes.constData() + previewOffset + 8);
+		const auto previewSize = ReadUint32(
+			bytes.constData() + previewOffset + 12);
+		if (previewSize > kMaximumPrivateFilePreviewSize
+			|| bytes.size()
+				!= previewOffset + kPreviewFieldsSize + int(previewSize)) {
+			return std::nullopt;
+		}
+		if (previewSize || width || height || duration) {
+			preview = PrivateFilePreview{
+				.width = width,
+				.height = height,
+				.durationMilliseconds = duration,
+				.jpegBytes = QByteArray(
+					bytes.constData() + previewOffset + kPreviewFieldsSize,
+					int(previewSize)),
+			};
+		}
+	}
 	if (!IsValidFileChunkContext(context)
 		|| !key.valid()
 		|| !hash
@@ -184,7 +249,8 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		|| unixTime
 			> std::uint64_t(std::numeric_limits<std::int64_t>::max())
 		|| !ValidFilename(filename)
-		|| !ValidMimeType(mime)) {
+		|| !ValidMimeType(mime)
+		|| !ValidPreview(preview)) {
 		return std::nullopt;
 	}
 	return PrivateFileManifest{
@@ -194,6 +260,7 @@ std::optional<PrivateFileManifest> PrivateFileManifestCodecV1::decodePlaintext(
 		.unixTime = unixTime,
 		.filenameUtf8 = filename,
 		.mimeTypeUtf8 = mime,
+		.preview = std::move(preview),
 	};
 }
 

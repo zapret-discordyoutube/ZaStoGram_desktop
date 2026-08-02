@@ -460,12 +460,24 @@ void Document::createComponents() {
 	}
 	UpdateComponents(mask);
 	if (const auto thumbed = Get<HistoryDocumentThumbed>()) {
-		thumbed->linksavel = std::make_shared<DocumentSaveClickHandler>(
-			_data,
-			_realParent->fullId());
-		thumbed->linkopenwithl = std::make_shared<DocumentOpenWithClickHandler>(
-			_data,
-			_realParent->fullId());
+		const auto makeProtectedLink = [=]() -> FileClickHandlerPtr {
+			return std::make_shared<DocumentOpenClickHandler>(
+				_data,
+				crl::guard(this, [=](FullMsgId id) {
+					_parent->delegate()->elementOpenDocument(_data, id);
+				}),
+				_realParent->fullId());
+		};
+		thumbed->linksavel = _realParent->isE2ECloudDecrypted()
+			? makeProtectedLink()
+			: std::make_shared<DocumentSaveClickHandler>(
+				_data,
+				_realParent->fullId());
+		thumbed->linkopenwithl = _realParent->isE2ECloudDecrypted()
+			? makeProtectedLink()
+			: std::make_shared<DocumentOpenWithClickHandler>(
+				_data,
+				_realParent->fullId());
 		thumbed->linkcancell = std::make_shared<DocumentCancelClickHandler>(
 			_data,
 			crl::guard(this, [=](FullMsgId id) {

@@ -15,6 +15,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace E2ECloud {
 
+inline constexpr auto kMaximumPrivateFilePreviewSize = 128 * 1024;
+
+struct PrivateFilePreview {
+	std::uint32_t width = 0;
+	std::uint32_t height = 0;
+	std::uint32_t durationMilliseconds = 0;
+	QByteArray jpegBytes;
+
+	friend inline bool operator==(
+		const PrivateFilePreview &,
+		const PrivateFilePreview &) = default;
+};
+
 struct PrivateFileManifest {
 	FileChunkContext context;
 	FileEncryptionKey key;
@@ -22,6 +35,7 @@ struct PrivateFileManifest {
 	std::uint64_t unixTime = 0;
 	QByteArray filenameUtf8;
 	QByteArray mimeTypeUtf8;
+	std::optional<PrivateFilePreview> preview;
 };
 
 class PrivateFileManifestCodecV1 final {
