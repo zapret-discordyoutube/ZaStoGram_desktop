@@ -1235,6 +1235,7 @@ void DesktopService::rememberProtectedPeerForPresentation(
 		_session->local().writePref<QByteArray>(
 			kProtectedPeersPref,
 			QByteArray("invalid"));
+		_session->local().writePrefs();
 		return;
 	}
 	_presentationProtectedPeers.emplace(telegramPeerIdBinding);
@@ -1243,6 +1244,7 @@ void DesktopService::rememberProtectedPeerForPresentation(
 		EncodeProtectedPeerMarkers(
 			_telegramUserIdBinding,
 			_presentationProtectedPeers));
+	_session->local().writePrefs();
 	_session->data().notifyHistoryChangeDelayed(
 		_session->data().history(PeerId(telegramPeerIdBinding)));
 }

@@ -869,9 +869,21 @@ known protected group back into a plaintext chat.
 
 The marker contains no secret beyond a Telegram peer binding already known to
 the local account and lives in Telegram Desktop's encrypted account-local
-preferences. It is deliberately never pruned from server history. Invalid or
+preferences. Flush the preference synchronously at the recognition boundary;
+the normal delayed settings write leaves a crash window in which an active
+server could remove the carrier before restart and regain a plaintext composer.
+The marker is deliberately never pruned from server history. Invalid or
 oversized marker state fails toward confidentiality by treating every group
 peer as protected instead of silently re-enabling plaintext composition.
 Unauthenticated reserved metadata continues to block composition while present,
 but cannot write a permanent marker and give an ordinary group member a lasting
 local denial-of-service primitive.
+
+### D075: One Telegram carrier peer maps to one protected conversation
+
+Require the authenticated account-vault conversation index to contain unique
+Telegram peer bindings as well as unique sorted conversation identifiers. Two
+independent MLS and archive states must never observe the same Telegram carrier
+group as their authoritative transport. Reject an ambiguous index during both
+encoding and authenticated decoding, so the client blocks rather than choosing
+one conversation based on iteration or UI state.

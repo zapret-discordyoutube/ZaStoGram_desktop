@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <set>
 #include <utility>
 
 namespace E2ECloud {
@@ -151,10 +152,13 @@ void Cleanse(Value &value) {
 	if (conversations.size() > kMaximumConversations) {
 		return false;
 	}
+	auto telegramPeerBindings = std::set<std::uint64_t>();
 	for (auto i = std::size_t(0); i != conversations.size(); ++i) {
 		const auto &entry = conversations[i];
 		if (!entry.conversationId
 			|| !entry.telegramPeerIdBinding
+			|| !telegramPeerBindings.emplace(
+				entry.telegramPeerIdBinding).second
 			|| entry.checkpoint.conversationId != entry.conversationId
 			|| !entry.checkpoint.generation
 			|| !entry.checkpoint.stateHash

@@ -37,6 +37,11 @@ not re-encrypt the complete message and file archive.
 Large per-message keys do not belong directly in the account vault. They are
 recovered through per-conversation archive epoch grants.
 
+Each Telegram peer binding occurs at most once in the authenticated
+conversation index. Two independent cryptographic conversations must never
+consume the same carrier group; an index with duplicate peer bindings is
+invalid and blocks unlock instead of selecting one mapping heuristically.
+
 ## Password derivation
 
 Argon2id parameters are versioned and stored with the encrypted vault. Concrete

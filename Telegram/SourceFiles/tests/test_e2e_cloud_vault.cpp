@@ -548,6 +548,51 @@ private:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioCloudVaultRejectsDuplicatePeerBindings() {
+	auto kdf = TestPasswordKdf();
+	auto sha256 = OpenSslSha256Provider();
+	auto codec = CloudVaultCodecV1(kdf, sha256);
+	auto identity = GenerateAccountPrivateIdentity();
+	auto created = identity
+		? codec.create(
+			777,
+			std::move(*identity),
+			QByteArray("correct horse battery staple"),
+			MakeConfig())
+		: std::nullopt;
+	if (!created) {
+		return Fail("duplicate peer vault fixture could not be created");
+	}
+	const auto first = CloudVaultConversation{
+		.conversationId = FilledId<ConversationId>(3),
+		.telegramPeerIdBinding = 9001,
+		.checkpoint = {
+			.conversationId = FilledId<ConversationId>(3),
+			.generation = 1,
+			.stateHash = FilledId<Digest>(4),
+		},
+		.ownerAccountId = FilledId<AccountId>(5),
+	};
+	auto second = CloudVaultConversation{
+		.conversationId = FilledId<ConversationId>(6),
+		.telegramPeerIdBinding = first.telegramPeerIdBinding,
+		.checkpoint = {
+			.conversationId = FilledId<ConversationId>(6),
+			.generation = 1,
+			.stateHash = FilledId<Digest>(7),
+		},
+		.ownerAccountId = FilledId<AccountId>(8),
+	};
+	if (codec.prepareUpdate(created->unlocked, { first, second })) {
+		return Fail("cloud vault accepted duplicate Telegram peer bindings");
+	}
+	second.telegramPeerIdBinding = 9002;
+	if (!codec.prepareUpdate(created->unlocked, { first, second })) {
+		return Fail("cloud vault rejected distinct Telegram peer bindings");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioCloudVaultSelectionDetectsForksAndGaps() {
 	auto kdf = TestPasswordKdf();
 	auto sha256 = OpenSslSha256Provider();
@@ -850,6 +895,7 @@ int main(int, char *[]) {
 		ScenarioArgon2idReferenceVector,
 		ScenarioCloudVaultRoundTripAndUpdate,
 		ScenarioCloudVaultRejectsTamperingAndKeyMismatch,
+		ScenarioCloudVaultRejectsDuplicatePeerBindings,
 		ScenarioCloudVaultSelectionDetectsForksAndGaps,
 		ScenarioCloudVaultSelectionScalesPastOldLimit,
 		ScenarioPersistentCloudVaultAnchor,
