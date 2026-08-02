@@ -876,6 +876,20 @@ def verify_file_chunks_download_only_on_demand() -> None:
     assert "releaseStorage(std::uint64_t(size));" in chunk_store
 
 
+def verify_new_file_cannot_replace_pending_transfer() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    file_send = function_body(
+        service,
+        "bool DesktopService::sendProtectedFile(",
+        "bool DesktopService::saveProtectedFile(",
+    )
+
+    assert file_send.index("i->second->fileTransfer.pending()") \
+        < file_send.index("const auto source = HashFile(path)")
+    assert "group.fileTransfer.begin(std::move(transfer))" in file_send
+    assert "group.fileTransfer.replace(" not in file_send
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -910,6 +924,7 @@ def main() -> None:
     verify_local_record_reads_are_bounded()
     verify_file_chunks_require_manifests_and_quota()
     verify_file_chunks_download_only_on_demand()
+    verify_new_file_cannot_replace_pending_transfer()
 
 
 if __name__ == "__main__":

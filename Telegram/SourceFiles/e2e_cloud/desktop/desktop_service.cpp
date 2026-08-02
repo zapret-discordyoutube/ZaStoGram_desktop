@@ -1168,6 +1168,7 @@ bool DesktopService::sendProtectedFile(
 		|| path.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
+		|| i->second->fileTransfer.pending()
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -1240,9 +1241,7 @@ bool DesktopService::sendProtectedFile(
 		.sourcePathUtf8 = absolutePath.toUtf8(),
 		.manifestPlaintext = *manifestPlaintext,
 	};
-	const auto queued = group.fileTransfer.pending()
-		? group.fileTransfer.replace(std::move(transfer))
-		: group.fileTransfer.begin(std::move(transfer));
+	const auto queued = group.fileTransfer.begin(std::move(transfer));
 	if (queued != FileTransferCommitResult::Committed) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;

@@ -517,3 +517,14 @@ cleanup cannot invalidate a completed upload or saved output, while successful
 cleanup returns the protected bytes to the bounded cache quota. Retaining the
 manifest authorization allows a later Save to authenticate freshly downloaded
 chunks without reprocessing chat history.
+
+### D050: A new file cannot replace an unfinished transfer
+
+Reject a new protected-file send while the conversation has a durable pending
+file transfer. Perform this check before hashing the selected source so a busy
+conversation does not synchronously scan an unrelated file.
+
+Never replace the persisted transfer implicitly. Its manifest or some of its
+chunks may already be present in Telegram, and replacing its local cursor would
+make that authenticated file permanently incomplete while leaving no state from
+which upload recovery could resume.
