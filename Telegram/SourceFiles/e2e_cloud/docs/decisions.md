@@ -501,3 +501,6 @@ failed. The archived content preparation uses fresh randomized encryption, so
 regeneration under the same event and content object identifiers would create
 competing authenticated hashes and security-block recipients. Chunks start only
 after the durable publish state proves the final manifest envelope was accepted.
+The same pre-acknowledgement rule applies when a restarted active group drains
+its persisted outbox through startup recovery, and successful group observation
+must resume a pending chunk transfer even when that outbox is already empty.

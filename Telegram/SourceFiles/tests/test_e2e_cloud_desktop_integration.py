@@ -762,6 +762,16 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     upload_controller = source(
         "SourceFiles/e2e_cloud/transport/outbox_upload_controller.cpp"
     )
+    bootstrap_publish = function_body(
+        service,
+        "void DesktopService::publishNextBootstrapObject()",
+        "void DesktopService::resumePendingGroupCreation()",
+    )
+    group_observation = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
     admission = function_body(
         processor,
         "[[nodiscard]] FileChunkAdmissionStatus AdmitObservedFileChunk(",
@@ -803,6 +813,9 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     assert "markManifestPublished(" in service
     assert "prepareActiveUploadAcknowledgement(" in service
     assert "group.outbox.size() != 1" not in service
+    assert bootstrap_publish.index("prepareFileManifestAcknowledgement(") \
+        < bootstrap_publish.index("outbox.remove(objectId)")
+    assert "pumpActiveOutbox(conversationId);" in group_observation
     assert upload_controller.index("_beforeAcknowledgeCallback(objectId)") \
         < upload_controller.index("_outbox.acknowledgeUploaded(objectId)")
     assert "|| !_pending->manifestPublished" in transfer

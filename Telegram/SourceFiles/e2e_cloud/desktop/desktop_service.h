@@ -251,6 +251,9 @@ private:
 	[[nodiscard]] bool prepareActiveUploadAcknowledgement(
 		ConversationId conversationId,
 		ObjectId objectId);
+	[[nodiscard]] bool prepareFileManifestAcknowledgement(
+		PendingGroupCreation &group,
+		ObjectId objectId);
 	void completeActiveUpload(
 		ConversationId conversationId,
 		UploadCompletion completion);

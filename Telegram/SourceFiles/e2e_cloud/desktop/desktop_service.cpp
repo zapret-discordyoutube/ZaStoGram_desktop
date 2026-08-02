@@ -2094,7 +2094,10 @@ void DesktopService::publishNextBootstrapObject() {
 			}
 			weak->_pendingGroupCreation->uploadInProgress = false;
 			if (result == TelegramTransport::UploadResult::Accepted) {
-				if (!weak->_pendingGroupCreation->outbox.remove(objectId)) {
+				if (!weak->prepareFileManifestAcknowledgement(
+						*weak->_pendingGroupCreation,
+						objectId)
+					|| !weak->_pendingGroupCreation->outbox.remove(objectId)) {
 					weak->_groupCreationState
 						= DesktopGroupCreationState::LocalFailure;
 					return;
@@ -3092,7 +3095,12 @@ bool DesktopService::prepareActiveUploadAcknowledgement(
 	if (i == end(_groups)) {
 		return false;
 	}
-	auto &group = *i->second;
+	return prepareFileManifestAcknowledgement(*i->second, objectId);
+}
+
+bool DesktopService::prepareFileManifestAcknowledgement(
+		PendingGroupCreation &group,
+		ObjectId objectId) {
 	const auto pending = group.fileTransfer.pending();
 	if (!pending
 		|| pending->manifestPublished
@@ -3816,6 +3824,7 @@ void DesktopService::applyGroupObservation(
 	if (!changed && rerun) {
 		beginGroupObservation(conversationId);
 	}
+	pumpActiveOutbox(conversationId);
 }
 
 void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
