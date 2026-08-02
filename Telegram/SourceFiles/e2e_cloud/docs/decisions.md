@@ -765,3 +765,32 @@ different group had moved that group into the pending vault-update state. The
 join would then fail only because the slot was occupied and could overwrite the
 real operation state with `LocalFailure`, leaving both operations without a
 correct recovery action.
+
+### D066: Discovery owns the global group-operation slot
+
+Start queued group discovery only while the global group operation is `Idle`
+or `Ready`, and publish `Preparing` before invoking its controller. The start
+can complete synchronously, so assigning the state afterward would overwrite
+the completion result. Existing chats remain accessible under D061, but the UI
+does not offer another vault-changing action while discovery is live.
+
+Keep discovery requests queued while admission or freshness is unresolved.
+After a successful verified control observation, try the queue again; this is
+the boundary that can turn `AwaitingFreshness` back into `Ready`. Pending
+creation or join still takes precedence and naturally keeps discovery queued.
+
+### D067: Global vault work defers every control boundary
+
+Do not start a group control observation while creation, indexed join, or
+discovery owns the global operation slot. If an already-running observation
+finishes after another group takes that slot, first honor an unambiguous
+security failure, otherwise discard its transient page, retain
+`observationDirty`, and do not advance the persistent Telegram boundary. The
+page will be fetched and authenticated again from the old boundary.
+
+When the slot is released, collect dirty conversation identifiers and restart
+their observers one by one. Stop if a synchronous completion claims the slot
+again. Discovery also waits until no control observer is running or dirty, so a
+new control notification received during discovery is deferred rather than
+raced. Resume this work after publication and after retryable, permanent,
+start, or local join/discovery failures.

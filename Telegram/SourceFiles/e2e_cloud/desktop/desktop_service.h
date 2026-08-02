@@ -235,6 +235,7 @@ private:
 	void startNextGroupDiscovery();
 	void applyGroupDiscovery(PublicBootstrapSyncCompletion result);
 	void beginGroupObservation(ConversationId conversationId);
+	void resumeDeferredGroupObservations();
 	void applyGroupObservation(
 		ConversationId conversationId,
 		PublicBootstrapSyncCompletion result);

@@ -2335,6 +2335,7 @@ void DesktopService::publishNextBootstrapObject() {
 		}
 		beginGroupObservation(conversationId);
 		beginContentObservation(conversationId);
+		resumeDeferredGroupObservations();
 		resumePendingGroupCreation();
 		startNextGroupDiscovery();
 		return;
@@ -2547,7 +2548,9 @@ void DesktopService::beginIndexedGroupJoin(
 			});
 	if (!_pendingGroupJoin->sync->startForJoin()) {
 		_pendingGroupJoin.reset();
-		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		_groupCreationState
+			= DesktopGroupCreationState::RetryableTransportError;
+		resumeDeferredGroupObservations();
 	}
 }
 
@@ -2561,11 +2564,13 @@ void DesktopService::applyPublicBootstrapSyncResult(
 		|| result.status == PublicBootstrapSyncStatus::Missing) {
 		_pendingGroupJoin.reset();
 		_groupCreationState = DesktopGroupCreationState::RetryableTransportError;
+		resumeDeferredGroupObservations();
 		return;
 	} else if (result.status
 			== PublicBootstrapSyncStatus::PermanentTransportError) {
 		_pendingGroupJoin.reset();
 		_groupCreationState = DesktopGroupCreationState::PermanentTransportError;
+		resumeDeferredGroupObservations();
 		return;
 	} else if (result.status != PublicBootstrapSyncStatus::Verified
 		|| !result.verified) {
@@ -2584,10 +2589,11 @@ void DesktopService::applyPublicBootstrapSyncResult(
 	}
 	_pendingGroupJoin.reset();
 	if (!prepareGroupJoin(
-		std::move(conversation),
-		std::move(verified),
-		false)) {
+			std::move(conversation),
+			std::move(verified),
+			false)) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		resumeDeferredGroupObservations();
 	}
 }
 
@@ -3247,6 +3253,12 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 		return;
 	}
 	auto &group = *i->second;
+	if (_pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery) {
+		group.observationDirty = true;
+		return;
+	}
 	if (group.observation) {
 		setContentState(
 			conversationId,
@@ -3932,6 +3944,12 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 		return;
 	}
 	auto &group = *i->second;
+	if (_pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery) {
+		group.observationDirty = true;
+		return;
+	}
 	if (group.observation) {
 		group.observationDirty = true;
 		return;
@@ -3981,6 +3999,29 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 			_groupCreationState
 				= DesktopGroupCreationState::RetryableTransportError;
 		}
+	}
+}
+
+void DesktopService::resumeDeferredGroupObservations() {
+	if (!vaultReady()
+		|| _pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery) {
+		return;
+	}
+	auto conversations = std::vector<ConversationId>();
+	for (const auto &[conversationId, group] : _groups) {
+		if (group->observationDirty && !group->observation) {
+			conversations.push_back(conversationId);
+		}
+	}
+	for (const auto conversationId : conversations) {
+		if (_pendingGroupCreation
+			|| _pendingGroupJoin
+			|| _pendingGroupDiscovery) {
+			return;
+		}
+		beginGroupObservation(conversationId);
 	}
 }
 
@@ -4258,7 +4299,14 @@ void DesktopService::applyGroupObservation(
 		_vaultState = DesktopVaultState::SecurityBlocked;
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
-	} else if (result.status != PublicBootstrapSyncStatus::Verified
+	}
+	if (_pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery) {
+		i->second->observationDirty = true;
+		return;
+	}
+	if (result.status != PublicBootstrapSyncStatus::Verified
 		&& result.status != PublicBootstrapSyncStatus::Incremental) {
 		i->second->observationDirty = true;
 		const auto permanent = result.status
@@ -4390,6 +4438,7 @@ void DesktopService::applyGroupObservation(
 		beginGroupObservation(conversationId);
 	}
 	pumpActiveOutbox(conversationId);
+	startNextGroupDiscovery();
 }
 
 void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
@@ -4458,14 +4507,20 @@ void DesktopService::queueGroupDiscovery(
 }
 
 void DesktopService::startNextGroupDiscovery() {
+	const auto operationState = _groupCreationState.current();
 	if (_pendingGroupDiscovery
 		|| _pendingGroupCreation
 		|| _pendingGroupJoin
 		|| !vaultReady()
-		|| (_groupCreationState.current()
-				== DesktopGroupCreationState::RetryableTransportError
-			|| _groupCreationState.current()
-				== DesktopGroupCreationState::PermanentTransportError)) {
+		|| (operationState != DesktopGroupCreationState::Idle
+			&& operationState != DesktopGroupCreationState::Ready)
+		|| std::any_of(
+			begin(_groups),
+			end(_groups),
+			[](const auto &entry) {
+				return entry.second->observation
+					|| entry.second->observationDirty;
+			})) {
 		return;
 	}
 	while (!_groupDiscoveryQueue.empty()) {
@@ -4499,11 +4554,13 @@ void DesktopService::startNextGroupDiscovery() {
 						weak->applyGroupDiscovery(std::move(result));
 					}
 				});
+		_groupCreationState = DesktopGroupCreationState::Preparing;
 		if (!_pendingGroupDiscovery->sync->start()) {
 			_pendingGroupDiscovery.reset();
 			_groupDiscoveryQueue.emplace(peerId);
 			_groupCreationState
 				= DesktopGroupCreationState::RetryableTransportError;
+			resumeDeferredGroupObservations();
 			return;
 		}
 		return;
@@ -4534,10 +4591,12 @@ void DesktopService::applyGroupDiscovery(
 				== PublicBootstrapSyncStatus::PermanentTransportError)
 			? DesktopGroupCreationState::PermanentTransportError
 			: DesktopGroupCreationState::RetryableTransportError;
+		resumeDeferredGroupObservations();
 		return;
 	} else if (result.status != PublicBootstrapSyncStatus::Verified
 		|| !result.verified) {
 		_groupCreationState = DesktopGroupCreationState::Ready;
+		resumeDeferredGroupObservations();
 		startNextGroupDiscovery();
 		return;
 	}
@@ -4552,6 +4611,7 @@ void DesktopService::applyGroupDiscovery(
 					|| conversation.telegramPeerIdBinding == peerId;
 			})) {
 		_groupCreationState = DesktopGroupCreationState::Ready;
+		resumeDeferredGroupObservations();
 		startNextGroupDiscovery();
 		return;
 	}
@@ -4566,6 +4626,7 @@ void DesktopService::applyGroupDiscovery(
 			std::move(verified),
 			true)) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		resumeDeferredGroupObservations();
 		startNextGroupDiscovery();
 	}
 }

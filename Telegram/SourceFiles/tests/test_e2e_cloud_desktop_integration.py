@@ -1325,10 +1325,19 @@ def verify_admission_and_discovery_failures_can_be_retried() -> None:
     assert "DesktopGroupCreationState::AwaitingAdmission" in retry
     assert retry.index("DesktopGroupCreationState::AwaitingAdmission") \
         < retry.index("beginGroupObservation(conversationId);")
-    assert "DesktopGroupCreationState::RetryableTransportError" \
+    assert "const auto operationState = _groupCreationState.current();" \
         in start_discovery
-    assert "DesktopGroupCreationState::PermanentTransportError" \
+    assert "operationState != DesktopGroupCreationState::Idle" \
         in start_discovery
+    assert "operationState != DesktopGroupCreationState::Ready" \
+        in start_discovery
+    preparing = start_discovery.index(
+        "_groupCreationState = DesktopGroupCreationState::Preparing;"
+    )
+    start_call = start_discovery.index(
+        "if (!_pendingGroupDiscovery->sync->start())"
+    )
+    assert preparing < start_call
     failed_start = start_discovery.index(
         "if (!_pendingGroupDiscovery->sync->start())"
     )
@@ -1355,6 +1364,7 @@ def verify_admission_and_discovery_failures_can_be_retried() -> None:
         in admission_error
     assert "DesktopGroupCreationState::PermanentTransportError" \
         in admission_error
+    assert "startNextGroupDiscovery();" in apply_observation
 
 
 def verify_open_protected_views_do_not_keep_stale_state() -> None:
@@ -1472,6 +1482,49 @@ def verify_vault_changing_group_operations_are_serialized() -> None:
     assert "|| _pendingGroupDiscovery" in administration
 
 
+def verify_global_vault_work_defers_control_boundaries() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    begin = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::resumeDeferredGroupObservations(",
+    )
+    resume = function_body(
+        service,
+        "void DesktopService::resumeDeferredGroupObservations(",
+        "void DesktopService::beginContentObservation(",
+    )
+    apply = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
+    discovery = function_body(
+        service,
+        "void DesktopService::startNextGroupDiscovery()",
+        "void DesktopService::applyGroupDiscovery(",
+    )
+
+    assert "void resumeDeferredGroupObservations();" in header
+    for body in (begin, resume, apply):
+        assert "_pendingGroupCreation" in body
+        assert "_pendingGroupJoin" in body
+        assert "_pendingGroupDiscovery" in body
+    assert "group.observationDirty = true;" in begin
+    assert "auto conversations = std::vector<ConversationId>();" in resume
+    assert "beginGroupObservation(conversationId);" in resume
+    deferred = apply.index("if (_pendingGroupCreation")
+    process_changes = apply.index("synchronizeObservedGroupChanges(")
+    security = apply.index("PublicBootstrapSyncStatus::ObjectConflict")
+    assert security < deferred < process_changes
+    assert "i->second->observationDirty = true;" \
+        in apply[deferred:process_changes]
+    assert "entry.second->observation" in discovery
+    assert "entry.second->observationDirty" in discovery
+    assert service.count("resumeDeferredGroupObservations();") >= 8
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1519,6 +1572,7 @@ def main() -> None:
     verify_failed_control_start_does_not_wait_forever()
     verify_file_download_security_failures_lock_the_vault()
     verify_vault_changing_group_operations_are_serialized()
+    verify_global_vault_work_defers_control_boundaries()
 
 
 if __name__ == "__main__":
