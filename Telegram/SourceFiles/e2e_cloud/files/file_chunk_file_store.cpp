@@ -454,6 +454,36 @@ FileChunkStoreResult FileChunkFileStore::storeIfAbsent(
 	return FileChunkStoreResult::Stored;
 }
 
+bool FileChunkFileStore::removeChunk(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t chunkIndex) {
+	if (!conversationId || !fileId) {
+		return false;
+	}
+	const auto target = path(conversationId, fileId, chunkIndex);
+	const auto directory = QFileInfo(target).absoluteDir();
+	if (!directory.exists()) {
+		return true;
+	}
+	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
+	if (!lock.tryLock(5000)) {
+		return false;
+	}
+	const auto info = QFileInfo(target);
+	if (!info.exists()) {
+		return true;
+	}
+	const auto size = info.size();
+	if (!info.isFile() || info.isSymLink() || !QFile::remove(target)) {
+		return false;
+	}
+	if (size > 0) {
+		releaseStorage(std::uint64_t(size));
+	}
+	return true;
+}
+
 QString FileChunkFileStore::path(
 		ConversationId conversationId,
 		FileId fileId,

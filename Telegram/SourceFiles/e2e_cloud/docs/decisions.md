@@ -504,3 +504,16 @@ after the durable publish state proves the final manifest envelope was accepted.
 The same pre-acknowledgement rule applies when a restarted active group drains
 its persisted outbox through startup recovery, and successful group observation
 must resume a pending chunk transfer even when that outbox is already empty.
+
+### D049: Release durable file-chunk cache entries after use
+
+Keep an outgoing chunk's exact ciphertext until Telegram accepts it and the
+next chunk cursor is durably committed. Then remove that cache entry. After a
+downloaded file is fully authenticated, atomically saved, and hash-verified,
+remove its cached chunks while retaining the small manifest authorization.
+
+Removal is idempotent and best-effort after the durability boundary. A failed
+cleanup cannot invalidate a completed upload or saved output, while successful
+cleanup returns the protected bytes to the bounded cache quota. Retaining the
+manifest authorization allows a later Save to authenticate freshly downloaded
+chunks without reprocessing chat history.

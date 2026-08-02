@@ -80,6 +80,10 @@ write therefore retains the original envelope for byte-identical retry instead
 of regenerating randomized content under an existing object identifier. Startup
 recovery uses the same transition, and the transfer resumes after the required
 group observation even when no protected outbox item remains.
+Once an accepted outgoing chunk cursor is durably advanced, its exact local
+ciphertext cache entry can be removed. Successfully saved and hash-verified
+downloads also release their chunk entries but retain the authenticated
+manifest authorization, so a later Save can securely download them again.
 Exact manifest duplicates retain their earliest positive Telegram message
 identifier in the protected content index. Chunk download uses that identifier
 as its exclusive lower search boundary, so a later duplicate cannot hide

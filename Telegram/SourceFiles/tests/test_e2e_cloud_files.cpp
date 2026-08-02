@@ -487,6 +487,52 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioChunkStoreReleasesQuotaAfterRemoval() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file chunk removal temporary directory was unavailable");
+	}
+	const auto context = MakeContext();
+	const auto chunk = StoredFileChunk{
+		.plaintextHash = FilledId<Digest>(11),
+		.exactCiphertext = QByteArray("ciphertext"),
+	};
+	auto store = FileChunkFileStore(directory.path(), protector, 200);
+	if (store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			0,
+			chunk) != FileChunkStoreResult::Stored
+		|| store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			1,
+			chunk) != FileChunkStoreResult::QuotaExceeded
+		|| !store.removeChunk(
+			context.conversationId,
+			context.fileId,
+			0)
+		|| store.read(
+			context.conversationId,
+			context.fileId,
+			0).status != FileChunkReadStatus::Missing
+		|| store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			1,
+			chunk) != FileChunkStoreResult::Stored
+		|| !store.removeChunk(
+			context.conversationId,
+			context.fileId,
+			0)) {
+		return Fail("removed file chunk did not release cache quota");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioSignedChunkEnvelope() {
 	const auto sha256 = OpenSslSha256Provider();
 	const auto codec = EnvelopeCodecV1();
@@ -605,6 +651,7 @@ int main(int, char *[]) {
 		ScenarioChunkStoreRejectsOversizedRecord,
 		ScenarioChunkAuthorizationLedger,
 		ScenarioChunkStoreEnforcesQuota,
+		ScenarioChunkStoreReleasesQuotaAfterRemoval,
 		ScenarioSignedChunkEnvelope,
 		ScenarioProtectedMessageBody,
 	}) {

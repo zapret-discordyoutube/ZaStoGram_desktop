@@ -1579,7 +1579,18 @@ bool DesktopService::writePendingProtectedFile(
 		output.cancelWriting();
 		return false;
 	}
-	return output.commit();
+	if (!output.commit()) {
+		return false;
+	}
+	for (auto index = std::uint32_t();
+		index != manifest->context.chunkCount;
+		++index) {
+		(void)group.chunkStore.removeChunk(
+			conversationId,
+			manifest->context.fileId,
+			index);
+	}
+	return true;
 }
 
 void DesktopService::finishFileChunkDownload(
@@ -3281,11 +3292,24 @@ void DesktopService::completeFileChunkUpload(
 			DesktopContentState::PermanentTransportError);
 		return;
 	}
+	const auto pending = group.fileTransfer.pending();
+	const auto manifest = pending
+		? PrivateFileManifestCodecV1().decodePlaintext(
+			pending->manifestPlaintext)
+		: std::nullopt;
+	if (!manifest) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return;
+	}
 	if (group.fileTransfer.advance(chunkIndex)
 			!= FileTransferCommitResult::Committed) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return;
 	}
+	(void)group.chunkStore.removeChunk(
+		conversationId,
+		manifest->context.fileId,
+		chunkIndex);
 	pumpActiveOutbox(conversationId);
 }
 

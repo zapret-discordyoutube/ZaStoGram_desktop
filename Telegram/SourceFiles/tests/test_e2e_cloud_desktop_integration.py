@@ -830,10 +830,23 @@ def verify_file_chunks_download_only_on_demand() -> None:
         "telegram_session_carrier_backend.cpp"
     )
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    chunk_store = source(
+        "SourceFiles/e2e_cloud/files/file_chunk_file_store.cpp"
+    )
     upload = function_body(
         service,
         "bool DesktopService::pumpFileTransfer(",
         "void DesktopService::completeFileChunkUpload(",
+    )
+    complete = function_body(
+        service,
+        "void DesktopService::completeFileChunkUpload(",
+        "bool DesktopService::queuePendingFileManifest(",
+    )
+    write_file = function_body(
+        service,
+        "bool DesktopService::writePendingProtectedFile(",
+        "void DesktopService::finishFileChunkDownload(",
     )
     incoming = function_body(
         service,
@@ -855,6 +868,12 @@ def verify_file_chunks_download_only_on_demand() -> None:
     assert "ProtectedFileChunkCarrierFilename(" in download
     assert "kFileDownloadPageBytes" in download
     assert "minimumMessageIdExclusive" in backend
+    assert complete.index("fileTransfer.advance(chunkIndex)") \
+        < complete.index("group.chunkStore.removeChunk(")
+    assert write_file.index("output.commit()") \
+        < write_file.index("group.chunkStore.removeChunk(")
+    assert "bool FileChunkFileStore::removeChunk(" in chunk_store
+    assert "releaseStorage(std::uint64_t(size));" in chunk_store
 
 
 def main() -> None:

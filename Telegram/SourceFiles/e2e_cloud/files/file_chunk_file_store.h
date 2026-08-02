@@ -36,6 +36,10 @@ public:
 		FileId fileId,
 		std::uint32_t chunkIndex,
 		StoredFileChunk chunk) override;
+	[[nodiscard]] bool removeChunk(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t chunkIndex);
 
 private:
 	[[nodiscard]] QString path(
