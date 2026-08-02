@@ -63,7 +63,28 @@ inline constexpr auto kMinimumFreeBytes
 		+ QString::fromLatin1(digest);
 }
 
+[[nodiscard]] bool RemoveLegacyChunkRecordLockFile(
+		const QString &path,
+		int &retryBudget) {
+	const auto info = QFileInfo(path);
+	if (!info.exists()) {
+		return true;
+	} else if (!info.isFile() || info.isSymLink()) {
+		return false;
+	}
+	while (true) {
+		if (QFile::remove(path) || !QFile::exists(path)) {
+			return true;
+		} else if (!retryBudget) {
+			return false;
+		}
+		--retryBudget;
+		::Sleep(1);
+	}
+}
+
 [[nodiscard]] bool RemoveLegacyChunkRecordLock(const QString &lockPath) {
+	auto retryBudget = 500;
 	auto removalPath = lockPath;
 	for (auto depth = 0; depth != 16; ++depth) {
 		removalPath += QString::fromLatin1(".rmlock");
@@ -73,20 +94,14 @@ inline constexpr auto kMinimumFreeBytes
 		if (info.exists()
 			&& (!info.isFile()
 				|| info.isSymLink()
-				|| !QFile::remove(removalPath))) {
+				|| !RemoveLegacyChunkRecordLockFile(
+					removalPath,
+					retryBudget))) {
 			return false;
 		}
 		removalPath.chop(7);
 	}
-	const auto info = QFileInfo(lockPath);
-	if (!info.exists()) {
-		return true;
-	} else if (!info.isFile() || info.isSymLink()) {
-		return false;
-	}
-	auto legacy = QLockFile(lockPath);
-	legacy.setStaleLockTime(0);
-	return legacy.removeStaleLockFile() || !QFile::exists(lockPath);
+	return RemoveLegacyChunkRecordLockFile(lockPath, retryBudget);
 }
 #endif // Q_OS_WIN
 

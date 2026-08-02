@@ -1462,6 +1462,11 @@ def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
     assert "WaitForSingleObject(_mutex, 0)" in chunk_store
     assert "wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED" in chunk_store
     assert "RemoveLegacyChunkRecordLock(lockPath)" in chunk_store
+    assert "RemoveLegacyChunkRecordLockFile" in chunk_store
+    assert "auto retryBudget = 500;" in chunk_store
+    assert "--retryBudget;" in chunk_store
+    assert "::Sleep(1);" in chunk_store
+    assert "legacy.removeStaleLockFile()" not in chunk_store
     assert "_locked = _file->tryLock(0);" in chunk_store
 
 
