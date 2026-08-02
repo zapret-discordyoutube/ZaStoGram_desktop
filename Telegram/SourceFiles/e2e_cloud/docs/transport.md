@@ -89,6 +89,15 @@ pages, objects, and total bytes from the authenticated manifest layout. Older
 clients that used `protected-content.tde2e` remain readable through the same
 bounded search as a one-time fallback after the per-file search is empty.
 
+Telegram may duplicate the same authenticated manifest under several message
+identifiers. The protected content index retains the minimum positive observed
+identifier for exact duplicates, so a later copy cannot move the exclusive
+chunk-search boundary past chunks uploaded after the original. This value is
+only a local availability hint; all returned chunks still require the manifest
+authorization, signed sender binding, and ciphertext verification. A legacy
+index conservatively starts per-file recovery after identifier one because it
+cannot prove whether its stored identifier belonged to the first copy.
+
 Every long-running pagination controller tracks cursor uniqueness with an
 ordered set and caps the encoded cursor bytes retained by one run at 128 MiB.
 This keeps duplicate detection sublinear per page and prevents an active server

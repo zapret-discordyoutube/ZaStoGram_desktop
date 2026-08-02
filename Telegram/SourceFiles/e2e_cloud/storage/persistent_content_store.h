@@ -85,6 +85,7 @@ private:
 		Digest recordHash;
 		ObjectKind objectKind = ObjectKind::EncryptedMessageBody;
 		std::uint64_t unixTime = 0;
+		std::optional<std::int64_t> observedTelegramMessageId;
 	};
 
 	[[nodiscard]] QString recordPath(ObjectId eventObjectId) const;

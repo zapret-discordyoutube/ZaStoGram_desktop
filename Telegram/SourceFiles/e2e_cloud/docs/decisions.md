@@ -459,3 +459,18 @@ Never classify a deferred application as ignored. The overlap retains only a
 bounded recent suffix, so advancing the boundary after a deferred object could
 make older ciphertext permanently unreachable even though its failure was
 explicitly retryable.
+
+### D046: Exact manifest duplicates retain the earliest carrier position
+
+Keep the minimum positive Telegram message identifier observed for identical
+authenticated content in the protected content index. A newer duplicate must
+not replace the original manifest position: file chunks are published after
+the original manifest, so using the duplicate as the exclusive search boundary
+could permanently exclude valid chunks between the two copies.
+
+The identifier remains an untrusted transport hint and is not included in file
+identity, signatures, or encryption context. Updating it rewrites only the
+authenticated index, leaving the immutable content record and its hash
+unchanged. Legacy file-manifest indexes migrate to the conservative boundary
+one so already stored files remain recoverable even when an older client kept
+only a later duplicate position.

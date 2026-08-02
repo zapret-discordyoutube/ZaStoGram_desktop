@@ -538,10 +538,33 @@ int CountingLocalRecordProtector::openCalls() const {
 		return Fail("content duplicate fixture could not be persisted");
 	}
 	record.observedTelegramMessageId = 101;
-	if (store.append(record) != ContentStoreAppendResult::AlreadyStored
+	const auto newerDuplicate = store.append(record);
+	const auto afterNewerDuplicate = store.record(record.eventObjectId);
+	if (newerDuplicate != ContentStoreAppendResult::AlreadyStored
 		|| store.revision() != 1
-		|| store.size() != 1) {
+		|| store.size() != 1
+		|| !afterNewerDuplicate
+		|| afterNewerDuplicate->observedTelegramMessageId != 100) {
 		return Fail("same content under another carrier id was a conflict");
+	}
+	record.observedTelegramMessageId = 99;
+	indexBlob.writeError = true;
+	const auto failed = store.append(record);
+	const auto afterFailedWrite = store.record(record.eventObjectId);
+	if (failed != ContentStoreAppendResult::PersistenceFailed
+		|| store.revision() != 1
+		|| !afterFailedWrite
+		|| afterFailedWrite->observedTelegramMessageId != 100) {
+		return Fail("failed duplicate boundary write changed live content");
+	}
+	indexBlob.writeError = false;
+	const auto retried = store.append(record);
+	const auto afterOlderDuplicate = store.record(record.eventObjectId);
+	if (retried != ContentStoreAppendResult::AlreadyStored
+		|| store.revision() != 2
+		|| !afterOlderDuplicate
+		|| afterOlderDuplicate->observedTelegramMessageId != 99) {
+		return Fail("older carrier duplicate did not lower its search boundary");
 	}
 	record.plaintext.append('!');
 	if (store.append(std::move(record)) != ContentStoreAppendResult::Conflict) {
@@ -592,17 +615,50 @@ int CountingLocalRecordProtector::openCalls() const {
 		}
 	}
 	const auto purpose = QByteArray("e2e-cloud-content-index-v1");
-	auto versionTwo = indexBlob.bytes
+	auto versionThree = indexBlob.bytes
 		? protector.open(purpose, *indexBlob.bytes)
 		: std::nullopt;
-	if (!versionTwo || versionTwo->size() != 54 + 3 * 74) {
-		return Fail("content paging index was not written as version two");
+	if (!versionThree || versionThree->size() != 54 + 3 * 82) {
+		return Fail("content paging index was not written as version three");
 	}
-	auto versionOne = QByteArray(versionTwo->constData(), 54);
+	auto versionTwo = QByteArray(versionThree->constData(), 54);
+	versionTwo[8] = 0;
+	versionTwo[9] = 2;
+	for (auto index = 0; index != 3; ++index) {
+		versionTwo.append(
+			versionThree->constData() + 54 + index * 82,
+			74);
+	}
+	indexBlob.bytes = protector.seal(purpose, versionTwo);
+	auto restoredVersionTwo = PersistentContentStore(
+		conversationId,
+		directory.path(),
+		indexBlob,
+		protector,
+		sha256);
+	if (!indexBlob.bytes
+		|| restoredVersionTwo.load() != ContentStoreLoadResult::Loaded) {
+		return Fail("version-two content index did not migrate");
+	}
+	const auto versionTwoFiles = restoredVersionTwo.records(
+		0,
+		1,
+		ObjectKind::EncryptedFileManifest);
+	const auto migratedVersionTwo = indexBlob.bytes
+		? protector.open(purpose, *indexBlob.bytes)
+		: std::nullopt;
+	if (versionTwoFiles.size() != 1
+		|| versionTwoFiles[0].observedTelegramMessageId != 1
+		|| !migratedVersionTwo
+		|| migratedVersionTwo->size() != 54 + 3 * 82
+		|| std::uint8_t((*migratedVersionTwo)[9]) != 3) {
+		return Fail("version-two manifest boundary was not made conservative");
+	}
+	auto versionOne = QByteArray(versionThree->constData(), 54);
 	versionOne[8] = 0;
 	versionOne[9] = 1;
 	for (auto index = 0; index != 3; ++index) {
-		versionOne.append(versionTwo->constData() + 54 + index * 74, 64);
+		versionOne.append(versionThree->constData() + 54 + index * 82, 64);
 	}
 	indexBlob.bytes = protector.seal(purpose, versionOne);
 	if (!indexBlob.bytes) {
@@ -632,16 +688,17 @@ int CountingLocalRecordProtector::openCalls() const {
 		|| secondPage[0].unixTime != 300
 		|| files.size() != 1
 		|| files[0].objectKind != ObjectKind::EncryptedFileManifest
-		|| files[0].unixTime != 200) {
+		|| files[0].unixTime != 200
+		|| files[0].observedTelegramMessageId != 1) {
 		return Fail("content store did not load only the requested sorted page");
 	}
 	const auto migrated = indexBlob.bytes
 		? protector.open(purpose, *indexBlob.bytes)
 		: std::nullopt;
 	if (!migrated
-		|| migrated->size() != 54 + 3 * 74
+		|| migrated->size() != 54 + 3 * 82
 		|| std::uint8_t((*migrated)[8]) != 0
-		|| std::uint8_t((*migrated)[9]) != 2) {
+		|| std::uint8_t((*migrated)[9]) != 3) {
 		return Fail("legacy content index was not upgraded atomically");
 	}
 	protector.resetOpenCalls();
@@ -653,7 +710,7 @@ int CountingLocalRecordProtector::openCalls() const {
 		sha256);
 	if (reloaded.load() != ContentStoreLoadResult::Loaded
 		|| protector.openCalls() != 1) {
-		return Fail("version-two content load decrypted every message");
+		return Fail("version-three content load decrypted every message");
 	}
 	return 0;
 }

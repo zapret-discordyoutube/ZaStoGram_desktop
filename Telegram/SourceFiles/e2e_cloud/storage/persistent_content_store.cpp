@@ -37,7 +37,8 @@ inline constexpr auto kMaximumRecords = std::size_t(1'000'000);
 inline constexpr auto kMaximumRecordPlaintextSize = 16 * 1024 * 1024;
 inline constexpr auto kIndexHeaderSize = 8 + 2 + 32 + 8 + 4;
 inline constexpr auto kIndexEntrySizeV1 = 32 + 32;
-inline constexpr auto kIndexEntrySize = 32 + 32 + 2 + 8;
+inline constexpr auto kIndexEntrySizeV2 = 32 + 32 + 2 + 8;
+inline constexpr auto kIndexEntrySize = 32 + 32 + 2 + 8 + 8;
 inline constexpr auto kRecordHeaderSize = 8 + 2 + 32 + 32 + 32 + 2
 	+ 8 + 32 + 16 + 8 + 8 + 4;
 
@@ -168,6 +169,16 @@ void Cleanse(QByteArray &bytes) {
 		&& a.plaintext == b.plaintext;
 }
 
+[[nodiscard]] std::int64_t EarliestObservedMessageId(
+		std::int64_t a,
+		std::int64_t b) {
+	return (a <= 0)
+		? b
+		: (b <= 0)
+		? a
+		: std::min(a, b);
+}
+
 [[nodiscard]] std::optional<QByteArray> EncodeRecord(
 		const ProtectedContentRecord &record) {
 	if (!ValidRecord(record)) {
@@ -288,7 +299,7 @@ ContentStoreLoadResult PersistentContentStore::load() {
 		|| !ReadUint64(reader, revision)
 		|| !ReadUint32(reader, count)
 		|| magic != kIndexMagic
-		|| (version != 1 && version != 2)
+		|| (version != 1 && version != 2 && version != 3)
 		|| conversationId != _conversationId
 		|| count > kMaximumRecords
 		|| (count && !revision)) {
@@ -296,6 +307,8 @@ ContentStoreLoadResult PersistentContentStore::load() {
 	}
 	const auto entrySize = (version == 1)
 		? kIndexEntrySizeV1
+		: (version == 2)
+		? kIndexEntrySizeV2
 		: kIndexEntrySize;
 	if (reader.bytes.size() - reader.offset != int(count) * entrySize) {
 		return fail();
@@ -312,7 +325,7 @@ ContentStoreLoadResult PersistentContentStore::load() {
 			|| !identifiers.emplace(entry.eventObjectId).second) {
 			return fail();
 		}
-		if (version == 2) {
+		if (version >= 2) {
 			auto kind = std::uint16_t();
 			if (!ReadUint16(reader, kind)
 				|| !ReadUint64(reader, entry.unixTime)) {
@@ -327,17 +340,34 @@ ContentStoreLoadResult PersistentContentStore::load() {
 				return fail();
 			}
 		}
+		if (version == 3) {
+			auto observedMessageId = std::uint64_t();
+			if (!ReadUint64(reader, observedMessageId)
+				|| observedMessageId > std::uint64_t(
+					std::numeric_limits<std::int64_t>::max())) {
+				return fail();
+			}
+			entry.observedTelegramMessageId
+				= std::int64_t(observedMessageId);
+		}
 		entries.push_back(entry);
 	}
 	Cleanse(*plaintext);
-	if (version == 1) {
+	if (version != 3) {
 		for (auto &entry : entries) {
 			auto record = readRecord(entry);
 			if (!record) {
 				return ContentStoreLoadResult::InvalidSnapshot;
 			}
-			entry.objectKind = record->objectKind;
-			entry.unixTime = record->unixTime;
+			if (version == 1) {
+				entry.objectKind = record->objectKind;
+				entry.unixTime = record->unixTime;
+			}
+			entry.observedTelegramMessageId
+				= (record->objectKind == ObjectKind::EncryptedFileManifest
+					&& record->observedTelegramMessageId > 0)
+				? 1
+				: record->observedTelegramMessageId;
 			Cleanse(record->plaintext);
 		}
 	}
@@ -345,7 +375,7 @@ ContentStoreLoadResult PersistentContentStore::load() {
 	_revision = revision;
 	_loaded = true;
 	rebuildOrderedEntries();
-	if (version == 1) {
+	if (version != 3) {
 		(void)persistIndex(_entries, _revision);
 	}
 	return ContentStoreLoadResult::Loaded;
@@ -377,9 +407,27 @@ ContentStoreAppendResult PersistentContentStore::append(
 		if (!stored) {
 			return ContentStoreAppendResult::PersistenceFailed;
 		}
-		return SameProtectedContent(*stored, record)
-			? ContentStoreAppendResult::AlreadyStored
-			: ContentStoreAppendResult::Conflict;
+		if (!SameProtectedContent(*stored, record)) {
+			return ContentStoreAppendResult::Conflict;
+		}
+		const auto observedMessageId = EarliestObservedMessageId(
+			stored->observedTelegramMessageId,
+			record.observedTelegramMessageId);
+		if (observedMessageId == stored->observedTelegramMessageId) {
+			return ContentStoreAppendResult::AlreadyStored;
+		} else if (_revision == std::numeric_limits<std::uint64_t>::max()) {
+			return ContentStoreAppendResult::PersistenceFailed;
+		}
+		auto entries = _entries;
+		entries[std::size_t(existing - begin(_entries))]
+			.observedTelegramMessageId = observedMessageId;
+		const auto revision = _revision + 1;
+		if (!persistIndex(entries, revision)) {
+			return ContentStoreAppendResult::PersistenceFailed;
+		}
+		_entries = std::move(entries);
+		_revision = revision;
+		return ContentStoreAppendResult::AlreadyStored;
 	} else if (_entries.size() == kMaximumRecords
 		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
 		return ContentStoreAppendResult::PersistenceFailed;
@@ -405,6 +453,7 @@ ContentStoreAppendResult PersistentContentStore::append(
 		.recordHash = recordHash,
 		.objectKind = record.objectKind,
 		.unixTime = record.unixTime,
+		.observedTelegramMessageId = record.observedTelegramMessageId,
 	});
 	const auto revision = _revision + 1;
 	if (!persistIndex(entries, revision)) {
@@ -540,6 +589,10 @@ std::optional<ProtectedContentRecord> PersistentContentStore::readRecord(
 		}
 		return std::nullopt;
 	}
+	if (entry.observedTelegramMessageId) {
+		record->observedTelegramMessageId
+			= *entry.observedTelegramMessageId;
+	}
 	return record;
 }
 
@@ -582,6 +635,8 @@ bool PersistentContentStore::persistIndex(
 			|| !entry.recordHash
 			|| !ValidKind(entry.objectKind)
 			|| !entry.unixTime
+			|| !entry.observedTelegramMessageId
+			|| *entry.observedTelegramMessageId < 0
 			|| entry.unixTime > std::uint64_t(
 				std::numeric_limits<std::int64_t>::max())) {
 			Cleanse(plaintext);
@@ -591,6 +646,9 @@ bool PersistentContentStore::persistIndex(
 		AppendArray(plaintext, entry.recordHash.bytes);
 		AppendUint16(plaintext, std::uint16_t(entry.objectKind));
 		AppendUint64(plaintext, entry.unixTime);
+		AppendUint64(
+			plaintext,
+			std::uint64_t(*entry.observedTelegramMessageId));
 	}
 	const auto protectedBytes = _protector.seal(
 		QByteArray(kIndexPurpose),

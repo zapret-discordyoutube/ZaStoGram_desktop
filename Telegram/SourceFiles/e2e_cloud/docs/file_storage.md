@@ -74,6 +74,10 @@ chunk. A receiver persists a protected local authorization record derived from
 that manifest and accepts a chunk only when its file identifier, layout,
 sender, client, generation, and authenticated ciphertext agree with the
 manifest. Unknown or malformed chunks are discarded without creating files.
+Exact manifest duplicates retain their earliest positive Telegram message
+identifier in the protected content index. Chunk download uses that identifier
+as its exclusive lower search boundary, so a later duplicate cannot hide
+chunks published after the original manifest.
 During history synchronization, manifests are previewed while Telegram pages
 are scanned and ordinary content is still replayed oldest-first. This preserves
 files written by the earlier chunk-first sender without reopening orphan-chunk
