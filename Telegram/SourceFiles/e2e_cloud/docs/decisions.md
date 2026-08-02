@@ -569,3 +569,15 @@ rewrite, release the current retry chunk, and only then clear the transfer. If
 the app stops between these steps, startup observes the cancellation marker and
 finishes cleanup before any outbox recovery upload. Failed cleanup remains
 retryable and never silently resumes the cancelled file.
+
+### D054: Administration waits for the outgoing pipeline
+
+Reject a local administrative transition while file preparation, a durable file
+transfer, the direct transport, the protected outbox, or its upload controller
+has work. An administrative transition moves the group into the vault-update
+state machine, so an older upload callback would otherwise target a group that
+is no longer in the active-group map and fail to acknowledge accepted bytes.
+
+The user may retry the role, removal, or history-policy action after outgoing
+work reaches its durability boundary. Incoming content download remains
+independent and does not block administration.

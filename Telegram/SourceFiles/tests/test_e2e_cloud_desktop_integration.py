@@ -949,6 +949,29 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
     assert "fileTransferPending" in box
 
 
+def verify_administration_waits_for_outgoing_work() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    administration = function_body(
+        service,
+        "bool DesktopService::applyAdministrativeTransition(",
+        "bool DesktopService::admitObservedClient(",
+    )
+    move_to_creation = administration.index(
+        "_pendingGroupCreation = std::move(i->second)"
+    )
+
+    assert administration.index("group.fileHashInProgress") \
+        < move_to_creation
+    assert administration.index("group.fileTransfer.pending()") \
+        < move_to_creation
+    assert administration.index("group.uploadInProgress") \
+        < move_to_creation
+    assert administration.index("group.outbox.size()") \
+        < move_to_creation
+    assert administration.index("uploadController->uploadInProgress()") \
+        < move_to_creation
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -985,6 +1008,7 @@ def main() -> None:
     verify_file_chunks_download_only_on_demand()
     verify_new_file_cannot_replace_pending_transfer()
     verify_failed_file_transfer_can_be_cancelled_durably()
+    verify_administration_waits_for_outgoing_work()
 
 
 if __name__ == "__main__":

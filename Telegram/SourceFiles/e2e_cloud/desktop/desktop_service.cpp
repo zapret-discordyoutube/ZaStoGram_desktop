@@ -4714,6 +4714,14 @@ bool DesktopService::applyAdministrativeTransition(
 		|| group.observation
 		|| group.observationDirty
 		|| group.phase != PendingGroupCreation::Phase::Active
+		|| group.fileHashInProgress
+		|| !group.filePreparationPath.isEmpty()
+		|| group.fileFinalHashInProgress
+		|| group.fileTransfer.pending()
+		|| group.uploadInProgress
+		|| group.outbox.size()
+		|| (group.uploadController
+			&& group.uploadController->uploadInProgress())
 		|| !group.freshnessGate
 		|| !group.freshnessGate->administrationAllowed()
 		|| metadata->accountId != *actorAccountId
