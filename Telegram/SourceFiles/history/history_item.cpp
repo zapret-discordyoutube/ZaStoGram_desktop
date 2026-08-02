@@ -65,6 +65,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_game.h"
+#include "e2e_cloud/desktop/desktop_service.h"
 #include "data/data_histories.h"
 #include "data/data_history_messages.h"
 #include "data/data_user.h"
@@ -4595,7 +4596,9 @@ bool HistoryItem::isE2ECloudCarrier() const {
 			document->filename(),
 			document->mimeString());
 	} else if (peer->isChat() || peer->isMegagroup()) {
-		return E2ECloud::IsProtectedGroupCarrierMetadata(
+		return _history->session().e2eCloud(
+		).isProtectedPeerForPresentation(peer->id.value)
+			&& E2ECloud::IsProtectedGroupCarrierMetadata(
 			document->filename(),
 			document->mimeString());
 	}

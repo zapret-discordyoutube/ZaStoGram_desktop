@@ -1147,3 +1147,16 @@ finishes or is cancelled. A busy-file rejection is an expected user-visible
 state, not a local cryptographic or persistence failure. This policy changes
 only protected-content queueing; it does not alter MTProto upload-session
 ownership, pacing, endpoints, or connection selection.
+
+### D094: Carrier metadata hides content only in protected peers
+
+Hide a group carrier from the native Telegram timeline only after the peer is
+known to protected presentation state. A document in an ordinary group that
+happens to use the reserved carrier filename and MIME type remains an ordinary
+visible document instead of disappearing from history, notifications, copy,
+and shared media.
+
+Keep protected-group discovery metadata-only so a new carrier can still prove
+that an unindexed group should enter protected presentation. Persisted monotonic
+peer markers and their fail-closed invalid-marker behavior continue to prevent
+a previously protected group from downgrading to plaintext presentation.
