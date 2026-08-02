@@ -780,8 +780,11 @@ DesktopService::groupCreationStateValue() const {
 bool DesktopService::createProtectedGroup(
 		not_null<PeerData*> peer,
 		HistoryAccess defaultHistoryAccess) {
+	const auto operationState = _groupCreationState.current();
 	if (!_vault
 		|| _vaultState.current() != DesktopVaultState::Ready
+		|| (operationState != DesktopGroupCreationState::Idle
+			&& operationState != DesktopGroupCreationState::Ready)
 		|| _pendingGroupCreation
 		|| _pendingGroupJoin
 		|| _pendingGroupDiscovery
@@ -1605,7 +1608,18 @@ void DesktopService::applyFileChunkDownload(
 	group.fileDownloadController.reset();
 	group.fileDownloadTransport.reset();
 	group.fileDownloadBackend.reset();
-	if (completion.status == FileChunkDownloadStatus::Complete) {
+	if (completion.status == FileChunkDownloadStatus::SecurityBlocked
+		|| completion.status == FileChunkDownloadStatus::InvalidPagination
+		|| completion.status == FileChunkDownloadStatus::LimitExceeded) {
+		_vaultState = DesktopVaultState::SecurityBlocked;
+		setContentState(
+			conversationId,
+			DesktopContentState::SecurityBlocked);
+		finishFileChunkDownload(
+			conversationId,
+			ProtectedFileSaveResult::SecurityBlocked);
+		return;
+	} else if (completion.status == FileChunkDownloadStatus::Complete) {
 		if (!writePendingProtectedFile(conversationId)) {
 			finishFileChunkDownload(
 				conversationId,
@@ -1624,10 +1638,6 @@ void DesktopService::applyFileChunkDownload(
 		: (completion.status
 			== FileChunkDownloadStatus::PermanentTransportError)
 		? ProtectedFileSaveResult::PermanentTransportError
-		: (completion.status == FileChunkDownloadStatus::SecurityBlocked
-			|| completion.status == FileChunkDownloadStatus::InvalidPagination
-			|| completion.status == FileChunkDownloadStatus::LimitExceeded)
-		? ProtectedFileSaveResult::SecurityBlocked
 		: (completion.status == FileChunkDownloadStatus::Missing)
 		? ProtectedFileSaveResult::MissingChunks
 		: ProtectedFileSaveResult::LocalFailure;
@@ -3244,10 +3254,15 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 		return;
 	} else if (group.observationDirty && !group.outbox.size()) {
 		beginGroupObservation(conversationId);
-		if (group.observation || group.observationDirty) {
+		const auto current = _groups.find(conversationId);
+		if (current == end(_groups)) {
+			return;
+		} else if (current->second->observation) {
 			setContentState(
 				conversationId,
 				DesktopContentState::Synchronizing);
+			return;
+		} else if (current->second->observationDirty) {
 			return;
 		}
 	}
@@ -3958,6 +3973,14 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 	if (!started) {
 		group.observation.reset();
 		group.observationDirty = true;
+		setContentState(
+			conversationId,
+			DesktopContentState::RetryableTransportError);
+		if (group.phase
+				== PendingGroupCreation::Phase::AwaitingAdmission) {
+			_groupCreationState
+				= DesktopGroupCreationState::RetryableTransportError;
+		}
 	}
 }
 
@@ -4905,7 +4928,14 @@ bool DesktopService::applyAdministrativeTransition(
 		ConversationId conversationId,
 		GroupTransition transition) {
 	const auto i = _groups.find(conversationId);
-	if (!vaultReady() || i == end(_groups) || _pendingGroupCreation) {
+	const auto operationState = _groupCreationState.current();
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| (operationState != DesktopGroupCreationState::Idle
+			&& operationState != DesktopGroupCreationState::Ready)
+		|| _pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery) {
 		return false;
 	}
 	auto &group = *i->second;

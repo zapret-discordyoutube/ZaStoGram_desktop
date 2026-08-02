@@ -831,6 +831,10 @@ void ShowProtectedConversation(
 		) | rpl::on_next([=](DesktopContentState) {
 			refreshStatus();
 		}, box->lifetime());
+		service->securityRevisionValue(
+		) | rpl::on_next([=](std::uint64_t) {
+			refreshStatus();
+		}, box->lifetime());
 		box->setFocusCallback([=] { field->setFocusFast(); });
 		const auto send = [=] {
 			const auto text = field->getLastText();

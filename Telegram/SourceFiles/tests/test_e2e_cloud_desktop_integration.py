@@ -1376,6 +1376,11 @@ def verify_open_protected_views_do_not_keep_stale_state() -> None:
         "void ShowProtectedFiles(",
         "} // namespace",
     )
+    chat = function_body(
+        conversation,
+        "void ShowProtectedConversation(",
+        "} // namespace E2ECloud",
+    )
 
     assert "void CloseWhenSecurityChanges(" in conversation
     assert "rpl::skip(1)" in conversation
@@ -1387,6 +1392,84 @@ def verify_open_protected_views_do_not_keep_stale_state() -> None:
     assert "CloseWhenSecurityChanges(box, service);" in security
     assert "service->contentRevisionValue(" in files
     assert "RebuildProtectedFiles(" in files
+    assert "service->securityRevisionValue(" in chat
+    assert "refreshStatus();" in chat[
+        chat.index("service->securityRevisionValue("):]
+
+
+def verify_failed_control_start_does_not_wait_forever() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    begin = function_body(
+        service,
+        "void DesktopService::beginGroupObservation(",
+        "void DesktopService::beginContentObservation(",
+    )
+    pump = function_body(
+        service,
+        "void DesktopService::pumpActiveOutbox(",
+        "bool DesktopService::prepareActiveUploadAcknowledgement(",
+    )
+
+    failed = begin[begin.index("if (!started) {"):]
+    assert "DesktopContentState::RetryableTransportError" in failed
+    assert "PendingGroupCreation::Phase::AwaitingAdmission" in failed
+    assert "DesktopGroupCreationState::RetryableTransportError" in failed
+    start = pump.index("beginGroupObservation(conversationId);")
+    after_start = pump[start:]
+    assert "const auto current = _groups.find(conversationId);" \
+        in after_start
+    assert after_start.index("const auto current = _groups.find") \
+        < after_start.index("current->second->observation")
+    assert "group.observation || group.observationDirty" not in after_start
+    dirty = after_start.index("current->second->observationDirty")
+    ready = after_start.index("if (const auto pending")
+    assert "DesktopContentState::Synchronizing" not in after_start[
+        dirty:ready
+    ]
+
+
+def verify_file_download_security_failures_lock_the_vault() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    apply = function_body(
+        service,
+        "void DesktopService::applyFileChunkDownload(",
+        "bool DesktopService::writePendingProtectedFile(",
+    )
+    security = apply[
+        apply.index("FileChunkDownloadStatus::SecurityBlocked"):
+        apply.index("FileChunkDownloadStatus::Complete")
+    ]
+
+    assert "FileChunkDownloadStatus::InvalidPagination" in security
+    assert "FileChunkDownloadStatus::LimitExceeded" in security
+    assert "_vaultState = DesktopVaultState::SecurityBlocked;" in security
+    assert "DesktopContentState::SecurityBlocked" in security
+    assert "ProtectedFileSaveResult::SecurityBlocked" in security
+    assert security.index("_vaultState = DesktopVaultState::SecurityBlocked;") \
+        < security.index("finishFileChunkDownload(")
+
+
+def verify_vault_changing_group_operations_are_serialized() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    create = function_body(
+        service,
+        "bool DesktopService::createProtectedGroup(",
+        "bool DesktopService::retryProtectedGroupCreation()",
+    )
+    administration = function_body(
+        service,
+        "bool DesktopService::applyAdministrativeTransition(",
+        "bool DesktopService::admitObservedClient(",
+    )
+
+    for body in (create, administration):
+        assert "const auto operationState = _groupCreationState.current();" \
+            in body
+        assert "operationState != DesktopGroupCreationState::Idle" in body
+        assert "operationState != DesktopGroupCreationState::Ready" in body
+    assert "|| _pendingGroupCreation" in administration
+    assert "|| _pendingGroupJoin" in administration
+    assert "|| _pendingGroupDiscovery" in administration
 
 
 def main() -> None:
@@ -1433,6 +1516,9 @@ def main() -> None:
     verify_security_failures_destroy_the_unlocked_runtime()
     verify_admission_and_discovery_failures_can_be_retried()
     verify_open_protected_views_do_not_keep_stale_state()
+    verify_failed_control_start_does_not_wait_forever()
+    verify_file_download_security_failures_lock_the_vault()
+    verify_vault_changing_group_operations_are_serialized()
 
 
 if __name__ == "__main__":

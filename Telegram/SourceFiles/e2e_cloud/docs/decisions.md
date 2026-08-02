@@ -720,3 +720,48 @@ Rebuild an open protected-file list whenever the content revision changes.
 The list remains bounded by the existing visible-page limit and therefore can
 show newly synchronized manifests without retaining an unbounded plaintext
 snapshot or requiring the user to close the conversation.
+
+Refresh an open conversation's status and input availability on the same
+security revision. Removal or re-admission changes the active phase without
+necessarily adding content, so waiting for a content notification would leave
+the field looking writable even though the service correctly rejects the send.
+
+### D063: A control observer must exist before showing synchronization
+
+If a control observation cannot start, retain its dirty marker but expose a
+retryable content error instead of `Synchronizing`. For a client awaiting
+admission, expose the same retryable failure through the group state so restart
+recovery cannot leave the main dialog waiting without a live controller.
+
+Starting a controller may synchronously invoke its completion callback. Any
+caller that wants to inspect the group afterward must find it again by
+conversation identifier, because processing a verified control page may move
+the group into the durable vault-update state machine. Never dereference the
+pre-start map entry or group reference across that callback boundary.
+
+### D064: File-download security failures lock the vault
+
+Treat an authenticated file-chunk conflict, invalid pagination, or exceeded
+download bound as the same fail-closed boundary as a protected message or
+control conflict. A file-save callback returning `SecurityBlocked` is not
+sufficient while the unlocked service can still send or administer the group.
+
+Set both the vault and conversation states to `SecurityBlocked` before
+finishing the transient file operation. This prevents its cleanup from
+starting another observation, still delivers the failure to the UI callback,
+and lets the existing deferred security lock destroy all unlocked runtime
+state immediately afterward.
+
+### D065: Vault-changing group operations are globally serialized
+
+Starting a protected group or an administrative transition is allowed only
+while the global group operation is `Idle` or `Ready`. Administration also
+requires that no creation, indexed join, or discovery controller owns the
+global slot. Reading and ordinary protected sends in unrelated groups remain
+available because they do not rewrite the account vault index.
+
+Without this gate, a discovery callback could finish while administration of a
+different group had moved that group into the pending vault-update state. The
+join would then fail only because the slot was occupied and could overwrite the
+real operation state with `LocalFailure`, leaving both operations without a
+correct recovery action.
