@@ -613,6 +613,12 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 			weak->lock();
 		}
 	}, _lifetime);
+	_vaultState.value(
+	) | rpl::on_next([weak = base::weak_ptr(this)](DesktopVaultState state) {
+		if (state == DesktopVaultState::SecurityBlocked && weak) {
+			weak->scheduleSecurityLock();
+		}
+	}, _lifetime);
 }
 
 DesktopService::~DesktopService() {
@@ -629,7 +635,40 @@ rpl::producer<DesktopVaultState> DesktopService::vaultStateValue() const {
 }
 
 const UnlockedCloudVault *DesktopService::vault() const {
-	return _vault ? &*_vault : nullptr;
+	return vaultReady() ? &*_vault : nullptr;
+}
+
+bool DesktopService::vaultReady() const {
+	return _vaultState.current() == DesktopVaultState::Ready && bool(_vault);
+}
+
+bool DesktopService::hasProtectedRuntimeState() const {
+	return _vault
+		|| _sync
+		|| _pendingCreation
+		|| _pendingGroupCreation
+		|| _pendingGroupJoin
+		|| _pendingGroupDiscovery
+		|| !_groups.empty()
+		|| !_pendingUnlockPassword.isEmpty()
+		|| !_unlockedPassword.isEmpty();
+}
+
+void DesktopService::scheduleSecurityLock() {
+	if (_securityLockScheduled || !hasProtectedRuntimeState()) {
+		return;
+	}
+	_securityLockScheduled = true;
+	crl::on_main([weak = base::weak_ptr(this)] {
+		if (!weak) {
+			return;
+		}
+		weak->_securityLockScheduled = false;
+		if (weak->_vaultState.current() == DesktopVaultState::SecurityBlocked
+			&& weak->hasProtectedRuntimeState()) {
+			weak->lock();
+		}
+	});
 }
 
 void DesktopService::ensureVaultDiscovery() {
@@ -903,7 +942,8 @@ bool DesktopService::createProtectedGroup(
 
 bool DesktopService::retryProtectedGroupCreation() {
 	const auto state = _groupCreationState.current();
-	if ((state != DesktopGroupCreationState::RetryableTransportError
+	if (!vaultReady()
+		|| (state != DesktopGroupCreationState::RetryableTransportError
 			&& state != DesktopGroupCreationState::PermanentTransportError)
 		|| _pendingGroupJoin) {
 		return false;
@@ -926,6 +966,9 @@ bool DesktopService::retryProtectedGroupCreation() {
 std::vector<DesktopProtectedGroupSummary>
 DesktopService::protectedGroups() const {
 	auto result = std::vector<DesktopProtectedGroupSummary>();
+	if (!vaultReady()) {
+		return result;
+	}
 	result.reserve(_groups.size());
 	for (const auto &[conversationId, group] : _groups) {
 		const auto state = group->groupLedger.state();
@@ -957,7 +1000,7 @@ DesktopService::protectedGroups() const {
 
 std::optional<ConversationId> DesktopService::protectedConversationForPeer(
 		std::uint64_t telegramPeerIdBinding) const {
-	if (!telegramPeerIdBinding) {
+	if (!vaultReady() || !telegramPeerIdBinding) {
 		return std::nullopt;
 	}
 	auto result = std::optional<ConversationId>();
@@ -1000,6 +1043,9 @@ std::vector<ProtectedContentRecord> DesktopService::protectedContent(
 		std::size_t offset,
 		std::size_t limit,
 		std::optional<ObjectKind> kind) const {
+	if (!vaultReady()) {
+		return {};
+	}
 	const auto i = _groups.find(conversationId);
 	return (i != end(_groups))
 		? i->second->contentStore.records(offset, limit, kind)
@@ -1009,6 +1055,9 @@ std::vector<ProtectedContentRecord> DesktopService::protectedContent(
 std::size_t DesktopService::protectedContentCount(
 		ConversationId conversationId,
 		std::optional<ObjectKind> kind) const {
+	if (!vaultReady()) {
+		return 0;
+	}
 	const auto i = _groups.find(conversationId);
 	return (i != end(_groups)) ? i->second->contentStore.size(kind) : 0;
 }
@@ -1016,7 +1065,7 @@ std::size_t DesktopService::protectedContentCount(
 std::optional<DesktopProtectedSecurity> DesktopService::protectedSecurity(
 		ConversationId conversationId) const {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault) {
+	if (!vaultReady() || i == end(_groups)) {
 		return std::nullopt;
 	}
 	const auto &group = *i->second;
@@ -1123,8 +1172,8 @@ bool DesktopService::sendProtectedText(
 		ConversationId conversationId,
 		QString text) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| text.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
@@ -1196,8 +1245,8 @@ bool DesktopService::sendProtectedFile(
 		ConversationId conversationId,
 		QString path) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| path.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
@@ -1263,7 +1312,8 @@ bool DesktopService::sendProtectedFile(
 bool DesktopService::cancelProtectedFileTransfer(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| i->second->phase != PendingGroupCreation::Phase::Active
 		|| !i->second->fileTransfer.pending()) {
 		return false;
@@ -1283,6 +1333,12 @@ bool DesktopService::saveProtectedFile(
 		ObjectId eventObjectId,
 		QString path,
 		std::function<void(ProtectedFileSaveResult)> callback) {
+	if (!vaultReady()) {
+		if (callback) {
+			callback(ProtectedFileSaveResult::SecurityBlocked);
+		}
+		return false;
+	}
 	const auto i = _groups.find(conversationId);
 	auto record = (i != end(_groups))
 		? i->second->contentStore.record(eventObjectId)
@@ -1356,7 +1412,9 @@ bool DesktopService::beginFileChunkDownload(
 		ConversationId conversationId,
 		bool legacyCarrier) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !i->second->pendingFileDownload) {
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| !i->second->pendingFileDownload) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -1445,6 +1503,9 @@ bool DesktopService::beginFileChunkDownload(
 FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 		ConversationId conversationId,
 		std::vector<TelegramTransport::UntrustedObject> objects) {
+	if (!vaultReady()) {
+		return FileChunkDownloadPageStatus::SecurityBlocked;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups) || !i->second->pendingFileDownload) {
 		return FileChunkDownloadPageStatus::PersistenceFailed;
@@ -1484,6 +1545,9 @@ FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 void DesktopService::applyFileChunkDownload(
 		ConversationId conversationId,
 		FileChunkDownloadCompletion completion) {
+	if (!vaultReady()) {
+		return;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups) || !i->second->pendingFileDownload) {
 		return;
@@ -1525,7 +1589,8 @@ void DesktopService::applyFileChunkDownload(
 bool DesktopService::writePendingProtectedFile(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| !i->second->pendingFileDownload
 		|| i->second->pendingFileDownload->write) {
 		return false;
@@ -1582,7 +1647,7 @@ void DesktopService::continuePendingProtectedFileWrite(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
 		std::uint64_t operationEpoch) {
-	if (_operationEpoch != operationEpoch) {
+	if (!vaultReady() || _operationEpoch != operationEpoch) {
 		return;
 	}
 	const auto i = _groups.find(conversationId);
@@ -1830,6 +1895,9 @@ void DesktopService::notifySecurityRevision() {
 
 void DesktopService::synchronizeProtectedContent(
 		ConversationId conversationId) {
+	if (!vaultReady()) {
+		return;
+	}
 	beginGroupObservation(conversationId);
 	pumpActiveOutbox(conversationId);
 	beginContentObservation(conversationId);
@@ -1995,10 +2063,12 @@ void DesktopService::uploadPendingCreation() {
 }
 
 void DesktopService::beginGroupVaultPreflight() {
+	if (!vaultReady()) {
+		return;
+	}
 	if (!_pendingGroupCreation
 		|| !_pendingGroupCreation->vaultPreflightRequired
 		|| _sync
-		|| !_vault
 		|| _unlockedPassword.isEmpty()) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return;
@@ -2025,6 +2095,9 @@ void DesktopService::beginGroupVaultPreflight() {
 
 void DesktopService::applyGroupVaultSyncResult(
 		CloudVaultSyncCompletion result) {
+	if (!vaultReady()) {
+		return;
+	}
 	_sync.reset();
 	if (!_pendingGroupCreation) {
 		return;
@@ -2094,10 +2167,10 @@ void DesktopService::applyGroupVaultSyncResult(
 }
 
 void DesktopService::uploadPendingConversationIndex() {
-	if (!_pendingGroupCreation
+	if (!vaultReady()
+		|| !_pendingGroupCreation
 		|| !_pendingGroupCreation->vaultUpdate
-		|| _pendingGroupCreation->uploadInProgress
-		|| !_vault) {
+		|| _pendingGroupCreation->uploadInProgress) {
 		return;
 	}
 	_pendingGroupCreation->uploadInProgress = true;
@@ -2108,6 +2181,7 @@ void DesktopService::uploadPendingConversationIndex() {
 		[weak = base::weak_ptr(this), operationEpoch](
 				TelegramTransport::UploadResult result) {
 			if (!weak
+				|| !weak->vaultReady()
 				|| weak->_operationEpoch != operationEpoch
 				|| !weak->_pendingGroupCreation
 				|| !weak->_pendingGroupCreation->vaultUpdate
@@ -2148,7 +2222,8 @@ void DesktopService::uploadPendingConversationIndex() {
 }
 
 void DesktopService::publishNextBootstrapObject() {
-	if (!_pendingGroupCreation
+	if (!vaultReady()
+		|| !_pendingGroupCreation
 		|| _pendingGroupCreation->uploadInProgress
 		|| _pendingGroupCreation->vaultUpdate) {
 		return;
@@ -2229,7 +2304,9 @@ void DesktopService::publishNextBootstrapObject() {
 		*item->sealed,
 		[weak = base::weak_ptr(this), objectId](
 				TelegramTransport::UploadResult result) {
-			if (!weak || !weak->_pendingGroupCreation) {
+			if (!weak
+				|| !weak->vaultReady()
+				|| !weak->_pendingGroupCreation) {
 				return;
 			}
 			weak->_pendingGroupCreation->uploadInProgress = false;
@@ -2273,9 +2350,7 @@ void DesktopService::publishNextBootstrapObject() {
 }
 
 void DesktopService::resumePendingGroupCreation() {
-	if (_pendingGroupCreation
-		|| !_vault
-		|| _vaultState.current() != DesktopVaultState::Ready) {
+	if (!vaultReady() || _pendingGroupCreation) {
 		return;
 	}
 	for (const auto &conversation : _vault->conversations) {
@@ -2381,10 +2456,10 @@ void DesktopService::resumePendingGroupCreation() {
 
 void DesktopService::beginIndexedGroupJoin(
 		const CloudVaultConversation &conversation) {
-	if (_pendingGroupJoin
+	if (!vaultReady()
+		|| _pendingGroupJoin
 		|| _pendingGroupCreation
-		|| _groups.contains(conversation.conversationId)
-		|| !_vault) {
+		|| _groups.contains(conversation.conversationId)) {
 		return;
 	}
 	if (!IsProtectedGroupPeerBinding(
@@ -2420,7 +2495,7 @@ void DesktopService::beginIndexedGroupJoin(
 
 void DesktopService::applyPublicBootstrapSyncResult(
 		PublicBootstrapSyncCompletion result) {
-	if (!_pendingGroupJoin || !_vault) {
+	if (!vaultReady() || !_pendingGroupJoin) {
 		return;
 	}
 	_pendingGroupJoin->sync.reset();
@@ -2462,7 +2537,7 @@ bool DesktopService::prepareGroupJoin(
 		CloudVaultConversation conversation,
 		VerifiedPublicGroupBootstrap verified,
 		bool discovered) {
-	if (!_vault
+	if (!vaultReady()
 		|| _pendingGroupCreation
 		|| _groups.contains(conversation.conversationId)
 		|| !BootstrapMatchesConversation(verified, conversation)) {
@@ -2592,7 +2667,7 @@ bool DesktopService::prepareGroupJoin(
 
 bool DesktopService::queueFreshnessChallenge(
 		PendingGroupCreation &group) {
-	if (!_vault
+	if (!vaultReady()
 		|| !group.freshnessGate
 		|| group.freshnessGate->state() != FreshnessState::Required) {
 		return false;
@@ -2629,6 +2704,9 @@ bool DesktopService::queueFreshnessChallenge(
 bool DesktopService::resumeQueuedFreshnessChallenge(
 		PendingGroupCreation &group,
 		const EncodedEnvelope &encoded) {
+	if (!vaultReady()) {
+		return false;
+	}
 	const auto metadata = group.metadata.metadata();
 	const auto envelope = group.envelopeCodec.decode(encoded);
 	const auto challenge = envelope
@@ -2663,8 +2741,8 @@ bool DesktopService::processObservedFreshness(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -2834,8 +2912,8 @@ bool DesktopService::processObservedSafetyGossip(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| (i->second->phase != PendingGroupCreation::Phase::Active
 			&& i->second->phase != PendingGroupCreation::Phase::Removed)) {
 		return false;
@@ -2926,8 +3004,8 @@ bool DesktopService::synchronizeObservedGroupChanges(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| _pendingGroupCreation
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
@@ -3030,7 +3108,8 @@ bool DesktopService::synchronizeObservedGroupChanges(
 void DesktopService::publishQueuedGroupOutbox(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| _pendingGroupCreation
 		|| !i->second->outbox.size()) {
 		return;
@@ -3047,6 +3126,9 @@ void DesktopService::publishQueuedGroupOutbox(
 
 bool DesktopService::initializeActivePipeline(
 		PendingGroupCreation &group) {
+	if (!vaultReady()) {
+		return false;
+	}
 	if (group.applicationEngine
 		&& group.outboxCoordinator
 		&& group.uploadController) {
@@ -3100,7 +3182,8 @@ bool DesktopService::initializeActivePipeline(
 
 void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| i->second->phase != PendingGroupCreation::Phase::Active
 		|| !initializeActivePipeline(*i->second)) {
 		return;
@@ -3193,7 +3276,7 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			*item->sealed,
 			[weak = base::weak_ptr(this), conversationId, objectId](
 					TelegramTransport::UploadResult result) {
-				if (!weak) {
+				if (!weak || !weak->vaultReady()) {
 					return;
 				}
 				const auto i = weak->_groups.find(conversationId);
@@ -3268,7 +3351,7 @@ bool DesktopService::prepareActiveUploadAcknowledgement(
 		ConversationId conversationId,
 		ObjectId objectId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	return prepareFileManifestAcknowledgement(*i->second, objectId);
@@ -3299,7 +3382,7 @@ bool DesktopService::prepareFileManifestAcknowledgement(
 bool DesktopService::commitPreparedFileTransfer(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -3428,7 +3511,7 @@ void DesktopService::completeActiveUpload(
 		ConversationId conversationId,
 		UploadCompletion completion) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
+	if (!vaultReady() || i == end(_groups)) {
 		return;
 	}
 	auto &group = *i->second;
@@ -3479,8 +3562,8 @@ void DesktopService::completeActiveUpload(
 
 bool DesktopService::pumpFileTransfer(ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -3573,7 +3656,7 @@ void DesktopService::completeFileChunkUpload(
 		std::uint32_t chunkIndex,
 		TelegramTransport::UploadResult result) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
+	if (!vaultReady() || i == end(_groups)) {
 		return;
 	}
 	auto &group = *i->second;
@@ -3618,7 +3701,7 @@ void DesktopService::completeFileChunkUpload(
 bool DesktopService::queuePendingFileManifest(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -3693,7 +3776,7 @@ bool DesktopService::queuePendingFileManifest(
 bool DesktopService::finalizeFileTransfer(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -3778,7 +3861,8 @@ bool DesktopService::finalizeFileTransfer(
 
 void DesktopService::beginGroupObservation(ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| (i->second->phase != PendingGroupCreation::Phase::Active
 			&& i->second->phase
 				!= PendingGroupCreation::Phase::AwaitingAdmission)) {
@@ -3832,7 +3916,8 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 void DesktopService::beginContentObservation(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| (i->second->phase != PendingGroupCreation::Phase::Active
 			&& i->second->phase != PendingGroupCreation::Phase::Removed)) {
 		return;
@@ -3890,6 +3975,9 @@ ObservedContentPageResult DesktopService::previewObservedFileManifests(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects,
 		std::size_t objectLimit) {
+	if (!vaultReady()) {
+		return ObservedContentPageResult::SecurityBlocked;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)) {
 		return ObservedContentPageResult::PersistenceFailed;
@@ -3938,6 +4026,9 @@ ObservedContentPageResult DesktopService::previewObservedFileManifests(
 ObservedContentPageResult DesktopService::processObservedContentPage(
 		ConversationId conversationId,
 		std::vector<TelegramTransport::UntrustedObject> objects) {
+	if (!vaultReady()) {
+		return ObservedContentPageResult::SecurityBlocked;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)) {
 		return ObservedContentPageResult::PersistenceFailed;
@@ -3991,6 +4082,9 @@ ObservedContentPageResult DesktopService::processObservedContentPage(
 void DesktopService::applyContentObservation(
 		ConversationId conversationId,
 		ObservedContentSyncCompletion completion) {
+	if (!vaultReady()) {
+		return;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)) {
 		return;
@@ -4074,6 +4168,9 @@ void DesktopService::applyContentObservation(
 void DesktopService::applyGroupObservation(
 		ConversationId conversationId,
 		PublicBootstrapSyncCompletion result) {
+	if (!vaultReady()) {
+		return;
+	}
 	const auto i = _groups.find(conversationId);
 	if (i == end(_groups)) {
 		return;
@@ -4219,6 +4316,9 @@ void DesktopService::applyGroupObservation(
 }
 
 void DesktopService::handleNewTelegramItem(not_null<HistoryItem*> item) {
+	if (!vaultReady()) {
+		return;
+	}
 	const auto peer = item->history()->peer;
 	if (!peer->isChat() && !peer->isMegagroup()) {
 		return;
@@ -4331,7 +4431,7 @@ void DesktopService::startNextGroupDiscovery() {
 
 void DesktopService::applyGroupDiscovery(
 		PublicBootstrapSyncCompletion result) {
-	if (!_pendingGroupDiscovery || !_vault) {
+	if (!vaultReady() || !_pendingGroupDiscovery) {
 		return;
 	}
 	const auto peerId = _pendingGroupDiscovery->telegramPeerIdBinding;
@@ -4388,8 +4488,8 @@ bool DesktopService::completeObservedJoin(
 		ConversationId conversationId,
 		const PublicBootstrapSyncCompletion &result) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)
-		|| !_vault
+	if (!vaultReady()
+		|| i == end(_groups)
 		|| _pendingGroupCreation
 		|| i->second->phase
 			!= PendingGroupCreation::Phase::AwaitingAdmission) {
@@ -4629,7 +4729,7 @@ bool DesktopService::acceptObservedHistoryGrant(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -4713,7 +4813,7 @@ bool DesktopService::acceptObservedHistoryGrant(
 bool DesktopService::resumeObservedJoinHistory(
 		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups)) {
+	if (!vaultReady() || i == end(_groups)) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -4742,7 +4842,7 @@ bool DesktopService::applyAdministrativeTransition(
 		ConversationId conversationId,
 		GroupTransition transition) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault || _pendingGroupCreation) {
+	if (!vaultReady() || i == end(_groups) || _pendingGroupCreation) {
 		return false;
 	}
 	auto &group = *i->second;
@@ -4925,7 +5025,7 @@ bool DesktopService::admitObservedClient(
 		ConversationId conversationId,
 		const std::vector<TelegramTransport::UntrustedObject> &objects) {
 	const auto i = _groups.find(conversationId);
-	if (i == end(_groups) || !_vault || _pendingGroupCreation) {
+	if (!vaultReady() || i == end(_groups) || _pendingGroupCreation) {
 		return false;
 	}
 	auto &group = *i->second;

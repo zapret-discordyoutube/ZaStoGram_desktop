@@ -657,3 +657,20 @@ Resetting a revision to zero can repeat its initial value and suppress the
 reactive notification. Publish security revisions for verified roster and
 history-policy changes too, so an open security view cannot retain an older
 membership state before the lock boundary.
+
+### D060: Security failures destroy the unlocked runtime
+
+Treat `SecurityBlocked` as a fail-closed boundary, not only as a status shown by
+the interface. Once a rollback, fork, identity conflict, invalid pagination, or
+authenticated-content conflict selects that state, defer one lock operation
+until the current callback returns. The lock cancels controllers, destroys the
+unlocked vault and group objects, cleanses remembered passwords, and invalidates
+worker continuations without deleting the persistent encrypted recovery state.
+
+While that deferred cleanup is pending, require `Ready` and an unlocked vault
+at every public plaintext, send, file, administration, synchronization, and
+active pipeline entry point. In-flight observation or upload callbacks must not
+write, acknowledge, or publish after a separate callback has already detected a
+security failure. A manual lock that wins the race makes the deferred cleanup a
+no-op, and assigning `SecurityBlocked` with no unlocked runtime does not create
+a lock loop.

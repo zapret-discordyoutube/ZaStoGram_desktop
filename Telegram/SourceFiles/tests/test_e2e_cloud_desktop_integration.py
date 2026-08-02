@@ -1204,6 +1204,85 @@ def verify_lock_closes_protected_plaintext_surfaces() -> None:
     assert service.count("notifySecurityRevision();") >= 6
 
 
+def verify_security_failures_destroy_the_unlocked_runtime() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    constructor = function_body(
+        service,
+        "DesktopService::DesktopService(not_null<Main::Session*> session)",
+        "DesktopService::~DesktopService()",
+    )
+    schedule = function_body(
+        service,
+        "void DesktopService::scheduleSecurityLock()",
+        "void DesktopService::ensureVaultDiscovery()",
+    )
+    create_upload = function_body(
+        service,
+        "void DesktopService::uploadPendingCreation()",
+        "void DesktopService::beginGroupVaultPreflight()",
+    )
+
+    assert "bool _securityLockScheduled = false;" in header
+    assert "[[nodiscard]] bool vaultReady() const;" in header
+    assert "void scheduleSecurityLock();" in header
+    assert "_vaultState.value(" in constructor
+    assert "state == DesktopVaultState::SecurityBlocked" in constructor
+    assert "scheduleSecurityLock();" in constructor
+    assert "crl::on_main(" in schedule
+    assert "_securityLockScheduled = false;" in schedule
+    assert "weak->hasProtectedRuntimeState()" in schedule
+    assert "weak->lock();" in schedule
+    assert "return vaultReady() ? &*_vault : nullptr;" in service
+    assert "!weak->vaultReady()" not in create_upload
+
+    guarded_functions = (
+        ("std::vector<DesktopProtectedGroupSummary>\n"
+         "DesktopService::protectedGroups() const", "std::optional<ConversationId>"),
+        ("std::optional<ConversationId> DesktopService::protectedConversationForPeer(",
+         "std::vector<ProtectedContentRecord>"),
+        ("std::vector<ProtectedContentRecord> DesktopService::protectedContent(",
+         "std::size_t DesktopService::protectedContentCount("),
+        ("std::size_t DesktopService::protectedContentCount(",
+         "std::optional<DesktopProtectedSecurity>"),
+        ("std::optional<DesktopProtectedSecurity> DesktopService::protectedSecurity(",
+         "bool DesktopService::sendProtectedText("),
+        ("bool DesktopService::sendProtectedText(",
+         "bool DesktopService::sendProtectedFile("),
+        ("bool DesktopService::sendProtectedFile(",
+         "bool DesktopService::cancelProtectedFileTransfer("),
+        ("bool DesktopService::cancelProtectedFileTransfer(",
+         "bool DesktopService::saveProtectedFile("),
+        ("bool DesktopService::saveProtectedFile(",
+         "bool DesktopService::beginFileChunkDownload("),
+        ("void DesktopService::synchronizeProtectedContent(",
+         "void DesktopService::lock()"),
+        ("bool DesktopService::applyAdministrativeTransition(",
+         "bool DesktopService::admitObservedClient("),
+        ("void DesktopService::handleNewTelegramItem(",
+         "void DesktopService::queueGroupDiscovery("),
+        ("void DesktopService::pumpActiveOutbox(",
+         "bool DesktopService::prepareActiveUploadAcknowledgement("),
+        ("void DesktopService::beginGroupObservation(",
+         "void DesktopService::beginContentObservation("),
+        ("void DesktopService::beginContentObservation(",
+         "ObservedContentPageResult DesktopService::previewObservedFileManifests("),
+        ("void DesktopService::publishNextBootstrapObject(",
+         "void DesktopService::resumePendingGroupCreation("),
+        ("bool DesktopService::processObservedFreshness(",
+         "bool DesktopService::processObservedSafetyGossip("),
+        ("bool DesktopService::processObservedSafetyGossip(",
+         "bool DesktopService::synchronizeObservedGroupChanges("),
+        ("bool DesktopService::completeObservedJoin(",
+         "bool DesktopService::acceptObservedHistoryGrant("),
+        ("bool DesktopService::admitObservedClient(",
+         "DesktopService::LocalGroupRecoveryResult"),
+    )
+    for signature, next_signature in guarded_functions:
+        body = function_body(service, signature, next_signature)
+        assert "vaultReady()" in body, signature
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1245,6 +1324,7 @@ def main() -> None:
     verify_control_precedes_content_observation()
     verify_transport_failures_can_be_retried_manually()
     verify_lock_closes_protected_plaintext_surfaces()
+    verify_security_failures_destroy_the_unlocked_runtime()
 
 
 if __name__ == "__main__":

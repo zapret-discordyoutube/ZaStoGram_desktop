@@ -213,6 +213,9 @@ private:
 	struct PendingGroupDiscovery;
 	enum class LocalGroupRecoveryResult;
 
+	[[nodiscard]] bool vaultReady() const;
+	[[nodiscard]] bool hasProtectedRuntimeState() const;
+	void scheduleSecurityLock();
 	void applyVaultDiscoveryResult(CloudVaultSyncCompletion result);
 	void applySyncResult(CloudVaultSyncCompletion result);
 	void applyGroupVaultSyncResult(CloudVaultSyncCompletion result);
@@ -355,7 +358,6 @@ private:
 	std::unique_ptr<PendingGroupDiscovery> _pendingGroupDiscovery;
 	std::set<std::uint64_t> _groupDiscoveryQueue;
 	std::map<ConversationId, std::unique_ptr<PendingGroupCreation>> _groups;
-	rpl::lifetime _lifetime;
 	rpl::variable<DesktopVaultState> _vaultState
 		= DesktopVaultState::Uninitialized;
 	rpl::variable<DesktopGroupCreationState> _groupCreationState
@@ -367,6 +369,8 @@ private:
 	rpl::variable<std::uint64_t> _fileTransferRevision = 0;
 	rpl::variable<std::uint64_t> _securityRevision = 0;
 	std::uint64_t _operationEpoch = 1;
+	bool _securityLockScheduled = false;
+	rpl::lifetime _lifetime;
 };
 
 } // namespace E2ECloud
