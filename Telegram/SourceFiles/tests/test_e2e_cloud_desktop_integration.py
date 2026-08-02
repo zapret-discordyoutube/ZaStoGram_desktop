@@ -102,8 +102,7 @@ def verify_protected_peers_never_downgrade_to_plaintext() -> None:
     assert "_presentationProtectedPeers" in header
     assert "_presentationProtectedPeersValid" in header
     assert "readPref<QByteArray>(kProtectedPeersPref)" in constructor
-    assert "writePref<QByteArray>(" in presentation
-    assert "writePrefs();" in presentation
+    assert "writePrefNow<QByteArray>(" in presentation
     assert "EncodeProtectedPeerMarkers(" in presentation
     assert "!_presentationProtectedPeersValid" in presentation
     assert "_presentationProtectedPeers.contains(" in presentation

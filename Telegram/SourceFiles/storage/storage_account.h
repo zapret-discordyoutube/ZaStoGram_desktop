@@ -189,6 +189,11 @@ public:
 	void writePref(std::string_view key, Other &&value) {
 		writePrefImpl<Type>(key, std::forward<Other>(value));
 	}
+	template <typename Type, typename Other>
+	void writePrefNow(std::string_view key, Other &&value) {
+		writePrefImpl<Type>(key, std::forward<Other>(value));
+		writePrefs();
+	}
 	void clearPref(std::string_view key);
 
 	template <typename Type, typename Other = Type>

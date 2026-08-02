@@ -1232,19 +1232,17 @@ void DesktopService::rememberProtectedPeerForPresentation(
 	if (_presentationProtectedPeers.size()
 			>= kMaximumProtectedPeerMarkers) {
 		_presentationProtectedPeersValid = false;
-		_session->local().writePref<QByteArray>(
+		_session->local().writePrefNow<QByteArray>(
 			kProtectedPeersPref,
 			QByteArray("invalid"));
-		_session->local().writePrefs();
 		return;
 	}
 	_presentationProtectedPeers.emplace(telegramPeerIdBinding);
-	_session->local().writePref<QByteArray>(
+	_session->local().writePrefNow<QByteArray>(
 		kProtectedPeersPref,
 		EncodeProtectedPeerMarkers(
 			_telegramUserIdBinding,
 			_presentationProtectedPeers));
-	_session->local().writePrefs();
 	_session->data().notifyHistoryChangeDelayed(
 		_session->data().history(PeerId(telegramPeerIdBinding)));
 }
