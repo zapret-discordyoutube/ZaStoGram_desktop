@@ -1098,3 +1098,16 @@ exponential delay. A Save operation also retries transient downloads and
 temporarily missing chunks while an authenticated sender may still be
 publishing them. Keep retries bounded, retain already authenticated chunks, and
 commit the destination only after its exact size and full hash match.
+
+### D091: Retry the control observation that gates file recovery
+
+An interrupted account authorization or transient Telegram failure may leave a
+restored group control observation marked dirty before a persisted file transfer
+can resume. Retry that observation automatically with bounded exponential
+delay. A successful request invalidates older retry callbacks; permanent
+transport failures remain explicit and require user retry.
+
+The retry belongs to the protected-group control plane. It does not admit,
+delay, pace, or own MTProto media/upload sessions. Once observation succeeds,
+the existing durable transfer continues from its saved chunk cursor and exact
+manifest instead of replacing the transfer or regenerating ciphertext.

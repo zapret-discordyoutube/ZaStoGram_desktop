@@ -2120,6 +2120,8 @@ def verify_global_vault_work_defers_control_boundaries() -> None:
     )
 
     assert "void resumeDeferredGroupObservations();" in header
+    assert "void scheduleGroupObservationRetry(" in header
+    assert "void resetGroupObservationRetry(" in header
     for body in (begin, resume, apply):
         assert "_pendingGroupCreation" in body
         assert "_pendingGroupJoin" in body
@@ -2127,6 +2129,11 @@ def verify_global_vault_work_defers_control_boundaries() -> None:
     assert "group.observationDirty = true;" in begin
     assert "auto conversations = std::vector<ConversationId>();" in resume
     assert "beginGroupObservation(conversationId);" in resume
+    assert "scheduleGroupObservationRetry(conversationId);" in begin
+    assert "scheduleGroupObservationRetry(conversationId);" in apply
+    assert "base::call_delayed(delay" in service
+    assert "groupObservationRetryToken" in service
+    assert "groupObservationRetryAttempt" in service
     deferred = apply.index("if (_pendingGroupCreation")
     process_changes = apply.index("synchronizeObservedGroupChanges(")
     security = apply.index("PublicBootstrapSyncStatus::ObjectConflict")

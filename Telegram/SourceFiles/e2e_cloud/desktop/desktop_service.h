@@ -258,6 +258,8 @@ private:
 	void applyGroupDiscovery(PublicBootstrapSyncCompletion result);
 	void beginGroupObservation(ConversationId conversationId);
 	void resumeDeferredGroupObservations();
+	void scheduleGroupObservationRetry(ConversationId conversationId);
+	void resetGroupObservationRetry(PendingGroupCreation &group);
 	void applyGroupObservation(
 		ConversationId conversationId,
 		PublicBootstrapSyncCompletion result);

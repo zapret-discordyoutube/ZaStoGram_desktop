@@ -1051,6 +1051,7 @@ struct DesktopService::PendingGroupCreation {
 	std::uint64_t materializedHistoryPeerIdBinding = 0;
 	std::size_t materializedHistoryLimit = 0;
 	std::uint64_t safetyWitnessGeneration = 0;
+	std::uint64_t groupObservationRetryToken = 0;
 	std::uint64_t fileRetryToken = 0;
 	bool ownSafetyGossipObserved = false;
 	bool observationDirty = false;
@@ -1060,6 +1061,7 @@ struct DesktopService::PendingGroupCreation {
 	bool fileHashInProgress = false;
 	bool fileHashCancelRequested = false;
 	bool fileFinalHashInProgress = false;
+	int groupObservationRetryAttempt = 0;
 	int fileRetryAttempt = 0;
 	std::shared_ptr<std::atomic_bool> fileHashCancellation;
 	std::shared_ptr<std::atomic_bool> fileFinalHashCancellation;
@@ -5474,6 +5476,7 @@ void DesktopService::beginGroupObservation(ConversationId conversationId) {
 			_groupCreationState
 				= DesktopGroupCreationState::RetryableTransportError;
 		}
+		scheduleGroupObservationRetry(conversationId);
 	}
 }
 
@@ -5497,6 +5500,49 @@ void DesktopService::resumeDeferredGroupObservations() {
 			return;
 		}
 		beginGroupObservation(conversationId);
+	}
+}
+
+void DesktopService::scheduleGroupObservationRetry(
+		ConversationId conversationId) {
+	const auto i = _groups.find(conversationId);
+	if (!vaultReady()
+		|| i == end(_groups)
+		|| i->second->observation
+		|| !i->second->observationDirty) {
+		return;
+	}
+	auto &group = *i->second;
+	const auto delay = FileRetryDelay(group.groupObservationRetryAttempt);
+	group.groupObservationRetryAttempt = std::min(
+		group.groupObservationRetryAttempt + 1,
+		6);
+	if (++group.groupObservationRetryToken == 0) {
+		++group.groupObservationRetryToken;
+	}
+	const auto token = group.groupObservationRetryToken;
+	base::call_delayed(delay, [weak = base::weak_ptr(this),
+			conversationId,
+			token] {
+		if (!weak || !weak->vaultReady()) {
+			return;
+		}
+		const auto i = weak->_groups.find(conversationId);
+		if (i == end(weak->_groups)
+			|| i->second->groupObservationRetryToken != token
+			|| i->second->observation
+			|| !i->second->observationDirty) {
+			return;
+		}
+		weak->beginGroupObservation(conversationId);
+	});
+}
+
+void DesktopService::resetGroupObservationRetry(
+		PendingGroupCreation &group) {
+	group.groupObservationRetryAttempt = 0;
+	if (++group.groupObservationRetryToken == 0) {
+		++group.groupObservationRetryToken;
 	}
 }
 
@@ -5796,8 +5842,12 @@ void DesktopService::applyGroupObservation(
 				? DesktopGroupCreationState::PermanentTransportError
 				: DesktopGroupCreationState::RetryableTransportError;
 		}
+		if (!permanent) {
+			scheduleGroupObservationRetry(conversationId);
+		}
 		return;
 	}
+	resetGroupObservationRetry(*i->second);
 	auto changed = false;
 	if (awaiting) {
 		changed = completeObservedJoin(
