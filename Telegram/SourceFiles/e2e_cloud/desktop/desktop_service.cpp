@@ -2941,6 +2941,11 @@ bool DesktopService::initializeActivePipeline(
 	group.uploadController = std::make_unique<OutboxUploadController>(
 		*group.outboxCoordinator,
 		group.transport,
+		[weak = base::weak_ptr(this), conversationId](ObjectId objectId) {
+			return weak && weak->prepareActiveUploadAcknowledgement(
+				conversationId,
+				objectId);
+		},
 		[weak = base::weak_ptr(this), conversationId](
 				UploadCompletion completion) {
 			if (weak) {
@@ -3051,7 +3056,8 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 			if (!queuePendingFileManifest(conversationId)) {
 				return;
 			}
-		} else {
+		} else if (!group.outbox.contains(pending->eventObjectId)
+			&& !group.outbox.contains(pending->contentObjectId)) {
 			(void)pumpFileTransfer(conversationId);
 			return;
 		}
@@ -3077,6 +3083,33 @@ void DesktopService::pumpActiveOutbox(ConversationId conversationId) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		break;
 	}
+}
+
+bool DesktopService::prepareActiveUploadAcknowledgement(
+		ConversationId conversationId,
+		ObjectId objectId) {
+	const auto i = _groups.find(conversationId);
+	if (i == end(_groups)) {
+		return false;
+	}
+	auto &group = *i->second;
+	const auto pending = group.fileTransfer.pending();
+	if (!pending
+		|| pending->manifestPublished
+		|| objectId != pending->eventObjectId) {
+		return true;
+	} else if (!group.outbox.contains(pending->eventObjectId)
+		|| group.outbox.contains(pending->contentObjectId)) {
+		return false;
+	}
+	const auto currentEpoch = group.archiveState.currentEpoch();
+	const auto archiveEpochGeneration = pending->archiveEpochGeneration
+		? pending->archiveEpochGeneration
+		: (currentEpoch ? currentEpoch->generation : 0);
+	const auto marked = group.fileTransfer.markManifestPublished(
+		archiveEpochGeneration);
+	return marked == FileTransferCommitResult::Committed
+		|| marked == FileTransferCommitResult::AlreadyCommitted;
 }
 
 void DesktopService::completeActiveUpload(
@@ -3122,28 +3155,6 @@ void DesktopService::completeActiveUpload(
 			if (state == DesktopContentState::SecurityBlocked) {
 				_vaultState = DesktopVaultState::SecurityBlocked;
 			}
-			return;
-		}
-	}
-	if (const auto pending = group.fileTransfer.pending(); pending
-		&& !pending->manifestPublished
-		&& (completion.objectId == pending->eventObjectId
-			|| completion.objectId == pending->contentObjectId)
-		&& !group.outbox.contains(pending->eventObjectId)
-		&& !group.outbox.contains(pending->contentObjectId)) {
-		const auto currentEpoch = group.archiveState.currentEpoch();
-		const auto archiveEpochGeneration = pending->archiveEpochGeneration
-			? pending->archiveEpochGeneration
-			: (currentEpoch
-				? currentEpoch->generation
-				: 0);
-		const auto marked = group.fileTransfer.markManifestPublished(
-			archiveEpochGeneration);
-		if (marked != FileTransferCommitResult::Committed
-			&& marked != FileTransferCommitResult::AlreadyCommitted) {
-			setContentState(
-				conversationId,
-				DesktopContentState::LocalFailure);
 			return;
 		}
 	}

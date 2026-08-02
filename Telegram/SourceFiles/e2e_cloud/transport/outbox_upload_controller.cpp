@@ -19,8 +19,21 @@ OutboxUploadController::OutboxUploadController(
 		OutboxCoordinator &outbox,
 		TelegramTransport &transport,
 		CompletionCallback completionCallback)
+: OutboxUploadController(
+	  outbox,
+	  transport,
+	  nullptr,
+	  std::move(completionCallback)) {
+}
+
+OutboxUploadController::OutboxUploadController(
+		OutboxCoordinator &outbox,
+		TelegramTransport &transport,
+		BeforeAcknowledgeCallback beforeAcknowledgeCallback,
+		CompletionCallback completionCallback)
 : _outbox(outbox)
 , _transport(transport)
+, _beforeAcknowledgeCallback(std::move(beforeAcknowledgeCallback))
 , _completionCallback(std::move(completionCallback))
 , _callbackGuard(std::make_shared<CallbackGuard>(CallbackGuard{ this })) {
 }
@@ -79,9 +92,17 @@ void OutboxUploadController::complete(
 	if (!_activeObjectId || *_activeObjectId != objectId) {
 		return;
 	}
-	const auto updated = (result == TelegramTransport::UploadResult::Accepted)
+	const auto guard = _callbackGuard;
+	const auto prepared = (result != TelegramTransport::UploadResult::Accepted)
+		|| !_beforeAcknowledgeCallback
+		|| _beforeAcknowledgeCallback(objectId);
+	if (guard->controller != this) {
+		return;
+	}
+	const auto updated = (result == TelegramTransport::UploadResult::Accepted
+		&& prepared)
 		? _outbox.acknowledgeUploaded(objectId)
-		: _outbox.markUploadFailed(objectId);
+		: _outbox.markUploadFailed(objectId) && prepared;
 	_activeObjectId.reset();
 	const auto callback = _completionCallback;
 	if (callback) {

@@ -248,6 +248,9 @@ private:
 	[[nodiscard]] bool initializeActivePipeline(
 		PendingGroupCreation &group);
 	void pumpActiveOutbox(ConversationId conversationId);
+	[[nodiscard]] bool prepareActiveUploadAcknowledgement(
+		ConversationId conversationId,
+		ObjectId objectId);
 	void completeActiveUpload(
 		ConversationId conversationId,
 		UploadCompletion completion);

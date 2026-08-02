@@ -759,6 +759,9 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     transfer = source(
         "SourceFiles/e2e_cloud/files/persistent_file_transfer.cpp"
     )
+    upload_controller = source(
+        "SourceFiles/e2e_cloud/transport/outbox_upload_controller.cpp"
+    )
     admission = function_body(
         processor,
         "[[nodiscard]] FileChunkAdmissionStatus AdmitObservedFileChunk(",
@@ -796,7 +799,12 @@ def verify_file_chunks_require_manifests_and_quota() -> None:
     assert pump.index("queuePendingFileManifest(") \
         < pump.index("pumpFileTransfer(")
     assert "!pending->manifestPublished" in pump
+    assert "!group.outbox.contains(pending->eventObjectId)" in pump
     assert "markManifestPublished(" in service
+    assert "prepareActiveUploadAcknowledgement(" in service
+    assert "group.outbox.size() != 1" not in service
+    assert upload_controller.index("_beforeAcknowledgeCallback(objectId)") \
+        < upload_controller.index("_outbox.acknowledgeUploaded(objectId)")
     assert "|| !_pending->manifestPublished" in transfer
 
 

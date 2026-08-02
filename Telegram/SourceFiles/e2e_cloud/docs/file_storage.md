@@ -74,6 +74,10 @@ chunk. A receiver persists a protected local authorization record derived from
 that manifest and accepts a chunk only when its file identifier, layout,
 sender, client, generation, and authenticated ciphertext agree with the
 manifest. Unknown or malformed chunks are discarded without creating files.
+On the sender, the durable `manifestPublished` transition occurs before the
+final exact manifest envelope is removed from the outbox. A failed local state
+write therefore retains the original envelope for byte-identical retry instead
+of regenerating randomized content under an existing object identifier.
 Exact manifest duplicates retain their earliest positive Telegram message
 identifier in the protected content index. Chunk download uses that identifier
 as its exclusive lower search boundary, so a later duplicate cannot hide

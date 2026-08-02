@@ -35,11 +35,17 @@ struct UploadCompletion {
 
 class OutboxUploadController final {
 public:
+	using BeforeAcknowledgeCallback = std::function<bool(ObjectId)>;
 	using CompletionCallback = std::function<void(UploadCompletion)>;
 
 	OutboxUploadController(
 		OutboxCoordinator &outbox,
 		TelegramTransport &transport,
+		CompletionCallback completionCallback);
+	OutboxUploadController(
+		OutboxCoordinator &outbox,
+		TelegramTransport &transport,
+		BeforeAcknowledgeCallback beforeAcknowledgeCallback,
 		CompletionCallback completionCallback);
 	~OutboxUploadController();
 
@@ -55,6 +61,7 @@ private:
 
 	OutboxCoordinator &_outbox;
 	TelegramTransport &_transport;
+	BeforeAcknowledgeCallback _beforeAcknowledgeCallback;
 	CompletionCallback _completionCallback;
 	std::optional<ObjectId> _activeObjectId;
 	std::shared_ptr<CallbackGuard> _callbackGuard;

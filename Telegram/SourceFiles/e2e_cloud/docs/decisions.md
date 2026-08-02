@@ -487,3 +487,17 @@ manifest behind the saved Telegram boundary.
 Chunk-cache quota exhaustion during an explicit Save remains a bounded download
 failure: it cannot advance ordinary content synchronization and the user may
 retry after recovering local capacity.
+
+### D048: Publish-state durability precedes manifest outbox removal
+
+After Telegram accepts the final MLS manifest envelope, persist the file
+transfer's `manifestPublished` state before removing that exact envelope from
+the protected outbox. If this pre-acknowledgement persistence step fails, keep
+the exact bytes queued and retry them with the same Telegram random identifier.
+Unrelated queued messages do not prevent this transition.
+
+Never regenerate a manifest pair merely because its final local state write
+failed. The archived content preparation uses fresh randomized encryption, so
+regeneration under the same event and content object identifiers would create
+competing authenticated hashes and security-block recipients. Chunks start only
+after the durable publish state proves the final manifest envelope was accepted.
