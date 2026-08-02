@@ -23,7 +23,8 @@ inline constexpr auto kMagic = std::array<std::uint8_t, 8>{
 };
 inline constexpr auto kPurpose = "e2e-cloud-file-transfer-v1";
 inline constexpr auto kMaximumSourcePathSize = 16 * 1024;
-inline constexpr auto kMaximumManifestSize = 64 * 1024;
+inline constexpr auto kMaximumManifestSize
+	= kMaximumPrivateFilePreviewSize + 2 * 1024;
 inline constexpr auto kHeaderSize = 8 + 2 + 32 + 8 + 1;
 inline constexpr auto kPendingFixedSizeV1 = 32 + 32 + 8 + 4 + 4 + 4;
 inline constexpr auto kPendingFixedSizeV2

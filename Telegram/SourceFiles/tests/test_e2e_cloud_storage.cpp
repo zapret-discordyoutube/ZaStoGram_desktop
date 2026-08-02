@@ -737,6 +737,11 @@ int CountingLocalRecordProtector::openCalls() const {
 		.unixTime = 1'725'000'000,
 		.filenameUtf8 = QByteArray("backup.any"),
 		.mimeTypeUtf8 = QByteArray("application/octet-stream"),
+		.preview = PrivateFilePreview{
+			.width = 320,
+			.height = 180,
+			.jpegBytes = QByteArray(70 * 1024, 'p'),
+		},
 	});
 	auto blob = MemoryBlobStore();
 	auto transfer = PersistentFileTransfer(blob, protector);
