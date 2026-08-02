@@ -946,14 +946,14 @@ def verify_new_file_cannot_replace_pending_transfer() -> None:
     assert file_send.index("i->second->fileTransfer.pending()") \
         < file_send.index("crl::async(")
     assert file_send.index("crl::async(") \
-        < file_send.index("HashFile(absolutePath)")
+        < file_send.index("HashFile(absolutePath, cancellation)")
     assert "group.fileHashInProgress = true;" in file_send
     assert "commitPreparedFileTransfer(conversationId)" in service
     assert "group.fileTransfer.begin(std::move(transfer))" in service
     assert "group.fileTransfer.replace(" not in file_send
     assert "HashFile(" not in queue_manifest
     assert finalize.index("crl::async(") \
-        < finalize.index("HashFile(sourcePath)")
+        < finalize.index("HashFile(sourcePath, cancellation)")
 
 
 def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
@@ -1039,6 +1039,53 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
     assert "group.fileFinalHashInProgress" in finish
     assert "cancelProtectedFileTransfer(" in box
     assert "fileTransferPending" in box
+
+
+def verify_file_preparation_can_be_cancelled() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    summary = function_body(
+        service,
+        "DesktopService::protectedGroups() const",
+        "std::optional<ConversationId> "
+        "DesktopService::protectedConversationForPeer(",
+    )
+    send_text = function_body(
+        service,
+        "bool DesktopService::sendProtectedText(",
+        "bool DesktopService::sendProtectedFile(",
+    )
+    send_file = function_body(
+        service,
+        "bool DesktopService::sendProtectedFile(",
+        "bool DesktopService::cancelProtectedFileTransfer(",
+    )
+    cancel = function_body(
+        service,
+        "bool DesktopService::cancelProtectedFileTransfer(",
+        "bool DesktopService::saveProtectedFile(",
+    )
+    finalize = function_body(
+        service,
+        "bool DesktopService::finalizeFileTransfer(",
+        "void DesktopService::beginGroupObservation(",
+    )
+    hashing = function_body(
+        service,
+        "[[nodiscard]] std::optional<HashedFile> HashFile(",
+        "} // namespace",
+    )
+
+    assert "group->fileHashInProgress" in summary
+    assert "!group->filePreparationPath.isEmpty()" in summary
+    assert "i->second->fileHashInProgress" in send_text
+    assert "!i->second->filePreparationPath.isEmpty()" in send_text
+    assert "group.fileHashCancellation = cancellation;" in send_file
+    assert "notifyFileTransferRevision();" in send_file
+    assert "group.fileHashCancelRequested = true;" in cancel
+    assert "group.fileHashCancellation->store(" in cancel
+    assert "group.fileFinalHashCancellation->store(" in cancel
+    assert "fileFinalHashCancellation = cancellation;" in finalize
+    assert hashing.count("cancellation->load(std::memory_order_relaxed)") >= 2
 
 
 def verify_administration_waits_for_outgoing_work() -> None:
@@ -1593,6 +1640,19 @@ def verify_removed_clients_discard_outgoing_work() -> None:
     assert "!(removed && operation->fileTransfer.pending())" in restore
 
 
+def verify_equal_content_states_notify_every_group() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    setter = function_body(
+        service,
+        "void DesktopService::setContentState(",
+        "void DesktopService::notifyContentRevision()",
+    )
+
+    assert "_contentStates[conversationId] = state;" in setter
+    assert "_contentState.force_assign(state);" in setter
+    assert "_contentState = state;" not in setter
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1630,6 +1690,7 @@ def main() -> None:
     verify_accepted_file_chunks_are_recovered_and_cleaned()
     verify_new_file_cannot_replace_pending_transfer()
     verify_failed_file_transfer_can_be_cancelled_durably()
+    verify_file_preparation_can_be_cancelled()
     verify_administration_waits_for_outgoing_work()
     verify_transient_file_work_serializes_control_changes()
     verify_control_precedes_content_observation()
@@ -1643,6 +1704,7 @@ def main() -> None:
     verify_vault_changing_group_operations_are_serialized()
     verify_global_vault_work_defers_control_boundaries()
     verify_removed_clients_discard_outgoing_work()
+    verify_equal_content_states_notify_every_group()
 
 
 if __name__ == "__main__":

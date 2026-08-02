@@ -838,3 +838,22 @@ will resume the outgoing pump after observing the cancellation marker. Clearing
 the transfer early would let a second file reach finalization while that slot
 still belonged to the first file, leaving the second transfer synchronized
 forever with no continuation able to restart it.
+
+### D072: Equal content states still notify every conversation
+
+Keep the per-conversation content-state map authoritative, but force the shared
+reactive notifier to emit for every map update. Protected conversation views use
+that producer as an invalidation signal and then read their own conversation's
+state. A normal equality-filtered assignment loses the second notification when
+two different groups consecutively enter the same enum state, leaving one view
+with stale status and controls even though the service state is correct.
+
+### D073: File cancellation covers hashing as well as upload
+
+Expose file preparation as a pending transfer immediately, prevent text from
+being queued behind it, and let the existing cancel action stop both the initial
+and final source-hash workers. Each worker owns a distinct atomic cancellation
+token; its callback must still match that token before changing group state, so
+a late completion can never finish a newer file operation. Destroying a group
+also signals both tokens, preventing lock or shutdown from continuing to read a
+large plaintext file in the background.

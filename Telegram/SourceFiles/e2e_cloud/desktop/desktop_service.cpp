@@ -70,6 +70,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <limits>
 #include <set>
@@ -257,7 +258,9 @@ struct HashedFile {
 	Digest hash;
 };
 
-[[nodiscard]] std::optional<HashedFile> HashFile(const QString &path) {
+[[nodiscard]] std::optional<HashedFile> HashFile(
+		const QString &path,
+		std::shared_ptr<std::atomic_bool> cancellation = nullptr) {
 	auto file = QFile(path);
 	if (!file.open(QIODevice::ReadOnly)
 		|| file.size() < 0
@@ -273,6 +276,11 @@ struct HashedFile {
 	auto processed = qint64();
 	auto ok = true;
 	while (processed != originalSize) {
+		if (cancellation
+			&& cancellation->load(std::memory_order_relaxed)) {
+			ok = false;
+			break;
+		}
 		auto bytes = file.read(std::min<qint64>(
 			kDesktopFileChunkSize,
 			originalSize - processed));
@@ -295,6 +303,8 @@ struct HashedFile {
 	};
 	auto hashSize = 0U;
 	ok = ok
+		&& (!cancellation
+			|| !cancellation->load(std::memory_order_relaxed))
 		&& file.size() == originalSize
 		&& EVP_DigestFinal_ex(
 			context,
@@ -442,6 +452,15 @@ struct DesktopService::PendingGroupCreation {
 		contentBackend) {
 	}
 
+	~PendingGroupCreation() {
+		if (fileHashCancellation) {
+			fileHashCancellation->store(true, std::memory_order_relaxed);
+		}
+		if (fileFinalHashCancellation) {
+			fileFinalHashCancellation->store(true, std::memory_order_relaxed);
+		}
+	}
+
 	ConversationId conversationId;
 	std::uint64_t telegramPeerIdBinding = 0;
 	QString directory;
@@ -509,7 +528,10 @@ struct DesktopService::PendingGroupCreation {
 	bool vaultPreflightRequired = true;
 	bool uploadInProgress = false;
 	bool fileHashInProgress = false;
+	bool fileHashCancelRequested = false;
 	bool fileFinalHashInProgress = false;
+	std::shared_ptr<std::atomic_bool> fileHashCancellation;
+	std::shared_ptr<std::atomic_bool> fileFinalHashCancellation;
 	Phase phase = Phase::Creating;
 };
 
@@ -1037,7 +1059,9 @@ DesktopService::protectedGroups() const {
 			.sendingAllowed = !removed
 				&& group->freshnessGate
 				&& group->freshnessGate->sendingAllowed(),
-			.fileTransferPending = bool(group->fileTransfer.pending()),
+			.fileTransferPending = group->fileHashInProgress
+				|| !group->filePreparationPath.isEmpty()
+				|| bool(group->fileTransfer.pending()),
 		});
 	}
 	std::sort(
@@ -1228,6 +1252,8 @@ bool DesktopService::sendProtectedText(
 		|| text.isEmpty()
 		|| i->second->observation
 		|| i->second->observationDirty
+		|| i->second->fileHashInProgress
+		|| !i->second->filePreparationPath.isEmpty()
 		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
@@ -1321,17 +1347,23 @@ bool DesktopService::sendProtectedFile(
 	}
 	group.filePreparationPath = absolutePath;
 	group.filePreparationSource.reset();
+	group.fileHashCancelRequested = false;
 	group.fileHashInProgress = true;
+	const auto cancellation = std::make_shared<std::atomic_bool>(false);
+	group.fileHashCancellation = cancellation;
 	setContentState(conversationId, DesktopContentState::Synchronizing);
+	notifyFileTransferRevision();
 	const auto operationEpoch = _operationEpoch;
 	crl::async([weak = base::weak_ptr(this),
 			conversationId,
 			absolutePath,
+			cancellation,
 			operationEpoch] {
-		const auto source = HashFile(absolutePath);
+		const auto source = HashFile(absolutePath, cancellation);
 		crl::on_main([weak,
 				conversationId,
 				absolutePath,
+				cancellation,
 				operationEpoch,
 				source] {
 			if (!weak || weak->_operationEpoch != operationEpoch) {
@@ -1340,14 +1372,24 @@ bool DesktopService::sendProtectedFile(
 			const auto i = weak->_groups.find(conversationId);
 			if (i == end(weak->_groups)
 				|| !i->second->fileHashInProgress
+				|| i->second->fileHashCancellation != cancellation
 				|| i->second->filePreparationPath != absolutePath) {
 				return;
 			}
 			auto &group = *i->second;
 			group.fileHashInProgress = false;
-			if (!source) {
+			group.fileHashCancellation.reset();
+			if (group.fileHashCancelRequested) {
+				group.fileHashCancelRequested = false;
 				group.filePreparationPath.clear();
 				group.filePreparationSource.reset();
+				weak->notifyFileTransferRevision();
+				weak->pumpActiveOutbox(conversationId);
+				return;
+			} else if (!source) {
+				group.filePreparationPath.clear();
+				group.filePreparationSource.reset();
+				weak->notifyFileTransferRevision();
 				weak->setContentState(
 					conversationId,
 					DesktopContentState::LocalFailure);
@@ -1365,15 +1407,38 @@ bool DesktopService::cancelProtectedFileTransfer(
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
-		|| i->second->phase != PendingGroupCreation::Phase::Active
-		|| !i->second->fileTransfer.pending()) {
+		|| i->second->phase != PendingGroupCreation::Phase::Active) {
 		return false;
 	}
-	const auto requested = i->second->fileTransfer.requestCancel();
+	auto &group = *i->second;
+	if (group.fileHashInProgress) {
+		if (!group.fileHashCancellation) {
+			setContentState(conversationId, DesktopContentState::LocalFailure);
+			return false;
+		}
+		group.fileHashCancelRequested = true;
+		group.fileHashCancellation->store(true, std::memory_order_relaxed);
+		setContentState(conversationId, DesktopContentState::Synchronizing);
+		return true;
+	} else if (!group.filePreparationPath.isEmpty()) {
+		group.filePreparationPath.clear();
+		group.filePreparationSource.reset();
+		notifyFileTransferRevision();
+		pumpActiveOutbox(conversationId);
+		return true;
+	} else if (!group.fileTransfer.pending()) {
+		return false;
+	}
+	const auto requested = group.fileTransfer.requestCancel();
 	if (requested != FileTransferCommitResult::Committed
 		&& requested != FileTransferCommitResult::AlreadyCommitted) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return false;
+	}
+	if (group.fileFinalHashCancellation) {
+		group.fileFinalHashCancellation->store(
+			true,
+			std::memory_order_relaxed);
 	}
 	pumpActiveOutbox(conversationId);
 	return true;
@@ -1914,7 +1979,7 @@ void DesktopService::setContentState(
 		ConversationId conversationId,
 		DesktopContentState state) {
 	_contentStates[conversationId] = state;
-	_contentState = state;
+	_contentState.force_assign(state);
 }
 
 rpl::producer<std::uint64_t> DesktopService::contentRevisionValue() const {
@@ -3904,29 +3969,35 @@ bool DesktopService::finalizeFileTransfer(
 	const auto eventObjectId = pending->eventObjectId;
 	const auto sourcePath = QString::fromUtf8(pending->sourcePathUtf8);
 	const auto operationEpoch = _operationEpoch;
+	const auto cancellation = std::make_shared<std::atomic_bool>(false);
 	group.fileFinalHashInProgress = true;
+	group.fileFinalHashCancellation = cancellation;
 	setContentState(conversationId, DesktopContentState::Synchronizing);
 	crl::async([weak = base::weak_ptr(this),
 			conversationId,
 			eventObjectId,
 			sourcePath,
+			cancellation,
 			operationEpoch] {
-		const auto source = HashFile(sourcePath);
+		const auto source = HashFile(sourcePath, cancellation);
 		crl::on_main([weak,
 				conversationId,
 				eventObjectId,
 				sourcePath,
+				cancellation,
 				operationEpoch,
 				source] {
 			if (!weak || weak->_operationEpoch != operationEpoch) {
 				return;
 			}
 			const auto i = weak->_groups.find(conversationId);
-			if (i == end(weak->_groups)) {
+			if (i == end(weak->_groups)
+				|| i->second->fileFinalHashCancellation != cancellation) {
 				return;
 			}
 			auto &group = *i->second;
 			group.fileFinalHashInProgress = false;
+			group.fileFinalHashCancellation.reset();
 			const auto pending = group.fileTransfer.pending();
 			if (!pending
 				|| pending->eventObjectId != eventObjectId
