@@ -163,6 +163,8 @@ void ProtectedGroupsBox::refresh() {
 		_status->setText(tr::lng_e2e_cloud_discovering(tr::now));
 		break;
 	case DesktopVaultState::Locked:
+		_password->setText(QString());
+		_confirm->setText(QString());
 		_status->setText(tr::lng_e2e_cloud_locked(tr::now));
 		addButton(tr::lng_e2e_cloud_unlock(), [=] { submit(); });
 		break;

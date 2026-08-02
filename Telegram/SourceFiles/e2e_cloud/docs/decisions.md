@@ -641,3 +641,19 @@ failed vault creation already discarded its pending identity, retry performs a
 fresh password-backed cloud selection; a still-missing vault then returns to
 the normal confirmed creation form. Security-blocked and local-persistence
 failures never use this path, and no transport state retries automatically.
+
+### D059: Lock closes protected plaintext surfaces
+
+Close every protected conversation, file, group-list, and security dialog as
+soon as the vault leaves `Ready`. These surfaces may already contain decrypted
+messages, filenames, member safety codes, or an unsent draft, so leaving their
+widgets alive after a manual or passcode lock would expose stale plaintext even
+though the service has discarded its keys. Clear both password fields when the
+main protected-groups dialog returns to `Locked` as well.
+
+Keep content, file-transfer, and security revision streams monotonic across a
+lock and explicitly publish a revision after clearing the protected state.
+Resetting a revision to zero can repeat its initial value and suppress the
+reactive notification. Publish security revisions for verified roster and
+history-policy changes too, so an open security view cannot retain an older
+membership state before the lock boundary.

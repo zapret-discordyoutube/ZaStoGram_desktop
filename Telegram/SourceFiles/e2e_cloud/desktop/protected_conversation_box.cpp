@@ -96,6 +96,16 @@ void CleanseRecords(std::vector<ProtectedContentRecord> &records) {
 	}
 }
 
+void CloseWhenVaultUnavailable(
+		not_null<Ui::GenericBox*> box,
+		not_null<DesktopService*> service) {
+	service->vaultStateValue() | rpl::on_next([=](DesktopVaultState state) {
+		if (state != DesktopVaultState::Ready) {
+			box->closeBox();
+		}
+	}, box->lifetime());
+}
+
 [[nodiscard]] QString RecordText(
 		const DesktopService &service,
 		const ProtectedContentRecord &record) {
@@ -495,6 +505,7 @@ void ShowProtectedMemberSecurity(
 		AccountId accountId) {
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
+		CloseWhenVaultUnavailable(box, service);
 		const auto security = service->protectedSecurity(conversationId);
 		const auto member = security
 			? std::find_if(
@@ -616,6 +627,7 @@ void ShowProtectedSecurity(
 		ConversationId conversationId) {
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
+		CloseWhenVaultUnavailable(box, service);
 		box->setTitle(tr::lng_e2e_cloud_security());
 		const auto text = box->addRow(object_ptr<Ui::FlatLabel>(
 			box,
@@ -700,6 +712,7 @@ void ShowProtectedFiles(
 		ConversationId conversationId) {
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
+		CloseWhenVaultUnavailable(box, service);
 		box->setTitle(tr::lng_e2e_cloud_files());
 		const auto files = box->addRow(
 			object_ptr<Ui::VerticalLayout>(box),
@@ -719,9 +732,10 @@ void ShowProtectedFiles(
 void ShowProtectedGroupList(
 		not_null<Window::SessionController*> controller) {
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
+		const auto service = &controller->session().e2eCloud();
+		CloseWhenVaultUnavailable(box, service);
 		box->setTitle(tr::lng_e2e_cloud_title());
-		const auto groups = controller->session().e2eCloud()
-			.protectedGroups();
+		const auto groups = service->protectedGroups();
 		if (groups.empty()) {
 			box->addRow(object_ptr<Ui::FlatLabel>(
 				box,
@@ -756,6 +770,7 @@ void ShowProtectedConversation(
 		ConversationId conversationId) {
 	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
 		const auto service = &controller->session().e2eCloud();
+		CloseWhenVaultUnavailable(box, service);
 		const auto groups = service->protectedGroups();
 		const auto group = std::find_if(
 			begin(groups),

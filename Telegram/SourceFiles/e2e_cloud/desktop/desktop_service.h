@@ -307,7 +307,9 @@ private:
 	void setContentState(
 		ConversationId conversationId,
 		DesktopContentState state);
+	void notifyContentRevision();
 	void notifyFileTransferRevision();
+	void notifySecurityRevision();
 	[[nodiscard]] bool completeObservedJoin(
 		ConversationId conversationId,
 		const PublicBootstrapSyncCompletion &result);

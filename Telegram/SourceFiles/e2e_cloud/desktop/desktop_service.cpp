@@ -1798,6 +1798,13 @@ rpl::producer<std::uint64_t> DesktopService::contentRevisionValue() const {
 	return _contentRevision.value();
 }
 
+void DesktopService::notifyContentRevision() {
+	const auto revision = _contentRevision.current();
+	if (revision != std::numeric_limits<std::uint64_t>::max()) {
+		_contentRevision = revision + 1;
+	}
+}
+
 auto DesktopService::fileTransferRevisionValue() const
 -> rpl::producer<std::uint64_t> {
 	return _fileTransferRevision.value();
@@ -1812,6 +1819,13 @@ void DesktopService::notifyFileTransferRevision() {
 
 rpl::producer<std::uint64_t> DesktopService::securityRevisionValue() const {
 	return _securityRevision.value();
+}
+
+void DesktopService::notifySecurityRevision() {
+	const auto revision = _securityRevision.current();
+	if (revision != std::numeric_limits<std::uint64_t>::max()) {
+		_securityRevision = revision + 1;
+	}
 }
 
 void DesktopService::synchronizeProtectedContent(
@@ -1848,9 +1862,9 @@ void DesktopService::lock() {
 	_groupCreationState = DesktopGroupCreationState::Idle;
 	_contentState = DesktopContentState::Idle;
 	_contentStates.clear();
-	_fileTransferRevision = 0;
-	_contentRevision = 0;
-	_securityRevision = 0;
+	notifyFileTransferRevision();
+	notifyContentRevision();
+	notifySecurityRevision();
 }
 
 void DesktopService::applyVaultDiscoveryResult(
@@ -2880,10 +2894,7 @@ bool DesktopService::processObservedSafetyGossip(
 	group.safetyWitnesses = std::move(witnesses);
 	group.ownSafetyGossipObserved = ownCurrentGossipObserved;
 	if (witnessChanged) {
-		const auto revision = _securityRevision.current();
-		if (revision != std::numeric_limits<std::uint64_t>::max()) {
-			_securityRevision = revision + 1;
-		}
+		notifySecurityRevision();
 	}
 	if (group.phase != PendingGroupCreation::Phase::Active
 		|| ownCurrentGossipObserved) {
@@ -3008,6 +3019,7 @@ bool DesktopService::synchronizeObservedGroupChanges(
 		}
 	}
 	group.conversation.checkpoint = checkpoint;
+	notifySecurityRevision();
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
@@ -3918,10 +3930,7 @@ ObservedContentPageResult DesktopService::previewObservedFileManifests(
 		return ObservedContentPageResult::PersistenceFailed;
 	}
 	if (processed.stats.manifestsStored) {
-		const auto revision = _contentRevision.current();
-		if (revision != std::numeric_limits<std::uint64_t>::max()) {
-			_contentRevision = revision + 1;
-		}
+		notifyContentRevision();
 	}
 	return ObservedContentPageResult::Persisted;
 }
@@ -3974,10 +3983,7 @@ ObservedContentPageResult DesktopService::processObservedContentPage(
 	}
 	if (processed.stats.messagesStored
 		|| processed.stats.manifestsStored) {
-		const auto revision = _contentRevision.current();
-		if (revision != std::numeric_limits<std::uint64_t>::max()) {
-			_contentRevision = revision + 1;
-		}
+		notifyContentRevision();
 	}
 	return ObservedContentPageResult::Persisted;
 }
@@ -4611,6 +4617,7 @@ bool DesktopService::completeObservedJoin(
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		return false;
 	}
+	notifySecurityRevision();
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
@@ -4906,6 +4913,7 @@ bool DesktopService::applyAdministrativeTransition(
 	}
 	group.conversation.checkpoint = group.groupLedger.checkpoint();
 	setContentState(conversationId, DesktopContentState::Synchronizing);
+	notifySecurityRevision();
 	_pendingGroupCreation = std::move(i->second);
 	_groups.erase(i);
 	_pendingGroupCreation->vaultPreflightRequired = true;
@@ -5099,6 +5107,7 @@ bool DesktopService::admitObservedClient(
 			return false;
 		}
 		group.conversation.checkpoint = group.groupLedger.checkpoint();
+		notifySecurityRevision();
 		_pendingGroupCreation = std::move(i->second);
 		_groups.erase(i);
 		_pendingGroupCreation->vaultPreflightRequired = true;

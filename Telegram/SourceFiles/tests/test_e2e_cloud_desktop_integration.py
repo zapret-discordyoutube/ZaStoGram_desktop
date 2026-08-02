@@ -1156,6 +1156,54 @@ def verify_transport_failures_can_be_retried_manually() -> None:
     assert "tr::lng_e2e_cloud_retry()" not in security_blocked
 
 
+def verify_lock_closes_protected_plaintext_surfaces() -> None:
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    conversation = source(
+        "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
+    )
+    groups = source(
+        "SourceFiles/e2e_cloud/desktop/protected_groups_box.cpp"
+    )
+    lock = function_body(
+        service,
+        "void DesktopService::lock()",
+        "void DesktopService::applyVaultDiscoveryResult(",
+    )
+    refresh = function_body(
+        groups,
+        "void ProtectedGroupsBox::refresh()",
+        "void ProtectedGroupsBox::submit()",
+    )
+    locked = refresh[
+        refresh.index("case DesktopVaultState::Locked:"):
+        refresh.index("case DesktopVaultState::Loading:")
+    ]
+
+    assert "void notifyContentRevision();" in header
+    assert "void notifyFileTransferRevision();" in header
+    assert "void notifySecurityRevision();" in header
+    for revision in (
+        "_contentRevision = 0",
+        "_fileTransferRevision = 0",
+        "_securityRevision = 0",
+    ):
+        assert revision not in lock
+    assert lock.index("_groups.clear();") < lock.index("_vault.reset();")
+    assert lock.index("_vault.reset();") \
+        < lock.index("notifyFileTransferRevision();")
+    assert lock.index("notifyFileTransferRevision();") \
+        < lock.index("notifyContentRevision();")
+    assert lock.index("notifyContentRevision();") \
+        < lock.index("notifySecurityRevision();")
+    assert "void CloseWhenVaultUnavailable(" in conversation
+    assert "state != DesktopVaultState::Ready" in conversation
+    assert conversation.count("CloseWhenVaultUnavailable(box, service);") == 5
+    assert "_password->setText(QString());" in locked
+    assert "_confirm->setText(QString());" in locked
+    assert service.count("notifySecurityRevision();") >= 6
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1196,6 +1244,7 @@ def main() -> None:
     verify_transient_file_work_serializes_control_changes()
     verify_control_precedes_content_observation()
     verify_transport_failures_can_be_retried_manually()
+    verify_lock_closes_protected_plaintext_surfaces()
 
 
 if __name__ == "__main__":
