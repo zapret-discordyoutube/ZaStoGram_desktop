@@ -16,7 +16,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "e2e_cloud/storage/aes_gcm_local_record_protector.h"
 
 #include <QtCore/QDir>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QLockFile>
 #include <QtCore/QTemporaryDir>
 
 #include <algorithm>
@@ -487,6 +490,49 @@ public:
 	return 0;
 }
 
+[[nodiscard]] int ScenarioChunkStoreLockContentionIsNonBlocking() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file chunk lock temporary directory was unavailable");
+	}
+	const auto context = MakeContext();
+	const auto idPath = [](const auto &id) {
+		return QString::fromLatin1(QByteArray(
+			reinterpret_cast<const char*>(id.bytes.data()),
+			id.bytes.size()).toHex());
+	};
+	const auto target = QDir(directory.path()).filePath(
+		idPath(context.conversationId)
+		+ QString::fromLatin1("/")
+		+ idPath(context.fileId)
+		+ QString::fromLatin1("/0.fcl"));
+	if (!QDir().mkpath(QFileInfo(target).absolutePath())) {
+		return Fail("file chunk lock directory was unavailable");
+	}
+	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
+	if (!lock.tryLock(0)) {
+		return Fail("file chunk contention fixture could not lock");
+	}
+	auto timer = QElapsedTimer();
+	timer.start();
+	auto store = FileChunkFileStore(directory.path(), protector);
+	const auto stored = store.storeIfAbsent(
+		context.conversationId,
+		context.fileId,
+		0,
+		{
+			.plaintextHash = FilledId<Digest>(11),
+			.exactCiphertext = QByteArray("ciphertext"),
+		});
+	if (stored != FileChunkStoreResult::Error || timer.elapsed() >= 1000) {
+		return Fail("file chunk lock contention blocked the caller");
+	}
+	return 0;
+}
+
 [[nodiscard]] int ScenarioChunkStoreReleasesQuotaAfterRemoval() {
 	auto localKey = LocalRecordKey();
 	localKey.fill(42);
@@ -537,6 +583,64 @@ public:
 			context.fileId,
 			0)) {
 		return Fail("removed file chunk did not release cache quota");
+	}
+	return 0;
+}
+
+[[nodiscard]] int ScenarioChunkStoreRemovesAcceptedPrefix() {
+	auto localKey = LocalRecordKey();
+	localKey.fill(42);
+	const auto protector = AesGcmLocalRecordProtector(std::move(localKey));
+	auto directory = QTemporaryDir();
+	if (!directory.isValid()) {
+		return Fail("file chunk prefix temporary directory was unavailable");
+	}
+	const auto authorization = MakeAuthorization();
+	const auto context = authorization.context;
+	const auto chunk = StoredFileChunk{
+		.plaintextHash = FilledId<Digest>(11),
+		.exactCiphertext = QByteArray("ciphertext"),
+	};
+	auto otherFileId = context.fileId;
+	otherFileId.bytes.back() ^= 1;
+	auto store = FileChunkFileStore(directory.path(), protector);
+	if (store.authorize(authorization) != FileChunkAuthorizeResult::Authorized
+		|| store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			0,
+			chunk) != FileChunkStoreResult::Stored
+		|| store.storeIfAbsent(
+			context.conversationId,
+			context.fileId,
+			1,
+			chunk) != FileChunkStoreResult::Stored
+		|| store.storeIfAbsent(
+			context.conversationId,
+			otherFileId,
+			0,
+			chunk) != FileChunkStoreResult::Stored
+		|| !store.removeChunksBefore(
+			context.conversationId,
+			context.fileId,
+			1)
+		|| store.hasChunk(
+			context.conversationId,
+			context.fileId,
+			0)
+		|| !store.hasChunk(
+			context.conversationId,
+			context.fileId,
+			1)
+		|| !store.hasChunk(
+			context.conversationId,
+			otherFileId,
+			0)
+		|| store.authorization(
+			context.conversationId,
+			context.fileId).status
+			!= FileChunkAuthorizationReadStatus::Found) {
+		return Fail("accepted file chunk prefix was not cleaned precisely");
 	}
 	return 0;
 }
@@ -659,7 +763,9 @@ int main(int, char *[]) {
 		ScenarioChunkStoreRejectsOversizedRecord,
 		ScenarioChunkAuthorizationLedger,
 		ScenarioChunkStoreEnforcesQuota,
+		ScenarioChunkStoreLockContentionIsNonBlocking,
 		ScenarioChunkStoreReleasesQuotaAfterRemoval,
+		ScenarioChunkStoreRemovesAcceptedPrefix,
 		ScenarioSignedChunkEnvelope,
 		ScenarioProtectedMessageBody,
 	}) {

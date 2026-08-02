@@ -794,3 +794,38 @@ again. Discovery also waits until no control observer is running or dirty, so a
 new control notification received during discovery is deferred rather than
 raced. Resume this work after publication and after retryable, permanent,
 start, or local join/discovery failures.
+
+### D068: Accepted outgoing file chunks are cleaned before state is forgotten
+
+After advancing the durable outgoing-file cursor, remove every cached chunk
+strictly before that cursor before preparing more work. A stop between the
+cursor commit and the original best-effort removal can therefore leave at most
+a recoverable cache entry, and restart removes it without discarding the
+current chunk whose exact ciphertext is required for a safe retry.
+
+Cancellation removes the complete file chunk range before clearing the durable
+transfer. Successful finalization repeats the same check immediately before
+clearing, after the final source hash has completed. A cleanup failure retains
+the transfer and becomes a local failure instead of forgetting the only index
+from which the encrypted cache can be reclaimed.
+
+### D069: Chunk-store lock contention never blocks the interface thread
+
+Acquire per-record file locks without waiting. Chunk preparation, manifest
+authorization, and cache cleanup run from interface-driven callbacks, so a
+five-second lock wait can freeze the entire client and a prefix cleanup can
+multiply that pause by the number of cached records. Contention now fails the
+current operation immediately while preserving its durable state for recovery.
+
+### D070: Removal durably discards every pending outgoing object
+
+When a verified control transition removes the local client, persist
+cancellation of any outgoing file, reclaim its cached chunks, and atomically
+clear the remaining protected outbox before publishing the updated vault index.
+Freshness challenges and other objects queued before removal must never be sent
+after the client has lost membership.
+
+Run the same cleanup from restored vault-update work. A transient cleanup or
+outbox persistence failure remains a local recoverable operation with its
+durable state intact; it no longer masquerades as authenticated vault damage
+and no longer forces a global security lock during unlock.

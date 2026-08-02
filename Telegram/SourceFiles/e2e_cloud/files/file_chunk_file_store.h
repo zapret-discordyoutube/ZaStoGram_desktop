@@ -44,6 +44,10 @@ public:
 		ConversationId conversationId,
 		FileId fileId,
 		std::uint32_t chunkIndex);
+	[[nodiscard]] bool removeChunksBefore(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t exclusiveUpperBound);
 
 private:
 	[[nodiscard]] QString path(

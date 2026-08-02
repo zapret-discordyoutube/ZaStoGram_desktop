@@ -893,6 +893,38 @@ def verify_file_chunks_download_only_on_demand() -> None:
     assert "releaseStorage(std::uint64_t(size));" in chunk_store
 
 
+def verify_accepted_file_chunks_are_recovered_and_cleaned() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    chunk_store = source(
+        "SourceFiles/e2e_cloud/files/file_chunk_file_store.cpp"
+    )
+    cancel = function_body(
+        service,
+        "bool DesktopService::finishFileTransferCancellation(",
+        "void DesktopService::completeActiveUpload(",
+    )
+    upload = function_body(
+        service,
+        "bool DesktopService::pumpFileTransfer(",
+        "void DesktopService::completeFileChunkUpload(",
+    )
+    finalize = function_body(
+        service,
+        "bool DesktopService::finalizeFileTransfer(",
+        "void DesktopService::beginGroupObservation(",
+    )
+
+    assert "bool FileChunkFileStore::removeChunksBefore(" in chunk_store
+    assert "pending->nextChunkIndex" in upload
+    assert "group.chunkStore.removeChunksBefore(" in upload
+    assert "manifest->context.chunkCount" in cancel
+    assert "group.chunkStore.removeChunksBefore(" in cancel
+    assert "manifest->context.chunkCount" in finalize
+    assert "group.chunkStore.removeChunksBefore(" in finalize
+    assert "tryLock(5000)" not in chunk_store
+    assert chunk_store.count("tryLock(0)") == 3
+
+
 def verify_new_file_cannot_replace_pending_transfer() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     file_send = function_body(
@@ -959,6 +991,11 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
         "DesktopService::restoreLocalGroup(",
         "bool DesktopService::commitVaultAnchor(",
     )
+    publisher = function_body(
+        service,
+        "void DesktopService::publishNextBootstrapObject()",
+        "void DesktopService::resumePendingGroupCreation()",
+    )
 
     assert "FileTransferCommitResult " \
         "PersistentFileTransfer::requestCancel()" in transfer
@@ -991,8 +1028,8 @@ def verify_failed_file_transfer_can_be_cancelled_durably() -> None:
         < complete_chunk.index(
             "TelegramTransport::UploadResult::RetryableError"
         )
-    assert restore.index("finishFileTransferCancellation(*operation)") \
-        < restore.index("else if (!operation->outbox.size())")
+    assert "finishFileTransferCancellation(*operation)" not in restore
+    assert "finishFileTransferCancellation(group)" in publisher
     assert "cancelProtectedFileTransfer(" in box
     assert "fileTransferPending" in box
 
@@ -1525,6 +1562,30 @@ def verify_global_vault_work_defers_control_boundaries() -> None:
     assert service.count("resumeDeferredGroupObservations();") >= 8
 
 
+def verify_removed_clients_discard_outgoing_work() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    outbox = source("SourceFiles/e2e_cloud/storage/persistent_outbox.cpp")
+    publisher = function_body(
+        service,
+        "void DesktopService::publishNextBootstrapObject()",
+        "void DesktopService::resumePendingGroupCreation()",
+    )
+    restore = function_body(
+        service,
+        "DesktopService::LocalGroupRecoveryResult "
+        "DesktopService::restoreLocalGroup(",
+        "bool DesktopService::commitVaultAnchor(",
+    )
+
+    item = publisher.index("auto item = _pendingGroupCreation->outbox.front(")
+    assert publisher.index("group.fileTransfer.requestCancel()") < item
+    assert publisher.index("finishFileTransferCancellation(group)") < item
+    assert publisher.index("group.outbox.clear()") < item
+    assert "bool PersistentOutboxStore::clear()" in outbox
+    assert "persist({}, revision)" in outbox
+    assert "!(removed && operation->fileTransfer.pending())" in restore
+
+
 def main() -> None:
     verify_carrier_tracking()
     verify_group_scope()
@@ -1559,6 +1620,7 @@ def main() -> None:
     verify_local_record_reads_are_bounded()
     verify_file_chunks_require_manifests_and_quota()
     verify_file_chunks_download_only_on_demand()
+    verify_accepted_file_chunks_are_recovered_and_cleaned()
     verify_new_file_cannot_replace_pending_transfer()
     verify_failed_file_transfer_can_be_cancelled_durably()
     verify_administration_waits_for_outgoing_work()
@@ -1573,6 +1635,7 @@ def main() -> None:
     verify_file_download_security_failures_lock_the_vault()
     verify_vault_changing_group_operations_are_serialized()
     verify_global_vault_work_defers_control_boundaries()
+    verify_removed_clients_discard_outgoing_work()
 
 
 if __name__ == "__main__":

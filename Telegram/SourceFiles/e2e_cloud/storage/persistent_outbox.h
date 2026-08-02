@@ -46,6 +46,7 @@ public:
 	bool replaceWithSealed(
 		ObjectId objectId,
 		EncodedEnvelope envelope) override;
+	bool clear();
 	bool removePair(ObjectId firstObjectId, ObjectId secondObjectId);
 	bool remove(ObjectId objectId) override;
 	[[nodiscard]] bool contains(ObjectId objectId) const override;

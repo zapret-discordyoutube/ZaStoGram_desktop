@@ -362,7 +362,7 @@ FileChunkAuthorizeResult FileChunkFileStore::authorize(
 		return FileChunkAuthorizeResult::Error;
 	}
 	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(5000)) {
+	if (!lock.tryLock(0)) {
 		return FileChunkAuthorizeResult::Error;
 	} else if (QFile::exists(target)) {
 		const auto existing = this->authorization(
@@ -424,7 +424,7 @@ FileChunkStoreResult FileChunkFileStore::storeIfAbsent(
 		return FileChunkStoreResult::Error;
 	}
 	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(5000)) {
+	if (!lock.tryLock(0)) {
 		return FileChunkStoreResult::Error;
 	} else if (QFile::exists(target)) {
 		return FileChunkStoreResult::AlreadyExists;
@@ -482,7 +482,7 @@ bool FileChunkFileStore::removeChunk(
 		return true;
 	}
 	auto lock = QLockFile(target + QString::fromLatin1(".lock"));
-	if (!lock.tryLock(5000)) {
+	if (!lock.tryLock(0)) {
 		return false;
 	}
 	const auto info = QFileInfo(target);
@@ -495,6 +495,44 @@ bool FileChunkFileStore::removeChunk(
 	}
 	if (size > 0) {
 		releaseStorage(std::uint64_t(size));
+	}
+	return true;
+}
+
+bool FileChunkFileStore::removeChunksBefore(
+		ConversationId conversationId,
+		FileId fileId,
+		std::uint32_t exclusiveUpperBound) {
+	if (!conversationId || !fileId) {
+		return false;
+	}
+	const auto directory = QFileInfo(
+		path(conversationId, fileId, 0)).absoluteDir();
+	if (!directory.exists()) {
+		return true;
+	}
+	auto iterator = QDirIterator(
+		directory.absolutePath(),
+		{ QString::fromLatin1("*.fcl") },
+		QDir::Files | QDir::NoSymLinks);
+	while (iterator.hasNext()) {
+		iterator.next();
+		const auto filename = iterator.fileName();
+		const auto indexText = filename.first(filename.size() - 4);
+		auto validIndex = false;
+		const auto index = indexText.toULongLong(&validIndex, 10);
+		if (!validIndex
+			|| index > std::numeric_limits<std::uint32_t>::max()
+			|| QString::number(index) != indexText
+			|| index >= exclusiveUpperBound) {
+			continue;
+		}
+		if (!removeChunk(
+			conversationId,
+			fileId,
+			std::uint32_t(index))) {
+			return false;
+		}
 	}
 	return true;
 }

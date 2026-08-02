@@ -1008,6 +1008,23 @@ int CountingLocalRecordProtector::openCalls() const {
 		|| restored.revision() != 3) {
 		return Fail("protected outbox pair was not removed atomically");
 	}
+	auto remaining = Message();
+	remaining.objectId = FilledId<ObjectId>(4);
+	if (!restored.append(std::move(remaining)) || restored.size() != 1) {
+		return Fail("protected outbox clear setup failed");
+	}
+	blob.writeError = true;
+	if (restored.clear() || restored.size() != 1) {
+		return Fail("failed outbox clear changed live state");
+	}
+	blob.writeError = false;
+	if (!restored.clear()
+		|| restored.size()
+		|| restored.revision() != 5
+		|| !restored.clear()
+		|| restored.revision() != 5) {
+		return Fail("protected outbox was not cleared atomically");
+	}
 	return 0;
 }
 

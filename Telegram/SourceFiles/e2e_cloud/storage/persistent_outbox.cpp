@@ -572,6 +572,22 @@ bool PersistentOutboxStore::remove(ObjectId objectId) {
 	return true;
 }
 
+bool PersistentOutboxStore::clear() {
+	if (!_loaded
+		|| _revision == std::numeric_limits<std::uint64_t>::max()) {
+		return false;
+	} else if (_items.empty()) {
+		return true;
+	}
+	const auto revision = _revision + 1;
+	if (!persist({}, revision)) {
+		return false;
+	}
+	CleanseItems(_items);
+	_revision = revision;
+	return true;
+}
+
 bool PersistentOutboxStore::removePair(
 		ObjectId firstObjectId,
 		ObjectId secondObjectId) {

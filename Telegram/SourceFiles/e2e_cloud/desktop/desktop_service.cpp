@@ -2286,6 +2286,30 @@ void DesktopService::publishNextBootstrapObject() {
 		|| _pendingGroupCreation->vaultUpdate) {
 		return;
 	}
+	auto &group = *_pendingGroupCreation;
+	if (const auto pending = group.fileTransfer.pending();
+		pending
+		&& group.phase == PendingGroupCreation::Phase::Removed
+		&& !pending->cancelRequested) {
+		const auto requested = group.fileTransfer.requestCancel();
+		if (requested != FileTransferCommitResult::Committed
+			&& requested != FileTransferCommitResult::AlreadyCommitted) {
+			_groupCreationState = DesktopGroupCreationState::LocalFailure;
+			return;
+		}
+	}
+	if (const auto pending = group.fileTransfer.pending();
+		pending
+		&& pending->cancelRequested
+		&& !finishFileTransferCancellation(group)) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return;
+	}
+	if (group.phase == PendingGroupCreation::Phase::Removed
+		&& !group.outbox.clear()) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return;
+	}
 	if (_pendingGroupCreation->phase == PendingGroupCreation::Phase::Active
 		&& _pendingGroupCreation->freshnessGate
 		&& _pendingGroupCreation->freshnessGate->state()
@@ -3567,11 +3591,11 @@ bool DesktopService::finishFileTransferCancellation(
 			pending->contentObjectId)) {
 		return false;
 	}
-	if (pending->nextChunkIndex < manifest->context.chunkCount) {
-		(void)group.chunkStore.removeChunk(
-			group.conversationId,
-			manifest->context.fileId,
-			pending->nextChunkIndex);
+	if (!group.chunkStore.removeChunksBefore(
+		group.conversationId,
+		manifest->context.fileId,
+		manifest->context.chunkCount)) {
+		return false;
 	}
 	const auto cleared = group.fileTransfer.clear();
 	if (cleared != FileTransferCommitResult::Committed
@@ -3663,6 +3687,12 @@ bool DesktopService::pumpFileTransfer(ConversationId conversationId) {
 	const auto manifest = PrivateFileManifestCodecV1().decodePlaintext(
 		pending->manifestPlaintext);
 	if (!manifest) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+		return true;
+	} else if (!group.chunkStore.removeChunksBefore(
+		conversationId,
+		manifest->context.fileId,
+		pending->nextChunkIndex)) {
 		setContentState(conversationId, DesktopContentState::LocalFailure);
 		return true;
 	} else if (pending->nextChunkIndex == manifest->context.chunkCount) {
@@ -3914,6 +3944,15 @@ bool DesktopService::finalizeFileTransfer(
 				|| !source
 				|| source->size != manifest->context.plaintextSize
 				|| source->hash != manifest->plaintextHash) {
+				weak->setContentState(
+					conversationId,
+					DesktopContentState::LocalFailure);
+				return;
+			}
+			if (!group.chunkStore.removeChunksBefore(
+				conversationId,
+				manifest->context.fileId,
+				manifest->context.chunkCount)) {
 				weak->setContentState(
 					conversationId,
 					DesktopContentState::LocalFailure);
@@ -5546,12 +5585,6 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		&& receiptReconciliation != MlsReceiptReconcileResult::NothingToDo) {
 		return LocalGroupRecoveryResult::Invalid;
 	}
-	if (const auto pending = operation->fileTransfer.pending();
-		pending
-		&& pending->cancelRequested
-		&& !finishFileTransferCancellation(*operation)) {
-		return LocalGroupRecoveryResult::Invalid;
-	}
 	const auto state = operation->groupLedger.state();
 	const auto localMember = state ? state->member(*accountId) : nullptr;
 	const auto activeClient = localMember && std::find(
@@ -5781,7 +5814,8 @@ DesktopService::LocalGroupRecoveryResult DesktopService::restoreLocalGroup(
 		beginContentObservation(conversationId);
 		pumpActiveOutbox(conversationId);
 		return LocalGroupRecoveryResult::Complete;
-	} else if (!operation->outbox.size()) {
+	} else if (!operation->outbox.size()
+		&& !(removed && operation->fileTransfer.pending())) {
 		const auto requiresVaultUpdate = localAhead
 			|| (!indexedConversation
 				&& (awaitingAdmission || localIsGenesisOwner));
