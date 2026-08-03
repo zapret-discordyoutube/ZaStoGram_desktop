@@ -618,7 +618,7 @@ template <typename Id>
 				MTP_int(file.preview->height)));
 		}
 	}
-	return session->data().document(
+	const auto result = session->data().document(
 		ProtectedHistoryDocumentId(
 			conversationId,
 			eventObjectId,
@@ -634,6 +634,12 @@ template <typename Id>
 		false,
 		0,
 		file.size);
+	if (result->loading()) {
+		result->cancel();
+	}
+	result->resetCancelled();
+	result->status = FileReady;
+	return result;
 }
 
 [[nodiscard]] ObjectId FreshnessResponseObjectId(
