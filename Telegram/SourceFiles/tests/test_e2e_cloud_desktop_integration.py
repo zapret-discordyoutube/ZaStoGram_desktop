@@ -1072,6 +1072,16 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     assert "if (showInMediaView)" in protected_box
     assert "document->setLocation(Core::FileLocation(savedPath));" \
         in protected_box
+    assert "document->uploadingData = " \
+        "std::make_unique<Data::UploadState>" in protected_box
+    assert "document->owner().documentLoadProgress(document);" \
+        in protected_box
+    assert "document->owner().documentLoadDone(document);" \
+        in protected_box
+    assert "document->owner().documentLoadFail(document, true);" \
+        in protected_box
+    assert "makeProtectedPendingLink" in file_view
+    assert "makeProtectedPendingLink" in document_view
     assert "|| _realParent->isE2ECloudDecrypted())" in document_view
     assert ": _realParent->isE2ECloudDecrypted()\n\t\t? _openl" in gif_view
     assert service.count("CleanupProtectedMediaCache(_session);") >= 3

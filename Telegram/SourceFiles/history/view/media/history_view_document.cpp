@@ -468,6 +468,12 @@ void Document::createComponents() {
 				}),
 				_realParent->fullId());
 		};
+		const auto makeProtectedPendingLink = [=]() -> FileClickHandlerPtr {
+			return std::make_shared<DocumentOpenClickHandler>(
+				_data,
+				[](FullMsgId) {},
+				_realParent->fullId());
+		};
 		thumbed->linksavel = _realParent->isE2ECloudDecrypted()
 			? makeProtectedLink()
 			: std::make_shared<DocumentSaveClickHandler>(
@@ -478,12 +484,14 @@ void Document::createComponents() {
 			: std::make_shared<DocumentOpenWithClickHandler>(
 				_data,
 				_realParent->fullId());
-		thumbed->linkcancell = std::make_shared<DocumentCancelClickHandler>(
-			_data,
-			crl::guard(this, [=](FullMsgId id) {
-				_parent->delegate()->elementCancelUpload(id);
-			}),
-			_realParent->fullId());
+		thumbed->linkcancell = _realParent->isE2ECloudDecrypted()
+			? makeProtectedPendingLink()
+			: std::make_shared<DocumentCancelClickHandler>(
+				_data,
+				crl::guard(this, [=](FullMsgId id) {
+					_parent->delegate()->elementCancelUpload(id);
+				}),
+				_realParent->fullId());
 	}
 	if (const auto voice = Get<HistoryDocumentVoice>()) {
 		const auto media = _parent->data()->media();

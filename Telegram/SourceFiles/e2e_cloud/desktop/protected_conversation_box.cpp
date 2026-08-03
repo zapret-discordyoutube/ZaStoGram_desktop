@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/file_utilities.h"
 #include "data/data_document.h"
+#include "data/data_session.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "storage/storage_account.h"
@@ -619,6 +620,13 @@ void OpenProtectedHistoryFile(
 			});
 			return;
 		}
+		if (document->uploading()) {
+			return;
+		}
+		document->status = FileReady;
+		document->uploadingData = std::make_unique<Data::UploadState>(
+			std::max(document->size, int64(1)));
+		document->owner().documentLoadProgress(document);
 		const auto savedPath = path;
 		(void)controller->session().e2eCloud().saveProtectedFile(
 			*conversationId,
@@ -627,6 +635,10 @@ void OpenProtectedHistoryFile(
 			crl::guard(controller, [=](ProtectedFileSaveResult result) {
 				const auto saved
 					= (result == ProtectedFileSaveResult::Saved);
+				document->uploadingData = nullptr;
+				document->status = saved
+					? FileReady
+					: FileDownloadFailed;
 				if (!saved || showSavedToast) {
 					Ui::Toast::Show({
 						.text = saved
@@ -639,10 +651,13 @@ void OpenProtectedHistoryFile(
 				}
 				if (saved) {
 					document->setLocation(Core::FileLocation(savedPath));
+					document->owner().documentLoadDone(document);
 					controller->openDocument(
 						document,
 						showInMediaView,
 						{ .id = context });
+				} else {
+					document->owner().documentLoadFail(document, true);
 				}
 			}));
 	};
