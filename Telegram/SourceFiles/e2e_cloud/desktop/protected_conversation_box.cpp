@@ -86,8 +86,8 @@ template <typename Id>
 	const auto validSuffix = !suffix.isEmpty()
 		&& suffix.size() <= 16
 		&& std::all_of(
-			begin(suffix),
-			end(suffix),
+			suffix.begin(),
+			suffix.end(),
 			[](char value) {
 				return std::isalnum(static_cast<unsigned char>(value));
 			});
