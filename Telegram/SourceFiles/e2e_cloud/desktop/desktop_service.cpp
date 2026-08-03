@@ -2191,17 +2191,47 @@ bool DesktopService::editProtectedText(
 bool DesktopService::deleteProtectedMessage(
 		ConversationId conversationId,
 		ObjectId targetEventObjectId) {
-	return queueProtectedMessageBody(
+	const auto i = _groups.find(conversationId);
+	const auto pending = (i != end(_groups))
+		? i->second->fileTransfer.pending()
+		: nullptr;
+	const auto cancelMatchingFile = pending
+		&& pending->eventObjectId == targetEventObjectId;
+	if (!queueProtectedMessageBody(
 		conversationId,
 		{
 			.action = ProtectedMessageAction::Delete,
 			.targetEventObjectId = targetEventObjectId,
-		});
+		},
+		false)) {
+		return false;
+	}
+	// Persist the deletion before cancelling its matching transfer. The
+	// cancellation pump removes only the manifest pair, so this tombstone
+	// remains queued and is published immediately after local cleanup.
+	auto cancellationFailed = false;
+	if (cancelMatchingFile && !pending->cancelRequested) {
+		const auto requested = i->second->fileTransfer.requestCancel();
+		if (requested != FileTransferCommitResult::Committed
+			&& requested != FileTransferCommitResult::AlreadyCommitted) {
+			cancellationFailed = true;
+		} else if (i->second->fileFinalHashCancellation) {
+			i->second->fileFinalHashCancellation->store(
+				true,
+				std::memory_order_relaxed);
+		}
+	}
+	pumpActiveOutbox(conversationId);
+	if (cancellationFailed) {
+		setContentState(conversationId, DesktopContentState::LocalFailure);
+	}
+	return true;
 }
 
 bool DesktopService::queueProtectedMessageBody(
 		ConversationId conversationId,
-		ProtectedMessageBody body) {
+		ProtectedMessageBody body,
+		bool pump) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
@@ -2353,7 +2383,9 @@ bool DesktopService::queueProtectedMessageBody(
 		notifyContentRevision();
 	}
 	group.queuedContentReconciled = true;
-	pumpActiveOutbox(conversationId);
+	if (pump) {
+		pumpActiveOutbox(conversationId);
+	}
 	return true;
 }
 

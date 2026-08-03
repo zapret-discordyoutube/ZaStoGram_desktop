@@ -89,6 +89,13 @@ allocation waits until that earlier outbox is empty, so the file uses the latest
 accepted protected state without making a normal quick attachment attempt fail.
 Only one prepared or durable file transfer exists per conversation at a time.
 
+Deleting the native history card for the currently uploading file first queues
+its authenticated protected deletion and then durably cancels that exact file
+transfer. Cancellation removes only the manifest pair and staged chunks; the
+deletion remains in the ordinary protected outbox and is published after local
+cleanup. A large file therefore does not finish uploading merely to be deleted
+immediately afterward.
+
 The authenticated manifest is published and acknowledged before the first
 chunk. A receiver persists a protected local authorization record derived from
 that manifest and accepts a chunk only when its file identifier, layout,

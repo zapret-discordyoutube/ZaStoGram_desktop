@@ -286,7 +286,8 @@ private:
 		PendingGroupCreation &group);
 	[[nodiscard]] bool queueProtectedMessageBody(
 		ConversationId conversationId,
-		ProtectedMessageBody body);
+		ProtectedMessageBody body,
+		bool pump = true);
 	void pumpActiveOutbox(ConversationId conversationId);
 	[[nodiscard]] bool prepareActiveUploadAcknowledgement(
 		ConversationId conversationId,

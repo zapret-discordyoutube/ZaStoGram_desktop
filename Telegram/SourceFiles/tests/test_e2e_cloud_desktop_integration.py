@@ -1261,6 +1261,11 @@ def verify_protected_message_mutations_are_authorized_and_native() -> None:
         "bool DesktopService::queueProtectedMessageBody(",
         "bool DesktopService::sendProtectedFile(",
     )
+    delete_message = function_body(
+        service,
+        "bool DesktopService::deleteProtectedMessage(",
+        "bool DesktopService::queueProtectedMessageBody(",
+    )
     outbox_pump = function_body(
         service,
         "void DesktopService::pumpActiveOutbox(",
@@ -1296,6 +1301,12 @@ def verify_protected_message_mutations_are_authorized_and_native() -> None:
     assert "editProtectedText(" in widget
     assert "deleteProtectedMessage(" in delete_box
     assert "lng_e2e_cloud_file_pending" in widget
+    assert delete_message.index("queueProtectedMessageBody(") \
+        < delete_message.index("fileTransfer.requestCancel()")
+    assert "false))" in delete_message
+    assert delete_message.index("fileTransfer.requestCancel()") \
+        < delete_message.index("pumpActiveOutbox(conversationId)")
+    assert "pending->eventObjectId == targetEventObjectId" in delete_message
 
 
 def verify_local_record_reads_are_bounded() -> None:

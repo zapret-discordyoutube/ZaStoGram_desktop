@@ -1227,3 +1227,18 @@ sending a message produced a generic queue failure even though no file transfer
 was active. A second prepared or durable file remains rejected, control
 reconstruction remains serialized, and the change does not alter MTProto
 session ownership, connection selection, pacing, or retry behavior.
+
+### D100: Deleting an uploading file cancels the matching transfer
+
+When the native history delete action targets the event object of the one
+durable outgoing file transfer, persist its authenticated deletion event before
+requesting durable transfer cancellation. Suppress the deletion queue's normal
+immediate pump until the cancellation marker is committed. The cancellation
+cleanup removes only the manifest event/content pair, so the deletion remains
+queued and is published as soon as the staged source and chunks are released.
+
+If cancellation persistence fails after the deletion is already durable, keep
+the deletion and report a local transfer failure; completing the original file
+cannot make the deleted card reappear. Unrelated messages and files do not
+cancel the transfer. This changes no MTProto session, admission, pacing, or
+connection ownership.
