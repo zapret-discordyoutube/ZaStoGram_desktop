@@ -1142,6 +1142,10 @@ public:
 	const auto legacyFileChunk = QString(fileChunk).replace(
 		QString::fromLatin1("protected-file-"),
 		QString::fromLatin1("protected_file_"));
+	const auto legacyShortFileChunk = QString::fromLatin1(
+		"protected_file_"
+		"9db6fe65cacc30b368b72533b6d6901c914101ffae6e4dbd"
+		".tde2e");
 	if (!IsProtectedGroupCarrierMetadata(
 			ProtectedLegacyCarrierFilename(),
 			mime)
@@ -1155,10 +1159,14 @@ public:
 		|| ProtectedFileChunkCarrierFileId(fileChunk) != fileId
 		|| !IsProtectedGroupCarrierMetadata(legacyFileChunk, mime)
 		|| ProtectedFileChunkCarrierFileId(legacyFileChunk) != fileId
+		|| !IsProtectedGroupCarrierMetadata(legacyShortFileChunk, mime)
+		|| ProtectedFileChunkCarrierFileId(
+			legacyShortFileChunk).has_value()
 		|| !IsProtectedGroupCarrierFilename(
 			ProtectedLegacyCarrierFilename())
 		|| !IsProtectedGroupCarrierFilename(fileChunk)
 		|| !IsProtectedGroupCarrierFilename(legacyFileChunk)
+		|| !IsProtectedGroupCarrierFilename(legacyShortFileChunk)
 		|| ProtectedFileChunkCarrierFilename(FileId()).size()
 		|| ProtectedFileChunkCarrierFileId(
 			fileChunk.toUpper()).has_value()
@@ -1182,7 +1190,11 @@ public:
 		|| IsProtectedGroupCarrierFilename(
 			CloudVaultCarrierFilename())
 		|| IsProtectedGroupCarrierFilename(
-			QString::fromLatin1("notes.tde2e"))) {
+			QString::fromLatin1("notes.tde2e"))
+		|| IsProtectedGroupCarrierFilename(
+			legacyShortFileChunk.toUpper())
+		|| IsProtectedGroupCarrierFilename(
+			legacyShortFileChunk + QString::fromLatin1("x"))) {
 		return Fail("protected carrier metadata recognition was not exact");
 	}
 	return 0;

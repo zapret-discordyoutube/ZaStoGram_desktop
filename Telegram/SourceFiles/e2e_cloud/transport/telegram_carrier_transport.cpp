@@ -22,6 +22,27 @@ inline constexpr auto kMaximumFileChunkObjectSize = 5 * 1024 * 1024;
 inline constexpr auto kFileChunkPrefix = "protected-file-";
 inline constexpr auto kLegacyFileChunkPrefix = "protected_file_";
 inline constexpr auto kFileChunkSuffix = ".tde2e";
+inline constexpr auto kLegacyEncodedFileIdSize = 48;
+
+[[nodiscard]] bool LowerHex(QStringView value) {
+	return std::all_of(value.begin(), value.end(), [](QChar value) {
+		return (value >= u'0' && value <= u'9')
+			|| (value >= u'a' && value <= u'f');
+	});
+}
+
+[[nodiscard]] bool LegacyFileChunkCarrierFilename(
+		const QString &filename) {
+	const auto prefix = QString::fromLatin1(kLegacyFileChunkPrefix);
+	const auto suffix = QString::fromLatin1(kFileChunkSuffix);
+	return filename.startsWith(prefix)
+		&& filename.endsWith(suffix)
+		&& filename.size()
+			== prefix.size() + kLegacyEncodedFileIdSize + suffix.size()
+		&& LowerHex(QStringView(filename).mid(
+			prefix.size(),
+			kLegacyEncodedFileIdSize));
+}
 
 [[nodiscard]] bool ContentKind(ObjectKind kind) {
 	return kind == ObjectKind::MlsApplication
@@ -73,10 +94,7 @@ std::optional<FileId> ProtectedFileChunkCarrierFileId(
 		return std::nullopt;
 	}
 	const auto encoded = filename.mid(prefix.size(), kEncodedFileIdSize);
-	if (!std::all_of(encoded.begin(), encoded.end(), [](QChar value) {
-			return (value >= u'0' && value <= u'9')
-				|| (value >= u'a' && value <= u'f');
-		})) {
+	if (!LowerHex(QStringView(encoded))) {
 		return std::nullopt;
 	}
 	const auto decoded = QByteArray::fromHex(encoded.toLatin1());
@@ -111,7 +129,8 @@ bool IsProtectedGroupCarrierFilename(const QString &filename) {
 	};
 	return std::find(begin(filenames), end(filenames), filename)
 		!= end(filenames)
-		|| ProtectedFileChunkCarrierFileId(filename).has_value();
+		|| ProtectedFileChunkCarrierFileId(filename).has_value()
+		|| LegacyFileChunkCarrierFilename(filename);
 }
 
 bool IsProtectedGroupCarrierMetadata(

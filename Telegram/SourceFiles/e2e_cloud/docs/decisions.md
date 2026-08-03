@@ -1249,7 +1249,8 @@ Keep protected-group discovery strict on both the exact carrier filename and
 `application/octet-stream`. Once either side of a chat-to-megagroup migration
 is already known to protected presentation, reserve the exact current and
 legacy carrier filenames across both linked histories and hide those documents
-regardless of server-normalized MIME metadata.
+regardless of server-normalized MIME metadata. Legacy underscore filenames may
+contain the historical 24-byte identifier; current identifiers remain 32 bytes.
 
 Ordinary groups still show documents that merely resemble carriers because
 they have no monotonic protected-peer marker. Exact filename parsing remains
