@@ -1759,14 +1759,27 @@ def verify_transient_file_work_serializes_control_changes() -> None:
         "bool DesktopService::applyAdministrativeTransition(",
         "bool DesktopService::admitObservedClient(",
     )
+    apply_observation = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
     observation_start = observation.index(
         "group.observation = std::make_unique<PublicBootstrapSyncController>"
     )
 
-    assert save_file.index("group.observation") \
+    assert save_file.index("group.fileDownloadQueue.push_back") \
+        < save_file.index("startNextProtectedFileDownload(conversationId)")
+    assert save_file.index("i->second->observation") \
         < save_file.index("group.pendingFileDownload =")
-    assert save_file.index("group.observationDirty") \
+    assert save_file.index("i->second->observationDirty") \
         < save_file.index("group.pendingFileDownload =")
+    assert "|| group.pendingFileDownload" not in function_body(
+        service,
+        "bool DesktopService::saveProtectedFile(",
+        "bool DesktopService::startNextProtectedFileDownload(",
+    )
+    assert "kMaximumQueuedFileDownloads" in save_file
     assert observation.index("group.fileHashInProgress") \
         < observation_start
     assert observation.index("group.fileFinalHashInProgress") \
@@ -1777,6 +1790,40 @@ def verify_transient_file_work_serializes_control_changes() -> None:
         < finish_download.index("beginGroupObservation(conversationId)")
     assert administration.index("group.pendingFileDownload") \
         < administration.index("_pendingGroupCreation = std::move(i->second)")
+    assert "!group.fileDownloadQueue.empty()" in administration
+    assert "startNextProtectedFileDownload(conversationId)" \
+        in apply_observation
+
+
+def verify_file_download_legacy_carrier_fallbacks() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    backend = source(
+        "SourceFiles/e2e_cloud/transport/"
+        "telegram_session_carrier_backend.cpp"
+    )
+    download = function_body(
+        service,
+        "bool DesktopService::beginFileChunkDownload(",
+        "void DesktopService::scheduleFileDownloadRetry(",
+    )
+    completion = function_body(
+        service,
+        "void DesktopService::applyFileChunkDownload(",
+        "bool DesktopService::writePendingProtectedFile(",
+    )
+
+    assert 'u"protected_file_"_q' in download
+    assert "encodedFileId.left(48)" in download
+    assert "ProtectedContentCarrierFilename()" in download
+    assert "ProtectedLegacyCarrierFilename()" in download
+    assert "FileDownloadCarrierSearch::Family" in download
+    assert "protectedCarrierFamily" in backend
+    assert "(!filename.isEmpty() || protectedCarrierFamily)" in backend
+    assert "FileDownloadCarrierSearch::LegacyFileId" in completion
+    assert "FileDownloadCarrierSearch::LegacyTruncatedFileId" in completion
+    assert "FileDownloadCarrierSearch::Family" in completion
+    assert completion.index("nextCarrierSearch") \
+        < completion.index("scheduleFileDownloadRetry(")
 
 
 def verify_control_precedes_content_observation() -> None:
@@ -2341,6 +2388,7 @@ def main() -> None:
     verify_file_preparation_can_be_cancelled()
     verify_administration_waits_for_outgoing_work()
     verify_transient_file_work_serializes_control_changes()
+    verify_file_download_legacy_carrier_fallbacks()
     verify_control_precedes_content_observation()
     verify_transport_failures_can_be_retried_manually()
     verify_lock_closes_protected_plaintext_surfaces()

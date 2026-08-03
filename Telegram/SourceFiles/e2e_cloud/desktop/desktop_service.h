@@ -229,6 +229,14 @@ public:
 
 private:
 	struct PendingGroupCreation;
+	enum class FileDownloadCarrierSearch {
+		Current,
+		LegacyFileId,
+		LegacyTruncatedFileId,
+		Content,
+		Legacy,
+		Family,
+	};
 	struct PendingGroupJoin;
 	struct PendingGroupDiscovery;
 	enum class LocalGroupRecoveryResult;
@@ -310,13 +318,15 @@ private:
 		TelegramTransport::UploadResult result);
 	void scheduleFileTransferRetry(ConversationId conversationId);
 	void resetFileTransferRetry(PendingGroupCreation &group);
+	[[nodiscard]] bool startNextProtectedFileDownload(
+		ConversationId conversationId);
 	[[nodiscard]] bool beginFileChunkDownload(
 		ConversationId conversationId,
-		bool legacyCarrier);
+		FileDownloadCarrierSearch carrierSearch);
 	void scheduleFileDownloadRetry(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
-		bool legacyCarrier);
+		FileDownloadCarrierSearch carrierSearch);
 	[[nodiscard]] FileChunkDownloadPageStatus processFileChunkDownloadPage(
 		ConversationId conversationId,
 		std::vector<TelegramTransport::UntrustedObject> objects);

@@ -954,8 +954,9 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 		QString mimeType,
 		int maximumObjectSize,
 		int maximumDownloadPageBytes,
-		int minimumMessageIdExclusive)
-: _state((!filename.isEmpty()
+		int minimumMessageIdExclusive,
+		bool protectedCarrierFamily)
+: _state(((!filename.isEmpty() || protectedCarrierFamily)
 		&& !mimeType.isEmpty()
 		&& maximumObjectSize > 0
 		&& maximumObjectSize <= kMaximumCarrierObjectSize
@@ -971,7 +972,7 @@ TelegramSessionCarrierBackend::TelegramSessionCarrierBackend(
 			maximumObjectSize,
 			maximumDownloadPageBytes,
 			minimumMessageIdExclusive,
-			false)
+			protectedCarrierFamily)
 		: nullptr) {
 }
 

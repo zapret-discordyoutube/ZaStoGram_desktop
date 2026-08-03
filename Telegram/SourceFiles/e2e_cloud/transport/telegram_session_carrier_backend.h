@@ -35,7 +35,8 @@ public:
 		QString mimeType,
 		int maximumObjectSize,
 		int maximumDownloadPageBytes = 64 * 1024 * 1024,
-		int minimumMessageIdExclusive = 0);
+		int minimumMessageIdExclusive = 0,
+		bool protectedCarrierFamily = false);
 	~TelegramSessionCarrierBackend();
 
 	void uploadDocument(

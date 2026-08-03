@@ -82,6 +82,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <deque>
 #include <limits>
 #include <set>
 #include <utility>
@@ -674,6 +675,7 @@ inline constexpr auto kFileCleanupChunksPerTurn = std::uint32_t(64);
 inline constexpr auto kFileRetryInitialDelay = crl::time(1000);
 inline constexpr auto kFileRetryMaximumDelay = crl::time(30'000);
 inline constexpr auto kFileDownloadMaximumRetries = 20;
+inline constexpr auto kMaximumQueuedFileDownloads = std::size_t(64);
 
 [[nodiscard]] crl::time FileRetryDelay(int attempt) {
 	const auto shift = std::min(attempt, 5);
@@ -895,7 +897,13 @@ struct DesktopService::PendingGroupCreation {
 		std::uint64_t retryToken = 0;
 		int retryAttempt = 0;
 		int retryCount = 0;
-		bool legacyCarrier = false;
+		FileDownloadCarrierSearch carrierSearch
+			= FileDownloadCarrierSearch::Current;
+	};
+	struct PendingFileDownloadRequest {
+		ObjectId eventObjectId;
+		QString path;
+		std::function<void(ProtectedFileSaveResult)> callback;
 	};
 
 	PendingGroupCreation(
@@ -1056,6 +1064,7 @@ struct DesktopService::PendingGroupCreation {
 	std::unique_ptr<TelegramCarrierTransport> fileDownloadTransport;
 	std::unique_ptr<FileChunkDownloadController> fileDownloadController;
 	std::optional<PendingFileDownload> pendingFileDownload;
+	std::deque<PendingFileDownloadRequest> fileDownloadQueue;
 	QString filePreparationPath;
 	QString filePreparationFilename;
 	QString filePreparationMimeType;
@@ -2627,54 +2636,114 @@ bool DesktopService::saveProtectedFile(
 		return false;
 	}
 	auto &group = *i->second;
-	if (group.observation
-		|| group.observationDirty
-		|| group.pendingFileDownload) {
+	const auto duplicate = (group.pendingFileDownload
+			&& group.pendingFileDownload->eventObjectId == eventObjectId)
+		|| std::any_of(
+			begin(group.fileDownloadQueue),
+			end(group.fileDownloadQueue),
+			[&](const auto &request) {
+				return request.eventObjectId == eventObjectId;
+			});
+	if (duplicate
+		|| group.fileDownloadQueue.size()
+			>= kMaximumQueuedFileDownloads) {
 		if (callback) {
 			callback(ProtectedFileSaveResult::Busy);
 		}
 		return false;
 	}
-	auto missing = std::set<std::uint32_t>();
-	for (auto index = std::uint32_t();
-			index != manifest->context.chunkCount;
-			++index) {
-		if (!group.chunkStore.hasChunk(
-			conversationId,
-			manifest->context.fileId,
-			index)) {
-			missing.emplace(index);
-		}
-	}
-	group.pendingFileDownload = PendingGroupCreation::PendingFileDownload{
+	group.fileDownloadQueue.push_back({
 		.eventObjectId = eventObjectId,
-		.fileId = manifest->context.fileId,
 		.path = std::move(path),
-		.missingChunkIndices = std::move(missing),
 		.callback = std::move(callback),
-		.legacyCarrier = false,
-	};
-	if (group.pendingFileDownload->missingChunkIndices.empty()) {
-		const auto started = writePendingProtectedFile(conversationId);
-		if (!started) {
+	});
+	(void)startNextProtectedFileDownload(conversationId);
+	return true;
+}
+
+bool DesktopService::startNextProtectedFileDownload(
+		ConversationId conversationId) {
+	while (vaultReady()) {
+		const auto i = _groups.find(conversationId);
+		if (i == end(_groups)
+			|| i->second->pendingFileDownload
+			|| i->second->observation
+			|| i->second->observationDirty
+			|| i->second->fileDownloadQueue.empty()) {
+			return false;
+		}
+		auto &group = *i->second;
+		auto request = std::move(group.fileDownloadQueue.front());
+		group.fileDownloadQueue.pop_front();
+		auto record = group.contentStore.record(request.eventObjectId);
+		const auto recordGuard = qScopeGuard([&] {
+			if (record) {
+				Cleanse(record->plaintext);
+			}
+		});
+		const auto manifest = (record
+			&& record->objectKind == ObjectKind::EncryptedFileManifest)
+			? PrivateFileManifestCodecV1().decodePlaintext(record->plaintext)
+			: std::nullopt;
+		if (!manifest
+			|| request.path.isEmpty()
+			|| record->observedTelegramMessageId <= 0
+			|| record->observedTelegramMessageId
+				> std::numeric_limits<int>::max()) {
+			auto callback = std::move(request.callback);
+			const auto weak = base::weak_ptr(this);
+			if (callback) {
+				callback(ProtectedFileSaveResult::InvalidRequest);
+			}
+			if (!weak) {
+				return false;
+			}
+			continue;
+		}
+		auto missing = std::set<std::uint32_t>();
+		for (auto index = std::uint32_t();
+				index != manifest->context.chunkCount;
+				++index) {
+			if (!group.chunkStore.hasChunk(
+				conversationId,
+				manifest->context.fileId,
+				index)) {
+				missing.emplace(index);
+			}
+		}
+		group.pendingFileDownload = PendingGroupCreation::PendingFileDownload{
+			.eventObjectId = request.eventObjectId,
+			.fileId = manifest->context.fileId,
+			.path = std::move(request.path),
+			.missingChunkIndices = std::move(missing),
+			.callback = std::move(request.callback),
+			.carrierSearch = FileDownloadCarrierSearch::Current,
+		};
+		if (group.pendingFileDownload->missingChunkIndices.empty()) {
+			const auto started = writePendingProtectedFile(conversationId);
+			if (!started) {
+				finishFileChunkDownload(
+					conversationId,
+					ProtectedFileSaveResult::LocalFailure);
+			}
+			return started;
+		}
+		if (!beginFileChunkDownload(
+				conversationId,
+				FileDownloadCarrierSearch::Current)) {
 			finishFileChunkDownload(
 				conversationId,
 				ProtectedFileSaveResult::LocalFailure);
+			return false;
 		}
-		return started;
+		return true;
 	}
-	if (!beginFileChunkDownload(conversationId, false)) {
-		finishFileChunkDownload(
-			conversationId,
-			ProtectedFileSaveResult::LocalFailure);
-		return false;
-	}
-	return true;
+	return false;
 }
 
 bool DesktopService::beginFileChunkDownload(
 		ConversationId conversationId,
-		bool legacyCarrier) {
+		FileDownloadCarrierSearch carrierSearch) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
@@ -2714,10 +2783,34 @@ bool DesktopService::beginFileChunkDownload(
 	const auto maximumBytes = manifest->context.plaintextSize
 		+ (chunkCount * 2048)
 		+ kFileDownloadExtraBytes;
-	const auto filename = legacyCarrier
-		? ProtectedContentCarrierFilename()
-		: ProtectedFileChunkCarrierFilename(manifest->context.fileId);
-	group.pendingFileDownload->legacyCarrier = legacyCarrier;
+	const auto encodedFileId = QByteArray(
+		reinterpret_cast<const char*>(manifest->context.fileId.bytes.data()),
+		manifest->context.fileId.bytes.size()).toHex();
+	const auto filename = [&] {
+		switch (carrierSearch) {
+		case FileDownloadCarrierSearch::Current:
+			return ProtectedFileChunkCarrierFilename(
+				manifest->context.fileId);
+		case FileDownloadCarrierSearch::LegacyFileId:
+			return u"protected_file_"_q
+				+ QString::fromLatin1(encodedFileId)
+				+ u".tde2e"_q;
+		case FileDownloadCarrierSearch::LegacyTruncatedFileId:
+			return u"protected_file_"_q
+				+ QString::fromLatin1(encodedFileId.left(48))
+				+ u".tde2e"_q;
+		case FileDownloadCarrierSearch::Content:
+			return ProtectedContentCarrierFilename();
+		case FileDownloadCarrierSearch::Legacy:
+			return ProtectedLegacyCarrierFilename();
+		case FileDownloadCarrierSearch::Family:
+			return QString();
+		}
+		Unexpected("File download carrier search type.");
+	}();
+	const auto broadCarrierSearch
+		= (carrierSearch == FileDownloadCarrierSearch::Family);
+	group.pendingFileDownload->carrierSearch = carrierSearch;
 	group.fileDownloadController.reset();
 	group.fileDownloadTransport.reset();
 	group.fileDownloadBackend = std::make_unique<
@@ -2729,7 +2822,8 @@ bool DesktopService::beginFileChunkDownload(
 			ProtectedCarrierMimeType(),
 			ProtectedFileChunkMaximumObjectSize(),
 			kFileDownloadPageBytes,
-			int(record->observedTelegramMessageId));
+			int(record->observedTelegramMessageId),
+			broadCarrierSearch);
 	group.fileDownloadTransport = std::make_unique<TelegramCarrierTransport>(
 		conversationId,
 		group.telegramPeerIdBinding,
@@ -2778,7 +2872,7 @@ bool DesktopService::beginFileChunkDownload(
 void DesktopService::scheduleFileDownloadRetry(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
-		bool legacyCarrier) {
+		FileDownloadCarrierSearch carrierSearch) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady()
 		|| i == end(_groups)
@@ -2797,7 +2891,7 @@ void DesktopService::scheduleFileDownloadRetry(
 	base::call_delayed(delay, [weak = base::weak_ptr(this),
 			conversationId,
 			eventObjectId,
-			legacyCarrier,
+			carrierSearch,
 			token] {
 		if (!weak || !weak->vaultReady()) {
 			return;
@@ -2812,7 +2906,7 @@ void DesktopService::scheduleFileDownloadRetry(
 		}
 		if (!weak->beginFileChunkDownload(
 				conversationId,
-				legacyCarrier)) {
+				carrierSearch)) {
 			weak->finishFileChunkDownload(
 				conversationId,
 				ProtectedFileSaveResult::LocalFailure);
@@ -2885,7 +2979,8 @@ void DesktopService::applyFileChunkDownload(
 		return;
 	}
 	auto &group = *i->second;
-	const auto wasLegacy = group.pendingFileDownload->legacyCarrier;
+	const auto previousCarrierSearch
+		= group.pendingFileDownload->carrierSearch;
 	group.fileDownloadController.reset();
 	group.fileDownloadTransport.reset();
 	group.fileDownloadBackend.reset();
@@ -2911,23 +3006,43 @@ void DesktopService::applyFileChunkDownload(
 		}
 		return;
 	} else if (completion.status == FileChunkDownloadStatus::Missing
-		&& !wasLegacy) {
-		if (beginFileChunkDownload(conversationId, true)) {
+		|| completion.status
+			== FileChunkDownloadStatus::RetryableTransportError) {
+		const auto nextCarrierSearch = [=]()
+				-> std::optional<FileDownloadCarrierSearch> {
+			switch (previousCarrierSearch) {
+			case FileDownloadCarrierSearch::Current:
+				return FileDownloadCarrierSearch::LegacyFileId;
+			case FileDownloadCarrierSearch::LegacyFileId:
+				return FileDownloadCarrierSearch::LegacyTruncatedFileId;
+			case FileDownloadCarrierSearch::LegacyTruncatedFileId:
+				return FileDownloadCarrierSearch::Content;
+			case FileDownloadCarrierSearch::Content:
+				return FileDownloadCarrierSearch::Legacy;
+			case FileDownloadCarrierSearch::Legacy:
+				return FileDownloadCarrierSearch::Family;
+			case FileDownloadCarrierSearch::Family:
+				return std::nullopt;
+			}
+			Unexpected("File download carrier search type.");
+		}();
+		if (nextCarrierSearch
+			&& beginFileChunkDownload(
+				conversationId,
+				*nextCarrierSearch)) {
 			return;
 		}
-	} else if ((completion.status
+		if (!nextCarrierSearch
+			&& completion.status
 				== FileChunkDownloadStatus::RetryableTransportError
-			|| completion.status == FileChunkDownloadStatus::Missing)
-		&& group.pendingFileDownload->retryCount
-			< kFileDownloadMaximumRetries) {
-		scheduleFileDownloadRetry(
-			conversationId,
-			eventObjectId,
-			(completion.status
-				== FileChunkDownloadStatus::RetryableTransportError)
-				? wasLegacy
-				: false);
-		return;
+			&& group.pendingFileDownload->retryCount
+				< kFileDownloadMaximumRetries) {
+			scheduleFileDownloadRetry(
+				conversationId,
+				eventObjectId,
+				previousCarrierSearch);
+			return;
+		}
 	}
 	const auto result = (completion.status
 			== FileChunkDownloadStatus::RetryableTransportError)
@@ -3133,8 +3248,12 @@ void DesktopService::finishFileChunkDownload(
 	if (group.observationDirty) {
 		beginGroupObservation(conversationId);
 	}
+	const auto weak = base::weak_ptr(this);
 	if (callback) {
 		callback(result);
+	}
+	if (weak) {
+		(void)weak->startNextProtectedFileDownload(conversationId);
 	}
 }
 
@@ -6263,6 +6382,7 @@ void DesktopService::applyGroupObservation(
 	if (!changed && rerun) {
 		beginGroupObservation(conversationId);
 	}
+	(void)startNextProtectedFileDownload(conversationId);
 	pumpActiveOutbox(conversationId);
 	startNextGroupDiscovery();
 }
@@ -6867,6 +6987,7 @@ bool DesktopService::applyAdministrativeTransition(
 		|| group.fileFinalHashInProgress
 		|| group.fileTransfer.pending()
 		|| group.pendingFileDownload
+		|| !group.fileDownloadQueue.empty()
 		|| group.uploadInProgress
 		|| group.outbox.size()
 		|| (group.uploadController
