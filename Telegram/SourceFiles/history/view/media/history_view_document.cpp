@@ -745,6 +745,9 @@ void Document::draw(
 		_dataMedia->automaticLoad(_realParent->fullId(), _realParent);
 	}
 	bool loaded = dataLoaded(), displayLoading = _data->displayLoading();
+	const auto protectedPreview = _realParent->isE2ECloudDecrypted()
+		&& _data->goodThumbnailPhoto()
+		&& !loaded;
 	const auto sti = context.imageStyle();
 	const auto stm = context.messageStyle();
 
@@ -782,7 +785,9 @@ void Document::draw(
 			FillThumbnailOverlay(p, rthumb, rounding, context);
 		}
 
-		if (radial || (!loaded && !_data->loading()) || _data->waitingForAlbum()) {
+		if (radial
+			|| (!protectedPreview && !loaded && !_data->loading())
+			|| _data->waitingForAlbum()) {
 			const auto backOpacity = (loaded && !_data->uploading()) ? radialOpacity : 1.;
 			p.setPen(Qt::NoPen);
 			p.setBrush(sti->msgDateImgBg);
@@ -1365,6 +1370,13 @@ TextState Document::textState(
 					: thumbed->linksavel;
 				return result;
 			}
+		}
+		if (_realParent->isE2ECloudDecrypted()
+			&& _data->goodThumbnailPhoto()
+			&& !loaded
+			&& rthumb.contains(point)) {
+			result.link = _openl;
+			return result;
 		}
 	} else {
 		if (const auto state = cornerDownloadTextState(point, request, mode); state.link) {

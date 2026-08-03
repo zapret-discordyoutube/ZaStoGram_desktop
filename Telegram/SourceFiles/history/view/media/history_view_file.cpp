@@ -130,9 +130,24 @@ void File::setDocumentLinks(
 			}),
 			context);
 	};
+	const auto makePreviewLink = [=]() -> FileClickHandlerPtr {
+		return std::make_shared<DocumentOpenClickHandler>(
+			document,
+			crl::guard(this, [=](FullMsgId id) {
+				if (document->filepath(true).isEmpty()) {
+					if (const auto photo = document->goodThumbnailPhoto()) {
+						_parent->delegate()->elementOpenPhoto(photo, id);
+						return;
+					}
+				}
+				_parent->delegate()->elementOpenDocument(document, id);
+			}),
+			context);
+	};
+	const auto protectedDocument = realParent->isE2ECloudDecrypted();
 	setLinks(
-		makeOpenLink(),
-		realParent->isE2ECloudDecrypted()
+		protectedDocument ? makePreviewLink() : makeOpenLink(),
+		protectedDocument
 			? makeOpenLink()
 			: std::make_shared<DocumentSaveClickHandler>(document, context),
 		std::make_shared<DocumentCancelClickHandler>(
