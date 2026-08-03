@@ -160,7 +160,9 @@ std::optional<QByteArray> ProtectedMessageBodyCodecV1::encodePlaintext(
 }
 
 std::optional<ProtectedMessageBody>
-ProtectedMessageBodyCodecV1::decodePlaintext(const QByteArray &bytes) const {
+ProtectedMessageBodyCodecV1::decodePlaintext(
+		const QByteArray &bytes,
+		ProtectedMessageBodyLayout) const {
 	if (bytes.size() < kHeaderSizeV1
 		|| !std::equal(
 			begin(kMagic),

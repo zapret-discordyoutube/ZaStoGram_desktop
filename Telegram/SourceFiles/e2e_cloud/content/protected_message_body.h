@@ -11,8 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QByteArray>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 namespace E2ECloud {
 
@@ -35,12 +37,29 @@ struct ProtectedMessageBody {
 		const ProtectedMessageBody &) = default;
 };
 
+static_assert(std::is_standard_layout_v<ProtectedMessageBody>);
+
+// Keep the decoded layout in the linker symbol: a stale caller must fail to
+// link instead of interpreting a newly built body with old field offsets.
+template <std::size_t... Layout>
+struct ProtectedMessageBodyLayoutTag final {
+};
+
+using ProtectedMessageBodyLayout = ProtectedMessageBodyLayoutTag<
+	sizeof(ProtectedMessageBody),
+	alignof(ProtectedMessageBody),
+	offsetof(ProtectedMessageBody, action),
+	offsetof(ProtectedMessageBody, unixTime),
+	offsetof(ProtectedMessageBody, targetEventObjectId),
+	offsetof(ProtectedMessageBody, textUtf8)>;
+
 class ProtectedMessageBodyCodecV1 final {
 public:
 	[[nodiscard]] std::optional<QByteArray> encodePlaintext(
 		const ProtectedMessageBody &body) const;
 	[[nodiscard]] std::optional<ProtectedMessageBody> decodePlaintext(
-		const QByteArray &bytes) const;
+		const QByteArray &bytes,
+		ProtectedMessageBodyLayout = {}) const;
 };
 
 } // namespace E2ECloud
