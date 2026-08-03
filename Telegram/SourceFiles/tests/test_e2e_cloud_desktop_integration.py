@@ -1080,6 +1080,10 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
         in protected_box
     assert "document->owner().documentLoadFail(document, true);" \
         in protected_box
+    assert "ProtectedFileSaveProgress progress" in service
+    assert "pending.missingChunkIndices.contains(index)" in service
+    assert "progress(received, pending.plaintextSize);" in service
+    assert "document->uploadingData->offset" in protected_box
     assert "makeProtectedPendingLink" in file_view
     assert "makeProtectedPendingLink" in document_view
     assert "|| _realParent->isE2ECloudDecrypted())" in document_view
@@ -1834,6 +1838,10 @@ def verify_file_download_legacy_carrier_fallbacks() -> None:
     assert "FileDownloadCarrierSearch::Family" in completion
     assert completion.index("nextCarrierSearch") \
         < completion.index("scheduleFileDownloadRetry(")
+    file_controller = source(
+        "SourceFiles/e2e_cloud/transport/file_chunk_download_controller.cpp"
+    )
+    assert "kDownloadPageLimit = 4" in file_controller
 
 
 def verify_control_precedes_content_observation() -> None:

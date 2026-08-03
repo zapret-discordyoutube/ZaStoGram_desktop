@@ -34,6 +34,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <utility>
 
 namespace E2ECloud {
@@ -659,6 +660,21 @@ void OpenProtectedHistoryFile(
 				} else {
 					document->owner().documentLoadFail(document, true);
 				}
+			}),
+			crl::guard(controller, [=](
+					std::uint64_t receivedBytes,
+					std::uint64_t totalBytes) {
+				if (!document->uploadingData || !totalBytes) {
+					return;
+				}
+				const auto maximum = std::uint64_t(
+					std::numeric_limits<int64>::max());
+				document->uploadingData->size = int64(
+					std::min(totalBytes, maximum));
+				document->uploadingData->offset = int64(std::min(
+					receivedBytes,
+					std::uint64_t(document->uploadingData->size)));
+				document->owner().documentLoadProgress(document);
 			}));
 	};
 	if (showInMediaView) {

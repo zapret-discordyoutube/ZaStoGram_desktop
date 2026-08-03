@@ -13,7 +13,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace E2ECloud {
 namespace {
 
-inline constexpr auto kDownloadPageLimit = 100;
+// Keep on-demand file pages small enough to surface useful byte progress in
+// the native message card instead of jumping from zero straight to complete.
+inline constexpr auto kDownloadPageLimit = 4;
 inline constexpr auto kMaximumCursorSize = 1024;
 
 } // namespace

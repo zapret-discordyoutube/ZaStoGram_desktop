@@ -98,6 +98,10 @@ enum class ProtectedFileSaveResult {
 	LocalFailure,
 };
 
+using ProtectedFileSaveProgress = std::function<void(
+	std::uint64_t receivedBytes,
+	std::uint64_t totalBytes)>;
+
 struct DesktopProtectedGroupSummary {
 	ConversationId conversationId;
 	std::uint64_t telegramPeerIdBinding = 0;
@@ -199,7 +203,8 @@ public:
 		ConversationId conversationId,
 		ObjectId eventObjectId,
 		QString path,
-		std::function<void(ProtectedFileSaveResult)> callback);
+		std::function<void(ProtectedFileSaveResult)> callback,
+		ProtectedFileSaveProgress progress = {});
 	[[nodiscard]] bool setProtectedDefaultHistory(
 		ConversationId conversationId,
 		HistoryAccess historyAccess);

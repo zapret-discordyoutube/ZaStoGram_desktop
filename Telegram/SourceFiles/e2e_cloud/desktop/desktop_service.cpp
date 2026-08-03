@@ -891,8 +891,12 @@ struct DesktopService::PendingGroupCreation {
 		ObjectId eventObjectId;
 		FileId fileId;
 		QString path;
+		std::uint64_t plaintextSize = 0;
+		std::uint32_t chunkSize = 0;
+		std::uint32_t chunkCount = 0;
 		std::set<std::uint32_t> missingChunkIndices;
 		std::function<void(ProtectedFileSaveResult)> callback;
+		ProtectedFileSaveProgress progress;
 		std::unique_ptr<PendingWrite> write;
 		std::uint64_t retryToken = 0;
 		int retryAttempt = 0;
@@ -904,6 +908,7 @@ struct DesktopService::PendingGroupCreation {
 		ObjectId eventObjectId;
 		QString path;
 		std::function<void(ProtectedFileSaveResult)> callback;
+		ProtectedFileSaveProgress progress;
 	};
 
 	PendingGroupCreation(
@@ -2605,7 +2610,8 @@ bool DesktopService::saveProtectedFile(
 		ConversationId conversationId,
 		ObjectId eventObjectId,
 		QString path,
-		std::function<void(ProtectedFileSaveResult)> callback) {
+		std::function<void(ProtectedFileSaveResult)> callback,
+		ProtectedFileSaveProgress progress) {
 	if (!vaultReady()) {
 		if (callback) {
 			callback(ProtectedFileSaveResult::SecurityBlocked);
@@ -2656,6 +2662,7 @@ bool DesktopService::saveProtectedFile(
 		.eventObjectId = eventObjectId,
 		.path = std::move(path),
 		.callback = std::move(callback),
+		.progress = std::move(progress),
 	});
 	(void)startNextProtectedFileDownload(conversationId);
 	return true;
@@ -2715,8 +2722,12 @@ bool DesktopService::startNextProtectedFileDownload(
 			.eventObjectId = request.eventObjectId,
 			.fileId = manifest->context.fileId,
 			.path = std::move(request.path),
+			.plaintextSize = manifest->context.plaintextSize,
+			.chunkSize = manifest->context.chunkSize,
+			.chunkCount = manifest->context.chunkCount,
 			.missingChunkIndices = std::move(missing),
 			.callback = std::move(request.callback),
+			.progress = std::move(request.progress),
 			.carrierSearch = FileDownloadCarrierSearch::Current,
 		};
 		if (group.pendingFileDownload->missingChunkIndices.empty()) {
@@ -2957,6 +2968,25 @@ FileChunkDownloadPageStatus DesktopService::processFileChunkDownloadPage(
 			< missingBefore) {
 		group.pendingFileDownload->retryAttempt = 0;
 		group.pendingFileDownload->retryCount = 0;
+		if (const auto &progress = group.pendingFileDownload->progress) {
+			const auto &pending = *group.pendingFileDownload;
+			auto received = std::uint64_t();
+			for (auto index = std::uint32_t();
+					index != pending.chunkCount;
+					++index) {
+				if (pending.missingChunkIndices.contains(index)) {
+					continue;
+				}
+				const auto offset = std::uint64_t(index)
+					* pending.chunkSize;
+				if (offset < pending.plaintextSize) {
+					received += std::min(
+						std::uint64_t(pending.chunkSize),
+						pending.plaintextSize - offset);
+				}
+			}
+			progress(received, pending.plaintextSize);
+		}
 	}
 	return group.pendingFileDownload->missingChunkIndices.empty()
 		? FileChunkDownloadPageStatus::Complete
