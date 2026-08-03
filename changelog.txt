@@ -1,3 +1,10 @@
+7.0.7 (04.08.26)
+
+- Add password-protected end-to-end encrypted Telegram groups.
+- Send encrypted messages and files from the regular chat composer.
+- Add previews, progress, editing and deletion for protected messages.
+- Fix protected media downloads, duplicate transfers and related crashes.
+
 7.0.6 (27.07.26)
 
 - Allow muting forever by left click on the profile mute button.
