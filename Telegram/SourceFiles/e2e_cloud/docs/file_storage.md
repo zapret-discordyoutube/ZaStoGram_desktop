@@ -83,6 +83,12 @@ the durable transfer before cleaning staging directories, preserves the one
 source path named by that transfer, and only then removes unrelated staged file
 or image orphans.
 
+A source may be staged and hashed while an earlier protected text, edit, or
+delete event is still queued or finishing its Telegram upload. Manifest
+allocation waits until that earlier outbox is empty, so the file uses the latest
+accepted protected state without making a normal quick attachment attempt fail.
+Only one prepared or durable file transfer exists per conversation at a time.
+
 The authenticated manifest is published and acknowledged before the first
 chunk. A receiver persists a protected local authorization record derived from
 that manifest and accepts a chunk only when its file identifier, layout,

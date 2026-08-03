@@ -2373,12 +2373,9 @@ bool DesktopService::sendProtectedFile(
 		return false;
 	}
 	auto &group = *i->second;
-	if (group.outbox.size()
-		|| group.uploadInProgress
-		|| (group.uploadController
-			&& group.uploadController->uploadInProgress())) {
-		return false;
-	}
+	// An earlier protected object may still own the outbox or upload slot.
+	// Staging is independent; pumpActiveOutbox creates this file's durable
+	// manifest only after both become empty, preserving their exact order.
 	const auto sourceInfo = QFileInfo(path);
 	const auto absolutePath = sourceInfo.absoluteFilePath();
 	if (absolutePath.isEmpty() || !sourceInfo.isFile()) {

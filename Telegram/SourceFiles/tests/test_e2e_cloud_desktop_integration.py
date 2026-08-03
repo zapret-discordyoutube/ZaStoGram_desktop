@@ -1154,6 +1154,9 @@ def verify_protected_files_keep_a_stable_source_and_retry() -> None:
 
     assert "PrepareStagedProtectedFile(" in send_file
     assert "ownedSource ? QString() : stagedPath" in send_file
+    assert "group.outbox.size()" not in send_file
+    assert "group.uploadInProgress" not in send_file
+    assert "uploadController->uploadInProgress()" not in send_file
     assert "staged->write(bytes) == bytes.size()" in service
     assert "staged->commit()" in service
     assert ".sourcePathUtf8 = group.filePreparationPath.toUtf8()" in commit

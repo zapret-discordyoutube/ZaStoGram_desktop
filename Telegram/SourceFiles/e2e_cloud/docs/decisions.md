@@ -1213,3 +1213,17 @@ New groups with an authenticated empty journal may clean every orphan after the
 empty state is established. Restored groups keep the full staged source across
 restart, so manifest and chunk retry continues from the durable cursor instead
 of failing after startup with a missing file.
+
+### D099: File preparation may wait behind an existing outbox
+
+Accept one new protected-file source while earlier protected text, edit, or
+delete objects are still queued or finishing upload. Copy and hash that source
+on the worker as usual, but allocate its manifest and durable transfer only
+after the existing outbox and active upload are empty. The normal outbox pump
+already enforces that boundary before `commitPreparedFileTransfer`.
+
+This removes a composer race in which attaching a file immediately after
+sending a message produced a generic queue failure even though no file transfer
+was active. A second prepared or durable file remains rejected, control
+reconstruction remains serialized, and the change does not alter MTProto
+session ownership, connection selection, pacing, or retry behavior.
