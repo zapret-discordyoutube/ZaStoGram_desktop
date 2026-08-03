@@ -103,12 +103,7 @@ int ProtectedFileChunkMaximumObjectSize() {
 	return kMaximumFileChunkObjectSize;
 }
 
-bool IsProtectedGroupCarrierMetadata(
-		const QString &filename,
-		const QString &mimeType) {
-	if (mimeType != ProtectedCarrierMimeType()) {
-		return false;
-	}
+bool IsProtectedGroupCarrierFilename(const QString &filename) {
 	const auto filenames = std::array{
 		ProtectedLegacyCarrierFilename(),
 		ProtectedControlCarrierFilename(),
@@ -117,6 +112,15 @@ bool IsProtectedGroupCarrierMetadata(
 	return std::find(begin(filenames), end(filenames), filename)
 		!= end(filenames)
 		|| ProtectedFileChunkCarrierFileId(filename).has_value();
+}
+
+bool IsProtectedGroupCarrierMetadata(
+		const QString &filename,
+		const QString &mimeType) {
+	if (mimeType != ProtectedCarrierMimeType()) {
+		return false;
+	}
+	return IsProtectedGroupCarrierFilename(filename);
 }
 
 struct TelegramCarrierTransport::CallbackGuard {

@@ -41,8 +41,14 @@ def verify_carrier_tracking() -> None:
     )
     assert "peer->isSelf()" in carrier
     assert "peer->isChat() || peer->isMegagroup()" in carrier
-    assert ".isProtectedPeerForPresentation(peer->id.value)" in carrier
+    assert "peer->migrateFrom()" in carrier
+    assert "peer->migrateTo()" in carrier
+    assert ".isProtectedPeerForPresentation(peer->id.value, linkedPeerId)" \
+        in carrier
+    assert "IsProtectedGroupCarrierFilename(" in carrier
+    assert "IsProtectedGroupCarrierMetadata(" not in carrier
     assert "!peer->isChat() && !peer->isMegagroup()" in group_carrier
+    assert "IsProtectedGroupCarrierMetadata(" in group_carrier
 
 
 def verify_group_scope() -> None:

@@ -29,6 +29,8 @@ namespace E2ECloud {
 [[nodiscard]] QString ProtectedCarrierMimeType();
 [[nodiscard]] int ProtectedCarrierMaximumObjectSize();
 [[nodiscard]] int ProtectedFileChunkMaximumObjectSize();
+[[nodiscard]] bool IsProtectedGroupCarrierFilename(
+	const QString &filename);
 [[nodiscard]] bool IsProtectedGroupCarrierMetadata(
 	const QString &filename,
 	const QString &mimeType);

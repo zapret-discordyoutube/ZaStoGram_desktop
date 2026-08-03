@@ -1242,3 +1242,16 @@ the deletion and report a local transfer failure; completing the original file
 cannot make the deleted card reappear. Unrelated messages and files do not
 cancel the transfer. This changes no MTProto session, admission, pacing, or
 connection ownership.
+
+### D101: Confirmed protected peers reserve exact carrier filenames
+
+Keep protected-group discovery strict on both the exact carrier filename and
+`application/octet-stream`. Once either side of a chat-to-megagroup migration
+is already known to protected presentation, reserve the exact current and
+legacy carrier filenames across both linked histories and hide those documents
+regardless of server-normalized MIME metadata.
+
+Ordinary groups still show documents that merely resemble carriers because
+they have no monotonic protected-peer marker. Exact filename parsing remains
+fail-closed, so partial names, uppercase identifiers, other extensions, and
+vault-only filenames remain visible and cannot enter protected transport.

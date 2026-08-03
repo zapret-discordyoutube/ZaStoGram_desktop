@@ -4596,11 +4596,18 @@ bool HistoryItem::isE2ECloudCarrier() const {
 			document->filename(),
 			document->mimeString());
 	} else if (peer->isChat() || peer->isMegagroup()) {
+		const auto linkedPeerId = [&]() -> std::uint64_t {
+			if (const auto from = peer->migrateFrom()) {
+				return from->id.value;
+			} else if (const auto to = peer->migrateTo()) {
+				return to->id.value;
+			}
+			return std::uint64_t(0);
+		}();
 		return _history->session().e2eCloud(
-		).isProtectedPeerForPresentation(peer->id.value)
-			&& E2ECloud::IsProtectedGroupCarrierMetadata(
-			document->filename(),
-			document->mimeString());
+		).isProtectedPeerForPresentation(peer->id.value, linkedPeerId)
+			&& E2ECloud::IsProtectedGroupCarrierFilename(
+				document->filename());
 	}
 	return false;
 }

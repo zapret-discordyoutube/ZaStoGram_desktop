@@ -1155,6 +1155,10 @@ public:
 		|| ProtectedFileChunkCarrierFileId(fileChunk) != fileId
 		|| !IsProtectedGroupCarrierMetadata(legacyFileChunk, mime)
 		|| ProtectedFileChunkCarrierFileId(legacyFileChunk) != fileId
+		|| !IsProtectedGroupCarrierFilename(
+			ProtectedLegacyCarrierFilename())
+		|| !IsProtectedGroupCarrierFilename(fileChunk)
+		|| !IsProtectedGroupCarrierFilename(legacyFileChunk)
 		|| ProtectedFileChunkCarrierFilename(FileId()).size()
 		|| ProtectedFileChunkCarrierFileId(
 			fileChunk.toUpper()).has_value()
@@ -1174,7 +1178,11 @@ public:
 			QString::fromLatin1("application/pdf"))
 		|| IsProtectedGroupCarrierMetadata(
 			CloudVaultCarrierFilename(),
-			mime)) {
+			mime)
+		|| IsProtectedGroupCarrierFilename(
+			CloudVaultCarrierFilename())
+		|| IsProtectedGroupCarrierFilename(
+			QString::fromLatin1("notes.tde2e"))) {
 		return Fail("protected carrier metadata recognition was not exact");
 	}
 	return 0;
