@@ -1007,6 +1007,9 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     document_view = source(
         "SourceFiles/history/view/media/history_view_document.cpp"
     )
+    gif_view = source(
+        "SourceFiles/history/view/media/history_view_gif.cpp"
+    )
     protected_box = source(
         "SourceFiles/e2e_cloud/desktop/protected_conversation_box.cpp"
     )
@@ -1061,6 +1064,17 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     assert "realParent->isE2ECloudDecrypted()" in file_view
     assert "_realParent->isE2ECloudDecrypted()" in document_view
     assert "void OpenProtectedHistoryFile(" in protected_box
+    assert "elementOpenPhoto(photo, id)" not in file_view
+    assert "ProtectedHistoryPreviewPhotoId" not in service
+    assert "setGoodThumbnailPhoto(preview)" not in service
+    assert "elementOpenDocument(\n\t\t\t\t\tdocument,\n\t\t\t\t\tid,\n\t\t\t\t\ttrue);" in file_view
+    assert "ProtectedMediaCachePath(" in protected_box
+    assert "if (showInMediaView)" in protected_box
+    assert "document->setLocation(Core::FileLocation(savedPath));" \
+        in protected_box
+    assert "|| _realParent->isE2ECloudDecrypted())" in document_view
+    assert ": _realParent->isE2ECloudDecrypted()\n\t\t? _openl" in gif_view
+    assert service.count("CleanupProtectedMediaCache(_session);") >= 3
     assert 'u"🔒 "_q' in service
     assert "tr::lng_e2e_cloud_header_status(tr::now)" in widget
     assert "|| !_customTitleText.isEmpty()" in top_bar

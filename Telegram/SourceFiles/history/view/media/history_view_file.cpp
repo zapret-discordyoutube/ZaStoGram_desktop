@@ -134,13 +134,10 @@ void File::setDocumentLinks(
 		return std::make_shared<DocumentOpenClickHandler>(
 			document,
 			crl::guard(this, [=](FullMsgId id) {
-				if (document->filepath(true).isEmpty()) {
-					if (const auto photo = document->goodThumbnailPhoto()) {
-						_parent->delegate()->elementOpenPhoto(photo, id);
-						return;
-					}
-				}
-				_parent->delegate()->elementOpenDocument(document, id);
+				_parent->delegate()->elementOpenDocument(
+					document,
+					id,
+					true);
 			}),
 			context);
 	};

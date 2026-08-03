@@ -746,7 +746,7 @@ void Document::draw(
 	}
 	bool loaded = dataLoaded(), displayLoading = _data->displayLoading();
 	const auto protectedPreview = _realParent->isE2ECloudDecrypted()
-		&& _data->goodThumbnailPhoto()
+		&& _data->hasThumbnail()
 		&& !loaded;
 	const auto sti = context.imageStyle();
 	const auto stm = context.messageStyle();
@@ -1372,7 +1372,7 @@ TextState Document::textState(
 			}
 		}
 		if (_realParent->isE2ECloudDecrypted()
-			&& _data->goodThumbnailPhoto()
+			&& _data->hasThumbnail()
 			&& !loaded
 			&& rthumb.contains(point)) {
 			result.link = _openl;
@@ -1471,8 +1471,10 @@ TextState Document::textState(
 	if (QRect(0, 0, till, painth).contains(point)
 		&& (!_data->loading() || downloadInCorner())
 		&& !_data->uploading()
-		&& !_data->isNull()) {
-		if (loaded || _dataMedia->canBePlayed()) {
+		&& (!_data->isNull() || _realParent->isE2ECloudDecrypted())) {
+		if (loaded
+			|| _dataMedia->canBePlayed()
+			|| _realParent->isE2ECloudDecrypted()) {
 			result.link = _openl;
 		} else {
 			result.link = _savel;

@@ -15,7 +15,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer.h"
 #include "data/data_document.h"
 #include "data/data_document_media.h"
-#include "data/data_photo_media.h"
 #include "e2e_cloud/archive/archive_epoch_crypto.h"
 #include "e2e_cloud/archive/archived_content_reader.h"
 #include "e2e_cloud/archive/archived_content_outbox.h"
@@ -289,6 +288,11 @@ template <typename Id>
 		ConversationId conversationId) {
 	return ConversationDirectory(telegramUserIdBinding, conversationId)
 		+ u"staged-files/"_q;
+}
+
+void CleanupProtectedMediaCache(not_null<Main::Session*> session) {
+	QDir(session->local().tempDirectory() + u"protected_media/"_q)
+		.removeRecursively();
 }
 
 [[nodiscard]] bool IsStagedProtectedImage(
@@ -575,21 +579,6 @@ template <typename Id>
 	return result ? result : 1;
 }
 
-[[nodiscard]] PhotoId ProtectedHistoryPreviewPhotoId(
-		ConversationId conversationId,
-		ObjectId eventObjectId,
-		const Sha256Provider &sha256) {
-	auto input = QByteArray("TDE2E/protected-history-preview-photo/v1");
-	input.append(ProtectedHistoryIdBytes(conversationId));
-	input.append(ProtectedHistoryIdBytes(eventObjectId));
-	const auto digest = sha256.digest(input);
-	auto result = std::uint64_t();
-	for (auto index = 0; index != 8; ++index) {
-		result = (result << 8) | digest.bytes[index];
-	}
-	return result ? result : 1;
-}
-
 [[nodiscard]] not_null<DocumentData*> CreateProtectedHistoryDocument(
 		not_null<Main::Session*> session,
 		ConversationId conversationId,
@@ -601,7 +590,6 @@ template <typename Id>
 		MTP_documentAttributeFilename(MTP_string(file.filename)),
 	};
 	auto thumbnail = ImageWithLocation();
-	auto previewImage = QImage();
 	if (file.preview) {
 		auto buffer = QBuffer();
 		buffer.setData(file.preview->jpegBytes);
@@ -617,7 +605,6 @@ template <typename Id>
 						image,
 						"JPG",
 						file.preview->jpegBytes);
-					previewImage = image;
 				}
 			}
 		}
@@ -657,31 +644,6 @@ template <typename Id>
 	}
 	result->resetCancelled();
 	result->status = FileReady;
-	if (file.preview && !previewImage.isNull()) {
-		const auto preview = session->data().photo(
-			ProtectedHistoryPreviewPhotoId(
-				conversationId,
-				eventObjectId,
-				sha256),
-			0,
-			QByteArray(),
-			date,
-			0,
-			false,
-			QByteArray(),
-			thumbnail,
-			thumbnail,
-			thumbnail,
-			ImageWithLocation(),
-			ImageWithLocation(),
-			crl::time(0));
-		preview->createMediaView()->set(
-			Data::PhotoSize::Large,
-			Data::PhotoSize::Large,
-			std::move(previewImage),
-			file.preview->jpegBytes);
-		result->setGoodThumbnailPhoto(preview);
-	}
 	return result;
 }
 
@@ -1222,6 +1184,7 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 , _remote(std::make_unique<TelegramCloudVaultTransport>(
 	_telegramSelfPeerId,
 	*_backend)) {
+	CleanupProtectedMediaCache(_session);
 	auto protectedPeers = DecodeProtectedPeerMarkers(
 		_session->local().readPref<QByteArray>(kProtectedPeersPref),
 		_telegramUserIdBinding);
@@ -1257,6 +1220,7 @@ DesktopService::DesktopService(not_null<Main::Session*> session)
 }
 
 DesktopService::~DesktopService() {
+	CleanupProtectedMediaCache(_session);
 	if (_pendingGroupCreation) {
 		clearMaterializedProtectedHistory(*_pendingGroupCreation);
 	}
@@ -3328,6 +3292,7 @@ void DesktopService::lock() {
 	_pendingGroupDiscovery.reset();
 	_groupDiscoveryQueue.clear();
 	_groups.clear();
+	CleanupProtectedMediaCache(_session);
 	_vault.reset();
 	Cleanse(_pendingUnlockPassword);
 	Cleanse(_unlockedPassword);

@@ -1976,6 +1976,8 @@ ClickHandlerPtr Gif::currentVideoLink() const {
 		? nullptr
 		: dataLoaded()
 		? _openl
+		: _realParent->isE2ECloudDecrypted()
+		? _openl
 		: (_data->loading() && _smallGroupPart)
 		? _cancell
 		: _dataMedia->canBePlayed()

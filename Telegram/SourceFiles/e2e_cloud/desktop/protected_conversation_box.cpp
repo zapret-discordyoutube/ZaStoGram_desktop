@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_document.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "storage/storage_account.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/layers/generic_box.h"
 #include "ui/toast/toast.h"
@@ -26,9 +27,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QScopeGuard>
 
 #include <algorithm>
+#include <cctype>
 #include <utility>
 
 namespace E2ECloud {
@@ -57,6 +61,40 @@ template <typename Id>
 		result.bytes.size(),
 		result.bytes.begin());
 	return result ? std::optional<Id>(result) : std::nullopt;
+}
+
+[[nodiscard]] QString ProtectedMediaCachePath(
+		not_null<Main::Session*> session,
+		ConversationId conversationId,
+		ObjectId eventObjectId,
+		const QString &filename) {
+	const auto conversationBytes = QByteArray(
+		reinterpret_cast<const char*>(conversationId.bytes.data()),
+		int(conversationId.bytes.size()));
+	auto directory = session->local().tempDirectory()
+		+ u"protected_media/"_q
+		+ QString::fromLatin1(conversationBytes.toHex())
+		+ u"/"_q;
+	if (!QDir().mkpath(directory)) {
+		return {};
+	}
+	const auto idBytes = QByteArray(
+		reinterpret_cast<const char*>(eventObjectId.bytes.data()),
+		int(eventObjectId.bytes.size()));
+	auto result = directory + QString::fromLatin1(idBytes.toHex());
+	const auto suffix = QFileInfo(filename).suffix().toLatin1();
+	const auto validSuffix = !suffix.isEmpty()
+		&& suffix.size() <= 16
+		&& std::all_of(
+			begin(suffix),
+			end(suffix),
+			[](char value) {
+				return std::isalnum(static_cast<unsigned char>(value));
+			});
+	if (validSuffix) {
+		result += u"."_q + QString::fromLatin1(suffix);
+	}
+	return result;
 }
 
 void CloseWhenVaultUnavailable(
@@ -574,40 +612,59 @@ void OpenProtectedHistoryFile(
 		});
 		return;
 	}
+	const auto download = [=](QString path, bool showSavedToast) {
+		if (path.isEmpty()) {
+			Ui::Toast::Show({
+				.text = tr::lng_e2e_cloud_file_save_failed(tr::now),
+			});
+			return;
+		}
+		const auto savedPath = path;
+		(void)controller->session().e2eCloud().saveProtectedFile(
+			*conversationId,
+			*eventObjectId,
+			std::move(path),
+			crl::guard(controller, [=](ProtectedFileSaveResult result) {
+				const auto saved
+					= (result == ProtectedFileSaveResult::Saved);
+				if (!saved || showSavedToast) {
+					Ui::Toast::Show({
+						.text = saved
+							? tr::lng_e2e_cloud_file_saved(tr::now)
+							: (result == ProtectedFileSaveResult::Busy)
+							? tr::lng_e2e_cloud_file_busy(tr::now)
+							: tr::lng_e2e_cloud_file_save_failed(
+								tr::now),
+					});
+				}
+				if (saved) {
+					document->setLocation(Core::FileLocation(savedPath));
+					controller->openDocument(
+						document,
+						showInMediaView,
+						{ .id = context });
+				}
+			}));
+	};
+	if (showInMediaView) {
+		download(
+			ProtectedMediaCachePath(
+				&controller->session(),
+				*conversationId,
+				*eventObjectId,
+				document->filename()),
+			false);
+		return;
+	}
 	FileDialog::GetWritePath(
 		Core::App().getFileDialogParent(),
 		tr::lng_e2e_cloud_save_file(tr::now),
 		FileDialog::AllFilesFilter(),
 		document->filename(),
 		crl::guard(controller, [=](QString &&path) {
-			if (path.isEmpty()) {
-				return;
+			if (!path.isEmpty()) {
+				download(std::move(path), true);
 			}
-			const auto savedPath = path;
-			(void)controller->session().e2eCloud().saveProtectedFile(
-					*conversationId,
-					*eventObjectId,
-					std::move(path),
-					crl::guard(controller, [=](
-							ProtectedFileSaveResult result) {
-						const auto saved
-							= (result == ProtectedFileSaveResult::Saved);
-						Ui::Toast::Show({
-							.text = saved
-								? tr::lng_e2e_cloud_file_saved(tr::now)
-								: (result == ProtectedFileSaveResult::Busy)
-								? tr::lng_e2e_cloud_file_busy(tr::now)
-								: tr::lng_e2e_cloud_file_save_failed(
-									tr::now),
-						});
-						if (saved) {
-							document->setLocation(Core::FileLocation(savedPath));
-							controller->openDocument(
-								document,
-								showInMediaView,
-								{ .id = context });
-						}
-					}));
 		}));
 }
 
