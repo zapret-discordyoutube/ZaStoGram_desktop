@@ -384,8 +384,7 @@ private:
 	[[nodiscard]] bool resumeObservedJoinHistory(
 		ConversationId conversationId);
 	[[nodiscard]] bool admitObservedClient(
-		ConversationId conversationId,
-		const std::vector<TelegramTransport::UntrustedObject> &objects);
+		ConversationId conversationId);
 	[[nodiscard]] bool applyAdministrativeTransition(
 		ConversationId conversationId,
 		GroupTransition transition);

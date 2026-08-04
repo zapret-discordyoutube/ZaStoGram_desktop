@@ -622,6 +622,33 @@ def verify_control_sync_uses_a_persistent_boundary() -> None:
     assert "groupLedger.stateAt(1)" in service
 
 
+def verify_client_admission_retries_the_persistent_inbox() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    apply = function_body(
+        service,
+        "void DesktopService::applyGroupObservation(",
+        "void DesktopService::handleNewTelegramItem(",
+    )
+    admission = function_body(
+        service,
+        "bool DesktopService::admitObservedClient(",
+        "DesktopService::LocalGroupRecoveryResult",
+    )
+
+    assert "admitObservedClient(conversationId)" in apply
+    admitted = apply.index("const auto admitted = admitObservedClient(")
+    admission_end = apply.index("if (processingFailed()", admitted)
+    assert "result.untrustedObjects" not in apply[admitted:admission_end]
+    reconstruct = admission.index("ReconstructPublicJoinObjects(")
+    verify = admission.index("VerifyObservedClientKeyPackage(")
+    assert reconstruct < verify
+    assert "group.changeInbox" in admission[reconstruct:verify]
+    assert "for (const auto &object : *durableObjects)" in admission
+    assert "DesktopGroupCreationState::LocalFailure" in admission[
+        reconstruct:verify
+    ]
+
+
 def verify_content_sync_requires_its_saved_boundary() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     controller = source(
@@ -2409,6 +2436,7 @@ def main() -> None:
     verify_control_sync_blocks_outgoing_races()
     verify_freshness_wait_does_not_busy_poll()
     verify_control_sync_uses_a_persistent_boundary()
+    verify_client_admission_retries_the_persistent_inbox()
     verify_content_sync_requires_its_saved_boundary()
     verify_deferred_content_keeps_its_saved_boundary()
     verify_pagination_cursor_tracking_is_bounded()

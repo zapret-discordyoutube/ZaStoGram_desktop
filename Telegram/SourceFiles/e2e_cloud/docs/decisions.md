@@ -1271,3 +1271,18 @@ The KeyPackage then commits to the caught-up generation. This is required after
 the first client addition or any administrative transition: a package bound to
 generation one is correctly rejected by current participants and would
 otherwise leave every later installation waiting for admission forever.
+
+### D103: Client admission retries the durable control inbox
+
+Admit new clients from the authenticated `group-change-inbox.state`, not only
+from the Telegram page that happened to finish the current observation. The
+control synchronizer stages each observed KeyPackage before admission and
+removes expired packages first. If freshness or another serialized operation
+temporarily prevents administration, advancing the Telegram observation
+boundary must therefore not strand the request forever.
+
+Every later control synchronization reconstructs the bounded, locally
+authenticated inbox and retries usable KeyPackages against the current group
+generation and Telegram sender binding. Invalid or expired packages remain
+rejected, inbox reconstruction failure is a local failure, and successful MLS
+admission keeps the existing transactional publish path.

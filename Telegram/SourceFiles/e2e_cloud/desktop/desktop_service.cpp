@@ -6391,9 +6391,7 @@ void DesktopService::applyGroupObservation(
 		if (processingFailed()) {
 			return;
 		}
-		const auto admitted = admitObservedClient(
-			conversationId,
-			result.untrustedObjects);
+		const auto admitted = admitObservedClient(conversationId);
 		if (processingFailed() || !_groups.contains(conversationId)) {
 			return;
 		}
@@ -7224,8 +7222,7 @@ bool DesktopService::applyAdministrativeTransition(
 }
 
 bool DesktopService::admitObservedClient(
-		ConversationId conversationId,
-		const std::vector<TelegramTransport::UntrustedObject> &objects) {
+		ConversationId conversationId) {
 	const auto i = _groups.find(conversationId);
 	if (!vaultReady() || i == end(_groups) || _pendingGroupCreation) {
 		return false;
@@ -7245,8 +7242,17 @@ bool DesktopService::admitObservedClient(
 		|| !state->memberByClient(metadata->clientId)) {
 		return false;
 	}
-	for (const auto &object : objects) {
-			auto observed = VerifyObservedClientKeyPackage(
+	const auto durableObjects = ReconstructPublicJoinObjects(
+		conversationId,
+		group.telegramPeerIdBinding,
+		group.envelopeCodec,
+		group.changeInbox);
+	if (!durableObjects) {
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	for (const auto &object : *durableObjects) {
+		auto observed = VerifyObservedClientKeyPackage(
 			object,
 			conversationId,
 			group.telegramPeerIdBinding,
