@@ -266,6 +266,7 @@ private:
 	[[nodiscard]] bool prepareGroupJoin(
 		CloudVaultConversation conversation,
 		VerifiedPublicGroupBootstrap verified,
+		std::vector<TelegramTransport::UntrustedObject> objects,
 		bool discovered);
 	void queueLoadedGroupDiscoveries();
 	void queueGroupDiscovery(std::uint64_t telegramPeerIdBinding);

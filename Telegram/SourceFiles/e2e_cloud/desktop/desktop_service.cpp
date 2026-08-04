@@ -4144,6 +4144,7 @@ void DesktopService::applyPublicBootstrapSyncResult(
 	}
 	auto conversation = _pendingGroupJoin->conversation;
 	auto verified = std::move(*result.verified);
+	auto objects = std::move(result.untrustedObjects);
 	if (!BootstrapMatchesConversation(verified, conversation)) {
 		_pendingGroupJoin.reset();
 		_vaultState = DesktopVaultState::SecurityBlocked;
@@ -4154,6 +4155,7 @@ void DesktopService::applyPublicBootstrapSyncResult(
 	if (!prepareGroupJoin(
 			std::move(conversation),
 			std::move(verified),
+			std::move(objects),
 			false)) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		resumeDeferredGroupObservations();
@@ -4163,6 +4165,7 @@ void DesktopService::applyPublicBootstrapSyncResult(
 bool DesktopService::prepareGroupJoin(
 		CloudVaultConversation conversation,
 		VerifiedPublicGroupBootstrap verified,
+		std::vector<TelegramTransport::UntrustedObject> objects,
 		bool discovered) {
 	if (!vaultReady()
 		|| _pendingGroupCreation
@@ -4228,30 +4231,6 @@ bool DesktopService::prepareGroupJoin(
 		return false;
 	}
 	CleanupStagedProtectedSources(operation->directory, QString());
-	const auto createdAt = std::uint64_t(base::unixtime::now());
-	auto keyPackage = PrepareClientKeyPackage({
-		.client = {
-			.conversationId = conversation.conversationId,
-			.accountId = *accountId,
-			.clientId = *clientId,
-			.telegramPeerIdBinding = conversation.telegramPeerIdBinding,
-		},
-		.currentGeneration = verified.state.generation(),
-		.telegramUserIdBinding = _telegramUserIdBinding,
-		.createdAt = createdAt,
-		.accountCredential = &_vault->identity.credential,
-		.accountSigningPrivateKey = &_vault->identity.signingPrivateKey,
-	},
-	OpenMlsBridge(),
-	MlsContextCodecV1(),
-	ClientKeyPackagePublicationCodecV1(),
-	operation->envelopeCodec,
-	_sha256);
-	if (keyPackage.status != PrepareClientKeyPackageStatus::Prepared
-		|| !keyPackage.entry) {
-		_groupCreationState = DesktopGroupCreationState::LocalFailure;
-		return false;
-	}
 	if (!BeginConversationSetup(operation->directory)) {
 		DiscardUncommittedConversationDirectory(operation->directory);
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
@@ -4264,7 +4243,80 @@ bool DesktopService::prepareGroupJoin(
 			verified.ownerCredential)
 			!= GroupLedgerCommitResult::Committed
 		|| operation->freshnessTrust.initialize(false)
-			!= FreshnessTrustCommitResult::Committed
+			!= FreshnessTrustCommitResult::Committed) {
+		DiscardUncommittedConversationDirectory(operation->directory);
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	const auto staged = StagePublicJoinObjects(
+		objects,
+		conversation.conversationId,
+		conversation.telegramPeerIdBinding,
+		operation->envelopeCodec,
+		_sha256,
+		operation->changeInbox);
+	const auto reconstructed = (staged == PublicJoinInboxStageStatus::Staged)
+		? ReconstructPublicJoinObjects(
+			conversation.conversationId,
+			conversation.telegramPeerIdBinding,
+			operation->envelopeCodec,
+			operation->changeInbox)
+		: std::nullopt;
+	const auto createdAt = std::uint64_t(base::unixtime::now());
+	const auto catchup = reconstructed
+		? CatchUpPublicJoin(
+			*reconstructed,
+			conversation.conversationId,
+			conversation.telegramPeerIdBinding,
+			*accountId,
+			*clientId,
+			_vault->identity.credential,
+			createdAt,
+			operation->envelopeCodec,
+			_sha256,
+			operation->groupLedger,
+			operation->keyPackages)
+		: PublicJoinCatchupOutcome();
+	const auto caughtUpCheckpoint = operation->groupLedger.checkpoint();
+	const auto reachedIndexedCheckpoint = ValidConversationCheckpoint(
+		conversation.checkpoint,
+		conversation.conversationId)
+		&& caughtUpCheckpoint.generation >= conversation.checkpoint.generation
+		&& operation->groupLedger.checkpointAt(
+			conversation.checkpoint.generation) == conversation.checkpoint;
+	if (!reconstructed
+		|| (catchup.status != PublicJoinCatchupStatus::Waiting
+			&& catchup.status
+				!= PublicJoinCatchupStatus::UpdatedWaiting)
+		|| !reachedIndexedCheckpoint
+		|| !operation->changeInbox.discardAppliedTransitions(
+			caughtUpCheckpoint.generation)) {
+		DiscardUncommittedConversationDirectory(operation->directory);
+		_groupCreationState = DesktopGroupCreationState::LocalFailure;
+		return false;
+	}
+	const auto catchupAdvanced = caughtUpCheckpoint != conversation.checkpoint;
+	conversation.checkpoint = caughtUpCheckpoint;
+	auto keyPackage = PrepareClientKeyPackage({
+		.client = {
+			.conversationId = conversation.conversationId,
+			.accountId = *accountId,
+			.clientId = *clientId,
+			.telegramPeerIdBinding = conversation.telegramPeerIdBinding,
+		},
+		.currentGeneration = caughtUpCheckpoint.generation,
+		.telegramUserIdBinding = _telegramUserIdBinding,
+		.createdAt = createdAt,
+		.accountCredential = &_vault->identity.credential,
+		.accountSigningPrivateKey = &_vault->identity.signingPrivateKey,
+	},
+	OpenMlsBridge(),
+	MlsContextCodecV1(),
+	ClientKeyPackagePublicationCodecV1(),
+	operation->envelopeCodec,
+	_sha256);
+	if (keyPackage.status != PrepareClientKeyPackageStatus::Prepared
+		|| !keyPackage.entry
 		|| operation->keyPackages.add(std::move(*keyPackage.entry))
 			!= KeyPackagePoolMutationResult::Committed
 		|| operation->keyPackages.enqueuePending(
@@ -4288,7 +4340,7 @@ bool DesktopService::prepareGroupJoin(
 	operation->freshnessGate = std::make_unique<FreshnessGate>(
 		verified.checkpoint,
 		false);
-	operation->vaultPreflightRequired = discovered;
+	operation->vaultPreflightRequired = discovered || catchupAdvanced;
 	operation->phase = PendingGroupCreation::Phase::AwaitingAdmission;
 	_pendingGroupCreation = std::move(operation);
 	publishNextBootstrapObject();
@@ -6594,6 +6646,7 @@ void DesktopService::applyGroupDiscovery(
 		return;
 	}
 	auto verified = std::move(*result.verified);
+	auto objects = std::move(result.untrustedObjects);
 	if (verified.genesis.telegramPeerIdBinding != peerId
 		|| std::any_of(
 			begin(_vault->conversations),
@@ -6617,6 +6670,7 @@ void DesktopService::applyGroupDiscovery(
 	if (!prepareGroupJoin(
 			std::move(conversation),
 			std::move(verified),
+			std::move(objects),
 			true)) {
 		_groupCreationState = DesktopGroupCreationState::LocalFailure;
 		resumeDeferredGroupObservations();

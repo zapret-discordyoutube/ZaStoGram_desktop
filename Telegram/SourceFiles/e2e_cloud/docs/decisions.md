@@ -1256,3 +1256,18 @@ Ordinary groups still show documents that merely resemble carriers because
 they have no monotonic protected-peer marker. Exact filename parsing remains
 fail-closed, so partial names, uppercase identifiers, other extensions, and
 vault-only filenames remain visible and cannot enter protected transport.
+
+### D102: New clients catch up before publishing their KeyPackage
+
+Build a new installation's client authorization against the latest verified
+protected-group generation visible in the Telegram control history, not against
+the immutable generation-one bootstrap. Before creating or uploading the
+KeyPackage, stage the bounded public join objects, replay the signed transition
+chain, and require it to reach the checkpoint authenticated by the account
+vault. If the visible chain is ahead, persist that newer verified checkpoint in
+the vault preflight.
+
+The KeyPackage then commits to the caught-up generation. This is required after
+the first client addition or any administrative transition: a package bound to
+generation one is correctly rejected by current participants and would
+otherwise leave every later installation waiting for admission forever.

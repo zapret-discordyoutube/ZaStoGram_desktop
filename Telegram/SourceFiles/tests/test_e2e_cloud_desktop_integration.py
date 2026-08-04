@@ -901,6 +901,40 @@ def verify_group_setup_commits_metadata_last() -> None:
     assert "ConversationSetupPending(directory)" in recovery
 
 
+def verify_join_catches_up_before_publishing_a_key_package() -> None:
+    service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
+    header = source("SourceFiles/e2e_cloud/desktop/desktop_service.h")
+    join = function_body(
+        service,
+        "bool DesktopService::prepareGroupJoin(",
+        "bool DesktopService::queueFreshnessChallenge(",
+    )
+    indexed = function_body(
+        service,
+        "void DesktopService::applyPublicBootstrapSyncResult(",
+        "bool DesktopService::prepareGroupJoin(",
+    )
+    discovered = function_body(
+        service,
+        "void DesktopService::applyGroupDiscovery(",
+        "bool DesktopService::completeObservedJoin(",
+    )
+
+    assert "std::vector<TelegramTransport::UntrustedObject> objects" \
+        in header
+    assert "auto objects = std::move(result.untrustedObjects);" in indexed
+    assert "auto objects = std::move(result.untrustedObjects);" in discovered
+    stage = join.index("StagePublicJoinObjects(")
+    catchup = join.index("CatchUpPublicJoin(")
+    package = join.index("PrepareClientKeyPackage(")
+    assert stage < catchup < package
+    assert ".currentGeneration = caughtUpCheckpoint.generation" in join
+    assert ".currentGeneration = verified.state.generation()" not in join
+    assert "checkpointAt(\n\t\t\tconversation.checkpoint.generation)" in join
+    assert "conversation.checkpoint = caughtUpCheckpoint;" in join
+    assert "discovered || catchupAdvanced" in join
+
+
 def verify_group_carriers_publish_before_vault_index() -> None:
     service = source("SourceFiles/e2e_cloud/desktop/desktop_service.cpp")
     creation = function_body(
@@ -2386,6 +2420,7 @@ def main() -> None:
     verify_admission_retry_preserves_synchronous_results()
     verify_untrusted_discovery_conflicts_do_not_lock_vault()
     verify_group_setup_commits_metadata_last()
+    verify_join_catches_up_before_publishing_a_key_package()
     verify_group_carriers_publish_before_vault_index()
     verify_freshness_challenges_resume_and_replays_stop()
     verify_observed_mls_receipts_finish_crash_recovery()
