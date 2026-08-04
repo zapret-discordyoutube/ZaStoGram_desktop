@@ -1,9 +1,22 @@
+7.0.8 (03.08.26)
+
+- Fix launch on some Windows 7 machines.
+
 7.0.7 (04.08.26)
 
 - Add password-protected end-to-end encrypted Telegram groups.
 - Send encrypted messages and files from the regular chat composer.
 - Add previews, progress, editing and deletion for protected messages.
 - Fix protected media downloads, duplicate transfers and related crashes.
+
+7.0.7 (31.07.26)
+
+- Add geometric shapes to the image editor.
+- Add better passkeys support on Windows, macOS and Linux.
+- Add undo for moving and resizing items in the image editor.
+- Extend chats list pull gesture to unread forum topics.
+- Fix Mini App cookies on Linux.
+- Crash fixes.
 
 7.0.6 (27.07.26)
 

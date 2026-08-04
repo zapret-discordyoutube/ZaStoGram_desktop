@@ -29,7 +29,27 @@ PRIVATE
     desktop-app::external_openssl
 )
 
-if (LINUX)
+if (WIN32)
+    nice_target_sources(td_webauthn ${src_loc}
+    PRIVATE
+        webauthn/cable_scanner_win.cpp
+    )
+    target_link_libraries(td_webauthn
+    PRIVATE
+        desktop-app::lib_base
+        desktop-app::lib_crl
+    )
+elseif (APPLE)
+    nice_target_sources(td_webauthn ${src_loc}
+    PRIVATE
+        webauthn/cable_scanner_mac.mm
+    )
+    target_link_libraries(td_webauthn
+    PRIVATE
+        desktop-app::lib_base
+        desktop-app::lib_crl
+    )
+else()
     nice_target_sources(td_webauthn ${src_loc}
     PRIVATE
         webauthn/cable_scanner_linux.cpp
@@ -42,25 +62,4 @@ if (LINUX)
     )
     include(${cmake_helpers_loc}/external/glib/generate_dbus.cmake)
     generate_dbus(td_webauthn org.bluez. Bluez ${src_loc}/webauthn/org.bluez.xml)
-elseif (WIN32)
-    nice_target_sources(td_webauthn ${src_loc}
-    PRIVATE
-        webauthn/cable_scanner_win.cpp
-    )
-    target_link_libraries(td_webauthn
-    PRIVATE
-        desktop-app::lib_base
-        desktop-app::lib_crl
-        Bthprops.lib
-    )
-elseif (APPLE)
-    nice_target_sources(td_webauthn ${src_loc}
-    PRIVATE
-        webauthn/cable_scanner_mac.mm
-    )
-    target_link_libraries(td_webauthn
-    PRIVATE
-        desktop-app::lib_base
-        desktop-app::lib_crl
-    )
 endif()
