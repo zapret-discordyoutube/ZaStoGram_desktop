@@ -41,7 +41,7 @@ bool Settings::validate() const {
 		return false;
 	} else if (!media.validate()) {
 		return false;
-	} else if (singlePeerTill > 0 && singlePeerTill <= singlePeerFrom) {
+	} else if (!singlePeerDateRange.valid()) {
 		return false;
 	}
 	return true;

@@ -395,7 +395,7 @@ void SettingsWidget::addFormatAndLocationLabel(
 void SettingsWidget::addLimitsLabel(
 		not_null<Ui::VerticalLayout*> container) {
 	auto fromDateLink = value() | rpl::map([](const Settings &data) {
-		return data.singlePeerFrom;
+		return data.singlePeerDateRange.from;
 	}) | rpl::distinct_until_changed(
 	) | rpl::map([](TimeId from) {
 		return (from
@@ -421,7 +421,7 @@ void SettingsWidget::addLimitsLabel(
 	};
 
 	auto fromTimeLink = value() | rpl::map([](const Settings &data) {
-		return data.singlePeerFrom;
+		return data.singlePeerDateRange.from;
 	}) | rpl::distinct_until_changed(
 	) | rpl::map([=](TimeId from) {
 		return mapToTime(from, u"internal:edit_from_time"_q);
@@ -433,7 +433,7 @@ void SettingsWidget::addLimitsLabel(
 	) | rpl::map(concat);
 
 	auto tillDateLink = value() | rpl::map([](const Settings &data) {
-		return data.singlePeerTill;
+		return data.singlePeerDateRange.till;
 	}) | rpl::distinct_until_changed(
 	) | rpl::map([](TimeId till) {
 		return (till
@@ -444,7 +444,7 @@ void SettingsWidget::addLimitsLabel(
 	}) | rpl::flatten_latest();
 
 	auto tillTimeLink = value() | rpl::map([](const Settings &data) {
-		return data.singlePeerTill;
+		return data.singlePeerDateRange.till;
 	}) | rpl::distinct_until_changed(
 	) | rpl::map([=](TimeId till) {
 		return mapToTime(till, u"internal:edit_till_time"_q);
@@ -514,33 +514,34 @@ void SettingsWidget::addLimitsLabel(
 		if (url == u"internal:edit_from"_q) {
 			const auto done = [=](TimeId limit) {
 				changeData([&](Settings &settings) {
-					settings.singlePeerFrom = limit;
+					settings.singlePeerDateRange.from = limit;
 				});
 			};
 			editDateLimit(
-				readData().singlePeerFrom,
+				readData().singlePeerDateRange.from,
 				0,
-				readData().singlePeerTill,
+				readData().singlePeerDateRange.till,
 				tr::lng_export_from_beginning(),
 				done);
 		} else if (url == u"internal:edit_from_time"_q) {
 			const auto now = [=] {
 				auto result = TimeId(0);
 				changeData([&](Settings &settings) {
-					result = settings.singlePeerFrom;
+					result = settings.singlePeerDateRange.from;
 				});
 				return result;
 			};
 			const auto done = [=](TimeId time) {
 				changeData([&](Settings &settings) {
 					const auto result = time
-						+ removeTime(settings.singlePeerFrom);
-					if (result >= settings.singlePeerTill
-							&& settings.singlePeerTill) {
-						settings.singlePeerFrom = settings.singlePeerTill
+						+ removeTime(settings.singlePeerDateRange.from);
+					if (result >= settings.singlePeerDateRange.till
+							&& settings.singlePeerDateRange.till) {
+						settings.singlePeerDateRange.from
+							= settings.singlePeerDateRange.till
 							- kOffset;
 					} else {
-						settings.singlePeerFrom = result;
+						settings.singlePeerDateRange.from = result;
 					}
 				});
 			};
@@ -548,18 +549,19 @@ void SettingsWidget::addLimitsLabel(
 		} else if (url == u"internal:edit_till"_q) {
 			const auto done = [=](TimeId limit) {
 				changeData([&](Settings &settings) {
-					if (limit <= settings.singlePeerFrom
-							&& settings.singlePeerFrom) {
-						settings.singlePeerTill = settings.singlePeerFrom
+					if (limit <= settings.singlePeerDateRange.from
+							&& settings.singlePeerDateRange.from) {
+						settings.singlePeerDateRange.till
+							= settings.singlePeerDateRange.from
 							+ kOffset;
 					} else {
-						settings.singlePeerTill = limit;
+						settings.singlePeerDateRange.till = limit;
 					}
 				});
 			};
 			editDateLimit(
-				readData().singlePeerTill,
-				readData().singlePeerFrom,
+				readData().singlePeerDateRange.till,
+				readData().singlePeerDateRange.from,
 				0,
 				tr::lng_export_till_end(),
 				done);
@@ -567,20 +569,21 @@ void SettingsWidget::addLimitsLabel(
 			const auto now = [=] {
 				auto result = TimeId(0);
 				changeData([&](Settings &settings) {
-					result = settings.singlePeerTill;
+					result = settings.singlePeerDateRange.till;
 				});
 				return result;
 			};
 			const auto done = [=](TimeId time) {
 				changeData([&](Settings &settings) {
 					const auto result = time
-						+ removeTime(settings.singlePeerTill);
-					if (result <= settings.singlePeerFrom
-							&& settings.singlePeerFrom) {
-						settings.singlePeerTill = settings.singlePeerFrom
+						+ removeTime(settings.singlePeerDateRange.till);
+					if (result <= settings.singlePeerDateRange.from
+							&& settings.singlePeerDateRange.from) {
+						settings.singlePeerDateRange.till
+							= settings.singlePeerDateRange.from
 							+ kOffset;
 					} else {
-						settings.singlePeerTill = result;
+						settings.singlePeerDateRange.till = result;
 					}
 				});
 			};
@@ -938,11 +941,14 @@ rpl::producer<Settings> SettingsWidget::value() const {
 	return rpl::single(readData()) | rpl::then(changes());
 }
 
-rpl::producer<> SettingsWidget::startClicks() const {
+rpl::producer<Settings> SettingsWidget::startClicks() const {
 	return _startClicks.value(
 	) | rpl::map([](Wrap &&wrap) {
 		return std::move(wrap.value);
-	}) | rpl::flatten_latest();
+	}) | rpl::flatten_latest(
+	) | rpl::map([=] {
+		return base::duplicate(readData());
+	});
 }
 
 rpl::producer<> SettingsWidget::cancelClicks() const {

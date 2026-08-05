@@ -1332,12 +1332,6 @@ MessagesSlice ParseMessagesSlice(
 	const QString &mediaFolder);
 MessagesSlice AdjustMigrateMessageIds(MessagesSlice slice);
 
-bool SingleMessageBefore(
-	const MTPmessages_Messages &data,
-	TimeId date);
-bool SingleMessageAfter(
-	const MTPmessages_Messages &data,
-	TimeId date);
 bool SkipMessageByDate(const Message &message, const Settings &settings);
 
 Utf8String FormatPhoneNumber(const Utf8String &phoneNumber);

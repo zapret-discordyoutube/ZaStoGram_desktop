@@ -131,7 +131,7 @@ void ResolveSettings(not_null<Main::Session*> session, Settings &settings) {
 		settings.forceSubPath = IsDefaultPath(session, settings.path);
 	}
 	if (!settings.onlySinglePeer()) {
-		settings.singlePeerFrom = settings.singlePeerTill = 0;
+		settings.singlePeerDateRange = {};
 	}
 }
 
@@ -201,7 +201,8 @@ void PanelController::showSettings() {
 	});
 
 	settings->startClicks(
-	) | rpl::on_next([=]() {
+	) | rpl::on_next([=](Settings data) {
+		*_settings = std::move(data);
 		showProgress();
 		_process->startExport(*_settings, PrepareEnvironment(_session));
 	}, settings->lifetime());

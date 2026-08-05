@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "export/export_date_range.h"
 #include "base/flags.h"
 #include "base/flat_map.h"
 
@@ -85,8 +86,7 @@ struct Settings {
 	MediaSettings media;
 
 	MTPInputPeer singlePeer = MTP_inputPeerEmpty();
-	TimeId singlePeerFrom = 0;
-	TimeId singlePeerTill = 0;
+	MessageDateRange singlePeerDateRange;
 
 	int32 singleTopicRootId = 0;
 	uint64 singleTopicPeerId = 0;

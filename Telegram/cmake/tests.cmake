@@ -91,6 +91,34 @@ set_target_properties(
 
 add_dependencies(Telegram test_bot_callback_state)
 
+add_executable(test_export_date_range WIN32)
+init_target(test_export_date_range "(tests)")
+
+target_include_directories(test_export_date_range PRIVATE ${src_loc})
+
+nice_target_sources(test_export_date_range ${src_loc}
+PRIVATE
+    export/export_date_range.h
+    tests/test_export_date_range.cpp
+)
+
+target_link_libraries(test_export_date_range
+PRIVATE
+    desktop-app::lib_base
+)
+
+set_target_properties(
+    test_export_date_range
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_export_date_range
+    COMMAND test_export_date_range
+)
+
+add_dependencies(Telegram test_export_date_range)
+
 add_executable(test_mtproxy_client_hello WIN32)
 init_target(test_mtproxy_client_hello "(tests)")
 

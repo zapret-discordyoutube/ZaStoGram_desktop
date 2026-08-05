@@ -3284,42 +3284,8 @@ MessagesSlice AdjustMigrateMessageIds(MessagesSlice slice) {
 	return slice;
 }
 
-TimeId SingleMessageDate(const MTPmessages_Messages &data) {
-	return data.match([&](const MTPDmessages_messagesNotModified &data) {
-		return 0;
-	}, [&](const auto &data) {
-		const auto &list = data.vmessages().v;
-		if (list.isEmpty()) {
-			return 0;
-		}
-		return list[0].match([](const MTPDmessageEmpty &data) {
-			return 0;
-		}, [](const auto &data) {
-			return data.vdate().v;
-		});
-	});
-}
-
-bool SingleMessageBefore(
-		const MTPmessages_Messages &data,
-		TimeId date) {
-	const auto single = SingleMessageDate(data);
-	return (single > 0 && single < date);
-}
-
-bool SingleMessageAfter(
-		const MTPmessages_Messages &data,
-		TimeId date) {
-	const auto single = SingleMessageDate(data);
-	return (single > 0 && single > date);
-}
-
 bool SkipMessageByDate(const Message &message, const Settings &settings) {
-	const auto goodFrom = (settings.singlePeerFrom <= 0)
-		|| (settings.singlePeerFrom <= message.date);
-	const auto goodTill = (settings.singlePeerTill <= 0)
-		|| (message.date < settings.singlePeerTill);
-	return !goodFrom || !goodTill;
+	return !settings.singlePeerDateRange.contains(message.date);
 }
 
 Utf8String FormatPhoneNumber(const Utf8String &phoneNumber) {

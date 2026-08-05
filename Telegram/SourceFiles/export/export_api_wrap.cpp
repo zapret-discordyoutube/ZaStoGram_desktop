@@ -1816,40 +1816,7 @@ void ApiWrap::requestMessagesCount(int localSplitIndex) {
 			error("Unexpected messagesNotModified received.");
 			return;
 		}
-		const auto skipSplit = !Data::SingleMessageAfter(
-			result,
-			_settings->singlePeerFrom);
-		if (skipSplit) {
-			// No messages from the requested range, skip this split.
-			messagesCountLoaded(localSplitIndex, 0);
-			return;
-		}
-		checkFirstMessageDate(localSplitIndex, count);
-	});
-}
-
-void ApiWrap::checkFirstMessageDate(int localSplitIndex, int count) {
-	Expects(_chatProcess != nullptr);
-	Expects(localSplitIndex < _chatProcess->info.splits.size());
-
-	if (_settings->singlePeerTill <= 0) {
 		messagesCountLoaded(localSplitIndex, count);
-		return;
-	}
-
-	// Request first message in this split to check if its' date < till.
-	requestChatMessages(
-		_chatProcess->info.splits[localSplitIndex],
-		1, // offset_id
-		-1, // add_offset
-		1, // limit
-		[=](const MTPmessages_Messages &result) {
-		Expects(_chatProcess != nullptr);
-
-		const auto skipSplit = !Data::SingleMessageBefore(
-			result,
-			_settings->singlePeerTill);
-		messagesCountLoaded(localSplitIndex, skipSplit ? 0 : count);
 	});
 }
 
@@ -2253,41 +2220,16 @@ void ApiWrap::requestChatMessages(
 	const auto realSplitIndex = (splitIndex >= 0)
 		? splitIndex
 		: (splitsCount + splitIndex);
-	if (_chatProcess->info.onlyMyMessages) {
-		splitRequest(realSplitIndex, MTPmessages_Search(
-			MTP_flags(MTPmessages_Search::Flag::f_from_id),
-			realPeerInput,
-			MTP_string(), // query
-			outgoingInput,
-			MTPInputPeer(), // saved_peer_id
-			MTPVector<MTPReaction>(), // saved_reaction
-			MTPint(), // top_msg_id
-			MTP_inputMessagesFilterEmpty(),
-			MTP_int(0), // min_date
-			MTP_int(0), // max_date
-			MTP_int(offsetId),
-			MTP_int(addOffset),
-			MTP_int(limit),
-			MTP_int(0), // max_id
-			MTP_int(0), // min_id
-			MTP_long(0) // hash
-		)).done(doneHandler).send();
-	} else {
-		splitRequest(realSplitIndex, MTPmessages_GetHistory(
-			realPeerInput,
-			MTP_int(offsetId),
-			MTP_int(0), // offset_date
-			MTP_int(addOffset),
-			MTP_int(limit),
-			MTP_int(0), // max_id
-			MTP_int(0), // min_id
-			MTP_long(0)  // hash
-		)).fail([=](const MTP::Error &error) {
+	const auto onlyMyMessages = _chatProcess->info.onlyMyMessages;
+	const auto &dateRange = _settings->singlePeerDateRange;
+	const auto useSearch = onlyMyMessages || dateRange.hasLimits();
+	const auto makeFailHandler = [=] {
+		return [=](const MTP::Error &error) {
 			Expects(_chatProcess != nullptr);
 
 			if (error.type() == u"CHANNEL_PRIVATE"_q) {
 				if (realPeerInput.type() == mtpc_inputPeerChannel
-					&& !_chatProcess->info.onlyMyMessages) {
+						&& !_chatProcess->info.onlyMyMessages) {
 
 					// Perhaps we just left / were kicked from channel.
 					// Just switch to only my messages.
@@ -2302,7 +2244,39 @@ void ApiWrap::requestChatMessages(
 				}
 			}
 			return false;
-		}).done(doneHandler).send();
+		};
+	};
+	if (useSearch) {
+		using Flag = MTPmessages_Search::Flag;
+		splitRequest(realSplitIndex, MTPmessages_Search(
+			MTP_flags(onlyMyMessages ? Flag::f_from_id : Flag(0)),
+			realPeerInput,
+			MTP_string(), // query
+			outgoingInput,
+			MTPInputPeer(), // saved_peer_id
+			MTPVector<MTPReaction>(), // saved_reaction
+			MTPint(), // top_msg_id
+			MTP_inputMessagesFilterEmpty(),
+			MTP_int(dateRange.searchMinDate()),
+			MTP_int(dateRange.searchMaxDate()),
+			MTP_int(offsetId),
+			MTP_int(addOffset),
+			MTP_int(limit),
+			MTP_int(0), // max_id
+			MTP_int(0), // min_id
+			MTP_long(0) // hash
+		)).fail(makeFailHandler()).done(doneHandler).send();
+	} else {
+		splitRequest(realSplitIndex, MTPmessages_GetHistory(
+			realPeerInput,
+			MTP_int(offsetId),
+			MTP_int(0), // offset_date
+			MTP_int(addOffset),
+			MTP_int(limit),
+			MTP_int(0), // max_id
+			MTP_int(0), // min_id
+			MTP_long(0)  // hash
+		)).fail(makeFailHandler()).done(doneHandler).send();
 	}
 }
 
@@ -3039,17 +3013,40 @@ void ApiWrap::requestTopicReplies(
 		base::take(_topicProcess->requestDone)(std::move(result));
 	};
 
-	mainRequest(MTPmessages_GetReplies(
-		_topicProcess->inputPeer,
-		MTP_int(_topicProcess->topicRootId),
-		MTP_int(offsetId),
-		MTP_int(0),
-		MTP_int(addOffset),
-		MTP_int(limit),
-		MTP_int(0),
-		MTP_int(0),
-		MTP_long(0)
-	)).done(doneHandler).send();
+	const auto &dateRange = _settings->singlePeerDateRange;
+	if (dateRange.hasLimits()) {
+		using Flag = MTPmessages_Search::Flag;
+		mainRequest(MTPmessages_Search(
+			MTP_flags(Flag::f_top_msg_id),
+			_topicProcess->inputPeer,
+			MTP_string(), // query
+			MTP_inputPeerEmpty(), // from_id
+			MTPInputPeer(), // saved_peer_id
+			MTPVector<MTPReaction>(), // saved_reaction
+			MTP_int(_topicProcess->topicRootId),
+			MTP_inputMessagesFilterEmpty(),
+			MTP_int(dateRange.searchMinDate()),
+			MTP_int(dateRange.searchMaxDate()),
+			MTP_int(offsetId),
+			MTP_int(addOffset),
+			MTP_int(limit),
+			MTP_int(0), // max_id
+			MTP_int(0), // min_id
+			MTP_long(0) // hash
+		)).done(doneHandler).send();
+	} else {
+		mainRequest(MTPmessages_GetReplies(
+			_topicProcess->inputPeer,
+			MTP_int(_topicProcess->topicRootId),
+			MTP_int(offsetId),
+			MTP_int(0),
+			MTP_int(addOffset),
+			MTP_int(limit),
+			MTP_int(0),
+			MTP_int(0),
+			MTP_long(0)
+		)).done(doneHandler).send();
+	}
 }
 
 void ApiWrap::loadTopicMessagesFiles(Data::MessagesSlice &&slice) {

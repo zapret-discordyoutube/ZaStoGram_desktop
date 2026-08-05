@@ -37,7 +37,7 @@ public:
 
 	rpl::producer<Settings> value() const;
 	rpl::producer<Settings> changes() const;
-	rpl::producer<> startClicks() const;
+	rpl::producer<Settings> startClicks() const;
 	rpl::producer<> cancelClicks() const;
 
 	void setShowBoxCallback(Fn<void(object_ptr<Ui::BoxContent>)> callback) {
