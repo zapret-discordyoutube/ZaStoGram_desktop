@@ -157,13 +157,13 @@ QString currentVersionText() {
 	} else if (AppBetaVersion) {
 		result += " beta";
 	}
-	if (!ZsgBuildId.empty()) {
-		result += u" (%1)"_q.arg(ZsgBuildId.utf16());
-	}
 	if (Platform::IsWindows64Bit()) {
 		result += " x64";
 	} else if (Platform::IsWindowsARM64()) {
 		result += " arm64";
+	}
+	if (!ZsgBuildId.empty()) {
+		result += u" (build %1)"_q.arg(ZsgBuildId.utf16());
 	}
 #ifdef _DEBUG
 	result += " DEBUG";

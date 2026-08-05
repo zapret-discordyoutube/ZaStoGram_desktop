@@ -607,8 +607,7 @@ jobs:
           # keep the object compiled with the previous build id.
           cd "${TBUILD//\\//}/${REPO_NAME}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            # A tagged release is fully identified by its version number.
-            BUILD_ID=""
+            BUILD_ID="stable-${GITHUB_RUN_NUMBER}"
           else
             BUILD_ID="dev-${GITHUB_RUN_NUMBER}"
           fi
@@ -799,7 +798,7 @@ jobs:
           ${SCCACHE_PATH:-sccache} --stop-server || true
 
       - name: Pack signed update.
-        if: env.ONLY_CACHE == 'false' && startsWith(github.ref, 'refs/tags/')
+        if: env.ONLY_CACHE == 'false' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/dev')
         shell: bash
         run: |
           cd "$TBUILD/$REPO_NAME/out/Release"
@@ -810,6 +809,12 @@ jobs:
             *) TARGET="" ;;
           esac
           ./Packer.exe -path Telegram.exe -path Updater.exe -version "$VERSION" $TARGET
+          if [[ "$GITHUB_REF" == refs/heads/dev ]]; then
+            for package in t*upd"$VERSION"; do
+              [ -e "$package" ] || continue
+              mv "$package" "${package}_dev${GITHUB_RUN_NUMBER}"
+            done
+          fi
           ls -la t*upd*
 
       - name: Move artifact.
@@ -883,6 +888,40 @@ jobs:
           [ -e "release/tupdate$ver" ] && add win "/tupdate{version}"
           [ -e "release/tx64upd$ver" ] && add win64 "/tx64upd{version}"
           [ -e "release/tarm64upd$ver" ] && add winarm "/tarm64upd{version}"
+          echo "$current" | tee release/current4
+      - name: Generate dev update map (current4).
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          build="$GITHUB_RUN_NUMBER"
+          current='{}'
+          add() {
+            key="$1"
+            file="$2"
+            version="$(basename "$file" | sed -nE 's/^t(update|x64upd|arm64upd)([0-9]+)_dev[0-9]+$/\2/p')"
+            if [ -z "$version" ]; then
+              echo "Could not read update version from $file"
+              exit 1
+            fi
+            current="$(echo "$current" | jq \
+              --arg key "$key" \
+              --arg build "$build" \
+              --arg version "$version" \
+              --arg link "/$(basename "$file")" \
+              '. + {($key): {dev: {released: $build, version: $version, link: $link}}}')"
+          }
+          for file in release/tupdate*_dev"$build"; do
+            [ -e "$file" ] && add win "$file"
+          done
+          for file in release/tx64upd*_dev"$build"; do
+            [ -e "$file" ] && add win64 "$file"
+          done
+          for file in release/tarm64upd*_dev"$build"; do
+            [ -e "$file" ] && add winarm "$file"
+          done
+          if [ "$current" = '{}' ]; then
+            echo "No signed dev update packages found, cannot generate current4!"
+            exit 1
+          fi
           echo "$current" | tee release/current4
       - name: Publish release.
         env:

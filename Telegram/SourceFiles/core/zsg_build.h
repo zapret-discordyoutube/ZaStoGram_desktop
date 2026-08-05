@@ -11,11 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // ZaStoGram build identity, baked in by CI right before the build.
 //
-// A tagged stable release is already fully described by AppVersionStr, so it
-// keeps the id empty. A pre-release built from `dev` gets "dev-<run number>",
-// which is exactly the name of the GitHub release the binary was downloaded
-// from, so an installed build can be traced back to its commit. A local build
-// keeps whatever is committed here.
+// CI gives every binary a channel-qualified run number: "stable-<run number>"
+// for a tagged release and "dev-<run number>" for a pre-release. The dev
+// number also drives same-AppVersion in-app updates. The local release helper
+// uses "dev-0-<commit>" so local packages are identifiable and follow dev.
 //
 // The "Bake ZaStoGram build id." step in .github/workflows/win.yml rewrites the
 // line below, so keep it on one line and keep this header trivial to include:

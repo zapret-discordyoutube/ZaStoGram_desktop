@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/changelogs.h"
 #include "core/click_handler_types.h"
 #include "core/version.h"
+#include "core/zsg_build.h"
 #include "mainwindow.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
@@ -31,6 +32,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/layers/box_content.h"
 
 #include <QtCore/QJsonDocument>
+#include <QtCore/QJsonArray>
 #include <QtCore/QJsonObject>
 #include <QtCore/QFileSystemWatcher>
 
@@ -66,6 +68,10 @@ namespace {
 
 constexpr auto kUpdaterTimeout = 10 * crl::time(1000);
 constexpr auto kMaxResponseSize = 1024 * 1024;
+constexpr auto kMaxReleasesResponseSize = 4 * kMaxResponseSize;
+constexpr auto kZaStoGramReleasesApi =
+	"https://api.github.com/repos/"
+	"youtubediscord/ZaStoGram_desktop/releases?per_page=100"_cs;
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
 constexpr auto kFlatpakPortalService = "org.freedesktop.portal.Flatpak";
@@ -93,6 +99,21 @@ using VersionChar = wchar_t;
 #endif // Q_OS_WIN
 
 using Loader = MTP::AbstractDedicatedLoader;
+
+std::optional<uint64> ZaStoGramDevBuildNumber() {
+	static const auto Expression = QRegularExpression(
+		u"^dev-(\\d+)(?:\\D.*)?$"_q,
+		QRegularExpression::CaseInsensitiveOption);
+	const auto match = Expression.match(ZsgBuildId.utf16());
+	if (!match.hasMatch()) {
+		return std::nullopt;
+	}
+	return match.captured(1).toULongLong();
+}
+
+bool IsZaStoGramDevBuild() {
+	return ZaStoGramDevBuildNumber().has_value();
+}
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
 using namespace gi::repository;
@@ -156,10 +177,17 @@ public:
 	~HttpChecker();
 
 private:
+	enum class ResponseType {
+		UpdateMap,
+		DevReleases,
+	};
+
+	void request(const QUrl &url, ResponseType type);
 	void gotResponse();
 	void gotFailure(QNetworkReply::NetworkError e);
 	void clearSentRequest();
 	bool handleResponse(const QByteArray &response);
+	bool handleDevReleases(const QByteArray &response);
 	std::optional<QString> parseOldResponse(
 		const QByteArray &response) const;
 	std::optional<QString> parseResponse(const QByteArray &response) const;
@@ -170,6 +198,7 @@ private:
 
 	std::unique_ptr<QNetworkAccessManager> _manager;
 	QNetworkReply *_reply = nullptr;
+	ResponseType _responseType = ResponseType::UpdateMap;
 
 };
 
@@ -487,7 +516,8 @@ bool UnpackUpdate(const QString &filepath) {
 				LOG(("Update Error: downloaded alpha version %1 is not greater, than mine %2").arg(alphaVersion).arg(cAlphaVersion()));
 				return false;
 			}
-		} else if (int32(version) <= AppVersion) {
+		} else if (int32(version) < AppVersion
+			|| (int32(version) == AppVersion && !IsZaStoGramDevBuild())) {
 			LOG(("Update Error: downloaded version %1 is not greater, than mine %2").arg(version).arg(AppVersion));
 			return false;
 		}
@@ -716,13 +746,29 @@ HttpChecker::HttpChecker(bool testing) : Checker(testing) {
 }
 
 void HttpChecker::start() {
+	if (IsZaStoGramDevBuild()) {
+		DEBUG_LOG(("Update Info: requesting ZaStoGram dev releases"));
+		request(
+			QUrl(kZaStoGramReleasesApi.utf16()),
+			ResponseType::DevReleases);
+		return;
+	}
 	const auto updaterVersion = Platform::AutoUpdateVersion();
 	const auto path = Local::readAutoupdatePrefix()
 		+ qstr("/current")
 		+ (updaterVersion > 1 ? QString::number(updaterVersion) : QString());
-	auto url = QUrl(path);
 	DEBUG_LOG(("Update Info: requesting update state"));
-	const auto request = QNetworkRequest(url);
+	request(QUrl(path), ResponseType::UpdateMap);
+}
+
+void HttpChecker::request(const QUrl &url, ResponseType type) {
+	_responseType = type;
+	auto request = QNetworkRequest(url);
+	if (type == ResponseType::DevReleases) {
+		request.setRawHeader("Accept", "application/vnd.github+json");
+		request.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
+		request.setRawHeader("User-Agent", "ZaStoGram-Desktop-Updater");
+	}
 	_manager = std::make_unique<QNetworkAccessManager>();
 	_reply = _manager->get(request);
 	_reply->connect(_reply, &QNetworkReply::finished, [=] {
@@ -740,12 +786,102 @@ void HttpChecker::gotResponse() {
 
 	cSetLastUpdateCheck(base::unixtime::now());
 	const auto response = _reply->readAll();
+	const auto responseType = _responseType;
 	clearSentRequest();
 
-	if (response.size() >= kMaxResponseSize || !handleResponse(response)) {
+	const auto maxSize = (responseType == ResponseType::DevReleases)
+		? kMaxReleasesResponseSize
+		: kMaxResponseSize;
+	if (response.size() >= maxSize) {
+		LOG(("Update Error: update response is too large: %1")
+			.arg(response.size()));
+		gotFailure(QNetworkReply::UnknownContentError);
+		return;
+	}
+	const auto handled = (responseType == ResponseType::DevReleases)
+		? handleDevReleases(response)
+		: handleResponse(response);
+	if (!handled) {
 		LOG(("Update Error: Bad update map size: %1").arg(response.size()));
 		gotFailure(QNetworkReply::UnknownContentError);
 	}
+}
+
+bool HttpChecker::handleDevReleases(const QByteArray &response) {
+	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
+	const auto document = QJsonDocument::fromJson(response, &error);
+	if (error.error != QJsonParseError::NoError || !document.isArray()) {
+		LOG(("Update Error: bad GitHub releases response: %1")
+			.arg(error.errorString()));
+		return false;
+	}
+	const auto current = ZaStoGramDevBuildNumber().value_or(0);
+	auto best = current;
+	auto bestUrl = QString();
+	static const auto TagExpression = QRegularExpression(u"^dev-(\\d+)$"_q);
+	const auto packagePrefix = [&] {
+		const auto platform = Platform::AutoUpdateKey();
+		if (platform == "win") {
+			return u"tupdate"_q;
+		} else if (platform == "win64") {
+			return u"tx64upd"_q;
+		} else if (platform == "winarm") {
+			return u"tarm64upd"_q;
+		}
+		return QString();
+	}();
+	if (packagePrefix.isEmpty()) {
+		LOG(("Update Error: unsupported ZaStoGram dev update platform."));
+		return false;
+	}
+	for (const auto &value : document.array()) {
+		if (!value.isObject()) {
+			continue;
+		}
+		const auto release = value.toObject();
+		if (!release.value("prerelease").toBool()
+			|| release.value("draft").toBool()) {
+			continue;
+		}
+		const auto match = TagExpression.match(
+			release.value("tag_name").toString());
+		if (!match.hasMatch()) {
+			continue;
+		}
+		const auto build = match.captured(1).toULongLong();
+		if (build <= best) {
+			continue;
+		}
+		auto hasManifest = false;
+		auto packageVersion = 0ULL;
+		auto packageUrl = QString();
+		const auto packageExpression = QRegularExpression(
+			u"^%1(\\d+)_dev%2$"_q.arg(packagePrefix).arg(build));
+		for (const auto &assetValue : release.value("assets").toArray()) {
+			const auto asset = assetValue.toObject();
+			const auto name = asset.value("name").toString();
+			if (name == "current4") {
+				hasManifest = true;
+			} else if (const auto package = packageExpression.match(name);
+				package.hasMatch()) {
+				packageVersion = package.captured(1).toULongLong();
+				packageUrl = asset.value("browser_download_url").toString();
+			}
+		}
+		if (hasManifest
+			&& packageVersion >= uint64(AppVersion)
+			&& !packageUrl.isEmpty()) {
+			best = build;
+			bestUrl = packageUrl;
+		}
+	}
+	if (bestUrl.isEmpty()) {
+		done(nullptr);
+		return true;
+	}
+	DEBUG_LOG(("Update Info: found ZaStoGram dev build %1").arg(best));
+	done(std::make_shared<HttpLoader>(bestUrl));
+	return true;
 }
 
 bool HttpChecker::handleResponse(const QByteArray &response) {
@@ -1788,7 +1924,8 @@ bool checkReadyUpdate() {
 				ClearAll();
 				return false;
 			}
-		} else if (versionNum <= AppVersion) {
+		} else if (versionNum < AppVersion
+			|| (versionNum == AppVersion && !IsZaStoGramDevBuild())) {
 			LOG(("Update Error: cant install version %1 having version %2").arg(versionNum).arg(AppVersion));
 			ClearAll();
 			return false;

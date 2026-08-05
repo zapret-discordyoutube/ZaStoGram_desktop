@@ -39,7 +39,14 @@ def main() -> None:
     require(
         "SourceFiles/boxes/about_box.cpp",
         "box->setTitle(AppName.utf16());",
-        "ZsgBuildId.utf16()",
+        'u" (build %1)"_q.arg(ZsgBuildId.utf16())',
+    )
+    require(
+        "SourceFiles/core/update_checker.cpp",
+        "kZaStoGramReleasesApi",
+        'release.value("prerelease").toBool()',
+        "ZaStoGramDevBuildNumber()",
+        "versionNum == AppVersion && !IsZaStoGramDevBuild()",
     )
     require(
         "SourceFiles/window/window_main_menu.cpp",
@@ -54,6 +61,12 @@ def main() -> None:
         "Resources/winrc/Telegram.rc",
         'VALUE "FileDescription", "ZaStoGram"',
         'VALUE "ProductName", "ZaStoGram"',
+    )
+    require(
+        "../.github/workflows/win.yml",
+        'BUILD_ID="stable-${GITHUB_RUN_NUMBER}"',
+        'BUILD_ID="dev-${GITHUB_RUN_NUMBER}"',
+        "Generate dev update map (current4).",
     )
 
 
