@@ -1,0 +1,30 @@
+name: Desktop source guards
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  guards:
+    runs-on: linux
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -f CMakeLists.txt
+          test -f Telegram/configure.py
+          test -f Telegram/configure.sh
+          bash -n Telegram/configure.sh
+
+      - name: Validate Python build helpers
+        run: python3 -m compileall -q Telegram/build Telegram/configure.py
