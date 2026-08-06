@@ -1232,7 +1232,7 @@ bool Application::openInternalUrl(const QString &url, QVariant context) {
 }
 
 QString Application::changelogLink() const {
-	return u"https://github.com/youtubediscord/ZaStoGram_desktop/releases"_q;
+	return u"https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/releases"_q;
 }
 
 bool Application::openCustomUrl(

@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FORK_RELEASES = "https://github.com/youtubediscord/ZaStoGram_desktop/releases"
+FORK_RELEASES = "https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/releases"
 UPSTREAM_CHANGELOG = "https://telegramdesktop.github.io/tdesktop/changelog/"
 
 
