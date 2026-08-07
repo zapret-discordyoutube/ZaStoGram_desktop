@@ -52,10 +52,11 @@ def main() -> None:
         "AppName.utf16()",
         FORK_RELEASES,
     )
-    require(
-        "SourceFiles/storage/localstorage.cpp",
-        FORK_RELEASES + "/latest/download",
-    )
+    localstorage = source("SourceFiles/storage/localstorage.cpp")
+    if FORK_RELEASES + "/download/latest" not in localstorage:
+        raise AssertionError("the native Forgejo latest-asset prefix is missing")
+    if FORK_RELEASES + "/latest/download" in localstorage:
+        raise AssertionError("the GitHub latest-asset path order returned")
     require(
         "Resources/winrc/Telegram.rc",
         'VALUE "FileDescription", "ZaStoGram"',
