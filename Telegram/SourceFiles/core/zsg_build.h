@@ -2,8 +2,7 @@
 This file is part of Telegram Desktop,
 the official desktop application for the Telegram messaging service.
 
-For license and copyright information please follow this link:
-https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+For license and copyright information see the local LEGAL file.
 */
 #pragma once
 
@@ -16,8 +15,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // number also drives same-AppVersion in-app updates. The local release helper
 // uses "dev-0-<commit>" so local packages are identifiable and follow dev.
 //
-// The "Bake ZaStoGram build id." step in .github/workflows/win.yml rewrites the
-// line below, so keep it on one line and keep this header trivial to include:
+// The local Windows release publisher rewrites the line below, so keep it on
+// one line and keep this header trivial to include:
 // only boxes/about_box.cpp does, so a new build id costs one translation unit
 // instead of a full rebuild.
 constexpr auto ZsgBuildId = ""_cs;

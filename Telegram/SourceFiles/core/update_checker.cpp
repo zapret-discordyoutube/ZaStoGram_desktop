@@ -2,8 +2,7 @@
 This file is part of Telegram Desktop,
 the official desktop application for the Telegram messaging service.
 
-For license and copyright information please follow this link:
-https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+For license and copyright information see the local LEGAL file.
 */
 #include "core/update_checker.h"
 
@@ -70,8 +69,8 @@ constexpr auto kUpdaterTimeout = 10 * crl::time(1000);
 constexpr auto kMaxResponseSize = 1024 * 1024;
 constexpr auto kMaxReleasesResponseSize = 4 * kMaxResponseSize;
 constexpr auto kZaStoGramReleasesApi =
-	"https://api.github.com/repos/"
-	"youtubediscord/ZaStoGram_desktop/releases?per_page=100"_cs;
+	"https://git.zapret.moe/api/v1/repos/"
+	"zapretdiscordyoutube/ZaStoGram_desktop/releases?limit=100"_cs;
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
 constexpr auto kFlatpakPortalService = "org.freedesktop.portal.Flatpak";
@@ -765,8 +764,7 @@ void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
 	auto request = QNetworkRequest(url);
 	if (type == ResponseType::DevReleases) {
-		request.setRawHeader("Accept", "application/vnd.github+json");
-		request.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
+		request.setRawHeader("Accept", "application/json");
 		request.setRawHeader("User-Agent", "ZaStoGram-Desktop-Updater");
 	}
 	_manager = std::make_unique<QNetworkAccessManager>();
@@ -811,7 +809,7 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
 	const auto document = QJsonDocument::fromJson(response, &error);
 	if (error.error != QJsonParseError::NoError || !document.isArray()) {
-		LOG(("Update Error: bad GitHub releases response: %1")
+		LOG(("Update Error: bad Forgejo releases response: %1")
 			.arg(error.errorString()));
 		return false;
 	}
@@ -1642,7 +1640,7 @@ void Updater::start(bool forceWait) {
 		startImplementation(
 			&_httpImplementation,
 			std::make_unique<HttpChecker>(_testing));
-		// Updates come only from our GitHub releases, never from
+		// Updates come only from our Forgejo releases, never from
 		// the official Telegram update channel.
 		startImplementation(&_mtpImplementation, nullptr);
 

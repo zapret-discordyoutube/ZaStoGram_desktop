@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FORK_RELEASES = "https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/releases"
-UPSTREAM_CHANGELOG = "https://telegramdesktop.github.io/tdesktop/changelog/"
 
 
 def source(path: str) -> str:
@@ -22,8 +21,6 @@ def require(path: str, *needles: str) -> None:
 
 def main() -> None:
     application = source("SourceFiles/core/application.cpp")
-    if UPSTREAM_CHANGELOG in application:
-        raise AssertionError("the upstream Telegram changelog URL was restored")
     if FORK_RELEASES not in application:
         raise AssertionError("the ZaStoGram release history URL is missing")
 
@@ -44,6 +41,8 @@ def main() -> None:
     require(
         "SourceFiles/core/update_checker.cpp",
         "kZaStoGramReleasesApi",
+        "https://git.zapret.moe/api/v1/repos/",
+        "zapretdiscordyoutube/ZaStoGram_desktop/releases?limit=100",
         'release.value("prerelease").toBool()',
         "ZaStoGramDevBuildNumber()",
         "versionNum == AppVersion && !IsZaStoGramDevBuild()",
@@ -63,10 +62,9 @@ def main() -> None:
         'VALUE "ProductName", "ZaStoGram"',
     )
     require(
-        "../.github/workflows/win.yml",
-        'BUILD_ID="stable-${GITHUB_RUN_NUMBER}"',
-        'BUILD_ID="dev-${GITHUB_RUN_NUMBER}"',
-        "Generate dev update map (current4).",
+        "../.forgejo/workflows/source-guards.yml",
+        "release_guards.txt",
+        "Run canonical release source guards",
     )
 
 

@@ -1,5 +1,5 @@
 # ZaStoGram Desktop
-<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/1fb98cdb-b9e0-49a0-9c2b-2302a2eb8dca" />
+![Обзор ZaStoGram Desktop](docs/assets/zastogram-overview.png)
 
 **ZaStoGram** — форк [Telegram Desktop][tdesktop], заточенный под работу в сетях с DPI‑цензурой и под приватность. Цель проекта: чтобы клиент **уверенно подключался там, где обычный Telegram режут**, маскировал трафик под обычный браузерный HTTPS и **не терял переписку** (удалённые сообщения, истории, правки).
 
@@ -109,10 +109,11 @@
 
 ---
 
-## 🏗️ Сборка и CI
+## 🏗️ Сборка и проверки
 
-- Сборка идёт через **GitHub Actions** (`.github/workflows/win.yml`): только **Windows**, конфигурации `x64` и `x64_x86` (Qt5). После каждого пуша автоматически публикуется **пре‑релиз** `dev-N` с готовыми `.exe`.
-- Зависимости (Qt, Libraries, ThirdParty) кэшируются между запусками.
+- Forgejo Actions выполняет быстрые проверки исходников из `.forgejo/workflows/source-guards.yml` на изолированном Linux Runner.
+- Тяжёлая Windows-сборка выполняется локальным публикатором на выделенной Windows-машине, после чего проверенные `.exe`, ZIP и файлы автообновления загружаются в Forgejo Releases.
+- Единый список обязательных исходных проверок хранится в `Telegram/SourceFiles/tests/release_guards.txt`; его используют и Forgejo Actions, и локальный Windows-публикатор.
 - Инструкции по ручной сборке официального клиента (применимы и здесь) — в [`docs/`](docs/).
 
 > Базовый клиент собирается стандартным тулчейном Telegram Desktop. Артефакты пре‑релиза переименовываются в `ZaStoGram-<arch>.exe`.
@@ -131,4 +132,4 @@
 
 ZaStoGram — независимый форк; товарные знаки Telegram принадлежат их владельцам.
 
-[tdesktop]: https://github.com/telegramdesktop/tdesktop
+[tdesktop]: https://desktop.telegram.org/

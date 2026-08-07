@@ -45,7 +45,7 @@ body:
       label: Installation source
       multiple: false
       options:
-        - Downloaded from desktop.telegram.org or GitHub
+        - Downloaded from Forgejo Releases
         - Microsoft Store
         - Mac App Store
         - Flatpak
@@ -67,8 +67,7 @@ body:
     attributes:
       label: Logs
       description: >
-        Type the word `viewlogs`
-        [directly into your settings menu](https://github.com/telegramdesktop/tdesktop/wiki/Cheat-Codes)
-        to open the logs folder.
+        Type the word `viewlogs` directly into the settings menu to open the
+        logs folder.
       placeholder: Insert log.txt here
       render: shell

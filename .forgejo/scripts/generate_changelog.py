@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert changelog.txt to a static HTML page for GitHub Pages."""
+"""Convert changelog.txt to a static HTML release-history page."""
 
 import re
 import shutil
@@ -255,9 +255,9 @@ footer a:hover {{ text-decoration: underline; }}
 
 <footer>
   Auto-generated from
-  <a href="https://github.com/telegramdesktop/tdesktop/blob/dev/changelog.txt">changelog.txt</a>.
+  <a href="https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/raw/branch/dev/changelog.txt">changelog.txt</a>.
   Source code is published under
-  <a href="https://github.com/telegramdesktop/tdesktop">GPL v3</a>.
+  <a href="https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop">GPL v3</a>.
 </footer>
 
 <script>

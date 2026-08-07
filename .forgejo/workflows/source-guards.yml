@@ -28,3 +28,12 @@ jobs:
 
       - name: Validate Python build helpers
         run: python3 -m compileall -q Telegram/build Telegram/configure.py
+
+      - name: Run canonical release source guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r guard; do
+            [ -z "$guard" ] && continue
+            python3 "$guard"
+          done < Telegram/SourceFiles/tests/release_guards.txt
