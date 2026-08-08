@@ -24,7 +24,12 @@ struct WssRoute {
 };
 
 // Official MTProto-over-WebSocket route for a data center, mirroring the
-// web.telegram.org transport. The public web sockets exist only for DC2/DC4.
+// web.telegram.org transport. Every production DC (1-5) has a working web
+// relay, but the ingress addresses are NOT interchangeable: each one serves
+// only its own datacenters. Reaching the wrong ingress answers 302 (with an
+// X-Redirect-Host header naming the right relay) or accepts the connection
+// and stays silent - which is where the widespread "web sockets exist only
+// for DC2/DC4" belief came from. Measured against live relays 2026-08-08.
 [[nodiscard]] std::optional<WssRoute> WssOfficialRoute(
 	int16 protocolDcId);
 

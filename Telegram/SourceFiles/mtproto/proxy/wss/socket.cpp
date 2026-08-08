@@ -98,6 +98,21 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 	return result;
 }
 
+[[nodiscard]] QString OfficialRelayIngress(int dcId) {
+	// Each ingress serves only its own datacenters; they are not
+	// interchangeable. Verified against live relays on 2026-08-08: all three
+	// accept the upgrade and carry real MTProto, including the media (-1)
+	// hostnames.
+	switch (dcId) {
+	case 1:
+	case 3: return u"149.154.174.100"_q;
+	case 2:
+	case 4: return u"149.154.167.220"_q;
+	case 5: return u"149.154.170.100"_q;
+	}
+	return QString();
+}
+
 } // namespace
 
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
@@ -105,14 +120,16 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	const auto positive = (raw < 0) ? -raw : raw;
 	if (positive >= kTestModeDcIdShift) {
 		return std::nullopt; // test-mode DCs have no public web relay
-	} else if (positive != 2 && positive != 4) {
-		return std::nullopt; // web sockets exist only for DC2 / DC4
+	}
+	const auto ingress = OfficialRelayIngress(positive);
+	if (ingress.isEmpty()) {
+		return std::nullopt; // CDN and unknown ids have no public web relay
 	}
 	auto route = WssRoute();
-	route.relayHost = u"149.154.167.220"_q;
+	route.relayHost = ingress;
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
-	const auto name = (positive == 4) ? u"kws4"_q : u"kws2"_q;
+	const auto name = u"kws%1"_q.arg(positive);
 	// A file lane can bootstrap a regular key first. Route by the protocol
 	// DC sign, not by its large-buffer/file-lane classification, otherwise a
 	// positive DC id reaches a media-only relay and is rejected with -444.
@@ -267,6 +284,14 @@ int64 WssSocket::read(bytes::span buffer) {
 void WssSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	Expects(!buffer.empty());
 
+	// Frame boundaries are free EXCEPT for the very first binary frame after
+	// the upgrade: the relay parses the 64-byte obfuscation header out of that
+	// single frame's payload and never revisits the decision. A shorter first
+	// frame is fatal and silent - the relay simply never answers, which looks
+	// exactly like a network problem. Neither one TCP write nor real WebSocket
+	// fragmentation helps; only the frame payload counts. Measured against the
+	// live relays on 2026-08-08: 63 bytes never answered, 64 always did.
+	// Combining the header with the first packet keeps that guarantee here.
 	if (prefix.empty()) {
 		sendFrame(0x2, buffer);
 		return;
@@ -297,7 +322,7 @@ QString WssSocket::transportName() const {
 void WssSocket::handleError(int errorCode) {
 	// On a connect/handshake failure, retry once via the other relay host
 	// (hardcoded IP <-> domain) before giving up, so a blocked or stale
-	// relay IP does not kill DC2/DC4 connectivity. The failure is recorded
+	// relay IP does not kill web-relay connectivity. The failure is recorded
 	// so the next socket starts from the host that still may work.
 	if (!_upgraded && !_hostFlipped && HasRelayFallback(_route)) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
