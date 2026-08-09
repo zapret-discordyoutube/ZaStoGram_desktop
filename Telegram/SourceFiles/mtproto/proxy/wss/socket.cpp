@@ -62,6 +62,49 @@ std::map<QString, RelayPreference> RelayPreferences;
 		&& (i->second.until > crl::now());
 }
 
+// Отдельный от выбора адреса учёт: у датацентра может не открываться ни один
+// адрес релея — у части провайдеров порт 443 к нему закрыт целиком, по обоим
+// протоколам. Держать такой датацентр в вечных попытках бессмысленно: медиа
+// оттуда не загрузится никогда, хотя прямое соединение может работать. После
+// нескольких неудач подряд, ни одна из которых не дошла даже до TCP, маршрут
+// WSS для этого датацентра отключается, и фабрика сокетов создаёт обычный TCP.
+constexpr auto kRouteFailuresBeforeSuppress = 3;
+constexpr auto kRouteSuppressTtl = 10 * 60 * crl::time(1000);
+
+struct RouteHealth {
+	int consecutiveFailures = 0;
+	crl::time suppressedUntil = 0;
+};
+
+std::map<QString, RouteHealth> RouteHealthByDomain;
+
+[[nodiscard]] bool RouteSuppressed(const QString &domain) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto i = RouteHealthByDomain.find(domain);
+	if (i == end(RouteHealthByDomain) || !i->second.suppressedUntil) {
+		return false;
+	} else if (i->second.suppressedUntil <= crl::now()) {
+		i->second = RouteHealth();
+		return false;
+	}
+	return true;
+}
+
+void NoteRouteUnreachable(const WssRoute &route) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	auto &health = RouteHealthByDomain[route.domain];
+	if (health.suppressedUntil > crl::now()) {
+		return;
+	} else if (++health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
+		health.suppressedUntil = crl::now() + kRouteSuppressTtl;
+	}
+}
+
+void NoteRouteReachable(const WssRoute &route) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	RouteHealthByDomain[route.domain] = RouteHealth();
+}
+
 void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
 	if (!HasRelayFallback(route)) {
 		return;
@@ -139,6 +182,10 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	// Fallback: if the hardcoded relay IP is unreachable, retry once via the
 	// domain so DNS yields a currently-valid address.
 	route.relayHostFallback = route.domain;
+	if (RouteSuppressed(route.domain)) {
+		// Релей этого датацентра недоступен; пусть соединение идёт напрямую.
+		return std::nullopt;
+	}
 	return route;
 }
 
@@ -255,6 +302,11 @@ void WssSocket::timedOut() {
 	// from the other one instead of repeating the same dead-host attempt.
 	if (!_upgraded && !_hostFlipped) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
+	}
+	if (!_upgraded && _phase == HandshakePhase::None) {
+		// Не дошли даже до установленного TCP: адрес релея недоступен, а не
+		// протокол сломан.
+		NoteRouteUnreachable(_route);
 	}
 }
 
@@ -393,6 +445,7 @@ bool WssSocket::tryFinishUpgrade() {
 		return false;
 	}
 	_upgraded = true;
+	NoteRouteReachable(_route);
 	NoteRelayUpgraded(_route, _usedFallback);
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
