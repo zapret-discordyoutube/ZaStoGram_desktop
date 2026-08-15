@@ -888,13 +888,15 @@ void Controller::show(
 		subscribeToSource();
 	});
 
-	const auto guard = gsl::finally([&] {
-		_paused = false;
-		_started = false;
-		if (!story->document()) {
-			_photoPlayback = std::make_unique<PhotoPlayback>(this);
-		} else {
-			_photoPlayback = nullptr;
+	const auto photo = (story->document() == nullptr);
+	const auto weak = base::make_weak(this);
+	const auto guard = gsl::finally([=] {
+		if (const auto strong = weak.get()) {
+			strong->_paused = false;
+			strong->_started = false;
+			strong->_photoPlayback = photo
+				? std::make_unique<PhotoPlayback>(strong)
+				: nullptr;
 		}
 	});
 
