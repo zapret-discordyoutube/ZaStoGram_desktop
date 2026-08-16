@@ -56,6 +56,21 @@ def main() -> None:
         "AppName.utf16()",
         FORK_RELEASES,
     )
+    require(
+        "SourceFiles/settings/sections/settings_advanced.cpp",
+        "BuildUpdateSection(builder, true);",
+        "return !downloading;",
+        "Core::UpdateChecker checker;",
+        "tr::lng_settings_check_now()",
+    )
+    advanced = source("SourceFiles/settings/sections/settings_advanced.cpp")
+    if "lng_settings_install_beta" in advanced:
+        raise AssertionError("the obsolete upstream beta switch returned")
+    require(
+        "SourceFiles/core/launcher.cpp",
+        "ZaStoGram has two baked, independent channels",
+        "cSetInstallBetaVersion(false);",
+    )
     localstorage = source("SourceFiles/storage/localstorage.cpp")
     if FORK_RELEASES + "/download/latest" not in localstorage:
         raise AssertionError("the native Forgejo latest-asset prefix is missing")

@@ -171,17 +171,10 @@ void WriteInstallBetaVersionsSetting() {
 }
 
 void ComputeInstallBetaVersions() {
-	const auto installBetaSettingPath = InstallBetaVersionsSettingPath();
-	if (cAlphaVersion()) {
-		cSetInstallBetaVersion(false);
-	} else if (QFile::exists(installBetaSettingPath)) {
-		QFile f(installBetaSettingPath);
-		if (f.open(QIODevice::ReadOnly)) {
-			cSetInstallBetaVersion(f.read(1) != "0");
-		}
-	} else if (AppBetaVersion) {
-		WriteInstallBetaVersionsSetting();
-	}
+	// ZaStoGram has two baked, independent channels: stable-* and dev-*.
+	// The upstream Telegram beta preference must never bridge them.
+	cSetInstallBetaVersion(false);
+	WriteInstallBetaVersionsSetting();
 }
 
 void ComputeInstallationTag() {
