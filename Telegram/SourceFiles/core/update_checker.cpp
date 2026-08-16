@@ -70,7 +70,7 @@ constexpr auto kMaxResponseSize = 1024 * 1024;
 constexpr auto kMaxReleasesResponseSize = 4 * kMaxResponseSize;
 constexpr auto kZaStoGramReleasesApi =
 	"https://git.zapret.moe/api/v1/repos/"
-	"zapretdiscordyoutube/ZaStoGram_desktop/releases?limit=100"_cs;
+	"zastogram/ZaStoGram_desktop/releases?limit=100"_cs;
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
 constexpr auto kFlatpakPortalService = "org.freedesktop.portal.Flatpak";

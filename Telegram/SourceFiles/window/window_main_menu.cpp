@@ -385,7 +385,7 @@ MainMenu::MainMenu(
 
 	_telegram->setMarkedText(tr::link(
 		AppName.utf16(),
-		u"https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/releases"_q));
+		u"https://git.zapret.moe/zastogram/ZaStoGram_desktop/releases"_q));
 	_telegram->setLinksTrusted();
 	_version->setMarkedText(
 		tr::link(

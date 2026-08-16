@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FORK_RELEASES = "https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/releases"
+FORK_RELEASES = "https://git.zapret.moe/zastogram/ZaStoGram_desktop/releases"
 
 
 def source(path: str) -> str:
@@ -42,9 +42,13 @@ def main() -> None:
         "SourceFiles/core/update_checker.cpp",
         "kZaStoGramReleasesApi",
         "https://git.zapret.moe/api/v1/repos/",
-        "zapretdiscordyoutube/ZaStoGram_desktop/releases?limit=100",
+        "zastogram/ZaStoGram_desktop/releases?limit=100",
+        "if (IsZaStoGramDevBuild())",
+        "ResponseType::DevReleases",
         'release.value("prerelease").toBool()',
         "ZaStoGramDevBuildNumber()",
+        'name == "current4"',
+        "_dev%2",
         "versionNum == AppVersion && !IsZaStoGramDevBuild()",
     )
     require(
