@@ -715,6 +715,7 @@ private:
 
 	QString _topPromotedMessage;
 	QString _topPromotedType;
+	MsgId _topPromotionLastMessageId;
 
 	HistoryView::SendActionPainter _sendActionPainter;
 

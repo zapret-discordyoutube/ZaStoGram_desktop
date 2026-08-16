@@ -32,6 +32,11 @@ constexpr auto kTopPromotionMinDelay = TimeId(10);
 // instead of the server-provided proxy sponsor.
 const auto kCustomChannelUsername = u"zastogram"_q;
 
+// ZaStoGram: the user is not subscribed to the promoted channel, so the
+// server does not push its updates. Poll the dialog entry to keep its chat
+// list preview current without requiring the user to open the channel.
+constexpr auto kCustomChannelRefreshInterval = 60 * crl::time(1000);
+
 [[nodiscard]] CustomSuggestion CustomFromTL(
 		not_null<Main::Session*> session,
 		const MTPPendingSuggestion &r) {
@@ -51,6 +56,7 @@ PromoSuggestions::PromoSuggestions(
 	not_null<Main::Session*> session,
 	Fn<void()> firstPromoLoaded)
 : _session(session)
+, _customChannelTimer([=] { refreshCustomChannelEntry(); })
 , _topPromotionTimer([=] { refreshTopPromotion(); })
 , _firstPromoLoaded(std::move(firstPromoLoaded)) {
 	Core::App().settings().proxy().connectionTypeValue(
@@ -64,6 +70,7 @@ PromoSuggestions::~PromoSuggestions() = default;
 void PromoSuggestions::promoteCustomChannel() {
 	if (_customChannel) {
 		setTopPromoted(_customChannel, QString(), QString());
+		refreshCustomChannelEntry();
 		return;
 	} else if (_customChannelRequestId) {
 		return;
@@ -85,10 +92,19 @@ void PromoSuggestions::promoteCustomChannel() {
 		if (peer) {
 			_customChannel = _session->data().history(peer->id).get();
 			setTopPromoted(_customChannel, QString(), QString());
+			refreshCustomChannelEntry();
 		}
 	}).fail([=] {
 		_customChannelRequestId = 0;
 	}).send();
+}
+
+void PromoSuggestions::refreshCustomChannelEntry() {
+	if (!_customChannel) {
+		return;
+	}
+	_customChannelTimer.callOnce(kCustomChannelRefreshInterval);
+	_session->data().histories().requestDialogEntry(_customChannel);
 }
 
 void PromoSuggestions::refreshTopPromotion() {

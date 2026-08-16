@@ -3472,6 +3472,14 @@ bool History::isServerSideUnread(not_null<const HistoryItem*> item) const {
 void History::applyDialog(
 		Data::Folder *requestFolder,
 		const MTPDdialog &data) {
+	const auto topMessageId = MsgId(data.vtop_message().v);
+	const auto keepTopPromotionUnread = isTopPromoted()
+		&& (unreadMark()
+			|| (_topPromotionLastMessageId
+				&& topMessageId > _topPromotionLastMessageId));
+	if (isTopPromoted() && topMessageId > _topPromotionLastMessageId) {
+		_topPromotionLastMessageId = topMessageId;
+	}
 	const auto folderId = data.vfolder_id();
 	const auto folder = !folderId
 		? requestFolder
@@ -3483,8 +3491,13 @@ void History::applyDialog(
 		data.vunread_count().v,
 		data.vread_inbox_max_id().v,
 		data.vread_outbox_max_id().v);
-	applyDialogTopMessage(data.vtop_message().v);
+	applyDialogTopMessage(topMessageId);
 	setUnreadMark(data.is_unread_mark());
+	if (keepTopPromotionUnread) {
+		// Telegram does not track unread posts for a promoted channel that
+		// the user has not joined. Keep a local dot until the channel opens.
+		setUnreadMark(true);
+	}
 	unreadMentions().setCount(data.vunread_mentions_count().v);
 	unreadReactions().setCount(data.vunread_reactions_count().v);
 	const auto pollVotesCount = data.vunread_poll_votes_count().v;
@@ -4530,8 +4543,12 @@ void History::cacheTopPromoted(bool promoted) {
 		return;
 	} else if (promoted) {
 		_flags |= Flag::IsTopPromoted;
+		if (const auto item = chatListMessage()) {
+			_topPromotionLastMessageId = item->id;
+		}
 	} else {
 		_flags &= ~Flag::IsTopPromoted;
+		_topPromotionLastMessageId = MsgId();
 	}
 	updateChatListSortPosition();
 	updateChatListEntry();

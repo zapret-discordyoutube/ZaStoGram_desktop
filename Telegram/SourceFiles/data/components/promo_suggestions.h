@@ -78,6 +78,10 @@ private:
 	// never the proxy-sponsor peer sent by the server.
 	void promoteCustomChannel();
 
+	// ZaStoGram: we are not subscribed to the promoted channel, so the
+	// server pushes no updates for it - its chat list row has to be polled.
+	void refreshCustomChannelEntry();
+
 	void topPromotionDelayed(TimeId now, TimeId next);
 
 	const not_null<Main::Session*> _session;
@@ -89,6 +93,7 @@ private:
 
 	History *_customChannel = nullptr;
 	mtpRequestId _customChannelRequestId = 0;
+	base::Timer _customChannelTimer;
 
 	mtpRequestId _contactBirthdaysRequestId = 0;
 	int _contactBirthdaysLastDayRequest = -1;
