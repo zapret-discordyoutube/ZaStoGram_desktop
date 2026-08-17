@@ -35,7 +35,7 @@ const auto kCustomChannelUsername = u"zastogram"_q;
 // ZaStoGram: the user is not subscribed to the promoted channel, so the
 // server does not push its updates. Poll the dialog entry to keep its chat
 // list preview current without requiring the user to open the channel.
-constexpr auto kCustomChannelRefreshInterval = 60 * crl::time(1000);
+constexpr auto kCustomChannelRefreshInterval = 5 * 60 * crl::time(1000);
 
 [[nodiscard]] CustomSuggestion CustomFromTL(
 		not_null<Main::Session*> session,
@@ -62,6 +62,12 @@ PromoSuggestions::PromoSuggestions(
 	Core::App().settings().proxy().connectionTypeValue(
 	) | rpl::on_next([=] {
 		refreshTopPromotion();
+	}, _lifetime);
+	Core::App().appDeactivatedValue(
+	) | rpl::filter([](bool deactivated) {
+		return !deactivated;
+	}) | rpl::on_next([=] {
+		refreshCustomChannelEntry();
 	}, _lifetime);
 }
 
