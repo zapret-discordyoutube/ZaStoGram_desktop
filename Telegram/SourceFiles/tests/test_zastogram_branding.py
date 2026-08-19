@@ -42,7 +42,7 @@ def main() -> None:
         "SourceFiles/core/update_checker.cpp",
         "kZaStoGramReleasesApi",
         "https://git.zapret.moe/api/v1/repos/",
-        "zastogram/ZaStoGram_desktop/releases?limit=100",
+        "?draft=false&pre-release=true&limit=1",
         "if (IsZaStoGramDevBuild())",
         "ResponseType::DevReleases",
         'release.value("prerelease").toBool()',
@@ -50,7 +50,15 @@ def main() -> None:
         'name == "current4"',
         "_dev%2",
         "versionNum == AppVersion && !IsZaStoGramDevBuild()",
+        "request.setTransferTimeout(int(kUpdateCheckTimeout));",
+        "tryLoaders();",
     )
+    updater = source("SourceFiles/core/update_checker.cpp")
+    timeout = updater.split("void Updater::handleTimeout()", 1)[1].split(
+        "bool Updater::tryLoaders()", 1
+    )[0]
+    if "cSetLastUpdateCheck(0)" in timeout or "_timer.callOnce" in timeout:
+        raise AssertionError("a timed-out update check must not restart itself")
     require(
         "SourceFiles/window/window_main_menu.cpp",
         "AppName.utf16()",

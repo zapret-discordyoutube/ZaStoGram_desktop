@@ -65,12 +65,13 @@ extern "C" {
 namespace Core {
 namespace {
 
-constexpr auto kUpdaterTimeout = 10 * crl::time(1000);
+constexpr auto kUpdateCheckTimeout = 6 * crl::time(1000);
+constexpr auto kUpdaterStallTimeout = 10 * crl::time(1000);
 constexpr auto kMaxResponseSize = 1024 * 1024;
-constexpr auto kMaxReleasesResponseSize = 4 * kMaxResponseSize;
 constexpr auto kZaStoGramReleasesApi =
 	"https://git.zapret.moe/api/v1/repos/"
-	"zastogram/ZaStoGram_desktop/releases?limit=100"_cs;
+	"zastogram/ZaStoGram_desktop/releases"
+	"?draft=false&pre-release=true&limit=1"_cs;
 
 #if !defined Q_OS_WIN && !defined Q_OS_MAC
 constexpr auto kFlatpakPortalService = "org.freedesktop.portal.Flatpak";
@@ -763,6 +764,7 @@ void HttpChecker::start() {
 void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
 	auto request = QNetworkRequest(url);
+	request.setTransferTimeout(int(kUpdateCheckTimeout));
 	if (type == ResponseType::DevReleases) {
 		request.setRawHeader("Accept", "application/json");
 		request.setRawHeader("User-Agent", "ZaStoGram-Desktop-Updater");
@@ -787,13 +789,10 @@ void HttpChecker::gotResponse() {
 	const auto responseType = _responseType;
 	clearSentRequest();
 
-	const auto maxSize = (responseType == ResponseType::DevReleases)
-		? kMaxReleasesResponseSize
-		: kMaxResponseSize;
-	if (response.size() >= maxSize) {
+	if (response.size() >= kMaxResponseSize) {
 		LOG(("Update Error: update response is too large: %1")
 			.arg(response.size()));
-		gotFailure(QNetworkReply::UnknownContentError);
+		fail();
 		return;
 	}
 	const auto handled = (responseType == ResponseType::DevReleases)
@@ -801,7 +800,7 @@ void HttpChecker::gotResponse() {
 		: handleResponse(response);
 	if (!handled) {
 		LOG(("Update Error: Bad update map size: %1").arg(response.size()));
-		gotFailure(QNetworkReply::UnknownContentError);
+		fail();
 	}
 }
 
@@ -908,12 +907,12 @@ void HttpChecker::clearSentRequest() {
 }
 
 void HttpChecker::gotFailure(QNetworkReply::NetworkError e) {
+	if (!_reply) {
+		return;
+	}
 	LOG(("Update Error: "
 		"could not get current version %1").arg(e));
-	if (const auto reply = base::take(_reply)) {
-		reply->deleteLater();
-	}
-
+	clearSentRequest();
 	fail();
 }
 
@@ -1458,11 +1457,11 @@ private:
 
 	void finalize(QString filepath);
 	void unpackDone(bool ready);
-	void handleChecking();
-	void handleProgress();
-	void handleLatest();
-	void handleFailed();
-	void handleReady();
+	void reportChecking();
+	void reportProgress(Progress progress);
+	void reportLatest();
+	void reportFailed();
+	void reportReady();
 	void scheduleNext();
 
 	bool _testing = false;
@@ -1481,28 +1480,11 @@ private:
 	bool _usingMtprotoLoader = (cAlphaVersion() != 0);
 	base::weak_ptr<Main::Session> _session;
 
-	rpl::lifetime _lifetime;
-
 };
 
 Updater::Updater()
 : _timer([=] { check(); })
 , _retryTimer([=] { handleTimeout(); }) {
-	checking() | rpl::on_next([=] {
-		handleChecking();
-	}, _lifetime);
-	progress() | rpl::on_next([=] {
-		handleProgress();
-	}, _lifetime);
-	failed() | rpl::on_next([=] {
-		handleFailed();
-	}, _lifetime);
-	ready() | rpl::on_next([=] {
-		handleReady();
-	}, _lifetime);
-	isLatest() | rpl::on_next([=] {
-		handleLatest();
-	}, _lifetime);
 }
 
 rpl::producer<> Updater::checking() const {
@@ -1530,33 +1512,54 @@ void Updater::check() {
 	start(false);
 }
 
-void Updater::handleReady() {
+void Updater::reportReady() {
 	stop();
 	_action = Action::Ready;
 	if (!Quitting()) {
 		cSetLastUpdateCheck(base::unixtime::now());
 		Local::writeSettings();
 	}
+	_ready.fire({});
 }
 
-void Updater::handleFailed() {
+void Updater::reportFailed() {
+	const auto flatpakWaiting = KSandbox::isFlatpak()
+		&& (_action == Action::Waiting);
+	if (_action != Action::Checking
+		&& _action != Action::Loading
+		&& _action != Action::Unpacking
+		&& !flatpakWaiting) {
+		return;
+	}
 	scheduleNext();
+	_failed.fire({});
 }
 
-void Updater::handleLatest() {
+void Updater::reportLatest() {
+	const auto flatpakWaiting = KSandbox::isFlatpak()
+		&& (_action == Action::Waiting);
+	if (_action != Action::Checking && !flatpakWaiting) {
+		return;
+	}
 	if (const auto update = FindUpdateFile(); !update.isEmpty()) {
 		QFile(update).remove();
 	}
 	scheduleNext();
+	_isLatest.fire({});
 }
 
-void Updater::handleChecking() {
+void Updater::reportChecking() {
 	_action = Action::Checking;
-	_retryTimer.callOnce(kUpdaterTimeout);
+	_retryTimer.callOnce(kUpdateCheckTimeout);
+	_checking.fire({});
 }
 
-void Updater::handleProgress() {
-	_retryTimer.callOnce(kUpdaterTimeout);
+void Updater::reportProgress(Progress progress) {
+	if (_action != Action::Loading) {
+		return;
+	}
+	_retryTimer.callOnce(kUpdaterStallTimeout);
+	_progress.fire(std::move(progress));
 }
 
 void Updater::scheduleNext() {
@@ -1590,6 +1593,8 @@ bool Updater::percent() const {
 }
 
 void Updater::stop() {
+	_timer.cancel();
+	_retryTimer.cancel();
 	_httpImplementation = Implementation();
 	_mtpImplementation = Implementation();
 	_flatpakImplementation = Implementation{
@@ -1637,6 +1642,7 @@ void Updater::start(bool forceWait) {
 		}
 #endif // !Q_OS_WIN && !Q_OS_MAC
 	} else if (sendRequest) {
+		reportChecking();
 		startImplementation(
 			&_httpImplementation,
 			std::make_unique<HttpChecker>(_testing));
@@ -1644,7 +1650,6 @@ void Updater::start(bool forceWait) {
 		// the official Telegram update channel.
 		startImplementation(&_mtpImplementation, nullptr);
 
-		_checking.fire({});
 	} else {
 		_timer.callOnce((updateInSecs + 5) * crl::time(1000));
 	}
@@ -1718,12 +1723,9 @@ void Updater::handleTimeout() {
 		};
 		reset(_httpImplementation);
 		reset(_mtpImplementation);
-		if (!tryLoaders()) {
-			cSetLastUpdateCheck(0);
-			_timer.callOnce(kUpdaterTimeout);
-		}
+		tryLoaders();
 	} else if (_action == Action::Loading) {
-		_failed.fire({});
+		reportFailed();
 	}
 }
 
@@ -1740,32 +1742,34 @@ bool Updater::tryLoaders() {
 			_action = Action::Loading;
 
 			loader->progress(
-			) | rpl::start_to_stream(_progress, loader->lifetime());
+			) | rpl::on_next([=](Progress progress) {
+				reportProgress(std::move(progress));
+			}, loader->lifetime());
 			loader->ready(
 			) | rpl::on_next([=](QString &&filepath) {
 				finalize(std::move(filepath));
 			}, loader->lifetime());
 			loader->failed(
 			) | rpl::on_next([=] {
-				_failed.fire({});
+				reportFailed();
 			}, loader->lifetime());
 
-			_retryTimer.callOnce(kUpdaterTimeout);
+			_retryTimer.callOnce(kUpdaterStallTimeout);
 			loader->wipeFolder();
 			loader->start();
 		} else {
-			_isLatest.fire({});
+			reportLatest();
 		}
 	};
 	if (KSandbox::isFlatpak()) {
 		if (_flatpakImplementation.failed) {
-			_failed.fire({});
+			reportFailed();
 			return false;
 		} else {
 			tryOne(_flatpakImplementation);
 		}
 	} else if (_mtpImplementation.failed && _httpImplementation.failed) {
-		_failed.fire({});
+		reportFailed();
 		return false;
 	} else if (!_mtpImplementation.loader) {
 		tryOne(_httpImplementation);
@@ -1797,10 +1801,10 @@ void Updater::finalize(QString filepath) {
 
 void Updater::unpackDone(bool ready) {
 	if (ready) {
-		_ready.fire({});
+		reportReady();
 	} else {
 		ClearAll();
-		_failed.fire({});
+		reportFailed();
 	}
 }
 
