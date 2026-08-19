@@ -23,6 +23,19 @@ struct WssRoute {
 	QString path;
 };
 
+// A passive snapshot for user-facing media diagnostics. It observes the
+// relay preference and health maps, but never changes connection admission,
+// retry timing or the lifetime of a live session.
+struct WssRouteDiagnostics {
+	std::optional<WssRoute> route;
+	QString selectedRelayHost;
+	bool custom = false;
+	bool prefersFallback = false;
+	bool suppressed = false;
+	int consecutiveFailures = 0;
+	crl::time suppressedFor = 0;
+};
+
 // Official MTProto-over-WebSocket route for a data center, mirroring the
 // web.telegram.org transport. Every production DC (1-5) has a working web
 // relay, but the ingress addresses are NOT interchangeable: each one serves
@@ -37,6 +50,10 @@ struct WssRoute {
 // for any DC when set and verified against the configured relay domain.
 [[nodiscard]] std::optional<WssRoute> WssCustomRoute(
 	const ProxyStealthOptions &stealth);
+
+[[nodiscard]] WssRouteDiagnostics WssRouteDiagnosticsForDc(
+	const ProxyStealthOptions &stealth,
+	int16 protocolDcId);
 
 // A clean, self-contained MTProto-over-WebSocket(-over-TLS) transport. It
 // speaks RFC 6455 over a real QSslSocket and carries the obfuscated MTProto

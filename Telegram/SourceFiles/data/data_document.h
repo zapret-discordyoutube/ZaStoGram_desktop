@@ -270,6 +270,8 @@ public:
 		int32 dc,
 		uint64 access,
 		const QByteArray &fileReference);
+	[[nodiscard]] int32 dcId() const;
+	[[nodiscard]] uint64 accessHash() const;
 	void setContentUrl(const QString &url);
 	void setWebLocation(const WebFileLocation &location);
 	[[nodiscard]] bool hasRemoteLocation() const;

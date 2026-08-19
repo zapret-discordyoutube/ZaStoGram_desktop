@@ -276,6 +276,14 @@ void PhotoData::setRemoteLocation(
 	}
 }
 
+int32 PhotoData::dcId() const {
+	return _dc;
+}
+
+uint64 PhotoData::accessHash() const {
+	return _access;
+}
+
 MTPInputPhoto PhotoData::mtpInput() const {
 	return MTP_inputPhoto(
 		MTP_long(id),

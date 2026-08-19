@@ -102,6 +102,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/proxy/transport_policy.h"
+#include "mtproto/proxy/wss/socket.h"
+#include "mtproto/runtime/runtime_environment.h"
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_instance.h"
 #include "spellcheck/spellcheck_types.h"
@@ -109,9 +113,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_menu_icons.h"
+#include "ui/layers/generic_box.h"
+#include "ui/widgets/labels.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QDateTime>
 
 namespace HistoryView {
 namespace {
@@ -119,6 +127,303 @@ namespace {
 constexpr auto kRescheduleLimit = 20;
 constexpr auto kTagNameLimit = 12;
 constexpr auto kPublicPostLinkToastDuration = 4 * crl::time(1000);
+
+[[nodiscard]] QString DiagnosticBool(bool value) {
+	return value ? u"true"_q : u"false"_q;
+}
+
+[[nodiscard]] QString DiagnosticHash(const QByteArray &value) {
+	return value.isEmpty()
+		? u"none"_q
+		: QString::fromLatin1(QCryptographicHash::hash(
+			value,
+			QCryptographicHash::Sha256).toHex().left(16));
+}
+
+[[nodiscard]] QString DiagnosticPeerType(not_null<PeerData*> peer) {
+	return peer->isUser()
+		? u"user"_q
+		: peer->isChat()
+		? u"chat"_q
+		: peer->isChannel()
+		? u"channel"_q
+		: u"unknown"_q;
+}
+
+[[nodiscard]] QString DiagnosticProxyType(MTP::ProxyData::Type type) {
+	using Type = MTP::ProxyData::Type;
+	switch (type) {
+	case Type::None: return u"none"_q;
+	case Type::Socks5: return u"socks5"_q;
+	case Type::Http: return u"http"_q;
+	case Type::Mtproto: return u"mtproxy"_q;
+	}
+	Unexpected("ProxyData::Type in DiagnosticProxyType.");
+}
+
+[[nodiscard]] QString DiagnosticFileStatus(FileStatus status) {
+	switch (status) {
+	case FileDownloadFailed: return u"download_failed"_q;
+	case FileUploadFailed: return u"upload_failed"_q;
+	case FileReady: return u"ready"_q;
+	}
+	Unexpected("FileStatus in DiagnosticFileStatus.");
+}
+
+[[nodiscard]] QString DiagnosticDocumentType(
+		not_null<DocumentData*> document) {
+	return document->isVideoMessage()
+		? u"round_video"_q
+		: document->isVideoFile()
+		? u"video"_q
+		: document->isAnimation()
+		? u"animation"_q
+		: document->isVoiceMessage()
+		? u"voice"_q
+		: document->isSong()
+		? u"audio"_q
+		: document->sticker()
+		? u"sticker"_q
+		: u"document"_q;
+}
+
+void AddMediaTransportDiagnostics(
+		QStringList &lines,
+		not_null<Main::Session*> session,
+		int dcId) {
+	auto &runtime = session->mtp().runtimeEnvironment();
+	const auto &gateway = runtime.proxy();
+	const auto enabled = gateway.enabled ? gateway.enabled() : false;
+	const auto selected = gateway.selected
+		? gateway.selected()
+		: MTP::ProxyData();
+	const auto proxy = enabled ? selected : MTP::ProxyData();
+	const auto settings = gateway.settings
+		? gateway.settings()
+		: MTP::ProxyData::Settings::System;
+	const auto stealth = gateway.stealthOptions
+		? gateway.stealthOptions()
+		: MTP::ProxyStealthOptions();
+	const auto wssAllowed = MTP::ProxyWssAllowed(
+		&runtime,
+		proxy,
+		settings);
+	const auto policyTransport = (stealth.transport == MTP::ProxyTransport::Wss
+		&& wssAllowed)
+		? MTP::ProxyTransport::Wss
+		: MTP::ProxyTransport::Tcp;
+
+	lines.push_back(u""_q);
+	lines.push_back(u"[network]"_q);
+	lines.push_back(u"proxy.enabled: %1"_q.arg(DiagnosticBool(enabled)));
+	lines.push_back(u"proxy.type: %1"_q.arg(DiagnosticProxyType(proxy.type)));
+	if (proxy) {
+		lines.push_back(u"proxy.endpoint: %1:%2"_q.arg(
+			proxy.host,
+			QString::number(proxy.port)));
+		if (!proxy.originalHost.isEmpty()
+			&& proxy.originalHost != proxy.host) {
+			lines.push_back(u"proxy.configured_host: %1"_q.arg(
+				proxy.originalHost));
+		}
+		if (!proxy.resolvedIPs.empty()) {
+			auto resolved = QStringList();
+			for (const auto &ip : proxy.resolvedIPs) {
+				resolved.push_back(ip);
+			}
+			lines.push_back(u"proxy.resolved_ips: %1"_q.arg(
+				resolved.join(u", "_q)));
+		}
+	}
+	lines.push_back(u"transport.configured: %1"_q.arg(
+		stealth.transport == MTP::ProxyTransport::Wss
+			? u"WSS"_q
+			: u"TCP"_q));
+	lines.push_back(u"transport.policy_effective: %1"_q.arg(
+		policyTransport == MTP::ProxyTransport::Wss
+			? u"WSS"_q
+			: u"TCP"_q));
+	lines.push_back(u"protocol_dc: -%1 (media)"_q.arg(dcId));
+
+	if (policyTransport != MTP::ProxyTransport::Wss || dcId <= 0) {
+		lines.push_back(u"transport.route_effective: TCP"_q);
+		return;
+	}
+
+	const auto snapshot = MTP::details::WssRouteDiagnosticsForDc(
+		stealth,
+		int16(-dcId));
+	if (!snapshot.route) {
+		lines.push_back(u"transport.route_effective: TCP"_q);
+		lines.push_back(u"wss.route: unavailable_for_dc"_q);
+		return;
+	}
+	const auto &route = *snapshot.route;
+	lines.push_back(u"transport.route_effective: %1"_q.arg(
+		snapshot.suppressed ? u"TCP"_q : u"WSS"_q));
+	lines.push_back(u"wss.route: %1"_q.arg(
+		snapshot.custom ? u"custom"_q : u"official"_q));
+	lines.push_back(u"wss.preferred_attempt_host: %1:%2"_q.arg(
+		snapshot.selectedRelayHost,
+		QString::number(route.relayPort)));
+	lines.push_back(u"wss.primary_host: %1:%2"_q.arg(
+		route.relayHost,
+		QString::number(route.relayPort)));
+	if (!route.relayHostFallback.isEmpty()) {
+		lines.push_back(u"wss.fallback_host: %1:%2"_q.arg(
+			route.relayHostFallback,
+			QString::number(route.relayPort)));
+	}
+	lines.push_back(u"wss.sni_host: %1"_q.arg(route.domain));
+	lines.push_back(u"wss.path: %1"_q.arg(route.path));
+	lines.push_back(u"wss.prefers_fallback: %1"_q.arg(
+		DiagnosticBool(snapshot.prefersFallback)));
+	lines.push_back(u"wss.suppressed: %1"_q.arg(
+		DiagnosticBool(snapshot.suppressed)));
+	lines.push_back(u"wss.consecutive_failures: %1"_q.arg(
+		snapshot.consecutiveFailures));
+	if (snapshot.suppressedFor > 0) {
+		lines.push_back(u"wss.suppressed_for_ms: %1"_q.arg(
+			snapshot.suppressedFor));
+	}
+}
+
+[[nodiscard]] QString BuildMessageDiagnostics(
+		not_null<HistoryItem*> item) {
+	const auto id = item->fullId();
+	const auto history = item->history();
+	const auto peer = history->peer;
+	const auto session = &history->session();
+	auto lines = QStringList{
+		u"ZaStoGram message diagnostics v1"_q,
+		u"generated_at_utc: %1"_q.arg(
+			QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)),
+		u""_q,
+		u"[message]"_q,
+		u"account_user_id: %1"_q.arg(session->userId().bare),
+		u"peer_id: %1"_q.arg(id.peer.value),
+		u"peer_type: %1"_q.arg(DiagnosticPeerType(peer)),
+		u"message_id: %1"_q.arg(id.msg.bare),
+		u"author_peer_id: %1"_q.arg(item->author()->id.value),
+		u"date_utc: %1"_q.arg(QDateTime::fromSecsSinceEpoch(
+			item->date()).toUTC().toString(Qt::ISODate)),
+		u"outgoing: %1"_q.arg(DiagnosticBool(item->out())),
+		u"sending: %1"_q.arg(DiagnosticBool(item->isSending())),
+		u"sending_failed: %1"_q.arg(DiagnosticBool(item->hasFailed())),
+		u"scheduled: %1"_q.arg(DiagnosticBool(item->isScheduled())),
+	};
+	if (const auto original = item->originalSender()) {
+		lines.push_back(u"original_sender_peer_id: %1"_q.arg(
+			original->id.value));
+	}
+	if (const auto originalId = item->originalId()) {
+		lines.push_back(u"original_message_id: %1"_q.arg(
+			originalId.bare));
+	}
+
+	const auto media = item->media();
+	const auto document = media ? media->document() : nullptr;
+	const auto photo = media ? media->photo() : nullptr;
+	if (document) {
+		const auto reference = document->fileReference();
+		lines.push_back(u""_q);
+		lines.push_back(u"[media]"_q);
+		lines.push_back(u"type: %1"_q.arg(DiagnosticDocumentType(document)));
+		lines.push_back(u"document_id: %1"_q.arg(document->id));
+		lines.push_back(u"dc_id: %1"_q.arg(document->dcId()));
+		lines.push_back(u"access_hash: %1"_q.arg(document->accessHash()));
+		lines.push_back(u"file_reference_bytes: %1"_q.arg(reference.size()));
+		lines.push_back(u"file_reference_sha256_16: %1"_q.arg(
+			DiagnosticHash(reference)));
+		lines.push_back(u"size_bytes: %1"_q.arg(document->size));
+		lines.push_back(u"mime_type: %1"_q.arg(document->mimeString()));
+		lines.push_back(u"dimensions: %1x%2"_q.arg(
+			document->dimensions.width(),
+			document->dimensions.height()));
+		lines.push_back(u"file_status: %1"_q.arg(
+			DiagnosticFileStatus(document->status)));
+		lines.push_back(u"loading: %1"_q.arg(
+			DiagnosticBool(document->loading())));
+		lines.push_back(u"cancelled: %1"_q.arg(
+			DiagnosticBool(document->cancelled())));
+		lines.push_back(u"load_offset: %1"_q.arg(document->loadOffset()));
+		lines.push_back(u"progress_percent: %1"_q.arg(QString::number(
+			document->progress() * 100.,
+			'f',
+			1)));
+		const auto path = document->filepath(false);
+		lines.push_back(u"local_file_present: %1"_q.arg(
+			DiagnosticBool(!path.isEmpty())));
+		const auto &qualities = document->resolveQualities(item);
+		if (!qualities.empty()) {
+			auto ids = QStringList();
+			for (const auto quality : qualities) {
+				ids.push_back(u"%1@dc%2/%3p"_q.arg(
+					quality->id,
+					quality->dcId(),
+					quality->resolveVideoQuality()));
+			}
+			lines.push_back(u"video_quality_documents: %1"_q.arg(
+				ids.join(u", "_q)));
+		}
+		AddMediaTransportDiagnostics(lines, session, document->dcId());
+	} else if (photo) {
+		const auto reference = photo->fileReference();
+		lines.push_back(u""_q);
+		lines.push_back(u"[media]"_q);
+		lines.push_back(u"type: photo"_q);
+		lines.push_back(u"photo_id: %1"_q.arg(photo->id));
+		lines.push_back(u"dc_id: %1"_q.arg(photo->dcId()));
+		lines.push_back(u"access_hash: %1"_q.arg(photo->accessHash()));
+		lines.push_back(u"file_reference_bytes: %1"_q.arg(reference.size()));
+		lines.push_back(u"file_reference_sha256_16: %1"_q.arg(
+			DiagnosticHash(reference)));
+		lines.push_back(u"dimensions: %1x%2"_q.arg(
+			photo->width(),
+			photo->height()));
+		lines.push_back(u"large_size_bytes: %1"_q.arg(
+			photo->imageByteSize(Data::PhotoSize::Large)));
+		lines.push_back(u"loading: %1"_q.arg(
+			DiagnosticBool(photo->loading())));
+		lines.push_back(u"cancelled: %1"_q.arg(
+			DiagnosticBool(photo->cancelled())));
+		lines.push_back(u"load_offset: %1"_q.arg(photo->loadOffset()));
+		lines.push_back(u"progress_percent: %1"_q.arg(QString::number(
+			photo->progress() * 100.,
+			'f',
+			1)));
+		AddMediaTransportDiagnostics(lines, session, photo->dcId());
+	} else {
+		lines.push_back(u""_q);
+		lines.push_back(u"[media]"_q);
+		lines.push_back(u"type: none"_q);
+	}
+	return lines.join('\n');
+}
+
+void ShowMessageDiagnostics(
+		not_null<Window::SessionController*> controller,
+		not_null<Data::Session*> owner,
+		FullMsgId id) {
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		const auto current = owner->message(id);
+		const auto text = current
+			? BuildMessageDiagnostics(current)
+			: u"Message is no longer available."_q;
+		box->setWidth(st::boxWideWidth);
+		box->setTitle(tr::lng_article_insert_details());
+		const auto label = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			text,
+			st::boxLabel));
+		label->setSelectable(true);
+		label->setBreakEverywhere(true);
+		box->addButton(tr::lng_close(), [=] { box->closeBox(); });
+		box->addLeftButton(tr::lng_context_copy_text(), [=] {
+			TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+		});
+	}));
+}
 
 bool HasEditMessageAction(
 		const ContextMenuRequest &request,
@@ -1599,6 +1904,13 @@ void FillContextMenuItems(
 
 	AddCopyLinkAction(result, link);
 	AddMessageActions(result, request, list);
+	if (item && request.selectedItems.empty()) {
+		const auto owner = &item->history()->owner();
+		result->addAction(
+			tr::lng_article_insert_details(tr::now),
+			[=] { ShowMessageDiagnostics(list->controller(), owner, itemId); },
+			&st::menuIconInfo);
+	}
 
 	const auto wasAmount = result->actions().size();
 	if (const auto textItem = view ? view->textItem() : item) {

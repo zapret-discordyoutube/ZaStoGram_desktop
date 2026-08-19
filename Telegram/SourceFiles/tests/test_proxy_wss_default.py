@@ -213,7 +213,7 @@ def test_wss_dc_coverage_policy_is_centralized_and_soft():
     assert "WssOfficialRoute(protocolDcId)" in source
     route_source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
     route_body = function_body(
-        route_source, "std::optional<WssRoute> WssOfficialRoute(")
+        route_source, "std::optional<WssRoute> OfficialRoute(")
     assert "route.domain = (raw < 0)" in route_body
     assert "protocolForFiles" not in route_body
     assert "proxy.type == ProxyData::Type::None" in source

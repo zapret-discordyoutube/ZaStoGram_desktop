@@ -77,6 +77,8 @@ public:
 		int32 dc,
 		uint64 access,
 		const QByteArray &fileReference);
+	[[nodiscard]] int32 dcId() const;
+	[[nodiscard]] uint64 accessHash() const;
 	[[nodiscard]] MTPInputPhoto mtpInput() const;
 	[[nodiscard]] QByteArray fileReference() const;
 	void refreshFileReference(const QByteArray &value);

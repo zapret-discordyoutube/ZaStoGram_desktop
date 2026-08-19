@@ -156,9 +156,7 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 	return QString();
 }
 
-} // namespace
-
-std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
+[[nodiscard]] std::optional<WssRoute> OfficialRoute(int16 protocolDcId) {
 	const auto raw = int(protocolDcId);
 	const auto positive = (raw < 0) ? -raw : raw;
 	if (positive >= kTestModeDcIdShift) {
@@ -182,7 +180,17 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	// Fallback: if the hardcoded relay IP is unreachable, retry once via the
 	// domain so DNS yields a currently-valid address.
 	route.relayHostFallback = route.domain;
-	if (RouteSuppressed(route.domain)) {
+	return route;
+}
+
+} // namespace
+
+std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
+	auto route = OfficialRoute(protocolDcId);
+	if (!route) {
+		return std::nullopt;
+	}
+	if (RouteSuppressed(route->domain)) {
 		// Релей этого датацентра недоступен; пусть соединение идёт напрямую.
 		return std::nullopt;
 	}
@@ -208,6 +216,40 @@ std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
 		route.relayHostFallback = route.domain;
 	}
 	return route;
+}
+
+WssRouteDiagnostics WssRouteDiagnosticsForDc(
+		const ProxyStealthOptions &stealth,
+		int16 protocolDcId) {
+	auto result = WssRouteDiagnostics();
+	result.route = WssCustomRoute(stealth);
+	result.custom = result.route.has_value();
+	if (!result.route) {
+		result.route = OfficialRoute(protocolDcId);
+	}
+	if (!result.route) {
+		return result;
+	}
+	const auto &route = *result.route;
+	result.prefersFallback = PreferRelayFallback(route);
+	result.selectedRelayHost = result.prefersFallback
+		? route.relayHostFallback
+		: route.relayHost;
+	if (result.custom) {
+		return result;
+	}
+	result.suppressed = RouteSuppressed(route.domain);
+	{
+		QMutexLocker lock(&RelayPreferencesMutex);
+		const auto i = RouteHealthByDomain.find(route.domain);
+		if (i != end(RouteHealthByDomain)) {
+			result.consecutiveFailures = i->second.consecutiveFailures;
+			result.suppressedFor = std::max(
+				i->second.suppressedUntil - crl::now(),
+				crl::time(0));
+		}
+	}
+	return result;
 }
 
 WssSocket::WssSocket(

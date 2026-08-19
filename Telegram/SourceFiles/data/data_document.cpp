@@ -1946,6 +1946,14 @@ void DocumentData::setRemoteLocation(
 	}
 }
 
+int32 DocumentData::dcId() const {
+	return _dc;
+}
+
+uint64 DocumentData::accessHash() const {
+	return _access;
+}
+
 void DocumentData::setStoryMedia(bool value) {
 	if (value) {
 		_flags |= Flag::StoryDocument;
