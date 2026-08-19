@@ -3792,6 +3792,29 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			addSelectMessageAction(Element::Moused()->data());
 		}
 	}
+	const auto detailsCandidate = _dragStateItem
+		? _dragStateItem
+		: Element::Hovered()
+		? Element::Hovered()->data().get()
+		: Element::HoveredLink()
+		? Element::HoveredLink()->data().get()
+		: nullptr;
+	const auto detailsItem = (!asGroup && detailsCandidate)
+		? detailsCandidate
+		: groupLeaderOrSelf(detailsCandidate);
+	if (detailsItem) {
+		const auto detailsOwner = &detailsItem->history()->owner();
+		const auto detailsId = detailsItem->fullId();
+		_menu->addAction(
+			tr::lng_article_insert_details(tr::now),
+			[=] {
+				HistoryView::ShowMessageDiagnostics(
+					_controller,
+					detailsOwner,
+					detailsId);
+			},
+			&st::menuIconInfo);
+	}
 
 	if (_dragStateItem) {
 		const auto view = viewByItem(_dragStateItem);

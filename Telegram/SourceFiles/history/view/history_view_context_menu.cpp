@@ -401,7 +401,7 @@ void AddMediaTransportDiagnostics(
 	return lines.join('\n');
 }
 
-void ShowMessageDiagnostics(
+void ShowMessageDiagnosticsBox(
 		not_null<Window::SessionController*> controller,
 		not_null<Data::Session*> owner,
 		FullMsgId id) {
@@ -1655,6 +1655,13 @@ void EditTagBox(
 }
 
 } // namespace
+
+void ShowMessageDiagnostics(
+		not_null<Window::SessionController*> controller,
+		not_null<Data::Session*> owner,
+		FullMsgId id) {
+	ShowMessageDiagnosticsBox(controller, owner, id);
+}
 
 std::optional<QString> CurrentVoiceTimecode(FullMsgId itemId) {
 	const auto state = ::Media::Player::instance()->getState(
