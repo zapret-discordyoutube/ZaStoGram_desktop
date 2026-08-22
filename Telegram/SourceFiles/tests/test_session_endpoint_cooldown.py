@@ -8,6 +8,8 @@ TLS_SOCKET_CPP = SOURCE_DIR / "mtproto" / "proxy" / "mtproxy" / "tls_socket.cpp"
 CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
 TRANSPORT_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "transport.cpp"
 CHECK_CPP = SOURCE_DIR / "mtproto" / "proxy" / "check.cpp"
+DIAL_PACER_CPP = SOURCE_DIR / "mtproto" / "proxy" / "dial_pacer.cpp"
+TCP_CONNECTION_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
 
 
 def test_session_bypasses_endpoint_admission_and_local_cooldown():
@@ -30,9 +32,24 @@ def test_session_bypasses_endpoint_admission_and_local_cooldown():
     assert "_owner->_connectionFactory->create(" in append_body
     assert "weak->connectToServer(" in append_body
     assert "admission queue, no health cooldown" in append_body
-    # The only thing a proxy still imposes on the data plane is dial pacing.
+    # MTProxy may still pace its independent handshakes. The pacer itself
+    # must reject other proxy types: WEB connections are logical streams on
+    # one carrier and must never inherit MTProxy failure memory or queues.
     assert "ReserveProxyDial(_owner->_runtime, proxy)" in append_body
+    pacer = DIAL_PACER_CPP.read_text(encoding="utf-8")
+    reserve = function_body(pacer, "ProxyDialLease ReserveProxyDial(")
+    assert "proxy.type != ProxyData::Type::Mtproto" in reserve
     assert "setState(-int(admission.retryAfter));" not in append_body
+
+
+def test_web_proxy_connect_budget_covers_browser_handshake():
+    source = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
+    timeout = function_body(
+        source, "crl::time TcpConnection::fullConnectTimeout() const")
+
+    assert "kWebProxyFullConnectionTimeout" in source
+    assert "ProxyData::Type::Web" in timeout
+    assert "kWebProxyFullConnectionTimeout" in timeout
 
 
 def function_body(text: str, signature: str) -> str:
@@ -52,3 +69,4 @@ def function_body(text: str, signature: str) -> str:
 
 if __name__ == "__main__":
     test_session_bypasses_endpoint_admission_and_local_cooldown()
+    test_web_proxy_connect_budget_covers_browser_handshake()

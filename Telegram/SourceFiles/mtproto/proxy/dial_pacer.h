@@ -83,8 +83,10 @@ private:
 
 };
 
-// Direct connections are never paced, so for them this returns an empty
-// lease with a zero delay.
+// Only MTProxy handshakes are paced. SOCKS, HTTP and WEB proxies have their
+// own connection semantics (WEB in particular multiplexes logical streams
+// over one browser carrier), so for them this returns an empty lease with a
+// zero delay.
 [[nodiscard]] ProxyDialLease ReserveProxyDial(
 	not_null<RuntimeEnvironment*> runtime,
 	const ProxyData &proxy);

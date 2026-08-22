@@ -179,7 +179,13 @@ void ProxyDialLease::finish(Verdict verdict) {
 ProxyDialLease ReserveProxyDial(
 		not_null<RuntimeEnvironment*> runtime,
 		const ProxyData &proxy) {
-	if (proxy.type == ProxyData::Type::None) {
+	// This pacer protects MTProxy relays from bursts of independent TLS or
+	// obfuscated handshakes. Other proxy kinds must not inherit its failure
+	// memory or queue. A WEB proxy is a single shared browser transport: each
+	// MTP connection here is only a cheap logical stream on that carrier, so
+	// pacing those streams delays recovery and lets unrelated stream timeouts
+	// poison the whole carrier.
+	if (proxy.type != ProxyData::Type::Mtproto) {
 		return ProxyDialLease();
 	}
 	auto key = ProxyDiagnosticsProxyKeyHash(proxy);

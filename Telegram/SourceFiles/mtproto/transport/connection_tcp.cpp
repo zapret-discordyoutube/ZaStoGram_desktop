@@ -26,6 +26,12 @@ namespace {
 
 constexpr auto kPacketSizeMax = int(0x01000000 * sizeof(mtpPrime));
 constexpr auto kFullConnectionTimeout = 8 * crl::time(1000);
+// A cold WEB carrier is allowed to spend up to 45 seconds navigating and
+// negotiating its browser bridge. Keep the outer MTP connection alive long
+// enough for that contract plus the first Telegram round trip; otherwise the
+// session tears down a healthy logical stream while the carrier is still
+// legitimately connecting.
+constexpr auto kWebProxyFullConnectionTimeout = 50 * crl::time(1000);
 constexpr auto kSmallBufferSize = 256 * 1024;
 constexpr auto kMinPacketBuffer = 256;
 constexpr auto kConnectionStartPrefixSize = 64;
@@ -663,7 +669,9 @@ crl::time TcpConnection::pingTime() const {
 }
 
 crl::time TcpConnection::fullConnectTimeout() const {
-	return kFullConnectionTimeout;
+	return (_proxy.type == ProxyData::Type::Web)
+		? kWebProxyFullConnectionTimeout
+		: kFullConnectionTimeout;
 }
 
 void TcpConnection::socketPacket(bytes::const_span bytes) {
