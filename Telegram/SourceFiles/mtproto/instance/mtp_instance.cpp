@@ -1342,6 +1342,20 @@ void Instance::Private::processCallback(const Response &response) {
 		} else {
 			const auto guard = QPointer<Instance>(_instance);
 			if (handler.done && !handler.done(response) && guard) {
+				const auto request = _requests.request(requestId);
+				const auto body = request
+					? request.bodyPrimes()
+					: gsl::span<const mtpPrime>();
+				const auto methodId = body.empty() ? uint32() : uint32(body[0]);
+				const auto responseId = uint32(response.reply[0]);
+				const auto shiftedDcId = _requests.queryDc(requestId).value_or(0);
+				LOG(("RPC Parse Error: request %1 method 0x%2 response 0x%3 "
+					"words %4 dc %5").arg(
+					QString::number(requestId),
+					QString::number(methodId, 16).rightJustified(8, '0'),
+					QString::number(responseId, 16).rightJustified(8, '0'),
+					QString::number(response.reply.size()),
+					QString::number(shiftedDcId)));
 				handleError(Error::Local(
 					"RESPONSE_PARSE_FAILED",
 					"Response parse failed."));
