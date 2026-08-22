@@ -389,7 +389,6 @@ QByteArray HistoryMessageMarkupButton::RegisterRichPageButton(
 		return key;
 	}
 	auto record = button;
-	record.requestId = 0;
 	source->buttonRecords.emplace(key, std::move(record));
 	return key;
 }

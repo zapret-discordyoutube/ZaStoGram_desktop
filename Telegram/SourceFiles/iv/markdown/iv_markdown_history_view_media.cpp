@@ -708,6 +708,7 @@ bool IvHistoryViewBlock::probeSupport() {
 	case IvHistoryViewMediaKind::GroupedMedia:
 		return supportsHitClassification();
 	case IvHistoryViewMediaKind::Map:
+	case IvHistoryViewMediaKind::Audio:
 	case IvHistoryViewMediaKind::DocumentRow:
 		return true;
 	}

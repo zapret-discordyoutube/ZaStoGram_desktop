@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/basic_types.h"
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/proxy/data.h"
 
 #include <QtCore/QByteArray>
 #include <QtCore/QObject>

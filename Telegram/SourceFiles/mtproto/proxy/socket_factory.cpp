@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/proxy/mtproxy/tls_socket.h"
 #include "mtproto/proxy/wss/socket.h"
+#include "mtproto/details/mtproto_web_proxy_socket.h"
 #include "mtproto/transport/details/mtproto_tcp_socket.h"
 
 namespace MTP::details {
@@ -24,6 +25,9 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 		ProxyConnectionAttempt mtproxyAttempt,
 		MtProxyAttemptPlan mtproxyPlan,
 		crl::time mtproxyAttemptStartedAt) {
+	if (proxy.type == ProxyData::Type::Web) {
+		return std::make_unique<WebProxySocket>(runtime, thread, proxy);
+	}
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {
 		auto route = WssCustomRoute(stealth);

@@ -548,6 +548,19 @@ private:
 		bool useStructuralSelection = true);
 	[[nodiscard]] std::optional<MathEditRequest> activeMathEditRequest() const;
 	[[nodiscard]] MathEditRequest newDisplayMathRequest() const;
+	[[nodiscard]] auto inlineButtonEditRequestFromArticleHit(
+		const Markdown::MarkdownArticleHitTestResult &hit) const
+	-> std::optional<ButtonEditRequest>;
+	[[nodiscard]] auto inlineButtonEditRequestFromFieldPoint(
+		QPoint globalPoint) const
+	-> std::optional<ButtonEditRequest>;
+	[[nodiscard]] std::optional<ButtonEditRequest> rowButtonEditRequest(
+		const Markdown::PreparedEditBlockSource &block,
+		int index) const;
+	[[nodiscard]] static ButtonEditRequest MakeInlineButtonEditRequest(
+		int ordinal,
+		int offset,
+		const Markdown::InlineTextObjectButtonData &button);
 	[[nodiscard]] int inlineFieldMaxVisualLineWidth() const;
 	struct MathEditResult {
 		QString source;
@@ -590,6 +603,8 @@ private:
 	[[nodiscard]] bool handleFieldBlockInsertShortcut(QKeyEvent *e);
 	[[nodiscard]] bool handleStructuralBlockInsertShortcut(QKeyEvent *e);
 	[[nodiscard]] bool handleHardcodedBlockShortcut(QKeyEvent *e);
+	[[nodiscard]] bool handleBroaderFormatShortcut(QKeyEvent *e);
+	[[nodiscard]] bool activeLeafIsTableCell() const;
 	[[nodiscard]] bool handleFieldMarkdownBlockShortcut(QKeyEvent *e);
 	[[nodiscard]] bool fieldMonospaceShortcutUsesCodeBlock() const;
 	[[nodiscard]] bool structuralMonospaceShortcutTargetsCodeBlock() const;

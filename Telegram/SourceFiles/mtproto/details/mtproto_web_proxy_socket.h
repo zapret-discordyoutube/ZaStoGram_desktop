@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/details/mtproto_abstract_socket.h"
-#include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/transport/details/mtproto_abstract_socket.h"
+#include "mtproto/proxy/data.h"
 
 #include <QtCore/QByteArray>
 
@@ -21,6 +21,7 @@ namespace MTP::details {
 class WebProxySocket final : public AbstractSocket {
 public:
 	WebProxySocket(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const ProxyData &proxy);
 	~WebProxySocket();

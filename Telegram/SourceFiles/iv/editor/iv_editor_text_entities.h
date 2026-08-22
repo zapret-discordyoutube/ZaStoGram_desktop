@@ -69,5 +69,9 @@ struct RichTextEditorContent {
 	TextWithTags text,
 	int anchor,
 	int position);
+[[nodiscard]] auto ButtonDataFromEntity(const EntityInText &entity)
+-> std::optional<Markdown::InlineTextObjectButtonData>;
+[[nodiscard]] auto ButtonDataFromEntity(QStringView data)
+-> std::optional<Markdown::InlineTextObjectButtonData>;
 
 } // namespace Iv::Editor

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/invoke_queued.h"
 #include "storage/storage_databases.h"
 #include "dialogs/dialogs_main_list.h"
 #include "data/data_groups.h"

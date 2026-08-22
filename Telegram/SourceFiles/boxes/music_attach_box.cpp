@@ -47,7 +47,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "menu/menu_send.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "overview/overview_layout.h"
 #include "storage/localimageloader.h"
 #include "storage/storage_media_prepare.h"

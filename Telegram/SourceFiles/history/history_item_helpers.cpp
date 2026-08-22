@@ -1443,6 +1443,20 @@ bool CanHoldItemNotification(not_null<const HistoryItem*> item) {
 	return result;
 }
 
+HistoryMessageMarkupData UnsupportedMessageMarkup() {
+	using Button = HistoryMessageMarkupButton;
+	auto markup = HistoryMessageMarkupData();
+	markup.flags = ReplyMarkupFlag::Inline;
+	auto row = std::vector<Button>();
+	row.emplace_back(
+		Button::Type::Url,
+		tr::lng_update_telegram(tr::now),
+		Button::Visual(),
+		QByteArray("https://desktop.telegram.org"));
+	markup.rows.push_back(std::move(row));
+	return markup;
+}
+
 void ShowTrialTranscribesToast(int left, TimeId until) {
 	const auto window = Core::App().activeWindow();
 	if (!window) {

@@ -137,6 +137,172 @@ constexpr auto kRescheduleLimit = 20;
 constexpr auto kTagNameLimit = 12;
 constexpr auto kPublicPostLinkToastDuration = 4 * crl::time(1000);
 
+class RevertAction final : public Ui::Menu::ItemBase {
+public:
+	RevertAction(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::Menu &st,
+		Fn<void()> callback);
+
+	bool isEnabled() const override;
+	not_null<QAction*> action() const override;
+
+	void handleKeyPress(not_null<QKeyEvent*> e) override;
+
+private:
+	QPoint prepareRippleStartPosition() const override;
+	QImage prepareRippleMask() const override;
+
+	int contentHeight() const override;
+
+	void prepare();
+	[[nodiscard]] int countAboutWidth(int outerWidth) const;
+	void resizeToMenuWidth(int width);
+	void paint(Painter &p);
+
+	const not_null<QAction*> _dummyAction;
+	const style::Menu &_st;
+
+	Ui::Text::String _text;
+	Ui::Text::String _about = { 1 };
+	int _textWidth = 0;
+	int _aboutWidth = 0;
+	int _height = 0;
+};
+
+RevertAction::RevertAction(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::Menu &st,
+		Fn<void()> callback)
+: ItemBase(parent, st)
+, _dummyAction(new QAction(parent))
+, _st(st) {
+	setAcceptBoth(true);
+	prepare();
+	setActionTriggered(std::move(callback));
+
+	parent->widthValue(
+	) | rpl::on_next([=](int width) {
+		if (width > 0) {
+			resizeToMenuWidth(width);
+		}
+	}, lifetime());
+
+	paintRequest(
+	) | rpl::on_next([=] {
+		Painter p(this);
+		paint(p);
+	}, lifetime());
+
+	enableMouseSelecting();
+}
+
+void RevertAction::prepare() {
+	_text.setText(
+		_st.itemStyle,
+		tr::lng_ephemeral_revert(tr::now),
+		kPlainTextOptions);
+	_about.setText(
+		st::historyRevertItemAboutStyle,
+		tr::lng_ephemeral_revert_about(tr::now),
+		kPlainTextOptions);
+
+	const auto &padding = _st.itemPadding;
+	const auto added = padding.left() + padding.right();
+	const auto goodWidth = added
+		+ std::max(_text.maxWidth(), countAboutWidth(_st.widthMax));
+	const auto w = std::clamp(goodWidth, _st.widthMin, _st.widthMax);
+	setMinWidth(w);
+	resizeToMenuWidth(w);
+}
+
+int RevertAction::countAboutWidth(int outerWidth) const {
+	const auto &padding = _st.itemPadding;
+	const auto added = padding.left() + padding.right();
+	const auto available = std::max(outerWidth - added, 1);
+	return Ui::Text::CountOptimalTextSize(
+		_about,
+		std::min(std::max(_st.widthMin - added, 1), available),
+		available).width();
+}
+
+void RevertAction::resizeToMenuWidth(int width) {
+	const auto &padding = _st.itemPadding;
+	const auto added = padding.left() + padding.right();
+	_textWidth = std::max(width - added, 1);
+	_aboutWidth = countAboutWidth(width);
+	_height = st::ttlItemPadding.top()
+		+ _st.itemStyle.font->height
+		+ _about.countHeight(_aboutWidth)
+		+ st::ttlItemPadding.bottom();
+	resize(width, contentHeight());
+	update();
+}
+
+void RevertAction::paint(Painter &p) {
+	const auto selected = isSelected();
+	if (selected && _st.itemBgOver->c.alpha() < 255) {
+		p.fillRect(0, 0, width(), _height, _st.itemBg);
+	}
+	p.fillRect(0, 0, width(), _height, selected ? _st.itemBgOver : _st.itemBg);
+	if (isEnabled()) {
+		paintRipple(p, 0, 0);
+	}
+
+	const auto normalHeight = _st.itemPadding.top()
+		+ _st.itemStyle.font->height
+		+ _st.itemPadding.bottom();
+	const auto deltaHeight = _height - normalHeight;
+	st::menuIconRestoreAttention.paint(
+		p,
+		_st.itemIconPosition + QPoint(0, deltaHeight / 2),
+		width());
+
+	p.setPen(selected ? _st.itemFgOver : _st.itemFg);
+	_text.drawLeftElided(
+		p,
+		_st.itemPadding.left(),
+		st::ttlItemPadding.top(),
+		_textWidth,
+		width());
+	_about.drawLeft(
+		p,
+		_st.itemPadding.left(),
+		st::ttlItemPadding.top() + _st.itemStyle.font->height,
+		_aboutWidth,
+		width());
+}
+
+bool RevertAction::isEnabled() const {
+	return true;
+}
+
+not_null<QAction*> RevertAction::action() const {
+	return _dummyAction;
+}
+
+QPoint RevertAction::prepareRippleStartPosition() const {
+	return mapFromGlobal(QCursor::pos());
+}
+
+QImage RevertAction::prepareRippleMask() const {
+	return Ui::RippleAnimation::RectMask(size());
+}
+
+int RevertAction::contentHeight() const {
+	return _height;
+}
+
+void RevertAction::handleKeyPress(not_null<QKeyEvent*> e) {
+	if (!isSelected()) {
+		return;
+	}
+	const auto key = e->key();
+	if (key == Qt::Key_Enter || key == Qt::Key_Return) {
+		setClicked(Ui::Menu::TriggeredSource::Keyboard);
+	}
+}
+
 [[nodiscard]] QString DiagnosticBool(bool value) {
 	return value ? u"true"_q : u"false"_q;
 }
@@ -166,6 +332,7 @@ constexpr auto kPublicPostLinkToastDuration = 4 * crl::time(1000);
 	case Type::Socks5: return u"socks5"_q;
 	case Type::Http: return u"http"_q;
 	case Type::Mtproto: return u"mtproxy"_q;
+	case Type::Web: return u"web"_q;
 	}
 	Unexpected("ProxyData::Type in DiagnosticProxyType.");
 }

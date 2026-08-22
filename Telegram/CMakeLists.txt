@@ -516,6 +516,8 @@ PRIVATE
     chat_helpers/gifs_list_widget.h
     chat_helpers/message_field.cpp
     chat_helpers/message_field.h
+    chat_helpers/rich_paste_toast.cpp
+    chat_helpers/rich_paste_toast.h
     chat_helpers/picker_animation_scheduler.cpp
     chat_helpers/picker_animation_scheduler.h
     chat_helpers/share_message_phrase_factory.cpp
@@ -1540,6 +1542,10 @@ PRIVATE
     media/streaming/media_streaming_video_track.cpp
     media/streaming/media_streaming_video_track.h
     media/streaming/media_streaming_native_frame_mac.h
+    media/media_video_encode.cpp
+    media/media_video_encode.h
+    media/media_video_frames.cpp
+    media/media_video_frames.h
     media/view/media_view_action_router.cpp
     media/view/media_view_action_router.h
     media/view/media_view_group_thumbs.cpp
@@ -1698,6 +1704,8 @@ PRIVATE
     mtproto/config/special_config_request.cpp
     mtproto/config/special_config_request.h
     mtproto/type_utils.h
+    mtproto/details/mtproto_web_proxy_socket.cpp
+    mtproto/details/mtproto_web_proxy_socket.h
     mtproto/web_proxy/web_proxy_frame.cpp
     mtproto/web_proxy/web_proxy_frame.h
     mtproto/web_proxy/web_proxy_transport.cpp

@@ -55,6 +55,10 @@ void EnableQTextEditLineMetrics(style::Markdown &style) {
 style::Markdown CreateEditorMarkdownStyle() {
 	auto result = st::messageMarkdown;
 	EnableQTextEditLineMetrics(result);
+
+	// st::messageMarkdown.pageMaxWidth also sizes the editor window on open,
+	// so the cap is lifted here instead of in the style itself.
+	result.pageMaxWidth = st::defaultMarkdown.pageMaxWidth;
 	return result;
 }
 
@@ -84,7 +88,10 @@ int MaxVisualLineWidthForWidth(
 	width = std::max(width, 1);
 	const auto clone = std::unique_ptr<QTextDocument>(document->clone());
 	clone->setTextWidth(width);
-	clone->adjustSize();
+	// adjustSize() replaces textWidth() with an 80-character heuristic and
+	// finally with idealWidth(). Querying size() lays out the clone while
+	// preserving the width supplied by the article.
+	(void)clone->size();
 	return MaxVisualLineWidth(clone.get());
 }
 

@@ -74,6 +74,7 @@ enum class IvHistoryViewMediaKind {
 	Photo,
 	Document,
 	Map,
+	Audio,
 	DocumentRow,
 	GroupedMedia,
 	Slideshow,

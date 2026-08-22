@@ -27,6 +27,7 @@ struct ProxyData {
 		Socks5,
 		Http,
 		Mtproto,
+		Web,
 	};
 	enum class Status {
 		Valid,

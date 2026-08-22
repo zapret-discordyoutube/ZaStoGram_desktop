@@ -12,9 +12,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 
 WebProxySocket::WebProxySocket(
+		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const ProxyData &proxy)
-: AbstractSocket(thread)
+: AbstractSocket(runtime, thread)
 , _streamId(WebProxy::Transport::NextStreamId())
 , _transport(WebProxy::Transport::Instance()) {
 	Expects(proxy.type == ProxyData::Type::Web);

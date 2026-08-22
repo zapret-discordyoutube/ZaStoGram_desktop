@@ -165,10 +165,6 @@ struct HistoryMessageMarkupButton {
 	InlineBots::PeerTypes peerTypes = 0;
 	mutable mtpRequestId urlAuthRequestId = 0;
 
-	friend inline bool operator==(
-		const HistoryMessageMarkupButton &,
-		const HistoryMessageMarkupButton &) = default;
-
 };
 
 [[nodiscard]] bool operator==(

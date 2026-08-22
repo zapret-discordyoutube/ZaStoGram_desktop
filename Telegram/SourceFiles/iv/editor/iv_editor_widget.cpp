@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_qptr.h"
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "chat_helpers/message_field.h"
+#include "chat_helpers/rich_paste_toast.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/mime_type.h"
@@ -118,6 +119,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Iv::Editor {
 namespace {
 
+[[nodiscard]] bool IsFieldLineBreak(QChar ch) {
+	return (ch == QChar::LineFeed)
+		|| (ch == QChar::LineSeparator)
+		|| (ch == QChar::ParagraphSeparator);
+}
 
 [[nodiscard]] std::vector<Ui::Text::SpecialColor> HighlightColors(
 		not_null<const Ui::ChatStyle*> style) {
@@ -131,38 +137,6 @@ namespace {
 	return result;
 }
 
-[[nodiscard]] int MaxVisualLineWidth(
-		not_null<const QTextDocument*> document) {
-	auto result = 0.;
-	for (auto block = document->begin(); block.isValid(); block = block.next()) {
-		const auto layout = block.layout();
-		if (!layout) {
-			continue;
-		}
-		for (auto i = 0, count = layout->lineCount(); i != count; ++i) {
-			result = std::max(
-				result,
-				double(layout->lineAt(i).naturalTextWidth()));
-		}
-	}
-	return std::max(int(std::ceil(result)), 0);
-}
-
-[[nodiscard]] int MaxVisualLineWidthForWidth(
-		not_null<const QTextDocument*> document,
-		int width) {
-	width = std::max(width, 1);
-	const auto clone = std::unique_ptr<QTextDocument>(document->clone());
-	clone->setTextWidth(width);
-	// adjustSize() does not merely force layout: Qt replaces textWidth() with
-	// an 80-character heuristic and finally with idealWidth(). The pullquote
-	// would therefore measure itself at a width unrelated to the article and
-	// feed that narrower value back into the live field. Querying size() lays
-	// out the clone while preserving the width supplied by the article.
-	(void)clone->size();
-	return MaxVisualLineWidth(clone.get());
-}
-
 [[nodiscard]] std::unique_ptr<Ui::ChatTheme> CreateStandaloneChatTheme() {
 	const auto palette = style::main_palette::get();
 	return std::make_unique<Ui::ChatTheme>(Ui::ChatThemeDescriptor{
@@ -173,10 +147,6 @@ namespace {
 			.colors = { palette->windowBg()->c },
 		},
 	});
-}
-
-[[nodiscard]] const style::margins &EditorBodyPadding() {
-	return st::ivEditorBodyPadding;
 }
 
 [[nodiscard]] bool MatchesKeySequence(
@@ -681,60 +651,6 @@ void EnumerateBlockPaths(
 				callback);
 		}
 	}
-}
-
-void EnableQTextEditLineMetrics(style::TextStyle &style) {
-	style.qtextEditLineMetrics = true;
-}
-
-void EnableQTextEditLineMetrics(style::Markdown &style) {
-	EnableQTextEditLineMetrics(style.body);
-	EnableQTextEditLineMetrics(style.heading1);
-	EnableQTextEditLineMetrics(style.heading2);
-	EnableQTextEditLineMetrics(style.heading3);
-	EnableQTextEditLineMetrics(style.heading4);
-	EnableQTextEditLineMetrics(style.heading5);
-	EnableQTextEditLineMetrics(style.heading6);
-	EnableQTextEditLineMetrics(style.footer);
-	EnableQTextEditLineMetrics(style.quoteAuthorStyle);
-	EnableQTextEditLineMetrics(style.code);
-	EnableQTextEditLineMetrics(style.displayMath.fallbackStyle);
-	EnableQTextEditLineMetrics(style.table.headerStyle);
-	EnableQTextEditLineMetrics(style.table.bodyStyle);
-	EnableQTextEditLineMetrics(style.details.summaryStyle);
-	EnableQTextEditLineMetrics(style.embedPost.authorStyle);
-	EnableQTextEditLineMetrics(style.embedPost.dateStyle);
-	EnableQTextEditLineMetrics(style.placeholder.labelStyle);
-	EnableQTextEditLineMetrics(style.audio.titleStyle);
-	EnableQTextEditLineMetrics(style.audio.subtitleStyle);
-	EnableQTextEditLineMetrics(style.channel.titleStyle);
-	EnableQTextEditLineMetrics(style.channel.subtitleStyle);
-	EnableQTextEditLineMetrics(style.channel.button.textStyle);
-	EnableQTextEditLineMetrics(style.relatedArticle.titleStyle);
-	EnableQTextEditLineMetrics(style.relatedArticle.subtitleStyle);
-	EnableQTextEditLineMetrics(style.relatedArticle.footerStyle);
-}
-
-[[nodiscard]] style::Markdown CreateEditorMarkdownStyle() {
-	auto result = st::messageMarkdown;
-	EnableQTextEditLineMetrics(result);
-
-	// st::messageMarkdown.pageMaxWidth also sizes the editor window on open,
-	// so the cap is lifted here instead of in the style itself.
-	result.pageMaxWidth = st::defaultMarkdown.pageMaxWidth;
-	return result;
-}
-
-[[nodiscard]] int CompareSelectionPositions(
-		Markdown::MarkdownArticleSelectionPosition a,
-		Markdown::MarkdownArticleSelectionPosition b) {
-	if (a.segment != b.segment) {
-		return (a.segment < b.segment) ? -1 : 1;
-	}
-	if (a.offset != b.offset) {
-		return (a.offset < b.offset) ? -1 : 1;
-	}
-	return 0;
 }
 
 [[nodiscard]] Markdown::MarkdownArticleSelection NormalizeSelection(
@@ -7559,11 +7475,9 @@ auto Widget::inlineButtonEditRequestFromFieldPoint(QPoint globalPoint) const
 		|| (button->type == HistoryMessageMarkupButton::Type::Disabled)) {
 		return std::nullopt;
 	}
-	const auto text = ConvertEditorTagsToRichText(
-		_field->getTextWithAppliedMarkdown());
 	return MakeInlineButtonEditRequest(
 		ordinal,
-		richOffsetForFieldOffset(text, index),
+		activeTextOffsetForFieldDocumentPosition(index),
 		*button);
 }
 
@@ -7699,6 +7613,34 @@ bool Widget::handleIvClipboardMime(
 		}
 	}
 	return false;
+}
+
+void Widget::offerPlainMarkdownPaste(const QString &text) {
+	auto pasted = std::make_shared<RichPage>(_state->richPage());
+	ChatHelpers::ShowRichPasteToast({
+		.session = _session,
+		.parent = _outer,
+		.bottomOffset = rpl::single(_bottomContentPadding),
+		.cancel = autosaveEvents() | rpl::to_empty,
+		.offer = ChatHelpers::RichPasteOffer::Plain,
+		.action = crl::guard(this, [=] {
+			undoMarkdownPaste(text, *pasted);
+		}),
+	});
+}
+
+void Widget::undoMarkdownPaste(const QString &text, const RichPage &pasted) {
+	if (_state->richPage() != pasted) {
+		return;
+	}
+	performUndoRedo(false);
+	auto page = SplitTextIntoRichPage(TextWithEntities{ text });
+	if (page.blocks.empty()) {
+		return;
+	}
+	crl::on_main(this, [=, blocks = std::move(page.blocks)]() mutable {
+		pasteImportedBlocks({ .blocks = std::move(blocks) });
+	});
 }
 
 ApplyResult Widget::applyFieldTextToState() {
@@ -9309,12 +9251,8 @@ bool Widget::moveListItemDepth(bool deeper) {
 		// Own line of an item moves alone, so it can't take the item deeper.
 		return true;
 	}
-	const auto text = ConvertEditorTagsToRichText(
-		_field->getTextWithAppliedMarkdown());
-	const auto cursorOffset = std::clamp(
-		richOffsetForFieldOffset(text, _field->textCursor().position()),
-		0,
-		int(text.text.size()));
+	const auto cursorOffset = activeTextOffsetForFieldDocumentPosition(
+		_field->textCursor().position());
 	auto handled = false;
 	beginArticleRelayoutDeferral();
 	const auto relayoutGuard = gsl::finally([&] {

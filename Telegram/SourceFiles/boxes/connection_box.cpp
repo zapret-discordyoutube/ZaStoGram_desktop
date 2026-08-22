@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/proxy_services.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/runtime_environment.h"
+#include "mtproto/web_proxy/web_proxy_transport.h"
 #include "qr/qr_generate.h"
 #include "settings/settings_common.h"
 #include "settings.h"

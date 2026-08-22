@@ -106,7 +106,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/audio/media_audio_capture.h"
 #include "media/audio/media_audio.h"
 #include "menu/menu_checked_action.h"
-#include "mtproto/mtproto_config.h"
+#include "mtproto/config/mtproto_config.h"
 #include "menu/menu_send.h"
 #include "settings/sections/settings_premium.h"
 #include "support/support_common.h"

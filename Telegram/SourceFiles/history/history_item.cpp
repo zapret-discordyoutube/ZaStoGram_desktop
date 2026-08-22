@@ -2039,11 +2039,6 @@ void HistoryItem::savePreviousMedia() {
 HistoryMessageContent HistoryItem::backupContent() {
 	const auto component = Get<HistoryMessageReplyMarkup>();
 	auto markup = component ? component->data : HistoryMessageMarkupData();
-	for (auto &row : markup.rows) {
-		for (auto &button : row) {
-			button.requestId = 0;
-		}
-	}
 	return {
 		.text = originalText(),
 		.media = (_media ? _media->clone(this) : nullptr),

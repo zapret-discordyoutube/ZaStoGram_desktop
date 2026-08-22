@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "main/main_session_settings.h"
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/runtime/connection_status.h"
 #include "platform/platform_specific.h"

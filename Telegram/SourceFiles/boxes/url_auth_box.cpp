@@ -217,12 +217,8 @@ void ActivateButton(
 		not_null<const HistoryItem*> message,
 		Api::BotButtonLookup lookup) {
 	const auto itemId = message->fullId();
-	const auto button = HistoryMessageMarkupButton::Get(
-		&message->history()->owner(),
-		itemId,
-		row,
-		column);
-	if (button->urlAuthRequestId || !message->isRegular()) {
+	const auto button = lookup();
+	if (!button || button->urlAuthRequestId || !message->isRegular()) {
 		return;
 	}
 	const auto session = &message->history()->session();
@@ -310,11 +306,7 @@ void RequestButton(
 		not_null<const HistoryItem*> message,
 		Api::BotButtonLookup lookup) {
 	const auto itemId = message->fullId();
-	const auto button = HistoryMessageMarkupButton::Get(
-		&message->history()->owner(),
-		itemId,
-		row,
-		column);
+	const auto button = lookup();
 	if (!button || button->urlAuthRequestId || !message->isRegular()) {
 		return;
 	}

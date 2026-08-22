@@ -670,7 +670,7 @@ void Message::activateRichPagePreparedLink(
 					return false;
 				}
 				const auto rect = owner->richPageRect(trect);
-				rich->article.resizeGetHeight(rect.width());
+				(void)rich->article.resizeGetHeight(rect.width());
 				top = rich->article.anchorTop(anchorId);
 				owner->requestRichPageRelayout(QRect());
 			} else {

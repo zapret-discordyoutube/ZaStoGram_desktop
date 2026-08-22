@@ -79,6 +79,8 @@ public:
 		bool deleted = false;
 		bool supportsShare = false;
 		bool supportsCalls = false;
+		bool web = false;
+		bool canOpenBrowser = false;
 		ItemState state = ItemState::Unknown;
 		MTP::ProxyCheckStatus progressStatus = MTP::ProxyCheckStatus::Idle;
 		QString statusText;
@@ -91,6 +93,7 @@ public:
 	void shareItems();
 	void checkItem(int id);
 	void applyItem(int id);
+	void openBrowser(int id);
 	void reorderItems(int oldPosition, int newPosition);
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();

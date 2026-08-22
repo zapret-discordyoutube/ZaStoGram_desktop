@@ -310,17 +310,8 @@ namespace {
 
 [[nodiscard]] std::optional<BotCallbackButton> ResolveCallbackButton(
 		not_null<HistoryItem*> item,
-		int row,
-		int column) {
-	const auto markup = item->Get<HistoryMessageReplyMarkup>();
-	if (!markup) {
-		return std::nullopt;
-	}
-	const auto button = HistoryMessageMarkupButton::Get(
-		&item->history()->owner(),
-		item->fullId(),
-		row,
-		column);
+		const BotButtonLookup &lookup) {
+	const auto button = lookup();
 	if (!button) {
 		return std::nullopt;
 	}
@@ -328,23 +319,58 @@ namespace {
 	if (!type) {
 		return std::nullopt;
 	}
+	const auto markup = item->Get<HistoryMessageReplyMarkup>();
+	if (markup) {
+		for (auto row = 0; row != markup->data.rows.size(); ++row) {
+			const auto &buttons = markup->data.rows[row];
+			for (auto column = 0; column != buttons.size(); ++column) {
+				if (&buttons[column] == button) {
+					return BotCallbackButton{
+						.messageId = item->fullId(),
+						.markupRevision = markup->markupRevision,
+						.row = row,
+						.column = column,
+						.type = *type,
+						.data = button->data,
+					};
+				}
+			}
+		}
+	}
+	const auto owner = &item->history()->owner();
+	const auto key = HistoryMessageMarkupButton::RichPageButtonKey(*button);
+	if (HistoryMessageMarkupButton::GetRichPageButton(
+			owner,
+			item->fullId(),
+			key) != button) {
+		return std::nullopt;
+	}
 	return BotCallbackButton{
 		.messageId = item->fullId(),
-		.markupRevision = markup->markupRevision,
-		.row = row,
-		.column = column,
+		.row = -1,
+		.column = -1,
 		.type = *type,
 		.data = button->data,
+		.richPageKey = key,
 	};
 }
 
 [[nodiscard]] bool CallbackButtonMatches(
 		not_null<HistoryItem*> item,
 		const BotCallbackButton &button) {
-	const auto current = ResolveCallbackButton(
-		item,
-		button.row,
-		button.column);
+	const auto owner = &item->history()->owner();
+	const auto current = ResolveCallbackButton(item, [=] {
+		return button.richPageKey.isEmpty()
+			? HistoryMessageMarkupButton::Get(
+				owner,
+				item->fullId(),
+				button.row,
+				button.column)
+			: HistoryMessageMarkupButton::GetRichPageButton(
+				owner,
+				item->fullId(),
+				button.richPageKey);
+	});
 	return current && *current == button;
 }
 
@@ -503,12 +529,11 @@ void HideSingleUseKeyboard(
 void SendBotCallbackData(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item,
-		int row,
-		int column) {
+		BotButtonLookup lookup) {
 	if (!item->isRegular() && !item->isEphemeral()) {
 		return;
 	}
-	const auto button = ResolveCallbackButton(item, row, column);
+	const auto button = ResolveCallbackButton(item, lookup);
 	if (!button) {
 		return;
 	}
@@ -539,7 +564,7 @@ void SendBotCallbackDataWithPassword(
 	const auto owner = &history->owner();
 	const auto api = &session->api();
 	const auto fullId = item->fullId();
-	const auto button = ResolveCallbackButton(item, row, column);
+	const auto button = ResolveCallbackButton(item, lookup);
 	if (!button
 		|| button->type != BotCallbackButtonType::CallbackWithPassword) {
 		return;

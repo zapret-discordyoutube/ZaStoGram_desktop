@@ -12,6 +12,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/markdown/iv_markdown_article.h"
 #include "iv/markdown/iv_markdown_article_layout_blocks.h"
 #include "lang/lang_keys.h"
+#include "main/main_session.h"
+#include "data/data_session.h"
 #include "ui/effects/animation_value.h"
 #include "ui/style/style_core_scale.h"
 #include "ui/color_contrast.h"
@@ -692,7 +694,30 @@ RichButtonLoadingState *RichButtonLoadingActive(
 		loading.owner,
 		loading.itemId,
 		key);
-	return (record && record->requestId) ? loading.state : nullptr;
+	if (!record) {
+		return nullptr;
+	}
+	const auto type = [&]() -> std::optional<Api::BotCallbackButtonType> {
+		using Type = HistoryMessageMarkupButton::Type;
+		switch (record->type) {
+		case Type::Callback:
+			return Api::BotCallbackButtonType::Callback;
+		case Type::CallbackWithPassword:
+			return Api::BotCallbackButtonType::CallbackWithPassword;
+		case Type::Game:
+			return Api::BotCallbackButtonType::Game;
+		default:
+			return std::nullopt;
+		}
+	}();
+	return type && loading.owner->session().botCallbacks().buttonLoading({
+		.messageId = loading.itemId,
+		.row = -1,
+		.column = -1,
+		.type = *type,
+		.data = record->data,
+		.richPageKey = key,
+	}) ? loading.state : nullptr;
 }
 
 // While the glare runs, the outline's opacity is the travelling gradient's

@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/config/mtproto_dc_options.h"
+#include "mtproto/web_proxy/web_proxy_transport.h"
 #include "core/file_utilities.h"
 #include "core/update_checker.h"
 #include "window/themes/window_theme.h"

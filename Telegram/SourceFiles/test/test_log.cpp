@@ -5,9 +5,9 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
-#ifdef _DEBUG
-
 #include "test/test_log.h"
+
+#ifdef _DEBUG
 
 #include "settings.h"
 
@@ -111,6 +111,55 @@ void Complete() {
 
 crl::time CompletedAt() {
 	return CompletedAtValue;
+}
+
+} // namespace Test
+
+#else // _DEBUG
+
+namespace Test {
+
+QString EvidenceDir() {
+	return {};
+}
+
+QString ScreenshotsDir() {
+	return {};
+}
+
+void LogRaw(const QString &) {
+}
+
+void Step(const QString &) {
+}
+
+void Pass(const QString &) {
+}
+
+void Fail(const QString &, const QString &) {
+}
+
+void Check(bool, const QString &, const QString &) {
+}
+
+void Note(const QString &) {
+}
+
+void CheckNear(int, int, int, const QString &) {
+}
+
+void LogGeometry(const QString &, const QRect &) {
+}
+
+int FailureCount() {
+	return 0;
+}
+
+void Complete() {
+}
+
+crl::time CompletedAt() {
+	return 0;
 }
 
 } // namespace Test

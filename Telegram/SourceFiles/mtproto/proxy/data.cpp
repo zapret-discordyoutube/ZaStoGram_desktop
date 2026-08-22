@@ -10,6 +10,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "base/qt/qt_string_view.h"
 
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QMessageAuthenticationCode>
+#include <QtCore/QUrl>
+#include <QtNetwork/QHostAddress>
+
 #include <utility>
 
 namespace MTP {

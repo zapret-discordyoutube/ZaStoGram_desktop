@@ -25,6 +25,8 @@ class SessionController;
 
 namespace Api {
 
+using BotButtonLookup = Fn<const HistoryMessageMarkupButton*()>;
+
 class BotCallbackManager final {
 public:
 	explicit BotCallbackManager(not_null<Main::Session*> session);

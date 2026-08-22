@@ -7577,14 +7577,15 @@ void HistoryWidget::updateAiButtonVisibility() {
 	}
 }
 
-void HistoryWidget::updateExpandButtonVisibility() {
-	const auto hidden = isE2ECloudProtectedPeer()
-		|| !_send->isVisible()
-		|| !_field->isVisible()
-		|| _voiceRecordBar->isActive()
-		|| !hasEnoughLinesForExpand()
-		|| (textExceedsMaxSize() && !editingMessage())
-		|| (_editMsgId
+bool HistoryWidget::canShowRichEditor() const {
+	return _history
+		&& !isE2ECloudProtectedPeer()
+		&& _send->isVisible()
+		&& _field->isVisible()
+		&& !_voiceRecordBar->isActive()
+		&& (editingMessage() || _canSendTexts)
+		&& (!textExceedsMaxSize() || editingMessage())
+		&& !(_editMsgId
 			&& _replyEditMsg
 			&& _replyEditMsg->media()
 			&& !_replyEditMsg->media()->webpage())

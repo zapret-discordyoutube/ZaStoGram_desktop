@@ -17,6 +17,8 @@ namespace MTP {
 	const ProxyData &proxy,
 	int ipIndex = 0);
 [[nodiscard]] QNetworkProxy ToNetworkProxy(const ProxyData &proxy);
+[[nodiscard]] QString NormalizeWebProxyHost(const QString &value);
+[[nodiscard]] QString WebProxyBridgeCapability(const ProxyData &proxy);
 [[nodiscard]] ProxyStealthOptions CompatStrictProxyStealthOptions(
 	ProxyStealthOptions result);
 [[nodiscard]] ProxyStealthOptions ApplyProxyStealthLevel(

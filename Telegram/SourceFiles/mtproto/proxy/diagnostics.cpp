@@ -533,6 +533,8 @@ QString ProxyDiagnosticsTransportName(
 		return u"SocksTcp"_q;
 	case ProxyData::Type::Http:
 		return u"HttpTcp"_q;
+	case ProxyData::Type::Web:
+		return u"WebProxy"_q;
 	case ProxyData::Type::None:
 		return u"Tcp"_q;
 	}

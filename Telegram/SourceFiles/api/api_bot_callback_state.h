@@ -40,6 +40,7 @@ struct BotCallbackButton {
 	int column = 0;
 	BotCallbackButtonType type = BotCallbackButtonType::Callback;
 	QByteArray data;
+	QByteArray richPageKey;
 
 	friend inline bool operator==(
 		const BotCallbackButton &,
