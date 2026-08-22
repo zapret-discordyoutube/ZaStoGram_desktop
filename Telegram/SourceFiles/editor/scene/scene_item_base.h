@@ -38,7 +38,7 @@ public:
 	[[nodiscard]] int number() const;
 
 	[[nodiscard]] Status status() const;
-	void setStatus(Status status);
+	virtual void setStatus(Status status);
 	[[nodiscard]] bool isNormalStatus() const;
 	[[nodiscard]] bool isUndidStatus() const;
 	[[nodiscard]] bool isRemovedStatus() const;
@@ -138,6 +138,9 @@ protected:
 	[[nodiscard]] bool fitsMinimumSize() const;
 	void setVerticalMinimumEnabled(bool enabled);
 	[[nodiscard]] bool isHandling() const;
+	void resetDragging();
+	[[nodiscard]] bool dragThresholdPassed(
+		not_null<QGraphicsSceneMouseEvent*> event);
 	[[nodiscard]] float64 scaledHandleSize() const;
 	void paintHandle(QPainter *p, const QRectF &rect, bool hasFocus) const;
 
@@ -188,6 +191,7 @@ private:
 
 	bool _flipped = false;
 	bool _verticalMinimumEnabled = true;
+	bool _dragging = false;
 
 };
 

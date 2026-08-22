@@ -9,8 +9,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "editor/controllers/controllers.h"
 #include "lang/lang_keys.h"
+#include "ui/effects/round_checkbox.h"
 #include "ui/image/image_prepare.h"
+#include "ui/qt_object_factory.h"
 #include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/menu/menu_multiline_action.h"
@@ -33,6 +36,257 @@ namespace {
 			| Qt::ControlModifier
 			| Qt::AltModifier
 			| Qt::MetaModifier);
+}
+
+class CheckAction final : public Ui::Menu::ItemBase {
+public:
+	CheckAction(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::Menu &st,
+		const QString &text,
+		bool checked);
+
+	void setChecked(bool checked);
+
+	not_null<QAction*> action() const override;
+	bool isEnabled() const override;
+
+private:
+	int contentHeight() const override;
+	void paintEvent(QPaintEvent *e) override;
+
+	const style::Menu &_st;
+	Ui::CheckView _check;
+	const base::unique_qptr<Ui::FlatLabel> _text;
+	const not_null<QAction*> _dummyAction;
+
+};
+
+CheckAction::CheckAction(
+	not_null<Ui::Menu::Menu*> parent,
+	const style::Menu &st,
+	const QString &text,
+	bool checked)
+: ItemBase(parent, st)
+, _st(st)
+, _check(st::photoEditorMenuCheck, checked, [=] { update(); })
+, _text(base::make_unique_q<Ui::FlatLabel>(
+	this,
+	rpl::single(text),
+	st::photoEditorMenuCheckLabel))
+, _dummyAction(Ui::CreateChild<QAction>(parent.get())) {
+	ItemBase::enableMouseSelecting();
+	setPreventClose(true);
+	_text->setAttribute(Qt::WA_TransparentForMouseEvents);
+	setMinWidth(_st.widthMin);
+	parent->widthValue() | rpl::on_next([=](int width) {
+		const auto &padding = _st.itemPadding;
+		_text->resizeToWidth(width - rect::m::sum::h(padding));
+		_text->moveToLeft(padding.left(), padding.top());
+		resize(width, contentHeight());
+	}, lifetime());
+}
+
+void CheckAction::setChecked(bool checked) {
+	_check.setChecked(checked, anim::type::normal);
+}
+
+not_null<QAction*> CheckAction::action() const {
+	return _dummyAction;
+}
+
+bool CheckAction::isEnabled() const {
+	return true;
+}
+
+int CheckAction::contentHeight() const {
+	return rect::m::sum::v(_st.itemPadding)
+		+ std::max(_text->heightNoMargins(), _check.getSize().height());
+}
+
+void CheckAction::paintEvent(QPaintEvent *e) {
+	auto p = QPainter(this);
+	const auto selected = isSelected();
+	p.fillRect(rect(), selected ? _st.itemBgOver : _st.itemBg);
+	RippleButton::paintRipple(p, 0, 0);
+	const auto size = _check.getSize();
+	_check.paint(
+		p,
+		(_st.itemPadding.left() - size.width()) / 2,
+		(height() - size.height()) / 2,
+		width());
+}
+
+class ShapeAction final : public Ui::Menu::Action {
+public:
+	ShapeAction(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::Menu &st,
+		not_null<QAction*> action,
+		const style::icon *outline,
+		const style::icon *fill,
+		bool filled);
+
+	void setFilled(bool filled);
+
+private:
+	void paintEvent(QPaintEvent *e) override;
+
+	const not_null<const style::icon*> _outline;
+	const style::icon *_fill = nullptr;
+	QImage _fillFrame;
+	Ui::Animations::Simple _filledAnimation;
+	bool _filled = false;
+
+};
+
+ShapeAction::ShapeAction(
+	not_null<Ui::Menu::Menu*> parent,
+	const style::Menu &st,
+	not_null<QAction*> action,
+	const style::icon *outline,
+	const style::icon *fill,
+	bool filled)
+: Ui::Menu::Action(parent, st, action, nullptr, nullptr)
+, _outline(outline)
+, _fill(fill)
+, _filled(filled) {
+}
+
+void ShapeAction::setFilled(bool filled) {
+	if (_filled == filled) {
+		return;
+	}
+	_filled = filled;
+	if (_fill) {
+		_filledAnimation.start(
+			[=] { update(); },
+			filled ? 0. : 1.,
+			filled ? 1. : 0.,
+			st::photoEditorShapeFillDuration,
+			anim::linear);
+	}
+}
+
+void ShapeAction::paintEvent(QPaintEvent *e) {
+	auto p = Painter(this);
+
+	const auto selected = isSelected();
+	paintBackground(p, selected);
+	paintRipple(p, 0, 0);
+	p.setPen(selected ? st().itemFgOver : st().itemFg);
+	paintText(p);
+
+	const auto position = st().itemIconPosition;
+	_outline->paint(p, position, width());
+	if (!_fill) {
+		return;
+	}
+	const auto progress = _filledAnimation.value(_filled ? 1. : 0.);
+	if (progress <= 0.) {
+		return;
+	} else if (progress >= 1.) {
+		_fill->paint(p, position, width());
+		return;
+	}
+	const auto size = _fill->size();
+	const auto ratio = style::DevicePixelRatio();
+	if (_fillFrame.size() != size * ratio) {
+		_fillFrame = QImage(
+			size * ratio,
+			QImage::Format_ARGB32_Premultiplied);
+		_fillFrame.setDevicePixelRatio(ratio);
+	}
+	_fillFrame.fill(Qt::transparent);
+	{
+		auto q = QPainter(&_fillFrame);
+		_fill->paint(q, QPoint(), size.width());
+
+		auto hq = PainterHighQualityEnabler(q);
+		const auto radius = st::photoEditorShapeFillRadius * progress;
+		const auto inner = QRectF(QPointF(), QSizeF(size));
+		auto path = QPainterPath();
+		path.addRect(inner);
+		path.addEllipse(inner.center(), radius, radius);
+		q.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+		q.setPen(Qt::NoPen);
+		q.setBrush(Qt::black);
+		q.drawPath(path);
+	}
+	p.drawImage(
+		style::rtlrect(QRect(position, size), width()).topLeft(),
+		_fillFrame);
+}
+
+class RoundCheckAction final : public Ui::Menu::Action {
+public:
+	RoundCheckAction(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::Menu &st,
+		not_null<QAction*> action,
+		bool checked);
+
+	void setChecked(bool checked);
+
+private:
+	void paintEvent(QPaintEvent *e) override;
+
+	Ui::RoundCheckbox _check;
+	Ui::Animations::Simple _checkedAnimation;
+	bool _checked = false;
+
+};
+
+RoundCheckAction::RoundCheckAction(
+	not_null<Ui::Menu::Menu*> parent,
+	const style::Menu &st,
+	not_null<QAction*> action,
+	bool checked)
+: Ui::Menu::Action(parent, st, action, nullptr, nullptr)
+, _check(st::photoEditorMenuRoundCheck, [=] { update(); })
+, _checked(checked) {
+	_check.setChecked(checked, anim::type::instant);
+}
+
+void RoundCheckAction::setChecked(bool checked) {
+	if (_checked == checked) {
+		return;
+	}
+	_checked = checked;
+	_check.setChecked(checked, anim::type::normal);
+	_checkedAnimation.start(
+		[=] { update(); },
+		checked ? 0. : 1.,
+		checked ? 1. : 0.,
+		st::photoEditorMenuRoundCheck.duration,
+		anim::linear);
+}
+
+void RoundCheckAction::paintEvent(QPaintEvent *e) {
+	auto p = Painter(this);
+
+	const auto selected = isSelected();
+	paintBackground(p, selected);
+	paintRipple(p, 0, 0);
+	p.setPen(selected ? st().itemFgOver : st().itemFg);
+	paintText(p);
+
+	const auto &check = st::photoEditorMenuRoundCheck;
+	const auto left = (st().itemPadding.left() - check.size) / 2;
+	const auto top = (height() - check.size) / 2;
+	const auto progress = _checkedAnimation.value(_checked ? 1. : 0.);
+	const auto untoggled = 1. - std::min(progress / check.bgDuration, 1.);
+	if (untoggled > 0.) {
+		auto hq = PainterHighQualityEnabler(p);
+		auto pen = st::photoEditorMenuRoundCheckUntoggledFg->p;
+		pen.setWidth(check.width);
+		p.setOpacity(untoggled);
+		p.setPen(pen);
+		p.setBrush(Qt::NoBrush);
+		p.drawEllipse(QRect(left, top, check.size, check.size));
+		p.setOpacity(1.);
+	}
+	_check.paint(p, left, top, width());
 }
 
 } // namespace
@@ -257,6 +511,7 @@ PhotoEditorControls::PhotoEditorControls(
 	bool shapesFilled)
 : RpWidget(parent)
 , _imageSize(imageSize)
+, _originalRatio(data.originalRatio)
 , _bg(st::roundedBg)
 , _buttonHeight(st::photoEditorButtonBarHeight)
 , _transformButtons(base::make_unique_q<ButtonBar>(this, _bg))
@@ -291,7 +546,8 @@ PhotoEditorControls::PhotoEditorControls(
 	: base::make_unique_q<Ui::IconButton>(
 		_transformButtons,
 		st::photoEditorCropRatioButton))
-, _cornersButton((data.cropType == EditorData::CropType::RoundedRect)
+, _cornersButton(((data.cropType == EditorData::CropType::RoundedRect)
+		&& (data.cropMode == EditorData::CropMode::Mask))
 	? base::make_unique_q<Ui::IconButton>(
 		_transformButtons,
 		st::photoEditorCornersButton)
@@ -605,6 +861,23 @@ PhotoEditorControls::PhotoEditorControls(
 			add(
 				tr::lng_photo_editor_corners_none(tr::now),
 				RoundedCornersLevel::None);
+			if (_originalRatio > 0.) {
+				_cornersMenu->addSeparator();
+				auto keepRatio = base::make_unique_q<CheckAction>(
+					_cornersMenu->menu(),
+					_cornersMenu->menu()->st(),
+					tr::lng_photo_editor_keep_ratio(tr::now),
+					_keepOriginalRatio);
+				const auto raw = keepRatio.get();
+				keepRatio->setActionTriggered([=] {
+					_keepOriginalRatio = !_keepOriginalRatio;
+					raw->setChecked(_keepOriginalRatio);
+					_aspectRatioChanges.fire_copy(_keepOriginalRatio
+						? _originalRatio
+						: 1.);
+				});
+				_cornersMenu->addAction(std::move(keepRatio));
+			}
 			const auto button = _cornersButton.get();
 			const auto bottomRight = button->mapToGlobal(
 				QPoint(button->width(), 0));
@@ -656,24 +929,20 @@ void PhotoEditorControls::showShapesMenu() {
 	_shapesMenu->setForcedOrigin(Ui::PanelAnimation::Origin::BottomRight);
 	const auto menu = _shapesMenu.get();
 
-	struct Entry {
-		Ui::Menu::Action *item = nullptr;
-		const style::icon *outline = nullptr;
-		const style::icon *fill = nullptr;
-	};
-	const auto entries = menu->lifetime().make_state<std::vector<Entry>>();
+	const auto entries = menu->lifetime().make_state<
+		std::vector<ShapeAction*>>();
 	const auto add = [&](
 			const QString &text,
 			ShapeType shape,
 			const style::icon *outline,
 			const style::icon *fill) {
-		const auto icon = _shapesFilled ? fill : outline;
-		auto item = base::make_unique_q<Ui::Menu::Action>(
+		auto item = base::make_unique_q<ShapeAction>(
 			menu->menu(),
 			menu->st().menu,
 			new QAction(text, menu),
-			icon,
-			icon);
+			outline,
+			fill,
+			_shapesFilled);
 		item->setActionTriggered([=] {
 			_shapeRequests.fire({
 				.shape = shape,
@@ -682,7 +951,7 @@ void PhotoEditorControls::showShapesMenu() {
 					: ShapeRequest::Action::Arm,
 			});
 		});
-		entries->push_back({ item.get(), outline, fill });
+		entries->push_back(item.get());
 		menu->addAction(std::move(item));
 	};
 	add(
@@ -709,26 +978,21 @@ void PhotoEditorControls::showShapesMenu() {
 		tr::lng_photo_editor_shape_arrow(tr::now),
 		ShapeType::Arrow,
 		&st::photoEditorShapeArrow,
-		&st::photoEditorShapeArrow);
+		nullptr);
 	menu->addSeparator();
 
-	auto filled = base::make_unique_q<Ui::Menu::Action>(
+	auto filled = base::make_unique_q<RoundCheckAction>(
 		menu->menu(),
 		menu->st().menu,
 		new QAction(tr::lng_photo_editor_shape_filled(tr::now), menu),
-		_shapesFilled ? &st::mediaPlayerMenuCheck : nullptr,
-		_shapesFilled ? &st::mediaPlayerMenuCheck : nullptr);
+		_shapesFilled);
 	const auto filledRaw = filled.get();
 	filled->setActionTriggered([=] {
 		_shapesFilled = !_shapesFilled;
 		_shapesFillChanges.fire_copy(_shapesFilled);
-		const auto check = _shapesFilled
-			? &st::mediaPlayerMenuCheck
-			: nullptr;
-		filledRaw->setIcon(check, check);
-		for (const auto &entry : *entries) {
-			const auto icon = _shapesFilled ? entry.fill : entry.outline;
-			entry.item->setIcon(icon, icon);
+		filledRaw->setChecked(_shapesFilled);
+		for (const auto entry : *entries) {
+			entry->setFilled(_shapesFilled);
 		}
 	});
 	filled->setPreventClose(true);

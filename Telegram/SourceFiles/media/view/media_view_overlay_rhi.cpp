@@ -26,16 +26,18 @@ namespace {
 
 using namespace Ui::GL;
 
+// The NDC Y flip stays at offset 12 in every block, see NdcFlipY().
 struct ImageUniforms {
 	float viewport[2];
 	float g_opacity;
-	float _pad0;
+	float flipY;
 };
 static_assert(sizeof(ImageUniforms) % 16 == 0);
 
 struct ContentUniforms {
 	float viewport[2];
-	float _pad0[2];
+	float fragCoordYUp;
+	float flipY;
 	float shadowTopRect[4];
 	float shadowBottomSkipOpacityFullFade[4];
 	float roundRect[4];
@@ -46,7 +48,8 @@ static_assert(sizeof(ContentUniforms) == 80);
 
 struct TransparentContentUniforms {
 	float viewport[2];
-	float _pad0[2];
+	float fragCoordYUp;
+	float flipY;
 	float shadowTopRect[4];
 	float shadowBottomSkipOpacityFullFade[4];
 	float transparentBg[4];
@@ -58,7 +61,8 @@ static_assert(sizeof(TransparentContentUniforms) == 96);
 
 struct RoundedCornersUniforms {
 	float viewport[2];
-	float _pad0[2];
+	float fragCoordYUp;
+	float flipY;
 	float roundRect[4];
 	float roundRadius;
 	float _pad1[3];
@@ -96,6 +100,16 @@ static_assert(sizeof(RoundedCornersUniforms) == 48);
 [[nodiscard]] QShader LoadShader(const QString &name) {
 	return Ui::Rhi::ShaderFromFile(
 		u":/shaders/"_q + name + u".qsb"_q);
+}
+
+// Vulkan is the only backend with the NDC Y axis pointing down.
+[[nodiscard]] float NdcFlipY(not_null<QRhi*> rhi) {
+	return rhi->isYUpInNDC() ? 1.f : -1.f;
+}
+
+// OpenGL is the only backend with gl_FragCoord.y counting from the bottom.
+[[nodiscard]] float FragCoordYUp(not_null<QRhi*> rhi) {
+	return rhi->isYUpInFramebuffer() ? 1.f : 0.f;
 }
 
 } // namespace
@@ -749,6 +763,7 @@ void OverlayWidget::RendererRhi::drawTexturedQuad(
 	uniforms.viewport[0] = _viewport.width() * _factor;
 	uniforms.viewport[1] = _viewport.height() * _factor;
 	uniforms.g_opacity = opacity;
+	uniforms.flipY = NdcFlipY(_rhi);
 	_rub->updateDynamicBuffer(
 		_uniformBuffer, uOffset, sizeof(ImageUniforms), &uniforms);
 
@@ -942,6 +957,8 @@ void OverlayWidget::RendererRhi::drawContentQuad(
 		TransparentContentUniforms uniforms{};
 		uniforms.viewport[0] = vw;
 		uniforms.viewport[1] = vh;
+		uniforms.flipY = NdcFlipY(_rhi);
+		uniforms.fragCoordYUp = FragCoordYUp(_rhi);
 		fillShadowUniforms(
 			uniforms.shadowTopRect,
 			uniforms.shadowBottomSkipOpacityFullFade,
@@ -965,6 +982,8 @@ void OverlayWidget::RendererRhi::drawContentQuad(
 		ContentUniforms uniforms{};
 		uniforms.viewport[0] = vw;
 		uniforms.viewport[1] = vh;
+		uniforms.flipY = NdcFlipY(_rhi);
+		uniforms.fragCoordYUp = FragCoordYUp(_rhi);
 		fillShadowUniforms(
 			uniforms.shadowTopRect,
 			uniforms.shadowBottomSkipOpacityFullFade,
@@ -1242,6 +1261,8 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 	ContentUniforms uniforms{};
 	uniforms.viewport[0] = vw;
 	uniforms.viewport[1] = vh;
+	uniforms.flipY = NdcFlipY(_rhi);
+	uniforms.fragCoordYUp = FragCoordYUp(_rhi);
 	fillShadowUniforms(
 		uniforms.shadowTopRect,
 		uniforms.shadowBottomSkipOpacityFullFade,
@@ -1765,6 +1786,8 @@ void OverlayWidget::RendererRhi::paintRoundedCorners(int radius) {
 	RoundedCornersUniforms uniforms{};
 	uniforms.viewport[0] = vw;
 	uniforms.viewport[1] = vh;
+	uniforms.flipY = NdcFlipY(_rhi);
+	uniforms.fragCoordYUp = FragCoordYUp(_rhi);
 	const auto roundRect = transformRect(QRect(QPoint(), _viewport));
 	uniforms.roundRect[0] = roundRect.x();
 	uniforms.roundRect[1] = roundRect.y();

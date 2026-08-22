@@ -16,12 +16,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/premium_top_bar.h"
 #include "ui/painter.h"
 #include "ui/rect.h"
+#include "ui/search_field_controller.h"
 #include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
 #include "ui/widgets/continuous_sliders.h"
 #include "ui/widgets/elastic_scroll.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/text/text_entity.h"
+#include "styles/style_edit_peer_members.h"
+#include "styles/style_info.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 #include "styles/style_widgets.h"
@@ -526,6 +532,60 @@ void CreateRightLabel(
 	name->setAttribute(Qt::WA_TransparentForMouseEvents);
 }
 
+SeparatedToggle AddSeparatedToggle(
+		not_null<Button*> button,
+		const style::SettingsButton &st,
+		bool checked) {
+	const auto container = button->parentWidget();
+	const auto toggle = Ui::CreateChild<Button>(container, nullptr, st);
+	const auto checkView = button->lifetime().make_state<Ui::ToggleView>(
+		st.toggle,
+		checked,
+		[=] { toggle->update(); });
+
+	const auto separator = Ui::CreateChild<Ui::RpWidget>(container);
+	separator->paintRequest(
+	) | rpl::on_next([=, bg = st.textBgOver] {
+		auto p = QPainter(separator);
+		p.fillRect(separator->rect(), bg);
+	}, separator->lifetime());
+	const auto separatorHeight = 2 * st.toggle.border + st.toggle.diameter;
+	button->geometryValue(
+	) | rpl::on_next([=](const QRect &r) {
+		const auto width = st::rightsButtonToggleWidth;
+		toggle->setGeometry(
+			r.x() + r.width() - width,
+			r.y(),
+			width,
+			r.height());
+		separator->setGeometry(
+			toggle->x() - st::lineWidth,
+			r.y() + (r.height() - separatorHeight) / 2,
+			st::lineWidth,
+			separatorHeight);
+	}, toggle->lifetime());
+
+	const auto checkWidget = Ui::CreateChild<Ui::RpWidget>(toggle);
+	checkWidget->resize(checkView->getSize());
+	checkWidget->paintRequest(
+	) | rpl::on_next([=] {
+		auto p = QPainter(checkWidget);
+		checkView->paint(p, 0, 0, checkWidget->width());
+	}, checkWidget->lifetime());
+	toggle->sizeValue(
+	) | rpl::on_next([=, &st](const QSize &s) {
+		checkWidget->moveToRight(
+			st.toggleSkip,
+			(s.height() - checkWidget->height()) / 2);
+	}, toggle->lifetime());
+
+	separator->show();
+	checkWidget->show();
+	toggle->show();
+
+	return { toggle, checkView };
+}
+
 not_null<Button*> AddButtonWithLabel(
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<QString> text,
@@ -775,6 +835,44 @@ void AddPremiumStar(
 
 	ministarsContainer->resize(fullHeight, fullHeight);
 	ministars->setCenter(ministarsContainer->rect());
+}
+
+SectionSearchRow CreateSectionSearchRow(
+		not_null<QWidget*> parent,
+		const QString &query) {
+	auto controller = std::make_unique<Ui::SearchFieldController>(query);
+	auto rowView = controller->createRowView(
+		parent,
+		st::infoLayerMediaSearch);
+	const auto row = rowView.wrap.release();
+	const auto field = rowView.field.data();
+	row->show();
+	return {
+		.controller = std::move(controller),
+		.row = row,
+		.field = field,
+	};
+}
+
+QStringList SearchWords(const QString &text) {
+	auto simple = text;
+	return TextUtilities::PrepareSearchWords(simple.replace('#', ' '));
+}
+
+bool MatchesWords(const QStringList &terms, const QStringList &words) {
+	for (const auto &word : words) {
+		auto found = false;
+		for (const auto &term : terms) {
+			if (term.startsWith(word)) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		}
+	}
+	return true;
 }
 
 } // namespace Settings

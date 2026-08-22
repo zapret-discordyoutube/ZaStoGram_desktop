@@ -55,8 +55,9 @@ constexpr auto kDefaultProxyPort = 1353;
 		case 1: return MTP::ProxyData::Type::Socks5;
 		case 2: return MTP::ProxyData::Type::Http;
 		case 3: return MTP::ProxyData::Type::Mtproto;
+		case 4: return MTP::ProxyData::Type::Web;
 		}
-		Unexpected("Bad type in DeserializeProxyData");
+		return MTP::ProxyData::Type::None;
 	}();
 	return proxy;
 }
@@ -77,6 +78,7 @@ constexpr auto kDefaultProxyPort = 1353;
 			case MTP::ProxyData::Type::Socks5: return 1;
 			case MTP::ProxyData::Type::Http: return 2;
 			case MTP::ProxyData::Type::Mtproto: return 3;
+			case MTP::ProxyData::Type::Web: return 4;
 			}
 			Unexpected("Bad type in SerializeProxyData");
 		}();
@@ -189,6 +191,7 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	auto listCount = qint32(_list.size());
 	auto selectedProxy = QByteArray();
 	auto list = std::vector<MTP::ProxyData>();
+	auto skippedIndices = std::vector<int>();
 
 	if (!stream.atEnd()) {
 		stream
@@ -205,7 +208,12 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 			for (auto i = 0; i != listCount; ++i) {
 				QByteArray data;
 				stream >> data;
-				list.push_back(DeserializeProxyData(data));
+				auto proxy = DeserializeProxyData(data);
+				if (proxy.type == MTP::ProxyData::Type::None) {
+					skippedIndices.push_back(i);
+				} else {
+					list.push_back(std::move(proxy));
+				}
 			}
 		}
 	}
@@ -262,7 +270,21 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	setProxyRotationTimeout(proxyRotationTimeout);
 	_settings = IntToProxySettings(settings);
 	_selected = DeserializeProxyData(selectedProxy);
+	if (_selected.type == MTP::ProxyData::Type::None) {
+		_selected = MTP::ProxyData();
+	}
 	_list = std::move(list);
+	if (!skippedIndices.empty()) {
+		for (auto &index : preferredIndices) {
+			if (ranges::contains(skippedIndices, index)) {
+				index = -1;
+			} else {
+				index -= int(ranges::count_if(
+					skippedIndices,
+					[&](int skipped) { return skipped < index; }));
+			}
+		}
+	}
 	setProxyRotationPreferredIndices(std::move(preferredIndices));
 	_defaultProxyAdded = (defaultProxyAdded == 1);
 	_fastWarmup = (fastWarmup == 1);

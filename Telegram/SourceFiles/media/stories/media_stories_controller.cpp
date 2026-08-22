@@ -1428,7 +1428,7 @@ void Controller::checkWaitingFor() {
 	Expects(shown());
 
 	const auto peer = shownPeer();
-	auto &stories = peer->owner().stories();
+	const auto &stories = peer->owner().stories();
 	const auto maybe = stories.lookup(_waitingForId);
 	if (!maybe) {
 		if (maybe.error() == Data::NoStory::Deleted) {
@@ -1567,7 +1567,7 @@ Fn<void(Data::StoryViews)> Controller::viewsGotMoreCallback() {
 	return crl::guard(&_viewsLoadGuard, [=](Data::StoryViews result) {
 		if (_viewsSlice.list.empty()) {
 			const auto peer = shownPeer();
-			auto &stories = peer->owner().stories();
+			const auto &stories = peer->owner().stories();
 			if (const auto maybeStory = stories.lookup(_shown)) {
 				if (peer->isChannel()) {
 					_viewsSlice = (*maybeStory)->channelReactionsList();
@@ -1732,7 +1732,7 @@ void Controller::refreshViewsFromData() {
 	Expects(shown());
 
 	const auto peer = shownPeer();
-	auto &stories = peer->owner().stories();
+	const auto &stories = peer->owner().stories();
 	const auto maybeStory = stories.lookup(_shown);
 	const auto check = peer->isSelf()
 		|| CanViewReactionsFor(peer);

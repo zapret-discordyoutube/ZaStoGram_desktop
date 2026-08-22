@@ -366,7 +366,8 @@ void Session::refreshOptions() {
 		: false;
 	const auto proxyType = (isEnabled ? proxy.type : ProxyData::Type::None);
 	const auto useTcp = (proxyType != ProxyData::Type::Http);
-	const auto useHttp = (proxyType != ProxyData::Type::Mtproto);
+	const auto useHttp = (proxyType != ProxyData::Type::Mtproto)
+		&& (proxyType != ProxyData::Type::Web);
 	const auto useIPv4 = true;
 	const auto useIPv6 = runtime.proxy().tryIPv6
 		? runtime.proxy().tryIPv6()

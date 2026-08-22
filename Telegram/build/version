@@ -2,8 +2,8 @@
 # keep BetaChannel 0 and no ".beta" suffix after upstream version bumps.
 AppVersion         7000008
 AppVersionStrMajor 7.0
-AppVersionStrSmall 7.0.8
-AppVersionStr      7.0.8
+AppVersionStrSmall 7.0.9
+AppVersionStr      7.0.9
 BetaChannel        0
 AlphaVersion       0
-AppVersionOriginal 7.0.8
+AppVersionOriginal 7.0.9

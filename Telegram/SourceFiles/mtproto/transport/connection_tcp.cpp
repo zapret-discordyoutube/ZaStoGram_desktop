@@ -603,7 +603,11 @@ void TcpConnection::connectToServer(
 		.arg(_debugId.toInt())
 		.arg(
 			ProtocolDcDebugId(_protocolDcId),
-			(_proxy.type == ProxyData::Type::Mtproto) ? "mtproxy " : "",
+			(_proxy.type == ProxyData::Type::Mtproto)
+				? "mtproxy "
+				: (_proxy.type == ProxyData::Type::Web)
+				? "webproxy "
+				: "",
 			_address)
 		.arg(_port)
 		.arg(postfix.isEmpty() ? _protocol->debugPostfix() : postfix);

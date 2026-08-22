@@ -391,7 +391,7 @@ void SendBotCallbackRequest(
 		[[maybe_unused]] const auto failed = callbacks->fail(operationId);
 		return;
 	}
-	if (ephemeralId) {
+	if (item->isEphemeral()) {
 		session->ephemeralMessages().noteCallbackTopic(
 			history,
 			item->from()->id,
@@ -530,8 +530,7 @@ void SendBotCallbackData(
 void SendBotCallbackDataWithPassword(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item,
-		int row,
-		int column) {
+		BotButtonLookup lookup) {
 	if (!item->isRegular()) {
 		return;
 	}
@@ -672,7 +671,7 @@ bool SwitchInlineBotButtonReceived(
 		samePeerReplyTo);
 }
 
-void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
+void ActivateBotButton(ClickHandlerContext context, BotButtonLookup lookup) {
 	const auto strong = context.sessionWindow.get();
 	if (!strong) {
 		return;
@@ -682,11 +681,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 	if (!item) {
 		return;
 	}
-	const auto button = HistoryMessageMarkupButton::Get(
-		&item->history()->owner(),
-		item->fullId(),
-		row,
-		column);
+	const auto button = lookup();
 	if (!button) {
 		return;
 	}
@@ -709,11 +704,11 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 
 	case ButtonType::Callback:
 	case ButtonType::Game: {
-		SendBotCallbackData(controller, item, row, column);
+		SendBotCallbackData(controller, item, lookup);
 	} break;
 
 	case ButtonType::CallbackWithPassword: {
-		SendBotCallbackDataWithPassword(controller, item, row, column);
+		SendBotCallbackDataWithPassword(controller, item, lookup);
 	} break;
 
 	case ButtonType::Buy: {
@@ -870,7 +865,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 	} break;
 
 	case ButtonType::Auth:
-		UrlAuthBox::ActivateButton(controller->uiShow(), item, row, column);
+		UrlAuthBox::ActivateButton(controller->uiShow(), item, lookup);
 		break;
 
 	case ButtonType::UserProfile: {
@@ -914,6 +909,8 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 			});
 		}
 	} break;
+
+	case ButtonType::Disabled: break;
 
 	case ButtonType::SuggestAccept: {
 		Api::AcceptClickHandler(item)->onClick(ClickContext{
@@ -988,6 +985,42 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 		});
 	} break;
 	}
+}
+
+void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
+	const auto strong = context.sessionWindow.get();
+	if (!strong) {
+		return;
+	}
+	const auto owner = &strong->session().data();
+	const auto itemId = context.itemId;
+	ActivateBotButton(context, [=] {
+		return HistoryMessageMarkupButton::Get(owner, itemId, row, column);
+	});
+}
+
+void ActivateRichPageBotButton(
+		ClickHandlerContext context,
+		const HistoryMessageMarkupButton &button) {
+	const auto strong = context.sessionWindow.get();
+	if (!strong) {
+		return;
+	}
+	const auto owner = &strong->session().data();
+	const auto itemId = context.itemId;
+	const auto key = HistoryMessageMarkupButton::RegisterRichPageButton(
+		owner,
+		itemId,
+		button);
+	if (key.isEmpty()) {
+		return;
+	}
+	ActivateBotButton(context, [=] {
+		return HistoryMessageMarkupButton::GetRichPageButton(
+			owner,
+			itemId,
+			key);
+	});
 }
 
 } // namespace Api

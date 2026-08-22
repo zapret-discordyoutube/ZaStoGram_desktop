@@ -16,8 +16,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/format_values.h"
 #include "ui/text/text_entity.h"
 #include "ui/effects/animations.h"
+#include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
+#include "ui/widgets/menu/menu_common.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/shadow.h"
@@ -2007,7 +2009,7 @@ base::unique_qptr<Ui::PopupMenu> EmojiListWidget::fillContextMenu(
 	auto menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
 		(_mode == Mode::Full
-			? st::popupMenuWithIcons
+			? st().menu
 			: st::defaultPopupMenu));
 	if (_mode == Mode::Full) {
 		fillRecentMenu(menu, section, index);
@@ -2047,19 +2049,19 @@ void EmojiListWidget::fillRecentMenu(
 			});
 			addAction(tr::lng_emoji_copy(tr::now), [=] {
 				TextUtilities::SetClipboardText(data);
-			}, &st::menuIconCopy);
+			}, &st().icons.menuEmojiCopy);
 		}
 		if (recent && setId && _features.openStickerSets) {
 			addAction(
 				tr::lng_emoji_view_pack(tr::now),
 				crl::guard(this, [=] { displaySet(document); }),
-				&st::menuIconShowAll);
+				&st().icons.menuEmojiViewPack);
 		}
 	} else if (recent && emoji) {
 		addAction(tr::lng_emoji_copy(tr::now), [=] {
 			const auto text = emoji->text();
 			TextUtilities::SetClipboardText({ text, { text } });
-		}, &st::menuIconCopy);
+		}, &st().icons.menuEmojiCopy);
 	}
 	if (!recent) {
 		return;
@@ -2074,7 +2076,7 @@ void EmojiListWidget::fillRecentMenu(
 	addAction(tr::lng_emoji_remove_recent(tr::now), crl::guard(this, [=] {
 		Core::App().settings().hideRecentEmoji(id);
 		refreshRecent();
-	}), &st::menuIconCancel);
+	}), &st().icons.menuEmojiRemoveRecent);
 
 	menu->addSeparator(&st().expandedSeparator);
 
@@ -2091,12 +2093,16 @@ void EmojiListWidget::fillRecentMenu(
 			.labelStyle = &st().boxLabel,
 		}));
 	};
-	addAction({
-		.text = tr::lng_emoji_reset_recent(tr::now),
-		.handler = crl::guard(this, resetRecent),
-		.icon = &st::menuIconRestoreAttention,
-		.isAttention = true,
-	});
+	const auto resetIcon = &st::menuIconRestoreAttention;
+	menu->addAction(base::make_unique_q<Ui::Menu::Action>(
+		menu->menu(),
+		st().menuAttention,
+		Ui::Menu::CreateAction(
+			menu->menu().get(),
+			tr::lng_emoji_reset_recent(tr::now),
+			crl::guard(this, resetRecent)),
+		resetIcon,
+		resetIcon));
 }
 
 void EmojiListWidget::fillEmojiStatusMenu(
@@ -2135,7 +2141,8 @@ base::unique_qptr<Ui::PopupMenu> EmojiListWidget::fillSetContextMenu(
 		_localSetsManager.get(),
 		crl::guard(this, [this](uint64 id) { removeSet(id); }),
 		crl::guard(this, [this] { update(); }),
-		st::popupMenuWithIcons);
+		st().menu,
+		st().icons);
 }
 
 void EmojiListWidget::paintEvent(QPaintEvent *e) {
@@ -2431,7 +2438,8 @@ void EmojiListWidget::paint(
 				&& (info.section >= _staticCount)
 				&& (_custom[info.section - _staticCount].id
 					== Data::Stickers::MegagroupSetId);
-			const auto amCreator = !megagroupEmoji
+			const auto amCreator = _features.openStickerSets
+				&& !megagroupEmoji
 				&& titleSet
 				&& (titleSet->flags & Data::StickersSetFlag::AmCreator);
 			const auto badgeText = megagroupEmoji
@@ -2590,15 +2598,25 @@ void EmojiListWidget::drawCollapsedBadge(
 	const auto &st = st::emojiPanExpand;
 	const auto text = u"+%1"_q.arg(count - _columnCount * kCollapsedRows + 1);
 	const auto textWidth = st.style.font->width(text);
-	const auto buttonw = std::max(textWidth - st.width, st.height);
+	const auto overflow = std::max(
+		position.x() + _singleSize.width() - width(),
+		0);
+	const auto available = std::min(
+		_singleSize.width() - 2 * overflow,
+		st::emojiPanArea.width());
+	const auto normal = std::max(textWidth - st.width, st.height);
+	const auto buttonw = (normal <= available)
+		? normal
+		: std::max(textWidth - st::emojiPanExpandTightWidth, st.height);
 	const auto buttonh = st.height;
 	const auto buttonx = position.x() + (_singleSize.width() - buttonw) / 2;
 	const auto buttony = position.y() + (_singleSize.height() - buttonh) / 2;
+	const auto textOffset = (normal <= available) ? 0 : -st::lineWidth;
 	_collapsedBg.paint(p, QRect(buttonx, buttony, buttonw, buttonh));
 	p.setPen(this->st().bg);
 	p.setFont(st.style.font);
 	p.drawText(
-		buttonx + (buttonw - textWidth) / 2,
+		buttonx + (buttonw - textWidth) / 2 + textOffset,
 		(buttony + st.textTop + st.style.font->ascent),
 		text);
 }
@@ -2694,7 +2712,7 @@ void EmojiListWidget::drawCustom(
 		int index) {
 	auto &custom = _custom[set];
 	custom.painted = true;
-	auto &entry = custom.list[index];
+	const auto &entry = custom.list[index];
 	_emojiPaintContext->scale = context.progress;
 	_emojiPaintContext->position = position
 		+ _innerPosition
@@ -2710,7 +2728,7 @@ void EmojiListWidget::drawSearchSetCustom(
 		int index) {
 	auto &custom = searchSetBySection(section);
 	custom.painted = true;
-	auto &entry = custom.list[index];
+	const auto &entry = custom.list[index];
 	_emojiPaintContext->scale = context.progress;
 	_emojiPaintContext->position = position
 		+ _innerPosition
@@ -2750,7 +2768,7 @@ EmojiListWidget::ResolvedCustom EmojiListWidget::lookupCustomEmoji(
 	} else if (_searchMode && section > 0) {
 		const auto &set = searchSetBySection(section);
 		if (index < int(set.list.size())) {
-			auto &entry = set.list[index];
+			const auto &entry = set.list[index];
 			return { entry.document, entry.collectible };
 		}
 		return {};
@@ -2769,8 +2787,8 @@ EmojiListWidget::ResolvedCustom EmojiListWidget::lookupCustomEmoji(
 		}
 	} else if (section >= _staticCount
 		&& index < _custom[section - _staticCount].list.size()) {
-		auto &set = _custom[section - _staticCount];
-		auto &entry = set.list[index];
+		const auto &set = _custom[section - _staticCount];
+		const auto &entry = set.list[index];
 		return { entry.document, entry.collectible };
 	}
 	return {};
@@ -4073,7 +4091,7 @@ void EmojiListWidget::setPressed(OverState newPressed) {
 				&& button->section <= int(_searchSets.size()))
 			|| (button->section >= _staticCount
 				&& button->section < _staticCount + _custom.size()));
-		auto &ripple = (_searchMode && button->section > 0)
+		const auto &ripple = (_searchMode && button->section > 0)
 			? searchSetBySection(button->section).ripple
 			: (button->section >= _staticCount)
 			? _custom[button->section - _staticCount].ripple
@@ -4084,7 +4102,7 @@ void EmojiListWidget::setPressed(OverState newPressed) {
 	} else if (auto shortcut = std::get_if<OverSearchShortcut>(&_pressed)) {
 		if (shortcut->index >= 0
 			&& shortcut->index < _searchShortcutSets.size()) {
-			auto &ripple = _searchShortcutSets[shortcut->index].ripple;
+			const auto &ripple = _searchShortcutSets[shortcut->index].ripple;
 			if (ripple) {
 				ripple->lastStop();
 			}
@@ -4198,7 +4216,7 @@ EmojiListWidget::createSearchShortcutRipple(int index) {
 		searchShortcutRect(index).size(),
 		st::roundRadiusLarge);
 	return std::make_unique<Ui::RippleAnimation>(
-		st::defaultRippleAnimation,
+		st().searchPackRipple,
 		std::move(mask),
 		[this, setId] {
 			const auto i = ranges::find(

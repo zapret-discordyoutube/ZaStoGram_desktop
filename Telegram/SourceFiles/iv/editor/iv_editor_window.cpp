@@ -33,6 +33,15 @@ namespace {
 	return result;
 }
 
+[[nodiscard]] Window *ActiveWindow() {
+	for (const auto &window : LiveWindows()) {
+		if (window->isActiveWindow()) {
+			return window;
+		}
+	}
+	return nullptr;
+}
+
 } // namespace
 
 Window::Window(QWidget *parent)
@@ -150,11 +159,17 @@ bool Window::nativeEvent(
 #endif // Q_OS_WIN || Q_OS_MAC
 
 bool CloseActiveWindow() {
-	for (const auto &window : LiveWindows()) {
-		if (window->isActiveWindow()) {
-			window->close();
-			return true;
-		}
+	if (const auto window = ActiveWindow()) {
+		window->close();
+		return true;
+	}
+	return false;
+}
+
+bool MinimizeActiveWindow() {
+	if (const auto window = ActiveWindow()) {
+		window->setWindowState(window->windowState() | Qt::WindowMinimized);
+		return true;
 	}
 	return false;
 }

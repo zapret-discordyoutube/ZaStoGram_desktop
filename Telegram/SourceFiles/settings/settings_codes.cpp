@@ -177,6 +177,12 @@ auto GenerateCodes() {
 			? u"Fast buttons mode enabled."_q
 			: u"Fast buttons mode disabled."_q);
 	});
+	codes.emplace(u"externalweb"_q, [](SessionController *window) {
+		const auto disabled = MTP::WebProxy::Transport::ToggleWebviewDisabled();
+		Ui::Toast::Show(disabled
+			? u"WebView transport blocked."_q
+			: u"WebView transport unblocked."_q);
+	});
 
 	auto audioFilters = u"Audio files (*.wav *.mp3);;"_q + FileDialog::AllFilesFilter();
 	auto audioKeys = {

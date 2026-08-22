@@ -49,6 +49,8 @@ public:
 		Type type,
 		const QMap<QString, QString> &fields);
 
+	[[nodiscard]] static ProxyData ProxyFromLink(const QString &link);
+
 	static object_ptr<Ui::BoxContent> CreateOwningBox(
 		not_null<Main::Account*> account,
 		const QString &highlightId = QString());
@@ -62,8 +64,10 @@ public:
 		Connecting,
 		Online,
 		Checking,
+		NotTested,
 		Available,
-		Unavailable
+		Unavailable,
+		WaitingForBrowser,
 	};
 	struct ItemView {
 		int id = 0;

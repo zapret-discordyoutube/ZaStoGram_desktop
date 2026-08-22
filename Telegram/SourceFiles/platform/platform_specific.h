@@ -49,6 +49,8 @@ void AutostartValidate();
 [[nodiscard]] bool AutostartSkip();
 [[nodiscard]] bool TrayIconSupported();
 [[nodiscard]] bool SkipTaskbarSupported();
+[[nodiscard]] bool ScreenshotProtectionSupported();
+void SetWindowScreenshotProtection(not_null<QWidget*> window, bool enabled);
 void WriteCrashDumpDetails();
 void NewVersionLaunched(int oldVersion);
 [[nodiscard]] QImage DefaultApplicationIcon();
