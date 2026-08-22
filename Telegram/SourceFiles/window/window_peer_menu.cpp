@@ -986,9 +986,10 @@ void Filler::addViewDiscussion() {
 			navigation->showToast(tr::lng_channel_invite_private(tr::now));
 			return;
 		}
-		navigation->showPeerHistory(
-			chat,
+		auto params = Window::SectionShow(
 			Window::SectionShow::Way::Forward);
+		params.preferCurrentWindow = true;
+		navigation->showPeerHistory(chat, params);
 	}, &st::menuIconDiscussion);
 }
 
