@@ -570,7 +570,9 @@ void TcpConnection::connectToServer(
 	_mtproxyAttempt = context.mtproxyAttempt;
 	_mtproxyPlan = context.mtproxyPlan;
 	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
-	const auto secret = (_proxy.type == ProxyData::Type::Mtproto)
+	const auto proxyProtocol = (_proxy.type == ProxyData::Type::Mtproto)
+		|| (_proxy.type == ProxyData::Type::Web);
+	const auto secret = proxyProtocol
 		? _proxy.secretFromMtprotoPassword()
 		: protocolSecret;
 	_transport = (_proxy.type == ProxyData::Type::Socks5)
@@ -582,7 +584,7 @@ void TcpConnection::connectToServer(
 			? TransportMode::FakeTlsMtproxy
 			: TransportMode::PlainMtproxy)
 		: TransportMode::Direct;
-	if (_proxy.type == ProxyData::Type::Mtproto) {
+	if (proxyProtocol) {
 		_address = _proxy.host;
 		_port = _proxy.port;
 		_protocol = Protocol::Create(secret);

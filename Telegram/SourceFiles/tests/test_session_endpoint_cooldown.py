@@ -46,10 +46,16 @@ def test_web_proxy_connect_budget_covers_browser_handshake():
     source = TCP_CONNECTION_CPP.read_text(encoding="utf-8")
     timeout = function_body(
         source, "crl::time TcpConnection::fullConnectTimeout() const")
+    connect = function_body(
+        source, "void TcpConnection::connectToServer(")
 
     assert "kWebProxyFullConnectionTimeout" in source
     assert "ProxyData::Type::Web" in timeout
     assert "kWebProxyFullConnectionTimeout" in timeout
+    assert "const auto proxyProtocol" in connect
+    assert "|| (_proxy.type == ProxyData::Type::Web)" in connect
+    assert "const auto secret = proxyProtocol" in connect
+    assert "if (proxyProtocol)" in connect
 
 
 def function_body(text: str, signature: str) -> str:
