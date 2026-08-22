@@ -1,9 +1,9 @@
 # ZaStoGram dev releases use their CI build id, not Telegram's beta version bit:
 # keep BetaChannel 0 and no ".beta" suffix after upstream version bumps.
-AppVersion         7001000
+AppVersion         7001001
 AppVersionStrMajor 7.1
-AppVersionStrSmall 7.1
-AppVersionStr      7.1.0
+AppVersionStrSmall 7.1.1
+AppVersionStr      7.1.1
 BetaChannel        0
 AlphaVersion       0
-AppVersionOriginal 7.1
+AppVersionOriginal 7.1.1
