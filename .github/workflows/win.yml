@@ -214,7 +214,7 @@ jobs:
 
       - name: ThirdParty cache (restore).
         id: cache-third-party
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.TBUILD }}\ThirdParty
           key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_VERSION }}-${{ env.SDK }}-${{ env.CACHE_KEY }}
@@ -225,7 +225,7 @@ jobs:
 
       - name: Libraries cache (restore).
         id: cache-libs
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -240,7 +240,7 @@ jobs:
 
       - name: Qt cache (restore).
         id: cache-qt
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
@@ -384,7 +384,7 @@ jobs:
           && steps.build-libs.outcome == 'success'
           && steps.cache-third-party.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.TBUILD }}\ThirdParty
           key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
@@ -395,7 +395,7 @@ jobs:
           && steps.build-libs.outcome == 'success'
           && steps.cache-libs.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -411,7 +411,7 @@ jobs:
           && steps.build-libs.outcome == 'success'
           && steps.cache-qt.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
@@ -421,7 +421,7 @@ jobs:
       - name: Telegram build cache (restore).
         if: env.ONLY_CACHE == 'false'
         id: cache-telegram-build
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
@@ -693,7 +693,7 @@ jobs:
             || steps.cache-telegram-build.outputs.cache-matched-key != env.TELEGRAM_BUILD_CACHE_RESTORE_KEY
           )
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ env.TBUILD }}\${{ env.REPO_NAME }}\out
