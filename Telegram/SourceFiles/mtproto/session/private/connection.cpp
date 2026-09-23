@@ -497,7 +497,7 @@ void SessionTransport::onReceivedSome() {
 			).arg(_timing.waitForReceived));
 
 		if (ms > 0 && ms * 2 < _timing.waitForReceived) {
-			_timing.waitForReceived = qMax(ms * 2, kMinReceiveTimeout);
+			_timing.waitForReceived = std::max(ms * 2, kMinReceiveTimeout);
 		}
 		_timing.firstSentAt = -1;
 	}

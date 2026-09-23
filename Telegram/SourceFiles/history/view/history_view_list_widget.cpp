@@ -386,16 +386,23 @@ void ListWidget::enumerateUserpics(Method method) {
 
 		// Call method on a userpic for all messages that have it and for those who are not showing it
 		// because of their attachment to the next message if they are bottom-most visible.
-		if (view->displayFromPhoto() || (view->hasFromPhoto() && itembottom >= _visibleBottom)) {
+		if (view->displayFromPhoto()
+			|| (view->hasFromPhoto()
+				&& view->isAttachedToNext()
+				&& itembottom >= _visibleBottom)) {
 			if (lowestAttachedItemTop < 0) {
 				lowestAttachedItemTop = itemtop + view->marginTop();
 			}
 			// Attach userpic to the bottom of the visible area with the same margin as the last message.
 			auto userpicMinBottomSkip = st::historyPaddingBottom + st::msgMargin.bottom();
-			auto userpicBottom = qMin(itembottom - view->marginBottom(), _visibleBottom - userpicMinBottomSkip);
+			auto userpicBottom = std::min(
+				itembottom - view->marginBottom(),
+				_visibleBottom - userpicMinBottomSkip);
 
 			// Do not let the userpic go above the attached messages pack top line.
-			userpicBottom = qMax(userpicBottom, lowestAttachedItemTop + st::msgPhotoSize);
+			userpicBottom = std::max(
+				userpicBottom,
+				lowestAttachedItemTop + st::msgPhotoSize);
 
 			// Call the template callback function that was passed
 			// and return if it finished everything it needed.
@@ -438,11 +445,14 @@ void ListWidget::enumerateDates(Method method) {
 				itemtop);
 
 			// Attach date to the top of the visible area with the same margin as it has in service message.
-			auto dateTop = qMax(itemtop - collapsed, _visibleTop) + st::msgServiceMargin.top();
+			auto dateTop = std::max(itemtop - collapsed, _visibleTop)
+				+ st::msgServiceMargin.top();
 
 			// Do not let the date go below the single-day messages pack bottom line.
 			auto dateHeight = st::msgServicePadding.bottom() + st::msgServiceFont->height + st::msgServicePadding.top();
-			dateTop = qMin(dateTop, lowestInOneDayItemBottom - dateHeight);
+			dateTop = std::min(
+				dateTop,
+				lowestInOneDayItemBottom - dateHeight);
 
 			// Call the template callback function that was passed
 			// and return if it finished everything it needed.
@@ -494,11 +504,14 @@ void ListWidget::enumerateForumThreadBars(Method method) {
 				lowestInOneBunchItemBottom = itembottom - view->marginBottom();
 			}
 			// Attach bar to the top of the visible area with the same margin as it has in service message.
-			int barTop = qMax(itemtop + view->displayedDateHeight(), _visibleTop + skip) + st::msgServiceMargin.top();
+			int barTop = std::max(
+				itemtop + view->displayedDateHeight(),
+				_visibleTop + skip)
+				+ st::msgServiceMargin.top();
 
 			// Do not let the bar go below the single-bar messages pack bottom line.
 			int barHeight = st::msgServicePadding.bottom() + st::msgServiceFont->height + st::msgServicePadding.top();
-			barTop = qMin(barTop, lowestInOneBunchItemBottom - barHeight);
+			barTop = std::min(barTop, lowestInOneBunchItemBottom - barHeight);
 
 			// Call the template callback function that was passed
 			// and return if it finished everything it needed.
@@ -802,7 +815,11 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 	Expects(_viewsCapacity.empty());
 
 	if (_thanosController) {
-		_thanosController->clearPreCaptured();
+		// Main history drops the view before itemRemoved() fires.
+		_thanosController->commitAnnouncedRemovals([&](FullMsgId id) {
+			return ranges::find(_slice.ids, id) == end(_slice.ids);
+		});
+		_thanosController->resetScrollBaseline();
 	}
 
 	saveScrollState();
@@ -820,6 +837,19 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 		int(end(_slice.ids) - addedToEndFrom),
 		1
 	) - 1;
+
+	auto shiftAnchor = (HistoryItem*)nullptr;
+	auto shiftAnchorBottom = 0;
+	if (_thanosController && !_thanosController->renderGaps().empty()) {
+		for (const auto &view : _items) {
+			const auto id = view->data()->fullId();
+			if (ranges::find(_slice.ids, id) != end(_slice.ids)) {
+				shiftAnchor = view->data();
+				shiftAnchorBottom = view->y() + view->height();
+				break;
+			}
+		}
+	}
 
 	auto destroyingBarElement = _bar.element;
 	auto clearingOverElement = _overElement;
@@ -870,6 +900,14 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 	updateAroundPositionFromNearest(nearestIndex);
 
 	updateItemsGeometry();
+
+	if (shiftAnchor) {
+		// Prepended slice moves every item, gap coordinate follows it.
+		if (const auto view = viewForItem(shiftAnchor)) {
+			_thanosController->shiftGaps(
+				view->y() + view->height() - shiftAnchorBottom);
+		}
+	}
 
 	if (clearingOverElement) {
 		_overElement = nullptr;
@@ -1238,7 +1276,18 @@ void ListWidget::showAtPosition(
 			return showAtPositionNow(position, params, done);
 		});
 	} else if (!showAtPositionNow(position, params, done)) {
+		const auto targetAbove = isBelowPosition(position);
+		const auto targetBelow = isAbovePosition(position);
 		showAroundPosition(position, [=] {
+			if ((targetAbove || targetBelow)
+				&& (params.animated != anim::type::instant)) {
+				if (const auto to = scrollTopForPosition(position)) {
+					const auto screen = _visibleBottom - _visibleTop;
+					_delegate->listScrollTo(targetAbove
+						? (*to + screen)
+						: (*to - screen));
+				}
+			}
 			return showAtPositionNow(position, params, done);
 		});
 	}
@@ -2241,9 +2290,12 @@ auto ListWidget::findViewForPinnedTracking(int top) const
 			top,
 			std::less<>(),
 			&Element::y);
-		return (first == end(_items) || (*first)->y() > top)
-			? first - 1
-			: first;
+		if (first == end(_items) || (*first)->y() > top) {
+			// 'top' may be above the first item, then lower_bound()
+			// returns begin() and 'first - 1' would read _items[-1].
+			return (first == begin(_items)) ? first : (first - 1);
+		}
+		return first;
 	};
 	const auto findView = [&](int top)
 	-> std::pair<std::vector<not_null<Element*>>::const_iterator, int> {
@@ -2671,6 +2723,9 @@ void ListWidget::resizeToWidth(int newWidth, int minHeight) {
 	_minHeight = minHeight;
 	RpWidget::resizeToWidth(newWidth);
 	restoreScrollPosition();
+	if (_thanosController) {
+		_thanosController->pinScroll();
+	}
 }
 
 void ListWidget::startItemRevealAnimations() {
@@ -2801,7 +2856,7 @@ int ListWidget::resizeGetHeight(int newWidth) {
 	_itemsWidth = newWidth;
 	_itemsHeight = newHeight - _itemsRevealHeight;
 	if (_thanosController) {
-		_thanosController->clearRemovalHeight();
+		_thanosController->flushRemovals(_itemsHeight);
 	}
 	const auto collapseGapTotal = collapseGapsTotal();
 	const auto about = aboutView();
@@ -3004,10 +3059,6 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 
 	auto clip = e->rect();
 
-	if (_thanosController) {
-		_thanosController->clearRemovalHeight();
-	}
-
 	auto collapseGapTotal = 0;
 	for (const auto &gap : collapseGaps()) {
 		collapseGapTotal += gap.height;
@@ -3197,18 +3248,15 @@ void ListWidget::paintUserpics(
 		// paint the userpic if it intersects the painted rect
 		if (userpicTop + st::msgPhotoSize > clip.top()) {
 			const auto item = view->data();
-			const auto hasTranslation = context.gestureHorizontal.translation
-				&& (context.gestureHorizontal.msgBareId
-					== item->fullId().msg.bare);
-			if (hasTranslation) {
-				p.translate(context.gestureHorizontal.translation, 0);
+			const auto shift = context.gestureHorizontal.visualTranslationFor(
+				item->id.bare);
+			if (shift) {
+				p.translate(shift, 0);
 				update(
 					QRect(
-						st::historyPhotoLeft
-							+ context.gestureHorizontal.translation,
+						st::historyPhotoLeft + std::min(shift, 0),
 						userpicTop,
-						st::msgPhotoSize
-							- context.gestureHorizontal.translation,
+						st::msgPhotoSize + std::abs(shift),
 						st::msgPhotoSize));
 			}
 			if (const auto from = view->displayFrom()) {
@@ -3246,8 +3294,8 @@ void ListWidget::paintUserpics(
 			} else {
 				Unexpected("Corrupt forwarded information in message.");
 			}
-			if (hasTranslation) {
-				p.translate(-context.gestureHorizontal.translation, 0);
+			if (shift) {
+				p.translate(-shift, 0);
 			}
 		}
 		return true;
@@ -3851,8 +3899,8 @@ void ListWidget::keyPressEvent(QKeyEvent *e) {
 			|| (key == Qt::Key_PageDown))) {
 		_scrollKeyEvents.fire(std::move(e));
 	} else if (((key == Qt::Key_O)
-		&& (e->modifiers() == Qt::ControlModifier))
-		|| (!(e->modifiers() & ~Qt::ShiftModifier)
+		&& (modifiers == Qt::ControlModifier))
+		|| (!(modifiers & ~Qt::ShiftModifier)
 			&& key != Qt::Key_Shift)) {
 		_delegate->listTryProcessKeyInput(e);
 	} else {
@@ -4241,8 +4289,14 @@ void ListWidget::touchUpdateSpeed() {
 
 			// fingers are inacurates, we ignore small changes to avoid stopping the autoscroll because
 			// of a small horizontal offset when scrolling vertically
-			const int newSpeedY = (qAbs(pixelsPerSecond.y()) > Ui::kFingerAccuracyThreshold) ? pixelsPerSecond.y() : 0;
-			const int newSpeedX = (qAbs(pixelsPerSecond.x()) > Ui::kFingerAccuracyThreshold) ? pixelsPerSecond.x() : 0;
+			const int newSpeedY = (std::abs(pixelsPerSecond.y())
+				> Ui::kFingerAccuracyThreshold)
+				? pixelsPerSecond.y()
+				: 0;
+			const int newSpeedX = (std::abs(pixelsPerSecond.x())
+				> Ui::kFingerAccuracyThreshold)
+				? pixelsPerSecond.x()
+				: 0;
 			if (_touchScrollState == Ui::TouchScrollState::Auto) {
 				const int oldSpeedY = _touchSpeed.y();
 				const int oldSpeedX = _touchSpeed.x();
@@ -4290,8 +4344,16 @@ void ListWidget::touchResetSpeed() {
 void ListWidget::touchDeaccelerate(int32 elapsed) {
 	int32 x = _touchSpeed.x();
 	int32 y = _touchSpeed.y();
-	_touchSpeed.setX((x == 0) ? x : (x > 0) ? qMax(0, x - elapsed) : qMin(0, x + elapsed));
-	_touchSpeed.setY((y == 0) ? y : (y > 0) ? qMax(0, y - elapsed) : qMin(0, y + elapsed));
+	_touchSpeed.setX((x == 0)
+		? x
+		: (x > 0)
+		? std::max(0, x - elapsed)
+		: std::min(0, x + elapsed));
+	_touchSpeed.setY((y == 0)
+		? y
+		: (y > 0)
+		? std::max(0, y - elapsed)
+		: std::min(0, y + elapsed));
 }
 
 void ListWidget::touchEvent(QTouchEvent *e) {
@@ -5115,7 +5177,11 @@ void ListWidget::mouseActionUpdate() {
 					auto dateLeft = st::msgServiceMargin.left();
 					auto maxwidth = view->width();
 					if (_isChatWide) {
-						maxwidth = qMin(maxwidth, int32(st::msgMaxWidth + 2 * st::msgPhotoSkip + 2 * st::msgMargin.left()));
+						maxwidth = std::min(
+							maxwidth,
+							int32(st::msgMaxWidth
+								+ 2 * st::msgPhotoSkip
+								+ 2 * st::msgMargin.left()));
 					}
 					auto widthForDate = maxwidth - st::msgServiceMargin.left() - st::msgServiceMargin.left();
 
@@ -5152,7 +5218,11 @@ void ListWidget::mouseActionUpdate() {
 					auto barLeft = st::msgServiceMargin.left();
 					auto maxwidth = view->width();
 					if (_isChatWide) {
-						maxwidth = qMin(maxwidth, int32(st::msgMaxWidth + 2 * st::msgPhotoSkip + 2 * st::msgMargin.left()));
+						maxwidth = std::min(
+							maxwidth,
+							int32(st::msgMaxWidth
+								+ 2 * st::msgPhotoSkip
+								+ 2 * st::msgMargin.left()));
 					}
 					auto widthForBar = maxwidth - st::msgServiceMargin.left() - st::msgServiceMargin.left();
 
@@ -5418,9 +5488,6 @@ int ListWidget::collapseGapsTotal() const {
 	for (const auto &gap : collapseGaps()) {
 		result += gap.height;
 	}
-	if (_thanosController) {
-		result = std::max(result - _thanosController->removalHeight(), 0);
-	}
 	return result;
 }
 
@@ -5493,6 +5560,7 @@ void ListWidget::setupThanosEffect() {
 			.visibleAreaTop = [=] { return _visibleTop; },
 			.visibleAreaBottom = [=] { return _visibleBottom; },
 			.contentWidth = [=] { return width(); },
+			.contentHeight = [=] { return _itemsHeight; },
 			.preparePaintContext = [=](QRect clip) {
 				return preparePaintContext(clip);
 			},
@@ -5503,7 +5571,7 @@ void ListWidget::setupThanosEffect() {
 				return scroll;
 			},
 			.scrollToY = [=](int y) {
-				scroll->scrollToY(y);
+				_delegate->listScrollTo(y);
 			},
 			.collapseGapsUpdated = [=] { collapseGapsUpdated(); },
 		},
@@ -5933,6 +6001,12 @@ void ListWidget::overrideChatMode(std::optional<ElementChatMode> mode) {
 }
 
 ListWidget::~ListWidget() {
+	// Stop listening to session events before any member is destroyed:
+	// ~TranslateTracker reverts translations still in flight, which fires
+	// viewResizeRequest() back into this half-destroyed widget and through
+	// the delegate reaches listScrollTo() when its scroll is already gone.
+	lifetime().destroy();
+
 	// Destroy child widgets first, because they may invoke leaveEvent-s.
 	_emptyInfo = nullptr;
 	if (const auto raw = _menu.release()) {
@@ -5940,6 +6014,11 @@ ListWidget::~ListWidget() {
 			delete raw;
 		});
 	}
+
+	// Views in _views are destroyed after _reactionsManager, but their
+	// destructors may invoke repaintItem() (e.g. by clearing the active
+	// click handler), which uses _reactionsManager, so null it explicitly.
+	_reactionsManager = nullptr;
 }
 
 // Accessibility.

@@ -3838,6 +3838,7 @@ public:
 	void clearTextLeafHeightOverride();
 
 	[[nodiscard]] int maxWidth();
+	[[nodiscard]] int contentDemandedWidth() const;
 	[[nodiscard]] bool hasMissingMediaBlocks() const;
 
 	[[nodiscard]] QSize resizeGetSize(int width);
@@ -4185,6 +4186,7 @@ private:
 	int _width = -1;
 	int _relayoutWidth = 1;
 	int _laidOutWidth = 0;
+	int _horizontalOverflow = 0;
 	int _height = 0;
 	int _layoutGeneration = 0;
 	TimeId _nextFormattedDateUpdate = 0;
@@ -4582,6 +4584,10 @@ int MarkdownArticle::Impl::maxWidth() {
 			+ 1);
 }
 
+int MarkdownArticle::Impl::contentDemandedWidth() const {
+	return _laidOutWidth + _horizontalOverflow;
+}
+
 bool MarkdownArticle::Impl::hasMissingMediaBlocks() const {
 	return _missingMediaBlocks > 0;
 }
@@ -4722,6 +4728,10 @@ MarkdownArticleHitTestResult MarkdownArticle::Impl::hitTest(
 		QPoint point,
 		Ui::Text::StateRequest::Flags flags) const {
 	auto result = hitTestSegments(point, flags);
+	if (result.inlineButton && result.customTooltip.isEmpty()) {
+		result.customTooltip = InlineButtonTooltip(
+			_inlineButtonPaintState->lookedUpButton);
+	}
 	if ((flags & Ui::Text::StateRequest::Flag::LookupLink)
 		&& !result.state.link
 		&& !result.preparedLink
@@ -5596,6 +5606,7 @@ void MarkdownArticle::Impl::invalidateLayout() {
 void MarkdownArticle::Impl::invalidateGeometry() {
 	_width = -1;
 	_laidOutWidth = 0;
+	_horizontalOverflow = 0;
 	_height = 0;
 	captureScrollState();
 	clearPendingHighlightBlockPointers();
@@ -6588,6 +6599,7 @@ void MarkdownArticle::Impl::finalizeRelayout(int heightBottom) {
 		std::max(
 			ArticleContentMaxRight(_blocks, layoutStyle(), contentRtl()) + page.right(),
 			page.left() + page.right() + 1));
+	_horizontalOverflow = ArticleHorizontalOverflow(_blocks);
 	pruneTaskMarkerRuntimes();
 	prunePlaceholderRuntimes();
 	pruneButtonRowRuntimes();
@@ -6922,6 +6934,10 @@ void MarkdownArticle::invalidateLayout() {
 
 int MarkdownArticle::maxWidth() const {
 	return const_cast<Impl*>(_impl.get())->maxWidth();
+}
+
+int MarkdownArticle::contentDemandedWidth() const {
+	return _impl->contentDemandedWidth();
 }
 
 bool MarkdownArticle::hasMissingMediaBlocks() const {

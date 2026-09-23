@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_filters_menu.h"
 
+#include "menu/menu_mark_as_read.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
 #include "window/window_controller.h"
@@ -257,7 +258,9 @@ void FiltersMenu::scrollToButton(not_null<Ui::RpWidget*> widget) {
 	const auto scrollTo = scrollTop + (isBottomEdge ? localBottom : localTop);
 
 	auto scroll = [=] {
-		_scroll.scrollToY(qRound(_scrollToAnimation.value(scrollTo)));
+		const auto animated
+			= int(base::SafeRound(_scrollToAnimation.value(scrollTo)));
+		_scroll.scrollToY(animated);
 	};
 
 	_scrollToAnimation.start(
@@ -762,8 +765,9 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 		auto filteredChats = [=] {
 			return _session->session().data().chatsFilters().chatsList(id);
 		};
-		Window::MenuAddMarkAsReadChatListAction(
+		MarkAsReadMenu::AddChatListAction(
 			_session,
+			MarkAsReadMenu::ChatListKind::Folder,
 			std::move(filteredChats),
 			addAction);
 
@@ -776,17 +780,11 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 			.isAttention = true,
 		});
 	} else {
-		auto customUnreadState = [=] {
-			const auto session = &_session->session();
-			return Data::MainListMapUnreadState(
-				session,
-				session->data().chatsList()->unreadState());
-		};
-		Window::MenuAddMarkAsReadChatListAction(
+		MarkAsReadMenu::AddChatListAction(
 			_session,
+			MarkAsReadMenu::ChatListKind::AllChats,
 			[=] { return _session->session().data().chatsList(); },
-			addAction,
-			std::move(customUnreadState));
+			addAction);
 
 		addAction(
 			tr::lng_filters_setup_menu(tr::now),

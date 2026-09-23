@@ -48,6 +48,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/welcome_messages.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/data_changes.h"
+#include "data/data_chat_participant_status.h"
 #include "data/data_drafts.h"
 #include "data/data_media_types.h"
 #include "data/data_web_page.h"
@@ -113,6 +114,7 @@ namespace {
 constexpr auto kSaveCloudDraftTimeout = 1000;
 
 constexpr auto kSmallDelayMs = 5;
+constexpr auto kDeleteHistoryRetryLimit = 8;
 constexpr auto kReadFeaturedSetsTimeout = crl::time(1000);
 constexpr auto kFileLoaderQueueStopTimeout = crl::time(5000);
 constexpr auto kStickersByEmojiInvalidateTimeout = crl::time(6 * 1000);
@@ -2205,6 +2207,14 @@ void ApiWrap::deleteHistory(
 		not_null<PeerData*> peer,
 		bool justClear,
 		bool revoke) {
+	deleteHistory(peer, justClear, revoke, 0);
+}
+
+void ApiWrap::deleteHistory(
+		not_null<PeerData*> peer,
+		bool justClear,
+		bool revoke,
+		int retries) {
 	auto deleteTillId = MsgId(0);
 	const auto history = _session->data().history(peer);
 	if (justClear) {
@@ -2222,10 +2232,19 @@ void ApiWrap::deleteHistory(
 			}
 		}
 		if (!history->lastMessageKnown()) {
+			if (retries >= kDeleteHistoryRetryLimit) {
+				// The entry keeps coming back without a known last message
+				// - offline, or a flood wait. Give up instead of spinning
+				// requests forever.
+				return;
+			}
 			history->owner().histories().requestDialogEntry(history, [=] {
-				Expects(history->lastMessageKnown());
-
-				deleteHistory(peer, justClear, revoke);
+				// The last message may be not known here again: callbacks
+				// of one dialog entry request are invoked back to back and
+				// an earlier one could destroy a client-side last message,
+				// which makes it unknown. deleteHistory() just requests
+				// the entry once more in that case.
+				deleteHistory(peer, justClear, revoke, retries + 1);
 			});
 			return;
 		}
@@ -4235,6 +4254,7 @@ void ApiWrap::editMedia(
 		.album = nullptr,
 		.forceFile = forceFile,
 		.sendLargePhotos = file.sendLargePhotos,
+		.archive = file.archive,
 		.idOverride = 0,
 		.displayName = file.displayName,
 	}));
@@ -4261,6 +4281,9 @@ void ApiWrap::sendFiles(
 		album = nullptr;
 	}
 	const auto to = FileLoadTaskOptions(action);
+	const auto animationAsGif = !Data::RestrictionError(
+		action.history->peer,
+		ChatRestriction::SendGifs);
 	if (album) {
 		album->options = to.options;
 	}
@@ -4309,6 +4332,8 @@ void ApiWrap::sendFiles(
 			.forceFile = forceFile,
 			.sendLargePhotos = file.sendLargePhotos,
 			.animationJob = file.animationJob,
+			.animationAsGif = animationAsGif,
+			.archive = file.archive,
 			.idOverride = 0,
 			.displayName = file.displayName,
 		}));
@@ -5435,6 +5460,7 @@ void ApiWrap::sendMultiPaidMedia(
 		}
 		if (done) done(true);
 	}, [=](const MTP::Error &error, const MTP::Response &response) {
+		_sendingAlbums.remove(groupId);
 		if (done) done(false);
 		sendMessageFail(error, peer, randomId, itemId);
 	});

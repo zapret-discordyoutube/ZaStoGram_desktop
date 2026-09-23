@@ -111,6 +111,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_send_action.h"
 #include "data/data_premium_limits.h"
 #include "data/notify/data_notify_settings.h"
+#include "storage/storage_folder_archive.h"
 #include "storage/storage_media_prepare.h"
 #include "storage/storage_account.h"
 #include "storage/localimageloader.h"
@@ -757,9 +758,15 @@ ChatWidget::ChatWidget(
 		if (_creatingBotTopic
 			&& action.history == _creatingBotTopic->owningHistory()
 			&& action.replyTo.topicRootId == _creatingBotTopic->rootId()) {
-			Ui::PostponeCall(_creatingBotTopic, [=] {
+			// Guard 'this' (the call reads _creatingBotTopic) and re-check
+			// the topic: it may be gone or already handled by another call.
+			const auto weak = base::make_weak(_creatingBotTopic);
+			Ui::PostponeCall(this, [=] {
 				using namespace HistoryView;
 				const auto topic = base::take(_creatingBotTopic);
+				if (!topic || topic != weak.get()) {
+					return;
+				}
 				controller->showSection(
 					std::make_shared<ChatMemento>(ChatViewId{
 						.history = topic->owningHistory(),
@@ -778,7 +785,7 @@ ChatWidget::ChatWidget(
 				action.replyTo.messageId);
 			const auto replyMatches = action.replyTo.messageId
 				&& (action.replyTo.messageId
-					== _composeControls->replyingToMessage().messageId);
+					== _composeControls->draftReplyingToMessage().messageId);
 			auto cancelledReply = false;
 			auto cancelledSuggest = false;
 			if (action.options.scheduled || !_justMarkingAsRead) {
@@ -1607,8 +1614,8 @@ void ChatWidget::setupComposeControls() {
 	}, lifetime());
 
 	_composeControls->scrollToMaxRequests(
-	) | rpl::on_next([=] {
-		listScrollTo(_scroll->scrollTopMax());
+	) | rpl::on_next([=](Api::SendOptions options) {
+		send(options);
 	}, lifetime());
 
 	_composeControls->sendVoiceRequests(
@@ -1997,6 +2004,33 @@ bool ChatWidget::confirmSendingFiles(
 	const auto premium = controller()->session().user()->isPremium();
 
 	if (const auto urls = Core::ReadMimeUrls(data); !urls.empty()) {
+		const auto folder = Storage::SingleFolderPath(urls);
+		if (!folder.isEmpty()) {
+			if (overrideSendImagesAsPhotos == false
+				&& !_composeControls->isEditingMessage()) {
+				const auto files = Storage::FolderFilesForSending(folder);
+				if (!files.isEmpty()) {
+					auto list = Storage::PrepareMediaList(
+						files,
+						st::sendMediaPreviewSize,
+						premium);
+					confirmSendingFiles(std::move(list), QString());
+				}
+			} else {
+				auto list = Ui::PreparedList();
+				list.files.push_back(Storage::PrepareFolderArchive(folder));
+				confirmSendingFiles(std::move(list), QString());
+			}
+			return true;
+		}
+		if (overrideSendImagesAsPhotos == true
+			&& (Storage::ComputeMimeDataState(data)
+				== Storage::MimeDataState::FilesArchive)) {
+			auto list = Ui::PreparedList();
+			list.files.push_back(Storage::PrepareFilesArchive(urls));
+			confirmSendingFiles(std::move(list), QString());
+			return true;
+		}
 		auto list = Storage::PrepareMediaList(
 			urls,
 			st::sendMediaPreviewSize,
@@ -2539,23 +2573,29 @@ void ChatWidget::sendTextWithTags(
 		.ignoreRestrictions = ephemeral,
 	};
 	request.messagesCount = ComputeSendingMessagesCount(_history, request);
-	const auto error = GetErrorForSending(_peer, request);
-	if (error) {
-		Data::ShowSendErrorToast(controller(), _peer, error);
-		return;
-	}
-	if (!ephemeral) {
-		const auto withPaymentApproved = [=](int approved) {
-			auto copy = options;
-			copy.starsApproved = approved;
-			sendTextWithTags(textWithTags, useCurrentWebPageDraft, copy, done);
-		};
-		const auto checked = checkSendPayment(
-			request.messagesCount,
-			message.action.options,
-			withPaymentApproved);
-		if (!checked) {
+	if (_canSendMessages) {
+		const auto error = GetErrorForSending(_peer, request);
+		if (error) {
+			Data::ShowSendErrorToast(controller(), _peer, error);
 			return;
+		}
+		if (!ephemeral) {
+			const auto withPaymentApproved = [=](int approved) {
+				auto copy = options;
+				copy.starsApproved = approved;
+				sendTextWithTags(
+					textWithTags,
+					useCurrentWebPageDraft,
+					copy,
+					done);
+			};
+			const auto checked = checkSendPayment(
+				request.messagesCount,
+				message.action.options,
+				withPaymentApproved);
+			if (!checked) {
+				return;
+			}
 		}
 	}
 
@@ -4553,6 +4593,9 @@ void ChatWidget::setPinnedVisibility(bool shown) {
 
 void ChatWidget::showAnimatedHook(
 		const Window::SectionSlideParams &params) {
+	if (!params.fromBottom) {
+		_topBar->show();
+	}
 	_topBar->setAnimatingMode(true);
 	_topControls->setAnimatingMode(true);
 	if (params.withTopBarShadow && !params.fromBottom) {
@@ -4679,9 +4722,16 @@ void ChatWidget::listDeleteRequest() {
 
 void ChatWidget::listTryProcessKeyInput(not_null<QKeyEvent*> e) {
 	const auto key = e->key();
-	if ((key == Qt::Key_Return || key == Qt::Key_Enter)
-		&& _bottom->botStartShown()) {
-		sendBotStartCommand();
+	if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+		if (_bottom->botStartShown()) {
+			sendBotStartCommand();
+		}
+		if (!_canSendMessages
+			&& Ui::InputField::ShouldSubmit(
+				Core::App().settings().sendSubmitWay(),
+				e->modifiers())) {
+			send({});
+		}
 	} else if ((key == Qt::Key_O)
 		&& (e->modifiers() == Qt::ControlModifier)) {
 		if (!_choosingAttach) {
@@ -5612,10 +5662,9 @@ bool ChatWidget::lastForceReplyReplied() const {
 }
 
 bool ChatWidget::cancelReply(bool lastKeyboardUsed) {
-	auto wasReply = false;
-	if (_composeControls->replyingToMessage()) {
-		wasReply = true;
-		_composeControls->cancelReplyMessage();
+	const auto wasReply = bool(_composeControls->replyingToMessage());
+	_composeControls->cancelReplyMessage();
+	if (wasReply) {
 		updateBotKeyboard();
 		refreshTopBarActiveChat();
 		updateControlsVisibility();
@@ -5733,7 +5782,9 @@ void ChatWidget::listOpenPhoto(
 		photo,
 		{
 			context,
-			item ? item->topicRootId() : _repliesRootId,
+			(item && !_monoforumPeerId)
+				? item->topicRootId()
+				: _repliesRootId,
 			_monoforumPeerId,
 			showDrawButton,
 		});
@@ -5766,7 +5817,9 @@ void ChatWidget::listOpenDocument(
 		showInMediaView,
 		{
 			context,
-			item ? item->topicRootId() : _repliesRootId,
+			(item && !_monoforumPeerId)
+				? item->topicRootId()
+				: _repliesRootId,
 			_monoforumPeerId,
 			showDrawButton,
 		});
@@ -5984,7 +6037,9 @@ void ChatWidget::setupDragArea() {
 		this,
 		filter,
 		nullptr,
-		[=] { updateControlsGeometry(); });
+		[=] { updateControlsGeometry(); },
+		nullptr,
+		[=] { return _composeControls->isEditingMessage(); });
 
 	const auto droppedCallback = [=](bool overrideSendImagesAsPhotos) {
 		return [=](const QMimeData *data) {
@@ -5994,6 +6049,15 @@ void ChatWidget::setupDragArea() {
 	};
 	areas.document->setDroppedCallback(droppedCallback(false));
 	areas.photo->setDroppedCallback(droppedCallback(true));
+	areas.photo->setArchiveDroppedCallback([=](const QMimeData *data) {
+		const auto urls = Core::ReadMimeUrls(data);
+		if (!urls.isEmpty()) {
+			auto list = Ui::PreparedList();
+			list.files.push_back(Storage::PrepareFilesArchive(urls));
+			confirmSendingFiles(std::move(list), QString());
+		}
+		Window::ActivateWindow(controller());
+	});
 }
 
 void ChatWidget::setupShortcuts() {
@@ -6023,17 +6087,15 @@ void ChatWidget::setupShortcuts() {
 						_history));
 				return true;
 			});
-		if (mode() == Mode::History) {
-			const auto channel = _peer->asChannel();
-			const auto hasRecentActions = channel
-				&& (channel->hasAdminRights() || channel->amCreator());
-			if (hasRecentActions) {
-				request->check(Command::ShowAdminLog, 1) && request->handle([=] {
-					controller()->showSection(
-						std::make_shared<AdminLog::SectionMemento>(channel));
-					return true;
-				});
-			}
+		const auto channel = _sublist ? nullptr : _peer->asChannel();
+		const auto hasRecentActions = channel
+			&& (channel->hasAdminRights() || channel->amCreator());
+		if (hasRecentActions) {
+			request->check(Command::ShowAdminLog, 1) && request->handle([=] {
+				controller()->showSection(
+					std::make_shared<AdminLog::SectionMemento>(channel));
+				return true;
+			});
 		}
 		if ((mode() == Mode::History) && session().supportMode()) {
 			request->check(Command::SupportToggleMuted)
@@ -6046,8 +6108,12 @@ void ChatWidget::setupShortcuts() {
 }
 
 void ChatWidget::searchRequested() {
-	if (_sublist) {
+	if (_composeSearch) {
+		_composeSearch->setInnerFocus();
+	} else if (_sublist) {
 		controller()->searchInChat(_sublist);
+	} else if (mode() == Mode::History) {
+		controller()->searchInChat(_history);
 	} else if (!preventsClose(crl::guard(this, [=] { searchInTopic(); }))) {
 		searchInTopic();
 	}
@@ -6080,7 +6146,9 @@ void ChatWidget::searchInTopic() {
 		using Activation = HistoryView::ComposeSearch::Activation;
 		_composeSearch->activations(
 		) | rpl::on_next([=](Activation activation) {
-			showAtPosition(activation.item->position());
+			auto params = Window::SectionShow();
+			params.highlight = Window::SearchHighlightId(activation.query);
+			showAtPosition(activation.item->position(), {}, params);
 		}, _composeSearch->lifetime());
 
 		_composeSearch->destroyRequests(
@@ -6106,43 +6174,49 @@ bool ChatWidget::searchInChatEmbedded(
 			_composeSearch->setInnerFocus();
 			return true;
 		}
-		const auto update = [=] {
-			if (_composeSearch) {
-				_composeControls->hide();
-			} else {
-				_composeControls->show();
-			}
-			updateBotKeyboard();
-			updateControlsGeometry();
-		};
-		_composeSearch = std::make_unique<ComposeSearch>(
-			this,
-			controller(),
-			_history,
-			searchFrom,
-			query);
-		_composeSearch->setCalendarChat(Dialogs::Key(_history));
-
-		update();
-		doSetInnerFocus();
-
-		using Activation = ComposeSearch::Activation;
-		_composeSearch->activations(
-		) | rpl::on_next([=](Activation activation) {
-			auto params = Window::SectionShow(
-				Window::SectionShow::Way::Forward,
-				anim::type::instant);
-			params.highlight = Window::SearchHighlightId(activation.query);
-			showAtPosition(activation.item->position(), {}, params);
-		}, _composeSearch->lifetime());
-
-		_composeSearch->destroyRequests(
-		) | rpl::take(1) | rpl::on_next([=] {
-			_composeSearch = nullptr;
+		const auto search = crl::guard(this, [=] {
+			const auto update = [=] {
+				if (_composeSearch) {
+					_composeControls->hide();
+				} else {
+					_composeControls->show();
+				}
+				updateBotKeyboard();
+				updateControlsGeometry();
+			};
+			_composeSearch = std::make_unique<ComposeSearch>(
+				this,
+				controller(),
+				_history,
+				searchFrom,
+				query);
+			_composeSearch->setCalendarChat(Dialogs::Key(_history));
 
 			update();
 			doSetInnerFocus();
-		}, _composeSearch->lifetime());
+
+			using Activation = ComposeSearch::Activation;
+			_composeSearch->activations(
+			) | rpl::on_next([=](Activation activation) {
+				auto params = Window::SectionShow(
+					Window::SectionShow::Way::Forward,
+					anim::type::instant);
+				params.highlight = Window::SearchHighlightId(
+					activation.query);
+				showAtPosition(activation.item->position(), {}, params);
+			}, _composeSearch->lifetime());
+
+			_composeSearch->destroyRequests(
+			) | rpl::take(1) | rpl::on_next([=] {
+				_composeSearch = nullptr;
+
+				update();
+				doSetInnerFocus();
+			}, _composeSearch->lifetime());
+		});
+		if (!preventsClose(search)) {
+			search();
+		}
 		return true;
 	}
 	if (sublist != _sublist) {

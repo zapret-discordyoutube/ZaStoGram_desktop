@@ -57,6 +57,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/click_handler.h"
+#include "ui/delayed_activation.h"
 #include "ui/image/image.h"
 #include "ui/image/image_location.h"
 #include "ui/layers/generic_box.h"
@@ -170,6 +171,7 @@ namespace {
 }
 
 constexpr auto kRetainedLeafFieldLimit = 50;
+constexpr auto kTooltipDelay = 1000;
 thread_local Widget *PreservingExternalFieldRestore = nullptr;
 using ToolbarFormatAction = Widget::ToolbarFormatAction;
 using ToolbarLinkMode = Widget::ToolbarLinkMode;
@@ -686,6 +688,23 @@ struct InlineFieldTrimResult {
 	int left = 0;
 };
 
+[[nodiscard]] TextWithTags RestoreInlineFieldEdges(
+		TextWithTags text,
+		const QString &left,
+		const QString &right) {
+	if (text.text.isEmpty() || (left.isEmpty() && right.isEmpty())) {
+		return text;
+	}
+	if (!left.isEmpty()) {
+		text.text = left + text.text;
+		for (auto &tag : text.tags) {
+			tag.offset += int(left.size());
+		}
+	}
+	text.text += right;
+	return text;
+}
+
 [[nodiscard]] InlineFieldTrimResult TrimInlineFieldText(
 		TextWithTags text,
 		bool trimLeft) {
@@ -991,6 +1010,18 @@ using PreparedMutationKind = State::PreparedMutationKind;
 #endif // Qt >= 6.0
 }
 
+[[nodiscard]] QString RowButtonTooltip(
+		const Markdown::MarkdownArticleHitTestResult &hit) {
+	if (hit.buttonRow.index < 0) {
+		return QString();
+	} else if (const auto link = hit.state.link) {
+		if (const auto text = link->tooltip(); !text.isEmpty()) {
+			return text;
+		}
+	}
+	return hit.customTooltip;
+}
+
 } // namespace
 
 Widget::Widget(
@@ -1005,6 +1036,7 @@ Widget::Widget(
 , _outer(services.outer)
 , _customEmojiPaused(std::move(services.customEmojiPaused))
 , _requestMedia(std::move(services.requestMedia))
+, _requestMap(std::move(services.requestMap))
 , _applyPreparedMedia(std::move(services.applyPreparedMedia))
 , _prepareDeferredMedia(std::move(services.prepareDeferredMedia))
 , _requestPhotoEditSource(std::move(services.requestPhotoEditSource))
@@ -1085,6 +1117,20 @@ Widget::Widget(
 		*fieldStyle.style,
 		Ui::InputField::Mode::MultiLine,
 		rpl::single(QString()));
+	_insertSuggestions = std::make_unique<InsertSuggestionsController>(
+		InsertSuggestionsDescriptor{
+			.host = this,
+			.outer = _outer,
+			.field = [=] {
+				return _field->isHidden() ? nullptr : _field.get();
+			},
+			.premium = AmPremiumValue(_session),
+			.chosen = [=](InsertSuggestionCommand command) {
+				applyInsertSuggestion(command);
+			},
+			.media = static_cast<bool>(_requestMedia),
+			.map = static_cast<bool>(_requestMap),
+		});
 	setupInlineField();
 	refreshPreparedContent();
 	_history.push_back(captureHistoryEntry());
@@ -3805,6 +3851,7 @@ void Widget::visibleTopBottomUpdated(int visibleTop, int visibleBottom) {
 		.bottom = visibleBottom,
 	};
 	syncArticleVisibleTopBottom();
+	_insertSuggestions->updatePosition();
 }
 
 bool Widget::eventFilter(QObject *object, QEvent *event) {
@@ -5733,6 +5780,33 @@ bool Widget::redirectImeToField() const {
 		&& (hasStructuralSelection() || _field->isHidden());
 }
 
+void Widget::leaveEventHook(QEvent *e) {
+	updateHoverTooltip(QString());
+	Ui::RpWidget::leaveEventHook(e);
+}
+
+void Widget::updateHoverTooltip(const QString &text) {
+	if (_hoverTooltip != text) {
+		_hoverTooltip = text;
+		Ui::Tooltip::Hide();
+	}
+	if (!_hoverTooltip.isEmpty()) {
+		Ui::Tooltip::Show(kTooltipDelay, this);
+	}
+}
+
+QString Widget::tooltipText() const {
+	return _hoverTooltip;
+}
+
+QPoint Widget::tooltipPos() const {
+	return QCursor::pos();
+}
+
+bool Widget::tooltipWindowActive() const {
+	return Ui::AppInFocus() && Ui::InFocusChain(window());
+}
+
 void Widget::mouseMoveEvent(QMouseEvent *e) {
 	const auto articlePoint = e->pos() - articleTopLeft();
 	if (_horizontalScrollDrag == HorizontalScrollDrag::Mouse) {
@@ -5747,9 +5821,16 @@ void Widget::mouseMoveEvent(QMouseEvent *e) {
 	}
 	if (!_articleSelectionDrag.active) {
 		auto cursor = style::cur_default;
+		auto tooltip = QString();
 		const auto controlHit = _article->editControlHitTest(articlePoint);
 		if (controlHit.valid()) {
 			cursor = style::cur_pointer;
+			using Kind = Markdown::MarkdownArticleEditControlHitKind;
+			if (controlHit.kind == Kind::ButtonEdit) {
+				tooltip = RowButtonTooltip(_article->hitTest(
+					articlePoint,
+					Ui::Text::StateRequest::Flag::LookupSymbol));
+			}
 		} else {
 			const auto editHit = _article->editHitTest(articlePoint);
 			if (simpleMediaBlockPathFromHit(editHit)
@@ -5760,8 +5841,15 @@ void Widget::mouseMoveEvent(QMouseEvent *e) {
 				const auto hit = _article->hitTest(
 					articlePoint,
 					Ui::Text::StateRequest::Flag::LookupSymbol);
-				if ((hit.valid() && hit.codeHeaderCopy)
-					|| inlineButtonEditRequestFromArticleHit(hit)) {
+				const auto inlineButton
+					= inlineButtonEditRequestFromArticleHit(hit);
+				tooltip = inlineButton
+					? Markdown::RichButtonTooltip(
+						inlineButton->data.type,
+						inlineButton->data.payload,
+						QString())
+					: RowButtonTooltip(hit);
+				if ((hit.valid() && hit.codeHeaderCopy) || inlineButton) {
 					cursor = style::cur_pointer;
 				} else if (hit.valid()
 					&& hit.direct
@@ -5770,10 +5858,12 @@ void Widget::mouseMoveEvent(QMouseEvent *e) {
 				}
 			}
 		}
+		updateHoverTooltip(tooltip);
 		setCursor(cursor);
 		Ui::RpWidget::mouseMoveEvent(e);
 		return;
 	}
+	updateHoverTooltip(QString());
 	const auto hit = _article->hitTest(
 		articlePoint,
 		Ui::Text::StateRequest::Flag::LookupSymbol);
@@ -6372,6 +6462,7 @@ void Widget::paintEvent(QPaintEvent *e) {
 	p.restore();
 	paintMediaControls(p, topLeft);
 	paintButtonRowControls(p, topLeft);
+	_insertSuggestions->paintQuery(p);
 	if (!_articleSelectionDrag.indicatorRect.isEmpty()) {
 		auto color = st::windowActiveTextFg->c;
 		color.setAlphaF(color.alphaF() * 0.7);
@@ -7079,6 +7170,10 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 				trimmed.text,
 				Ui::InputField::HistoryAction::Clear);
 		}
+		rememberInlineFieldTrim(
+			_state->activeRawText(),
+			trimmed.left,
+			int(trimmed.text.text.size()));
 		clearArticleEditableHeightOverride();
 	} else {
 		const auto activeText = ConvertRichTextToEditorTags(
@@ -7097,6 +7192,10 @@ void Widget::setInlineFieldFromActiveState(int selectionFrom, int selectionTo) {
 				trimmed.text,
 				Ui::InputField::HistoryAction::Clear);
 		}
+		rememberInlineFieldTrim(
+			activeText.text.text,
+			trimmed.left,
+			int(trimmed.text.text.size()));
 	}
 	auto cursor = _field->textCursor();
 	const auto from = fieldDocumentPositionForActiveTextOffset(selectionFrom);
@@ -7525,9 +7624,7 @@ std::optional<Widget::ButtonEditRequest> Widget::rowButtonEditRequest(
 bool Widget::handleIvClipboardMime(
 		not_null<const QMimeData*> data,
 		Ui::InputField::MimeAction action) {
-	const auto modifiers = QApplication::keyboardModifiers();
-	if ((modifiers & Qt::ControlModifier)
-		&& (modifiers & Qt::ShiftModifier)) {
+	if (PasteAsPlainTextRequested()) {
 		return false;
 	}
 	const auto insertContext = ClipboardPasteInsertContext(
@@ -7643,14 +7740,51 @@ void Widget::undoMarkdownPaste(const QString &text, const RichPage &pasted) {
 	});
 }
 
+void Widget::rememberInlineFieldTrim(
+		const QString &full,
+		int left,
+		int length) {
+	_fieldTrimmedLeft = full.mid(0, left);
+	_fieldTrimmedRight = full.mid(left + length);
+	_fieldTrimmedLeaf = _state->activeLeafPath();
+}
+
+QString Widget::inlineFieldTrimmedLeft() const {
+	const auto active = _state->activeLeafPath();
+	return (_fieldTrimmedLeaf && active && (*_fieldTrimmedLeaf == *active))
+		? _fieldTrimmedLeft
+		: QString();
+}
+
+QString Widget::inlineFieldTrimmedRight() const {
+	const auto active = _state->activeLeafPath();
+	return (_fieldTrimmedLeaf && active && (*_fieldTrimmedLeaf == *active))
+		? _fieldTrimmedRight
+		: QString();
+}
+
+int Widget::richOffsetForFieldPosition(int position) const {
+	return int(inlineFieldTrimmedLeft().size())
+		+ int(ConvertEditorTagsToRichText(
+			_field->getTextWithTagsPart(0, position)).text.size());
+}
+
 ApplyResult Widget::applyFieldTextToState() {
 	if (_settingField || _field->isHidden()) {
 		return ApplyResult::Unchanged;
 	}
+	const auto left = inlineFieldTrimmedLeft();
+	const auto right = inlineFieldTrimmedRight();
 	if (_state->activeFieldMode() == State::FieldMode::Raw) {
-		return _state->applyActiveRawText(_field->getLastText());
+		const auto raw = _field->getLastText();
+		return _state->applyActiveRawText(raw.isEmpty()
+			? raw
+			: (left + raw + right));
 	}
-	const auto text = _field->getTextWithAppliedMarkdown();
+	const auto text = RestoreInlineFieldEdges(
+		_field->getTextWithAppliedMarkdown(),
+		left,
+		right);
 	return _state->applyActiveText(ConvertEditorTagsToRichText(text));
 }
 
@@ -7725,11 +7859,16 @@ ApplyResult Widget::applyMathEditResult(
 		insertPreparedBlock(std::move(block));
 		return ApplyResult::Changed;
 	}
+	auto restoreOrdinal = -1;
+	auto restoreOffset = 0;
 	const auto committed = recordMutationTransaction([&] {
 		_field->commitMarkdownTagEdit(
 			request.range,
 			Ui::InputField::kTagIvMath,
 			source);
+		restoreOrdinal = _state->activeTextOrdinal();
+		restoreOffset = richOffsetForFieldPosition(
+			request.range.from + int(source.size()));
 		const auto committed = commitInlineField();
 		if (committed != ApplyResult::Failed) {
 			_pendingOrdinal = -1;
@@ -7741,6 +7880,9 @@ ApplyResult Widget::applyMathEditResult(
 	});
 	if (committed != ApplyResult::Failed) {
 		refreshAfterInlineFieldCommit(committed);
+		if (restoreOrdinal >= 0) {
+			activateTextOrdinal(restoreOrdinal, restoreOffset);
+		}
 	}
 	return committed;
 }
@@ -7812,12 +7954,18 @@ ApplyResult Widget::applyButtonEditResult(
 	if (serialized.isEmpty()) {
 		return ApplyResult::Unchanged;
 	}
+	auto restoreOrdinal = -1;
+	auto restoreOffset = 0;
 	const auto committed = recordMutationTransaction([&] {
+		const auto cursor = _field->textCursor();
+		const auto position = cursor.selectionStart() + 1;
 		Ui::InsertCustomEmojiAtCursor(
 			_field.get(),
-			_field->textCursor(),
+			cursor,
 			QString(QChar::ObjectReplacementCharacter),
 			Ui::InputField::CustomEmojiLink(serialized));
+		restoreOrdinal = _state->activeTextOrdinal();
+		restoreOffset = richOffsetForFieldPosition(position);
 		const auto committed = commitInlineField();
 		if (committed != ApplyResult::Failed) {
 			_pendingOrdinal = -1;
@@ -7829,6 +7977,9 @@ ApplyResult Widget::applyButtonEditResult(
 	});
 	if (committed != ApplyResult::Failed) {
 		refreshAfterInlineFieldCommit(committed);
+		if (restoreOrdinal >= 0) {
+			activateTextOrdinal(restoreOrdinal, restoreOffset);
+		}
 	}
 	return committed;
 }
@@ -7981,6 +8132,7 @@ void Widget::hideInlineField() {
 	const auto guard = gsl::finally([&] {
 		_settingField = wasSettingField;
 	});
+	_insertSuggestions->close();
 	_field->hide();
 }
 
@@ -8572,6 +8724,71 @@ bool Widget::adjustStructuralSelectionFromKeyboard(bool forward, bool page) {
 	return true;
 }
 
+bool Widget::handleInsertSuggestionsKey(QKeyEvent *e) {
+	if (_insertSuggestions->handleKeyPress(e)) {
+		e->accept();
+		return true;
+	}
+	const auto modifiers = e->modifiers()
+		& ~(Qt::KeypadModifier | Qt::GroupSwitchModifier | Qt::ShiftModifier);
+	if ((e->text() != u"/"_q)
+		|| (modifiers != Qt::NoModifier)
+		|| _field->isHidden()
+		|| (_fieldMode != State::FieldMode::Rich)
+		|| !_state->isActiveTopLevelParagraph()
+		|| !_field->getLastText().isEmpty()) {
+		return false;
+	}
+	_insertSuggestions->open();
+	return false;
+}
+
+void Widget::applyInsertSuggestion(InsertSuggestionCommand command) {
+	if (!_insertSuggestions->active() || _field->isHidden()) {
+		_insertSuggestions->close();
+		return;
+	}
+	_insertSuggestions->takeQuery();
+	_insertSuggestions->close();
+	if (const auto action = InsertSuggestionBlock(command)) {
+		insertBlock(*action);
+		return;
+	}
+	using Command = InsertSuggestionCommand;
+	switch (command) {
+	case Command::Button:
+		editButtonFromToolbar();
+		return;
+	case Command::Math:
+		editMathFromToolbar();
+		return;
+	case Command::Media:
+		requestMedia(std::nullopt, RequestMediaType::PhotoVideo);
+		return;
+	case Command::Audio:
+		requestMedia(std::nullopt, RequestMediaType::Audio);
+		return;
+	case Command::Map:
+		requestMapInsert();
+		return;
+	default:
+		break;
+	}
+	Unexpected("Command in Widget::applyInsertSuggestion.");
+}
+
+void Widget::requestMapInsert() {
+	if (!_requestMap) {
+		return;
+	}
+	const auto outer = static_cast<Ui::RpWidget*>(_outer.get());
+	Ui::PreventDelayedActivation();
+	_requestMap(
+		not_null<Widget*>(this),
+		QPointer<QWidget>(_outer.get()),
+		outer->death());
+}
+
 bool Widget::handleFieldInputRule(QKeyEvent *e) {
 	const auto modifiers = e->modifiers()
 		& ~(Qt::KeypadModifier | Qt::GroupSwitchModifier);
@@ -8652,6 +8869,10 @@ bool Widget::handleFieldKey(QKeyEvent *e) {
 	if (key != Qt::Key_Backspace) {
 		_inputRuleUndo = std::nullopt;
 	}
+	if (handleInsertSuggestionsKey(e)) {
+		return true;
+	}
+	_insertSuggestions->scheduleRefresh();
 	if (handleFieldInputRule(e)) {
 		return true;
 	}
@@ -8826,6 +9047,11 @@ bool Widget::handleFieldKey(QKeyEvent *e) {
 			if (!handled) {
 				handled = enterStructuralSelectionFromField(down, false);
 			}
+		}
+		if (!handled && !_field->isHidden() && modifiers == Qt::NoModifier) {
+			handled = moveFieldCursor(
+				down ? QTextCursor::End : QTextCursor::Start,
+				QTextCursor::MoveAnchor);
 		}
 		if (handled) {
 			e->accept();
@@ -11293,6 +11519,11 @@ bool Widget::handleFieldMouseEvent(QEvent *event) {
 		} else {
 			_selectScroll.cancel();
 			if (bandSelectsInField) {
+				if (_fieldBandSelecting) {
+					// Nested synthetic move from the reveal scroll below.
+					mouse->accept();
+					return true;
+				}
 				const auto raw = _field->rawTextEdit();
 				const auto pointerCursor = raw->cursorForPosition(
 					raw->viewport()->mapFromGlobal(globalPoint));
@@ -11305,7 +11536,9 @@ bool Widget::handleFieldMouseEvent(QEvent *event) {
 				auto cursor = _field->textCursor();
 				if (cursor.position() != position) {
 					cursor.setPosition(position, QTextCursor::KeepAnchor);
+					_fieldBandSelecting = true;
 					_field->setTextCursor(cursor);
+					_fieldBandSelecting = false;
 				}
 				mouse->accept();
 				return true;

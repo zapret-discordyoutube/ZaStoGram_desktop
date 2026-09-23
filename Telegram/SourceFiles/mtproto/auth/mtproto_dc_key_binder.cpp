@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "scheme.h"
 
 #include <QtCore/QPointer>
+#include <QtCore/QtEndian>
 
 namespace MTP::details {
 namespace {

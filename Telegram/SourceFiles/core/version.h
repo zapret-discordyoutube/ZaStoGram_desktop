@@ -22,8 +22,8 @@ constexpr auto AppId = "{53F49750-6209-4FBF-9CA8-7A333C87D1ED}"_cs;
 constexpr auto AppNameOld = "Telegram Win (Unofficial)"_cs;
 constexpr auto AppName = "ZaStoGram"_cs;
 constexpr auto AppFile = "Telegram"_cs;
-constexpr auto AppVersion = 7001001;
-constexpr auto AppVersionStr = "7.1.1";
+constexpr auto AppVersion = 7002009;
+constexpr auto AppVersionStr = "7.2.9";
 // ZaStoGram dev releases use ZsgBuildId instead of Telegram's beta bit, so keep
 // AppBetaVersion = false when upstream beta-version commits are merged.
 constexpr auto AppBetaVersion = false;

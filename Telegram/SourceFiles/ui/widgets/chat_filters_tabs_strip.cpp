@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_unread_value.h"
 #include "data/data_user.h"
 #include "lang/lang_keys.h"
+#include "menu/menu_mark_as_read.h"
 #include "main/main_session.h"
 #include "settings/sections/settings_folders.h"
 #include "ui/widgets/menu/menu_action.h"
@@ -85,8 +86,9 @@ void ShowMenu(
 			[=] { EditExistingFilter(controller, id); },
 			&st::menuIconEdit);
 
-		Window::MenuAddMarkAsReadChatListAction(
+		MarkAsReadMenu::AddChatListAction(
 			controller,
+			MarkAsReadMenu::ChatListKind::Folder,
 			[=] { return session->data().chatsFilters().chatsList(id); },
 			addAction);
 
@@ -100,16 +102,11 @@ void ShowMenu(
 			.isAttention = true,
 		});
 	} else {
-		auto customUnreadState = [=] {
-			return Data::MainListMapUnreadState(
-				session,
-				session->data().chatsList()->unreadState());
-		};
-		Window::MenuAddMarkAsReadChatListAction(
+		MarkAsReadMenu::AddChatListAction(
 			controller,
+			MarkAsReadMenu::ChatListKind::AllChats,
 			[=] { return session->data().chatsList(); },
-			addAction,
-			std::move(customUnreadState));
+			addAction);
 
 		auto openFiltersSettings = [=] {
 			const auto filters = &session->data().chatsFilters();

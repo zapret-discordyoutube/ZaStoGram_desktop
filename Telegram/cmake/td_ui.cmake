@@ -183,6 +183,8 @@ PRIVATE
     editor/photo_editor_inner_common.h
     editor/scene/scene.cpp
     editor/scene/scene.h
+    editor/scene/scene_item_animated.cpp
+    editor/scene/scene_item_animated.h
     editor/scene/scene_item_base.cpp
     editor/scene/scene_item_base.h
     editor/scene/scene_item_canvas.cpp
@@ -195,8 +197,12 @@ PRIVATE
     editor/scene/scene_item_shape.h
     editor/scene/scene_item_text.cpp
     editor/scene/scene_item_text.h
+    editor/scene/scene_item_video.cpp
+    editor/scene/scene_item_video.h
     editor/scene/scene_emoji_document.cpp
     editor/scene/scene_emoji_document.h
+    editor/scene/scene_text_editing.cpp
+    editor/scene/scene_text_editing.h
 
     ui/boxes/about_cocoon_box.h
     ui/boxes/about_cocoon_box.cpp
@@ -468,6 +474,8 @@ PRIVATE
     ui/chat/torn_edge.h
     ui/chat/unsupported_notice.cpp
     ui/chat/unsupported_notice.h
+    ui/controls/button_context_menu.cpp
+    ui/controls/button_context_menu.h
     ui/controls/button_labels.cpp
     ui/controls/button_labels.h
     ui/controls/call_button.cpp
@@ -520,6 +528,8 @@ PRIVATE
     ui/controls/swipe_handler_data.h
     ui/controls/tabbed_search.cpp
     ui/controls/tabbed_search.h
+    ui/controls/title_sub_widget.cpp
+    ui/controls/title_sub_widget.h
     ui/controls/ton_common.cpp
     ui/controls/ton_common.h
     ui/controls/ttl_media.cpp

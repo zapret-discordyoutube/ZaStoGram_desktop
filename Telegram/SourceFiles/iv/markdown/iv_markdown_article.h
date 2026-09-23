@@ -414,6 +414,7 @@ public:
 	void clearTextLeafHeightOverride();
 	void invalidateLayout();
 	[[nodiscard]] int maxWidth() const;
+	[[nodiscard]] int contentDemandedWidth() const;
 	[[nodiscard]] bool hasMissingMediaBlocks() const;
 	[[nodiscard]] QSize resizeGetSize(int width);
 	[[nodiscard]] int resizeGetHeight(int width);

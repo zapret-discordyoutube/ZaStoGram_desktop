@@ -112,6 +112,11 @@ bool ListSection::removeItem(not_null<const HistoryItem*> item) {
 	if (const auto i = _byItem.find(item); i != end(_byItem)) {
 		_items.erase(ranges::remove(_items, i->second), end(_items));
 		_byItem.erase(i);
+		if (!_mosaic.empty()) {
+			// Without touching the removed layout, see refreshMinId().
+			_mosaic.clearRows(true);
+			_mosaic.addItems(_items);
+		}
 		refreshMinId();
 		refreshHeight();
 		return true;
@@ -171,9 +176,8 @@ ListFoundItem ListSection::findItemByPoint(QPoint point) const {
 	auto item = *itemIt;
 	auto rect = findItemRect(item);
 	if (point.y() >= rect.top()) {
-		auto shift = floorclamp(
-			point.x(),
-			(_itemWidth + st::infoMediaSkip),
+		auto shift = std::clamp(
+			point.x() / (_itemWidth + st::infoMediaSkip),
 			0,
 			_itemsInRow);
 		while (shift-- && itemIt != _items.end()) {

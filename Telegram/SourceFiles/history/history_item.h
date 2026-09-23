@@ -480,8 +480,9 @@ public:
 	[[nodiscard]] TextForMimeData clipboardText() const;
 
 	bool changeViewsCount(int count);
+	bool changeForwardsCount(int count);
 	void setForwardsCount(int count);
-	void setReplies(HistoryMessageRepliesData &&data);
+	void setReplies(HistoryMessageRepliesData &&data, bool notify = true);
 	void clearReplies();
 	void changeRepliesCount(int delta, PeerId replier);
 	void setReplyFields(
@@ -739,6 +740,7 @@ private:
 	void changeReplyToTopCounter(
 		not_null<HistoryMessageReply*> reply,
 		int delta);
+	bool updateRepliesText(not_null<HistoryMessageViews*> views);
 	void refreshRepliesText(
 		not_null<HistoryMessageViews*> views,
 		bool forceResize = false);

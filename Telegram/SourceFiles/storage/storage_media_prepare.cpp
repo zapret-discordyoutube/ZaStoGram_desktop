@@ -77,7 +77,9 @@ void PrepareDetailsInParallel(PreparedList &result, int previewWidth) {
 
 } // namespace
 
-bool ValidatePhotoEditorMediaDragData(not_null<const QMimeData*> data) {
+bool ValidatePhotoEditorMediaDragData(
+		not_null<const QMimeData*> data,
+		bool withVideo) {
 	const auto urls = Core::ReadMimeUrls(data);
 	if (urls.size() > 1) {
 		return false;
@@ -90,13 +92,44 @@ bool ValidatePhotoEditorMediaDragData(not_null<const QMimeData*> data) {
 		if (url.isLocalFile()) {
 			using namespace Core;
 			const auto file = Platform::File::UrlToLocal(url);
-			const auto info = QFileInfo(file);
-			return FileIsImage(file, MimeTypeForFile(info).name())
-				&& QImageReader(file).canRead();
+			const auto mime = MimeTypeForFile(QFileInfo(file)).name();
+			return (withVideo && FileLoadTask::IsVideoFile(file, mime))
+				|| (FileIsImage(file, mime) && QImageReader(file).canRead());
 		}
 	}
 
 	return false;
+}
+
+PhotoEditorMedia ReadPhotoEditorMedia(
+		const QString &path,
+		const QByteArray &content) {
+	if (path.isEmpty() && content.size() > Images::kReadBytesLimit) {
+		return {};
+	}
+	const auto information = FileLoadTask::ReadMediaInformation(
+		path,
+		content,
+		path.isEmpty()
+			? Core::MimeTypeForData(content).name()
+			: Core::MimeTypeForFile(QFileInfo(path)).name());
+	if (const auto image = std::get_if<Image>(&information->media)) {
+		return { .image = std::move(image->data) };
+	}
+	using Video = PreparedFileInformation::Video;
+	if (const auto video = std::get_if<Video>(&information->media)) {
+		if (!path.isEmpty()
+			&& QFileInfo(path).size() > Images::kReadBytesLimit) {
+			return {};
+		}
+		return {
+			.image = std::move(video->thumbnail),
+			.videoPath = path,
+			.videoContent = content,
+			.videoDuration = video->duration,
+		};
+	}
+	return {};
 }
 
 bool ValidateEditMediaDragData(
@@ -145,7 +178,9 @@ MimeDataState ComputeMimeDataState(const QMimeData *data) {
 
 		const auto info = QFileInfo(file);
 		if (info.isDir()) {
-			return MimeDataState::None;
+			return (urls.size() == 1)
+				? MimeDataState::Folder
+				: MimeDataState::None;
 		}
 
 		using namespace Core;
@@ -177,6 +212,8 @@ MimeDataState ComputeMimeDataState(const QMimeData *data) {
 		? MimeDataState::PhotoFiles
 		: allAreMedia
 		? MimeDataState::MediaFiles
+		: (urls.size() > 1)
+		? MimeDataState::FilesArchive
 		: MimeDataState::Files;
 }
 
@@ -369,9 +406,17 @@ VideoDetails ComputeVideoDetails(
 		.originalDimensions = preview.size(),
 		.shownDimensions = PrepareShownDimensions(preview, sideLimit),
 	};
-	result.preview = Images::Blur(Images::Opaque(std::move(preview)))
-		.scaledToWidth(
-			previewWidth * style::DevicePixelRatio(),
+	// Blur whichever of the source and the result has fewer pixels. Blurring
+	// a full resolution frame allocates and works by the source pixel count,
+	// and washes the blur out in proportion to how much is scaled away, so a
+	// 4K video ended up with a far sharper preview than a small one.
+	const auto width = previewWidth * style::DevicePixelRatio();
+	auto opaque = Images::Opaque(std::move(preview));
+	result.preview = (opaque.width() > width)
+		? Images::Blur(
+			opaque.scaledToWidth(width, Qt::SmoothTransformation))
+		: Images::Blur(std::move(opaque)).scaledToWidth(
+			width,
 			Qt::SmoothTransformation);
 	Assert(!result.preview.isNull());
 	result.preview.setDevicePixelRatio(style::DevicePixelRatio());

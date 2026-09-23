@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/box_content_divider.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/controls/button_context_menu.h"
 #include "ui/controls/userpic_button.h"
 #include "ui/new_badges.h"
 #include "ui/text/text_utilities.h"
@@ -49,6 +50,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_badge.h"
 #include "info/profile/info_profile_phone_menu.h"
 #include "lang/lang_keys.h"
+#include "menu/menu_mark_as_read.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "main/main_domain.h"
@@ -869,7 +871,6 @@ void SetupAccountsWrap(
 
 		Ui::RpWidget userpic;
 		Ui::PeerUserpicView view;
-		base::unique_qptr<Ui::PopupMenu> menu;
 	};
 	const auto state = raw->lifetime().make_state<State>(raw);
 
@@ -910,22 +911,15 @@ void SetupAccountsWrap(
 	) | rpl::on_next([=](Qt::MouseButton which) {
 		if (which == Qt::LeftButton) {
 			callback(raw->clickModifiers());
-			return;
 		} else if (which == Qt::MiddleButton) {
 			callback(Qt::ControlModifier);
-			return;
-		} else if (which != Qt::RightButton) {
-			return;
 		}
-		if (state->menu) {
-			return;
-		}
+	}, raw->lifetime());
+
+	Ui::SetupButtonContextMenu(raw, &st::popupMenuExpandedSeparator, [=](
+			not_null<Ui::PopupMenu*> menu) {
 		const auto isActive = session == &window->session();
-		state->menu = base::make_unique_q<Ui::PopupMenu>(
-			raw,
-			st::popupMenuExpandedSeparator);
-		const auto addAction = Ui::Menu::CreateAddActionCallback(
-			state->menu);
+		const auto addAction = Ui::Menu::CreateAddActionCallback(menu);
 		if (!isActive) {
 			addAction(tr::lng_context_new_window(tr::now), [=] {
 				Ui::PreventDelayedActivation();
@@ -945,7 +939,7 @@ void SetupAccountsWrap(
 					callback({});
 				}, &st::menuIconProfile);
 			}
-			Window::MenuAddMarkAsReadAllChatsAction(
+			MarkAsReadMenu::AddAllChatsAction(
 				session,
 				window->uiShow(),
 				addAction);
@@ -973,8 +967,7 @@ void SetupAccountsWrap(
 				.isAttention = true,
 			});
 		}
-		state->menu->popup(QCursor::pos());
-	}, raw->lifetime());
+	});
 
 	return result;
 }

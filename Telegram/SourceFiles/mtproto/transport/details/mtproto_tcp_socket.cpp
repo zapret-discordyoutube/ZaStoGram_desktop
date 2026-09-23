@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_binary.h"
 #include "base/invoke_queued.h"
 
+#include <QtCore/QtEndian>
+
 namespace MTP::details {
 
 TcpSocket::TcpSocket(

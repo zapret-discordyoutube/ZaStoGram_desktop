@@ -151,6 +151,7 @@ constexpr auto kFullDayInMs = 86400 * 1000;
 constexpr auto kMouseEvents = {
 	QEvent::MouseMove,
 	QEvent::MouseButtonPress,
+	QEvent::MouseButtonDblClick,
 	QEvent::MouseButtonRelease
 };
 constexpr auto kRefreshSlowmodeLabelTimeout = crl::time(200);
@@ -541,7 +542,8 @@ void FieldHeader::init() {
 			return;
 		}
 		const auto isLeftButton = (e->button() == Qt::LeftButton);
-		if (type == QEvent::MouseButtonPress) {
+		if (type == QEvent::MouseButtonPress
+			|| type == QEvent::MouseButtonDblClick) {
 			if (isLeftButton && inPhotoEdit) {
 				_editPhotoRequests.fire({});
 			} else if (isLeftButton && inPreviewRect) {
@@ -2057,7 +2059,7 @@ void ComposeControls::setupStarsEffectsCanvas() {
 			const auto scale = kStarEffectScaleMin
 				+ (kStarEffectScaleMax - kStarEffectScaleMin) * opacity;
 
-			const auto rotation = qSin(-M_PI_2
+			const auto rotation = std::sin(-M_PI_2
 				+ M_PI * (animation->shift + animation->progress)
 			) * kStarEffectRotationMax;
 			const auto target = QRect(
@@ -2174,7 +2176,7 @@ auto ComposeControls::sendContentRequests(SendRequestType requestType) const {
 		_send->clicks() | rpl::filter([=] {
 			return sendButtonSends();
 		}) | filter | map,
-		_field->submits() | rpl::filter([=] {
+		_fieldSubmits.events() | rpl::filter([=] {
 			return submitSends();
 		}) | filter | submit,
 		_sendCustomRequests.events() | custom);
@@ -2189,15 +2191,8 @@ Api::SendOptions ComposeControls::adjustedSupportSendOptions(
 	return options;
 }
 
-rpl::producer<> ComposeControls::scrollToMaxRequests() const {
-	return _field->submits() | rpl::filter([=]{
-		if (_mode == Mode::Normal
-			&& !_voiceRecordBar->isListenState()
-			&& getTextWithAppliedMarkdown().text.isEmpty()) {
-			return true;
-		}
-		return false;
-	}) | rpl::to_empty;
+rpl::producer<Api::SendOptions> ComposeControls::scrollToMaxRequests() const {
+	return _scrollToMaxRequests.events();
 }
 
 rpl::producer<Api::SendOptions> ComposeControls::sendRequests() const {
@@ -2282,8 +2277,13 @@ void ComposeControls::offerRichPaste(not_null<const QMimeData*> data) {
 	if (!_history
 		|| !_pasteToastParent
 		|| !canShowRichEditor()
-		|| isEditingMessage()
-		|| !ChatHelpers::MimeDataLosesRichFormatting(session, data)) {
+		|| isEditingMessage()) {
+		return;
+	}
+	const auto decision = ChatHelpers::MimeDataRichPasteOffer(
+		session,
+		data);
+	if (!decision) {
 		return;
 	}
 	const auto copy = ChatHelpers::CloneMimeData(data);
@@ -2301,8 +2301,25 @@ void ComposeControls::offerRichPaste(not_null<const QMimeData*> data) {
 			.session = session,
 			.parent = parent,
 			.cancel = _field->changes(),
+			.offer = decision->offer,
 			.action = crl::guard(_wrap.get(), [=] {
-				if (_field->getTextWithTags() == now) {
+				const auto unchanged = (_field->getTextWithTags() == now);
+				if (decision->offer == ChatHelpers::RichPasteOffer::Field) {
+					if (!unchanged) {
+						return;
+					}
+					const auto &markdown = decision->markdown;
+					const auto from = std::min(position, anchor);
+					_field->setTextWithTags(ChatHelpers::TextWithTagsReplaced(
+						was,
+						from,
+						std::max(position, anchor),
+						markdown));
+					_field->setCursorPosition(
+						from + int(markdown.text.size()));
+					return;
+				}
+				if (unchanged) {
 					_field->setTextWithTags(was);
 					auto cursor = _field->textCursor();
 					cursor.setPosition(anchor);
@@ -2369,6 +2386,9 @@ auto ComposeControls::inlineResultChosen() const
 }
 
 void ComposeControls::showStarted() {
+	if (focused()) {
+		_parent->setFocus();
+	}
 	if (_inlineResults) {
 		_inlineResults->hideFast();
 	}
@@ -3076,6 +3096,20 @@ void ComposeControls::initKeyHandler() {
 void ComposeControls::initField() {
 	_field->setMaxHeight(st::historyComposeFieldMaxHeight);
 	updateSubmitSettings();
+	_field->submits(
+	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
+		// Classify each submit once, before anyone handles it: a send
+		// clears the field, so checking emptiness later would see an
+		// empty field and send once more (marking as read).
+		if (_mode == Mode::Normal
+			&& !isEditingMessage()
+			&& !_voiceRecordBar->isListenState()
+			&& getTextWithAppliedMarkdown().text.isEmpty()) {
+			_scrollToMaxRequests.fire(adjustedSupportSendOptions(modifiers));
+		} else {
+			_fieldSubmits.fire_copy(modifiers);
+		}
+	}, _field->lifetime());
 	_field->cancelled(
 	) | rpl::on_next([=] {
 		escape();
@@ -3328,6 +3362,7 @@ void ComposeControls::fieldChanged() {
 	const auto commandShown = updateBotCommandShown();
 	const auto menuRefreshed = refreshBotMenuButton();
 	const auto likeShown = updateLikeShown();
+	_fieldCharsCountManager.setCount(Ui::ComputeFieldCharacterCount(_field));
 	// Must repeat the rule from updateControlsVisibility().
 	const auto hideExtra = hideExtraButtons()
 		|| isEditingMessage()
@@ -3884,7 +3919,16 @@ void ComposeControls::initTabbedSelector() {
 				sendMenuDetails(),
 				crl::guard(_field, [=](
 						Api::SendOptions options,
-						TextWithTags caption) {
+						TextWithTags caption,
+						Ui::PreparedList &&edited) {
+					if (!edited.files.empty()) {
+						if (_sendAsFileConfirmed) {
+							_sendAsFileConfirmed(
+								Ui::MakeSingleFileBundle(std::move(edited)),
+								options);
+						}
+						return;
+					}
 					_fileChosen.fire({
 						.document = document,
 						.options = options,
@@ -4226,14 +4270,19 @@ void SetupRestrictionView(
 }
 
 void ComposeControls::initWriteRestriction() {
+	const auto rescue = [&](QWidget *control) {
+		// Fix a crash because of control destruction with its parent.
+		if (control && control->parentWidget() == _writeRestricted.get()) {
+			control->setParent(_wrap.get());
+		}
+	};
+	rescue(_like);
+	rescue(_commentsShown);
+	rescue(_starsReaction);
 	if (!_history) {
 		const auto was = base::take(_writeRestricted);
 		updateWrappingVisibility();
 		return;
-	}
-	if (_like && _like->parentWidget() == _writeRestricted.get()) {
-		// Fix a crash because of _like destruction with its parent.
-		_like->setParent(_wrap.get());
 	}
 	_writeRestricted = std::make_unique<Ui::RpWidget>(_parent);
 	_writeRestricted->move(_wrap->pos());
@@ -5340,7 +5389,8 @@ bool ComposeControls::hasSendableContent() const {
 }
 
 bool ComposeControls::hideExtraButtons() const {
-	return shouldShowRichDraftPreview();
+	return _fieldCharsCountManager.isLimitExceeded()
+		|| shouldShowRichDraftPreview();
 }
 
 bool ComposeControls::refreshBotMenuButton() {
@@ -6112,6 +6162,17 @@ FullReplyTo ComposeControls::replyingToMessage() const {
 	auto result = _header->replyingToMessage();
 	result.topicRootId = _topicRootId;
 	result.monoforumPeerId = _monoforumPeerId;
+	return result;
+}
+
+FullReplyTo ComposeControls::draftReplyingToMessage() const {
+	auto result = replyingToMessage();
+	if (!result.messageId && _history) {
+		// Compose box owns the field, applyDraft() leaves header empty.
+		if (const auto draft = _history->draft(draftKey(DraftType::Normal))) {
+			result.messageId = draft->reply.messageId;
+		}
+	}
 	return result;
 }
 

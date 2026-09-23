@@ -147,6 +147,7 @@ public:
 		return false;
 	}
 	void startSeeking(AudioMsgId::Type type);
+	void updateSeeking(AudioMsgId::Type type, float64 progress);
 	void finishSeeking(AudioMsgId::Type type, float64 progress);
 	void cancelSeeking(AudioMsgId::Type type);
 
@@ -203,6 +204,7 @@ private:
 		Storage::SharedMediaType overview;
 		AudioMsgId current;
 		AudioMsgId seeking;
+		std::vector<not_null<DocumentData*>> currentTracks;
 		std::optional<SparseIdsMergedSlice> playlistSlice;
 		std::optional<SliceKey> playlistSliceKey;
 		std::optional<SliceKey> playlistRequestedKey;
@@ -244,6 +246,12 @@ private:
 	Streaming::PlaybackOptions streamingOptions(
 		const AudioMsgId &audioId,
 		crl::time position = -1);
+	[[nodiscard]] crl::time streamedDuration(
+		not_null<Streamed*> streamed) const;
+	void seekStreamed(
+		not_null<Data*> data,
+		float64 progress,
+		bool keepPaused);
 
 	// Observed notifications.
 	void handleSongUpdate(const AudioMsgId &audioId);
@@ -262,6 +270,10 @@ private:
 	bool validOtherPlaylist(not_null<const Data*> data) const;
 	void validateOtherPlaylist(not_null<Data*> data);
 	void playlistUpdated(not_null<Data*> data);
+	[[nodiscard]] AudioMsgId trackInItem(
+		not_null<const Data*> data,
+		int delta) const;
+	bool moveInItem(not_null<Data*> data, int delta, bool autonext);
 	bool moveInPlaylist(not_null<Data*> data, int delta, bool autonext);
 	void updatePowerSaveBlocker(
 		not_null<Data*> data,

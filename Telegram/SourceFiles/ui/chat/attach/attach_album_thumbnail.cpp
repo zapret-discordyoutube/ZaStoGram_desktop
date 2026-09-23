@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/attach/attach_album_thumbnail.h"
 
 #include "core/mime_type.h" // Core::IsMimeSticker.
+#include "lang/lang_keys.h"
 #include "ui/chat/attach/attach_prepare.h"
 #include "ui/image/image_prepare.h"
 #include "ui/text/format_values.h"
@@ -98,7 +99,10 @@ AlbumThumbnail::AlbumThumbnail(
 		- st::sendBoxAlbumGroupSkipRight;
 	_captionAvailableWidth = availableCaptionWidth;
 	const auto filepath = file.path;
-	if (filepath.isEmpty()) {
+	if (file.archive) {
+		_name = file.displayName;
+		_status = tr::lng_folder_archive_status(tr::now);
+	} else if (filepath.isEmpty()) {
 		_name = file.displayName.isEmpty()
 			? "image.png"
 			: file.displayName;
@@ -148,7 +152,9 @@ AlbumThumbnail::AlbumThumbnail(
 
 	const auto duration = st::historyAttach.ripple.hideDuration;
 	_editMedia->setClickedCallback([=] {
-		base::call_delayed(duration, parent, editCallback);
+		// Guarded by the button, which dies with this thumbnail, so the
+		// delayed edit is dropped instead of firing for a thumb that is gone.
+		base::call_delayed(duration, _editMedia.data(), editCallback);
 	});
 	_deleteMedia->setClickedCallback(deleteCallback);
 

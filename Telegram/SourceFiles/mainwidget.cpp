@@ -95,7 +95,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "main/main_app_config.h"
 #include "settings/sections/settings_premium.h"
-#include "support/support_helper.h"
 #include "storage/storage_user_photos.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_chat.h"
@@ -1465,6 +1464,7 @@ void MainWidget::showHistory(
 		session().data().hideShownSpoilers();
 		if (params.activation != anim::activation::background) {
 			_controller->window().activate();
+			_controller->window().hideSettingsAndLayer();
 		}
 		return;
 	} else if (showHistoryInDifferentWindow(peerId, params, showAtMsgId)) {
@@ -2253,11 +2253,6 @@ std::vector<Window::SavedChat> MainWidget::chatStackForSave() const {
 		const auto rootId = (chat && thread && thread->asHistory())
 			? chat->id().repliesRootId
 			: MsgId();
-		const auto known = !chat
-			&& (dynamic_cast<HistoryView::PinnedWidget*>(_mainSection.data())
-				|| dynamic_cast<HistoryView::ScheduledWidget*>(
-					_mainSection.data())
-				|| dynamic_cast<AdminLog::Widget*>(_mainSection.data()));
 		if (rootId) {
 			const auto peer = chat->id().history->peer;
 			result.push_back(Window::SavedChat{
@@ -2268,8 +2263,11 @@ std::vector<Window::SavedChat> MainWidget::chatStackForSave() const {
 					? entry.fullId.msg
 					: MsgId()),
 			});
-		} else if (known) {
-			pushSection(_mainSection->createMemento().get());
+		} else if (const auto memento
+				= _mainSection->createIdentityMemento()) {
+			// createMemento() would "take" the state of a section that
+			// stays alive, so only an identity memento can be used here.
+			pushSection(memento.get());
 		} else {
 			push(thread, entry.fullId.msg);
 		}
@@ -2716,7 +2714,7 @@ void MainWidget::updateControlsGeometry() {
 	}
 	const auto mainSectionTop = getMainSectionTop();
 	auto dialogsWidth = _dialogs
-		? qRound(_a_dialogsWidth.value(_dialogsWidth))
+		? int(base::SafeRound(_a_dialogsWidth.value(_dialogsWidth)))
 		: isOneColumn()
 		? width()
 		: 0;
@@ -2971,13 +2969,9 @@ auto MainWidget::thirdSectionForCurrentMainSection(
 		; sublist && sublist->parentChat()) {
 		return std::make_shared<Info::Memento>(sublist);
 	} else if (const auto peer = key.peer()) {
-		return std::make_shared<Info::Memento>(
-			peer,
-			Info::Memento::DefaultSection(peer));
+		return Info::Memento::Default(peer);
 	} else if (const auto sublist = key.sublist()) {
-		return std::make_shared<Info::Memento>(
-			sublist->owningHistory()->peer,
-			Info::Memento::DefaultSection(sublist->owningHistory()->peer));
+		return Info::Memento::Default(sublist->owningHistory()->peer);
 	}
 	Unexpected("Key in MainWidget::thirdSectionForCurrentMainSection().");
 }
@@ -3252,17 +3246,7 @@ void MainWidget::activate() {
 	_controller->widget()->fixOrder();
 }
 
-void MainWidget::handleStartFiles(
-		QStringList interprets,
-		QStringList paths) {
-	for (const auto &interpret : interprets) {
-		const auto error = Support::InterpretSendPath(
-			_controller,
-			interpret);
-		if (!error.isEmpty()) {
-			_controller->show(Ui::MakeInformBox(error));
-		}
-	}
+void MainWidget::handleStartFiles(QStringList paths) {
 	if (!paths.isEmpty()) {
 		const auto chosen = [=](not_null<Data::Thread*> thread) {
 			return sendPaths(thread, paths);

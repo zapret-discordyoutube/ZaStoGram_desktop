@@ -662,6 +662,10 @@ storiesEmojiPan: EmojiPan(defaultEmojiPan) {
 	categoriesBgOver: storiesComposeBgOver;
 	fadeLeft: icon {{ "fade_horizontal-flip_horizontal", storiesComposeBg }};
 	fadeRight: icon {{ "fade_horizontal", storiesComposeBg }};
+	photoButtonIcon: icon {{
+		"photo_editor/camera-24x24",
+		storiesComposeWhiteText
+	}};
 	menu: storiesPopupMenuWithIcons;
 	menuAttention: storiesMenuWithIconsAttention;
 	expandedSeparator: mediaviewWideMenuSeparator;
@@ -713,6 +717,7 @@ storiesEmojiPan: EmojiPan(defaultEmojiPan) {
 		menuSetShare: icon {{ "menu/share", storiesComposeWhiteText }};
 		menuSetCopyLink: icon {{ "menu/link", storiesComposeWhiteText }};
 		menuSetRemove: icon {{ "menu/delete", storiesComposeWhiteText }};
+		menuEmojiStatus: icon {{ "menu/emoji", storiesComposeWhiteText }};
 		menuEmojiCopy: icon {{ "menu/copy", storiesComposeWhiteText }};
 		menuEmojiViewPack: icon {{ "menu/all_media", storiesComposeWhiteText }};
 		menuEmojiRemoveRecent: icon {{ "menu/cancel", storiesComposeWhiteText }};
@@ -980,6 +985,16 @@ mediaviewEmojiPan: EmojiPan(storiesEmojiPan) {
 		labelFgActive: storiesComposeBlue;
 		rippleBg: groupCallMenuBgOver;
 		rippleBgActive: groupCallMenuBgOver;
+	}
+	search: TabbedSearch(storiesEmojiTabbedSearch) {
+		outer: groupCallMenuBg;
+		bg: groupCallMenuBgOver;
+		bgActive: groupCallMenuBgRipple;
+		fadeLeft: icon {{
+			"fade_horizontal-flip_horizontal",
+			groupCallMenuBgOver
+		}};
+		fadeRight: icon {{ "fade_horizontal", groupCallMenuBgOver }};
 	}
 }
 

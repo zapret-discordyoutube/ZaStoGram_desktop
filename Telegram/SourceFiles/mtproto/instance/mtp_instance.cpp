@@ -30,6 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/call_delayed.h"
 #include "base/timer.h"
 #include "base/network_reachability.h"
+#include "test/test_rpc_retry.h"
 
 namespace MTP {
 namespace {
@@ -932,7 +933,7 @@ void Instance::Private::cancel(mtpRequestId requestId) {
 		crl::now());
 	resendDependentRequests(std::move(cancelled.dependentRequests));
 	if (cancelled.dcWithShift) {
-		const auto session = getSession(qAbs(*cancelled.dcWithShift));
+		const auto session = getSession(std::abs(*cancelled.dcWithShift));
 		session->cancel(requestId, cancelled.msgId);
 	}
 }
@@ -941,7 +942,7 @@ void Instance::Private::cancel(mtpRequestId requestId) {
 int32 Instance::Private::state(mtpRequestId requestId) {
 	if (requestId > 0) {
 		if (const auto shiftedDcId = _requests.queryDc(requestId)) {
-			const auto session = getSession(qAbs(*shiftedDcId));
+			const auto session = getSession(std::abs(*shiftedDcId));
 			return session->requestState(requestId);
 		}
 		return MTP::RequestSent;
@@ -1227,7 +1228,7 @@ void Instance::Private::checkDelayedRequests() {
 			DEBUG_LOG(("MTP Error: could not find request %1").arg(delayed.requestId));
 			continue;
 		}
-		const auto session = getSession(qAbs(*delayed.dcWithShift));
+		const auto session = getSession(std::abs(*delayed.dcWithShift));
 		session->sendPrepared(delayed.request);
 	}
 
@@ -1279,7 +1280,7 @@ void Instance::Private::resendDependentRequests(
 			LOG(("MTP Error: could not find dependent request %1").arg(resending.requestId));
 			return;
 		}
-		getSession(qAbs(resending.dcWithShift))->sendPrepared(resending.request);
+		getSession(std::abs(resending.dcWithShift))->sendPrepared(resending.request);
 	}
 }
 
@@ -1629,7 +1630,7 @@ bool Instance::Private::handleMsgWaitError(mtpRequestId requestId) {
 	}
 
 	if (!request->after) {
-		getSession(qAbs(dcWithShift))->sendPrepared(request);
+		getSession(std::abs(dcWithShift))->sendPrepared(request);
 	} else {
 		_requests.addDependency(requestId, request->after->requestId);
 	}
@@ -1678,7 +1679,7 @@ bool Instance::Private::handleUnauthorizedError(
 		LOG(("MTP Error: unauthorized request without dc info, requestId %1"
 			).arg(requestId));
 	}
-	const auto newdc = BareDcId(qAbs(dcWithShift));
+	const auto newdc = BareDcId(std::abs(dcWithShift));
 	if (!newdc || !hasMainDcId() || newdc == mainDcId()) {
 		if (!badGuestDc && _globalFailHandler) {
 			_globalFailHandler(error, response);
@@ -1729,7 +1730,7 @@ bool Instance::Private::handleConnectionInitError(mtpRequestId requestId) {
 		return false;
 	}
 
-	const auto session = getSession(qAbs(dcWithShift));
+	const auto session = getSession(std::abs(dcWithShift));
 	request->needsLayer = true;
 	session->setConnectionNotInited();
 	session->sendPrepared(request);
@@ -1751,6 +1752,18 @@ bool Instance::Private::onErrorDefault(
 	case Type::MsgWait:
 		return handleMsgWaitError(requestId);
 	case Type::Retry:
+		if (action.retry.delay
+			== details::DefaultRpcErrorRetry::Delay::Backoff) {
+			auto body = mtpTypeId(0);
+			const auto request = _requests.request(requestId);
+			if (request
+				&& (request->size()
+					> SerializedRequest::kMessageBodyPosition)) {
+				body = mtpTypeId(
+					(*request)[SerializedRequest::kMessageBodyPosition]);
+			}
+			Test::RecordRpcRetry(error.code(), error.type(), body);
+		}
 		return handleRetryError(requestId, action.retry);
 	case Type::Unauthorized:
 		return handleUnauthorizedError(error, response, action.badGuestDc);

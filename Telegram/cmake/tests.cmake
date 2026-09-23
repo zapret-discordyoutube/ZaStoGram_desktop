@@ -4,19 +4,6 @@
 # For license and copyright information please follow this link:
 # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
-if (TARGET external_rlottie_bundled)
-    add_executable(test_rlottie_polystar ${src_loc}/tests/test_rlottie_polystar.cpp)
-    init_target(test_rlottie_polystar "(tests)")
-    target_include_directories(test_rlottie_polystar PRIVATE
-        ${third_party_loc}/rlottie/src/vector
-        ${third_party_loc}/rlottie/src/vector/pixman
-        ${PROJECT_SOURCE_DIR}/cmake/external/rlottie/config
-    )
-    target_link_libraries(test_rlottie_polystar PRIVATE desktop-app::external_rlottie)
-    add_test(NAME test_rlottie_polystar COMMAND test_rlottie_polystar)
-    add_dependencies(Telegram test_rlottie_polystar)
-endif()
-
 add_executable(test_text WIN32)
 init_target(test_text "(tests)")
 

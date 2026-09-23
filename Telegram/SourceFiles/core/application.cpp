@@ -83,6 +83,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/screen_reader_mode.h"
 #include "storage/storage_domain.h"
 #include "storage/storage_databases.h"
+#include "storage/storage_folder_archive.h"
 #include "storage/localstorage.h"
 #include "payments/payments_checkout_process.h"
 #include "export/export_manager.h"
@@ -184,8 +185,6 @@ Application::Application()
 	Ui::Integration::Set(&_private->uiIntegration);
 
 	_platformIntegration->init();
-
-	_screenshotProtection->addReason(passcodeLockValue());
 
 	passcodeLockChanges(
 	) | rpl::on_next([=](bool locked) {
@@ -351,6 +350,7 @@ void Application::run() {
 	startSystemDarkModeViewer();
 	Media::Player::start(_audio.get());
 	Media::Encode::ClearStaleTempFiles();
+	Storage::ClearStaleArchiveFiles();
 
 	if (MediaControlsManager::Supported()) {
 		_mediaControlsManager = std::make_unique<MediaControlsManager>();
@@ -373,6 +373,9 @@ void Application::run() {
 	}, _lifetime);
 
 	DEBUG_LOG(("Application Info: inited..."));
+	LOG(("Qt version: %1 (compiled with %2)").arg(
+		QString::fromLatin1(qVersion()),
+		QString::fromLatin1(QT_VERSION_STR)));
 
 	DEBUG_LOG(("Application Info: starting app..."));
 
@@ -1241,23 +1244,18 @@ void Application::checkStartUrls() {
 	if (!cRefStartUrls().isEmpty()
 		&& _lastActivePrimaryWindow
 		&& !_lastActivePrimaryWindow->locked()) {
-		auto interprets = QStringList();
 		auto paths = QStringList();
 		cRefStartUrls() = ranges::views::all(
 			cRefStartUrls()
 		) | ranges::views::filter([&](const QUrl &url) {
-			if (url.scheme() == u"interpret"_q) {
-				interprets.append(url.path());
-				return false;
-			} else if (url.isLocalFile()) {
+			if (url.isLocalFile()) {
 				paths.append(url.toLocalFile());
 				return false;
 			}
 			return true;
 		}) | ranges::to<QList<QUrl>>;
-		if (!interprets.isEmpty() || !paths.isEmpty()) {
+		if (!paths.isEmpty()) {
 			_lastActivePrimaryWindow->widget()->handleStartFiles(
-				std::move(interprets),
 				std::move(paths));
 		}
 	}
@@ -1500,7 +1498,7 @@ Window::Controller *Application::separateWindowFor(
 	return nullptr;
 }
 
-Window::Controller *Application::ensureSeparateWindowFor(
+not_null<Window::Controller*> Application::ensureSeparateWindowFor(
 		Window::SeparateId id,
 		MsgId showAtMsgId) {
 	const auto activate = [&](not_null<Window::Controller*> window) {
@@ -1518,6 +1516,8 @@ Window::Controller *Application::ensureSeparateWindowFor(
 		}
 		return activate(existing);
 	}
+
+	Assert(Window::CanShowSeparateWindow(id));
 
 	const auto result = _windows.emplace(
 		id,
@@ -1869,7 +1869,10 @@ QPoint Application::getPointForCallPanelCenter() const {
 	if (const auto window = activeWindow()) {
 		return window->getPointForCallPanelCenter();
 	}
-	return QGuiApplication::primaryScreen()->geometry().center();
+	// When the last monitor is removed QGuiApplication has no screens at
+	// all, so primaryScreen() is nullptr.
+	const auto primary = QGuiApplication::primaryScreen();
+	return primary ? primary->geometry().center() : QPoint();
 }
 
 bool Application::isSharingScreen() const {
@@ -1916,8 +1919,8 @@ void Application::unregisterLeaveSubscription(not_null<QWidget*> widget) {
 		if (i != end(_leaveFilters)) {
 			i->second.registered = std::move(
 				i->second.registered
-			) | ranges::actions::remove_if([&](QPointer<QWidget> widget) {
-				const auto pointer = widget.data();
+			) | ranges::actions::remove_if([&](QPointer<QWidget> weak) {
+				const auto pointer = weak.data();
 				return !pointer || (pointer == widget);
 			});
 		}

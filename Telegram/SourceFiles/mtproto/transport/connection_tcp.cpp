@@ -20,6 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 
+#include <QtCore/QtEndian>
+
 namespace MTP {
 namespace details {
 namespace {

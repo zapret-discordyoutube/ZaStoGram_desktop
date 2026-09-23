@@ -1148,7 +1148,10 @@ def verify_protected_history_uses_the_native_timeline_and_composer() -> None:
     assert "makeProtectedPendingLink" in file_view
     assert "makeProtectedPendingLink" in document_view
     assert "|| _realParent->isE2ECloudDecrypted())" in document_view
-    assert ": _realParent->isE2ECloudDecrypted()\n\t\t? _openl" in gif_view
+    assert (
+        "} else if (_realParent->isE2ECloudDecrypted()) {\n"
+        "\t\treturn Action::Open;"
+    ) in gif_view
     assert service.count("CleanupProtectedMediaCache(_session);") >= 3
     assert 'u"🔒 "_q' in service
     assert "tr::lng_e2e_cloud_header_status(tr::now)" in widget
