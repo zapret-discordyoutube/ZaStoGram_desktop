@@ -42,6 +42,8 @@ public:
 	HandshakePhase handshakePhase() const override;
 	ProxyConnectionAttempt proxyConnectionAttempt() const override;
 	ProxyTransportFailure proxyTransportFailure() const override;
+	ReceiveWaitVerdict receiveWaitVerdict(
+		crl::time waitStartedAt) const override;
 	bool isConnected() const override;
 
 	int32 debugState() const override;

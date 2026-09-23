@@ -1729,6 +1729,8 @@ PRIVATE
     mtproto/details/mtproto_web_proxy_socket.h
     mtproto/web_proxy/web_proxy_frame.cpp
     mtproto/web_proxy/web_proxy_frame.h
+    mtproto/web_proxy/web_proxy_flow.cpp
+    mtproto/web_proxy/web_proxy_flow.h
     mtproto/web_proxy/web_proxy_transport.cpp
     mtproto/web_proxy/web_proxy_transport.h
     mtproto/web_proxy/web_proxy_webview.cpp

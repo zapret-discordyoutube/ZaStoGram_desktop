@@ -10,17 +10,36 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/web_proxy/web_proxy_transport.h"
 
 #include <QtCore/QtEndian>
+#include <crl/crl_time.h>
 
 namespace MTP::details {
 
 WebProxySocket::WebProxySocket(
 		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
-		const ProxyData &proxy)
+		const ProxyData &proxy,
+		ProxyConnectionUse use)
 : AbstractSocket(runtime, thread)
 , _streamId(WebProxy::Transport::NextStreamId())
+, _streamClass(ClassFor(use))
+, _probe(std::make_shared<WebProxy::StreamProbe>())
 , _transport(WebProxy::Transport::Instance()) {
 	Expects(proxy.type == ProxyData::Type::Web);
+}
+
+WebProxy::StreamClass WebProxySocket::ClassFor(ProxyConnectionUse use) {
+	switch (use) {
+	case ProxyConnectionUse::Media:
+		return WebProxy::StreamClass::Download;
+	case ProxyConnectionUse::Upload:
+		return WebProxy::StreamClass::Upload;
+	case ProxyConnectionUse::Main:
+	case ProxyConnectionUse::Maintenance:
+	case ProxyConnectionUse::Auxiliary:
+	case ProxyConnectionUse::ProxyCheck:
+		return WebProxy::StreamClass::Interactive;
+	}
+	return WebProxy::StreamClass::Interactive;
 }
 
 WebProxySocket::~WebProxySocket() {
@@ -42,6 +61,8 @@ void WebProxySocket::connectToHost(const QString &, int) {
 			},
 			.disconnected = [=] { transportDisconnected(); },
 			.failed = [=] { transportFailed(); },
+			.streamClass = _streamClass,
+			.probe = _probe,
 		});
 	} else {
 		transportFailed();
@@ -127,6 +148,32 @@ int32 WebProxySocket::debugState() {
 
 QString WebProxySocket::debugPostfix() const {
 	return u"_web"_q;
+}
+
+ReceiveWaitVerdict WebProxySocket::receiveWaitVerdict(
+		crl::time waitStartedAt) const {
+	if (!_transport || _state != State::Connected) {
+		return {};
+	}
+	const auto stream = _probe->snapshot();
+	const auto decision = WebProxy::DecideReceiveWait(
+		crl::now(),
+		waitStartedAt,
+		_transport->carrierHealth(),
+		stream,
+		WebProxy::LivenessLimits());
+	const auto details = u"web %1: %2, queued=%3 unacked=%4"_q
+		.arg(QString::fromLatin1(WebProxy::StreamClassName(_streamClass)))
+		.arg(QString::fromLatin1(WebProxy::ReceiveReasonName(
+			decision.reason)))
+		.arg(stream.queuedBytes)
+		.arg(stream.unackedBytes);
+	return {
+		.waitMore = (decision.verdict == WebProxy::ReceiveVerdict::Wait)
+			? decision.waitMore
+			: crl::time(0),
+		.details = details,
+	};
 }
 
 void WebProxySocket::transportConnected() {

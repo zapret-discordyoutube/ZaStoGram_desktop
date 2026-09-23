@@ -36,6 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/storage_account.h"
 #include "apiwrap.h"
+#include "mtproto/web_proxy/web_proxy_transport.h"
 
 #include <atomic>
 
@@ -72,6 +73,13 @@ constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
 constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
 
 constexpr auto kMaxSessionsCount = 8;
+
+// Through a WEB proxy every session shares one carrier, so more sessions
+// only fight over it and a slow part says nothing about its own session:
+// keep two (one sending while the other waits for its acknowledgement)
+// and never cancel in-flight parts to move them to another session.
+constexpr auto kWebProxyMaxSessionsCount = 2;
+
 constexpr auto kFastRequestThreshold = 1 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
 constexpr auto kFileProgressInterval = 2 * crl::time(1000);
@@ -105,6 +113,14 @@ constexpr auto kAcceptAsFastIfTotalAtLeast = 512 * 1024;
 	event.acknowledgedBytes = acknowledgedBytes;
 	event.isFinal = isFinal;
 	return event;
+}
+
+[[nodiscard]] bool SharedCarrier() {
+	return MTP::WebProxy::Transport::Active();
+}
+
+[[nodiscard]] int MaxSessionsCount() {
+	return SharedCarrier() ? kWebProxyMaxSessionsCount : kMaxSessionsCount;
 }
 
 [[nodiscard]] const char *ThumbnailFormat(const QString &mime) {
@@ -782,7 +798,7 @@ QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
 
 bool Uploader::canAddDcIndex() const {
 	const auto count = int(_sentPerDcIndex.size());
-	return (count < kMaxSessionsCount)
+	return (count < MaxSessionsCount())
 		&& (count == int(_dcIndicesWithFastRequests.size()));
 }
 
@@ -1123,7 +1139,8 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 		_dcIndicesWithFastRequests.clear();
 		if (slow) {
 			const auto elapsed = (now - _latestDcIndexRemoved);
-			const auto remove = (elapsed >= kWaitForNormalizeTimeout);
+			const auto remove = (elapsed >= kWaitForNormalizeTimeout)
+				&& !SharedCarrier();
 			if (remove && _sentPerDcIndex.size() > 1) {
 				DEBUG_LOG(("Uploader: Slow request, removing dc index."));
 				removeSlowDcIndex = true;

@@ -33,6 +33,14 @@ enum class HandshakePhase;
 
 inline constexpr auto kTestModeDcIdShift = 10000;
 
+// Asked when a session saw no reply for its receive timeout. Sockets that
+// share one carrier with other connections can tell a reply still queued
+// in that carrier from a dead connection; everything else answers "dead".
+struct ReceiveWaitVerdict {
+	crl::time waitMore = 0;
+	QString details;
+};
+
 class ConnectionPointer {
 public:
 	ConnectionPointer();
@@ -121,6 +129,10 @@ public:
 	[[nodiscard]] virtual HandshakePhase handshakePhase() const;
 	[[nodiscard]] virtual ProxyConnectionAttempt proxyConnectionAttempt() const;
 	[[nodiscard]] virtual ProxyTransportFailure proxyTransportFailure() const;
+	[[nodiscard]] virtual ReceiveWaitVerdict receiveWaitVerdict(
+			crl::time /*waitStartedAt*/) const {
+		return {};
+	}
 	[[nodiscard]] virtual bool isConnected() const = 0;
 	[[nodiscard]] virtual TransportServiceRequest serviceRequest() const {
 		return TransportServiceRequest::None;

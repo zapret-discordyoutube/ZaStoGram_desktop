@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_serialized_request.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "mtproto/runtime/runtime_environment.h"
+#include "mtproto/web_proxy/web_proxy_transport.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
@@ -30,6 +31,10 @@ constexpr auto kStartWaitedInSession = 4 * kDownloadPartSize;
 constexpr auto kMaxWaitedInSession = 16 * kDownloadPartSize;
 constexpr auto kStartSessionsCount = 1;
 constexpr auto kMaxSessionsCount = 8;
+
+// Through a WEB proxy all sessions share one carrier: extra download
+// sessions add streams that fight over it without adding bandwidth.
+constexpr auto kWebProxyMaxSessionsCount = 2;
 constexpr auto kMaxTrackedSessionRemoves = 64;
 constexpr auto kRetryAddSessionTimeout = 8 * crl::time(1000);
 constexpr auto kRetryAddSessionSuccesses = 3;
@@ -39,6 +44,12 @@ constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
 constexpr auto kFileProgressInterval = 2 * crl::time(1000);
+
+[[nodiscard]] int MaxSessionsCount() {
+	return MTP::WebProxy::Transport::Active()
+		? kWebProxyMaxSessionsCount
+		: kMaxSessionsCount;
+}
 
 [[nodiscard]] uint64 NextDownloadLaneOrdinal() {
 	static auto value = std::atomic<uint64>(0);
@@ -324,7 +335,7 @@ void DownloadManagerMtproto::requestSucceeded(
 	if (dc.timeouts > 0) {
 		--dc.timeouts;
 		return;
-	} else if (dc.sessions.size() >= kMaxSessionsCount) {
+	} else if (int(dc.sessions.size()) >= MaxSessionsCount()) {
 		return;
 	}
 	const auto now = crl::now();

@@ -107,6 +107,8 @@ namespace {
 		return u"file_rpc"_q;
 	case ProxyDiagnosticsPhase::FileProgress:
 		return u"file_progress"_q;
+	case ProxyDiagnosticsPhase::WebCarrier:
+		return u"web_carrier"_q;
 	}
 	return u"event"_q;
 }
@@ -472,6 +474,7 @@ namespace {
 	case ProxyDiagnosticsPhase::Liveness:
 	case ProxyDiagnosticsPhase::FileRpc:
 	case ProxyDiagnosticsPhase::FileProgress:
+	case ProxyDiagnosticsPhase::WebCarrier:
 		return false;
 	}
 	return false;

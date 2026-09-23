@@ -12,11 +12,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flat_set.h"
 #include "base/invoke_queued.h"
 #include "core/file_utilities.h"
+#include "logs.h"
+#include "mtproto/proxy/diagnostics.h"
 #include "mtproto/web_proxy/web_proxy_frame.h"
 #include "mtproto/web_proxy/web_proxy_webview.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QDateTime>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
@@ -31,6 +34,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <crl/crl_time.h>
 #include <rpl/event_stream.h>
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <limits>
@@ -64,12 +68,15 @@ constexpr auto kWebviewRetryMinTimeout = crl::time(2 * 1000);
 constexpr auto kWebviewRetryMaxTimeout = crl::time(30 * 1000);
 constexpr auto kWebviewCloseGrace = crl::time(200);
 constexpr auto kMaxWebviewFailures = 3;
+constexpr auto kHealthCheckInterval = crl::time(2 * 1000);
+constexpr auto kHealthSummaryInterval = crl::time(10 * 1000);
 constexpr auto kWebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 struct Globals {
 	std::unique_ptr<QThread> thread;
 	QPointer<Transport> transport;
 	std::atomic<Transport*> available = nullptr;
+	std::atomic<bool> webActive = false;
 	std::unique_ptr<WebviewCarrier> webview;
 	std::vector<std::unique_ptr<WebviewCarrier>> closingWebviews;
 	ProxyData active;
@@ -241,7 +248,9 @@ private:
 		, connected(std::move(handlers.connected))
 		, data(std::move(handlers.data))
 		, disconnected(std::move(handlers.disconnected))
-		, failed(std::move(handlers.failed)) {
+		, failed(std::move(handlers.failed))
+		, probe(std::move(handlers.probe))
+		, streamClass(handlers.streamClass) {
 		}
 
 		std::deque<Pending> pending;
@@ -250,11 +259,28 @@ private:
 		Fn<void(QByteArray)> data;
 		Fn<void()> disconnected;
 		Fn<void()> failed;
+		std::shared_ptr<StreamProbe> probe;
+		StreamClass streamClass = StreamClass::Interactive;
 		uint64 sendWindow = kInitialStreamWindow;
 		uint32 receiveWindow = kInitialStreamWindow;
 		uint32 pendingWindow = 0;
+
+		// Read by the socket but not returned to the relay yet: download
+		// streams get only a share of the protocol window, see
+		// DownlinkCreditTarget().
+		uint32 withheldWindow = 0;
+
+		// Written to the carrier and not yet credited back by the relay.
+		int64 unacked = 0;
+
 		int pendingBytes = 0;
 		bool opened = false;
+	};
+	struct Traffic {
+		int64 up = 0;
+		int64 down = 0;
+		int64 withheldPeak = 0;
+		int uploadBlocked = 0;
 	};
 
 	[[nodiscard]] bool ensureServer();
@@ -314,9 +340,20 @@ private:
 	[[nodiscard]] bool carrierAccepts(int frameSize, bool control) const;
 	[[nodiscard]] int carrierFrameSize(int payloadSize) const;
 	void markStreamReady(uint32 streamId);
-	void unmarkStreamReady(uint32 streamId);
+	void forgetStream(uint32 streamId, Stream &stream);
 	void flushStreams();
-	void flushStream(uint32 streamId);
+	void flushStream(uint32 streamId, int maxBytes);
+	void publishStream(const Stream &stream);
+	void publishConnected();
+	void addUnacked(Stream &stream, int64 bytes);
+	void creditUnacked(uint32 streamId, Stream &stream, int64 bytes);
+	[[nodiscard]] bool releaseDownlinkCredit(Stream &stream);
+	void rebalanceDownlinkCredit();
+	void scheduleHealthCheck();
+	void checkHealth();
+	void recoverStalledCarrier(crl::time silence);
+	void logCarrier(ProxyDiagnosticsSeverity severity, const QString &text);
+	void logSummary(crl::time now);
 	void releasePending(Stream &stream);
 	void rememberClosedStream(uint32 streamId);
 	void notifyConnected(const Stream &stream);
@@ -333,8 +370,14 @@ private:
 	std::unique_ptr<QTcpServer> _server;
 	base::flat_map<QTcpSocket*, Client> _clients;
 	base::flat_map<uint32, Stream> _streams;
-	std::deque<uint32> _readyStreams;
-	base::flat_set<uint32> _readySet;
+	UplinkScheduler _scheduler;
+	const DownlinkLimits _downlinkLimits;
+	const LivenessLimits _livenessLimits;
+	int _downloadStreams = 0;
+	int64 _totalUnacked = 0;
+	Traffic _traffic;
+	crl::time _lastSummaryAt = 0;
+	bool _healthCheckScheduled = false;
 	base::flat_set<uint32> _closedStreams;
 	std::deque<uint32> _closedStreamOrder;
 	std::deque<QByteArray> _controlFrames;
@@ -359,7 +402,9 @@ private:
 };
 
 Transport::Private::Private(not_null<Transport*> owner)
-: _owner(owner) {
+: _owner(owner)
+, _scheduler(UplinkLimits{ .frameSize = kDataFrameSize })
+, _downlinkLimits{ .streamWindow = kInitialStreamWindow } {
 }
 
 void Transport::Private::configure(const ProxyData &proxy) {
@@ -387,8 +432,7 @@ void Transport::Private::deactivate() {
 	}
 	_closedStreams.clear();
 	_closedStreamOrder.clear();
-	_readyStreams.clear();
-	_readySet.clear();
+	_scheduler.clear();
 	_controlFrames.clear();
 	_controlBytes = 0;
 	_pendingToken.clear();
@@ -409,6 +453,9 @@ void Transport::Private::deactivate() {
 	_serverPort = 0;
 	_proxy = ProxyData();
 	_state = State::Idle;
+	_traffic = Traffic();
+	_lastSummaryAt = 0;
+	publishConnected();
 }
 
 void Transport::Private::stop() {
@@ -943,13 +990,14 @@ void Transport::Private::webviewFailed(uint64 generation) {
 		_webviewCandidateGeneration = 0;
 	}
 	if (active) {
+		logCarrier(
+			ProxyDiagnosticsSeverity::Warning,
+			u"webview carrier lost (streams: %1)"_q.arg(_streams.size()));
 		_webviewGeneration = 0;
 		_webviewPendingBytes = 0;
 		_webviewPendingItems = 0;
 		_welcomed = false;
 		closeAllStreams(false);
-		_readyStreams.clear();
-		_readySet.clear();
 		_controlFrames.clear();
 		_controlBytes = 0;
 		_browserWriteFailed = false;
@@ -961,6 +1009,7 @@ void Transport::Private::webviewFailed(uint64 generation) {
 	if (!_browserSocket && _state != State::WaitingForBrowser) {
 		setState(State::Connecting);
 	}
+	publishConnected();
 }
 
 void Transport::Private::webviewUnavailable() {
@@ -977,6 +1026,7 @@ void Transport::Private::processRelayPayload(const QByteArray &payload) {
 		protocolError();
 		return;
 	}
+	_owner->_healthLastDownlinkAt = crl::now();
 	for (const auto &frame : frames) {
 		if (!processRelayFrame(frame)) {
 			protocolError();
@@ -1047,6 +1097,10 @@ bool Transport::Private::processRelayFrame(const Frame &frame) {
 			return false;
 		}
 		stream.receiveWindow -= frame.payload.size();
+		_traffic.down += frame.payload.size();
+		if (stream.probe) {
+			stream.probe->lastReceivedAt = crl::now();
+		}
 		notifyData(stream, frame.payload);
 		return true;
 	case FrameType::Window: {
@@ -1060,6 +1114,7 @@ bool Transport::Private::processRelayFrame(const Frame &frame) {
 		stream.sendWindow = std::min<uint64>(
 			stream.sendWindow + amount,
 			uint64(std::numeric_limits<uint32>::max()));
+		creditUnacked(frame.streamId, stream, amount);
 		markStreamReady(frame.streamId);
 		flushStreams();
 		return true;
@@ -1071,7 +1126,7 @@ bool Transport::Private::processRelayFrame(const Frame &frame) {
 		rememberClosedStream(frame.streamId);
 		auto removed = std::move(i->second);
 		_streams.erase(i);
-		unmarkStreamReady(frame.streamId);
+		forgetStream(frame.streamId, removed);
 		releasePending(removed);
 		notifyDisconnected(removed);
 		return true;
@@ -1091,6 +1146,13 @@ void Transport::Private::registerStream(
 		notifyFailed(stream);
 		return;
 	}
+	if (stream.probe) {
+		stream.probe->open = true;
+	}
+	_scheduler.add(streamId, stream.streamClass);
+	if (stream.streamClass == StreamClass::Download) {
+		++_downloadStreams;
+	}
 	_streams.emplace(streamId, std::move(stream));
 	if (_welcomed) {
 		auto &stream = _streams.find(streamId)->second;
@@ -1098,6 +1160,7 @@ void Transport::Private::registerStream(
 		sendFrame(FrameType::Open, streamId);
 		notifyConnected(stream);
 	}
+	scheduleHealthCheck();
 }
 
 void Transport::Private::closeStream(uint32 streamId) {
@@ -1111,7 +1174,7 @@ void Transport::Private::closeStream(uint32 streamId) {
 	}
 	auto removed = std::move(i->second);
 	_streams.erase(i);
-	unmarkStreamReady(streamId);
+	forgetStream(streamId, removed);
 	releasePending(removed);
 }
 
@@ -1132,9 +1195,14 @@ void Transport::Private::sendData(uint32 streamId, QByteArray data) {
 			sendFrame(FrameType::Close, streamId);
 			rememberClosedStream(streamId);
 		}
+		LOG(("Web Proxy Error: stream %1 (%2) overflowed its queue, "
+			"%3 bytes pending."
+			).arg(streamId
+			).arg(QString::fromLatin1(StreamClassName(stream.streamClass))
+			).arg(stream.pendingBytes));
 		auto removed = std::move(stream);
 		_streams.erase(i);
-		unmarkStreamReady(streamId);
+		forgetStream(streamId, removed);
 		releasePending(removed);
 		notifyFailed(removed);
 		return;
@@ -1146,6 +1214,7 @@ void Transport::Private::sendData(uint32 streamId, QByteArray data) {
 	} else {
 		stream.pending.push_back({ std::move(data), 0 });
 	}
+	publishStream(stream);
 	markStreamReady(streamId);
 	flushStreams();
 }
@@ -1156,16 +1225,54 @@ void Transport::Private::grantWindow(uint32 streamId, uint32 amount) {
 		return;
 	}
 	auto &stream = i->second;
-	if (amount > kInitialStreamWindow - stream.receiveWindow) {
+	if (amount > kInitialStreamWindow
+		- stream.receiveWindow
+		- stream.withheldWindow) {
 		protocolError();
 		return;
 	}
-	stream.receiveWindow += amount;
-	stream.pendingWindow += amount;
-	if (stream.pendingWindow >= kWindowFlushBytes) {
+	stream.withheldWindow += amount;
+	if (!releaseDownlinkCredit(stream)) {
+		return;
+	} else if (stream.pendingWindow >= kWindowFlushBytes) {
 		const auto pending = base::take(stream.pendingWindow);
 		sendFrame(FrameType::Window, streamId, WindowPayload(pending));
 	} else {
+		scheduleWindowFlush();
+	}
+}
+
+bool Transport::Private::releaseDownlinkCredit(Stream &stream) {
+	const auto target = DownlinkCreditTarget(
+		_downlinkLimits,
+		stream.streamClass,
+		_downloadStreams);
+	const auto release = uint32(DownlinkCreditRelease(
+		stream.receiveWindow,
+		stream.withheldWindow,
+		target));
+	if (!release) {
+		_traffic.withheldPeak = std::max(
+			_traffic.withheldPeak,
+			int64(stream.withheldWindow));
+		return false;
+	}
+	stream.withheldWindow -= release;
+	stream.receiveWindow += release;
+	stream.pendingWindow += release;
+	return true;
+}
+
+void Transport::Private::rebalanceDownlinkCredit() {
+	auto released = false;
+	for (auto &[streamId, stream] : _streams) {
+		if (stream.opened
+			&& stream.withheldWindow
+			&& releaseDownlinkCredit(stream)) {
+			released = true;
+		}
+	}
+	if (released) {
 		scheduleWindowFlush();
 	}
 }
@@ -1320,16 +1427,65 @@ void Transport::Private::markStreamReady(uint32 streamId) {
 	if (i == end(_streams)
 		|| !i->second.opened
 		|| !i->second.sendWindow
-		|| i->second.pending.empty()
-		|| _readySet.contains(streamId)) {
+		|| i->second.pending.empty()) {
 		return;
 	}
-	_readySet.emplace(streamId);
-	_readyStreams.push_back(streamId);
+	_scheduler.markReady(streamId);
 }
 
-void Transport::Private::unmarkStreamReady(uint32 streamId) {
-	_readySet.erase(streamId);
+void Transport::Private::forgetStream(uint32 streamId, Stream &stream) {
+	_scheduler.remove(streamId);
+	if (stream.unacked) {
+		_totalUnacked -= stream.unacked;
+		stream.unacked = 0;
+		_owner->_healthUnacked = _totalUnacked;
+	}
+	if (stream.probe) {
+		stream.probe->open = false;
+	}
+	if (stream.streamClass == StreamClass::Download) {
+		--_downloadStreams;
+		rebalanceDownlinkCredit();
+	}
+}
+
+void Transport::Private::publishStream(const Stream &stream) {
+	if (const auto probe = stream.probe.get()) {
+		probe->queuedBytes = stream.pendingBytes;
+		probe->unackedBytes = stream.unacked;
+	}
+}
+
+void Transport::Private::publishConnected() {
+	_owner->_healthConnected = _welcomed && carrierAvailable();
+}
+
+void Transport::Private::addUnacked(Stream &stream, int64 bytes) {
+	if (bytes <= 0) {
+		return;
+	} else if (!_totalUnacked) {
+		_owner->_healthOutstandingSince = crl::now();
+	}
+	stream.unacked += bytes;
+	_totalUnacked += bytes;
+	_owner->_healthUnacked = _totalUnacked;
+}
+
+void Transport::Private::creditUnacked(
+		uint32 streamId,
+		Stream &stream,
+		int64 bytes) {
+	const auto now = crl::now();
+	const auto credited = std::min(stream.unacked, bytes);
+	stream.unacked -= credited;
+	_totalUnacked -= credited;
+	_owner->_healthUnacked = _totalUnacked;
+	_owner->_healthLastCreditAt = now;
+	_scheduler.acknowledged(streamId, bytes);
+	if (stream.probe && !stream.unacked) {
+		stream.probe->deliveredAt = now;
+	}
+	publishStream(stream);
 }
 
 void Transport::Private::flushStreams() {
@@ -1341,25 +1497,25 @@ void Transport::Private::flushStreams() {
 		return;
 	}
 	auto processed = 0;
-	while (!_readyStreams.empty()
-		&& processed != kMaxFlushFramesPerTurn
+	while (processed != kMaxFlushFramesPerTurn
 		&& carrierAccepts(kFrameHeaderSize + 1, false)) {
-		const auto streamId = _readyStreams.front();
-		_readyStreams.pop_front();
-		if (!_readySet.contains(streamId)) {
-			continue;
+		const auto grant = _scheduler.next();
+		if (!grant) {
+			break;
 		}
-		_readySet.erase(streamId);
-		flushStream(streamId);
-		markStreamReady(streamId);
+		flushStream(grant->streamId, grant->maxBytes);
+		markStreamReady(grant->streamId);
 		++processed;
+	}
+	if (_scheduler.uploadBlocked()) {
+		++_traffic.uploadBlocked;
 	}
 	if (carrierPendingBytes() > 0) {
 		ensureWriteProgressCheck();
 	}
 }
 
-void Transport::Private::flushStream(uint32 streamId) {
+void Transport::Private::flushStream(uint32 streamId, int maxBytes) {
 	const auto i = _streams.find(streamId);
 	if (i == end(_streams) || !i->second.opened || !carrierAvailable()) {
 		return;
@@ -1381,6 +1537,7 @@ void Transport::Private::flushStream(uint32 streamId) {
 			stream.sendWindow,
 			uint64(remaining),
 			uint64(kDataFrameSize),
+			uint64(std::max(maxBytes, 1)),
 			uint64(localAllowance - kFrameHeaderSize - 10),
 		}));
 		auto frame = SerializeFrame(
@@ -1396,6 +1553,10 @@ void Transport::Private::flushStream(uint32 streamId) {
 		if (itemDone) {
 			stream.pending.pop_front();
 		}
+		_scheduler.sent(streamId, take);
+		addUnacked(stream, take);
+		_traffic.up += take;
+		publishStream(stream);
 		ensureWriteProgressCheck();
 	}
 }
@@ -1411,7 +1572,7 @@ void Transport::Private::failStream(uint32 streamId) {
 	}
 	auto removed = std::move(i->second);
 	_streams.erase(i);
-	unmarkStreamReady(streamId);
+	forgetStream(streamId, removed);
 	releasePending(removed);
 	notifyFailed(removed);
 }
@@ -1471,6 +1632,12 @@ void Transport::Private::welcome() {
 	}
 	_welcomed = true;
 	setState(State::Connected, _browser);
+	logCarrier(
+		ProxyDiagnosticsSeverity::Info,
+		u"connected through %1 (streams: %2)"_q
+			.arg(_webviewGeneration ? u"webview"_q : u"browser"_q)
+			.arg(_streams.size()));
+	_owner->_healthLastDownlinkAt = crl::now();
 	for (auto &[streamId, stream] : _streams) {
 		stream.opened = true;
 		sendFrame(FrameType::Open, streamId);
@@ -1478,13 +1645,19 @@ void Transport::Private::welcome() {
 		markStreamReady(streamId);
 	}
 	flushStreams();
+	scheduleHealthCheck();
 }
 
 void Transport::Private::loseBrowser(bool failed) {
+	logCarrier(
+		failed
+			? ProxyDiagnosticsSeverity::Warning
+			: ProxyDiagnosticsSeverity::Info,
+		u"browser carrier lost (failed: %1, streams: %2)"_q
+			.arg(failed ? u"yes"_q : u"no"_q)
+			.arg(_streams.size()));
 	_welcomed = false;
 	closeAllStreams(failed);
-	_readyStreams.clear();
-	_readySet.clear();
 	_controlFrames.clear();
 	_controlBytes = 0;
 	_closedStreams.clear();
@@ -1501,10 +1674,15 @@ void Transport::Private::loseBrowser(bool failed) {
 void Transport::Private::closeAllStreams(bool failed) {
 	auto streams = std::move(_streams);
 	_streams.clear();
-	_readyStreams.clear();
-	_readySet.clear();
+	_scheduler.clear();
+	_downloadStreams = 0;
+	_totalUnacked = 0;
+	_owner->_healthUnacked = 0;
 	for (auto &entry : streams) {
 		auto &stream = entry.second;
+		if (stream.probe) {
+			stream.probe->open = false;
+		}
 		releasePending(stream);
 		if (failed) {
 			notifyFailed(stream);
@@ -1515,6 +1693,9 @@ void Transport::Private::closeAllStreams(bool failed) {
 }
 
 void Transport::Private::protocolError() {
+	logCarrier(
+		ProxyDiagnosticsSeverity::Warning,
+		u"carrier protocol error (streams: %1)"_q.arg(_streams.size()));
 	if (_webviewGeneration) {
 		const auto generation = _webviewGeneration;
 		closeAllStreams(true);
@@ -1523,8 +1704,6 @@ void Transport::Private::protocolError() {
 		return;
 	}
 	closeAllStreams(true);
-	_readyStreams.clear();
-	_readySet.clear();
 	_controlFrames.clear();
 	_controlBytes = 0;
 	_closedStreams.clear();
@@ -1537,12 +1716,134 @@ void Transport::Private::protocolError() {
 }
 
 void Transport::Private::setState(State state, const QString &browser) {
+	publishConnected();
 	if (_state == state && _browser == browser) {
 		return;
 	}
 	_state = state;
 	_browser = browser;
 	PublishState(_proxy, state, browser);
+}
+
+void Transport::Private::scheduleHealthCheck() {
+	if (_healthCheckScheduled || !_proxy) {
+		return;
+	}
+	_healthCheckScheduled = true;
+	QTimer::singleShot(int(kHealthCheckInterval), _owner, [=] {
+		_healthCheckScheduled = false;
+		checkHealth();
+	});
+}
+
+void Transport::Private::checkHealth() {
+	if (!_proxy) {
+		return;
+	}
+	const auto now = crl::now();
+	const auto health = _owner->carrierHealth();
+	if (CarrierStalled(now, health, _livenessLimits)) {
+		recoverStalledCarrier(now - std::max({
+			health.outstandingSince,
+			health.lastCreditAt,
+			health.lastDownlinkAt,
+		}));
+	} else if (now - _lastSummaryAt >= kHealthSummaryInterval) {
+		logSummary(now);
+	}
+	if (!_streams.empty() || _totalUnacked > 0) {
+		scheduleHealthCheck();
+	}
+}
+
+void Transport::Private::recoverStalledCarrier(crl::time silence) {
+	logCarrier(
+		ProxyDiagnosticsSeverity::Warning,
+		u"stalled: no relay progress for %1ms with %2 bytes outstanding, "
+		"recovering the carrier once for %3 streams"_q
+			.arg(silence)
+			.arg(_totalUnacked)
+			.arg(_streams.size()));
+	if (_webviewGeneration) {
+		// A fresh bridge page opens a fresh relay session.
+		protocolError();
+		return;
+	}
+	// An external browser cannot be reopened from here, so keep its page
+	// and reset the streams on it in one go instead.
+	const auto ids = _streams | ranges::views::keys | ranges::to_vector;
+	for (const auto streamId : ids) {
+		failStream(streamId);
+	}
+}
+
+void Transport::Private::logCarrier(
+		ProxyDiagnosticsSeverity severity,
+		const QString &text) {
+	if (!_proxy) {
+		return;
+	}
+	auto event = ProxyDiagnosticsEvent{
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = ProxyDiagnosticsPhase::WebCarrier,
+		.severity = severity,
+		.proxy = _proxy,
+		.transport = u"WEB"_q,
+		.message = text,
+	};
+	event.timestamp = QDateTime::currentDateTime();
+	Logs::writeMtproxy(FormatProxyDiagnosticsEvent(event));
+}
+
+void Transport::Private::logSummary(crl::time now) {
+	const auto interval = _lastSummaryAt
+		? (now - _lastSummaryAt)
+		: kHealthSummaryInterval;
+	_lastSummaryAt = now;
+	const auto traffic = base::take(_traffic);
+	const auto stats = _scheduler.stats();
+	auto queued = int64();
+	auto withheld = int64();
+	for (const auto &[streamId, stream] : _streams) {
+		queued += stream.pendingBytes;
+		withheld += stream.withheldWindow;
+	}
+	const auto idle = !traffic.up
+		&& !traffic.down
+		&& !queued
+		&& !_totalUnacked;
+	if (idle) {
+		return;
+	}
+	const auto health = _owner->carrierHealth();
+	const auto since = [&](int64 at) {
+		return at ? QString::number(now - at) : u"never"_q;
+	};
+	const auto perClass = [](const std::array<int, kStreamClassCount> &v) {
+		return u"%1/%2/%3"_q.arg(v[0]).arg(v[1]).arg(v[2]);
+	};
+	logCarrier(
+		ProxyDiagnosticsSeverity::Info,
+		(u"health: streams(i/d/u)=%1 ready=%2 queued=%3 unacked=%4 "
+			"upload_inflight=%5/%6 upload_blocked=%7 withheld=%8 "
+			"withheld_peak=%9 "_q
+			.arg(perClass(stats.streams))
+			.arg(perClass(stats.ready))
+			.arg(queued)
+			.arg(_totalUnacked)
+			.arg(stats.uploadInFlight)
+			.arg(_scheduler.limits().uploadInFlight)
+			.arg(traffic.uploadBlocked)
+			.arg(withheld)
+			.arg(traffic.withheldPeak))
+		+ (u"up=%1 down=%2 interval_ms=%3 last_down_ms=%4 "
+			"last_credit_ms=%5 carrier_pending=%6"_q
+			.arg(traffic.up)
+			.arg(traffic.down)
+			.arg(interval)
+			.arg(since(health.lastDownlinkAt))
+			.arg(since(health.lastCreditAt))
+			.arg(carrierPendingBytes())));
 }
 
 void Transport::Private::writeWebSocket(
@@ -1818,6 +2119,7 @@ void Transport::Activate(const ProxyData &proxy) {
 		global.thread->start();
 	}
 	global.active = proxy;
+	global.webActive = true;
 	if (changed) {
 		RetireWebview(base::take(global.webview));
 		++global.webviewGeneration;
@@ -1850,6 +2152,7 @@ void Transport::Deactivate() {
 		}, Qt::BlockingQueuedConnection);
 	}
 	const auto old = base::take(global.active);
+	global.webActive = false;
 	global.state = State::Idle;
 	global.browser.clear();
 	if (old.type == ProxyData::Type::Web) {
@@ -1934,6 +2237,20 @@ void Transport::OpenBrowser(const ProxyData &proxy) {
 uint32 Transport::NextStreamId() {
 	static auto next = std::atomic<uint64>(0);
 	return uint32((next.fetch_add(1) % 0x00FFFFFF) + 1);
+}
+
+bool Transport::Active() {
+	return Global().webActive.load();
+}
+
+CarrierHealth Transport::carrierHealth() const {
+	return {
+		.connected = _healthConnected.load(),
+		.lastDownlinkAt = _healthLastDownlinkAt.load(),
+		.lastCreditAt = _healthLastCreditAt.load(),
+		.unackedBytes = _healthUnacked.load(),
+		.outstandingSince = _healthOutstandingSince.load(),
+	};
 }
 
 void Transport::registerStream(uint32 streamId, StreamHandlers handlers) {

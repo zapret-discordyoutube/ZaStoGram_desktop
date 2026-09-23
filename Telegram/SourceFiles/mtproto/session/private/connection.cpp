@@ -52,6 +52,12 @@ constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
 constexpr auto kSilentTimeoutsToAssumeKeyDestroyed = 2;
 
+// A WEB proxy stream is a relay stream to an MTProxy, and a -404 on it is
+// as likely to come from that hop being reset as from the server having
+// lost our temporary key. Recreating a key is expensive, so the first -404
+// only reconnects; a second one before any reply decrypts is believed.
+constexpr auto kWebKeyNotFoundStrikesToAssumeKeyDestroyed = 2;
+
 base::options::toggle OptionPreferIPv6({
 	.id = kOptionPreferIPv6,
 	.name = "Prefer IPv6",
@@ -357,11 +363,19 @@ void SessionTransport::connectToServer(bool afterConfig) {
 			: !useHttp
 			? Variants::Http
 			: Variants::ProtocolCount;
-		for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
+
+		// A WEB proxy stream reaches the same relay and the same MTProxy
+		// whatever DC address it is given, so racing endpoints would only
+		// open identical streams on the one shared carrier.
+		const auto single = webProxy();
+		const auto enough = [&] {
+			return single && !_state.testConnections.empty();
+		};
+		for (auto address = 0; address != Variants::AddressTypeCount && !enough(); ++address) {
 			if (address == skipAddress) {
 				continue;
 			}
-			for (auto protocol = 0; protocol != Variants::ProtocolCount; ++protocol) {
+			for (auto protocol = 0; protocol != Variants::ProtocolCount && !enough(); ++protocol) {
 				if (protocol == skipProtocol) {
 					continue;
 				}
@@ -372,6 +386,9 @@ void SessionTransport::connectToServer(bool afterConfig) {
 						endpoint.port,
 						endpoint.secret,
 						protocolForFiles);
+					if (enough()) {
+						break;
+					}
 				}
 			}
 		}
@@ -477,6 +494,8 @@ void SessionTransport::onSentSome(uint64 size) {
 			}
 		}
 		_timing.waitForReceivedTimer.callOnce(remain);
+		_timing.waitForReceivedStartedAt = crl::now();
+		_timing.waitForReceivedExtended = false;
 	}
 	if (!_timing.firstSentAt) {
 		_timing.firstSentAt = crl::now();
@@ -490,6 +509,7 @@ void SessionTransport::onReceivedSome() {
 	}
 	_timing.oldConnectionTimer.callOnce(kMarkConnectionOldTimeout);
 	_timing.waitForReceivedTimer.cancel();
+	_timing.waitForReceivedStartedAt = 0;
 	if (_timing.firstSentAt > 0) {
 		const auto ms = crl::now() - _timing.firstSentAt;
 		DEBUG_LOG(("MTP Info: response in %1ms, _waitForReceived: %2ms"
@@ -510,9 +530,48 @@ void SessionTransport::markConnectionOld() {
 		).arg(_timing.waitForReceived));
 }
 
+bool SessionTransport::webProxy() const {
+	return _owner->_sessionState.options
+		&& (_owner->_sessionState.options->proxy.type
+			== ProxyData::Type::Web);
+}
+
+bool SessionTransport::extendWebProxyReceiveWait() {
+	_timing.waitForReceivedDetails = QString();
+	if (!_state.connection || !webProxy()) {
+		return false;
+	}
+	const auto now = crl::now();
+	const auto startedAt = _timing.waitForReceivedStartedAt
+		? _timing.waitForReceivedStartedAt
+		: (now - _timing.waitForReceived);
+	const auto verdict = _state.connection->receiveWaitVerdict(startedAt);
+	_timing.waitForReceivedDetails = verdict.details;
+	if (verdict.waitMore <= 0) {
+		return false;
+	}
+	// The reply is plausibly still queued in the carrier that every WEB
+	// session shares, and that carrier is moving; a dead carrier is torn
+	// down by the carrier itself, for all of its streams at once.
+	if (!_timing.waitForReceivedExtended) {
+		_timing.waitForReceivedExtended = true;
+		_owner->logMtprotoEvent(
+			ProxyDiagnosticsPhase::WebCarrier,
+			ProxyDiagnosticsSeverity::Info,
+			u"receive wait extended after %1ms (%2)"_q
+				.arg(now - startedAt)
+				.arg(verdict.details));
+	}
+	_timing.waitForReceivedTimer.callOnce(verdict.waitMore);
+	return true;
+}
+
 void SessionTransport::waitReceivedFailed() {
 	Expects(_owner->_sessionState.options != nullptr);
 
+	if (extendWebProxyReceiveWait()) {
+		return;
+	}
 	DEBUG_LOG(("MTP Info: bad connection, _waitForReceived: %1ms").arg(_timing.waitForReceived));
 	if (_timing.waitForReceived < kMaxReceiveTimeout) {
 		_timing.waitForReceived = std::min(
@@ -527,13 +586,15 @@ void SessionTransport::waitReceivedFailed() {
 	if (silentMtproxyConnection) {
 		++_state.mtprotoSilentTimeouts;
 	}
+	const auto webDetails = base::take(_timing.waitForReceivedDetails);
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpReceiveTimeout,
 		ProxyDiagnosticsSeverity::Warning,
 		u"no mtproto data in %1ms (received before: %2, silent strikes: %3)"_q
 			.arg(_timing.waitForReceived)
 			.arg(_state.mtprotoDataReceived ? u"yes"_q : u"no"_q)
-			.arg(_state.mtprotoSilentTimeouts));
+			.arg(_state.mtprotoSilentTimeouts)
+		+ (webDetails.isEmpty() ? QString() : (u", "_q + webDetails)));
 	doDisconnect();
 	if (silentMtproxyConnection
 		&& (_state.mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
@@ -775,7 +836,20 @@ void SessionTransport::handleError(int errorCode) {
 	destroyAllConnections();
 	_timing.waitForConnectedTimer.cancel();
 
-	if (errorCode == -404) {
+	if (errorCode == -404
+		&& webProxy()
+		&& (++_state.webKeyNotFoundStrikes
+			< kWebKeyNotFoundStrikesToAssumeKeyDestroyed)) {
+		_owner->logMtprotoEvent(
+			ProxyDiagnosticsPhase::WebCarrier,
+			ProxyDiagnosticsSeverity::Warning,
+			u"-404 on a web proxy stream (strike %1 of %2): "
+			"reconnecting the stream, keeping the temporary key"_q
+				.arg(_state.webKeyNotFoundStrikes)
+				.arg(kWebKeyNotFoundStrikesToAssumeKeyDestroyed));
+		return restart();
+	} else if (errorCode == -404) {
+		_state.webKeyNotFoundStrikes = 0;
 		_owner->destroyTemporaryKey();
 	} else {
 		MTP_LOG(_owner->_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));

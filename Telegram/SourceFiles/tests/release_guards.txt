@@ -21,3 +21,4 @@ Telegram/SourceFiles/tests/test_proxy_shield_probe.py
 Telegram/SourceFiles/tests/test_proxy_wss_default.py
 Telegram/SourceFiles/tests/test_session_endpoint_cooldown.py
 Telegram/SourceFiles/tests/test_zastogram_branding.py
+Telegram/SourceFiles/tests/test_web_proxy_carrier_flow.py

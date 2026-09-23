@@ -26,7 +26,11 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 		MtProxyAttemptPlan mtproxyPlan,
 		crl::time mtproxyAttemptStartedAt) {
 	if (proxy.type == ProxyData::Type::Web) {
-		return std::make_unique<WebProxySocket>(runtime, thread, proxy);
+		return std::make_unique<WebProxySocket>(
+			runtime,
+			thread,
+			proxy,
+			mtproxyAttempt.use);
 	}
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {

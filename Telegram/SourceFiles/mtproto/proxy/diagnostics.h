@@ -62,6 +62,7 @@ enum class ProxyDiagnosticsPhase {
 	Liveness,
 	FileRpc,
 	FileProgress,
+	WebCarrier,
 };
 
 enum class ProxyDiagnosticsSeverity {

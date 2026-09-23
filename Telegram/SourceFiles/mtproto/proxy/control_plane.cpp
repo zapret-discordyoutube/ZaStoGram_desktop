@@ -289,6 +289,7 @@ ProxyFact ProxyControlPlane::FactFromReport(
 	case ProxyDiagnosticsPhase::MtpRestart:
 	case ProxyDiagnosticsPhase::AttemptSummary:
 	case ProxyDiagnosticsPhase::Liveness:
+	case ProxyDiagnosticsPhase::WebCarrier:
 		fact.status.error = ProxyConnectionError::None;
 		fact.status.mtproxyReason = ProxyMtproxyTerminalReason::None;
 		return fact;

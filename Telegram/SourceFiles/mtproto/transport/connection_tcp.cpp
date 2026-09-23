@@ -810,6 +810,13 @@ ProxyTransportFailure TcpConnection::proxyTransportFailure() const {
 		: ProxyTransportFailure();
 }
 
+ReceiveWaitVerdict TcpConnection::receiveWaitVerdict(
+		crl::time waitStartedAt) const {
+	return (_socket && _status == Status::Ready)
+		? _socket->receiveWaitVerdict(waitStartedAt)
+		: ReceiveWaitVerdict();
+}
+
 bool TcpConnection::isConnected() const {
 	return (_status == Status::Ready);
 }

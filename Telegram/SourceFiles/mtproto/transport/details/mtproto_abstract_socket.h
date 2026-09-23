@@ -87,6 +87,10 @@ public:
 	[[nodiscard]] virtual ProxyTransportFailure proxyTransportFailure() const {
 		return {};
 	}
+	[[nodiscard]] virtual ReceiveWaitVerdict receiveWaitVerdict(
+			crl::time /*waitStartedAt*/) const {
+		return {};
+	}
 
 protected:
 	static const int kFilesSendBufferSize = 2 * 1024 * 1024;

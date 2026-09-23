@@ -10,10 +10,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 #include "mtproto/proxy/data.h"
 
+#include "mtproto/web_proxy/web_proxy_flow.h"
+
 #include <QtCore/QByteArray>
 
 namespace MTP::WebProxy {
 class Transport;
+struct StreamProbe;
 } // namespace MTP::WebProxy
 
 namespace MTP::details {
@@ -23,8 +26,12 @@ public:
 	WebProxySocket(
 		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		ProxyConnectionUse use);
 	~WebProxySocket();
+
+	[[nodiscard]] static WebProxy::StreamClass ClassFor(
+		ProxyConnectionUse use);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -36,6 +43,8 @@ public:
 
 	int32 debugState() override;
 	QString debugPostfix() const override;
+	ReceiveWaitVerdict receiveWaitVerdict(
+		crl::time waitStartedAt) const override;
 
 private:
 	enum class State {
@@ -52,6 +61,8 @@ private:
 	void transportFailed();
 
 	const uint32 _streamId;
+	const WebProxy::StreamClass _streamClass;
+	const std::shared_ptr<WebProxy::StreamProbe> _probe;
 	WebProxy::Transport *_transport = nullptr;
 	QByteArray _incoming;
 	int _incomingOffset = 0;

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/proxy/data.h"
+#include "mtproto/web_proxy/web_proxy_flow.h"
 
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
@@ -17,6 +18,26 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <memory>
 
 namespace MTP::WebProxy {
+
+// What the carrier knows about one stream, readable from the socket's
+// thread while the carrier thread updates it.
+struct StreamProbe {
+	std::atomic<int64> queuedBytes = 0;
+	std::atomic<int64> unackedBytes = 0;
+	std::atomic<int64> lastReceivedAt = 0;
+	std::atomic<int64> deliveredAt = 0;
+	std::atomic<bool> open = false;
+
+	[[nodiscard]] StreamHealth snapshot() const {
+		return {
+			.open = open.load(),
+			.queuedBytes = queuedBytes.load(),
+			.unackedBytes = unackedBytes.load(),
+			.lastReceivedAt = lastReceivedAt.load(),
+			.deliveredAt = deliveredAt.load(),
+		};
+	}
+};
 
 class Transport final : public QObject {
 	Q_OBJECT
@@ -40,6 +61,8 @@ public:
 		Fn<void(QByteArray)> data;
 		Fn<void()> disconnected;
 		Fn<void()> failed;
+		StreamClass streamClass = StreamClass::Interactive;
+		std::shared_ptr<StreamProbe> probe;
 	};
 
 	static void Activate(const ProxyData &proxy);
@@ -51,6 +74,13 @@ public:
 	[[nodiscard]] static bool ToggleWebviewDisabled();
 	static void OpenBrowser(const ProxyData &proxy);
 	[[nodiscard]] static uint32 NextStreamId();
+
+	// A WEB proxy is the active proxy, so every session shares one carrier
+	// and file transfers should not fan out.
+	[[nodiscard]] static bool Active();
+
+	// Any thread.
+	[[nodiscard]] CarrierHealth carrierHealth() const;
 
 	void registerStream(uint32 streamId, StreamHandlers handlers);
 	void closeStream(uint32 streamId);
@@ -77,6 +107,11 @@ private:
 	const std::unique_ptr<Private> _private;
 	std::atomic<int64> _pendingBytes = 0;
 	std::atomic<int> _pendingItems = 0;
+	std::atomic<bool> _healthConnected = false;
+	std::atomic<int64> _healthLastDownlinkAt = 0;
+	std::atomic<int64> _healthLastCreditAt = 0;
+	std::atomic<int64> _healthUnacked = 0;
+	std::atomic<int64> _healthOutstandingSince = 0;
 
 };
 

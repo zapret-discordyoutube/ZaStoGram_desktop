@@ -100,6 +100,10 @@ private:
 		uint64 proxyGeneration = 0;
 		bool mtprotoDataReceived = false;
 		int mtprotoSilentTimeouts = 0;
+
+		// -404 received through a WEB proxy stream since the key last
+		// decrypted a reply, see handleError().
+		int webKeyNotFoundStrikes = 0;
 		std::vector<TestConnection> testConnections;
 		crl::time startedConnectingAt = 0;
 	};
@@ -118,6 +122,9 @@ private:
 		RuntimeTimer waitForReceivedTimer;
 		RuntimeTimer waitForBetterTimer;
 		crl::time waitForReceived = 0;
+		crl::time waitForReceivedStartedAt = 0;
+		QString waitForReceivedDetails;
+		bool waitForReceivedExtended = false;
 		crl::time waitForConnected = 0;
 		crl::time waitForConnectedArmed = 0;
 		crl::time firstSentAt = -1;
@@ -134,6 +141,8 @@ private:
 		const bytes::vector &protocolSecret,
 		bool protocolForFiles);
 	void connectingTimedOut();
+	[[nodiscard]] bool webProxy() const;
+	[[nodiscard]] bool extendWebProxyReceiveWait();
 	void handleError(int errorCode);
 	void onError(
 		not_null<AbstractConnection*> connection,

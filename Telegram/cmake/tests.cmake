@@ -119,6 +119,35 @@ add_test(
 
 add_dependencies(Telegram test_export_date_range)
 
+add_executable(test_web_proxy_flow WIN32)
+init_target(test_web_proxy_flow "(tests)")
+
+target_include_directories(test_web_proxy_flow PRIVATE ${src_loc})
+
+nice_target_sources(test_web_proxy_flow ${src_loc}
+PRIVATE
+    mtproto/web_proxy/web_proxy_flow.cpp
+    mtproto/web_proxy/web_proxy_flow.h
+    tests/test_web_proxy_flow.cpp
+)
+
+target_link_libraries(test_web_proxy_flow
+PRIVATE
+    desktop-app::lib_base
+)
+
+set_target_properties(
+    test_web_proxy_flow
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_test(
+    NAME test_web_proxy_flow
+    COMMAND test_web_proxy_flow
+)
+
+add_dependencies(Telegram test_web_proxy_flow)
+
 add_executable(test_mtproxy_client_hello WIN32)
 init_target(test_mtproxy_client_hello "(tests)")
 

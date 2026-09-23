@@ -185,6 +185,7 @@ void SessionTransport::startContainerCleanup() {
 void SessionTransport::noteMtprotoPayloadReceived() {
 	_timing.retryTimeout = 1;
 	const auto firstPayload = !_state.mtprotoDataReceived;
+	_state.webKeyNotFoundStrikes = 0;
 	if (firstPayload) {
 		_state.mtprotoDataReceived = true;
 		_state.mtprotoSilentTimeouts = 0;
