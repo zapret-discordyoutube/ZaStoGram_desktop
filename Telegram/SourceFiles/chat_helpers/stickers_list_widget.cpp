@@ -1951,15 +1951,10 @@ void StickersListWidget::syncVisibleAnimations() {
 			return true;
 		}
 		clearHeavyOutsideRetentionIn(info, retentionTop, retentionBottom);
-		const auto fromRow = floorclamp(
+		const auto [fromRow, toRow] = Ui::RowsInRange(
 			visibleTop - info.rowsTop,
-			_singleSize.height(),
-			0,
-			info.rowsCount);
-		const auto toRow = ceilclamp(
 			visibleBottom - info.rowsTop,
 			_singleSize.height(),
-			0,
 			info.rowsCount);
 		for (auto row = fromRow; row != toRow; ++row) {
 			for (auto column = 0; column != _columnCount; ++column) {
