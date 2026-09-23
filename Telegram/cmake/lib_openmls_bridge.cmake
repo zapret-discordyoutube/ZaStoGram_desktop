@@ -16,6 +16,11 @@ set(openmls_bridge_cargo_profile
     $<IF:$<CONFIG:Debug>,dev,release>)
 
 if (WIN32)
+    get_filename_component(openmls_bridge_cargo_dir
+        ${TD_E2E_CARGO_EXECUTABLE} DIRECTORY)
+    find_program(openmls_bridge_rustc rustc
+        HINTS ${openmls_bridge_cargo_dir}
+        REQUIRED)
     if (build_winarm)
         set(openmls_bridge_rust_target aarch64-pc-windows-msvc)
     elseif (build_win64)
@@ -38,7 +43,12 @@ if (WIN32)
             --manifest-path ${openmls_bridge_manifest}
             --locked
             --target ${openmls_bridge_rust_target}
-            --profile ${openmls_bridge_cargo_profile})
+            --profile ${openmls_bridge_cargo_profile}
+        # tlottie is a second Rust static library in the same executable.
+        COMMAND ${CMAKE_COMMAND}
+            -D library=${openmls_bridge_library}
+            -D rustc=${openmls_bridge_rustc}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/rename_rust_eh_personality.cmake)
 elseif (APPLE)
     set(openmls_bridge_library_dir
         ${openmls_bridge_target_dir}/universal)
