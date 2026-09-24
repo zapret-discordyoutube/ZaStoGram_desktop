@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/wss/socket.h"
 #include "mtproto/proxy/transport_policy.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/runtime/runtime_environment.h"
@@ -160,13 +161,35 @@ void SessionPrivate::logMtprotoEvent(
 		? _sessionState.options->proxy
 		: ProxyData();
 	if (proxy.type == ProxyData::Type::None) {
+		// Without a proxy the line used to say "transport=Tcp" even when the
+		// socket went through a WSS relay or the Cloudflare tunnel, and logs
+		// were misread twice. Name the route the socket factory really takes.
+		const auto stealth = _sessionState.options
+			? _sessionState.options->stealth
+			: ProxyStealthOptions();
+		auto transport = u"Tcp"_q;
+		auto route = QString();
+		if (stealth.transport == ProxyTransport::Wss) {
+			auto wss = details::WssCustomRoute(stealth);
+			if (!wss) {
+				wss = details::WssOfficialRoute(getProtocolDcId());
+			}
+			if (wss) {
+				transport = wss->tunnel ? u"WSSTunnel"_q : u"WSS"_q;
+				route = wss->tunnel
+					? wss->domain
+					: (wss->domain + '@' + wss->relayHost);
+			}
+		}
 		WriteProxyDiagnosticsLine(_runtime, {
 			.source = ProxyDiagnosticsSource::MTP,
 			.phase = phase,
 			.severity = severity,
 			.proxy = proxy,
+			.transport = transport,
 			.dc = mtprotoLogDc(),
 			.message = message,
+			.route = route,
 		});
 		return;
 	}

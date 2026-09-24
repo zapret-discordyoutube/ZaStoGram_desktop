@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/wss/socket.h"
 
 #include "mtproto/protocol/mtproto_binary.h"
+#include "mtproto/proxy/diagnostics.h"
+#include "logs.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 
@@ -74,7 +76,10 @@ constexpr auto kRouteFailuresBeforeSuppress = 3;
 // Туннель медленнее релея, поэтому держать в нём основной датацентр дольше
 // пары минут дороже, чем лишний раз проверить релей.
 constexpr auto kRouteSuppressTtl = 2 * 60 * crl::time(1000);
-constexpr auto kMediaRouteSuppressTtl = 30 * 60 * crl::time(1000);
+// A throttled network freezes TCP to Cloudflare after about 16 KB downstream
+// (Android logs (9) and (10): no tunnel session ever got past 15 KB). A
+// tunnel socket that times out before this much arrived is frozen.
+constexpr auto kTunnelFreezeBytes = qint64(20 * 1024);
 // Соединения открываются пачкой, и их таймауты приходят пачкой. Одна пачка —
 // один провал, а не «три подряд».
 constexpr auto kRouteFailureCoalesce = 2 * crl::time(1000);
@@ -111,6 +116,7 @@ void NoteTcpConnected(const QString &host) {
 		return false;
 	} else if (i->second.suppressedUntil <= crl::now()) {
 		i->second = RouteHealth();
+		LOG(("WSS Route: %1 restored (suppression expired).").arg(domain));
 		return false;
 	}
 	return true;
@@ -119,11 +125,11 @@ void NoteTcpConnected(const QString &host) {
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	auto &health = RouteHealthByDomain[route.domain];
-	// WHY: providers cut the kwsN-1 media relays while kwsN stays up, and
-	// three 8 s connect timeouts meant half a minute without media, so a
-	// media relay goes to the tunnel after its first failure, for longer.
-	const auto media = route.domain.contains(u"-1.web.telegram.org"_q);
-	const auto threshold = media ? 1 : kRouteFailuresBeforeSuppress;
+	// Media relays used to go to the tunnel after their first failure, for
+	// half an hour. Connections open in bursts, so a first failure is almost
+	// guaranteed, and on a throttled network the tunnel freezes after ~16 KB:
+	// in Android logs (10) every DC1/DC5 media session through it died while
+	// kws2-1 and kws4-1 delivered megabytes. Media follows the main rules.
 	const auto now = crl::now();
 	if (health.suppressedUntil > now) {
 		return;
@@ -132,15 +138,27 @@ void NoteRouteUnreachable(const WssRoute &route) {
 		return;
 	}
 	health.lastFailureAt = now;
-	if (++health.consecutiveFailures >= threshold) {
-		health.suppressedUntil = now
-			+ (media ? kMediaRouteSuppressTtl : kRouteSuppressTtl);
+	++health.consecutiveFailures;
+	LOG(("WSS Route: %1 failure %2/%3."
+		).arg(route.domain
+		).arg(health.consecutiveFailures
+		).arg(kRouteFailuresBeforeSuppress));
+	if (health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
+		health.suppressedUntil = now + kRouteSuppressTtl;
+		LOG(("WSS Route: %1 suppressed for %2 s, next: %3."
+			).arg(route.domain
+			).arg(kRouteSuppressTtl / 1000
+			).arg(route.tunnel ? u"direct TCP"_q : u"Cloudflare tunnel"_q));
 	}
 }
 
 void NoteRouteReachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	RouteHealthByDomain[route.domain] = RouteHealth();
+	auto &health = RouteHealthByDomain[route.domain];
+	if (health.consecutiveFailures || health.suppressedUntil) {
+		LOG(("WSS Route: %1 restored (relay answered).").arg(route.domain));
+	}
+	health = RouteHealth();
 }
 
 void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
@@ -359,6 +377,34 @@ WssSocket::WssSocket(
 		wrap([=](Error e) { handleError(e); }));
 }
 
+WssSocket::~WssSocket() {
+	if (!_openedAt) {
+		return;
+	}
+	// One line per relay socket: which route it took, how far the handshake
+	// got, how much went each way and how long it lived.
+	const auto since = [&](crl::time at) {
+		return at ? QString::number(at - _openedAt) : u"-1"_q;
+	};
+	WriteProxyDiagnosticsLine(_runtime, {
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = ProxyDiagnosticsPhase::AttemptSummary,
+		.severity = ProxyDiagnosticsSeverity::Info,
+		.transport = _route.tunnel ? u"WSSTunnel"_q : u"WSS"_q,
+		.socketId = _debugId,
+		.message = u"wss_session host=%1 tcp=%2 upgraded=%3 tx=%4 rx=%5 ready_ms=%6 first_data_ms=%7 life_ms=%8"_q
+			.arg(_currentHost)
+			.arg(_tcpConnected ? 1 : 0)
+			.arg(_upgraded ? 1 : 0)
+			.arg(_bytesSent)
+			.arg(_bytesReceived)
+			.arg(since(_upgradedAt))
+			.arg(since(_firstDataAt))
+			.arg(crl::now() - _openedAt),
+		.route = _route.domain,
+	});
+}
+
 void WssSocket::connectToHost(const QString &address, int port) {
 	Q_UNUSED(port);
 	// MTProto-over-WSS always connects to the relay route; the DC
@@ -368,6 +414,7 @@ void WssSocket::connectToHost(const QString &address, int port) {
 		_route.path = u"/apiws?dst="_q + address;
 	}
 	_usedFallback = PreferRelayFallback(_route);
+	_openedAt = crl::now();
 	connectToRelayHost();
 }
 
@@ -407,7 +454,17 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void WssSocket::timedOut() {
-	if (!_upgraded && !_tcpConnected && TcpRecentlyConnected(_currentHost)) {
+	if (_upgraded) {
+		if (_route.tunnel && _bytesReceived < kTunnelFreezeBytes) {
+			// The session gave up on a tunnel socket that has barely received
+			// anything: the network froze it. Counting it lets the tunnel be
+			// suppressed so the DC goes back to its relay or direct TCP.
+			NoteRouteUnreachable(_route);
+			logError(0, u"WSS tunnel stalled after %1 bytes"_q.arg(_bytesReceived));
+		}
+		return;
+	}
+	if (!_tcpConnected && TcpRecentlyConnected(_currentHost)) {
 		// Соседние сокеты к этому адресу только что подключались: провайдер
 		// съел SYN одного потока. Новый сокет пройдёт, а переход на запасной
 		// адрес или в туннель здесь только навредит.
@@ -566,7 +623,12 @@ bool WssSocket::tryFinishUpgrade() {
 		return false;
 	}
 	_upgraded = true;
-	NoteRouteReachable(_route);
+	_upgradedAt = crl::now();
+	if (!_route.tunnel) {
+		// The Cloudflare tunnel upgrades fine and then freezes after ~16 KB
+		// on a throttled network; it proves itself in parseFrames instead.
+		NoteRouteReachable(_route);
+	}
 	NoteRelayUpgraded(_route, _usedFallback);
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
@@ -656,6 +718,13 @@ void WssSocket::parseFrames() {
 			sendFrame(0xA, payload);
 		} else if (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
 			if (length > 0) {
+				_bytesReceived += qint64(length);
+				if (_route.tunnel
+					&& !_tunnelProven
+					&& _bytesReceived >= kTunnelFreezeBytes) {
+					_tunnelProven = true;
+					NoteRouteReachable(_route);
+				}
 				const auto at = int(_readBuffer.size());
 				const auto count = int(length);
 				_readBuffer.resize(at + count);
@@ -680,6 +749,7 @@ void WssSocket::parseFrames() {
 	if (produced) {
 		if (_phase == HandshakePhase::ServerHelloOk) {
 			_phase = HandshakePhase::FirstDataReceived;
+			_firstDataAt = crl::now();
 			connectionProgress(_phase);
 		}
 		_readyRead.fire({});
@@ -688,6 +758,9 @@ void WssSocket::parseFrames() {
 
 void WssSocket::sendFrame(quint8 opcode, bytes::const_span data) {
 	const auto size = int(data.size());
+	if (opcode == 0x2) {
+		_bytesSent += size;
+	}
 	auto frame = QByteArray();
 	frame.reserve(size + 14);
 	frame.append(char(0x80 | opcode));

@@ -68,6 +68,7 @@ public:
 		const QNetworkProxy &proxy,
 		bool protocolForFiles,
 		WssRoute route);
+	~WssSocket();
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -104,6 +105,12 @@ private:
 	bool _hostFlipped = false;
 	QString _currentHost;
 	bool _tcpConnected = false;
+	qint64 _bytesReceived = 0;
+	qint64 _bytesSent = 0;
+	bool _tunnelProven = false;
+	crl::time _openedAt = 0;
+	crl::time _upgradedAt = 0;
+	crl::time _firstDataAt = 0;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };

@@ -596,6 +596,14 @@ void SessionTransport::waitReceivedFailed() {
 			.arg(_state.mtprotoDataReceived ? u"yes"_q : u"no"_q)
 			.arg(_state.mtprotoSilentTimeouts)
 		+ (webDetails.isEmpty() ? QString() : (u", "_q + webDetails)));
+	if (_state.connection
+		&& _owner->_sessionState.options->proxy.type == ProxyData::Type::None
+		&& _owner->_sessionState.options->stealth.transport
+			== ProxyTransport::Wss) {
+		// Lets a WSS socket tell a frozen Cloudflare tunnel from a slow one;
+		// proxy connections keep their own receive-timeout accounting.
+		_state.connection->timedOut();
+	}
 	doDisconnect();
 	if (silentMtproxyConnection
 		&& (_state.mtprotoSilentTimeouts >= kSilentTimeoutsToAssumeKeyDestroyed)) {
