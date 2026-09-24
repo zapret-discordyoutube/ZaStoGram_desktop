@@ -172,6 +172,14 @@ public:
 	void setKeepDeletedMessages(bool value) {
 		writePref<bool>("zastoKeepDeleted", value);
 	}
+	// ZaStoGram: keep the ZaStoGram channel pinned on top of the chat list.
+	// When off it is an ordinary chat again and can be archived or left.
+	[[nodiscard]] bool pinZaStoGramChannel() {
+		return readPref<bool>("zastoPinPromoChannel", true);
+	}
+	void setPinZaStoGramChannel(bool value) {
+		writePref<bool>("zastoPinPromoChannel", value);
+	}
 	[[nodiscard]] float64 songVolume() const {
 		return _songVolume.current();
 	}

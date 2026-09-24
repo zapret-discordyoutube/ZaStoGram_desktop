@@ -892,6 +892,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_settings_add_account_about" = "You can add up to four accounts with different phone numbers.";
 "lng_settings_peer_to_peer_about" = "Disabling peer-to-peer will relay all calls through Telegram servers to avoid revealing your IP address, but may decrease audio and video quality.";
 "lng_settings_advanced" = "Advanced";
+"lng_settings_zastogram_section" = "ZaStoGram";
+"lng_settings_zastogram_pin_channel" = "Pin the ZaStoGram channel";
+"lng_settings_zastogram_pin_channel_about" = "When off, the ZaStoGram channel is an ordinary chat that can be archived.";
 "lng_settings_stickers_emoji" = "Stickers and emoji";
 "lng_settings_messages" = "Messages";
 "lng_settings_themes" = "Themes";

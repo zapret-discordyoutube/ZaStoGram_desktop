@@ -24,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/file_utilities.h"
 #include "core/launcher.h"
 #include "core/update_checker.h"
+#include "data/components/promo_suggestions.h"
 #include "data/data_auto_download.h"
 #include "data/data_session.h"
 #include "export/export_manager.h"
@@ -1031,6 +1032,41 @@ void BuildSpellcheckerSection(SectionBuilder &builder) {
 #endif // !TDESKTOP_DISABLE_SPELLCHECK
 }
 
+void BuildZaStoGramSection(SectionBuilder &builder) {
+	builder.addDivider();
+	builder.addSkip();
+	builder.addSubsectionTitle({
+		.id = u"advanced/zastogram"_q,
+		.title = tr::lng_settings_zastogram_section(),
+		.keywords = { u"zastogram"_q, u"channel"_q, u"pin"_q, u"archive"_q },
+	});
+
+	const auto pin = builder.addButton({
+		.id = u"advanced/zastogram_pin_channel"_q,
+		.title = tr::lng_settings_zastogram_pin_channel(),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::single(
+			Core::App().settings().pinZaStoGramChannel()),
+		.keywords = { u"zastogram"_q, u"channel"_q, u"pin"_q, u"archive"_q },
+	});
+	if (pin) {
+		pin->toggledValue(
+		) | rpl::filter([](bool enabled) {
+			return (enabled != Core::App().settings().pinZaStoGramChannel());
+		}) | rpl::on_next([=](bool enabled) {
+			Core::App().settings().setPinZaStoGramChannel(enabled);
+			Core::App().saveSettingsDelayed();
+			for (const auto &[_, account] : Core::App().domain().accounts()) {
+				if (account->sessionExists()) {
+					account->session().promoSuggestions().refreshTopPromotion();
+				}
+			}
+		}, pin->lifetime());
+	}
+	builder.addSkip();
+	builder.addDividerText(tr::lng_settings_zastogram_pin_channel_about());
+}
+
 void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
 	if (!HasUpdate()) {
 		return;
@@ -1325,6 +1361,7 @@ const auto kMeta = BuildHelper({
 	.icon = &st::menuIconManage,
 }, [](SectionBuilder &builder) {
 	BuildUpdateSection(builder, true);
+	BuildZaStoGramSection(builder);
 	BuildDataStorageSection(builder);
 	BuildAutoDownloadSection(builder);
 	BuildWindowTitleSection(builder);

@@ -74,7 +74,12 @@ PromoSuggestions::PromoSuggestions(
 PromoSuggestions::~PromoSuggestions() = default;
 
 void PromoSuggestions::promoteCustomChannel() {
-	if (_customChannel) {
+	if (!Core::App().settings().pinZaStoGramChannel()) {
+		if (_customChannel && _topPromoted == _customChannel) {
+			setTopPromoted(nullptr, QString(), QString());
+		}
+		return;
+	} else if (_customChannel) {
 		setTopPromoted(_customChannel, QString(), QString());
 		refreshCustomChannelEntry();
 		return;
@@ -97,6 +102,9 @@ void PromoSuggestions::promoteCustomChannel() {
 			: nullptr;
 		if (peer) {
 			_customChannel = _session->data().history(peer->id).get();
+			if (!Core::App().settings().pinZaStoGramChannel()) {
+				return;
+			}
 			setTopPromoted(_customChannel, QString(), QString());
 			refreshCustomChannelEntry();
 		}
