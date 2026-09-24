@@ -183,6 +183,16 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 	return route;
 }
 
+[[nodiscard]] WssRoute TunnelRoute() {
+	auto route = WssRoute();
+	route.relayHost = u"edge.amberwick.workers.dev"_q;
+	route.relayPort = 443;
+	route.domain = route.relayHost;
+	route.path = u"/apiws"_q;
+	route.tunnel = true;
+	return route;
+}
+
 } // namespace
 
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
@@ -191,8 +201,12 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		return std::nullopt;
 	}
 	if (RouteSuppressed(route->domain)) {
-		// Релей этого датацентра недоступен; пусть соединение идёт напрямую.
-		return std::nullopt;
+		// Релей датацентра недоступен: сначала туннель, потом прямой TCP.
+		auto tunnel = TunnelRoute();
+		if (RouteSuppressed(tunnel.domain)) {
+			return std::nullopt;
+		}
+		return tunnel;
 	}
 	return route;
 }
@@ -296,11 +310,13 @@ WssSocket::WssSocket(
 }
 
 void WssSocket::connectToHost(const QString &address, int port) {
-	Q_UNUSED(address);
 	Q_UNUSED(port);
 	// MTProto-over-WSS always connects to the relay route; the DC
 	// endpoint (address, port) is intentionally ignored - the relay routes
 	// to the right data center based on the SNI / Host domain.
+	if (_route.tunnel) {
+		_route.path = u"/apiws?dst="_q + address;
+	}
 	_usedFallback = PreferRelayFallback(_route);
 	connectToRelayHost();
 }

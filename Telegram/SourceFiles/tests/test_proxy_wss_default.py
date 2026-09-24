@@ -249,8 +249,11 @@ def test_wss_remembers_working_relay_host_across_sockets():
     # errorOccurred fires) records the stalled host too.
     assert "bool _hostFlipped = false;" in header
     assert "kRelayFallbackPreferenceTtl" in source
-    assert "Q_UNUSED(address);" in connect_body
     assert "Q_UNUSED(port);" in connect_body
+    # The official relay ignores the DC address; only the Worker tunnel
+    # needs it, to know which datacenter to open over TCP.
+    assert '_route.path = u"/apiws?dst="_q + address;' in connect_body
+    assert "if (_route.tunnel) {" in connect_body
     assert "_usedFallback = PreferRelayFallback(_route);" in connect_body
     assert "NoteRelayAttemptFailed(_route, _usedFallback);" in timed_out_body
     assert "NoteRelayAttemptFailed(_route, _usedFallback);" in error_body

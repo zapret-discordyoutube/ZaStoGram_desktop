@@ -21,6 +21,7 @@ struct WssRoute {
 	int relayPort = 443;
 	QString domain;
 	QString path;
+	bool tunnel = false; // path gets ?dst=<datacenter address> on connect
 };
 
 // A passive snapshot for user-facing media diagnostics. It observes the
