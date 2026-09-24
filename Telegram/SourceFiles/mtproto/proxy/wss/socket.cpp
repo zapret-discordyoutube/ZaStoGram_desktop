@@ -72,6 +72,7 @@ constexpr auto kTunnelOnlyDcId = 203;
 // WSS для этого датацентра отключается, и фабрика сокетов создаёт обычный TCP.
 constexpr auto kRouteFailuresBeforeSuppress = 3;
 constexpr auto kRouteSuppressTtl = 10 * 60 * crl::time(1000);
+constexpr auto kMediaRouteSuppressTtl = 30 * 60 * crl::time(1000);
 
 struct RouteHealth {
 	int consecutiveFailures = 0;
@@ -95,10 +96,16 @@ std::map<QString, RouteHealth> RouteHealthByDomain;
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	auto &health = RouteHealthByDomain[route.domain];
+	// WHY: providers cut the kwsN-1 media relays while kwsN stays up, and
+	// three 8 s connect timeouts meant half a minute without media, so a
+	// media relay goes to the tunnel after its first failure, for longer.
+	const auto media = route.domain.contains(u"-1.web.telegram.org"_q);
+	const auto threshold = media ? 1 : kRouteFailuresBeforeSuppress;
 	if (health.suppressedUntil > crl::now()) {
 		return;
-	} else if (++health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
-		health.suppressedUntil = crl::now() + kRouteSuppressTtl;
+	} else if (++health.consecutiveFailures >= threshold) {
+		health.suppressedUntil = crl::now()
+			+ (media ? kMediaRouteSuppressTtl : kRouteSuppressTtl);
 	}
 }
 
