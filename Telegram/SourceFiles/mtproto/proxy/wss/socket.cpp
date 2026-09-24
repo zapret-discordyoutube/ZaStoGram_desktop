@@ -62,6 +62,8 @@ std::map<QString, RelayPreference> RelayPreferences;
 		&& (i->second.until > crl::now());
 }
 
+constexpr auto kTunnelOnlyDcId = 203;
+
 // Отдельный от выбора адреса учёт: у датацентра может не открываться ни один
 // адрес релея — у части провайдеров порт 443 к нему закрыт целиком, по обоим
 // протоколам. Держать такой датацентр в вечных попытках бессмысленно: медиа
@@ -198,6 +200,14 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	auto route = OfficialRoute(protocolDcId);
 	if (!route) {
+		// DC203 serves non-Premium media and has no kws relay at all.
+		const auto raw = int(protocolDcId);
+		if (raw == kTunnelOnlyDcId || raw == -kTunnelOnlyDcId) {
+			auto tunnel = TunnelRoute();
+			if (!RouteSuppressed(tunnel.domain)) {
+				return tunnel;
+			}
+		}
 		return std::nullopt;
 	}
 	if (RouteSuppressed(route->domain)) {
