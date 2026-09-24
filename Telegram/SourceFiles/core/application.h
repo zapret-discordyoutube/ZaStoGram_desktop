@@ -114,6 +114,7 @@ class Environment;
 namespace Core {
 
 struct LocalUrlHandler;
+class ProxyWssFallback;
 class ScreenshotProtection;
 class Settings;
 class Tray;
@@ -244,6 +245,7 @@ public:
 	void applyProxyStealthOptions(const MTP::ProxyStealthOptions &options);
 	void restartProxyConnections();
 	[[nodiscard]] rpl::producer<ProxyChange> proxyChanges() const;
+	[[nodiscard]] bool proxyWssFallbackEngaged() const;
 	void badMtprotoConfigurationError();
 
 	// Databases.
@@ -485,6 +487,7 @@ private:
 
 	std::optional<base::Timer> _saveSettingsTimer;
 	std::optional<base::Timer> _proxyRestartTimer;
+	std::unique_ptr<ProxyWssFallback> _proxyWssFallback;
 
 	struct LeaveFilter {
 		std::vector<QPointer<QWidget>> registered;

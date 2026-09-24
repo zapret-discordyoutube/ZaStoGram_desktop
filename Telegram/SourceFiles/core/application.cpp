@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "core/core_screenshot_protection.h"
 #include "core/core_settings.h"
+#include "core/proxy_wss_fallback.h"
 #include "core/update_checker.h"
 #include "core/shortcuts.h"
 #include "core/sandbox.h"
@@ -912,6 +913,9 @@ void Application::setCurrentProxy(
 	my.setSelected(proxy);
 	my.setSettings(settings);
 	const auto now = current();
+	if (_proxyWssFallback) {
+		_proxyWssFallback->reset();
+	}
 	refreshGlobalProxy();
 	if (was != now) {
 		_proxyChanges.fire({ was, now, manual });
@@ -947,6 +951,10 @@ auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {
 	return _proxyChanges.events();
 }
 
+bool Application::proxyWssFallbackEngaged() const {
+	return _proxyWssFallback && _proxyWssFallback->engaged();
+}
+
 void Application::badMtprotoConfigurationError() {
 	if (settings().proxy().isEnabled() && !_badProxyDisableBox) {
 		const auto disableCallback = [=] {
@@ -968,6 +976,7 @@ void Application::startLocalStorage() {
 	Local::start();
 	_saveSettingsTimer.emplace([=] { saveSettings(); });
 	_proxyRestartTimer.emplace([=] { restartProxyConnections(); });
+	_proxyWssFallback = std::make_unique<ProxyWssFallback>();
 	settings().saveDelayedRequests() | rpl::on_next([=] {
 		saveSettingsDelayed();
 	}, _lifetime);

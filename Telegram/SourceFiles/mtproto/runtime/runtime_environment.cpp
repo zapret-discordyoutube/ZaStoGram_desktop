@@ -36,13 +36,16 @@ std::atomic<bool> ServerTimeHeard/* = false*/;
 RuntimeProxySettings CreateProxySettings() {
 	return {
 		.enabled = [] {
-			return Core::App().settings().proxy().isEnabled();
+			return Core::App().settings().proxy().isEnabled()
+				&& !Core::App().proxyWssFallbackEngaged();
 		},
 		.selected = [] {
 			return Core::App().settings().proxy().selected();
 		},
 		.settings = [] {
-			return Core::App().settings().proxy().settings();
+			return Core::App().proxyWssFallbackEngaged()
+				? ProxyData::Settings::Disabled
+				: Core::App().settings().proxy().settings();
 		},
 		.tryIPv6 = [] {
 			return Core::App().settings().proxy().tryIPv6();
