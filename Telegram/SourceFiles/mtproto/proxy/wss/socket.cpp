@@ -71,15 +71,38 @@ constexpr auto kTunnelOnlyDcId = 203;
 // нескольких неудач подряд, ни одна из которых не дошла даже до TCP, маршрут
 // WSS для этого датацентра отключается, и фабрика сокетов создаёт обычный TCP.
 constexpr auto kRouteFailuresBeforeSuppress = 3;
-constexpr auto kRouteSuppressTtl = 10 * 60 * crl::time(1000);
+// Туннель медленнее релея, поэтому держать в нём основной датацентр дольше
+// пары минут дороже, чем лишний раз проверить релей.
+constexpr auto kRouteSuppressTtl = 2 * 60 * crl::time(1000);
 constexpr auto kMediaRouteSuppressTtl = 30 * 60 * crl::time(1000);
+// Соединения открываются пачкой, и их таймауты приходят пачкой. Одна пачка —
+// один провал, а не «три подряд».
+constexpr auto kRouteFailureCoalesce = 2 * crl::time(1000);
+// Провайдер глотает SYN отдельного потока, а соседний сокет к тому же адресу
+// проходит. Пока адрес недавно принимал TCP, таймаут соединения — шум потока,
+// а не недоступный релей.
+constexpr auto kRecentTcpSuccess = 30 * crl::time(1000);
 
 struct RouteHealth {
 	int consecutiveFailures = 0;
 	crl::time suppressedUntil = 0;
+	crl::time lastFailureAt = 0;
 };
 
 std::map<QString, RouteHealth> RouteHealthByDomain;
+std::map<QString, crl::time> TcpSuccessByHost;
+
+void NoteTcpConnected(const QString &host) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	TcpSuccessByHost[host] = crl::now();
+}
+
+[[nodiscard]] bool TcpRecentlyConnected(const QString &host) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto i = TcpSuccessByHost.find(host);
+	return (i != end(TcpSuccessByHost))
+		&& (crl::now() - i->second < kRecentTcpSuccess);
+}
 
 [[nodiscard]] bool RouteSuppressed(const QString &domain) {
 	QMutexLocker lock(&RelayPreferencesMutex);
@@ -101,10 +124,16 @@ void NoteRouteUnreachable(const WssRoute &route) {
 	// media relay goes to the tunnel after its first failure, for longer.
 	const auto media = route.domain.contains(u"-1.web.telegram.org"_q);
 	const auto threshold = media ? 1 : kRouteFailuresBeforeSuppress;
-	if (health.suppressedUntil > crl::now()) {
+	const auto now = crl::now();
+	if (health.suppressedUntil > now) {
 		return;
-	} else if (++health.consecutiveFailures >= threshold) {
-		health.suppressedUntil = crl::now()
+	} else if (health.lastFailureAt
+		&& (now - health.lastFailureAt < kRouteFailureCoalesce)) {
+		return;
+	}
+	health.lastFailureAt = now;
+	if (++health.consecutiveFailures >= threshold) {
+		health.suppressedUntil = now
 			+ (media ? kMediaRouteSuppressTtl : kRouteSuppressTtl);
 	}
 }
@@ -310,6 +339,10 @@ WssSocket::WssSocket(
 	using Error = QAbstractSocket::SocketError;
 	connect(
 		&_socket,
+		&QAbstractSocket::connected,
+		wrap([=] { onTcpConnected(); }));
+	connect(
+		&_socket,
 		&QSslSocket::encrypted,
 		wrap([=] { onEncrypted(); }));
 	connect(
@@ -340,6 +373,8 @@ void WssSocket::connectToHost(const QString &address, int port) {
 
 void WssSocket::connectToRelayHost() {
 	const auto host = _usedFallback ? _route.relayHostFallback : _route.relayHost;
+	_currentHost = host;
+	_tcpConnected = false;
 	_socket.setPeerVerifyName(_route.domain);
 	_socket.connectToHostEncrypted(
 		host,
@@ -372,13 +407,19 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void WssSocket::timedOut() {
+	if (!_upgraded && !_tcpConnected && TcpRecentlyConnected(_currentHost)) {
+		// Соседние сокеты к этому адресу только что подключались: провайдер
+		// съел SYN одного потока. Новый сокет пройдёт, а переход на запасной
+		// адрес или в туннель здесь только навредит.
+		return;
+	}
 	// The session watchdog is killing this socket before any socket error
 	// arrived. Remember which relay host stalled so the next socket starts
 	// from the other one instead of repeating the same dead-host attempt.
 	if (!_upgraded && !_hostFlipped) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
 	}
-	if (!_upgraded && _phase == HandshakePhase::None) {
+	if (!_upgraded && !_tcpConnected) {
 		// Не дошли даже до установленного TCP: адрес релея недоступен, а не
 		// протокол сломан.
 		NoteRouteUnreachable(_route);
@@ -466,6 +507,11 @@ void WssSocket::handleError(int errorCode) {
 	}
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);
+}
+
+void WssSocket::onTcpConnected() {
+	_tcpConnected = true;
+	NoteTcpConnected(_currentHost);
 }
 
 void WssSocket::onEncrypted() {

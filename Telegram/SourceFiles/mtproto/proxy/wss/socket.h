@@ -85,6 +85,7 @@ public:
 private:
 	void handleError(int errorCode);
 	void connectToRelayHost();
+	void onTcpConnected();
 	void onEncrypted();
 	void onReadyRead();
 	void sendHttpUpgrade();
@@ -101,6 +102,8 @@ private:
 	bool _upgraded = false;
 	bool _usedFallback = false;
 	bool _hostFlipped = false;
+	QString _currentHost;
+	bool _tcpConnected = false;
 	HandshakePhase _phase = HandshakePhase::None;
 
 };
