@@ -24,6 +24,7 @@ namespace MTP::WebProxy {
 struct StreamProbe {
 	std::atomic<int64> queuedBytes = 0;
 	std::atomic<int64> unackedBytes = 0;
+	std::atomic<int64> sentBytes = 0;
 	std::atomic<int64> lastReceivedAt = 0;
 	std::atomic<int64> deliveredAt = 0;
 	std::atomic<bool> open = false;
@@ -96,7 +97,7 @@ private:
 	void webviewStarting(uint64 generation);
 	void webviewReady(uint64 generation);
 	void webviewPayload(uint64 generation, QByteArray payload);
-	void webviewWritten(uint64 generation, int bytes);
+	void webviewWritten(uint64 generation, int bytes, int items);
 	void webviewFailed(uint64 generation);
 	void webviewUnavailable();
 	void sendWebviewFrame(uint64 generation, QByteArray frame);

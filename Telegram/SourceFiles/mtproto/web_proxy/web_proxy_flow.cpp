@@ -122,8 +122,13 @@ std::optional<UplinkGrant> UplinkScheduler::next() {
 		} else if (uploadEligible) {
 			++_uploadSkipped;
 		}
+		const auto uploadFrame = std::min<int64>(
+			_limits.frameSize,
+			std::max<int64>(
+				_limits.uploadInFlight / 4,
+				_limits.minUploadFrame));
 		const auto maxBytes = upload
-			? int(std::min<int64>(_limits.frameSize, uploadRoom))
+			? int(std::min(uploadFrame, uploadRoom))
 			: _limits.frameSize;
 		return UplinkGrant{ .streamId = *streamId, .maxBytes = maxBytes };
 	}
@@ -151,6 +156,10 @@ void UplinkScheduler::acknowledged(uint32 streamId, int64 bytes) {
 	if (i->second.streamClass == StreamClass::Upload) {
 		_uploadInFlight -= acked;
 	}
+}
+
+void UplinkScheduler::setUploadInFlight(int64 bytes) {
+	_limits.uploadInFlight = std::max(bytes, int64(_limits.frameSize));
 }
 
 UplinkStats UplinkScheduler::stats() const {
@@ -193,6 +202,102 @@ int64 DownlinkCreditRelease(
 		int64 withheld,
 		int64 target) {
 	return std::clamp(target - relayCredit, int64(0), std::max(withheld, int64(0)));
+}
+
+AdaptiveWindow::AdaptiveWindow(AdaptiveWindowLimits limits)
+: _limits(limits)
+, _window(std::clamp(limits.initial, limits.min, limits.max))
+, _target(_window) {
+}
+
+void AdaptiveWindow::reset() {
+	_base.clear();
+	_lastDelay = std::nullopt;
+	_window = std::clamp(_limits.initial, _limits.min, _limits.max);
+	_target = _window;
+	_rate = 0;
+}
+
+std::optional<int64> AdaptiveWindow::baseDelay() const {
+	if (_base.empty()) {
+		return std::nullopt;
+	}
+	auto result = _base.front().second;
+	for (const auto &[bucket, value] : _base) {
+		result = std::min(result, value);
+	}
+	return result;
+}
+
+void AdaptiveWindow::noteDelay(int64 now, std::optional<int64> delay) {
+	if (!delay || *delay < 0) {
+		return;
+	}
+	_lastDelay = delay;
+	const auto bucket = now / _limits.baseBucket;
+	if (!_base.empty() && _base.back().first == bucket) {
+		_base.back().second = std::min(_base.back().second, *delay);
+	} else {
+		_base.emplace_back(bucket, *delay);
+	}
+	const auto buckets = _limits.baseHistory / _limits.baseBucket;
+	while (!_base.empty() && bucket - _base.front().first >= buckets) {
+		_base.pop_front();
+	}
+}
+
+void AdaptiveWindow::hold(const FlowSample &sample) {
+	noteDelay(sample.now, sample.delay);
+}
+
+void AdaptiveWindow::update(const FlowSample &sample) {
+	if (sample.interval <= 0) {
+		return;
+	}
+	const auto now = sample.now;
+	if (!sample.probing) {
+		const auto rate = sample.bytes * 1000 / sample.interval;
+		_rate = _rate ? ((_rate + rate) / 2) : rate;
+	}
+
+	noteDelay(now, sample.delay);
+	if (!sample.windowLimited || sample.probing) {
+		// An idle or application-limited flow says nothing about the
+		// path; keep the window for the next burst. A drained one only
+		// says what the base is.
+		return;
+	}
+	const auto clampWindow = [&](int64 value) {
+		return std::clamp(value, _limits.min, _limits.max);
+	};
+	const auto base = baseDelay();
+	if (!base) {
+		// Nothing tells how much is queued: grow cautiously, never past
+		// blindMax.
+		if (_window < _limits.blindMax) {
+			_window = std::min(
+				clampWindow(_window * _limits.maxGrowthPercent / 100),
+				std::max(_limits.blindMax, _limits.min));
+		}
+		return;
+	}
+	// While the window is the limit, rate == window / loop round trip.
+	// Below the target the loop runs at the base round trip and the target
+	// comes out above the window; once a queue builds, the loop round trip
+	// grows past base + targetDelay and the target drops below it.
+	_target = clampWindow(_rate
+		* (*base + _limits.targetDelay + sample.extraDelay)
+		/ 1000);
+	if (_target > _window) {
+		_window = std::min(
+			_target,
+			clampWindow(_window * _limits.maxGrowthPercent / 100));
+	} else if (_target < _window) {
+		_window = std::max(
+			_target,
+			clampWindow(_window * _limits.shrinkPercent / 100));
+		++_shrinks;
+	}
 }
 
 const char *ReceiveReasonName(ReceiveReason reason) {

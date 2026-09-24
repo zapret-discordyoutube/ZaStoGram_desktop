@@ -14,6 +14,8 @@ SESSION_TRANSPORT_CPP = (
 FILE_UPLOAD_CPP = SOURCE_DIR / "storage" / "file_upload.cpp"
 DOWNLOAD_MANAGER_CPP = SOURCE_DIR / "storage" / "download_manager_mtproto.cpp"
 TESTS_CMAKE = SOURCE_DIR.parent / "cmake" / "tests.cmake"
+WEBVIEW_CPP = WEB_DIR / "web_proxy_webview.cpp"
+AUTH_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "auth.cpp"
 
 
 def read(path):
@@ -111,13 +113,54 @@ def test_web_sessions_open_one_stream():
     assert "if (enough()) {" in connect
 
 
-def test_file_transfers_do_not_fan_out_over_a_web_carrier():
+def test_file_transfers_keep_upstream_parallelism_over_a_web_carrier():
     upload = read(FILE_UPLOAD_CPP)
     download = read(DOWNLOAD_MANAGER_CPP)
-    assert "kWebProxyMaxSessionsCount = 2;" in upload
-    assert "kWebProxyMaxSessionsCount = 2;" in download
+    # The carrier's scheduler keeps chats ahead, so file transfers keep
+    # upstream's session counts; only in-flight parts are never cancelled
+    # to move them to another session through the same pipe.
+    assert "kWebProxyMaxSessionsCount" not in upload
+    assert "kWebProxyMaxSessionsCount" not in download
     assert "&& !SharedCarrier();" in upload
-    assert "MaxSessionsCount()" in download
+
+
+def test_bridge_batches_instead_of_one_round_trip_per_frame():
+    transport = read(TRANSPORT_CPP)
+    webview = read(WEBVIEW_CPP)
+    write = function_body(
+        transport, "void Transport::Private::writeCarrierFrame(")
+    assert "_webviewBatch.append(frame);" in write
+    assert "flushWebviewBatch();" in write
+    drain = function_body(webview, "void WebviewCarrier::drain()")
+    assert "_inFlight.size() < kMaxInFlightWrites" in drain
+    assert "kMaxWriteBytes" in drain
+    # Downlink frames the page posts in one task leave as one message.
+    assert "queueMicrotask(flushOut)" in webview
+
+
+def test_windows_adapt_to_the_carrier():
+    transport = read(TRANSPORT_CPP)
+    update = function_body(transport, "void Transport::Private::updateFlow(")
+    assert "_upWindow.update(" in update
+    assert "_downWindow.update(" in update
+    # Both windows are drained together now and then to measure the base.
+    assert "_probeUntil = now + std::max(kProbeMinDuration, base);" in update
+    apply = function_body(transport, "void Transport::Private::applyWindows(")
+    assert "_scheduler.setUploadInFlight(probing" in apply
+    assert "_downlinkLimits.downloadBudget = budget;" in apply
+
+
+def test_media_sessions_use_the_media_cluster_key():
+    connection = read(CONNECTION_CPP)
+    auth = read(AUTH_CPP)
+    connect = function_body(
+        connection, "void SessionTransport::connectToServer(")
+    assert connect.index("tryAcquireKeyCreation();") < connect.index(
+        "dropMismatchedTemporaryKey();")
+    drop = function_body(
+        auth, "void SessionPrivate::dropMismatchedTemporaryKey()")
+    assert "TemporaryKeyType::MediaCluster" in drop
+    assert "applyAuthKey(nullptr);" in drop
 
 
 def test_flow_policy_has_a_unit_test_target():

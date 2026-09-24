@@ -195,6 +195,40 @@ bool SessionPrivate::noMediaKeyWithExistingRegularKey() const {
 		&& _sessionState.data->getTemporaryKey(TemporaryKeyType::Regular);
 }
 
+void SessionPrivate::dropMismatchedTemporaryKey() {
+	// A media session creates the regular temporary key itself when it is
+	// the first session of its DC (see Dcenter::acquireKeyCreation), and it
+	// kept that key after the next connect switched it to the media
+	// cluster. Through MTProxy and WEB proxies the DC id in the transport
+	// header picks the backend, -N is the media cluster, and it does not
+	// know the regular key: every packet came back as -404, the regular key
+	// of the whole DC was destroyed, recreated by the same session through
+	// the regular DC and the loop started over. Give the media session the
+	// key of its own cluster (created on this connection if missing).
+	const auto proxy = _sessionState.options
+		? _sessionState.options->proxy.type
+		: ProxyData::Type::None;
+	if (!_sessionState.encryptionKey
+		|| _delegate->isKeysDestroyer()
+		|| (proxy != ProxyData::Type::Mtproto
+			&& proxy != ProxyData::Type::Web)
+		|| (TemporaryKeyTypeByDcType(_currentDcType)
+			!= TemporaryKeyType::MediaCluster)) {
+		return;
+	}
+	const auto regular = _sessionState.data->getTemporaryKey(
+		TemporaryKeyType::Regular);
+	if (!regular || regular != _sessionState.encryptionKey) {
+		return;
+	}
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpKeyCreating,
+		ProxyDiagnosticsSeverity::Info,
+		u"media session left the regular temporary key (id %1) "
+		"for the media cluster key"_q.arg(regular->keyId()));
+	applyAuthKey(nullptr);
+}
+
 bool SessionPrivate::destroyOldEnoughPersistentKey() {
 	Expects(_authState.keyCreator != nullptr);
 

@@ -69,6 +69,46 @@ constexpr auto kWebviewRetryMaxTimeout = crl::time(30 * 1000);
 constexpr auto kWebviewCloseGrace = crl::time(200);
 constexpr auto kMaxWebviewFailures = 3;
 constexpr auto kHealthCheckInterval = crl::time(2 * 1000);
+
+// Frames written within one turn of the carrier thread go to the WebView
+// bridge as one batch, flushed early at this size.
+constexpr auto kBridgeBatchBytes = 1024 * 1024;
+
+// How often the adaptive windows are fed with what the carrier delivered:
+// once per base round trip, within these bounds.
+constexpr auto kFlowUpdateMinInterval = crl::time(50);
+constexpr auto kFlowUpdateMaxInterval = crl::time(200);
+
+// A direction counts as busy for the other one this long after it was
+// last limited by its window (see FlowSample::extraDelay).
+constexpr auto kBusyMemory = crl::time(1000);
+
+// Every kProbeInterval of busy carrier both windows drop to their floors
+// for a round trip (at least kProbeMinDuration), so that frames sent then
+// measure the path without the queues (see AdaptiveWindow).
+constexpr auto kProbeInterval = crl::time(20 * 1000);
+constexpr auto kProbeMinDuration = crl::time(200);
+
+// Upload bytes the relay has not credited yet, sized by AdaptiveWindow.
+// It starts at one relay stream window, what one upstream upload session
+// may have in flight, so a burst is never slower than without shaping;
+// on a slow uplink that first window is queued in front of chats once
+// (a few seconds at 400 KB/s, against 40 s with upstream's sessions) and
+// the window then settles at the target delay. The floor lets that queue
+// drop below the target on such an uplink (upload frames shrink with it,
+// see UplinkLimits::minUploadFrame), the ceiling is four such windows.
+constexpr auto kUploadWindowInitial = int64(4 * 1024 * 1024);
+constexpr auto kUploadWindowMin = int64(16 * 1024);
+constexpr auto kUploadWindowMax = int64(16 * 1024 * 1024);
+
+// Credit shared by download streams, same idea for the relay's downlink.
+// It starts at what one stream gets from the protocol anyway, so a fresh
+// carrier is never slower than without shaping, and it may grow to four
+// such windows.
+constexpr auto kDownloadBudgetInitial = int64(4 * 1024 * 1024);
+constexpr auto kDownloadBudgetMin = int64(256 * 1024);
+constexpr auto kDownloadBudgetMax = int64(16 * 1024 * 1024);
+constexpr auto kDownloadStreamMin = int64(64 * 1024);
 constexpr auto kHealthSummaryInterval = crl::time(10 * 1000);
 constexpr auto kWebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -225,7 +265,7 @@ public:
 	void webviewStarting(uint64 generation);
 	void webviewReady(uint64 generation);
 	void webviewPayload(uint64 generation, const QByteArray &payload);
-	void webviewWritten(uint64 generation, int bytes);
+	void webviewWritten(uint64 generation, int bytes, int items);
 	void webviewFailed(uint64 generation);
 	void webviewUnavailable();
 
@@ -273,6 +313,14 @@ private:
 		// Written to the carrier and not yet credited back by the relay.
 		int64 unacked = 0;
 
+		// (total written after the frame, when) for credit round trips.
+		std::deque<std::pair<int64, crl::time>> sentLog;
+		int64 sentTotal = 0;
+		int64 creditedTotal = 0;
+
+		// Interactive streams: when the first unanswered write went out.
+		crl::time awaitingSince = 0;
+
 		int pendingBytes = 0;
 		bool opened = false;
 	};
@@ -281,6 +329,20 @@ private:
 		int64 down = 0;
 		int64 withheldPeak = 0;
 		int uploadBlocked = 0;
+		int probes = 0;
+		int flooded = 0;
+		std::optional<crl::time> rttMin;
+		std::optional<crl::time> interactiveMin;
+		std::optional<crl::time> interactiveMax;
+	};
+	struct FlowInterval {
+		crl::time startedAt = 0;
+		int64 upCredited = 0;
+		int64 downReceived = 0;
+		bool upLimited = false;
+		bool downLimited = false;
+		std::optional<crl::time> rtt;
+		std::optional<crl::time> interactive;
 	};
 
 	[[nodiscard]] bool ensureServer();
@@ -346,6 +408,10 @@ private:
 	void publishStream(const Stream &stream);
 	void publishConnected();
 	void addUnacked(Stream &stream, int64 bytes);
+	void noteRtt(crl::time rtt);
+	void noteInteractive(crl::time delay);
+	void updateFlow(crl::time now);
+	void flushWebviewBatch();
 	void creditUnacked(uint32 streamId, Stream &stream, int64 bytes);
 	[[nodiscard]] bool releaseDownlinkCredit(Stream &stream);
 	void rebalanceDownlinkCredit();
@@ -354,6 +420,7 @@ private:
 	void recoverStalledCarrier(crl::time silence);
 	void logCarrier(ProxyDiagnosticsSeverity severity, const QString &text);
 	void logSummary(crl::time now);
+	[[nodiscard]] QString flowSummary(const Traffic &traffic);
 	void releasePending(Stream &stream);
 	void rememberClosedStream(uint32 streamId);
 	void notifyConnected(const Stream &stream);
@@ -371,12 +438,26 @@ private:
 	base::flat_map<QTcpSocket*, Client> _clients;
 	base::flat_map<uint32, Stream> _streams;
 	UplinkScheduler _scheduler;
-	const DownlinkLimits _downlinkLimits;
+	DownlinkLimits _downlinkLimits;
+	AdaptiveWindow _upWindow;
+	AdaptiveWindow _downWindow;
+	FlowInterval _flow;
+	crl::time _probeUntil = 0;
+	crl::time _nextProbeAt = 0;
+	crl::time _upLimitedAt = 0;
+	crl::time _downLimitedAt = 0;
+	void applyWindows(crl::time now);
+	QByteArray _webviewBatch;
+	bool _webviewBatchScheduled = false;
 	const LivenessLimits _livenessLimits;
 	int _downloadStreams = 0;
 	int64 _totalUnacked = 0;
 	Traffic _traffic;
 	crl::time _lastSummaryAt = 0;
+	int64 _lastBridgeWrites = 0;
+	int64 _lastBridgeBytes = 0;
+	int64 _lastBridgeAckMs = 0;
+	int64 _lastBridgeDownMessages = 0;
 	bool _healthCheckScheduled = false;
 	base::flat_set<uint32> _closedStreams;
 	std::deque<uint32> _closedStreamOrder;
@@ -403,8 +484,27 @@ private:
 
 Transport::Private::Private(not_null<Transport*> owner)
 : _owner(owner)
-, _scheduler(UplinkLimits{ .frameSize = kDataFrameSize })
-, _downlinkLimits{ .streamWindow = kInitialStreamWindow } {
+, _scheduler(UplinkLimits{
+	.frameSize = kDataFrameSize,
+	.uploadInFlight = kUploadWindowInitial,
+})
+, _downlinkLimits{
+	.streamWindow = kInitialStreamWindow,
+	.downloadBudget = kDownloadBudgetInitial,
+	.downloadMin = kDownloadStreamMin,
+}
+, _upWindow({
+	.initial = kUploadWindowInitial,
+	.min = kUploadWindowMin,
+	.max = kUploadWindowMax,
+	.blindMax = kUploadWindowInitial,
+})
+, _downWindow({
+	.initial = kDownloadBudgetInitial,
+	.min = kDownloadBudgetMin,
+	.max = kDownloadBudgetMax,
+	.blindMax = kDownloadBudgetInitial,
+}) {
 }
 
 void Transport::Private::configure(const ProxyData &proxy) {
@@ -441,6 +541,7 @@ void Transport::Private::deactivate() {
 	_webviewCandidateGeneration = 0;
 	_webviewGeneration = 0;
 	_webviewPendingBytes = 0;
+	_webviewBatch = QByteArray();
 	_webviewPendingItems = 0;
 	_welcomed = false;
 	_browserWriteFailed = false;
@@ -455,6 +556,15 @@ void Transport::Private::deactivate() {
 	_state = State::Idle;
 	_traffic = Traffic();
 	_lastSummaryAt = 0;
+	_flow = FlowInterval();
+	_probeUntil = 0;
+	_nextProbeAt = 0;
+	_upLimitedAt = 0;
+	_downLimitedAt = 0;
+	_upWindow.reset();
+	_downWindow.reset();
+	_scheduler.setUploadInFlight(_upWindow.window());
+	_downlinkLimits.downloadBudget = _downWindow.window();
 	publishConnected();
 }
 
@@ -948,6 +1058,7 @@ void Transport::Private::webviewReady(uint64 generation) {
 	}
 	_webviewGeneration = generation;
 	_webviewPendingBytes = 0;
+	_webviewBatch = QByteArray();
 	_webviewPendingItems = 0;
 	_browser = u"WebView"_q;
 	_pendingToken.clear();
@@ -964,17 +1075,21 @@ void Transport::Private::webviewPayload(
 	}
 }
 
-void Transport::Private::webviewWritten(uint64 generation, int bytes) {
+void Transport::Private::webviewWritten(
+		uint64 generation,
+		int bytes,
+		int items) {
 	if (_webviewGeneration != generation) {
 		return;
 	} else if (bytes <= 0
 		|| bytes > _webviewPendingBytes
-		|| _webviewPendingItems <= 0) {
+		|| items <= 0
+		|| items > _webviewPendingItems) {
 		protocolError();
 		return;
 	}
 	_webviewPendingBytes -= bytes;
-	--_webviewPendingItems;
+	_webviewPendingItems -= items;
 	_lastWriteProgress = crl::now();
 	flushControlFrames();
 	flushStreams();
@@ -996,6 +1111,7 @@ void Transport::Private::webviewFailed(uint64 generation) {
 		_webviewGeneration = 0;
 		_webviewPendingBytes = 0;
 		_webviewPendingItems = 0;
+		_webviewBatch = QByteArray();
 		_welcomed = false;
 		closeAllStreams(false);
 		_controlFrames.clear();
@@ -1098,10 +1214,18 @@ bool Transport::Private::processRelayFrame(const Frame &frame) {
 		}
 		stream.receiveWindow -= frame.payload.size();
 		_traffic.down += frame.payload.size();
-		if (stream.probe) {
-			stream.probe->lastReceivedAt = crl::now();
+		_flow.downReceived += frame.payload.size();
+		{
+			const auto now = crl::now();
+			if (stream.probe) {
+				stream.probe->lastReceivedAt = now;
+			}
+			if (stream.awaitingSince) {
+				noteInteractive(now - base::take(stream.awaitingSince));
+			}
+			notifyData(stream, frame.payload);
+			updateFlow(now);
 		}
-		notifyData(stream, frame.payload);
 		return true;
 	case FrameType::Window: {
 		if (frame.payload.size() != 4) {
@@ -1251,6 +1375,11 @@ bool Transport::Private::releaseDownlinkCredit(Stream &stream) {
 		stream.receiveWindow,
 		stream.withheldWindow,
 		target));
+	if (stream.streamClass == StreamClass::Download
+		&& release < stream.withheldWindow) {
+		// The reader wanted more credit back than the budget allows.
+		_flow.downLimited = true;
+	}
 	if (!release) {
 		_traffic.withheldPeak = std::max(
 			_traffic.withheldPeak,
@@ -1381,12 +1510,32 @@ void Transport::Private::browserBytesWritten() {
 
 void Transport::Private::writeCarrierFrame(QByteArray frame) {
 	if (_webviewGeneration) {
+		// Everything written in this turn goes to the bridge as one batch:
+		// a page call costs a round trip through the WebView, a frame
+		// does not have to.
 		_webviewPendingBytes += frame.size();
-		++_webviewPendingItems;
-		_owner->sendWebviewFrame(_webviewGeneration, std::move(frame));
+		_webviewBatch.append(frame);
+		if (_webviewBatch.size() >= kBridgeBatchBytes) {
+			flushWebviewBatch();
+		} else if (!_webviewBatchScheduled) {
+			_webviewBatchScheduled = true;
+			InvokeQueued(_owner, [=] {
+				_webviewBatchScheduled = false;
+				flushWebviewBatch();
+			});
+		}
 	} else if (_browserSocket) {
 		_browserSocket->write(WebSocketFrame(0x02, frame));
 	}
+}
+
+void Transport::Private::flushWebviewBatch() {
+	if (_webviewBatch.isEmpty() || !_webviewGeneration) {
+		_webviewBatch = QByteArray();
+		return;
+	}
+	++_webviewPendingItems;
+	_owner->sendWebviewFrame(_webviewGeneration, base::take(_webviewBatch));
 }
 
 bool Transport::Private::carrierAvailable() const {
@@ -1486,6 +1635,136 @@ void Transport::Private::creditUnacked(
 		stream.probe->deliveredAt = now;
 	}
 	publishStream(stream);
+
+	// Every frame fully credited now went through the whole uplink: the
+	// bridge, the carrier, the relay's queue and into the backend socket.
+	stream.creditedTotal += credited;
+	while (!stream.sentLog.empty()
+		&& stream.sentLog.front().first <= stream.creditedTotal) {
+		noteRtt(now - stream.sentLog.front().second);
+		stream.sentLog.pop_front();
+	}
+	_flow.upCredited += credited;
+	updateFlow(now);
+}
+
+void Transport::Private::noteRtt(crl::time rtt) {
+	_flow.rtt = std::min(_flow.rtt.value_or(rtt), rtt);
+	_traffic.rttMin = std::min(_traffic.rttMin.value_or(rtt), rtt);
+}
+
+void Transport::Private::noteInteractive(crl::time delay) {
+	_flow.interactive = std::min(_flow.interactive.value_or(delay), delay);
+	_traffic.interactiveMin = std::min(
+		_traffic.interactiveMin.value_or(delay),
+		delay);
+	_traffic.interactiveMax = std::max(
+		_traffic.interactiveMax.value_or(delay),
+		delay);
+}
+
+void Transport::Private::updateFlow(crl::time now) {
+	if (!_flow.startedAt) {
+		_flow.startedAt = now;
+		return;
+	}
+	const auto interval = now - _flow.startedAt;
+	const auto every = std::clamp(
+		_upWindow.baseDelay().value_or(kFlowUpdateMaxInterval),
+		kFlowUpdateMinInterval,
+		kFlowUpdateMaxInterval);
+	if (interval < every) {
+		return;
+	}
+	if (_flow.upLimited) {
+		_upLimitedAt = now;
+	}
+	if (_flow.downLimited) {
+		_downLimitedAt = now;
+	}
+	const auto busy = [&](crl::time at) {
+		return at && (now - at < kBusyMemory);
+	};
+	const auto share = _upWindow.limits().targetDelay;
+	// A frame is credited when the relay has written it to the backend,
+	// and the credit comes back in the relay's downlink FIFO: its round
+	// trip holds both queues a chat request waits in. Both windows follow
+	// it, so together they keep that wait near the target. Interactive
+	// request-to-reply times would say the same, but they cannot be told
+	// apart when requests are pipelined, so they are only reported.
+	const auto probing = (_probeUntil && _flow.startedAt < _probeUntil);
+
+	// New download streams start with the protocol's whole window each, and
+	// until they use it up the relay's downlink FIFO holds more than any
+	// budget: that delay is charged to nobody we control. Credits for the
+	// uplink come back behind it, so the upload window is held, not cut.
+	auto relayHeld = int64();
+	for (const auto &[streamId, stream] : _streams) {
+		if (stream.streamClass == StreamClass::Download) {
+			relayHeld += int64(stream.receiveWindow) - stream.pendingWindow;
+		}
+	}
+	const auto flooded = (relayHeld > _downlinkLimits.downloadBudget);
+	if (flooded) {
+		++_traffic.flooded;
+		_upWindow.hold({
+			.now = now,
+			.interval = interval,
+			.bytes = _flow.upCredited,
+			.windowLimited = _flow.upLimited,
+			.delay = _flow.rtt,
+		});
+	} else {
+		_upWindow.update({
+			.now = now,
+			.interval = interval,
+			.bytes = _flow.upCredited,
+			.windowLimited = _flow.upLimited,
+			.delay = _flow.rtt,
+			.probing = probing,
+			.extraDelay = busy(_downLimitedAt) ? share : 0,
+		});
+	}
+	_downWindow.update({
+		.now = now,
+		.interval = interval,
+		.bytes = _flow.downReceived,
+		.windowLimited = _flow.downLimited,
+		.delay = _flow.rtt,
+		.probing = probing,
+		.extraDelay = busy(_upLimitedAt) ? share : 0,
+	});
+	const auto limited = _flow.upLimited || _flow.downLimited;
+	_flow = FlowInterval{ .startedAt = now };
+	if (_probeUntil && now >= _probeUntil) {
+		_probeUntil = 0;
+	}
+	if (!_nextProbeAt) {
+		_nextProbeAt = now + kProbeInterval;
+	} else if (limited && now >= _nextProbeAt) {
+		const auto base = _upWindow.baseDelay().value_or(0);
+		_probeUntil = now + std::max(kProbeMinDuration, base);
+		_nextProbeAt = now + kProbeInterval;
+		++_traffic.probes;
+	}
+	applyWindows(now);
+}
+
+void Transport::Private::applyWindows(crl::time now) {
+	const auto probing = (_probeUntil && now < _probeUntil);
+	_scheduler.setUploadInFlight(probing
+		? _upWindow.limits().min
+		: _upWindow.window());
+	const auto budget = probing
+		? _downWindow.limits().min
+		: _downWindow.window();
+	if (budget != _downlinkLimits.downloadBudget) {
+		const auto grew = (budget > _downlinkLimits.downloadBudget);
+		_downlinkLimits.downloadBudget = budget;
+		if (grew) {
+			rebalanceDownlinkCredit();
+		}
+	}
 }
 
 void Transport::Private::flushStreams() {
@@ -1509,6 +1788,7 @@ void Transport::Private::flushStreams() {
 	}
 	if (_scheduler.uploadBlocked()) {
 		++_traffic.uploadBlocked;
+		_flow.upLimited = true;
 	}
 	if (carrierPendingBytes() > 0) {
 		ensureWriteProgressCheck();
@@ -1555,6 +1835,18 @@ void Transport::Private::flushStream(uint32 streamId, int maxBytes) {
 		}
 		_scheduler.sent(streamId, take);
 		addUnacked(stream, take);
+		if (stream.probe) {
+			stream.probe->sentBytes += take;
+		}
+		{
+			const auto now = crl::now();
+			stream.sentTotal += take;
+			stream.sentLog.emplace_back(stream.sentTotal, now);
+			if (stream.streamClass == StreamClass::Interactive
+				&& !stream.awaitingSince) {
+				stream.awaitingSince = now;
+			}
+		}
 		_traffic.up += take;
 		publishStream(stream);
 		ensureWriteProgressCheck();
@@ -1837,13 +2129,53 @@ void Transport::Private::logSummary(crl::time now) {
 			.arg(withheld)
 			.arg(traffic.withheldPeak))
 		+ (u"up=%1 down=%2 interval_ms=%3 last_down_ms=%4 "
-			"last_credit_ms=%5 carrier_pending=%6"_q
+			"last_credit_ms=%5 carrier_pending=%6 "_q
 			.arg(traffic.up)
 			.arg(traffic.down)
 			.arg(interval)
 			.arg(since(health.lastDownlinkAt))
 			.arg(since(health.lastCreditAt))
-			.arg(carrierPendingBytes())));
+			.arg(carrierPendingBytes()))
+		+ flowSummary(traffic));
+}
+
+QString Transport::Private::flowSummary(const Traffic &traffic) {
+	const auto optional = [](const std::optional<crl::time> &value) {
+		return value ? QString::number(*value) : u"-"_q;
+	};
+	const auto &bridge = Bridge();
+	const auto writes = bridge.upWrites.load() - _lastBridgeWrites;
+	const auto bytes = bridge.upBytes.load() - _lastBridgeBytes;
+	const auto ackMs = bridge.upAckMsTotal.load() - _lastBridgeAckMs;
+	const auto messages = bridge.downMessages.load() - _lastBridgeDownMessages;
+	_lastBridgeWrites += writes;
+	_lastBridgeBytes += bytes;
+	_lastBridgeAckMs += ackMs;
+	_lastBridgeDownMessages += messages;
+	return (u"up_window=%1 up_rate=%2 up_base_ms=%3 up_delay_ms=%4 "
+		"up_shrinks=%5 down_budget=%6 down_rate=%7 down_base_ms=%8 "
+		"down_delay_ms=%9 "_q
+		.arg(_upWindow.window())
+		.arg(_upWindow.rate())
+		.arg(optional(_upWindow.baseDelay()))
+		.arg(optional(_upWindow.lastDelay()))
+		.arg(_upWindow.shrinks())
+		.arg(_downWindow.window())
+		.arg(_downWindow.rate())
+		.arg(optional(_downWindow.baseDelay()))
+		.arg(optional(_downWindow.lastDelay())))
+		+ (u"probes=%1 flooded=%2 rtt_min=%3 interactive_ms=%4..%5 "
+			"bridge_writes=%6 bridge_avg_bytes=%7 bridge_ack_avg_ms=%8 "
+			"bridge_down_msgs=%9"_q
+			.arg(traffic.probes)
+			.arg(traffic.flooded)
+			.arg(optional(traffic.rttMin))
+			.arg(optional(traffic.interactiveMin))
+			.arg(optional(traffic.interactiveMax))
+			.arg(writes)
+			.arg(writes ? (bytes / writes) : 0)
+			.arg(writes ? (ackMs / writes) : 0)
+			.arg(messages));
 }
 
 void Transport::Private::writeWebSocket(
@@ -2037,9 +2369,15 @@ void Transport::StartWebview(const ProxyData &proxy) {
 						std::move(payload));
 				}
 			},
-			.written = [=](uint64 writtenGeneration, int bytes) {
+			.written = [=](
+					uint64 writtenGeneration,
+					int bytes,
+					int items) {
 				if (transport) {
-					transport->webviewWritten(writtenGeneration, bytes);
+					transport->webviewWritten(
+						writtenGeneration,
+						bytes,
+						items);
 				}
 			},
 			.failed = [=](uint64 failedGeneration) {
@@ -2312,8 +2650,10 @@ void Transport::webviewPayload(uint64 generation, QByteArray payload) {
 	});
 }
 
-void Transport::webviewWritten(uint64 generation, int bytes) {
-	InvokeQueued(this, [=] { _private->webviewWritten(generation, bytes); });
+void Transport::webviewWritten(uint64 generation, int bytes, int items) {
+	InvokeQueued(this, [=] {
+		_private->webviewWritten(generation, bytes, items);
+	});
 }
 
 void Transport::webviewFailed(uint64 generation) {

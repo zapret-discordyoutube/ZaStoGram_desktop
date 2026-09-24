@@ -74,12 +74,6 @@ constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
 
 constexpr auto kMaxSessionsCount = 8;
 
-// Through a WEB proxy every session shares one carrier, so more sessions
-// only fight over it and a slow part says nothing about its own session:
-// keep two (one sending while the other waits for its acknowledgement)
-// and never cancel in-flight parts to move them to another session.
-constexpr auto kWebProxyMaxSessionsCount = 2;
-
 constexpr auto kFastRequestThreshold = 1 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
 constexpr auto kFileProgressInterval = 2 * crl::time(1000);
@@ -115,12 +109,12 @@ constexpr auto kAcceptAsFastIfTotalAtLeast = 512 * 1024;
 	return event;
 }
 
+// Through a WEB proxy every session shares one carrier, whose scheduler
+// interleaves them and keeps chats ahead: a slow part says nothing about
+// its own session, so in-flight parts are never cancelled to move them to
+// another session (they would only be sent again through the same pipe).
 [[nodiscard]] bool SharedCarrier() {
 	return MTP::WebProxy::Transport::Active();
-}
-
-[[nodiscard]] int MaxSessionsCount() {
-	return SharedCarrier() ? kWebProxyMaxSessionsCount : kMaxSessionsCount;
 }
 
 [[nodiscard]] const char *ThumbnailFormat(const QString &mime) {
@@ -798,7 +792,7 @@ QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
 
 bool Uploader::canAddDcIndex() const {
 	const auto count = int(_sentPerDcIndex.size());
-	return (count < MaxSessionsCount())
+	return (count < kMaxSessionsCount)
 		&& (count == int(_dcIndicesWithFastRequests.size()));
 }
 

@@ -317,6 +317,7 @@ void SessionTransport::connectToServer(bool afterConfig) {
 	const auto bareDc = BareDcId(_owner->_shiftedDcId);
 
 	_owner->_currentDcType = _owner->tryAcquireKeyCreation();
+	_owner->dropMismatchedTemporaryKey();
 	if (_owner->_currentDcType == DcType::Cdn && !_owner->_delegate->isKeysDestroyer()) {
 		if (!_owner->_delegate->dcOptions().hasCDNKeysForDc(bareDc)) {
 			requestCDNConfig();

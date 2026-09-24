@@ -29,12 +29,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // The policy has three parts:
 // - uplink: interactive frames go first, bulk streams share what is left
 //   round-robin in frame-sized chunks, and upload bytes that the relay has
-//   not yet written to its backend are capped, so the page queue never holds
-//   more than a bounded amount of bulk data in front of a chat request;
+//   not yet written to its backend are capped by a window, so the page
+//   queue never holds more than a bounded amount of bulk data in front of
+//   a chat request;
 // - downlink: the relay may only read a backend while it holds our credit,
-//   so download streams get a small credit instead of the full protocol
-//   window, and what they do not get stays in the backend's TCP buffers
-//   instead of in the shared FIFO in front of interactive replies;
+//   so download streams share a credit budget instead of the full protocol
+//   window each, and what they do not get stays in the backend's TCP
+//   buffers instead of in the shared FIFO in front of interactive replies;
+// - both the upload window and the download budget adapt: they track the
+//   bandwidth-delay product the carrier actually delivers plus a small
+//   queue allowance, and shrink when chat replies start to wait in line;
 // - liveness: a stream is declared dead by what the carrier knows about it,
 //   not by a per-stream timer that cannot tell "queued" from "lost".
 
@@ -54,8 +58,13 @@ struct UplinkLimits {
 
 	// Upload bytes handed to the carrier and not yet credited back by the
 	// relay. This is what can sit in front of an interactive frame in the
-	// shared uplink queue.
+	// shared uplink queue. The carrier moves it with AdaptiveWindow.
 	int64 uploadInFlight = 1024 * 1024;
+
+	// Upload frames are cut to a quarter of the in-flight cap, but not
+	// below this: on a slow uplink a 64 KiB frame alone is a long wait
+	// for whatever is queued behind it.
+	int minUploadFrame = 16 * 1024;
 
 	// Interactive and download frames are tiny, but a steady stream of them
 	// must not stop uploads forever: after this many of them in a row while
@@ -92,6 +101,8 @@ public:
 	void sent(uint32 streamId, int bytes);
 	void acknowledged(uint32 streamId, int64 bytes);
 
+	void setUploadInFlight(int64 bytes);
+
 	[[nodiscard]] UplinkStats stats() const;
 	[[nodiscard]] bool uploadBlocked() const;
 	[[nodiscard]] const UplinkLimits &limits() const {
@@ -121,9 +132,12 @@ struct DownlinkLimits {
 
 	// Credit shared by all download streams: the most media that can be
 	// queued in the relay's downlink FIFO in front of an interactive reply.
+	// The carrier moves it with AdaptiveWindow.
 	int64 downloadBudget = 2 * 1024 * 1024;
-	int64 downloadMin = 256 * 1024;
-	int64 downloadMax = 1024 * 1024;
+
+	// Bounds of one stream's share.
+	int64 downloadMin = 128 * 1024;
+	int64 downloadMax = 4 * 1024 * 1024;
 };
 
 // How much credit the relay should hold for a stream of this class.
@@ -138,6 +152,123 @@ struct DownlinkLimits {
 	int64 relayCredit,
 	int64 withheld,
 	int64 target);
+
+// A window sized by the bandwidth-delay product the carrier delivers.
+//
+// Everything the carrier holds in flight waits in one FIFO in front of the
+// next chat request: the bridge page's queue, the WebSocket, TCP and the
+// relay's queue. So the window is kept at
+//
+//     window = rate * (baseRtt + targetDelay)
+//
+// once per interval, where rate is what was delivered in it (credited back
+// by the relay for the uplink, received for the downlink) and baseRtt is
+// the lowest frame round trip over the last minutes: one bandwidth-delay
+// product to keep the pipe full plus targetDelay worth of queue. While the
+// window is the limit the delivered rate is window / loop round trip, so
+// the target is above the window until the queue reaches targetDelay and
+// below it after. The upload window and the download budget share one
+// loop (a download's credit goes up behind uploads, an upload's credit
+// comes down behind media), so together they settle where both queues sum
+// to targetDelay: what a chat request waits behind, both ways.
+//
+// The base must be the path without a queue, and a flow that keeps its
+// queue at targetDelay never shows it by itself: a minimum over a short
+// history would soon take the standing queue for the base and the window
+// would run away. So, like BBR's ProbeRTT, the carrier drains both windows
+// for a round trip every few seconds (FlowSample::probing); those samples
+// refresh the base, and the history only has to outlive the probe period.
+struct AdaptiveWindowLimits {
+	int64 initial = 1024 * 1024;
+	int64 min = 64 * 1024;
+	int64 max = 8 * 1024 * 1024;
+
+	// Queueing delay (ms) the flow may add in front of interactive traffic.
+	int64 targetDelay = 100;
+
+	// Without any delay sample the window may still grow when it is the
+	// limit, but only up to this.
+	int64 blindMax = 2 * 1024 * 1024;
+
+	// The base round trip is the minimum of per-bucket minimums over the
+	// history (ms), so it follows a real path change within minutes.
+	int64 baseBucket = 10'000;
+	int64 baseHistory = 60'000;
+
+	int64 maxGrowthPercent = 200;
+	int64 shrinkPercent = 75;
+};
+
+struct FlowSample {
+	int64 now = 0;
+	int64 interval = 0;
+
+	// Delivered in the interval: credited back (uplink) or received
+	// (downlink).
+	int64 bytes = 0;
+
+	// Demand was held back by the window during the interval.
+	bool windowLimited = false;
+
+	// Lowest round trip measured in the interval.
+	std::optional<int64> delay;
+
+	// The interval overlapped a drain for measuring the base: its delay
+	// counts, its rate and limits do not.
+	bool probing = false;
+
+	// Queueing (ms) another flow on the same loop is allowed on top of
+	// targetDelay: with upload and download both busy each keeps its own
+	// share instead of the two squeezing each other into one.
+	int64 extraDelay = 0;
+};
+
+class AdaptiveWindow final {
+public:
+	explicit AdaptiveWindow(AdaptiveWindowLimits limits);
+
+	void update(const FlowSample &sample);
+
+	// The loop is slowed by a queue this flow does not own (e.g. the
+	// relay's downlink flooded by new streams' initial credit): only the
+	// base is tracked, the window stays. Growing it to cover the credit in
+	// transit cannot tell that transit from this flow's own queue.
+	void hold(const FlowSample &sample);
+
+	void reset();
+
+	[[nodiscard]] int64 window() const {
+		return _window;
+	}
+	[[nodiscard]] int64 rate() const { // Bytes per second, smoothed.
+		return _rate;
+	}
+	[[nodiscard]] int64 target() const {
+		return _target;
+	}
+	[[nodiscard]] std::optional<int64> baseDelay() const;
+	[[nodiscard]] std::optional<int64> lastDelay() const {
+		return _lastDelay;
+	}
+	[[nodiscard]] int shrinks() const {
+		return _shrinks;
+	}
+	[[nodiscard]] const AdaptiveWindowLimits &limits() const {
+		return _limits;
+	}
+
+private:
+	void noteDelay(int64 now, std::optional<int64> delay);
+
+	AdaptiveWindowLimits _limits;
+	std::deque<std::pair<int64, int64>> _base; // (bucket, min delay)
+	std::optional<int64> _lastDelay;
+	int64 _window = 0;
+	int64 _target = 0;
+	int64 _rate = 0;
+	int _shrinks = 0;
+
+};
 
 struct CarrierHealth {
 	bool connected = false;

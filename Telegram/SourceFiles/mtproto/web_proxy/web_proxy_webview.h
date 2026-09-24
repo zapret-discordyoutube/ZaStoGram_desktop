@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QObject>
 #include <crl/crl_time.h>
 
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <string>
@@ -26,12 +27,26 @@ class Window;
 
 namespace MTP::WebProxy {
 
+// What crossed the native <-> page boundary, for diagnostics and the
+// self-test. Written on the main thread, read anywhere.
+struct BridgeCounters {
+	std::atomic<int64> upWrites = 0;
+	std::atomic<int64> upBytes = 0;
+	std::atomic<int64> upAckMsTotal = 0;
+	std::atomic<int64> upAckMsMax = 0;
+	std::atomic<int64> upQueuedMax = 0;
+	std::atomic<int64> downMessages = 0;
+	std::atomic<int64> downBytes = 0;
+};
+[[nodiscard]] BridgeCounters &Bridge();
+
 class WebviewCarrier final : public QObject {
 public:
 	struct Callbacks {
 		Fn<void(uint64)> ready;
 		Fn<void(uint64, QByteArray)> payload;
-		Fn<void(uint64, int)> written;
+		// Bytes and items (send() calls) the page has taken over.
+		Fn<void(uint64, int, int)> written;
 		Fn<void(uint64)> failed;
 	};
 
@@ -43,7 +58,11 @@ public:
 
 	[[nodiscard]] static bool Supported();
 	[[nodiscard]] bool valid() const;
-	void send(QByteArray frame);
+
+	// One or more whole frames. Consecutive sends are coalesced into one
+	// page call and several page calls are kept in flight, so the bridge
+	// costs one round trip per batch, not per frame.
+	void send(QByteArray frames);
 
 	// Asks the bridge page to close its relay session and stops reacting
 	// to the page. The object should be kept alive shortly afterwards so
@@ -54,6 +73,13 @@ private:
 	struct Pending {
 		QByteArray frame;
 		bool notifyWritten = false;
+	};
+	struct InFlight {
+		uint64 sequence = 0;
+		int bytes = 0;
+		int items = 0;
+		bool notifyWritten = false;
+		crl::time since = 0;
 	};
 
 	void handleMessage(std::string message, std::string sourceUrl);
@@ -79,7 +105,8 @@ private:
 	std::unique_ptr<QTimer> _probeTimer;
 	std::unique_ptr<QTimer> _writeTimer;
 	std::deque<Pending> _pending;
-	Pending _inFlight;
+	std::deque<InFlight> _inFlight;
+	int _inFlightBytes = 0;
 	uint64 _writeSequence = 0;
 	crl::time _handshakeStarted = 0;
 	int _pendingBytes = 0;

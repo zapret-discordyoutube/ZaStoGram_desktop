@@ -65,6 +65,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/view/media_view_open_common.h"
 #include "mtproto/config/mtproto_dc_options.h"
 #include "mtproto/config/mtproto_config.h"
+#include "mtproto/web_proxy/web_proxy_selftest.h"
 #include "mtproto/web_proxy/web_proxy_transport.h"
 #include "media/audio/media_audio_track.h"
 #include "media/player/media_player_instance.h"
@@ -315,7 +316,13 @@ void Application::run() {
 
 	ValidateScale();
 
+	if (const auto proxy = MTP::WebProxy::SelfTestProxy()) {
+		auto &proxies = settings().proxy();
+		proxies.setSelected(*proxy);
+		proxies.setSettings(MTP::ProxyData::Settings::Enabled);
+	}
 	refreshGlobalProxy(); // Depends on app settings being read.
+	MTP::WebProxy::StartSelfTest();
 
 	if (const auto old = Local::oldSettingsVersion(); old < AppVersion) {
 		autoRegisterUrlScheme();

@@ -34,10 +34,22 @@ constexpr auto kMaxPendingBytes = 8 * 1024 * 1024;
 constexpr auto kMaxPendingItems = 1024;
 constexpr auto kMaxMessageBytes = 2 * 1024 * 1024;
 
-// The relay coalesces DATA up to kMaxFramePayload per frame and the bridge
-// posts one frame per native message, so a message can hold a full frame
-// in base64 (plus the one-byte prefix); the per-platform script message
-// caps in lib_webview must accept at least this much as well.
+// Uplink: consecutive sends are joined into page calls of up to this many
+// bytes, and up to kMaxInFlightWrites / kMaxInFlightBytes of them may wait
+// for the page's acknowledgement at once. The page hands each call to its
+// carrier queue right away, so the acknowledgement only bounds what sits in
+// the page, it is not flow control towards the relay.
+constexpr auto kMaxWriteBytes = 1024 * 1024;
+constexpr auto kMaxInFlightWrites = 4;
+constexpr auto kMaxInFlightBytes = 4 * 1024 * 1024;
+
+// Downlink: the injected script joins the frames the page posts within one
+// task (the page splits every relay message into single frames) into one
+// native message of up to this many bytes, a single frame of up to
+// kMaxFramePayload passes alone; in base64 with the one-byte prefix that
+// is kMaxFrameMessageBytes, and the per-platform script message caps in
+// lib_webview must accept at least this much as well.
+constexpr auto kDownlinkBatchBytes = 1024 * 1024;
 constexpr auto kMaxFrameMessageBytes = 1
 	+ ((kMaxFramePayload + kFrameHeaderSize + 2) / 3) * 4;
 static_assert(kMaxMessageBytes >= kMaxFrameMessageBytes);
@@ -74,7 +86,7 @@ window.external.invoke('d'+(ok?'1':'0'));
 #endif // !NDEBUG
 
 [[nodiscard]] QByteArray BridgeScript() {
-	return R"JS((()=>{
+	return QByteArray(R"JS((()=>{
 if(window!==window.top||Object.prototype.hasOwnProperty.call(window,'TelegramWebProxy'))return;
 let receiver=null;
 const send=value=>window.external.invoke(value);
@@ -84,14 +96,32 @@ const encode=value=>{
  return btoa(parts.join(''));
 };
 const decode=value=>{
+ if(typeof Uint8Array.fromBase64==='function')return Uint8Array.fromBase64(value).buffer;
  const binary=atob(value),bytes=new Uint8Array(binary.length);
  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
  return bytes.buffer;
 };
+let outParts=[],outBytes=0,outScheduled=false;
+const flushOut=()=>{
+ outScheduled=false;
+ if(!outParts.length)return;
+ let bytes;
+ if(outParts.length===1)bytes=new Uint8Array(outParts[0]);
+ else{bytes=new Uint8Array(outBytes);let offset=0;for(const part of outParts){bytes.set(new Uint8Array(part),offset);offset+=part.byteLength}}
+ outParts=[];outBytes=0;
+ send('b'+(typeof bytes.toBase64==='function'?bytes.toBase64():encode(bytes.buffer)));
+};
 const bridge={
  postMessage(value){
-  if(value instanceof ArrayBuffer)send('b'+encode(value));
-  else if(typeof value==='string')send('c'+value);
+  if(value instanceof ArrayBuffer){
+   if(outBytes&&outBytes+value.byteLength>__BATCH__)flushOut();
+   outParts.push(value);outBytes+=value.byteLength;
+   if(outBytes>=__BATCH__)flushOut();
+   else if(!outScheduled){outScheduled=true;queueMicrotask(flushOut)}
+   return;
+  }
+  flushOut();
+  if(typeof value==='string')send('c'+value);
   else send('f');
  },
  receive(sequence,value){
@@ -115,10 +145,17 @@ Object.defineProperty(window,'TelegramWebProxy',{
  value:Object.freeze(bridge),configurable:false,writable:false
 });
 send('h');
-})())JS";
+})())JS").replace(
+		"__BATCH__",
+		QByteArray::number(kDownlinkBatchBytes));
 }
 
 } // namespace
+
+BridgeCounters &Bridge() {
+	static auto result = BridgeCounters();
+	return result;
+}
 
 WebviewCarrier::WebviewCarrier(
 		const ProxyData &proxy,
@@ -225,8 +262,8 @@ bool WebviewCarrier::valid() const {
 	return _window && _window->valid() && !_failed && !_closing;
 }
 
-void WebviewCarrier::send(QByteArray frame) {
-	enqueue({ std::move(frame), true });
+void WebviewCarrier::send(QByteArray frames) {
+	enqueue({ std::move(frames), true });
 }
 
 void WebviewCarrier::handleMessage(
@@ -268,17 +305,33 @@ void WebviewCarrier::handleMessage(
 	case 'a': {
 		bool ok = false;
 		const auto sequence = data.mid(1).toULongLong(&ok);
-		if (!ok || _inFlight.frame.isEmpty() || sequence != _writeSequence) {
+		if (!ok
+			|| _inFlight.empty()
+			|| sequence != _inFlight.front().sequence) {
 			fail("invalid write acknowledgement");
 			return;
 		}
-		_writeTimer->stop();
-		const auto written = _inFlight.frame.size();
-		const auto notify = _inFlight.notifyWritten;
-		_pendingBytes -= written;
-		_inFlight = Pending();
-		if (notify) {
-			_callbacks.written(_generation, written);
+		const auto done = _inFlight.front();
+		_inFlight.pop_front();
+		_inFlightBytes -= done.bytes;
+		_pendingBytes -= done.bytes;
+		{
+			auto &counters = Bridge();
+			const auto ms = crl::now() - done.since;
+			++counters.upWrites;
+			counters.upBytes += done.bytes;
+			counters.upAckMsTotal += ms;
+			if (ms > counters.upAckMsMax) {
+				counters.upAckMsMax = ms;
+			}
+		}
+		if (_inFlight.empty()) {
+			_writeTimer->stop();
+		} else {
+			_writeTimer->start(kWriteTimeout);
+		}
+		if (done.notifyWritten) {
+			_callbacks.written(_generation, done.bytes, done.items);
 		}
 		drain();
 		return;
@@ -361,7 +414,9 @@ void WebviewCarrier::handleBinary(QByteArray frame) {
 		return;
 	}
 	if (!_adopted) {
-		auto input = frame;
+		// The welcome is the relay's first frame; frames the script
+		// joined behind it in the same message belong to the carrier.
+		auto input = frame.left(kFrameHeaderSize);
 		auto frames = std::vector<Frame>();
 		if (!ParseFrames(input, frames)
 			|| !input.isEmpty()
@@ -375,8 +430,13 @@ void WebviewCarrier::handleBinary(QByteArray frame) {
 		_adopted = true;
 		_handshakeTimer->stop();
 		_callbacks.ready(_generation);
-		return;
+		if (frame.size() == kFrameHeaderSize) {
+			return;
+		}
+		frame.remove(0, kFrameHeaderSize);
 	}
+	++Bridge().downMessages;
+	Bridge().downBytes += frame.size();
 	_callbacks.payload(_generation, std::move(frame));
 }
 
@@ -411,8 +471,7 @@ void WebviewCarrier::enqueue(Pending pending) {
 	if (_failed || _closing || pending.frame.isEmpty()) {
 		return;
 	}
-	const auto pendingItems = _pending.size()
-		+ (_inFlight.frame.isEmpty() ? 0 : 1);
+	const auto pendingItems = _pending.size() + _inFlight.size();
 	if (pendingItems >= kMaxPendingItems
 		|| pending.frame.size() > kMaxPendingBytes
 		|| _pendingBytes > kMaxPendingBytes - pending.frame.size()) {
@@ -425,20 +484,43 @@ void WebviewCarrier::enqueue(Pending pending) {
 }
 
 void WebviewCarrier::drain() {
-	if (_failed || !_inFlight.frame.isEmpty() || _pending.empty()) {
-		return;
+	if (int64(_pending.size()) > Bridge().upQueuedMax) {
+		Bridge().upQueuedMax = int64(_pending.size());
 	}
-	_inFlight = std::move(_pending.front());
-	_pending.pop_front();
-	++_writeSequence;
-	const auto base64 = _inFlight.frame.toBase64();
-	_writeTimer->start(kWriteTimeout);
-	_window->eval(
-		"window.TelegramWebProxy?.receive("
-		+ QByteArray::number(_writeSequence)
-		+ ",'"
-		+ base64
-		+ "')");
+	while (!_failed
+		&& !_pending.empty()
+		&& _inFlight.size() < kMaxInFlightWrites
+		&& _inFlightBytes < kMaxInFlightBytes) {
+		auto batch = std::move(_pending.front());
+		_pending.pop_front();
+		auto items = 1;
+		while (!_pending.empty()
+			&& _pending.front().notifyWritten == batch.notifyWritten
+			&& (batch.frame.size() + _pending.front().frame.size()
+				<= kMaxWriteBytes)) {
+			batch.frame.append(_pending.front().frame);
+			_pending.pop_front();
+			++items;
+		}
+		const auto sequence = ++_writeSequence;
+		_inFlight.push_back({
+			.sequence = sequence,
+			.bytes = int(batch.frame.size()),
+			.items = items,
+			.notifyWritten = batch.notifyWritten,
+			.since = crl::now(),
+		});
+		_inFlightBytes += batch.frame.size();
+		if (_inFlight.size() == 1) {
+			_writeTimer->start(kWriteTimeout);
+		}
+		_window->eval(
+			"window.TelegramWebProxy?.receive("
+			+ QByteArray::number(sequence)
+			+ ",'"
+			+ batch.frame.toBase64()
+			+ "')");
+	}
 }
 
 void WebviewCarrier::heartbeat() {

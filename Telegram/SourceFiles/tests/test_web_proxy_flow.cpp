@@ -129,6 +129,28 @@ void TestUploadCap() {
 		"removed stream releases its in-flight bytes");
 }
 
+void TestUploadFramesFollowTheCap() {
+	auto limits = UplinkLimits();
+	limits.uploadInFlight = 64 * 1024;
+	auto scheduler = UplinkScheduler(limits);
+	scheduler.add(1, StreamClass::Upload);
+	scheduler.markReady(1);
+	auto grant = scheduler.next();
+	Check(grant && grant->maxBytes == limits.minUploadFrame,
+		"a small cap cuts upload frames down to the minimum");
+	scheduler.setUploadInFlight(4 * 1024 * 1024);
+	scheduler.markReady(1);
+	grant = scheduler.next();
+	Check(grant && grant->maxBytes == limits.frameSize,
+		"a large cap sends full frames");
+	scheduler.add(2, StreamClass::Interactive);
+	scheduler.setUploadInFlight(64 * 1024);
+	scheduler.markReady(2);
+	grant = scheduler.next();
+	Check(grant && grant->maxBytes == limits.frameSize,
+		"interactive frames are never cut");
+}
+
 void TestDownloadNotCapped() {
 	auto limits = UplinkLimits();
 	limits.frameSize = 64;
@@ -195,13 +217,17 @@ void TestDownlinkCredit() {
 	Check(DownlinkCreditTarget(limits, StreamClass::Upload, 5)
 		== limits.streamWindow, "upload streams keep the full window");
 	Check(DownlinkCreditTarget(limits, StreamClass::Download, 1)
-		== limits.downloadMax, "a lone download is capped at the max");
+		== limits.downloadBudget, "a lone download gets the whole budget");
 	Check(DownlinkCreditTarget(limits, StreamClass::Download, 4)
 		== limits.downloadBudget / 4, "downloads share the budget");
 	Check(DownlinkCreditTarget(limits, StreamClass::Download, 100)
 		== limits.downloadMin, "a share never drops below the minimum");
 	Check(DownlinkCreditTarget(limits, StreamClass::Download, 0)
-		== limits.downloadMax, "zero streams does not divide by zero");
+		== limits.downloadBudget, "zero streams does not divide by zero");
+	auto big = limits;
+	big.downloadBudget = 64 * 1024 * 1024;
+	Check(DownlinkCreditTarget(big, StreamClass::Download, 1)
+		== limits.downloadMax, "a share never exceeds the per-stream max");
 
 	// The relay still holds the initial window: nothing is returned.
 	Check(DownlinkCreditRelease(4 * 1024 * 1024, 65536, 512 * 1024) == 0,
@@ -369,6 +395,197 @@ void TestReceiveWait() {
 		"a stalled carrier is recovered once by the carrier, not per stream");
 }
 
+// A path with a bottleneck of `capacity` bytes per second and a base round
+// trip of `baseRtt` ms, fed as the carrier would feed it: everything above
+// one bandwidth-delay product waits in the queue.
+struct Path {
+	int64 capacity = 0;
+	int64 baseRtt = 0;
+
+	[[nodiscard]] int64 queueDelay(int64 window) const {
+		const auto bdp = capacity * baseRtt / 1000;
+		return (window > bdp) ? ((window - bdp) * 1000 / capacity) : 0;
+	}
+	[[nodiscard]] FlowSample sample(
+			int64 now,
+			int64 interval,
+			int64 window,
+			bool limited = true) const {
+		const auto rtt = baseRtt + queueDelay(window);
+		const auto rate = std::min(window * 1000 / rtt, capacity);
+		auto result = FlowSample();
+		result.now = now;
+		result.interval = interval;
+		result.bytes = rate * interval / 1000;
+		result.windowLimited = limited;
+		result.delay = rtt;
+		return result;
+	}
+};
+
+[[nodiscard]] FlowSample Sample(
+		int64 now,
+		int64 interval,
+		int64 bytes,
+		bool limited,
+		std::optional<int64> delay) {
+	auto result = FlowSample();
+	result.now = now;
+	result.interval = interval;
+	result.bytes = bytes;
+	result.windowLimited = limited;
+	result.delay = delay;
+	return result;
+}
+
+void TestAdaptiveGrowsOnFreePath() {
+	auto window = AdaptiveWindow(AdaptiveWindowLimits());
+	const auto start = window.window();
+	const auto path = Path{ .capacity = 20 * 1024 * 1024, .baseRtt = 100 };
+	auto now = int64(1000);
+	for (auto i = 0; i != 80; ++i) {
+		now += 200;
+		window.update(path.sample(now, 200, window.window()));
+	}
+	// Settles where the queue it builds is the 100 ms target:
+	// 20 MiB/s * (100 ms + 100 ms) = 4 MiB.
+	Check(window.window() > start, "a free path grows the window");
+	Check(window.window() >= 3 * 1024 * 1024
+		&& window.window() <= 5 * 1024 * 1024,
+		"the window settles where queueing meets the target");
+	Check(path.queueDelay(window.window()) <= 150,
+		"what waits in front of a chat stays near the target delay");
+
+	auto fast = AdaptiveWindow(AdaptiveWindowLimits());
+	const auto wide = Path{ .capacity = 200 * 1024 * 1024, .baseRtt = 100 };
+	now = 1000;
+	auto steps = 0;
+	while (fast.window() < fast.limits().max && steps < 40) {
+		now += 200;
+		fast.update(wide.sample(now, 200, fast.window()));
+		++steps;
+	}
+	Check(fast.window() == fast.limits().max,
+		"a wide path reaches the upper bound");
+	Check(steps <= 6, "growth is multiplicative, not additive");
+}
+
+void TestAdaptiveShrinksWhenQueueGrows() {
+	auto limits = AdaptiveWindowLimits();
+	limits.initial = 8 * 1024 * 1024;
+	auto window = AdaptiveWindow(limits);
+	// A slow uplink: 400 KB/s at 60 ms. 8 MiB in flight means 20 s of
+	// queue in front of every chat request.
+	const auto path = Path{ .capacity = 400 * 1000, .baseRtt = 60 };
+	auto now = int64(1000);
+	// The first frames of a burst see the empty path.
+	window.update(Sample(now, 200, 80'000, false, 60));
+	auto first = int64(0);
+	for (auto i = 0; i != 60; ++i) {
+		now += 200;
+		window.update(path.sample(now, 200, window.window()));
+		if (!i) {
+			first = window.window();
+		}
+	}
+	Check(first >= limits.initial / 2,
+		"one interval shrinks the window at most by half");
+	Check(window.window() <= 128 * 1024,
+		"a queue far beyond the target shrinks the window to the floor");
+	Check(path.queueDelay(window.window()) <= 250,
+		"after shrinking chats wait a fraction of a second, not seconds");
+	Check(window.shrinks() > 0, "shrinks are counted");
+	Check(window.baseDelay() == 60,
+		"a standing queue does not raise the base round trip "
+		"within the history");
+}
+
+void TestAdaptiveIgnoresIdleFlow() {
+	auto window = AdaptiveWindow(AdaptiveWindowLimits());
+	const auto start = window.window();
+	auto now = int64(1000);
+	for (auto i = 0; i != 30; ++i) {
+		now += 200;
+		window.update(Sample(now, 200, 1000, false, 80));
+	}
+	Check(window.window() == start,
+		"an application-limited flow neither grows nor drains the window");
+
+	auto blind = AdaptiveWindow(AdaptiveWindowLimits());
+	for (auto i = 0; i != 30; ++i) {
+		blind.update(Sample(1000 + i * 200, 200, 10'000'000, true, {}));
+	}
+	Check(blind.window() == blind.limits().blindMax,
+		"without delay samples growth stops at the blind cap");
+}
+
+void TestAdaptiveSharesDelay() {
+	// Upload and download on one loop: the credit for this direction comes
+	// back behind the queue the other direction keeps (here 150 ms), which
+	// delays the loop but holds none of this direction's bytes.
+	const auto capacity = int64(1'500'000);
+	const auto base = int64(150);
+	const auto other = int64(150);
+	const auto run = [&](int64 extra) {
+		auto window = AdaptiveWindow(AdaptiveWindowLimits());
+		auto now = int64(1000);
+		window.update(Sample(now, base, 1, false, base));
+		auto rate = int64();
+		for (auto i = 0; i != 100; ++i) {
+			now += base;
+			const auto loop = base + other;
+			const auto w = window.window();
+			const auto queue = std::max(w - capacity * loop / 1000, int64(0))
+				* 1000 / capacity;
+			rate = std::min(capacity, w * 1000 / loop);
+			auto sample = Sample(now, base, rate * base / 1000, true, loop + queue);
+			sample.extraDelay = extra;
+			window.update(sample);
+		}
+		return rate;
+	};
+	Check(run(0) < capacity * 9 / 10,
+		"without a share the other queue starves this direction");
+	Check(run(100) >= capacity * 95 / 100,
+		"with its share this direction keeps the pipe full");
+}
+
+void TestAdaptiveHold() {
+	auto window = AdaptiveWindow(AdaptiveWindowLimits());
+	window.update(Sample(1000, 100, 1, false, 100));
+	const auto before = window.window();
+	for (auto i = 0; i != 40; ++i) {
+		window.hold(Sample(1100 + i * 100, 100, 50'000, true, 2100));
+	}
+	Check(window.window() == before,
+		"a held window neither grows nor shrinks");
+	window.hold(Sample(6000, 100, 1, true, 90));
+	Check(window.baseDelay() == 90, "held samples still refresh the base");
+}
+
+void TestAdaptiveBaseHistory() {
+	auto window = AdaptiveWindow(AdaptiveWindowLimits());
+	window.update(Sample(1000, 200, 1, false, 50));
+	window.update(Sample(2000, 200, 1, false, 200));
+	Check(window.baseDelay() == 50, "the lowest recent round trip is the base");
+	window.update(Sample(25'000, 200, 1, false, 200));
+	Check(window.baseDelay() == 50, "the base outlives the probe period");
+	window.update(Sample(75'000, 200, 1, false, 200));
+	Check(window.baseDelay() == 200, "an old base is eventually forgotten");
+
+	// A drained interval feeds the base but moves nothing else.
+	auto probe = Sample(76'000, 200, 10'000'000, true, 120);
+	probe.probing = true;
+	const auto before = window.window();
+	window.update(probe);
+	Check(window.baseDelay() == 120 && window.window() == before,
+		"a probe refreshes the base without touching the window");
+	window.reset();
+	Check(!window.baseDelay().has_value()
+		&& window.window() == window.limits().initial,
+		"reset starts over");
+}
+
 void TestReasonNames() {
 	Check(ReceiveReasonName(ReceiveReason::ReplyMissing)
 		== std::string("reply_missing"), "reason names are stable");
@@ -383,12 +600,19 @@ int main(int, char *[]) {
 	TestRoundRobinWithinClass();
 	TestMarkReadyIdempotent();
 	TestUploadCap();
+	TestUploadFramesFollowTheCap();
 	TestDownloadNotCapped();
 	TestNoUploadStarvation();
 	TestStaleIdsSkipped();
 	TestDownlinkCredit();
 	TestCarrierStall();
 	TestReceiveWait();
+	TestAdaptiveGrowsOnFreePath();
+	TestAdaptiveShrinksWhenQueueGrows();
+	TestAdaptiveIgnoresIdleFlow();
+	TestAdaptiveSharesDelay();
+	TestAdaptiveHold();
+	TestAdaptiveBaseHistory();
 	TestReasonNames();
 	if (Failures) {
 		std::fprintf(stderr, "%d check(s) failed\n", Failures);
