@@ -91,3 +91,5 @@ Telegram/SourceFiles/mtproto.zip
 !Telegram/build/patches_extra/**/*.patch
 logs
 logs/
+# Tester log archives exported from the app (logs.zip, logs (9).zip, ...).
+logs*.zip
