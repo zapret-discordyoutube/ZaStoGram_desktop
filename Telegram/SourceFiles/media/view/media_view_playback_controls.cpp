@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "media/view/media_view_playback_controls.h"
 
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_button.h"
 #include "media/player/media_player_dropdown.h"
@@ -86,6 +88,11 @@ PlaybackControls::PlaybackControls(
 		) | rpl::on_next([=](bool toggled) {
 			_speedToggle->setActive(toggled);
 		}, _speedToggle->lifetime());
+		controller->setExtraMenuFiller([=](
+				not_null<Ui::Menu::Menu*> menu,
+				const style::MediaSpeedMenu &st) {
+			fillGainMenu(menu, st);
+		});
 	}
 
 	_pictureInPicture->addClickHandler([=] {
@@ -223,6 +230,41 @@ float64 PlaybackControls::speedLookup(bool lastNonDefault) const {
 void PlaybackControls::saveSpeed(float64 speed) {
 	_speedToggle->setSpeed(speed);
 	_delegate->playbackControlsSpeedChanged(speed);
+}
+
+void PlaybackControls::fillGainMenu(
+		not_null<Ui::Menu::Menu*> menu,
+		const style::MediaSpeedMenu &st) {
+	const auto percent = [](float64 value) {
+		return QString::number(int(base::SafeRound(value * 100.))) + '%';
+	};
+	auto &settings = Core::App().settings();
+	Player::AddMenuStepper(menu, st, {
+		.label = tr::lng_zasto_media_brightness(tr::now),
+		.min = 0.5,
+		.max = 2.5,
+		.step = 0.1,
+		.reset = 1.,
+		.format = percent,
+		.value = rpl::single(settings.videoBrightnessGain()),
+		.change = [=](float64 gain) {
+			Core::App().settings().setVideoBrightnessGain(gain);
+			_delegate->playbackControlsBrightnessChanged(gain);
+		},
+	});
+	Player::AddMenuStepper(menu, st, {
+		.label = tr::lng_zasto_media_volume_gain(tr::now),
+		.min = 0.5,
+		.max = 4.,
+		.step = 0.1,
+		.reset = 1.,
+		.format = percent,
+		.value = rpl::single(settings.videoVolumeGain()),
+		.change = [=](float64 gain) {
+			Core::App().settings().setVideoVolumeGain(gain);
+			_delegate->playbackControlsVolumeGainChanged(gain);
+		},
+	});
 }
 
 void PlaybackControls::saveQuality(Media::VideoQuality quality) {

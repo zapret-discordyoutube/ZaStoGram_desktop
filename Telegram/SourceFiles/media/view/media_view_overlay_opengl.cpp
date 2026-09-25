@@ -36,6 +36,19 @@ constexpr auto kGroupThumbsOffset = kCaptionOffset + 4;
 constexpr auto kControlsOffset = kGroupThumbsOffset + 4;
 constexpr auto kControlValues = 4 * 4 + 4 * 4; // over + icon
 
+// ZaStoGram: усиление яркости видео. Цвет премультиплицирован,
+// поэтому потолок — альфа, а не 1.
+[[nodiscard]] ShaderPart FragmentVideoBrightness() {
+	return {
+		.header = R"(
+uniform float brightness;
+)",
+		.body = R"(
+	result.rgb = min(result.rgb * brightness, vec3(result.a));
+)",
+	};
+}
+
 [[nodiscard]] ShaderPart FragmentApplyControlsFade() {
 	return {
 		.header = R"(
@@ -207,6 +220,7 @@ void OverlayWidget::RendererGL::init(QOpenGLFunctions &f) {
 		_texturedVertexShader,
 		FragmentShader({
 			FragmentSampleARGB32Texture(),
+			FragmentVideoBrightness(),
 			FragmentApplyControlsFade(),
 			FragmentRoundedCorners()
 		}));
@@ -217,6 +231,7 @@ void OverlayWidget::RendererGL::init(QOpenGLFunctions &f) {
 		_texturedVertexShader,
 		FragmentShader({
 			FragmentSampleARGB32Texture(),
+			FragmentVideoBrightness(),
 			FragmentPlaceOnTransparentBackground(),
 			FragmentApplyControlsFade()
 		}));
@@ -227,6 +242,7 @@ void OverlayWidget::RendererGL::init(QOpenGLFunctions &f) {
 		_texturedVertexShader,
 		FragmentShader({
 			FragmentSampleYUV420Texture(),
+			FragmentVideoBrightness(),
 			FragmentApplyControlsFade(),
 			FragmentRoundedCorners()
 		}));
@@ -237,6 +253,7 @@ void OverlayWidget::RendererGL::init(QOpenGLFunctions &f) {
 		_texturedVertexShader,
 		FragmentShader({
 			FragmentSampleNV12Texture(),
+			FragmentVideoBrightness(),
 			FragmentApplyControlsFade(),
 			FragmentRoundedCorners()
 		}));
@@ -390,20 +407,24 @@ void OverlayWidget::RendererGL::paintTransformedVideoFrame(
 		return;
 	} else if (data.format == Streaming::FrameFormat::ARGB32) {
 		Assert(!data.image.isNull());
+		_contentBrightness = _owner->videoBrightness();
 		paintTransformedStaticContent(
 			data.image,
 			geometry,
 			data.alpha,
 			data.alpha);
+		_contentBrightness = 1.;
 		return;
 	} else if (data.format == Streaming::FrameFormat::NativeTexture) {
 		const auto image = _owner->currentVideoFrameImage();
 		if (!image.isNull()) {
+			_contentBrightness = _owner->videoBrightness();
 			paintTransformedStaticContent(
 				image,
 				geometry,
 				data.alpha,
 				data.alpha);
+			_contentBrightness = 1.;
 		}
 		return;
 	}
@@ -481,6 +502,9 @@ void OverlayWidget::RendererGL::paintTransformedVideoFrame(
 		program->setUniformValue("v_texture", GLint(2));
 	}
 	program->setUniformValue("f_texture", GLint(nv12 ? 2 : 3));
+	program->setUniformValue(
+		"brightness",
+		GLfloat(_owner->videoBrightness()));
 
 	toggleBlending(geometry.roundRadius > 0.);
 	const auto textureRect = _owner->_stories
@@ -517,6 +541,7 @@ void OverlayWidget::RendererGL::paintTransformedStaticContent(
 		? _withTransparencyProgram
 		: _staticContentProgram;
 	program->bind();
+	program->setUniformValue("brightness", GLfloat(_contentBrightness));
 	if (fillTransparentBackground) {
 		program->setUniformValue(
 			"transparentBg",

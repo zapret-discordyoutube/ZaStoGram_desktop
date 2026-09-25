@@ -713,6 +713,7 @@ OverlayWidget::OverlayWidget()
 	_lastPositiveVolume = (Core::App().settings().videoVolume() > 0.)
 		? Core::App().settings().videoVolume()
 		: Core::Settings::kDefaultVolume;
+	_videoBrightness = Core::App().settings().videoBrightnessGain();
 
 	_saveMsgTimer.setCallback([=, delay = st::mediaviewSaveMsgHiding] {
 		_saveMsgAnimation.start([=] { updateSaveMsg(); }, 1., 0., delay);
@@ -5940,6 +5941,19 @@ void OverlayWidget::playbackControlsVolumeChanged(float64 volume) {
 	}
 	Core::App().settings().setVideoVolume(volume);
 	Core::App().saveSettingsDelayed();
+}
+
+void OverlayWidget::playbackControlsBrightnessChanged(float64 gain) {
+	_videoBrightness = gain;
+	update();
+}
+
+void OverlayWidget::playbackControlsVolumeGainChanged(float64 gain) {
+	Player::mixer()->setVideoGain(gain);
+}
+
+float64 OverlayWidget::videoBrightness() const {
+	return _stories ? 1. : _videoBrightness;
 }
 
 float64 OverlayWidget::playbackControlsCurrentVolume() {

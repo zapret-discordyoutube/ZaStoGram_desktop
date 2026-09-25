@@ -20,6 +20,14 @@ class MediaSlider;
 class PopupMenu;
 } // namespace Ui
 
+namespace Ui::Menu {
+class Menu;
+} // namespace Ui::Menu
+
+namespace style {
+struct MediaSpeedMenu;
+} // namespace style
+
 namespace Media::Player {
 struct TrackState;
 class SettingsButton;
@@ -55,6 +63,8 @@ public:
 		virtual void playbackControlsFromFullScreen() = 0;
 		virtual void playbackControlsToPictureInPicture() = 0;
 		virtual void playbackControlsRotate() = 0;
+		virtual void playbackControlsBrightnessChanged(float64 gain) = 0;
+		virtual void playbackControlsVolumeGainChanged(float64 gain) = 0;
 	};
 
 	struct TimestampData {
@@ -108,6 +118,9 @@ private:
 
 	[[nodiscard]] float64 speedLookup(bool lastNonDefault) const;
 	void saveSpeed(float64 speed);
+	void fillGainMenu(
+		not_null<Ui::Menu::Menu*> menu,
+		const style::MediaSpeedMenu &st);
 
 	void saveQuality(Media::VideoQuality quality);
 	void updateTimestampLabel();

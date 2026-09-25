@@ -198,6 +198,7 @@ private:
 	bool _usingExternalVideoTextures = false;
 	// -1 so that the very first frame (index 0) always uploads.
 	int _trackFrameIndex = -1;
+	float64 _contentBrightness = 1.;
 	int _streamedIndex = 0;
 
 	struct PoolTexture {

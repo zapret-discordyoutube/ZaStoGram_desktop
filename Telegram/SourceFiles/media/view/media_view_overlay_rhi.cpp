@@ -42,7 +42,8 @@ struct ContentUniforms {
 	float shadowBottomSkipOpacityFullFade[4];
 	float roundRect[4];
 	float roundRadius;
-	float _pad1[3];
+	float brightness;
+	float _pad1[2];
 };
 static_assert(sizeof(ContentUniforms) == 80);
 
@@ -1003,6 +1004,7 @@ void OverlayWidget::RendererRhi::drawContentQuad(
 			uniforms.roundRect[3] = vh;
 		}
 		uniforms.roundRadius = geometry.roundRadius * _factor;
+		uniforms.brightness = float(_contentBrightness);
 		_rub->updateDynamicBuffer(
 			_uniformBuffer,
 			uOffset,
@@ -1082,11 +1084,13 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 		return;
 	} else if (data.format == Streaming::FrameFormat::ARGB32) {
 		Assert(!data.image.isNull());
+		_contentBrightness = _owner->videoBrightness();
 		paintTransformedStaticContent(
 			data.image,
 			geometry,
 			data.alpha,
 			data.alpha);
+		_contentBrightness = 1.;
 		return;
 	}
 	const auto nativeTexture =
@@ -1279,6 +1283,7 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 		uniforms.roundRect[3] = vh;
 	}
 	uniforms.roundRadius = geometry.roundRadius * _factor;
+	uniforms.brightness = float(_owner->videoBrightness());
 	_rub->updateDynamicBuffer(
 		_uniformBuffer, uOffset, sizeof(ContentUniforms), &uniforms);
 

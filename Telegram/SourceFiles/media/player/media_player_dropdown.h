@@ -30,6 +30,24 @@ class Menu;
 
 namespace Media::Player {
 
+// ZaStoGram: строка меню «подпись  −  значение  +». Кнопки повторяют шаг
+// при удержании, колесо мыши тоже шагает, клик по значению сбрасывает.
+struct MenuStepper {
+	QString label;
+	float64 min = 0.;
+	float64 max = 1.;
+	float64 step = 0.1;
+	float64 reset = 1.;
+	Fn<QString(float64)> format;
+	rpl::producer<float64> value;
+	Fn<void(float64)> change;
+};
+
+void AddMenuStepper(
+	not_null<Ui::Menu::Menu*> menu,
+	const style::MediaSpeedMenu &st,
+	MenuStepper &&descriptor);
+
 class Dropdown final : public Ui::RpWidget {
 public:
 	explicit Dropdown(QWidget *parent);
@@ -147,6 +165,9 @@ public:
 	[[nodiscard]] rpl::producer<float64> realtimeValue() const;
 	void reloadFromLookup();
 	void setQualities(std::vector<VideoQuality> qualities);
+	void setExtraMenuFiller(Fn<void(
+		not_null<Ui::Menu::Menu*>,
+		const style::MediaSpeedMenu &)> filler);
 
 private:
 	void fillMenu(not_null<Ui::DropdownMenu*> menu) override;
@@ -171,6 +192,9 @@ private:
 	Fn<VideoQuality()> _lookupQuality;
 	Fn<void(VideoQuality)> _changeQuality;
 	rpl::variable<VideoQuality> _quality;
+	Fn<void(
+		not_null<Ui::Menu::Menu*>,
+		const style::MediaSpeedMenu &)> _extraMenuFiller;
 
 };
 

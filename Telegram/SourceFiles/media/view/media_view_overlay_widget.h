@@ -263,6 +263,8 @@ private:
 	void playbackControlsFromFullScreen() override;
 	void playbackControlsToPictureInPicture() override;
 	void playbackControlsRotate() override;
+	void playbackControlsBrightnessChanged(float64 gain) override;
+	void playbackControlsVolumeGainChanged(float64 gain) override;
 
 	void smtcPlay() override;
 	void smtcPause() override;
@@ -625,6 +627,8 @@ private:
 	[[nodiscard]] QSize videoSize() const;
 	[[nodiscard]] bool streamingRequiresControls() const;
 	[[nodiscard]] QImage videoFrame() const; // ARGB (changes prepare format)
+	// ZaStoGram: усиление яркости кадра видео, в историях не применяется.
+	[[nodiscard]] float64 videoBrightness() const;
 	[[nodiscard]] QImage currentVideoFrameImage() const; // RGB (may convert)
 	[[nodiscard]] Streaming::FrameWithInfo videoFrameWithInfo() const; // YUV
 	[[nodiscard]] int streamedIndex() const;
@@ -718,6 +722,7 @@ private:
 	bool _storyContentPressTogglesPause = false;
 	int _fullScreenZoomCache = 0;
 	float64 _lastPositiveVolume = 1.;
+	float64 _videoBrightness = 1.;
 
 	std::unique_ptr<GroupThumbs> _groupThumbs;
 	QRect _groupThumbsRect;

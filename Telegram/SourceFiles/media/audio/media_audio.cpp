@@ -259,7 +259,10 @@ float64 ComputeVolume(AudioMsgId::Type type) {
 		}
 		return 1.;
 	}();
-	return gain * gain * gain;
+	const auto boost = (type == AudioMsgId::Type::Video)
+		? mixer()->getVideoGain()
+		: 1.;
+	return gain * gain * gain * boost;
 }
 
 Mixer *mixer() {
@@ -269,6 +272,8 @@ Mixer *mixer() {
 void Mixer::Track::createStream(AudioMsgId::Type type) {
 	alGenSources(1, &stream.source);
 	alSourcef(stream.source, AL_PITCH, 1.f);
+	// Иначе OpenAL обрежет AL_GAIN до 1 и усиление видео не сработает.
+	alSourcef(stream.source, AL_MAX_GAIN, 4.f);
 	alSource3f(stream.source, AL_POSITION, 0, 0, 0);
 	alSource3f(stream.source, AL_VELOCITY, 0, 0, 0);
 	alSourcei(stream.source, AL_LOOPING, 0);
@@ -465,6 +470,7 @@ Mixer::Mixer(not_null<Audio::Instance*> instance)
 : _instance(instance)
 , _volumeVideo(kVolumeRound)
 , _volumeSong(kVolumeRound)
+, _gainVideo(kVolumeRound)
 , _fader(new Fader(&_faderThread))
 , _loader(new Loaders(&_loaderThread)) {
 	connect(this, SIGNAL(suppressSong()), _fader, SLOT(onSuppressSong()));
@@ -674,6 +680,7 @@ void Mixer::play(
 
 	setSongVolume(Core::App().settings().songVolume());
 	setVideoVolume(Core::App().settings().videoVolume());
+	setVideoGain(Core::App().settings().videoVolumeGain());
 
 	auto type = audio.type();
 	AudioMsgId stopped;
@@ -1083,6 +1090,19 @@ void Mixer::setVideoVolume(float64 volume) {
 
 float64 Mixer::getVideoVolume() const {
 	return float64(_volumeVideo.loadAcquire()) / kVolumeRound;
+}
+
+void Mixer::setVideoGain(float64 gain) {
+	const auto value = int(base::SafeRound(gain * kVolumeRound));
+	if (_gainVideo.fetchAndStoreOrdered(value) != value) {
+		InvokeQueued(_fader, [fader = _fader] {
+			fader->videoVolumeChanged();
+		});
+	}
+}
+
+float64 Mixer::getVideoGain() const {
+	return float64(_gainVideo.loadAcquire()) / kVolumeRound;
 }
 
 Fader::Fader(QThread *thread) : QObject()

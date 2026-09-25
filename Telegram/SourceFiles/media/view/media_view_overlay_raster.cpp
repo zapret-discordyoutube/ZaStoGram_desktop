@@ -132,7 +132,31 @@ void OverlayWidget::RendererSW::paintTransformedVideoFrame(
 		? StoryCropRect(QSizeF(image.size()), geometry.rect.size())
 		: QRectF();
 	paintTransformedImage(image, rect, rotation, sourceRect);
+	paintVideoBrightness(image, rect, rotation, sourceRect);
 	paintControlsFade(rect, geometry);
+}
+
+void OverlayWidget::RendererSW::paintVideoBrightness(
+		const QImage &image,
+		QRect rect,
+		int rotation,
+		const QRectF &sourceRect) {
+	// ZaStoGram: затемнение — чёрным поверх кадра, усиление — докладываем
+	// тот же кадр сложением (CompositionMode_Plus) нужное число раз.
+	const auto brightness = _owner->videoBrightness();
+	if (brightness < 0.999) {
+		_p->setOpacity(1. - brightness);
+		_p->fillRect(rect, Qt::black);
+		_p->setOpacity(1.);
+	} else if (brightness > 1.001) {
+		_p->setCompositionMode(QPainter::CompositionMode_Plus);
+		for (auto left = brightness - 1.; left > 0.001; left -= 1.) {
+			_p->setOpacity(std::min(left, 1.));
+			paintTransformedImage(image, rect, rotation, sourceRect);
+		}
+		_p->setOpacity(1.);
+		_p->setCompositionMode(QPainter::CompositionMode_SourceOver);
+	}
 }
 
 void OverlayWidget::RendererSW::paintTransformedStaticContent(

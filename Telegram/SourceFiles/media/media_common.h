@@ -43,6 +43,13 @@ inline constexpr auto kSpeedMin = 0.5;
 inline constexpr auto kSpeedMax = 2.5;
 inline constexpr auto kSpedUpDefault = 1.7;
 
+// ZaStoGram: скорость выставляется шагом 0.05x, а не 0.1x.
+inline constexpr auto kSpeedStep = 0.05;
+
+[[nodiscard]] inline float64 RoundSpeed(float64 speed) {
+	return base::SafeRound(speed / kSpeedStep) * kSpeedStep;
+}
+
 [[nodiscard]] inline bool ValidFrameSize(int w, int h, int maxArea) {
 	return (w > 0)
 		&& (h > 0)
@@ -54,7 +61,8 @@ inline constexpr auto kSpedUpDefault = 1.7;
 }
 
 [[nodiscard]] inline bool EqualSpeeds(float64 a, float64 b) {
-	return int(base::SafeRound(a * 10.)) == int(base::SafeRound(b * 10.));
+	return int(base::SafeRound(a / kSpeedStep))
+		== int(base::SafeRound(b / kSpeedStep));
 }
 
 } // namespace Media

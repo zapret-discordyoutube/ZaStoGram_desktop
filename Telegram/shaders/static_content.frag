@@ -14,6 +14,7 @@ layout(std140, binding = 0) uniform Params {
 	vec4 shadowBottomSkipOpacityFullFade;
 	vec4 roundRect;
 	float roundRadius;
+	float brightness;
 };
 
 float roundedCorner(vec2 fragCoord) {
@@ -33,6 +34,8 @@ void main() {
 		: (viewport.y - gl_FragCoord.y);
 	vec2 fragCoord = vec2(gl_FragCoord.x, fragY);
 	vec4 result = texture(s_texture, v_texcoord);
+	// ZaStoGram: усиление яркости видео, цвет премультиплицирован.
+	result.rgb = min(result.rgb * brightness, vec3(result.a));
 
 	float topHeight = shadowTopRect.w;
 	float bottomHeight = shadowBottomSkipOpacityFullFade.x;

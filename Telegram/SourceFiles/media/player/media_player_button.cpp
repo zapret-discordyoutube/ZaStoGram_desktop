@@ -27,7 +27,7 @@ struct Shape {
 };
 
 [[nodiscard]] QString SpeedText(float64 speed) {
-	return QString::number(base::SafeRound(speed * 10) / 10.) + 'X';
+	return QString::number(RoundSpeed(speed)) + 'X';
 }
 
 [[nodiscard]] QPointF Normalized(QPointF value) {
@@ -293,7 +293,7 @@ SpeedButtonLayout::SpeedButtonLayout(
 }
 
 void SpeedButtonLayout::setSpeed(float64 speed) {
-	speed = base::SafeRound(speed * 10.) / 10.;
+	speed = RoundSpeed(speed);
 	if (!EqualSpeeds(_speed, speed)) {
 		_speed = speed;
 		_text = SpeedText(_speed);

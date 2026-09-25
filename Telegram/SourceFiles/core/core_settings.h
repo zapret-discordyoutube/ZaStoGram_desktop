@@ -180,6 +180,19 @@ public:
 	void setPinZaStoGramChannel(bool value) {
 		writePref<bool>("zastoPinPromoChannel", value);
 	}
+	// ZaStoGram: усиление яркости и громкости видео в просмотрщике.
+	[[nodiscard]] float64 videoBrightnessGain() {
+		return readGainPref("zastoVideoBrightness", 0.5, 2.5);
+	}
+	void setVideoBrightnessGain(float64 value) {
+		writeGainPref("zastoVideoBrightness", value);
+	}
+	[[nodiscard]] float64 videoVolumeGain() {
+		return readGainPref("zastoVideoVolumeGain", 0.5, 4.);
+	}
+	void setVideoVolumeGain(float64 value) {
+		writeGainPref("zastoVideoVolumeGain", value);
+	}
 	[[nodiscard]] float64 songVolume() const {
 		return _songVolume.current();
 	}
@@ -1109,6 +1122,11 @@ private:
 	[[nodiscard]] std::optional<Type> readPrefImpl(std::string_view key);
 
 	void writePrefGeneric(std::string_view key, const QByteArray &value);
+	[[nodiscard]] float64 readGainPref(
+		std::string_view key,
+		float64 min,
+		float64 max);
+	void writeGainPref(std::string_view key, float64 value);
 	[[nodiscard]] std::optional<QByteArray> readPrefGeneric(
 		std::string_view key);
 

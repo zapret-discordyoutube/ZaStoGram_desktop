@@ -82,7 +82,7 @@ Widget::Widget(
 		_speedToggle->setAccessibleName(tr::lng_mediaview_playback_speed(
 			tr::now,
 			lt_speed,
-			QString::number(base::SafeRound(speed * 10) / 10.) + "x"));
+			QString::number(RoundSpeed(speed)) + "x"));
 	}, _speedToggle->lifetime());
 	_speedToggle->finishAnimating();
 

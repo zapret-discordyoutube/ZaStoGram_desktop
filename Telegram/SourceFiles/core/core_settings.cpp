@@ -1343,6 +1343,29 @@ std::optional<QByteArray> Settings::readPrefGeneric(std::string_view key) {
 	return (i != end(_prefs)) ? i->second : std::optional<QByteArray>();
 }
 
+float64 Settings::readGainPref(
+		std::string_view key,
+		float64 min,
+		float64 max) {
+	if (const auto data = readPrefGeneric(key)) {
+		auto ok = false;
+		const auto percent = data->toInt(&ok);
+		if (ok) {
+			return std::clamp(percent / 100., min, max);
+		}
+	}
+	return 1.;
+}
+
+void Settings::writeGainPref(std::string_view key, float64 value) {
+	const auto percent = int(base::SafeRound(value * 100.));
+	if (percent == 100) {
+		clearPref(key);
+	} else {
+		writePrefGeneric(key, QByteArray::number(percent));
+	}
+}
+
 template <>
 std::optional<bool> Settings::readPrefImpl<bool>(std::string_view key) {
 	if (const auto data = readPrefGeneric(key)) {

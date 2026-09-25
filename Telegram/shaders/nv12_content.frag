@@ -15,6 +15,7 @@ layout(std140, binding = 0) uniform Params {
 	vec4 shadowBottomSkipOpacityFullFade;
 	vec4 roundRect;
 	float roundRadius;
+	float brightness;
 };
 
 float roundedCorner(vec2 fragCoord) {
@@ -42,6 +43,8 @@ void main() {
 		1.164 * y - 0.392 * u - 0.813 * v,
 		1.164 * y + 2.017 * u,
 		1.0);
+	// ZaStoGram: усиление яркости видео, цвет премультиплицирован.
+	result.rgb = min(result.rgb * brightness, vec3(result.a));
 
 	float topHeight = shadowTopRect.w;
 	float bottomHeight = shadowBottomSkipOpacityFullFade.x;

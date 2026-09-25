@@ -183,6 +183,9 @@ public:
 	float64 getSongVolume() const;
 	void setVideoVolume(float64 volume);
 	float64 getVideoVolume() const;
+	// ZaStoGram: усиление звука видео сверх 100%, множитель амплитуды.
+	void setVideoGain(float64 gain);
+	float64 getVideoGain() const;
 
 	void scheduleFaderCallback();
 
@@ -307,6 +310,7 @@ private:
 
 	QAtomicInt _volumeVideo;
 	QAtomicInt _volumeSong;
+	QAtomicInt _gainVideo;
 
 	friend class Fader;
 	friend class Loaders;

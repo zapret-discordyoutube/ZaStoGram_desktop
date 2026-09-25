@@ -139,6 +139,7 @@ private:
 	QSize _chromaSizeV; // size of texture 5 (V for YUV420 only)
 	qint64 _cacheKeys[3] = { 0 }; // image, sibling, right sibling
 	int _trackFrameIndex = 0;
+	float64 _contentBrightness = 1.;
 	int _streamedIndex = 0;
 	bool _chromaNV12 = false;
 

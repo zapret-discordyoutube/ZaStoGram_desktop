@@ -30,6 +30,11 @@ private:
 		bool semiTransparent,
 		bool fillTransparentBackground,
 		int index = 0) override;
+	void paintVideoBrightness(
+		const QImage &image,
+		QRect rect,
+		int rotation,
+		const QRectF &sourceRect);
 	void paintTransformedImage(
 		const QImage &image,
 		QRect rect,

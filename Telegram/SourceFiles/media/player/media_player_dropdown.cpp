@@ -26,6 +26,8 @@ namespace Media::Player {
 namespace {
 
 constexpr auto kSpeedDebounceTimeout = crl::time(1000);
+constexpr auto kStepperRepeatDelay = crl::time(400);
+constexpr auto kStepperRepeatInterval = crl::time(80);
 
 [[nodiscard]] float64 SpeedToSliderValue(float64 speed) {
 	return (speed - kSpeedMin) / (kSpeedMax - kSpeedMin);
@@ -33,7 +35,7 @@ constexpr auto kSpeedDebounceTimeout = crl::time(1000);
 
 [[nodiscard]] float64 SliderValueToSpeed(float64 value) {
 	const auto speed = value * (kSpeedMax - kSpeedMin) + kSpeedMin;
-	return base::SafeRound(speed * 10) / 10.;
+	return RoundSpeed(speed);
 }
 
 constexpr auto kSpeedStickedValues
@@ -154,7 +156,7 @@ SpeedSliderItem::SpeedSliderItem(
 
 	_last.value(
 	) | rpl::on_next([=](float64 value) {
-		const auto text = QString::number(value, 'f', 1) + 'x';
+		const auto text = QString::number(RoundSpeed(value)) + 'x';
 		if (_text.toString() != text) {
 			_text.setText(_st.sliderStyle, text);
 			update();
@@ -171,6 +173,249 @@ SpeedSliderItem::SpeedSliderItem(
 		}
 		return value;
 	});
+}
+
+class StepperItem final : public Ui::Menu::ItemBase {
+public:
+	StepperItem(
+		not_null<Ui::Menu::Menu*> parent,
+		const style::MediaSpeedMenu &st,
+		MenuStepper &&descriptor);
+
+	not_null<QAction*> action() const override;
+	bool isEnabled() const override;
+
+protected:
+	int contentHeight() const override;
+	void wheelEvent(QWheelEvent *e) override;
+
+private:
+	[[nodiscard]] not_null<Ui::AbstractButton*> makeButton(int direction);
+	void startRepeat(int direction);
+	void stopRepeat();
+	void stepBy(int direction);
+	void setValue(float64 value, bool notify);
+	[[nodiscard]] float64 normalized(float64 value) const;
+
+	const style::MediaSpeedMenu &_st;
+	const not_null<QAction*> _dummyAction;
+	MenuStepper _descriptor;
+	Ui::Text::String _label;
+	QString _valueText;
+	float64 _value = 0.;
+	int _height = 0;
+	int _buttonSize = 0;
+	int _valueWidth = 0;
+	Ui::AbstractButton *_minus = nullptr;
+	Ui::AbstractButton *_reset = nullptr;
+	Ui::AbstractButton *_plus = nullptr;
+	int _repeatDirection = 0;
+	base::Timer _repeatDelayTimer;
+	base::Timer _repeatTimer;
+
+};
+
+StepperItem::StepperItem(
+	not_null<Ui::Menu::Menu*> parent,
+	const style::MediaSpeedMenu &st,
+	MenuStepper &&descriptor)
+: Ui::Menu::ItemBase(parent, st.dropdown.menu)
+, _st(st)
+, _dummyAction(new QAction(parent))
+, _descriptor(std::move(descriptor))
+, _height(st.sliderPadding.top()
+	+ st.dropdown.menu.itemStyle.font->height
+	+ st.sliderPadding.bottom())
+, _repeatDelayTimer([=] { _repeatTimer.callEach(kStepperRepeatInterval); })
+, _repeatTimer([=] { stepBy(_repeatDirection); }) {
+	fitToMenuWidth();
+	enableMouseSelecting();
+	setPointerCursor(false);
+
+	_label.setText(_st.dropdown.menu.itemStyle, _descriptor.label);
+	_buttonSize = _height - _st.sliderPadding.top();
+	const auto &font = _st.sliderStyle.font;
+	for (const auto value : {
+			_descriptor.min,
+			_descriptor.max,
+			_descriptor.reset }) {
+		_valueWidth = std::max(
+			_valueWidth,
+			font->width(_descriptor.format(value)));
+	}
+	_valueWidth += font->spacew * 4;
+
+	_minus = makeButton(-1);
+	_reset = Ui::CreateChild<Ui::AbstractButton>(this);
+	_plus = makeButton(1);
+	_reset->resize(_valueWidth, _buttonSize);
+	_reset->setClickedCallback([=] {
+		setValue(_descriptor.reset, true);
+	});
+	_reset->paintRequest(
+	) | rpl::on_next([=] {
+		auto p = QPainter(_reset);
+		if (_reset->isOver()) {
+			auto hq = PainterHighQualityEnabler(p);
+			p.setPen(Qt::NoPen);
+			p.setBrush(_st.dropdown.menu.itemBgOver);
+			const auto radius = _buttonSize / 4.;
+			p.drawRoundedRect(_reset->rect(), radius, radius);
+		}
+		p.setFont(font);
+		p.setPen(_st.dropdown.menu.itemFg);
+		p.drawText(_reset->rect(), _valueText, style::al_center);
+	}, _reset->lifetime());
+	enableMouseSelecting(_reset);
+
+	const auto &padding = _st.dropdown.menu.itemPadding;
+	setMinWidth(padding.left()
+		+ _label.maxWidth()
+		+ font->spacew * 4
+		+ _buttonSize * 2
+		+ _valueWidth
+		+ _st.sliderPadding.right());
+
+	sizeValue(
+	) | rpl::on_next([=](QSize size) {
+		const auto top = (size.height() - _buttonSize) / 2;
+		auto right = size.width() - _st.sliderPadding.right();
+		right -= _buttonSize;
+		_plus->move(right, top);
+		right -= _valueWidth;
+		_reset->move(right, top);
+		right -= _buttonSize;
+		_minus->move(right, top);
+	}, lifetime());
+
+	paintRequest(
+	) | rpl::on_next([=](const QRect &clip) {
+		auto p = Painter(this);
+		p.fillRect(clip, _st.dropdown.menu.itemBg);
+		p.setPen(_st.dropdown.menu.itemFg);
+		_label.drawLeftElided(
+			p,
+			_st.dropdown.menu.itemPadding.left(),
+			(height() - _label.minHeight()) / 2,
+			_minus->x() - _st.dropdown.menu.itemPadding.left(),
+			width());
+	}, lifetime());
+
+	std::move(
+		_descriptor.value
+	) | rpl::on_next([=](float64 value) {
+		setValue(value, false);
+	}, lifetime());
+}
+
+not_null<Ui::AbstractButton*> StepperItem::makeButton(int direction) {
+	const auto button = Ui::CreateChild<Ui::AbstractButton>(this);
+	button->resize(_buttonSize, _buttonSize);
+	button->paintRequest(
+	) | rpl::on_next([=] {
+		auto p = QPainter(button);
+		auto hq = PainterHighQualityEnabler(p);
+		const auto enabled = (direction < 0)
+			? (_value > _descriptor.min + _descriptor.step / 2.)
+			: (_value < _descriptor.max - _descriptor.step / 2.);
+		if (enabled && button->isOver()) {
+			p.setPen(Qt::NoPen);
+			p.setBrush(_st.dropdown.menu.itemBgOver);
+			p.drawEllipse(button->rect());
+		}
+		auto pen = QPen(enabled
+			? _st.dropdown.menu.itemFg->c
+			: _st.dropdown.menu.itemFgDisabled->c);
+		pen.setWidthF(st::lineWidth * 1.5);
+		pen.setCapStyle(Qt::RoundCap);
+		p.setPen(pen);
+		const auto center = QRectF(button->rect()).center();
+		const auto half = _buttonSize / 5.;
+		p.drawLine(
+			center - QPointF(half, 0.),
+			center + QPointF(half, 0.));
+		if (direction > 0) {
+			p.drawLine(
+				center - QPointF(0., half),
+				center + QPointF(0., half));
+		}
+	}, button->lifetime());
+	button->events(
+	) | rpl::on_next([=](not_null<QEvent*> e) {
+		const auto type = e->type();
+		if (type == QEvent::MouseButtonPress
+			&& static_cast<QMouseEvent*>(e.get())->button() == Qt::LeftButton) {
+			startRepeat(direction);
+		} else if (type == QEvent::MouseButtonRelease
+			|| type == QEvent::Hide) {
+			stopRepeat();
+		}
+	}, button->lifetime());
+	enableMouseSelecting(button);
+	return button;
+}
+
+void StepperItem::startRepeat(int direction) {
+	_repeatDirection = direction;
+	stepBy(direction);
+	_repeatTimer.cancel();
+	_repeatDelayTimer.callOnce(kStepperRepeatDelay);
+}
+
+void StepperItem::stopRepeat() {
+	_repeatDelayTimer.cancel();
+	_repeatTimer.cancel();
+}
+
+void StepperItem::stepBy(int direction) {
+	if (direction) {
+		setValue(_value + direction * _descriptor.step, true);
+	}
+}
+
+float64 StepperItem::normalized(float64 value) const {
+	const auto step = _descriptor.step;
+	return std::clamp(
+		base::SafeRound(value / step) * step,
+		_descriptor.min,
+		_descriptor.max);
+}
+
+void StepperItem::setValue(float64 value, bool notify) {
+	value = normalized(value);
+	const auto changed = (base::SafeRound(value / _descriptor.step)
+		!= base::SafeRound(_value / _descriptor.step));
+	_value = value;
+	const auto text = _descriptor.format(value);
+	if (_valueText != text) {
+		_valueText = text;
+		_reset->update();
+	}
+	_minus->update();
+	_plus->update();
+	if (notify && changed) {
+		_descriptor.change(value);
+	}
+}
+
+void StepperItem::wheelEvent(QWheelEvent *e) {
+	const auto delta = e->angleDelta().y();
+	if (delta) {
+		stepBy(delta > 0 ? 1 : -1);
+	}
+	e->accept();
+}
+
+not_null<QAction*> StepperItem::action() const {
+	return _dummyAction;
+}
+
+bool StepperItem::isEnabled() const {
+	return false;
+}
+
+int StepperItem::contentHeight() const {
+	return _height;
 }
 
 void FillSpeedMenu(
@@ -199,6 +444,19 @@ void FillSpeedMenu(
 	));
 
 	menu->addAction(std::move(slider));
+
+	menu->addAction(base::make_unique_q<StepperItem>(menu, st, MenuStepper{
+		.label = tr::lng_zasto_media_speed(tr::now),
+		.min = kSpeedMin,
+		.max = kSpeedMax,
+		.step = kSpeedStep,
+		.reset = 1.,
+		.format = [](float64 value) {
+			return QString::number(RoundSpeed(value)) + 'x';
+		},
+		.value = state->realtime.value(),
+		.change = callback,
+	}));
 
 	if (onlySlider) {
 		return;
@@ -325,6 +583,16 @@ rpl::producer<float64> SpeedSliderItem::debouncedChanges() const {
 }
 
 } // namespace
+
+void AddMenuStepper(
+		not_null<Ui::Menu::Menu*> menu,
+		const style::MediaSpeedMenu &st,
+		MenuStepper &&descriptor) {
+	menu->addAction(base::make_unique_q<StepperItem>(
+		menu,
+		st,
+		std::move(descriptor)));
+}
 
 Dropdown::Dropdown(QWidget *parent)
 : RpWidget(parent)
@@ -803,6 +1071,12 @@ void SpeedController::setQualities(std::vector<VideoQuality> qualities) {
 	_qualities = std::move(qualities);
 }
 
+void SpeedController::setExtraMenuFiller(Fn<void(
+		not_null<Ui::Menu::Menu*>,
+		const style::MediaSpeedMenu &)> filler) {
+	_extraMenuFiller = std::move(filler);
+}
+
 float64 SpeedController::speed() const {
 	return _isDefault ? 1. : _speed;
 }
@@ -847,6 +1121,13 @@ void SpeedController::fillMenu(not_null<Ui::DropdownMenu*> menu) {
 			_speedChanged.events_starting_with(speed()),
 			[=](float64 speed) { setSpeed(speed); save(); },
 			!_qualities.empty());
+	}
+	if (const auto filler = _extraMenuFiller) {
+		const auto raw = menu->menu();
+		if (_lookup) {
+			raw->addSeparator(&_st.menu.dropdown.menu.separator);
+		}
+		filler(raw, _st.menu);
 	}
 	if (_qualities.empty()) {
 		return;
