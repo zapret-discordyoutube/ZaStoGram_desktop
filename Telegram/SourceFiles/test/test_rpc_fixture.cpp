@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "test/test_agent.h"
 #include "test/test_log.h"
 #include "test/test_runner.h"
