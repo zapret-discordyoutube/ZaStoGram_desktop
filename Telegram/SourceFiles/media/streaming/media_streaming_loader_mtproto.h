@@ -52,6 +52,9 @@ private:
 
 	bool readyToRequest() const override;
 	int64 takeNextRequestOffset() override;
+	int64 knownFileSize() const override {
+		return _size;
+	}
 	bool feedPart(int64 offset, const QByteArray &bytes) override;
 	void cancelOnFail() override;
 

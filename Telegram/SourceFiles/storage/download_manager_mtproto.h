@@ -226,6 +226,8 @@ private:
 		std::array<bool, kTunnelDownloadPieces> received = {};
 		int nextPiece = 0;
 		int endPiece = kTunnelDownloadPieces;
+		int piecesInFlight = 0;
+		bool sequential = false;
 	};
 	struct CdnFileHash {
 		CdnFileHash(int limit, QByteArray hash) : limit(limit), hash(hash) {
@@ -246,6 +248,10 @@ private:
 
 	// Called only if readyToRequest() == true.
 	[[nodiscard]] virtual int64 takeNextRequestOffset() = 0;
+	// 0 when the loader does not know it yet.
+	[[nodiscard]] virtual int64 knownFileSize() const {
+		return 0;
+	}
 	virtual bool feedPart(int64 offset, const QByteArray &bytes) = 0;
 	virtual bool setWebFileSizeHook(int64 size);
 	virtual void cancelOnFail() = 0;
@@ -281,6 +287,7 @@ private:
 	bool cdnPartFailed(const MTP::Error &error, mtpRequestId requestId);
 
 	[[nodiscard]] bool splitDownload() const;
+	[[nodiscard]] static bool canSendPiece(const SplitPart &part);
 	[[nodiscard]] bool hasUnsentPiece() const;
 	void sendPiece(int64 partOffset, SplitPart &part, int sessionIndex);
 	bool pieceLoaded(const RequestData &requestData, const QByteArray &bytes);

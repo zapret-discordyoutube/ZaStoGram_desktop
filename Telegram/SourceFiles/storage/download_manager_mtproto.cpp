@@ -630,14 +630,28 @@ bool DownloadMtprotoTask::readyToRequestPart() const {
 
 void DownloadMtprotoTask::loadPart(int sessionIndex) {
 	for (auto &[partOffset, part] : _splitParts) {
-		if (part.nextPiece < part.endPiece) {
+		if (canSendPiece(part)) {
 			sendPiece(partOffset, part, sessionIndex);
 			return;
 		}
 	}
 	const auto offset = takeNextRequestOffset();
 	if (splitDownload()) {
-		sendPiece(offset, _splitParts[offset], sessionIndex);
+		auto &part = _splitParts[offset];
+		if (const auto size = knownFileSize(); size > offset) {
+			// Never ask past the end: pieces there are wasted requests at
+			// best, and an error for any of them fails the whole file.
+			const auto left = size - offset;
+			part.endPiece = int(std::min(
+				int64(kTunnelDownloadPieces),
+				(left + kTunnelDownloadPieceSize - 1)
+					/ kTunnelDownloadPieceSize));
+		} else {
+			// Without a size the end is found by a short piece, so pieces
+			// of such a part go one by one.
+			part.sequential = true;
+		}
+		sendPiece(offset, part, sessionIndex);
 		return;
 	}
 	makeRequest({ offset, sessionIndex });
@@ -649,9 +663,14 @@ bool DownloadMtprotoTask::splitDownload() const {
 		&& MTP::details::WssMediaTunneled(dcId());
 }
 
+bool DownloadMtprotoTask::canSendPiece(const SplitPart &part) {
+	return (part.nextPiece < part.endPiece)
+		&& (!part.sequential || !part.piecesInFlight);
+}
+
 bool DownloadMtprotoTask::hasUnsentPiece() const {
 	return ranges::any_of(_splitParts, [](const auto &pair) {
-		return pair.second.nextPiece < pair.second.endPiece;
+		return canSendPiece(pair.second);
 	});
 }
 
@@ -666,6 +685,7 @@ void DownloadMtprotoTask::sendPiece(
 	requestData.partOffset = partOffset;
 	requestData.limit = kTunnelDownloadPieceSize;
 	++part.nextPiece;
+	++part.piecesInFlight;
 	makeRequest(requestData);
 }
 
@@ -677,6 +697,7 @@ bool DownloadMtprotoTask::pieceLoaded(
 		return true; // The part was cancelled or re-requested whole.
 	}
 	auto &part = i->second;
+	--part.piecesInFlight;
 	const auto index = int((requestData.offset - requestData.partOffset)
 		/ kTunnelDownloadPieceSize);
 	Assert(index >= 0 && index < kTunnelDownloadPieces);
