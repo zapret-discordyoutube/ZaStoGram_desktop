@@ -21,6 +21,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QMutex>
+#include <QtCore/QDateTime>
+#include <QtCore/QFile>
 
 namespace MTP::details {
 namespace {
@@ -107,8 +109,70 @@ struct RouteHealth {
 	int suppressions = 0;
 };
 constexpr auto kRouteSuppressMaxTtl = 30 * 60 * crl::time(1000);
+// Suppression lived only in memory, and every launch probed the blocked
+// relay again before the tunnel. It is kept in tdata; what a restart
+// restores is capped, since the network may have changed meanwhile.
+constexpr auto kRouteSuppressRestoreMax = 10 * 60 * crl::time(1000);
 
 std::map<QString, RouteHealth> RouteHealthByDomain;
+bool RouteHealthLoaded = false;
+
+[[nodiscard]] QString RouteHealthPath() {
+	return cWorkingDir() + u"tdata/wss_route_health"_q;
+}
+
+// Both called with RelayPreferencesMutex held.
+void LoadRouteHealthLocked() {
+	if (RouteHealthLoaded) {
+		return;
+	}
+	RouteHealthLoaded = true;
+	auto file = QFile(RouteHealthPath());
+	if (!file.open(QIODevice::ReadOnly)) {
+		return;
+	}
+	const auto now = crl::now();
+	const auto wall = QDateTime::currentMSecsSinceEpoch();
+	for (const auto &line : QString::fromUtf8(file.readAll()).split('\n')) {
+		const auto parts = line.split(' ', Qt::SkipEmptyParts);
+		if (parts.size() != 3) {
+			continue;
+		}
+		const auto suppressions = parts[1].toInt();
+		const auto left = std::min(
+			parts[2].toLongLong() - wall,
+			qint64(kRouteSuppressRestoreMax));
+		if (suppressions <= 0 || left <= 0) {
+			continue;
+		}
+		auto &health = RouteHealthByDomain[parts[0]];
+		health.suppressions = suppressions;
+		health.suppressedUntil = now + left;
+		LOG(("WSS Route: %1 suppressed for %2 s (restored after restart)."
+			).arg(parts[0]
+			).arg(left / 1000));
+	}
+}
+
+void SaveRouteHealthLocked() {
+	auto file = QFile(RouteHealthPath());
+	if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		return;
+	}
+	const auto now = crl::now();
+	const auto wall = QDateTime::currentMSecsSinceEpoch();
+	auto data = QByteArray();
+	for (const auto &[domain, health] : RouteHealthByDomain) {
+		if (health.suppressions > 0 && health.suppressedUntil > now) {
+			data += domain.toUtf8()
+				+ ' ' + QByteArray::number(health.suppressions)
+				+ ' ' + QByteArray::number(
+					wall + (health.suppressedUntil - now))
+				+ '\n';
+		}
+	}
+	file.write(data);
+}
 std::map<QString, crl::time> TcpSuccessByHost;
 
 void NoteTcpConnected(const QString &host) {
@@ -125,6 +189,7 @@ void NoteTcpConnected(const QString &host) {
 
 [[nodiscard]] bool RouteSuppressed(const QString &domain) {
 	QMutexLocker lock(&RelayPreferencesMutex);
+	LoadRouteHealthLocked();
 	const auto i = RouteHealthByDomain.find(domain);
 	if (i == end(RouteHealthByDomain) || !i->second.suppressedUntil) {
 		return false;
@@ -140,6 +205,7 @@ void NoteTcpConnected(const QString &host) {
 
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
+	LoadRouteHealthLocked();
 	auto &health = RouteHealthByDomain[route.domain];
 	// Media relays used to go to the tunnel after their first failure, for
 	// half an hour. Connections open in bursts, so a first failure is almost
@@ -165,6 +231,7 @@ void NoteRouteUnreachable(const WssRoute &route) {
 			kRouteSuppressMaxTtl);
 		++health.suppressions;
 		health.suppressedUntil = now + ttl;
+		SaveRouteHealthLocked();
 		LOG(("WSS Route: %1 suppressed for %2 s, next: %3."
 			).arg(route.domain
 			).arg(ttl / 1000
@@ -178,7 +245,11 @@ void NoteRouteReachable(const WssRoute &route) {
 	if (health.consecutiveFailures || health.suppressedUntil) {
 		LOG(("WSS Route: %1 restored (relay answered).").arg(route.domain));
 	}
+	const auto persisted = (health.suppressions > 0);
 	health = RouteHealth();
+	if (persisted) {
+		SaveRouteHealthLocked();
+	}
 }
 
 void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
