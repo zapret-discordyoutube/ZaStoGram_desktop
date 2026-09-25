@@ -2439,7 +2439,6 @@ void ProxiesBoxController::ShowApplyConfirmation(
 				};
 				statusLabel->setTextColorOverride(
 					st::proxyRowStatusFgOffline->c);
-				relayout();
 			};
 			const auto setProgress = [=](MTP::ProxyCheckStatus status) {
 				if (!weak || state->finished) {
@@ -2494,7 +2493,6 @@ void ProxiesBoxController::ShowApplyConfirmation(
 						};
 						statusLabel->setTextColorOverride(
 							st::proxyRowStatusFgAvailable->c);
-						relayout();
 					},
 					[=](Connection *raw) {
 						if (!weak || state->finished) {

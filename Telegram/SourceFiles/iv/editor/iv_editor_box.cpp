@@ -1744,6 +1744,7 @@ void WindowHost::Impl::setupWindow(ShowWindowDescriptor &&descriptor) {
 			.cancelMediaUpload = std::move(descriptor.cancelMediaUpload),
 			.addMediaAndGroupWithBlock
 				= std::move(descriptor.addMediaAndGroupWithBlock),
+			.submit = [=] { submit(); },
 			.imeCompositionStarts = window->imeCompositionStarts(),
 		},
 		descriptor.peer,

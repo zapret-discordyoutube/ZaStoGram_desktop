@@ -479,7 +479,7 @@ if customRunCommand:
 stage('patches', """
     git clone https://github.com/desktop-app/patches.git
     cd patches
-    git checkout 1ac7653d54c5993ec2c6856f267dd1dd6e8706da
+    git checkout 4e985907d09a2f0cf231946b946afa3266830a10
 mac:
     git clone https://github.com/desktop-app/qt6_highsierra_patches.git qt6_highsierra
     cd qt6_highsierra
@@ -549,8 +549,7 @@ win:
     SET "CARGO_HOME=%THIRDPARTY_DIR%\\rust\\cargo"
     rustup-init.exe -y --no-modify-path --profile minimal ^
         --default-toolchain """ + rustToolchain + """ ^
-        --component rust-src ^
-        --target aarch64-pc-windows-msvc
+        --component rust-src
     del rustup-init.exe
 mac:
     wget -O rustup-init.sh https://sh.rustup.rs

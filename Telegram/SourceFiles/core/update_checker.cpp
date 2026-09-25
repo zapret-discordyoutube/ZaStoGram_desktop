@@ -78,6 +78,11 @@ constexpr auto kZaStoGramReleasesApi =
 	"zastogram/ZaStoGram_desktop/releases"
 	"?draft=false&pre-release=true&limit=1"_cs;
 
+// Alpha and canary builds are published far more often than the eight hours
+// a stable build waits, so they ask every ten to fifteen minutes instead.
+constexpr auto kFrequentUpdateDelayConstPart = 600;
+constexpr auto kFrequentUpdateDelayRandPart = 300;
+
 // tdata/version marker for installed v2 canary packages, holding the full
 // 64-bit (base << 32 | counter) version. 0x7FFFFFFF is the alpha marker.
 constexpr auto kVersionFileCanaryMarker = quint32(0x7FFFFFFE);
@@ -2099,8 +2104,13 @@ void Updater::start(bool forceWait) {
 	}
 
 	_retryTimer.cancel();
-	const auto constDelay = cAlphaVersion() ? 600 : UpdateDelayConstPart;
-	const auto randDelay = cAlphaVersion() ? 300 : UpdateDelayRandPart;
+	const auto frequent = cAlphaVersion() || BuildIsCanary;
+	const auto constDelay = frequent
+		? kFrequentUpdateDelayConstPart
+		: UpdateDelayConstPart;
+	const auto randDelay = frequent
+		? kFrequentUpdateDelayRandPart
+		: UpdateDelayRandPart;
 	const auto updateInSecs = cLastUpdateCheck()
 		+ constDelay
 		+ int(rand() % randDelay)
