@@ -180,6 +180,11 @@ public:
 	void logInfo(const QString &message);
 	void logError(const QString &message);
 
+	// Closed on purpose to dodge a per-connection byte limit, not failed.
+	[[nodiscard]] bool rotating() const {
+		return _rotating;
+	}
+
 	// Used to emit error(...) with no real code from the server.
 	static constexpr auto kErrorCodeOther = -499;
 
@@ -198,6 +203,7 @@ Q_SIGNALS:
 protected:
 	const not_null<RuntimeEnvironment*> _runtime;
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet
+	bool _rotating = false;
 	int _pingTime = 0;
 	ProxyData _proxy;
 	TransportMode _transport = TransportMode::None;

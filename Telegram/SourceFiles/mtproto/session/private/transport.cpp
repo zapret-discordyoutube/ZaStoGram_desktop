@@ -193,6 +193,7 @@ void SessionTransport::noteMtprotoPayloadReceived() {
 			ProxyDiagnosticsPhase::MtpFirstDataReceived,
 			ProxyDiagnosticsSeverity::Info,
 			u"first mtproto payload received"_q);
+		_quietReconnect = false;
 	}
 	if (_state.connection) {
 		_state.connection->markProxyMtprotoPayloadReceived();

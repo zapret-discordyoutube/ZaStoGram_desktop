@@ -77,6 +77,11 @@ public:
 		uint32 size) const;
 	[[nodiscard]] bool empty() const;
 	[[nodiscard]] ProxyConnectionAttempt currentProxyAttempt() const;
+	// Reconnecting after a planned rotation of a tunnel file connection:
+	// the routine connect/ready lines are not logged for it.
+	[[nodiscard]] bool quietReconnect() const {
+		return _quietReconnect;
+	}
 
 private:
 	struct TestConnection {
@@ -154,6 +159,7 @@ private:
 
 	const not_null<SessionPrivate*> _owner;
 	ConnectionState _state;
+	bool _quietReconnect = false;
 	TimingState _timing;
 };
 

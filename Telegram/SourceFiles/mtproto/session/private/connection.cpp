@@ -570,6 +570,7 @@ bool SessionTransport::extendWebProxyReceiveWait() {
 void SessionTransport::waitReceivedFailed() {
 	Expects(_owner->_sessionState.options != nullptr);
 
+	_quietReconnect = false;
 	if (extendWebProxyReceiveWait()) {
 		return;
 	}
@@ -646,6 +647,7 @@ void SessionTransport::waitConnectedFailed() {
 		? _timing.waitForConnectedArmed
 		: _timing.waitForConnected;
 	DEBUG_LOG(("MTP Info: can't connect in %1ms").arg(waited));
+	_quietReconnect = false;
 	_owner->logMtprotoEvent(
 		ProxyDiagnosticsPhase::MtpConnectTimeout,
 		ProxyDiagnosticsSeverity::Warning,
@@ -754,9 +756,11 @@ void SessionTransport::onDisconnected(
 		&& _state.connection.get() != connection.get()) {
 		return;
 	}
+	const auto rotating = connection->rotating();
 	removeTestConnection(connection);
 
 	if (_state.testConnections.empty()) {
+		_quietReconnect = rotating;
 		destroyAllConnections();
 		restart();
 	} else if (!_state.testConnections.empty()) {

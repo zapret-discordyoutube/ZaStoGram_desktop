@@ -157,6 +157,18 @@ void SessionPrivate::logMtprotoEvent(
 		ProxyDiagnosticsPhase phase,
 		ProxyDiagnosticsSeverity severity,
 		const QString &message) const {
+	if (_transport.quietReconnect()) {
+		switch (phase) {
+		case ProxyDiagnosticsPhase::MtpRestart:
+		case ProxyDiagnosticsPhase::MtpConnecting:
+		case ProxyDiagnosticsPhase::MtpTransportReady:
+		case ProxyDiagnosticsPhase::MtpKeyReady:
+		case ProxyDiagnosticsPhase::MtpFirstDataReceived:
+			return;
+		default:
+			break;
+		}
+	}
 	const auto proxy = _sessionState.options
 		? _sessionState.options->proxy
 		: ProxyData();

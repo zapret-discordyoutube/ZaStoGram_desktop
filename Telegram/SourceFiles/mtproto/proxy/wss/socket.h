@@ -56,6 +56,11 @@ struct WssRouteDiagnostics {
 	const ProxyStealthOptions &stealth,
 	int16 protocolDcId);
 
+// The media relay of this DC is suppressed and its files go through the
+// Cloudflare tunnel, where every connection freezes after ~16 KB downstream.
+// File downloads then use small parts over many short-lived connections.
+[[nodiscard]] bool WssMediaTunneled(int dcId);
+
 // A clean, self-contained MTProto-over-WebSocket(-over-TLS) transport. It
 // speaks RFC 6455 over a real QSslSocket and carries the obfuscated MTProto
 // stream transparently inside binary frames, so the rest of the connection
@@ -73,6 +78,7 @@ public:
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
 	void timedOut() override;
+	[[nodiscard]] bool takeRotation() override;
 	bool isConnected() override;
 	bool hasBytesAvailable() override;
 	int64 read(bytes::span buffer) override;
@@ -108,6 +114,8 @@ private:
 	qint64 _bytesReceived = 0;
 	qint64 _bytesSent = 0;
 	bool _tunnelProven = false;
+	bool _forFiles = false;
+	bool _rotated = false;
 	crl::time _openedAt = 0;
 	crl::time _upgradedAt = 0;
 	crl::time _firstDataAt = 0;

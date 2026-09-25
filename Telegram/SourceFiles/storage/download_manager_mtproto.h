@@ -30,6 +30,13 @@ namespace Storage {
 // fixed part size download for hash checking.
 constexpr auto kDownloadPartSize = 128 * 1024;
 
+// A throttled Cloudflare tunnel freezes each connection after ~16 KB, so a
+// part for a tunneled DC is fetched as pieces, one per short connection, and
+// assembled before the loader sees it. CDN parts are never split.
+constexpr auto kTunnelDownloadPieceSize = 8 * 1024;
+constexpr auto kTunnelDownloadPieces = kDownloadPartSize
+	/ kTunnelDownloadPieceSize;
+
 class DownloadMtprotoTask;
 
 class DownloadManagerMtproto final : public base::has_weak_ptr {
@@ -178,6 +185,7 @@ public:
 	[[nodiscard]] const Location &location() const;
 
 	[[nodiscard]] virtual bool readyToRequest() const = 0;
+	[[nodiscard]] bool readyToRequestPart() const;
 	void loadPart(int sessionIndex);
 	void removeSession(int sessionIndex);
 
@@ -206,10 +214,18 @@ private:
 		int requestedInSession = 0;
 		crl::time sent = 0;
 		uint64 diagnosticLaneOrdinal = 0;
+		int64 partOffset = -1; // >= 0 for a piece of a split part
+		int limit = kDownloadPartSize;
 
 		inline bool operator<(const RequestData &other) const {
 			return offset < other.offset;
 		}
+	};
+	struct SplitPart {
+		std::array<QByteArray, kTunnelDownloadPieces> pieces;
+		std::array<bool, kTunnelDownloadPieces> received = {};
+		int nextPiece = 0;
+		int endPiece = kTunnelDownloadPieces;
 	};
 	struct CdnFileHash {
 		CdnFileHash(int limit, QByteArray hash) : limit(limit), hash(hash) {
@@ -264,6 +280,12 @@ private:
 		mtpRequestId requestId);
 	bool cdnPartFailed(const MTP::Error &error, mtpRequestId requestId);
 
+	[[nodiscard]] bool splitDownload() const;
+	[[nodiscard]] bool hasUnsentPiece() const;
+	void sendPiece(int64 partOffset, SplitPart &part, int sessionIndex);
+	bool pieceLoaded(const RequestData &requestData, const QByteArray &bytes);
+	void cancelSplitPart(int64 partOffset);
+
 	[[nodiscard]] mtpRequestId sendRequest(RequestData &requestData);
 	[[nodiscard]] auto fileTransferTag(
 		RequestData &requestData,
@@ -303,6 +325,7 @@ private:
 
 	base::flat_map<mtpRequestId, RequestData> _sentRequests;
 	base::flat_map<int64, mtpRequestId> _requestByOffset;
+	base::flat_map<int64, SplitPart> _splitParts;
 
 	MTP::DcId _cdnDcId = 0;
 	QByteArray _cdnToken;

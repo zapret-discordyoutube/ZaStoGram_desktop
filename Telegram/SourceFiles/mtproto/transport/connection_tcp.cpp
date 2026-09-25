@@ -433,6 +433,19 @@ void TcpConnection::socketRead() {
 	} while (_socket
 		&& _socket->isConnected()
 		&& _socket->hasBytesAvailable());
+
+	if (_socket
+		&& _status == Status::Ready
+		&& !_leftBytes
+		&& !_readBytes
+		&& _socket->takeRotation()) {
+		// A throttled tunnel freezes each connection after ~16 KB, so a file
+		// connection is reopened between packets instead: the session
+		// reconnects at once and resends whatever is still unanswered.
+		CONNECTION_LOG_INFO("Rotating the connection at a packet boundary.");
+		_rotating = true;
+		disconnected();
+	}
 }
 
 mtpBuffer TcpConnection::parsePacket(bytes::const_span bytes) {

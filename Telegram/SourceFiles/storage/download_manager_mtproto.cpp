@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/protocol/mtproto_serialized_request.h"
 #include "mtproto/proxy/diagnostics.h"
+#include "mtproto/proxy/wss/socket.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
@@ -129,7 +130,7 @@ auto DownloadManagerMtproto::Queue::nextTask(bool onlyHighestPriority) const
 		? ranges::find_if(_tasks, notHighestPriority)
 		: end(_tasks);
 	const auto readyToRequest = [&](const Enqueued &enqueued) {
-		return enqueued.task->readyToRequest();
+		return enqueued.task->readyToRequestPart();
 	};
 	const auto first = ranges::find_if(
 		ranges::make_subrange(begin(_tasks), till),
@@ -219,8 +220,31 @@ void DownloadManagerMtproto::checkSendNextAfterCancel() {
 }
 
 bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
-	const auto &balanceData = _balanceData[dcId];
-	const auto &sessions = balanceData.sessions;
+	auto &balanceData = _balanceData[dcId];
+	auto &sessions = balanceData.sessions;
+	if (MTP::details::WssMediaTunneled(dcId)) {
+		// Every tunnel connection carries one piece and is reopened, so speed
+		// comes from many sessions with one request each, opened at once
+		// instead of earned by successes.
+		const auto free = ranges::find(
+			sessions,
+			0,
+			&DcSessionBalanceData::requested);
+		const auto index = int(free - begin(sessions));
+		if (index == int(sessions.size())
+			&& index >= kMaxSessionsCount) {
+			return false;
+		}
+		const auto onlyHighestPriority = (balanceData.totalRequested > 0);
+		const auto task = queue.nextTask(onlyHighestPriority);
+		if (!task) {
+			return false;
+		} else if (index == int(sessions.size())) {
+			sessions.emplace_back();
+		}
+		task->loadPart(index);
+		return true;
+	}
 	const auto bestIndex = [&] {
 		const auto proj = [](const DcSessionBalanceData &data) {
 			return (data.requested < data.maxWaitedAmount)
@@ -362,6 +386,10 @@ void DownloadManagerMtproto::sessionTimedOut(MTP::DcId dcId, int index) {
 	DEBUG_LOG(("Download (%1,%2) session timed-out.").arg(dcId).arg(index));
 	for (auto &session : dc.sessions) {
 		session.successes = 0;
+	}
+	if (MTP::details::WssMediaTunneled(dcId)) {
+		// Slow pieces are the tunnel, not too many sessions.
+		return;
 	}
 	if (dc.sessions.size() == kStartSessionsCount
 		|| ++dc.timeouts < kRemoveSessionAfterTimeouts) {
@@ -596,20 +624,109 @@ void DownloadMtprotoTask::refreshFileReferenceFrom(
 	}
 }
 
+bool DownloadMtprotoTask::readyToRequestPart() const {
+	return hasUnsentPiece() || readyToRequest();
+}
+
 void DownloadMtprotoTask::loadPart(int sessionIndex) {
-	makeRequest({ takeNextRequestOffset(), sessionIndex });
+	for (auto &[partOffset, part] : _splitParts) {
+		if (part.nextPiece < part.endPiece) {
+			sendPiece(partOffset, part, sessionIndex);
+			return;
+		}
+	}
+	const auto offset = takeNextRequestOffset();
+	if (splitDownload()) {
+		sendPiece(offset, _splitParts[offset], sessionIndex);
+		return;
+	}
+	makeRequest({ offset, sessionIndex });
+}
+
+bool DownloadMtprotoTask::splitDownload() const {
+	return !_cdnDcId
+		&& v::is<StorageFileLocation>(_location.data)
+		&& MTP::details::WssMediaTunneled(dcId());
+}
+
+bool DownloadMtprotoTask::hasUnsentPiece() const {
+	return ranges::any_of(_splitParts, [](const auto &pair) {
+		return pair.second.nextPiece < pair.second.endPiece;
+	});
+}
+
+void DownloadMtprotoTask::sendPiece(
+		int64 partOffset,
+		SplitPart &part,
+		int sessionIndex) {
+	auto requestData = RequestData();
+	requestData.offset = partOffset
+		+ int64(part.nextPiece) * kTunnelDownloadPieceSize;
+	requestData.sessionIndex = sessionIndex;
+	requestData.partOffset = partOffset;
+	requestData.limit = kTunnelDownloadPieceSize;
+	++part.nextPiece;
+	makeRequest(requestData);
+}
+
+bool DownloadMtprotoTask::pieceLoaded(
+		const RequestData &requestData,
+		const QByteArray &bytes) {
+	const auto i = _splitParts.find(requestData.partOffset);
+	if (i == end(_splitParts)) {
+		return true; // The part was cancelled or re-requested whole.
+	}
+	auto &part = i->second;
+	const auto index = int((requestData.offset - requestData.partOffset)
+		/ kTunnelDownloadPieceSize);
+	Assert(index >= 0 && index < kTunnelDownloadPieces);
+	part.pieces[index] = bytes;
+	part.received[index] = true;
+	if (bytes.size() < kTunnelDownloadPieceSize) {
+		// A short piece is the end of the file.
+		part.endPiece = std::min(part.endPiece, index + 1);
+	}
+	if (part.nextPiece < part.endPiece) {
+		return true;
+	}
+	for (auto k = 0; k != part.endPiece; ++k) {
+		if (!part.received[k]) {
+			return true;
+		}
+	}
+	const auto partOffset = i->first;
+	auto result = QByteArray();
+	result.reserve(part.endPiece * kTunnelDownloadPieceSize);
+	for (auto k = 0; k != part.endPiece; ++k) {
+		result.append(part.pieces[k]);
+	}
+	cancelSplitPart(partOffset);
+	return feedPart(partOffset, result);
+}
+
+void DownloadMtprotoTask::cancelSplitPart(int64 partOffset) {
+	auto pieces = std::vector<mtpRequestId>();
+	for (const auto &[requestId, requestData] : _sentRequests) {
+		if (requestData.partOffset == partOffset) {
+			pieces.push_back(requestId);
+		}
+	}
+	_splitParts.remove(partOffset);
+	for (const auto requestId : pieces) {
+		cancelRequest(requestId);
+	}
 }
 
 void DownloadMtprotoTask::removeSession(int sessionIndex) {
 	struct Redirect {
 		mtpRequestId requestId = 0;
-		int64 offset = 0;
+		RequestData data;
 	};
 	auto redirect = std::vector<Redirect>();
 	for (const auto &[requestId, requestData] : _sentRequests) {
 		if (requestData.sessionIndex == sessionIndex) {
 			redirect.reserve(_sentRequests.size());
-			redirect.push_back({ requestId, requestData.offset });
+			redirect.push_back({ requestId, requestData });
 		}
 	}
 	for (auto &[requestData, bytes] : _cdnUncheckedParts) {
@@ -619,20 +736,24 @@ void DownloadMtprotoTask::removeSession(int sessionIndex) {
 			requestData.sessionIndex = newIndex;
 		}
 	}
-	for (const auto &[requestId, offset] : redirect) {
+	for (const auto &[requestId, data] : redirect) {
 		const auto needMakeRequest = (requestId != _cdnHashesRequestId);
 		cancelRequest(requestId);
 		if (needMakeRequest) {
 			const auto newIndex = _owner->chooseSessionIndex(dcId());
 			Assert(newIndex < sessionIndex);
-			makeRequest({ offset, newIndex });
+			auto moved = data;
+			moved.sessionIndex = newIndex;
+			moved.requestedInSession = 0;
+			moved.sent = 0;
+			makeRequest(moved);
 		}
 	}
 }
 
 mtpRequestId DownloadMtprotoTask::sendRequest(RequestData &requestData) {
 	const auto offset = requestData.offset;
-	const auto limit = Storage::kDownloadPartSize;
+	const auto limit = requestData.limit;
 	const auto shiftedDcId = MTP::downloadDcId(
 		_cdnDcId ? _cdnDcId : dcId(),
 		requestData.sessionIndex);
@@ -1037,15 +1158,19 @@ auto DownloadMtprotoTask::finishSentRequest(
 }
 
 bool DownloadMtprotoTask::haveSentRequests() const {
-	return !_sentRequests.empty() || !_cdnUncheckedParts.empty();
+	return !_sentRequests.empty()
+		|| !_cdnUncheckedParts.empty()
+		|| !_splitParts.empty();
 }
 
 bool DownloadMtprotoTask::haveSentRequestForOffset(int64 offset) const {
 	return _requestByOffset.contains(offset)
-		|| _cdnUncheckedParts.contains({ offset, 0 });
+		|| _cdnUncheckedParts.contains({ offset, 0 })
+		|| _splitParts.contains(offset);
 }
 
 void DownloadMtprotoTask::cancelAllRequests() {
+	_splitParts.clear();
 	while (!_sentRequests.empty()) {
 		cancelRequest(_sentRequests.begin()->first);
 	}
@@ -1053,6 +1178,10 @@ void DownloadMtprotoTask::cancelAllRequests() {
 }
 
 void DownloadMtprotoTask::cancelRequestForOffset(int64 offset) {
+	if (_splitParts.contains(offset)) {
+		cancelSplitPart(offset);
+		return;
+	}
 	const auto i = _requestByOffset.find(offset);
 	if (i != end(_requestByOffset)) {
 		cancelRequest(i->second);
@@ -1088,6 +1217,9 @@ bool DownloadMtprotoTask::partLoaded(
 	_owner->addAcceptedBytes(
 		requestData.diagnosticLaneOrdinal,
 		bytes.size());
+	if (requestData.partOffset >= 0) {
+		return pieceLoaded(requestData, bytes);
+	}
 	return feedPart(requestData.offset, bytes);
 }
 
@@ -1194,9 +1326,9 @@ void DownloadMtprotoTask::changeCDNParams(
 	_cdnEncryptionIV = encryptionIV;
 	addCdnHashes(hashes);
 
+	auto resendRequests = std::vector<RequestData>();
 	if (resendAllRequests && !_sentRequests.empty()) {
-		auto resendRequests = std::vector<RequestData>();
-		resendRequests.reserve(_sentRequests.size());
+		resendRequests.reserve(_sentRequests.size() + 1);
 		while (!_sentRequests.empty()) {
 			const auto requestId = _sentRequests.begin()->first;
 			api().request(requestId).cancel();
@@ -1204,11 +1336,36 @@ void DownloadMtprotoTask::changeCDNParams(
 				requestId,
 				FinishRequestReason::Redirect));
 		}
-		for (const auto &requestData : resendRequests) {
-			makeRequest(requestData);
-		}
 	}
-	makeRequest(requestData);
+	resendRequests.push_back(requestData);
+	if (_cdnDcId) {
+		// CDN hashes cover whole parts: split parts are requested whole.
+		auto whole = std::vector<RequestData>();
+		const auto add = [&](int64 offset, int sessionIndex) {
+			if (!_requestByOffset.contains(offset)
+				&& !ranges::contains(whole, offset, &RequestData::offset)) {
+				auto data = RequestData();
+				data.offset = offset;
+				data.sessionIndex = sessionIndex;
+				whole.push_back(data);
+			}
+		};
+		for (const auto &data : resendRequests) {
+			if (data.partOffset >= 0) {
+				add(data.partOffset, data.sessionIndex);
+			} else {
+				whole.push_back(data);
+			}
+		}
+		for (const auto &[partOffset, part] : _splitParts) {
+			add(partOffset, requestData.sessionIndex);
+		}
+		_splitParts.clear();
+		resendRequests = std::move(whole);
+	}
+	for (const auto &data : resendRequests) {
+		makeRequest(data);
+	}
 }
 
 } // namespace Storage

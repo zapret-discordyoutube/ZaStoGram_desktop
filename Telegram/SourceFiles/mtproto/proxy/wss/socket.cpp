@@ -76,10 +76,12 @@ constexpr auto kRouteFailuresBeforeSuppress = 3;
 // Туннель медленнее релея, поэтому держать в нём основной датацентр дольше
 // пары минут дороже, чем лишний раз проверить релей.
 constexpr auto kRouteSuppressTtl = 2 * 60 * crl::time(1000);
-// A throttled network freezes TCP to Cloudflare after about 16 KB downstream
-// (Android logs (9) and (10): no tunnel session ever got past 15 KB). A
-// tunnel socket that times out before this much arrived is frozen.
-constexpr auto kTunnelFreezeBytes = qint64(20 * 1024);
+// A throttled network freezes TCP to Cloudflare after about 16 KB downstream,
+// TLS handshake included (Android logs (9) and (10), desktop log 25.09: no
+// tunnel socket got more than ~13 KB of MTProto). A file connection is
+// reopened after one 8 KB part, before it reaches that limit; a tunnel that
+// delivered this much is working, even if it would freeze later.
+constexpr auto kTunnelRotateBytes = qint64(4 * 1024);
 // Соединения открываются пачкой, и их таймауты приходят пачкой. Одна пачка —
 // один провал, а не «три подряд».
 constexpr auto kRouteFailureCoalesce = 2 * crl::time(1000);
@@ -191,6 +193,55 @@ void NoteRelayUpgraded(const WssRoute &route, bool viaFallback) {
 	}
 }
 
+struct RotatedTunnelSockets {
+	int count = 0;
+	qint64 sent = 0;
+	qint64 received = 0;
+	crl::time life = 0;
+	crl::time since = 0;
+};
+
+QMutex RotatedTunnelSocketsMutex;
+RotatedTunnelSockets RotatedTunnelSocketsSum;
+
+void NoteRotatedTunnelSocket(
+		not_null<RuntimeEnvironment*> runtime,
+		qint64 sent,
+		qint64 received,
+		crl::time life) {
+	constexpr auto kReportEvery = 32;
+	constexpr auto kReportAfter = 60 * crl::time(1000);
+	auto report = RotatedTunnelSockets();
+	{
+		QMutexLocker lock(&RotatedTunnelSocketsMutex);
+		auto &sum = RotatedTunnelSocketsSum;
+		const auto now = crl::now();
+		if (!sum.count) {
+			sum.since = now;
+		}
+		++sum.count;
+		sum.sent += sent;
+		sum.received += received;
+		sum.life += life;
+		if (sum.count < kReportEvery && now - sum.since < kReportAfter) {
+			return;
+		}
+		report = base::take(sum);
+	}
+	WriteProxyDiagnosticsLine(runtime, {
+		.source = ProxyDiagnosticsSource::Network,
+		.phase = ProxyDiagnosticsPhase::AttemptSummary,
+		.severity = ProxyDiagnosticsSeverity::Info,
+		.transport = u"WSSTunnel"_q,
+		.message = u"wss_tunnel_rotated sockets=%1 tx=%2 rx=%3 avg_life_ms=%4"_q
+			.arg(report.count)
+			.arg(report.sent)
+			.arg(report.received)
+			.arg(report.life / report.count),
+		.route = u"edge.amberwick.workers.dev"_q,
+	});
+}
+
 [[nodiscard]] QByteArray RandomBytes(int count) {
 	auto result = QByteArray(count, char(0));
 	bytes::set_random(bytes::make_detached_span(result));
@@ -275,6 +326,16 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	return route;
 }
 
+bool WssMediaTunneled(int dcId) {
+	const auto media = OfficialRoute(int16(-dcId));
+	if (!media) {
+		return (dcId == kTunnelOnlyDcId)
+			&& !RouteSuppressed(TunnelRoute().domain);
+	}
+	return RouteSuppressed(media->domain)
+		&& !RouteSuppressed(TunnelRoute().domain);
+}
+
 std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
 	if (stealth.wssCustomHost.isEmpty()) {
 		return std::nullopt;
@@ -341,6 +402,7 @@ WssSocket::WssSocket(
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
 	_socket.setPeerVerifyMode(QSslSocket::VerifyPeer);
+	_forFiles = protocolForFiles;
 	if (protocolForFiles) {
 		_socket.setSocketOption(
 			QAbstractSocket::SendBufferSizeSocketOption,
@@ -379,6 +441,15 @@ WssSocket::WssSocket(
 
 WssSocket::~WssSocket() {
 	if (!_openedAt) {
+		return;
+	} else if (_rotated) {
+		// A tunnel file connection lives for one part; a line for each of
+		// them would flood the log, so they are summed up instead.
+		NoteRotatedTunnelSocket(
+			_runtime,
+			_bytesSent,
+			_bytesReceived,
+			crl::now() - _openedAt);
 		return;
 	}
 	// One line per relay socket: which route it took, how far the handshake
@@ -429,6 +500,14 @@ void WssSocket::connectToRelayHost() {
 		_route.domain);
 }
 
+bool WssSocket::takeRotation() {
+	if (!_route.tunnel || !_forFiles || _bytesReceived < kTunnelRotateBytes) {
+		return false;
+	}
+	_rotated = true;
+	return true;
+}
+
 bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 	Expects(nonce.size() >= 2 * sizeof(uint32));
 
@@ -455,12 +534,13 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 
 void WssSocket::timedOut() {
 	if (_upgraded) {
-		if (_route.tunnel && _bytesReceived < kTunnelFreezeBytes) {
-			// The session gave up on a tunnel socket that has barely received
-			// anything: the network froze it. Counting it lets the tunnel be
-			// suppressed so the DC goes back to its relay or direct TCP.
+		if (_route.tunnel && !_bytesReceived) {
+			// The tunnel upgraded and then delivered nothing at all. A tunnel
+			// that froze after some data is throttled, not dead: suppressing
+			// it sent DC1 to direct TCP, which the same network blocks
+			// outright, and files did not load at all for two minutes.
 			NoteRouteUnreachable(_route);
-			logError(0, u"WSS tunnel stalled after %1 bytes"_q.arg(_bytesReceived));
+			logError(0, u"WSS tunnel silent after upgrade"_q);
 		}
 		return;
 	}
@@ -721,7 +801,7 @@ void WssSocket::parseFrames() {
 				_bytesReceived += qint64(length);
 				if (_route.tunnel
 					&& !_tunnelProven
-					&& _bytesReceived >= kTunnelFreezeBytes) {
+					&& _bytesReceived >= kTunnelRotateBytes) {
 					_tunnelProven = true;
 					NoteRouteReachable(_route);
 				}

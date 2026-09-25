@@ -58,6 +58,11 @@ public:
 	virtual void connectToHost(const QString &address, int port) = 0;
 	[[nodiscard]] virtual bool isGoodStartNonce(bytes::const_span nonce) = 0;
 	virtual void timedOut() = 0;
+	// Asked at a packet boundary: true means the connection should be
+	// reopened now, and the socket remembers it was closed on purpose.
+	[[nodiscard]] virtual bool takeRotation() {
+		return false;
+	}
 	virtual void markProxyMtprotoPayloadReceived() {
 	}
 	[[nodiscard]] virtual bool isConnected() = 0;
