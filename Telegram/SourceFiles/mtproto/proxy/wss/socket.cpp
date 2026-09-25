@@ -82,6 +82,9 @@ constexpr auto kRouteSuppressTtl = 2 * 60 * crl::time(1000);
 // reopened after one 8 KB part, before it reaches that limit; a tunnel that
 // delivered this much is working, even if it would freeze later.
 constexpr auto kTunnelRotateBytes = qint64(4 * 1024);
+// Chat sessions through the tunnel froze after 11-15 KB and waited out the
+// 8 s receive timeout every 15-50 s; they are reopened after this much.
+constexpr auto kTunnelMainRotateBytes = qint64(8 * 1024);
 // An upgraded tunnel socket killed sooner than this without data was cut by
 // a connect budget, not found silent.
 constexpr auto kTunnelSilentAfter = 4 * crl::time(1000);
@@ -97,7 +100,13 @@ struct RouteHealth {
 	int consecutiveFailures = 0;
 	crl::time suppressedUntil = 0;
 	crl::time lastFailureAt = 0;
+	// Suppressions in a row without a single answer in between: a relay the
+	// network blocks outright was probed every two minutes, and each probe
+	// (1+2+4+8 s of connect budgets) was 15 s without DC1 (desktop log
+	// 25.09, 18:40 and 18:43). Each repeat doubles the suppression.
+	int suppressions = 0;
 };
+constexpr auto kRouteSuppressMaxTtl = 30 * 60 * crl::time(1000);
 
 std::map<QString, RouteHealth> RouteHealthByDomain;
 std::map<QString, crl::time> TcpSuccessByHost;
@@ -120,7 +129,9 @@ void NoteTcpConnected(const QString &host) {
 	if (i == end(RouteHealthByDomain) || !i->second.suppressedUntil) {
 		return false;
 	} else if (i->second.suppressedUntil <= crl::now()) {
+		const auto suppressions = i->second.suppressions;
 		i->second = RouteHealth();
+		i->second.suppressions = suppressions;
 		LOG(("WSS Route: %1 restored (suppression expired).").arg(domain));
 		return false;
 	}
@@ -149,10 +160,14 @@ void NoteRouteUnreachable(const WssRoute &route) {
 		).arg(health.consecutiveFailures
 		).arg(kRouteFailuresBeforeSuppress));
 	if (health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
-		health.suppressedUntil = now + kRouteSuppressTtl;
+		const auto ttl = std::min(
+			kRouteSuppressTtl << std::min(health.suppressions, 4),
+			kRouteSuppressMaxTtl);
+		++health.suppressions;
+		health.suppressedUntil = now + ttl;
 		LOG(("WSS Route: %1 suppressed for %2 s, next: %3."
 			).arg(route.domain
-			).arg(kRouteSuppressTtl / 1000
+			).arg(ttl / 1000
 			).arg(route.tunnel ? u"direct TCP"_q : u"Cloudflare tunnel"_q));
 	}
 }
@@ -504,7 +519,8 @@ void WssSocket::connectToRelayHost() {
 }
 
 bool WssSocket::takeRotation() {
-	if (!_route.tunnel || !_forFiles || _bytesReceived < kTunnelRotateBytes) {
+	const auto limit = _forFiles ? kTunnelRotateBytes : kTunnelMainRotateBytes;
+	if (!_route.tunnel || _bytesReceived < limit) {
 		return false;
 	}
 	_rotated = true;

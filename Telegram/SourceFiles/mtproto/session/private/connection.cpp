@@ -45,10 +45,11 @@ namespace {
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
 // The Cloudflare tunnel needs ~0.7 s for TCP, TLS and the upgrade and answers
-// the first MTProto packet at ~1.1 s (desktop log 25.09): the 1 s first wait
+// the first MTProto packet at ~1.1 s, sometimes only at ~4.2 s (desktop logs
+// 25.09): the 1 s first wait
 // killed nearly every tunnel attempt, and with a connection reopened after
 // each file piece that was most of them.
-constexpr auto kTunnelMinConnectedTimeout = crl::time(4000);
+constexpr auto kTunnelMinConnectedTimeout = crl::time(6000);
 constexpr auto kMtproxyMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
