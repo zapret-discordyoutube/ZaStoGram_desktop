@@ -122,6 +122,10 @@ public:
 
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;
 
+	// Used by the test harness to answer requests with synthesized results.
+	[[nodiscard]] bool hasCallback(mtpRequestId requestId) const;
+	void processCallback(const Response &response);
+
 	[[nodiscard]] auto nonPremiumDelayedRequests() const
 		-> rpl::producer<mtpRequestId>;
 	[[nodiscard]] rpl::producer<> frozenErrorReceived() const;

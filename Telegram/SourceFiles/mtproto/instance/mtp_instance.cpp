@@ -2086,6 +2086,14 @@ rpl::producer<ShiftedDcId> Instance::restartsByTimeout() const {
 	return _private->restartsByTimeout();
 }
 
+bool Instance::hasCallback(mtpRequestId requestId) const {
+	return _private->hasCallback(requestId);
+}
+
+void Instance::processCallback(const Response &response) {
+	_private->processCallback(response);
+}
+
 rpl::producer<mtpRequestId> Instance::nonPremiumDelayedRequests() const {
 	return _private->nonPremiumDelayedRequests();
 }
