@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/dial_pacer.h"
 #include "mtproto/proxy/mtproxy/handshake_plan.h"
 #include "mtproto/proxy/transport_policy.h"
+#include "mtproto/proxy/wss/socket.h"
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/options.h"
 #include "mtproto/session/session.h"
@@ -43,6 +44,11 @@ namespace {
 
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
+// The Cloudflare tunnel needs ~0.7 s for TCP, TLS and the upgrade and answers
+// the first MTProto packet at ~1.1 s (desktop log 25.09): the 1 s first wait
+// killed nearly every tunnel attempt, and with a connection reopened after
+// each file piece that was most of them.
+constexpr auto kTunnelMinConnectedTimeout = crl::time(4000);
 constexpr auto kMtproxyMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
@@ -222,6 +228,16 @@ void SessionTransport::armWaitForConnectedTimer() {
 	// reconnects, and repeated fresh handshakes are exactly what gets
 	// proxies throttled. Direct connections keep the short first wait.
 	auto wait = _timing.waitForConnected;
+	if (const auto &options = _owner->_sessionState.options;
+		options
+		&& options->proxy.type == ProxyData::Type::None
+		&& options->stealth.transport == ProxyTransport::Wss
+		&& !WssCustomRoute(options->stealth)) {
+		const auto route = WssOfficialRoute(_owner->getProtocolDcId());
+		if (route && route->tunnel) {
+			accumulate_max(wait, kTunnelMinConnectedTimeout);
+		}
+	}
 	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {
 		auto minWait = crl::time(0);
 		for (const auto &connection : _state.testConnections) {

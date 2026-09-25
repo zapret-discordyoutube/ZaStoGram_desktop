@@ -82,6 +82,9 @@ constexpr auto kRouteSuppressTtl = 2 * 60 * crl::time(1000);
 // reopened after one 8 KB part, before it reaches that limit; a tunnel that
 // delivered this much is working, even if it would freeze later.
 constexpr auto kTunnelRotateBytes = qint64(4 * 1024);
+// An upgraded tunnel socket killed sooner than this without data was cut by
+// a connect budget, not found silent.
+constexpr auto kTunnelSilentAfter = 4 * crl::time(1000);
 // Соединения открываются пачкой, и их таймауты приходят пачкой. Одна пачка —
 // один провал, а не «три подряд».
 constexpr auto kRouteFailureCoalesce = 2 * crl::time(1000);
@@ -534,7 +537,9 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 
 void WssSocket::timedOut() {
 	if (_upgraded) {
-		if (_route.tunnel && !_bytesReceived) {
+		if (_route.tunnel
+			&& !_bytesReceived
+			&& crl::now() - _upgradedAt >= kTunnelSilentAfter) {
 			// The tunnel upgraded and then delivered nothing at all. A tunnel
 			// that froze after some data is throttled, not dead: suppressing
 			// it sent DC1 to direct TCP, which the same network blocks

@@ -208,10 +208,19 @@ void SessionPrivate::dropMismatchedTemporaryKey() {
 	const auto proxy = _sessionState.options
 		? _sessionState.options->proxy.type
 		: ProxyData::Type::None;
+	// WSS is the same: the kwsN-1 relay and the Cloudflare tunnel (with -N
+	// in the obfuscated header) both land on the media cluster. Desktop log
+	// 25.09: DC1 media through the tunnel got -404 on every connection and
+	// spent the ~16 KB each tunnel connection gets on creating keys again.
+	const auto wss = (proxy == ProxyData::Type::None)
+		&& _sessionState.options
+		&& (_sessionState.options->stealth.transport
+			== ProxyTransport::Wss);
 	if (!_sessionState.encryptionKey
 		|| _delegate->isKeysDestroyer()
 		|| (proxy != ProxyData::Type::Mtproto
-			&& proxy != ProxyData::Type::Web)
+			&& proxy != ProxyData::Type::Web
+			&& !wss)
 		|| (TemporaryKeyTypeByDcType(_currentDcType)
 			!= TemporaryKeyType::MediaCluster)) {
 		return;
