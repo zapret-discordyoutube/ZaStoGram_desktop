@@ -30,6 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/call_delayed.h"
 #include "base/timer.h"
 #include "base/network_reachability.h"
+#include "mtproto/proxy/wss/socket.h"
 #include "test/test_rpc_retry.h"
 
 namespace MTP {
@@ -531,6 +532,8 @@ Instance::Private::Private(
 {
 	Expects(_config != nullptr);
 	Expects(_runtime != nullptr);
+
+	details::WssTrackNetwork();
 
 	_runtime->bindInstance({
 		.connectionStatus = _connectionStatus.get(),

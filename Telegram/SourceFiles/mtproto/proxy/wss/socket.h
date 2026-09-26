@@ -22,7 +22,16 @@ struct WssRoute {
 	QString domain;
 	QString path;
 	bool tunnel = false; // path gets ?dst=<datacenter address> on connect
+	// Network the route was chosen on (see WssTrackNetwork): its failures
+	// count against that network only, even when reported after a switch.
+	bool metered = false;
 };
+
+// A phone's hotspot (Windows marks Android tethering as metered) reaches
+// Telegram through the mobile operator, whose blocks differ from the home
+// provider's. Relay health, suppression and the IP/DNS preference are kept
+// separately for metered and unmetered networks. Call on the main thread.
+void WssTrackNetwork();
 
 // A passive snapshot for user-facing media diagnostics. It observes the
 // relay preference and health maps, but never changes connection admission,

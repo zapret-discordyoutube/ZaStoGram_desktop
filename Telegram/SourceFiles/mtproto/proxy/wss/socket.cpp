@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <crl/crl_time.h>
 
+#include <atomic>
 #include <cstring>
 #include <algorithm>
 #include <map>
@@ -23,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMutex>
 #include <QtCore/QDateTime>
 #include <QtCore/QFile>
+#include <QtNetwork/QNetworkInformation>
 
 namespace MTP::details {
 namespace {
@@ -46,8 +48,16 @@ struct RelayPreference {
 QMutex RelayPreferencesMutex;
 std::map<QString, RelayPreference> RelayPreferences;
 
+std::atomic<bool> CurrentNetworkMetered = false;
+
+[[nodiscard]] QString NetworkKey(bool metered, const QString &value) {
+	return (metered ? u"metered/"_q : u"unmetered/"_q) + value;
+}
+
 [[nodiscard]] QString RelayPreferenceKey(const WssRoute &route) {
-	return route.relayHost + u":"_q + QString::number(route.relayPort);
+	return NetworkKey(
+		route.metered,
+		route.relayHost + u":"_q + QString::number(route.relayPort));
 }
 
 [[nodiscard]] bool HasRelayFallback(const WssRoute &route) {
@@ -135,7 +145,8 @@ void LoadRouteHealthLocked() {
 	const auto wall = QDateTime::currentMSecsSinceEpoch();
 	for (const auto &line : QString::fromUtf8(file.readAll()).split('\n')) {
 		const auto parts = line.split(' ', Qt::SkipEmptyParts);
-		if (parts.size() != 3) {
+		// Lines written before the per-network split carry a bare domain.
+		if (parts.size() != 3 || !parts[0].contains('/')) {
 			continue;
 		}
 		const auto suppressions = parts[1].toInt();
@@ -175,19 +186,22 @@ void SaveRouteHealthLocked() {
 }
 std::map<QString, crl::time> TcpSuccessByHost;
 
-void NoteTcpConnected(const QString &host) {
+void NoteTcpConnected(const WssRoute &route, const QString &host) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	TcpSuccessByHost[host] = crl::now();
+	TcpSuccessByHost[NetworkKey(route.metered, host)] = crl::now();
 }
 
-[[nodiscard]] bool TcpRecentlyConnected(const QString &host) {
+[[nodiscard]] bool TcpRecentlyConnected(
+		const WssRoute &route,
+		const QString &host) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	const auto i = TcpSuccessByHost.find(host);
+	const auto i = TcpSuccessByHost.find(NetworkKey(route.metered, host));
 	return (i != end(TcpSuccessByHost))
 		&& (crl::now() - i->second < kRecentTcpSuccess);
 }
 
-[[nodiscard]] bool RouteSuppressed(const QString &domain) {
+[[nodiscard]] bool RouteSuppressed(const WssRoute &route) {
+	const auto domain = NetworkKey(route.metered, route.domain);
 	QMutexLocker lock(&RelayPreferencesMutex);
 	LoadRouteHealthLocked();
 	const auto i = RouteHealthByDomain.find(domain);
@@ -206,7 +220,7 @@ void NoteTcpConnected(const QString &host) {
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	LoadRouteHealthLocked();
-	auto &health = RouteHealthByDomain[route.domain];
+	auto &health = RouteHealthByDomain[NetworkKey(route.metered, route.domain)];
 	// Media relays used to go to the tunnel after their first failure, for
 	// half an hour. Connections open in bursts, so a first failure is almost
 	// guaranteed, and on a throttled network the tunnel freezes after ~16 KB:
@@ -222,7 +236,7 @@ void NoteRouteUnreachable(const WssRoute &route) {
 	health.lastFailureAt = now;
 	++health.consecutiveFailures;
 	LOG(("WSS Route: %1 failure %2/%3."
-		).arg(route.domain
+		).arg(NetworkKey(route.metered, route.domain)
 		).arg(health.consecutiveFailures
 		).arg(kRouteFailuresBeforeSuppress));
 	if (health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
@@ -233,7 +247,7 @@ void NoteRouteUnreachable(const WssRoute &route) {
 		health.suppressedUntil = now + ttl;
 		SaveRouteHealthLocked();
 		LOG(("WSS Route: %1 suppressed for %2 s, next: %3."
-			).arg(route.domain
+			).arg(NetworkKey(route.metered, route.domain)
 			).arg(ttl / 1000
 			).arg(route.tunnel ? u"direct TCP"_q : u"Cloudflare tunnel"_q));
 	}
@@ -241,9 +255,10 @@ void NoteRouteUnreachable(const WssRoute &route) {
 
 void NoteRouteReachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	auto &health = RouteHealthByDomain[route.domain];
+	const auto key = NetworkKey(route.metered, route.domain);
+	auto &health = RouteHealthByDomain[key];
 	if (health.consecutiveFailures || health.suppressedUntil) {
-		LOG(("WSS Route: %1 restored (relay answered).").arg(route.domain));
+		LOG(("WSS Route: %1 restored (relay answered).").arg(key));
 	}
 	const auto persisted = (health.suppressions > 0);
 	health = RouteHealth();
@@ -363,6 +378,7 @@ void NoteRotatedTunnelSocket(
 		return std::nullopt; // CDN and unknown ids have no public web relay
 	}
 	auto route = WssRoute();
+	route.metered = CurrentNetworkMetered.load();
 	route.relayHost = ingress;
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
@@ -381,6 +397,7 @@ void NoteRotatedTunnelSocket(
 
 [[nodiscard]] WssRoute TunnelRoute() {
 	auto route = WssRoute();
+	route.metered = CurrentNetworkMetered.load();
 	route.relayHost = u"edge.amberwick.workers.dev"_q;
 	route.relayPort = 443;
 	route.domain = route.relayHost;
@@ -391,6 +408,32 @@ void NoteRotatedTunnelSocket(
 
 } // namespace
 
+void WssTrackNetwork() {
+	static auto tracked = false;
+	if (tracked) {
+		return;
+	}
+	tracked = true;
+	if (!QNetworkInformation::loadBackendByFeatures(
+			QNetworkInformation::Feature::Metered)) {
+		LOG(("WSS Route: network type unknown, one state for all networks."));
+		return;
+	}
+	const auto information = QNetworkInformation::instance();
+	const auto apply = [](bool metered) {
+		if (CurrentNetworkMetered.exchange(metered) != metered) {
+			LOG(("WSS Route: network %1."
+				).arg(metered ? u"metered"_q : u"unmetered"_q));
+		}
+	};
+	apply(information->isMetered());
+	QObject::connect(
+		information,
+		&QNetworkInformation::isMeteredChanged,
+		information,
+		apply);
+}
+
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	auto route = OfficialRoute(protocolDcId);
 	if (!route) {
@@ -398,16 +441,16 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		const auto raw = int(protocolDcId);
 		if (raw == kTunnelOnlyDcId || raw == -kTunnelOnlyDcId) {
 			auto tunnel = TunnelRoute();
-			if (!RouteSuppressed(tunnel.domain)) {
+			if (!RouteSuppressed(tunnel)) {
 				return tunnel;
 			}
 		}
 		return std::nullopt;
 	}
-	if (RouteSuppressed(route->domain)) {
+	if (RouteSuppressed(*route)) {
 		// Релей датацентра недоступен: сначала туннель, потом прямой TCP.
 		auto tunnel = TunnelRoute();
-		if (RouteSuppressed(tunnel.domain)) {
+		if (RouteSuppressed(tunnel)) {
 			return std::nullopt;
 		}
 		return tunnel;
@@ -419,10 +462,10 @@ bool WssMediaTunneled(int dcId) {
 	const auto media = OfficialRoute(int16(-dcId));
 	if (!media) {
 		return (dcId == kTunnelOnlyDcId)
-			&& !RouteSuppressed(TunnelRoute().domain);
+			&& !RouteSuppressed(TunnelRoute());
 	}
-	return RouteSuppressed(media->domain)
-		&& !RouteSuppressed(TunnelRoute().domain);
+	return RouteSuppressed(*media)
+		&& !RouteSuppressed(TunnelRoute());
 }
 
 std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
@@ -466,10 +509,11 @@ WssRouteDiagnostics WssRouteDiagnosticsForDc(
 	if (result.custom) {
 		return result;
 	}
-	result.suppressed = RouteSuppressed(route.domain);
+	result.suppressed = RouteSuppressed(route);
 	{
 		QMutexLocker lock(&RelayPreferencesMutex);
-		const auto i = RouteHealthByDomain.find(route.domain);
+		const auto i = RouteHealthByDomain.find(
+			NetworkKey(route.metered, route.domain));
 		if (i != end(RouteHealthByDomain)) {
 			result.consecutiveFailures = i->second.consecutiveFailures;
 			result.suppressedFor = std::max(
@@ -636,7 +680,7 @@ void WssSocket::timedOut() {
 		}
 		return;
 	}
-	if (!_tcpConnected && TcpRecentlyConnected(_currentHost)) {
+	if (!_tcpConnected && TcpRecentlyConnected(_route, _currentHost)) {
 		// Соседние сокеты к этому адресу только что подключались: провайдер
 		// съел SYN одного потока. Новый сокет пройдёт, а переход на запасной
 		// адрес или в туннель здесь только навредит.
@@ -740,7 +784,7 @@ void WssSocket::handleError(int errorCode) {
 
 void WssSocket::onTcpConnected() {
 	_tcpConnected = true;
-	NoteTcpConnected(_currentHost);
+	NoteTcpConnected(_route, _currentHost);
 }
 
 void WssSocket::onEncrypted() {
