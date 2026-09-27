@@ -116,33 +116,31 @@ constexpr auto kRecentTcpSuccess = 30 * crl::time(1000);
 // carries MTProto only this way and, unlike the Worker tunnel (frozen after
 // ~16 KB on mobile networks), works there for text and media. Same catalog
 // and rules as Android (WssSocket.cpp, dev-173/174).
-struct CdnFront {
-	const char *encodedDomain = nullptr;
-	// The zone's own Cloudflare addresses (27.09.2026); any Cloudflare edge
-	// serves the zone, so these keep working if DNS moves it.
-	const char *address[2] = { nullptr, nullptr };
-};
-constexpr CdnFront kCdnFronts[] = {
-	{ "virkgj.com", { "104.21.80.254", "172.67.155.165" } },
-	{ "vmmzovy.com", { "104.21.43.90", "172.67.177.105" } },
-	{ "mkuosckvso.com", { "104.21.41.25", "172.67.159.17" } },
-	{ "zaewayzmplad.com", { "104.21.70.196", "172.67.138.236" } },
-	{ "twdmbzcm.com", { "104.21.21.168", "172.67.199.162" } },
-	{ "awzwsldi.com", { "104.21.69.145", "172.67.209.89" } },
-	{ "clngqrflngqin.com", { "104.21.73.83", "172.67.189.26" } },
-	{ "tjacxbqtj.com", { "104.21.39.36", "172.67.142.232" } },
-	{ "bxaxtxmrw.com", { "104.21.84.223", "172.67.197.117" } },
-	{ "dmohrsgmohcrwb.com", { "104.21.48.178", "172.67.155.85" } },
-	{ "vwbmtmoi.com", { "104.21.33.146", "172.67.146.105" } },
-	{ "khgrre.com", { "104.21.78.6", "172.67.214.68" } },
-	{ "ulihssf.com", { "104.21.7.253", "172.67.156.145" } },
-	{ "tmhqsdqmfpmk.com", { "104.21.25.159", "172.67.134.93" } },
-	{ "xwuwoqbm.com", { "104.21.44.55", "172.67.195.218" } },
-	{ "orgcnunpj.com", { "104.21.64.155", "172.67.152.37" } },
-	{ "zhkuldz.com", { "104.21.51.133", "172.67.180.160" } },
-	{ "zypoljnslxa.com", { "104.21.37.105", "172.67.207.129" } },
-	{ "efabnxaowuzs.com", { "104.21.35.206", "172.67.179.145" } },
-	{ "zaftuzsftqdq.com", { "104.21.78.5", "172.67.214.67" } },
+// Dialled by name, not by address: Qt sends no SNI when the host is an IP
+// (the relays do not need it, Cloudflare answers handshake_failure without
+// it), so on dev-31 every front died ~230 ms after TCP while the tunnel,
+// opened by name, worked. Android sets SNI itself and dials the addresses.
+constexpr const char *kCdnFronts[] = {
+	"virkgj.com",
+	"vmmzovy.com",
+	"mkuosckvso.com",
+	"zaewayzmplad.com",
+	"twdmbzcm.com",
+	"awzwsldi.com",
+	"clngqrflngqin.com",
+	"tjacxbqtj.com",
+	"bxaxtxmrw.com",
+	"dmohrsgmohcrwb.com",
+	"vwbmtmoi.com",
+	"khgrre.com",
+	"ulihssf.com",
+	"tmhqsdqmfpmk.com",
+	"xwuwoqbm.com",
+	"orgcnunpj.com",
+	"zhkuldz.com",
+	"zypoljnslxa.com",
+	"efabnxaowuzs.com",
+	"zaftuzsftqdq.com",
 };
 constexpr auto kCdnFrontCount = int(sizeof(kCdnFronts) / sizeof(kCdnFronts[0]));
 // A front connection is either served at once or answers 503 to every
@@ -428,7 +426,7 @@ void AdvanceCdn(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	auto &cursor = CdnCursor[route.metered];
 	if (cursor == route.cdnSlot) {
-		cursor = (cursor + 1) % (kCdnFrontCount * 2);
+		cursor = (cursor + 1) % kCdnFrontCount;
 	}
 }
 
@@ -608,15 +606,14 @@ void NoteRotatedTunnelSocket(
 		QMutexLocker lock(&RelayPreferencesMutex);
 		slot = CdnCursorLocked(route.metered);
 	}
-	const auto &front = kCdnFronts[slot % kCdnFrontCount];
+	const auto front = kCdnFronts[slot % kCdnFrontCount];
 	route.cdnSlot = slot;
 	route.cdnDcId = dcId;
 	// The fronts have no -1 media hosts: media rides kwsN too, as in Mirrly,
-	// with the plain DC in the obfuscation header (plainDcMarker). No DNS
-	// fallback: a failure moves to the next front and address instead.
-	route.domain = prefix + u"."_q + DecodeCdnDomain(front.encodedDomain);
-	route.relayHost = QString::fromLatin1(
-		front.address[(slot / kCdnFrontCount) % 2]);
+	// with the plain DC in the obfuscation header (plainDcMarker). A failure
+	// moves to the next front instead of a DNS/IP fallback.
+	route.domain = prefix + u"."_q + DecodeCdnDomain(front);
+	route.relayHost = route.domain;
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
 	return route;
