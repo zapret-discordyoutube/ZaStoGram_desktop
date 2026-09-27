@@ -50,6 +50,10 @@ constexpr auto kMaxConnectedTimeout = crl::time(8000);
 // killed nearly every tunnel attempt, and with a connection reopened after
 // each file piece that was most of them.
 constexpr auto kTunnelMinConnectedTimeout = crl::time(6000);
+// A Cloudflare front needs TCP, TLS, the upgrade and sometimes a few 503
+// retries on the same connection (~25 ms each); a mobile network made the
+// handshake alone 300-500 ms on Android, so the 1 s first wait is too short.
+constexpr auto kCdnMinConnectedTimeout = crl::time(4000);
 constexpr auto kMtproxyMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
@@ -237,6 +241,8 @@ void SessionTransport::armWaitForConnectedTimer() {
 		const auto route = WssOfficialRoute(_owner->getProtocolDcId());
 		if (route && route->tunnel) {
 			accumulate_max(wait, kTunnelMinConnectedTimeout);
+		} else if (route && route->cdnSlot >= 0) {
+			accumulate_max(wait, kCdnMinConnectedTimeout);
 		}
 	}
 	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {

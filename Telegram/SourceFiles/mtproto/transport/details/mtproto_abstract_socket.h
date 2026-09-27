@@ -65,6 +65,11 @@ public:
 	}
 	virtual void markProxyMtprotoPayloadReceived() {
 	}
+	// The obfuscation header names the plain DC even for media (a Cloudflare
+	// front has no media hosts and routes by kwsN alone).
+	[[nodiscard]] virtual bool plainDcMarker() const {
+		return false;
+	}
 	[[nodiscard]] virtual bool isConnected() = 0;
 	[[nodiscard]] virtual bool hasBytesAvailable() = 0;
 	[[nodiscard]] virtual int64 read(bytes::span buffer) = 0;

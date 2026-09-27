@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "logs.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
+#include "base/random.h"
 
 #include <crl/crl_time.h>
 
@@ -108,6 +109,57 @@ constexpr auto kRouteFailureCoalesce = 2 * crl::time(1000);
 // а не недоступный релей.
 constexpr auto kRecentTcpSuccess = 30 * crl::time(1000);
 
+// Cloudflare front domains of tg-ws-proxy (github.com/Flowseal/tg-ws-proxy,
+// .github/cfproxy-domains.txt), in the same shifted spelling: each letter of
+// the name moved forward by the number of letters, ".co.uk" written ".com".
+// kwsN.<domain>/apiws forwards the WebSocket to Telegram Web. Mirrly TG Proxy
+// carries MTProto only this way and, unlike the Worker tunnel (frozen after
+// ~16 KB on mobile networks), works there for text and media. Same catalog
+// and rules as Android (WssSocket.cpp, dev-173/174).
+struct CdnFront {
+	const char *encodedDomain = nullptr;
+	// The zone's own Cloudflare addresses (27.09.2026); any Cloudflare edge
+	// serves the zone, so these keep working if DNS moves it.
+	const char *address[2] = { nullptr, nullptr };
+};
+constexpr CdnFront kCdnFronts[] = {
+	{ "virkgj.com", { "104.21.80.254", "172.67.155.165" } },
+	{ "vmmzovy.com", { "104.21.43.90", "172.67.177.105" } },
+	{ "mkuosckvso.com", { "104.21.41.25", "172.67.159.17" } },
+	{ "zaewayzmplad.com", { "104.21.70.196", "172.67.138.236" } },
+	{ "twdmbzcm.com", { "104.21.21.168", "172.67.199.162" } },
+	{ "awzwsldi.com", { "104.21.69.145", "172.67.209.89" } },
+	{ "clngqrflngqin.com", { "104.21.73.83", "172.67.189.26" } },
+	{ "tjacxbqtj.com", { "104.21.39.36", "172.67.142.232" } },
+	{ "bxaxtxmrw.com", { "104.21.84.223", "172.67.197.117" } },
+	{ "dmohrsgmohcrwb.com", { "104.21.48.178", "172.67.155.85" } },
+	{ "vwbmtmoi.com", { "104.21.33.146", "172.67.146.105" } },
+	{ "khgrre.com", { "104.21.78.6", "172.67.214.68" } },
+	{ "ulihssf.com", { "104.21.7.253", "172.67.156.145" } },
+	{ "tmhqsdqmfpmk.com", { "104.21.25.159", "172.67.134.93" } },
+	{ "xwuwoqbm.com", { "104.21.44.55", "172.67.195.218" } },
+	{ "orgcnunpj.com", { "104.21.64.155", "172.67.152.37" } },
+	{ "zhkuldz.com", { "104.21.51.133", "172.67.180.160" } },
+	{ "zypoljnslxa.com", { "104.21.37.105", "172.67.207.129" } },
+	{ "efabnxaowuzs.com", { "104.21.35.206", "172.67.179.145" } },
+	{ "zaftuzsftqdq.com", { "104.21.78.5", "172.67.214.67" } },
+};
+constexpr auto kCdnFrontCount = int(sizeof(kCdnFronts) / sizeof(kCdnFronts[0]));
+// A front connection is either served at once or answers 503 to every
+// upgrade (host test 27.09); a retry on the same TLS connection costs ~25 ms.
+constexpr auto kCdnUpgradeRetries = 8;
+// About 40% of front connections are refused, so three failures in a row are
+// ordinary; six mean the fronts are really out of reach.
+constexpr auto kCdnFailuresBeforeSuppress = 6;
+// Past the ~16 KB freeze seen on the tunnel: a session that delivered this
+// much proves the front carries real traffic on this network.
+constexpr auto kCdnProofBytes = qint64(32 * 1024);
+// Sessions that answered and then went silent below kCdnProofBytes.
+constexpr auto kCdnStallsBeforeSuppress = 3;
+// Every front attempt rotates to a new address, so "this address connected
+// recently" never matched and each lost SYN counted against all fronts.
+const auto kAnyCdnHost = u"cdn-any"_q;
+
 struct RouteHealth {
 	int consecutiveFailures = 0;
 	crl::time suppressedUntil = 0;
@@ -117,6 +169,8 @@ struct RouteHealth {
 	// (1+2+4+8 s of connect budgets) was 15 s without DC1 (desktop log
 	// 25.09, 18:40 and 18:43). Each repeat doubles the suppression.
 	int suppressions = 0;
+	// Front sessions that answered and then froze (kCdnProofBytes).
+	int stalls = 0;
 };
 constexpr auto kRouteSuppressMaxTtl = 30 * 60 * crl::time(1000);
 // Suppression lived only in memory, and every launch probed the blocked
@@ -126,6 +180,21 @@ constexpr auto kRouteSuppressRestoreMax = 10 * 60 * crl::time(1000);
 
 std::map<QString, RouteHealth> RouteHealthByDomain;
 bool RouteHealthLoaded = false;
+
+[[nodiscard]] bool IsCdn(const WssRoute &route) {
+	return route.cdnSlot >= 0;
+}
+
+[[nodiscard]] const QString &HealthName(const WssRoute &route) {
+	return route.healthDomain.isEmpty() ? route.domain : route.healthDomain;
+}
+
+// Fronts are checked again on every launch: on Android a restart with the
+// relay, the fronts and the tunnel all restored as suppressed left DC2 with
+// no route at all for ten minutes (logs (1) (8)).
+[[nodiscard]] bool PersistedHealth(const QString &key) {
+	return !key.contains(u"/cdn-"_q);
+}
 
 [[nodiscard]] QString RouteHealthPath() {
 	return cWorkingDir() + u"tdata/wss_route_health"_q;
@@ -146,7 +215,9 @@ void LoadRouteHealthLocked() {
 	for (const auto &line : QString::fromUtf8(file.readAll()).split('\n')) {
 		const auto parts = line.split(' ', Qt::SkipEmptyParts);
 		// Lines written before the per-network split carry a bare domain.
-		if (parts.size() != 3 || !parts[0].contains('/')) {
+		if (parts.size() != 3
+			|| !parts[0].contains('/')
+			|| !PersistedHealth(parts[0])) {
 			continue;
 		}
 		const auto suppressions = parts[1].toInt();
@@ -174,7 +245,9 @@ void SaveRouteHealthLocked() {
 	const auto wall = QDateTime::currentMSecsSinceEpoch();
 	auto data = QByteArray();
 	for (const auto &[domain, health] : RouteHealthByDomain) {
-		if (health.suppressions > 0 && health.suppressedUntil > now) {
+		if (health.suppressions > 0
+			&& health.suppressedUntil > now
+			&& PersistedHealth(domain)) {
 			data += domain.toUtf8()
 				+ ' ' + QByteArray::number(health.suppressions)
 				+ ' ' + QByteArray::number(
@@ -188,7 +261,11 @@ std::map<QString, crl::time> TcpSuccessByHost;
 
 void NoteTcpConnected(const WssRoute &route, const QString &host) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	TcpSuccessByHost[NetworkKey(route.metered, host)] = crl::now();
+	const auto now = crl::now();
+	TcpSuccessByHost[NetworkKey(route.metered, host)] = now;
+	if (IsCdn(route)) {
+		TcpSuccessByHost[NetworkKey(route.metered, kAnyCdnHost)] = now;
+	}
 }
 
 [[nodiscard]] bool TcpRecentlyConnected(
@@ -201,7 +278,7 @@ void NoteTcpConnected(const WssRoute &route, const QString &host) {
 }
 
 [[nodiscard]] bool RouteSuppressed(const WssRoute &route) {
-	const auto domain = NetworkKey(route.metered, route.domain);
+	const auto domain = NetworkKey(route.metered, HealthName(route));
 	QMutexLocker lock(&RelayPreferencesMutex);
 	LoadRouteHealthLocked();
 	const auto i = RouteHealthByDomain.find(domain);
@@ -217,10 +294,34 @@ void NoteTcpConnected(const WssRoute &route, const QString &host) {
 	return true;
 }
 
+// Called with RelayPreferencesMutex held.
+void SuppressLocked(
+		const WssRoute &route,
+		RouteHealth &health,
+		crl::time now,
+		const QString &reason) {
+	const auto ttl = std::min(
+		kRouteSuppressTtl << std::min(health.suppressions, 4),
+		kRouteSuppressMaxTtl);
+	++health.suppressions;
+	health.suppressedUntil = now + ttl;
+	SaveRouteHealthLocked();
+	LOG(("WSS Route: %1 suppressed for %2 s (%3), next: %4."
+		).arg(NetworkKey(route.metered, HealthName(route))
+		).arg(ttl / 1000
+		).arg(reason
+		).arg(route.tunnel
+			? u"Cloudflare fronts"_q
+			: IsCdn(route)
+			? u"Cloudflare tunnel"_q
+			: u"Cloudflare fronts"_q));
+}
+
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	LoadRouteHealthLocked();
-	auto &health = RouteHealthByDomain[NetworkKey(route.metered, route.domain)];
+	const auto key = NetworkKey(route.metered, HealthName(route));
+	auto &health = RouteHealthByDomain[key];
 	// Media relays used to go to the tunnel after their first failure, for
 	// half an hour. Connections open in bursts, so a first failure is almost
 	// guaranteed, and on a throttled network the tunnel freezes after ~16 KB:
@@ -235,28 +336,31 @@ void NoteRouteUnreachable(const WssRoute &route) {
 	}
 	health.lastFailureAt = now;
 	++health.consecutiveFailures;
+	const auto limit = IsCdn(route)
+		? kCdnFailuresBeforeSuppress
+		: kRouteFailuresBeforeSuppress;
 	LOG(("WSS Route: %1 failure %2/%3."
-		).arg(NetworkKey(route.metered, route.domain)
+		).arg(key
 		).arg(health.consecutiveFailures
-		).arg(kRouteFailuresBeforeSuppress));
-	if (health.consecutiveFailures >= kRouteFailuresBeforeSuppress) {
-		const auto ttl = std::min(
-			kRouteSuppressTtl << std::min(health.suppressions, 4),
-			kRouteSuppressMaxTtl);
-		++health.suppressions;
-		health.suppressedUntil = now + ttl;
-		SaveRouteHealthLocked();
-		LOG(("WSS Route: %1 suppressed for %2 s, next: %3."
-			).arg(NetworkKey(route.metered, route.domain)
-			).arg(ttl / 1000
-			).arg(route.tunnel ? u"direct TCP"_q : u"Cloudflare tunnel"_q));
+		).arg(limit));
+	if (health.consecutiveFailures >= limit) {
+		SuppressLocked(route, health, now, u"failures"_q);
 	}
 }
 
 void NoteRouteReachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
-	const auto key = NetworkKey(route.metered, route.domain);
+	const auto key = NetworkKey(route.metered, HealthName(route));
 	auto &health = RouteHealthByDomain[key];
+	if (IsCdn(route)) {
+		// The first answer only shows that the front accepts connections. On
+		// a network that freezes Cloudflare after ~16 KB every session
+		// answers, and resetting the backoff here would cycle frozen sessions
+		// and the tunnel forever; that is left to NoteCdnProven.
+		health.consecutiveFailures = 0;
+		health.lastFailureAt = 0;
+		return;
+	}
 	if (health.consecutiveFailures || health.suppressedUntil) {
 		LOG(("WSS Route: %1 restored (relay answered).").arg(key));
 	}
@@ -265,6 +369,89 @@ void NoteRouteReachable(const WssRoute &route) {
 	if (persisted) {
 		SaveRouteHealthLocked();
 	}
+}
+
+void NoteCdnProven(const WssRoute &route) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto key = NetworkKey(route.metered, HealthName(route));
+	auto &health = RouteHealthByDomain[key];
+	if (health.stalls || health.suppressions || health.suppressedUntil) {
+		LOG(("WSS Route: %1 restored (front carried %2 bytes)."
+			).arg(key
+			).arg(kCdnProofBytes));
+	}
+	// A front past the freeze lifts its suppression too: with everything
+	// suppressed the fronts carry the DC anyway, and a suppression left in
+	// place moved it into the tunnel once the tunnel's own expired.
+	health = RouteHealth();
+}
+
+void NoteCdnStalled(const WssRoute &route, qint64 received) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto key = NetworkKey(route.metered, HealthName(route));
+	auto &health = RouteHealthByDomain[key];
+	const auto now = crl::now();
+	if (health.suppressedUntil > now) {
+		return;
+	}
+	++health.stalls;
+	LOG(("WSS Route: %1 stall after %2 bytes, %3/%4."
+		).arg(key
+		).arg(received
+		).arg(health.stalls
+		).arg(kCdnStallsBeforeSuppress));
+	if (health.stalls >= kCdnStallsBeforeSuppress) {
+		health.stalls = 0;
+		SuppressLocked(route, health, now, u"stalls"_q);
+	}
+}
+
+// Every connection starts from this position in kCdnFronts, per network. A
+// failure moves it on, so the next connection tries another front and edge;
+// a working front is kept. A random start spreads ZaStoGram users over the
+// whole catalog instead of all loading its first domain.
+std::map<bool, int> CdnCursor;
+
+// Called with RelayPreferencesMutex held.
+[[nodiscard]] int CdnCursorLocked(bool metered) {
+	auto i = CdnCursor.find(metered);
+	if (i == end(CdnCursor)) {
+		i = CdnCursor.emplace(metered, base::RandomIndex(kCdnFrontCount)).first;
+	}
+	return i->second;
+}
+
+void AdvanceCdn(const WssRoute &route) {
+	if (!IsCdn(route)) {
+		return;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	auto &cursor = CdnCursor[route.metered];
+	if (cursor == route.cdnSlot) {
+		cursor = (cursor + 1) % (kCdnFrontCount * 2);
+	}
+}
+
+[[nodiscard]] QString DecodeCdnDomain(const char *encoded) {
+	// tg-ws-proxy's decoder: shift each letter back by the letter count.
+	auto name = QString::fromLatin1(encoded);
+	if (!name.endsWith(u".com"_q)) {
+		return name;
+	}
+	name.chop(4);
+	auto letters = 0;
+	for (const auto ch : name) {
+		letters += ch.isLetter() ? 1 : 0;
+	}
+	for (auto &ch : name) {
+		const auto c = ch.toLatin1();
+		if (c >= 'a' && c <= 'z') {
+			ch = QChar('a' + ((c - 'a') - letters % 26 + 26) % 26);
+		} else if (c >= 'A' && c <= 'Z') {
+			ch = QChar('A' + ((c - 'A') - letters % 26 + 26) % 26);
+		}
+	}
+	return name + u".co.uk"_q;
 }
 
 void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
@@ -406,6 +593,35 @@ void NoteRotatedTunnelSocket(
 	return route;
 }
 
+[[nodiscard]] std::optional<WssRoute> CdnRoute(
+		int dcId,
+		bool ignoreSuppression = false) {
+	auto route = WssRoute();
+	route.metered = CurrentNetworkMetered.load();
+	const auto prefix = u"kws%1"_q.arg(dcId);
+	route.healthDomain = u"cdn-"_q + prefix;
+	if (!ignoreSuppression && RouteSuppressed(route)) {
+		return std::nullopt;
+	}
+	auto slot = 0;
+	{
+		QMutexLocker lock(&RelayPreferencesMutex);
+		slot = CdnCursorLocked(route.metered);
+	}
+	const auto &front = kCdnFronts[slot % kCdnFrontCount];
+	route.cdnSlot = slot;
+	route.cdnDcId = dcId;
+	// The fronts have no -1 media hosts: media rides kwsN too, as in Mirrly,
+	// with the plain DC in the obfuscation header (plainDcMarker). No DNS
+	// fallback: a failure moves to the next front and address instead.
+	route.domain = prefix + u"."_q + DecodeCdnDomain(front.encodedDomain);
+	route.relayHost = QString::fromLatin1(
+		front.address[(slot / kCdnFrontCount) % 2]);
+	route.relayPort = 443;
+	route.path = u"/apiws"_q;
+	return route;
+}
+
 } // namespace
 
 void WssTrackNetwork() {
@@ -448,24 +664,35 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		return std::nullopt;
 	}
 	if (RouteSuppressed(*route)) {
-		// Релей датацентра недоступен: сначала туннель, потом прямой TCP.
-		auto tunnel = TunnelRoute();
-		if (RouteSuppressed(tunnel)) {
-			return std::nullopt;
+		// Релей датацентра недоступен: сначала фронты Cloudflare, потом
+		// туннель. Если подавлено всё, остаются фронты: прямой TCP, к
+		// которому это раньше сваливалось, такие сети и закрывают.
+		const auto raw = int(protocolDcId);
+		const auto dcId = (raw < 0) ? -raw : raw;
+		if (auto front = CdnRoute(dcId)) {
+			return front;
 		}
-		return tunnel;
+		auto tunnel = TunnelRoute();
+		if (!RouteSuppressed(tunnel)) {
+			return tunnel;
+		}
+		static auto lastFloorLog = std::atomic<crl::time>(0);
+		const auto now = crl::now();
+		if (now - lastFloorLog.load() > 10 * crl::time(1000)) {
+			lastFloorLog = now;
+			LOG(("WSS Route: dc %1 has every route suppressed, "
+				"using the Cloudflare fronts anyway.").arg(raw));
+		}
+		return CdnRoute(dcId, true);
 	}
 	return route;
 }
 
 bool WssMediaTunneled(int dcId) {
-	const auto media = OfficialRoute(int16(-dcId));
-	if (!media) {
-		return (dcId == kTunnelOnlyDcId)
-			&& !RouteSuppressed(TunnelRoute());
-	}
-	return RouteSuppressed(*media)
-		&& !RouteSuppressed(TunnelRoute());
+	// Only the tunnel freezes by design; media on a Cloudflare front uses
+	// ordinary parts.
+	const auto route = WssOfficialRoute(int16(-dcId));
+	return route && route->tunnel;
 }
 
 std::optional<WssRoute> WssCustomRoute(const ProxyStealthOptions &stealth) {
@@ -594,9 +821,13 @@ WssSocket::~WssSocket() {
 		.source = ProxyDiagnosticsSource::Network,
 		.phase = ProxyDiagnosticsPhase::AttemptSummary,
 		.severity = ProxyDiagnosticsSeverity::Info,
-		.transport = _route.tunnel ? u"WSSTunnel"_q : u"WSS"_q,
+		.transport = _route.tunnel
+			? u"WSSTunnel"_q
+			: IsCdn(_route)
+			? u"WSSFront"_q
+			: u"WSS"_q,
 		.socketId = _debugId,
-		.message = u"wss_session host=%1 tcp=%2 upgraded=%3 tx=%4 rx=%5 ready_ms=%6 first_data_ms=%7 life_ms=%8"_q
+		.message = u"wss_session host=%1 tcp=%2 upgraded=%3 tx=%4 rx=%5 ready_ms=%6 first_data_ms=%7 life_ms=%8 upgrade_retries=%9"_q
 			.arg(_currentHost)
 			.arg(_tcpConnected ? 1 : 0)
 			.arg(_upgraded ? 1 : 0)
@@ -604,7 +835,8 @@ WssSocket::~WssSocket() {
 			.arg(_bytesReceived)
 			.arg(since(_upgradedAt))
 			.arg(since(_firstDataAt))
-			.arg(crl::now() - _openedAt),
+			.arg(crl::now() - _openedAt)
+			.arg(_upgradeRetries),
 		.route = _route.domain,
 	});
 }
@@ -631,6 +863,35 @@ void WssSocket::connectToRelayHost() {
 		host,
 		quint16(_route.relayPort),
 		_route.domain);
+}
+
+bool WssSocket::plainDcMarker() const {
+	return IsCdn(_route);
+}
+
+bool WssSocket::outputDrained() const {
+	// A photo going out slowly gets no answer until its part is complete, so
+	// silence while bytes still wait to be written is an upload in progress,
+	// not a frozen front.
+	return !_socket.bytesToWrite() && !_socket.encryptedBytesToWrite();
+}
+
+void WssSocket::noteFrontFailed() {
+	if (!IsCdn(_route) || _frontFailureNoted) {
+		return;
+	}
+	_frontFailureNoted = true;
+	AdvanceCdn(_route);
+	if (!_tcpConnected
+		&& (TcpRecentlyConnected(_route, _currentHost)
+			|| TcpRecentlyConnected(_route, kAnyCdnHost))) {
+		// Another front reached TCP just now: the provider dropped this
+		// flow's SYN, the fronts are fine.
+		return;
+	}
+	// A front refused at any stage, 503 included, is counted: otherwise a
+	// Flowseal-wide outage would never reach the tunnel.
+	NoteRouteUnreachable(_route);
 }
 
 bool WssSocket::takeRotation() {
@@ -667,6 +928,18 @@ bool WssSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void WssSocket::timedOut() {
+	if (IsCdn(_route)) {
+		if (!_upgraded || !_bytesReceived) {
+			noteFrontFailed();
+		} else if (_bytesReceived < kCdnProofBytes && outputDrained()) {
+			// The front answered and then went quiet with nothing left to
+			// send: the freeze the tunnel suffers. Counted apart from
+			// refusals, and only a session past kCdnProofBytes clears it.
+			AdvanceCdn(_route);
+			NoteCdnStalled(_route, _bytesReceived);
+		}
+		return;
+	}
 	if (_upgraded) {
 		if (_route.tunnel
 			&& !_bytesReceived
@@ -778,6 +1051,9 @@ void WssSocket::handleError(int errorCode) {
 	if (!_upgraded && !_hostFlipped) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
 	}
+	if (!_upgraded) {
+		noteFrontFailed();
+	}
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);
 }
@@ -829,6 +1105,10 @@ bool WssSocket::tryFinishUpgrade() {
 	const auto header = _incoming.left(end);
 	_incoming.remove(0, end + 4);
 	if (!header.contains(" 101 ") && !header.contains(" 101\r")) {
+		if (retryRefusedUpgrade(header)) {
+			return false;
+		}
+		noteFrontFailed();
 		logError(0, u"WSS HTTP upgrade rejected"_q);
 		_error.fire_copy(AbstractConnection::kErrorCodeOther);
 		return false;
@@ -840,15 +1120,37 @@ bool WssSocket::tryFinishUpgrade() {
 	}
 	_upgraded = true;
 	_upgradedAt = crl::now();
-	if (!_route.tunnel) {
+	if (!_route.tunnel && !IsCdn(_route)) {
 		// The Cloudflare tunnel upgrades fine and then freezes after ~16 KB
-		// on a throttled network; it proves itself in parseFrames instead.
+		// on a throttled network; it proves itself in parseFrames instead,
+		// and so do the fronts, which also upgrade for silent paths.
 		NoteRouteReachable(_route);
 	}
 	NoteRelayUpgraded(_route, _usedFallback);
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
 	_connected.fire({});
+	return true;
+}
+
+bool WssSocket::retryRefusedUpgrade(const QByteArray &header) {
+	// A front connection is either served at once or answers 503 to every
+	// upgrade; an empty keep-alive 503 leaves the connection clean for the
+	// next request, which costs ~25 ms against a new TCP+TLS dial.
+	if (!IsCdn(_route)
+		|| _upgradeRetries >= kCdnUpgradeRetries
+		|| !_incoming.isEmpty()
+		|| !(header.startsWith("HTTP/1.1 503")
+			|| header.startsWith("HTTP/1.1 429"))) {
+		return false;
+	}
+	const auto lowered = header.toLower() + "\r\n";
+	if (!lowered.contains("\r\ncontent-length: 0\r\n")
+		|| lowered.contains("connection: close")) {
+		return false;
+	}
+	++_upgradeRetries;
+	sendHttpUpgrade();
 	return true;
 }
 
@@ -940,6 +1242,16 @@ void WssSocket::parseFrames() {
 					&& _bytesReceived >= kTunnelRotateBytes) {
 					_tunnelProven = true;
 					NoteRouteReachable(_route);
+				}
+				if (IsCdn(_route) && !_frontAnswered) {
+					_frontAnswered = true;
+					NoteRouteReachable(_route);
+				}
+				if (IsCdn(_route)
+					&& !_frontProven
+					&& _bytesReceived >= kCdnProofBytes) {
+					_frontProven = true;
+					NoteCdnProven(_route);
 				}
 				const auto at = int(_readBuffer.size());
 				const auto count = int(length);

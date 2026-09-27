@@ -551,7 +551,12 @@ bytes::const_span TcpConnection::prepareConnectionStartPrefix(
 		reversed.subspan(CTRState::KeySize, CTRState::IvecSize));
 
 	binary::WriteAt<uint32>(nonce, 56, _protocol->id());
-	binary::WriteAt<int16>(nonce, 60, _protocolDcId);
+	binary::WriteAt<int16>(
+		nonce,
+		60,
+		((_socket && _socket->plainDcMarker() && _protocolDcId < 0)
+			? int16(-_protocolDcId)
+			: _protocolDcId));
 
 	bytes::copy(buffer, nonce.subspan(0, 56));
 	aesCtrEncrypt(nonce, _sendKey, &_sendState);

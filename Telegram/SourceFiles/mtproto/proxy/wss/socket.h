@@ -22,6 +22,14 @@ struct WssRoute {
 	QString domain;
 	QString path;
 	bool tunnel = false; // path gets ?dst=<datacenter address> on connect
+	// Position in the Cloudflare front catalog (kwsN.<front domain>), or -1.
+	// The front forwards the WebSocket to Telegram Web itself, so unlike the
+	// tunnel it needs no destination and carries the byte stream as is.
+	int cdnSlot = -1;
+	int cdnDcId = 0;
+	// Failure counting and suppression key when it must not follow the
+	// domain: every front domain of a DC shares one health record.
+	QString healthDomain;
 	// Network the route was chosen on (see WssTrackNetwork): its failures
 	// count against that network only, even when reported after a switch.
 	bool metered = false;
@@ -47,8 +55,12 @@ struct WssRouteDiagnostics {
 };
 
 // Official MTProto-over-WebSocket route for a data center, mirroring the
-// web.telegram.org transport. Every production DC (1-5) has a working web
-// relay, but the ingress addresses are NOT interchangeable: each one serves
+// web.telegram.org transport; while the DC's relay is suppressed, the
+// Cloudflare fronts of tg-ws-proxy (kwsN.<front domain>), then the tunnel.
+// With everything suppressed the fronts stay the floor: the direct TCP this
+// used to fall back to is what the blocking networks close.
+//
+// Every production DC (1-5) has a working web relay, but the ingress addresses are NOT interchangeable: each one serves
 // only its own datacenters. Reaching the wrong ingress answers 302 (with an
 // X-Redirect-Host header naming the right relay) or accepts the connection
 // and stays silent - which is where the widespread "web sockets exist only
@@ -88,6 +100,7 @@ public:
 	bool isGoodStartNonce(bytes::const_span nonce) override;
 	void timedOut() override;
 	[[nodiscard]] bool takeRotation() override;
+	[[nodiscard]] bool plainDcMarker() const override;
 	bool isConnected() override;
 	bool hasBytesAvailable() override;
 	int64 read(bytes::span buffer) override;
@@ -107,6 +120,9 @@ private:
 	void sendHttpUpgrade();
 	[[nodiscard]] bool tryFinishUpgrade();
 	[[nodiscard]] bool checkUpgradeAccept(const QByteArray &header) const;
+	[[nodiscard]] bool retryRefusedUpgrade(const QByteArray &header);
+	[[nodiscard]] bool outputDrained() const;
+	void noteFrontFailed();
 	void parseFrames();
 	void sendFrame(quint8 opcode, bytes::const_span data);
 
@@ -123,6 +139,10 @@ private:
 	qint64 _bytesReceived = 0;
 	qint64 _bytesSent = 0;
 	bool _tunnelProven = false;
+	bool _frontAnswered = false;
+	bool _frontProven = false;
+	bool _frontFailureNoted = false;
+	int _upgradeRetries = 0;
 	bool _forFiles = false;
 	bool _rotated = false;
 	crl::time _openedAt = 0;
