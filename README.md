@@ -1,5 +1,5 @@
 # ZaStoGram Desktop
-![Обзор ZaStoGram Desktop](docs/assets/zastogram-overview.png)
+![Обзор ZaStoGram Desktop](docs/assets/zastogram-overview.webp)
 
 **ZaStoGram** — форк [Telegram Desktop][tdesktop], заточенный под работу в сетях с DPI‑цензурой и под приватность. Цель проекта: чтобы клиент **уверенно подключался там, где обычный Telegram режут**, маскировал трафик под обычный браузерный HTTPS и **не терял переписку** (удалённые сообщения, истории, правки).
 
