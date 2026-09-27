@@ -316,6 +316,24 @@ void SuppressLocked(
 			: u"Cloudflare fronts"_q));
 }
 
+// Relay domains share ingress addresses: kws2, kws4, kws2-1 and kws4-1 all
+// dial 149.154.167.220. A TCP timeout does not depend on the SNI, so TCP
+// failures also count per address, and a suppressed address moves every
+// domain on it to the fronts at once instead of each timing out on its own
+// (Android logs (23): kws1-1 and kws2-1 lost 8-11 s each after kws1 and kws2
+// had already proven their addresses dead). Same rules as Android dev-176.
+[[nodiscard]] bool IsOfficialRelay(const WssRoute &route) {
+	return !route.tunnel
+		&& !IsCdn(route)
+		&& route.domain.endsWith(u".web.telegram.org"_q);
+}
+
+[[nodiscard]] WssRoute RelayAddressRoute(const WssRoute &route) {
+	auto result = route;
+	result.healthDomain = u"addr-"_q + route.relayHost;
+	return result;
+}
+
 void NoteRouteUnreachable(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	LoadRouteHealthLocked();
@@ -344,6 +362,33 @@ void NoteRouteUnreachable(const WssRoute &route) {
 		).arg(limit));
 	if (health.consecutiveFailures >= limit) {
 		SuppressLocked(route, health, now, u"failures"_q);
+	}
+}
+
+// The relay's hardcoded address failed and its DNS fallback failed too, so
+// the domain went down: siblings on the same address will fail the same way.
+// Only a recent failure of the address itself counts: a stray SYN loss long
+// ago must not take a sibling off a working relay.
+void SuppressRelayAddressWithDomain(const WssRoute &route) {
+	if (!IsOfficialRelay(route)) {
+		return;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto now = crl::now();
+	const auto domain = RouteHealthByDomain.find(
+		NetworkKey(route.metered, route.domain));
+	if (domain == end(RouteHealthByDomain)
+		|| domain->second.suppressedUntil <= now) {
+		return;
+	}
+	const auto address = RelayAddressRoute(route);
+	auto &health = RouteHealthByDomain[
+		NetworkKey(route.metered, HealthName(address))];
+	if (health.consecutiveFailures > 0
+		&& health.suppressedUntil <= now
+		&& health.lastFailureAt
+		&& (now - health.lastFailureAt < 2 * 60 * crl::time(1000))) {
+		SuppressLocked(address, health, now, u"domain"_q);
 	}
 }
 
@@ -661,7 +706,8 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		}
 		return std::nullopt;
 	}
-	if (RouteSuppressed(*route)) {
+	if (RouteSuppressed(*route)
+		|| RouteSuppressed(RelayAddressRoute(*route))) {
 		// Релей датацентра недоступен: сначала фронты Cloudflare, потом
 		// туннель. Если подавлено всё, остаются фронты: прямой TCP, к
 		// которому это раньше сваливалось, такие сети и закрывают.
@@ -966,7 +1012,11 @@ void WssSocket::timedOut() {
 	if (!_upgraded && !_tcpConnected) {
 		// Не дошли даже до установленного TCP: адрес релея недоступен, а не
 		// протокол сломан.
+		if (IsOfficialRelay(_route) && !_usedFallback) {
+			NoteRouteUnreachable(RelayAddressRoute(_route));
+		}
 		NoteRouteUnreachable(_route);
+		SuppressRelayAddressWithDomain(_route);
 	}
 }
 
@@ -1123,6 +1173,11 @@ bool WssSocket::tryFinishUpgrade() {
 		// on a throttled network; it proves itself in parseFrames instead,
 		// and so do the fronts, which also upgrade for silent paths.
 		NoteRouteReachable(_route);
+		if (IsOfficialRelay(_route) && !_usedFallback) {
+			// Only an answer through the hardcoded address clears it; the
+			// DNS fallback reaches another one.
+			NoteRouteReachable(RelayAddressRoute(_route));
+		}
 	}
 	NoteRelayUpgraded(_route, _usedFallback);
 	_phase = HandshakePhase::ServerHelloOk;

@@ -388,6 +388,17 @@ void SessionTransport::connectToServer(bool afterConfig) {
 			? Variants::Http
 			: Variants::ProtocolCount;
 
+		// While WSS carries this DC, TCP variants become WSS sockets and HTTP
+		// ones still go straight to 149.154.x:80, which the networks WSS is
+		// for block: every attempt then waited out its 4-8 s connect budget
+		// on them after the fronts had failed in ~230 ms (desktop log 27.09).
+		const auto wssCarries = useTcp
+			&& (_owner->_sessionState.options->proxy.type
+				== ProxyData::Type::None)
+			&& (_owner->_sessionState.options->stealth.transport
+				== ProxyTransport::Wss)
+			&& (WssCustomRoute(_owner->_sessionState.options->stealth).has_value()
+				|| WssOfficialRoute(protocolDcId).has_value());
 		// A WEB proxy stream reaches the same relay and the same MTProxy
 		// whatever DC address it is given, so racing endpoints would only
 		// open identical streams on the one shared carrier.
@@ -400,7 +411,8 @@ void SessionTransport::connectToServer(bool afterConfig) {
 				continue;
 			}
 			for (auto protocol = 0; protocol != Variants::ProtocolCount && !enough(); ++protocol) {
-				if (protocol == skipProtocol) {
+				if (protocol == skipProtocol
+					|| (wssCarries && protocol == Variants::Http)) {
 					continue;
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
