@@ -116,10 +116,11 @@ constexpr auto kRecentTcpSuccess = 30 * crl::time(1000);
 // carries MTProto only this way and, unlike the Worker tunnel (frozen after
 // ~16 KB on mobile networks), works there for text and media. Same catalog
 // and rules as Android (WssSocket.cpp, dev-173/174).
-// Dialled by name, not by address: Qt sends no SNI when the host is an IP
-// (the relays do not need it, Cloudflare answers handshake_failure without
-// it), so on dev-31 every front died ~230 ms after TCP while the tunnel,
-// opened by name, worked. Android sets SNI itself and dials the addresses.
+// Dialled by name, as the tunnel is: DNS gives the zone's current Cloudflare
+// addresses and Qt handles SNI and verification from the one host name.
+// (On dev-31/32 every Cloudflare handshake from the tester's PC was reset
+// ~200 ms after TCP; that was a local zapret strategy, curl.exe was reset
+// the same way.) Android sets SNI itself and dials the addresses.
 constexpr const char *kCdnFronts[] = {
 	"virkgj.com",
 	"vmmzovy.com",
