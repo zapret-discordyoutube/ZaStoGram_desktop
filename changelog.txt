@@ -1,3 +1,14 @@
+7.2.10 (28.09.26)
+
+- Route a data center through Cloudflare fronts and a tunnel when its WSS relay is down.
+- Fall back to WSS while the selected proxy does not connect.
+- Make the WEB proxy faster and more stable.
+- Remember unreachable relays per network and across restarts.
+- Set video speed in 0.05x steps and boost brightness and volume with buttons.
+- Allow unpinning the ZaStoGram channel.
+- Fix file downloads through the tunnel stalling.
+- Fix clicks on submenu items.
+
 7.2.9 (16.09.26)
 
 - Fix some tlottie incorrect renderings.
