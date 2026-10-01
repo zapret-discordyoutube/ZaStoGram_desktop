@@ -16,7 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Core {
 namespace {
 
-constexpr auto kDefaultProxyPort = 1353;
+constexpr auto kLegacyDefaultProxyPort = 1353;
 
 [[nodiscard]] qint32 ProxySettingsToInt(MTP::ProxyData::Settings settings) {
 	switch(settings) {
@@ -115,27 +115,29 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
 
 SettingsProxy::SettingsProxy()
 : _tryIPv6(!Platform::IsWindows()) {
-	ensureDefaultProxy();
 }
 
-void SettingsProxy::ensureDefaultProxy() {
-	if (_defaultProxyAdded) {
+void SettingsProxy::removeLegacyDefaultProxy() {
+	// Older builds added a local SOCKS5 for the external telegram_proxy
+	// service and selected it on a fresh install. Most users never ran that
+	// service, so the client sat on "connecting" forever, and a local proxy
+	// also suspends WSS. With no proxy selected the built-in WSS transport
+	// is what connects, so take the generated entry away once.
+	if (!_defaultProxyAdded) {
 		return;
 	}
-	_defaultProxyAdded = true;
+	_defaultProxyAdded = false;
 
 	auto def = MTP::ProxyData();
 	def.type = MTP::ProxyData::Type::Socks5;
 	def.host = u"127.0.0.1"_q;
-	def.port = kDefaultProxyPort;
-	const auto wasEmpty = _list.empty();
-	if (ranges::find(_list, def) == _list.end()) {
-		_list.insert(_list.begin(), def);
+	def.port = kLegacyDefaultProxyPort;
+	while (removeFromList(def)) {
 	}
-	if (wasEmpty && !_selected) {
-		_selected = def;
-		if (_settings == MTP::ProxyData::Settings::System) {
-			_settings = MTP::ProxyData::Settings::Enabled;
+	if (_selected == def) {
+		_selected = MTP::ProxyData();
+		if (_settings == MTP::ProxyData::Settings::Enabled) {
+			_settings = MTP::ProxyData::Settings::System;
 		}
 	}
 }
@@ -289,7 +291,7 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_defaultProxyAdded = (defaultProxyAdded == 1);
 	_fastWarmup = (fastWarmup == 1);
 
-	ensureDefaultProxy();
+	removeLegacyDefaultProxy();
 
 	return true;
 }

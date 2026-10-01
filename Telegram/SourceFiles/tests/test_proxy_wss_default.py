@@ -64,13 +64,28 @@ def test_route_via_wss_toggle_uses_transport_setting():
     assert ": MTP::ProxyTransport::Tcp" in source
 
 
-def test_default_local_proxy_port_matches_documented_telegram_proxy():
+def test_local_telegram_proxy_is_not_added_by_default():
     source = CORE_SETTINGS_PROXY_CPP.read_text(encoding="utf-8")
+    constructor = source.split("SettingsProxy::SettingsProxy()", 1)[1].split(
+        "void SettingsProxy::removeLegacyDefaultProxy()", 1)[0]
+    remove_body = function_body(
+        source,
+        "void SettingsProxy::removeLegacyDefaultProxy()")
 
-    assert '#include "base/random.h"' not in source
-    assert "kDefaultProxyPort = 1353" in source
-    assert "GenerateDefaultProxyPort()" not in source
-    assert "def.port = kDefaultProxyPort;" in source
+    # A fresh install starts with no proxy at all, so the built-in WSS
+    # transport is what connects. The entry older builds generated is
+    # removed once, and a proxy the user adds later by hand is kept.
+    assert "ensureDefaultProxy" not in source
+    assert "ProxyDefault" not in constructor
+    assert "_list" not in constructor
+    assert "_selected" not in constructor
+    assert "kLegacyDefaultProxyPort = 1353" in source
+    assert "if (!_defaultProxyAdded) {" in remove_body
+    assert "_defaultProxyAdded = false;" in remove_body
+    assert "removeFromList(def)" in remove_body
+    assert "_list.insert(" not in remove_body
+    assert "_selected = MTP::ProxyData();" in remove_body
+    assert "_settings = MTP::ProxyData::Settings::System;" in remove_body
 
 
 def test_wss_transport_policy_is_the_single_effective_entrypoint():
@@ -299,7 +314,7 @@ if __name__ == "__main__":
     test_wss_keeps_tls_peer_verification_enabled()
     test_persisted_transport_falls_back_to_wss()
     test_route_via_wss_toggle_uses_transport_setting()
-    test_default_local_proxy_port_matches_documented_telegram_proxy()
+    test_local_telegram_proxy_is_not_added_by_default()
     test_wss_transport_policy_is_the_single_effective_entrypoint()
     test_wss_policy_allows_only_direct_or_nonlocal_socks_until_forbidden()
     test_compat_strict_disables_stealth_for_mtproxy_and_local_tunnels()

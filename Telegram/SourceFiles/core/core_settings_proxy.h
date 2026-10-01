@@ -78,7 +78,7 @@ public:
 	bool setFromSerialized(const QByteArray &serialized);
 
 private:
-	void ensureDefaultProxy();
+	void removeLegacyDefaultProxy();
 
 	bool _tryIPv6 = false;
 	bool _useProxyForCalls = false;
