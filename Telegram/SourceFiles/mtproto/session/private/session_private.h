@@ -127,6 +127,7 @@ private:
 	void applyAuthKey(AuthKeyPtr &&encryptionKey);
 	[[nodiscard]] bool noMediaKeyWithExistingRegularKey() const;
 	void dropMismatchedTemporaryKey();
+	void dropForgottenTemporaryKey();
 	bool destroyOldEnoughPersistentKey();
 
 	void setCurrentKeyId(uint64 newKeyId);

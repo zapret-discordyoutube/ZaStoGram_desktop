@@ -27,6 +27,13 @@ namespace Storage {
 namespace {
 
 constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
+// A new file session through a relay or a front costs about six round trips
+// before its first request (TCP, TLS, WebSocket upgrade, transport check,
+// server salt): ~1.8 s of the 2.3 s a photo took, on every one of 577
+// downloads (desktop log 01.10), since 15 s of reading a chat is enough to
+// lose the session. An idle connection is closed by the other side after
+// ~90 s, so a session is kept just short of that.
+constexpr auto kKillWarmSessionTimeout = 75 * crl::time(1000);
 constexpr auto kStartWaitedInSession = 4 * kDownloadPartSize;
 constexpr auto kMaxWaitedInSession = 16 * kDownloadPartSize;
 constexpr auto kStartSessionsCount = 1;
@@ -430,11 +437,16 @@ void DownloadManagerMtproto::removeSession(MTP::DcId dcId) {
 }
 
 void DownloadManagerMtproto::killSessionsSchedule(MTP::DcId dcId) {
+	// Tunnel connections are reopened after every piece anyway.
+	const auto timeout = MTP::details::WssMediaTunneled(dcId)
+		? kKillSessionTimeout
+		: kKillWarmSessionTimeout;
 	if (!_killSessionsWhen.contains(dcId)) {
-		_killSessionsWhen.emplace(dcId, crl::now() + kKillSessionTimeout);
+		_killSessionsWhen.emplace(dcId, crl::now() + timeout);
 	}
-	if (!_killSessionsTimer.isActive()) {
-		_killSessionsTimer.callOnce(kKillSessionTimeout + 5);
+	if (!_killSessionsTimer.isActive()
+		|| _killSessionsTimer.remainingTime() > timeout + 5) {
+		_killSessionsTimer.callOnce(timeout + 5);
 	}
 }
 
@@ -447,7 +459,7 @@ void DownloadManagerMtproto::killSessionsCancel(MTP::DcId dcId) {
 
 void DownloadManagerMtproto::killSessions() {
 	const auto now = crl::now();
-	auto left = kKillSessionTimeout;
+	auto left = kKillWarmSessionTimeout;
 	for (auto i = begin(_killSessionsWhen); i != end(_killSessionsWhen); ) {
 		if (i->second <= now) {
 			killSessions(i->first);

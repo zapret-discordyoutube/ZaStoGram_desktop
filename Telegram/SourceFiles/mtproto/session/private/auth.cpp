@@ -92,6 +92,7 @@ void SessionPrivate::checkAuthKey() {
 			.arg(_transport.connectionTag())
 			.arg(_transport.connectionPingTime())
 			.arg(_sessionState.keyId));
+	dropForgottenTemporaryKey();
 	if (_sessionState.keyId) {
 		authKeyChecked();
 	} else if (_delegate->isKeysDestroyer()) {
@@ -236,6 +237,33 @@ void SessionPrivate::dropMismatchedTemporaryKey() {
 		u"media session left the regular temporary key (id %1) "
 		"for the media cluster key"_q.arg(regular->keyId()));
 	applyAuthKey(nullptr);
+}
+
+void SessionPrivate::dropForgottenTemporaryKey() {
+	// A session keeps its own pointer to the temporary key of its DC, and
+	// updateAuthKey() skips a session that is reconnecting. After one
+	// session found the key destroyed, the others connected with it again
+	// and each had to be refused on its own: 20-30 s of file sessions
+	// reconnecting after every switch between a WEB proxy and WSS (desktop
+	// log 01.10, 17:23 and 17:47, one key destroyed by four sessions in
+	// turn). A key the DC no longer holds is left before it is used; a key
+	// this session is still binding is not in the DC yet and stays.
+	const auto &key = _sessionState.encryptionKey;
+	if (!key || _authState.keyCreator || _delegate->isKeysDestroyer()) {
+		return;
+	}
+	const auto &data = _sessionState.data;
+	if (key == data->getTemporaryKey(TemporaryKeyType::Regular)
+		|| key == data->getTemporaryKey(TemporaryKeyType::MediaCluster)) {
+		return;
+	}
+	logMtprotoEvent(
+		ProxyDiagnosticsPhase::MtpKeyDestroyed,
+		ProxyDiagnosticsSeverity::Info,
+		u"temporary key (id %1) is no longer the key of its dc, left"_q
+			.arg(key->keyId()));
+	_sessionState.encryptionKey = nullptr;
+	setCurrentKeyId(0);
 }
 
 bool SessionPrivate::destroyOldEnoughPersistentKey() {

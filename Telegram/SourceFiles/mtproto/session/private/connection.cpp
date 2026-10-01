@@ -339,6 +339,8 @@ void SessionTransport::connectToServer(bool afterConfig) {
 
 	const auto bareDc = BareDcId(_owner->_shiftedDcId);
 
+	// Before acquiring: a creator's key is its own until it is bound.
+	_owner->dropForgottenTemporaryKey();
 	_owner->_currentDcType = _owner->tryAcquireKeyCreation();
 	_owner->dropMismatchedTemporaryKey();
 	if (_owner->_currentDcType == DcType::Cdn && !_owner->_delegate->isKeysDestroyer()) {

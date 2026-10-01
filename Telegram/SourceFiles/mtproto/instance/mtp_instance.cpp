@@ -963,6 +963,14 @@ void Instance::Private::killSession(ShiftedDcId shiftedDcId) {
 }
 
 void Instance::Private::stopSession(ShiftedDcId shiftedDcId) {
+	// Upload sessions are addressed without a dc (MTP::uploadDcId) and
+	// getSession() starts them on the main one. Looked up as given they were
+	// never found: both stayed after the first upload and were reconnected
+	// each time the idle connection was closed, every 93 s for the rest of
+	// the run (desktop log 01.10, 454 connections for 8 uploads).
+	if (shiftedDcId && !BareDcId(shiftedDcId) && _mainSession) {
+		shiftedDcId += BareDcId(_mainSession->getDcWithShift());
+	}
 	if (const auto session = findSession(shiftedDcId)) {
 		if (session != _mainSession) { // don't stop main session
 			session->stop();

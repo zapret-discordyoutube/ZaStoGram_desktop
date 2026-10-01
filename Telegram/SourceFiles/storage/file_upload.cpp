@@ -67,7 +67,9 @@ constexpr auto kDocumentUploadPartSize4 = 512 * 1024;
 constexpr auto kUploadRequestInterval = crl::time(250);
 
 // How much time without upload causes additional session kill.
-constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
+// Kept warm like download sessions (kKillWarmSessionTimeout): the next file
+// of a conversation skips the ~1.8 s of opening a session through a relay.
+constexpr auto kKillSessionTimeout = 75 * crl::time(1000);
 
 // How much wait after session kill before killing another one.
 constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
