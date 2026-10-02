@@ -590,6 +590,7 @@ void TcpConnection::connectToServer(
 	_mtproxyAttempt = context.mtproxyAttempt;
 	_mtproxyPlan = context.mtproxyPlan;
 	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
+	_wssFront = context.wssFront;
 	const auto proxyProtocol = (_proxy.type == ProxyData::Type::Mtproto)
 		|| (_proxy.type == ProxyData::Type::Web);
 	const auto secret = proxyProtocol
@@ -623,7 +624,8 @@ void TcpConnection::connectToServer(
 		protocolDcId,
 		_mtproxyAttempt,
 		_mtproxyPlan,
-		_mtproxyAttemptStartedAt);
+		_mtproxyAttemptStartedAt,
+		_wssFront);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();

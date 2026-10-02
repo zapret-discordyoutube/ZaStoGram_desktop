@@ -170,6 +170,8 @@ struct RouteHealth {
 	int suppressions = 0;
 	// Front sessions that answered and then froze (kCdnProofBytes).
 	int stalls = 0;
+	// The relay upgraded on this network since the process started.
+	bool answered = false;
 };
 constexpr auto kRouteSuppressMaxTtl = 30 * 60 * crl::time(1000);
 // Suppression lived only in memory, and every launch probed the blocked
@@ -410,6 +412,7 @@ void NoteRouteReachable(const WssRoute &route) {
 	}
 	const auto persisted = (health.suppressions > 0);
 	health = RouteHealth();
+	health.answered = true;
 	if (persisted) {
 		SaveRouteHealthLocked();
 	}
@@ -730,6 +733,37 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		return CdnRoute(dcId, true);
 	}
 	return route;
+}
+
+bool WssRelayUnproven(int16 protocolDcId) {
+	const auto route = OfficialRoute(protocolDcId);
+	if (!route) {
+		return false;
+	}
+	const auto address = RelayAddressRoute(*route);
+	if (RouteSuppressed(*route) || RouteSuppressed(address)) {
+		return false; // WssOfficialRoute already gives the fronts.
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto failing = [&](const WssRoute &value) {
+		const auto i = RouteHealthByDomain.find(
+			NetworkKey(value.metered, HealthName(value)));
+		return (i != end(RouteHealthByDomain))
+			&& (i->second.consecutiveFailures > 0);
+	};
+	const auto i = RouteHealthByDomain.find(
+		NetworkKey(route->metered, HealthName(*route)));
+	const auto answered = (i != end(RouteHealthByDomain))
+		&& i->second.answered;
+	return !answered || failing(*route) || failing(address);
+}
+
+std::optional<WssRoute> WssFrontRoute(int16 protocolDcId) {
+	if (!OfficialRoute(protocolDcId)) {
+		return std::nullopt;
+	}
+	const auto raw = int(protocolDcId);
+	return CdnRoute((raw < 0) ? -raw : raw);
 }
 
 bool WssMediaTunneled(int dcId) {
@@ -1101,6 +1135,22 @@ void WssSocket::handleError(int errorCode) {
 	}
 	if (!_upgraded) {
 		noteFrontFailed();
+	}
+	if (!_upgraded
+		&& !_tcpConnected
+		&& !_route.tunnel
+		&& !IsCdn(_route)
+		&& !TcpRecentlyConnected(_route, _currentHost)) {
+		// Refused outright (a reset, a reject, no such host) instead of
+		// staying silent: the session never waits out a budget for such a
+		// socket, so timedOut() never counted it, the relay was never
+		// suppressed and the fronts were never tried (VM test 02.10: two
+		// minutes of retries against a rejecting relay).
+		if (IsOfficialRelay(_route) && _hostFlipped) {
+			NoteRouteUnreachable(RelayAddressRoute(_route));
+		}
+		NoteRouteUnreachable(_route);
+		SuppressRelayAddressWithDomain(_route);
 	}
 	logError(errorCode, _socket.errorString());
 	_error.fire_copy(errorCode);

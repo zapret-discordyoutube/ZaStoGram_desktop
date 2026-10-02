@@ -68,6 +68,13 @@ struct WssRouteDiagnostics {
 [[nodiscard]] std::optional<WssRoute> WssOfficialRoute(
 	int16 protocolDcId);
 
+// The relay of this DC has not answered on this network yet, or failed since
+// it last did, while it is not suppressed. A session then races a Cloudflare
+// front (WssFrontRoute) against it instead of waiting for the relay to be
+// suppressed first.
+[[nodiscard]] bool WssRelayUnproven(int16 protocolDcId);
+[[nodiscard]] std::optional<WssRoute> WssFrontRoute(int16 protocolDcId);
+
 // Expert-only user-configured relay (ProxyStealthOptions.wssCustom*), used
 // for any DC when set and verified against the configured relay domain.
 [[nodiscard]] std::optional<WssRoute> WssCustomRoute(

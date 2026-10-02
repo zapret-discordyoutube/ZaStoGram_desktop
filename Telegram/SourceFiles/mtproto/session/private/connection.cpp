@@ -43,6 +43,9 @@ namespace details {
 namespace {
 
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
+// A relay that works answers well within this, and its session never opens
+// the raced front at all (Happy Eyeballs, RFC 8305 uses 250 ms).
+constexpr auto kWssFrontRaceDelay = crl::time(500);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
 // The Cloudflare tunnel needs ~0.7 s for TCP, TLS and the upgrade and answers
 // the first MTProto packet at ~1.1 s, sometimes only at ~4.2 s (desktop logs
@@ -95,7 +98,8 @@ bool SessionTransport::appendTestConnection(
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
-		bool protocolForFiles) {
+		bool protocolForFiles,
+		bool wssFront) {
 	QWriteLocker lock(&_owner->_stateMutex);
 
 	const auto proxy = _owner->_sessionState.options->proxy;
@@ -105,7 +109,8 @@ bool SessionTransport::appendTestConnection(
 		: (ip + ':' + QString::number(port));
 	const auto priority = (qthelp::is_ipv6(ip) ? (OptionPreferIPv6.value() ? 2 : 0) : 1)
 		+ (protocol == DcOptions::Variants::Tcp ? 1 : 0)
-		+ (protocolSecret.empty() ? 0 : 1);
+		+ (protocolSecret.empty() ? 0 : 1)
+		- (wssFront ? 1 : 0);
 	const auto mtproxy = (proxy.type == ProxyData::Type::Mtproto);
 	const auto mtproxyUse = classifyEndpointUse();
 	const auto protocolDcId = _owner->getProtocolDcId();
@@ -131,7 +136,9 @@ bool SessionTransport::appendTestConnection(
 	// every session of every account handshaking in the same millisecond, so
 	// the dial itself is paced per proxy server.
 	auto dial = ReserveProxyDial(_owner->_runtime, proxy);
-	const auto dialDelay = dial.delay();
+	const auto dialDelay = std::max(
+		dial.delay(),
+		wssFront ? kWssFrontRaceDelay : crl::time(0));
 	_state.testConnections.push_back({
 		.data = _owner->_connectionFactory->create(
 			_owner->_runtime,
@@ -147,6 +154,7 @@ bool SessionTransport::appendTestConnection(
 		.mtproxyAttemptStartedAt = attemptStartedAt,
 		.mtproxyDial = std::move(dial),
 		.mtproxyDialDelay = dialDelay,
+		.wssFront = wssFront,
 	});
 	const auto weak = _state.testConnections.back().data.get();
 	QObject::connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -185,6 +193,7 @@ bool SessionTransport::appendTestConnection(
 				.mtproxyAttempt = attempt,
 				.mtproxyPlan = plan,
 				.mtproxyAttemptStartedAt = attemptStartedAt,
+				.wssFront = wssFront,
 			});
 	};
 	if (dialDelay > 0) {
@@ -233,6 +242,15 @@ void SessionTransport::armWaitForConnectedTimer() {
 	// reconnects, and repeated fresh handshakes are exactly what gets
 	// proxies throttled. Direct connections keep the short first wait.
 	auto wait = _timing.waitForConnected;
+	const auto racingFront = ranges::any_of(
+		_state.testConnections,
+		&TestConnection::wssFront);
+	if (racingFront) {
+		// A front needs its own TLS and upgrade through Cloudflare, and is
+		// dialed only after kWssFrontRaceDelay; the relay's first 1 s budget
+		// would kill it before it could win.
+		accumulate_max(wait, kWssFrontRaceDelay + kCdnMinConnectedTimeout);
+	}
 	if (const auto &options = _owner->_sessionState.options;
 		options
 		&& options->proxy.type == ProxyData::Type::None
@@ -429,6 +447,31 @@ void SessionTransport::connectToServer(bool afterConfig) {
 					}
 				}
 			}
+		}
+		// The fronts used to wait for the relay to be suppressed: a first
+		// launch on a network that drops the relays spent 1+2+4 s of connect
+		// budgets on them first, and a relay that refused outright was never
+		// counted, so the fronts were never tried at all (desktop log 02.10,
+		// VM test). Until the relay answers on this network a front is
+		// raced against it, dialed kWssFrontRaceDelay after the relay. The
+		// relay keeps the higher priority, and losing
+		// the race counts against it (noteRelayRaceLost) until it is
+		// suppressed and the fronts are dialed directly.
+		const auto &relayTcp = variants.data[Variants::IPv4][Variants::Tcp];
+		if (wssCarries
+			&& !relayTcp.empty()
+			&& !_state.testConnections.empty()
+			&& !WssCustomRoute(_owner->_sessionState.options->stealth)
+			&& WssRelayUnproven(protocolDcId)
+			&& WssFrontRoute(protocolDcId)) {
+			const auto &endpoint = relayTcp.front();
+			(void)appendTestConnection(
+				Variants::Tcp,
+				QString::fromStdString(endpoint.ip),
+				endpoint.port,
+				endpoint.secret,
+				protocolForFiles,
+				true);
 		}
 	}
 	if (_state.testConnections.empty()) {
@@ -773,6 +816,7 @@ void SessionTransport::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_timing.waitForBetterTimer.cancel();
+		noteRelayRaceLost(connection);
 		_state.mtproxyUse = i->mtproxyUse;
 		_state.mtproxyAttempt = i->mtproxyAttempt;
 		_state.mtproxyAttemptStartedAt = i->mtproxyAttemptStartedAt;
@@ -830,6 +874,7 @@ void SessionTransport::confirmBestConnection() {
 	// answers with the failure spacing, on a proxy that had in fact just
 	// carried a Telegram reply.
 	i->mtproxyDial.proven();
+	noteRelayRaceLost(i->data.get());
 
 	_state.mtproxyAttempt = i->mtproxyAttempt;
 	_state.mtproxyAttemptStartedAt = i->mtproxyAttemptStartedAt;
@@ -839,6 +884,25 @@ void SessionTransport::confirmBestConnection() {
 	clearTestConnections();
 
 	_owner->checkAuthKey();
+}
+
+void SessionTransport::noteRelayRaceLost(
+		not_null<AbstractConnection*> winner) {
+	const auto i = ranges::find(
+		_state.testConnections,
+		winner.get(),
+		[](const TestConnection &test) { return test.data.get(); });
+	if (i == end(_state.testConnections) || !i->wssFront) {
+		return;
+	}
+	// The relay sockets are about to be dropped by us, which counts for
+	// nothing; without this a relay the network drops would be raced, and
+	// waited for, on every reconnect instead of being suppressed.
+	for (const auto &test : _state.testConnections) {
+		if (!test.wssFront && !test.data->isConnected()) {
+			test.data->timedOut();
+		}
+	}
 }
 
 void SessionTransport::removeTestConnection(

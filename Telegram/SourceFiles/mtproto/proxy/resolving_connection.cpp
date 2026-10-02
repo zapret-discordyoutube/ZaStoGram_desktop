@@ -415,6 +415,7 @@ void ResolvingConnection::addRouteAttempt(int ipIndex) {
 				.mtproxyAttempt = routeConnectionAttempt,
 				.mtproxyPlan = _mtproxyPlan,
 				.mtproxyAttemptStartedAt = _mtproxyAttemptStartedAt,
+				.wssFront = _wssFront,
 			});
 		CONNECTION_LOG_INFO("Resolving connected a new child: "
 			+ stored.child->debugId());
@@ -987,6 +988,7 @@ void ResolvingConnection::connectToServer(
 	_mtproxyAttempt = context.mtproxyAttempt;
 	_mtproxyPlan = context.mtproxyPlan;
 	_mtproxyAttemptStartedAt = context.mtproxyAttemptStartedAt;
+	_wssFront = context.wssFront;
 	_terminal = false;
 	_lastFailure = {};
 	if (!_child) {

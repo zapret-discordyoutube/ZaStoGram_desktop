@@ -99,6 +99,7 @@ private:
 	ProxyTransportFailure _lastFailure;
 	uint64 _lastRouteAttemptId = 0;
 	crl::time _mtproxyAttemptStartedAt = 0;
+	bool _wssFront = false;
 	crl::time _resolvingStartedAt = 0;
 	crl::time _resolvingDeadline = 0;
 	std::optional<crl::time> _dnsDuration;

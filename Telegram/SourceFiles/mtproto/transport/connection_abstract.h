@@ -82,6 +82,8 @@ public:
 		ProxyConnectionAttempt mtproxyAttempt;
 		MtProxyAttemptPlan mtproxyPlan;
 		crl::time mtproxyAttemptStartedAt = 0;
+		// A Cloudflare front raced against the DC's relay (WssFrontRoute).
+		bool wssFront = false;
 	};
 
 	enum class TransportServiceRequest {

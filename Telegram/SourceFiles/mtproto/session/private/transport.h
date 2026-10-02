@@ -96,6 +96,9 @@ private:
 		// relays a Telegram reply or the attempt dies with the entry.
 		ProxyDialLease mtproxyDial;
 		crl::time mtproxyDialDelay = 0;
+
+		// A Cloudflare front raced against a relay that is not proven yet.
+		bool wssFront = false;
 	};
 	struct ConnectionState {
 		ConnectionPointer connection;
@@ -144,7 +147,9 @@ private:
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		bool wssFront = false);
+	void noteRelayRaceLost(not_null<AbstractConnection*> winner);
 	void connectingTimedOut();
 	[[nodiscard]] bool webProxy() const;
 	[[nodiscard]] bool extendWebProxyReceiveWait();

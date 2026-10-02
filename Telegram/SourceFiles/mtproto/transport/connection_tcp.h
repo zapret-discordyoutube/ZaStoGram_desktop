@@ -82,6 +82,7 @@ private:
 	MtProxyAttemptPlan _mtproxyPlan;
 	ProxyTransportFailure _timeoutFailure;
 	crl::time _mtproxyAttemptStartedAt = 0;
+	bool _wssFront = false;
 	std::unique_ptr<AbstractSocket> _socket;
 	bool _connectionStarted = false;
 

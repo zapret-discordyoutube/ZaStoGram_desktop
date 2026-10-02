@@ -21,6 +21,7 @@ namespace MTP::details {
 	int16 protocolDcId = 0,
 	ProxyConnectionAttempt mtproxyAttempt = {},
 	MtProxyAttemptPlan mtproxyPlan = {},
-	crl::time mtproxyAttemptStartedAt = 0);
+	crl::time mtproxyAttemptStartedAt = 0,
+	bool wssFront = false);
 
 } // namespace MTP::details
