@@ -1864,6 +1864,7 @@ PRIVATE
     platform/win/webauthn_win.cpp
     platform/win/windows_app_user_model_id.cpp
     platform/win/windows_app_user_model_id.h
+    platform/win/windows_delay_load_hook.cpp
     platform/win/windows_dlls.cpp
     platform/win/windows_dlls.h
     platform/win/windows_autostart_task.cpp
