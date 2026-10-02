@@ -870,6 +870,21 @@ void Instance::Private::migrateProxy(bool manual) {
 		.attempt = { .proxyGeneration = _proxyGeneration },
 		.proxy = selected,
 	});
+	// A Cloudflare front lands a file session on the regular cluster of its
+	// DC, a relay (kwsN-1), the tunnel and a proxy on the media one, and a
+	// media key made on one side is unknown on the other. After a switch the
+	// DC2 and DC4 file sessions reconnected with the old key three or four
+	// times, ~2 s each, before the server's refusal was believed: 9 s with
+	// no media after the 7 s spent on the route itself (desktop log 02.10,
+	// 21:23; 20-30 s in the log of 01.10). Making a key takes ~2.5 s, so the
+	// media keys are left behind with the route. Sessions find theirs gone
+	// when they reconnect (dropForgottenTemporaryKey).
+	for (const auto &[dcId, dc] : _dcenters) {
+		const auto type = TemporaryKeyType::MediaCluster;
+		if (const auto key = dc->getTemporaryKey(type)) {
+			dc->destroyTemporaryKey(key->keyId());
+		}
+	}
 	for (const auto &[shiftedDcId, session] : _sessions) {
 		session->migrateProxy(_proxyGeneration);
 	}
