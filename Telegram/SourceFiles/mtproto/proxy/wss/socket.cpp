@@ -88,6 +88,7 @@ constexpr auto kTunnelOnlyDcId = 203;
 constexpr const char *kTunnelHosts[] = {
 	"edge.amberwick.workers.dev",
 	"fuckyourkn.copperbrook.workers.dev",
+	"nodeone.brackencombe.workers.dev",
 };
 constexpr auto kTunnelHostCount = int(std::size(kTunnelHosts));
 
