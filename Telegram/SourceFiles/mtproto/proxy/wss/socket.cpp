@@ -78,6 +78,17 @@ std::atomic<bool> CurrentNetworkMetered = false;
 }
 
 constexpr auto kTunnelOnlyDcId = 203;
+// Worker tunnels (zastogram-ws-worker/worker.js), each on its own Cloudflare
+// account. A free account serves 100 000 requests a day; past that the worker
+// answers 429 (error code: 1027) until 00:00 UTC, and on 08.10.2026 the single
+// worker was spent by the evening: DC203 media stood still for everyone. Every
+// install starts from a random worker, so the accounts share the load. The
+// same list is in the Android client (jni/tgnet/wss/WssSocket.cpp) and in
+// ZapretGUI (telegram_proxy/proxy/route_catalog.py, TUNNEL_HOSTS).
+constexpr const char *kTunnelHosts[] = {
+	"edge.amberwick.workers.dev",
+};
+constexpr auto kTunnelHostCount = int(std::size(kTunnelHosts));
 
 // Отдельный от выбора адреса учёт: у датацентра может не открываться ни один
 // адрес релея — у части провайдеров порт 443 к нему закрыт целиком, по обоим
@@ -367,6 +378,23 @@ void NoteRouteUnreachable(const WssRoute &route) {
 	}
 }
 
+// The worker answered 429: its account is out of requests for the day, and
+// every further attempt gets the same answer. Suppressed at once, without
+// counting to three, so the next connection goes straight to the next worker.
+void NoteTunnelQuotaExhausted(const WssRoute &route) {
+	QMutexLocker lock(&RelayPreferencesMutex);
+	LoadRouteHealthLocked();
+	auto &health = RouteHealthByDomain[
+		NetworkKey(route.metered, HealthName(route))];
+	const auto now = crl::now();
+	if (health.suppressedUntil > now) {
+		return;
+	}
+	health.lastFailureAt = now;
+	health.consecutiveFailures = 0;
+	SuppressLocked(route, health, now, u"quota"_q);
+}
+
 // The relay's hardcoded address failed and its DNS fallback failed too, so
 // the domain went down: siblings on the same address will fail the same way.
 // Only a recent failure of the address itself counts: a stray SYN loss long
@@ -576,7 +604,7 @@ void NoteRotatedTunnelSocket(
 			.arg(report.sent)
 			.arg(report.received)
 			.arg(report.life / report.count),
-		.route = u"edge.amberwick.workers.dev"_q,
+		.route = u"workers.dev"_q,
 	});
 }
 
@@ -629,15 +657,24 @@ void NoteRotatedTunnelSocket(
 	return route;
 }
 
-[[nodiscard]] WssRoute TunnelRoute() {
-	auto route = WssRoute();
-	route.metered = CurrentNetworkMetered.load();
-	route.relayHost = u"edge.amberwick.workers.dev"_q;
-	route.relayPort = 443;
-	route.domain = route.relayHost;
-	route.path = u"/apiws"_q;
-	route.tunnel = true;
-	return route;
+// The first worker not suppressed now, in a circle from the one this install
+// starts with.
+[[nodiscard]] std::optional<WssRoute> TunnelRoute() {
+	static const auto start = int(uchar(RandomBytes(1)[0])) % kTunnelHostCount;
+	for (auto step = 0; step != kTunnelHostCount; ++step) {
+		auto route = WssRoute();
+		route.metered = CurrentNetworkMetered.load();
+		route.relayHost = QString::fromLatin1(
+			kTunnelHosts[(start + step) % kTunnelHostCount]);
+		route.relayPort = 443;
+		route.domain = route.relayHost;
+		route.path = u"/apiws"_q;
+		route.tunnel = true;
+		if (!RouteSuppressed(route)) {
+			return route;
+		}
+	}
+	return std::nullopt;
 }
 
 [[nodiscard]] std::optional<WssRoute> CdnRoute(
@@ -702,8 +739,7 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		// DC203 serves non-Premium media and has no kws relay at all.
 		const auto raw = int(protocolDcId);
 		if (raw == kTunnelOnlyDcId || raw == -kTunnelOnlyDcId) {
-			auto tunnel = TunnelRoute();
-			if (!RouteSuppressed(tunnel)) {
+			if (auto tunnel = TunnelRoute()) {
 				return tunnel;
 			}
 		}
@@ -719,8 +755,7 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		if (auto front = CdnRoute(dcId)) {
 			return front;
 		}
-		auto tunnel = TunnelRoute();
-		if (!RouteSuppressed(tunnel)) {
+		if (auto tunnel = TunnelRoute()) {
 			return tunnel;
 		}
 		static auto lastFloorLog = std::atomic<crl::time>(0);
@@ -1207,6 +1242,9 @@ bool WssSocket::tryFinishUpgrade() {
 			return false;
 		}
 		noteFrontFailed();
+		if (_route.tunnel && header.startsWith("HTTP/1.1 429")) {
+			NoteTunnelQuotaExhausted(_route);
+		}
 		logError(0, u"WSS HTTP upgrade rejected"_q);
 		_error.fire_copy(AbstractConnection::kErrorCodeOther);
 		return false;
