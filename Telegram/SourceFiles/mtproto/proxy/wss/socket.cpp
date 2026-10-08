@@ -87,6 +87,7 @@ constexpr auto kTunnelOnlyDcId = 203;
 // ZapretGUI (telegram_proxy/proxy/route_catalog.py, TUNNEL_HOSTS).
 constexpr const char *kTunnelHosts[] = {
 	"edge.amberwick.workers.dev",
+	"fuckyourkn.copperbrook.workers.dev",
 };
 constexpr auto kTunnelHostCount = int(std::size(kTunnelHosts));
 
