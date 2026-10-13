@@ -56,11 +56,32 @@ def test_clip_reader_queues_decoder_starts_under_load():
     reader = CLIP_READER_SOURCE.read_text(encoding="utf-8")
     process = body_after(CLIP_READER_SOURCE, "void Manager::process")
 
-    assert "kMaxStartedClipReadersPerWorker" in reader
+    assert "kBusyClipReadersForStartThrottle" in reader
     assert "kQueuedClipStartDelay" in reader
     assert "bool hasDecoder() const" in reader
     assert "bool needsDecoderStart() const" in reader
-    assert "startedReaders" in process
     assert "needsDecoderStart()" in process
-    assert "startedReaders >= kMaxStartedClipReadersPerWorker" in process
-    assert "i.value() = ms + kQueuedClipStartDelay;" in process
+    assert "busyReaders >= kBusyClipReadersForStartThrottle" in process
+
+
+def test_clip_reader_start_queue_never_starves_a_reader():
+    reader = CLIP_READER_SOURCE.read_text(encoding="utf-8")
+    process = body_after(CLIP_READER_SOURCE, "void Manager::process")
+    decoding = body_after(CLIP_READER_SOURCE, "bool decoding() const")
+
+    # Paused readers keep their decoder but do no work, so they must not
+    # count as load: the media preview pauses every other clip and still
+    # has to start its own one.
+    assert "_implementation" in decoding
+    assert "!_autoPausedGif" in decoding
+    assert "!_videoPausedAtMs" in decoding
+    assert "i.key()->decoding()" in process
+    assert "i.key()->hasDecoder()" not in process
+
+    # The queue is a delay with a deadline, not a cap: a waiting reader is
+    # rescheduled to the moment the next start is allowed and starts then.
+    assert "crl::time _nextQueuedStartAt = 0;" in reader
+    assert "&& ms < _nextQueuedStartAt" in process
+    assert "i.value() = _nextQueuedStartAt;" in process
+    assert "_nextQueuedStartAt = ms + kQueuedClipStartDelay;" in process
+    assert "kMaxStartedClipReadersPerWorker" not in reader

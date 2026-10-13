@@ -34,7 +34,7 @@ namespace Clip {
 namespace {
 
 constexpr auto kClipThreadsCount = 8;
-constexpr auto kMaxStartedClipReadersPerWorker = 4;
+constexpr auto kBusyClipReadersForStartThrottle = 4;
 constexpr auto kAverageGifSize = 320 * 240;
 constexpr auto kWaitBeforeGifPause = crl::time(200);
 constexpr auto kQueuedClipStartDelay = crl::time(50);
@@ -168,6 +168,8 @@ private:
 	ReaderPointers::iterator unsafeFindReaderPointer(ReaderPrivate *reader);
 
 	bool handleProcessResult(ReaderPrivate *reader, ProcessResult result, crl::time ms);
+
+	crl::time _nextQueuedStartAt = 0;
 
 	enum ResultHandleState {
 		ResultHandleRemove,
@@ -566,6 +568,10 @@ public:
 		return (_implementation != nullptr);
 	}
 
+	bool decoding() const {
+		return _implementation && !_autoPausedGif && !_videoPausedAtMs;
+	}
+
 	bool needsDecoderStart() const {
 		return !_implementation && (_state == State::Reading);
 	}
@@ -945,19 +951,22 @@ void Manager::process() {
 		checkAllReaders = (_readers.size() > livePrivates);
 	}
 
-	auto startedReaders = 0;
+	auto busyReaders = 0;
 	for (auto i = _readers.cbegin(), e = _readers.cend(); i != e; ++i) {
-		if (i.key()->hasDecoder()) {
-			++startedReaders;
+		if (i.key()->decoding()) {
+			++busyReaders;
 		}
 	}
 
 	for (auto i = _readers.begin(), e = _readers.end(); i != e;) {
 		ReaderPrivate *reader = i.key();
 		if (i.value() <= ms) {
+			// A busy worker only spaces decoder starts out, it never refuses
+			// them: a reader left without a decoder shows no frames at all.
 			if (reader->needsDecoderStart()
-				&& startedReaders >= kMaxStartedClipReadersPerWorker) {
-				i.value() = ms + kQueuedClipStartDelay;
+				&& busyReaders >= kBusyClipReadersForStartThrottle
+				&& ms < _nextQueuedStartAt) {
+				i.value() = _nextQueuedStartAt;
 				if (!reader->_autoPausedGif && i.value() < minms) {
 					minms = i.value();
 				}
@@ -973,10 +982,11 @@ void Manager::process() {
 				_processingInThread = nullptr;
 				return;
 			}
-			if (!hadDecoder && reader->hasDecoder()) {
-				++startedReaders;
-			}
 			ms = crl::now();
+			if (!hadDecoder && reader->hasDecoder()) {
+				++busyReaders;
+				_nextQueuedStartAt = ms + kQueuedClipStartDelay;
+			}
 			if (reader->_videoPausedAtMs) {
 				i.value() = ms + 86400 * 1000ULL;
 			} else if (reader->_nextFrameWhen && reader->_started) {
