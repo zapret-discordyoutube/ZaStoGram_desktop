@@ -6,4 +6,7 @@ def test_proxy_control_plane_truth_tables():
 
 
 if __name__ == "__main__":
-    test_proxy_control_plane_truth_tables()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

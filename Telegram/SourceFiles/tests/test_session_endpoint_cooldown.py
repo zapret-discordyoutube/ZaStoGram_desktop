@@ -74,5 +74,7 @@ def function_body(text: str, signature: str) -> str:
 
 
 if __name__ == "__main__":
-    test_session_bypasses_endpoint_admission_and_local_cooldown()
-    test_web_proxy_connect_budget_covers_browser_handshake()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

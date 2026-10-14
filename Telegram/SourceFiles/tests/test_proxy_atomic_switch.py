@@ -144,3 +144,10 @@ def test_status_reducer_shadows_old_proxy_generation_facts():
     assert "update.proxyGeneration < current.proxyGeneration" in control
     assert "ApplyProxyConnectionStatusUpdate(" not in status
     assert "generation=%1" in diagnostics
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

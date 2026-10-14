@@ -72,3 +72,10 @@ def test_localhost_and_wss_remote_closed_disable_wss_by_proxy_key():
     assert "kWssRemoteClosedTtl = crl::time(30 * 60 * 1000)" in policy
     assert "noteWssRemoteClosed(" in note
     assert "kWssRemoteClosedTtl" in note
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

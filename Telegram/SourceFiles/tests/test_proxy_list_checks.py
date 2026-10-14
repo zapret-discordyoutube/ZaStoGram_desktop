@@ -104,9 +104,7 @@ def test_explicit_proxy_changes_still_start_check():
 
 
 if __name__ == "__main__":
-    test_proxy_list_open_does_not_start_bulk_checks()
-    test_proxy_window_open_path_does_not_start_probe_checks()
-    test_proxy_rows_start_unchecked_and_offer_manual_check()
-    test_initial_proxy_rows_are_batched_on_open()
-    test_proxy_switch_avoids_duplicate_row_and_rotation_updates()
-    test_explicit_proxy_changes_still_start_check()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

@@ -144,3 +144,10 @@ def test_logs_and_proxy_status_use_phase_specific_names():
         "lng_proxy_status_mtproxy_bad_response",
     ):
         assert f'"{key}' in lang
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

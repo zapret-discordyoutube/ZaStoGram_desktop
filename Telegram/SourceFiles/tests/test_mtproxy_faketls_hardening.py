@@ -46,4 +46,7 @@ def body_from_brace(text: str, brace: int) -> str:
 
 
 if __name__ == "__main__":
-    test_immutable_admission_profile_is_used_for_client_hello()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

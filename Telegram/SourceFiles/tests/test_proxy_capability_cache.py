@@ -200,22 +200,28 @@ def test_legacy_relay_cache_uses_last_success_as_proof_time():
     assert "result.lastSuccessAt" in read_card
 
 
-def test_last_good_capability_is_used_before_saved_mtproxy_experiments():
+def test_cached_capability_does_not_steer_mtproxy_stealth_options():
     source = read(TRANSPORT_POLICY_CPP)
     body = function_body(source, "ProxyStealthOptions EffectiveProxyStealthOptions(")
     mtproxy_branch = body.split(
         "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
         "if (settings == ProxyData::Settings::Enabled", 1)[0]
 
-    assert "runtime->proxyServices().capabilities().lookup(proxy)" in body
-    assert "capability.lastGoodTransport" in body
-    assert "ProxyCapabilityTransport::MtproxyFakeTlsTcp" in body
-    assert "capability.relayProven" in body
+    # The cache still records what worked (relay proof, routes), but the
+    # MTProxy ClientHello plan no longer follows it: the profile stays the
+    # one the user configured.
     assert "FreshMtproxyRelayProof(card)" in read(CAPABILITIES_CPP)
-    assert "capability.lastGoodRecipeLevel == 0" in body
-    assert "!capability.autoRotateAllowed" in body
-    assert "capability.lastGoodProfile" in body
+    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
+    assert "capabilities().lookup(" not in mtproxy_branch
+    assert "capability.lastGoodProfile" not in body
     assert "CompatStrictProxyStealthOptions(std::move(result))" in body
     assert "capability.syntheticPskAllowed" not in mtproxy_branch
     assert "capability.fragmentationAllowed" not in mtproxy_branch
     assert "result.level == ProxyStealthLevel::Experimental" not in mtproxy_branch
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

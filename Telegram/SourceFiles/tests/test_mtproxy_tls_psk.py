@@ -347,16 +347,7 @@ def body_from_brace(text: str, brace: int) -> str:
 
 
 if __name__ == "__main__":
-    test_qtcp_socket_members_have_direct_header_include()
-    test_server_hello_length_uses_non_narrow_storage()
-    test_browser_profiles_use_dynamic_psk_marker_instead_of_inline_psk()
-    test_synthetic_psk_offer_is_cached_per_endpoint_sni_and_profile()
-    test_synthetic_psk_cache_is_cleared_on_post_handshake_failure()
-    test_synthetic_psk_uses_cached_identity_and_plausible_age()
-    test_synthetic_psk_ticket_is_consumed_after_offer()
-    test_synthetic_psk_does_not_take_over_mtproxy_digest_slot()
-    test_client_hello_fragmentation_targets_sni_hostname()
-    test_mtproxy_profile_wording_does_not_claim_ja4_validation()
-    test_manual_tls_profiles_have_independent_transport_cases()
-    test_stealth_record_timing_and_startup_cover_default_off()
-    test_admission_plan_drives_tls_socket_spacing_and_diagnostics()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

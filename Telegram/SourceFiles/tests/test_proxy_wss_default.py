@@ -309,19 +309,7 @@ def function_body(text: str, signature: str) -> str:
 
 
 if __name__ == "__main__":
-    test_wss_transport_is_the_stealth_default()
-    test_wss_transport_lives_in_proxy_module()
-    test_wss_keeps_tls_peer_verification_enabled()
-    test_persisted_transport_falls_back_to_wss()
-    test_route_via_wss_toggle_uses_transport_setting()
-    test_local_telegram_proxy_is_not_added_by_default()
-    test_wss_transport_policy_is_the_single_effective_entrypoint()
-    test_wss_policy_allows_only_direct_or_nonlocal_socks_until_forbidden()
-    test_compat_strict_disables_stealth_for_mtproxy_and_local_tunnels()
-    test_persisted_transport_is_raw_and_not_mtproxy_clamped()
-    test_enabling_mtproxy_does_not_rewrite_saved_transport()
-    test_route_via_wss_checkbox_refreshes_after_proxy_change()
-    test_wss_dc_coverage_policy_is_centralized_and_soft()
-    test_wss_direct_fallback_requests_proxy_without_blocking()
-    test_wss_remembers_working_relay_host_across_sockets()
-    test_wss_remote_closed_forbids_wss_for_that_proxy()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

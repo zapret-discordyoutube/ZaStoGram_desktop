@@ -155,6 +155,7 @@ def test_established_idle_close_is_not_a_health_failure():
 
 
 if __name__ == "__main__":
-    test_relay_silence_reason_is_wired_through_all_mappings()
-    test_session_reports_silence_and_recovers_temporary_key()
-    test_established_idle_close_is_not_a_health_failure()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

@@ -77,6 +77,7 @@ def function_body(text, signature):
 
 
 if __name__ == "__main__":
-    test_raw_reducer_rejects_probe_and_stale_generation_facts()
-    test_tls_socket_owns_serverhello_timeout_and_one_terminal_path()
-    test_resolving_wrapper_keeps_typed_route_and_full_cycle_boundaries()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

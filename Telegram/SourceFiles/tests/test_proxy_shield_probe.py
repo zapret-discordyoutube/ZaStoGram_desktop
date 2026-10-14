@@ -141,9 +141,7 @@ def function_body(text, signature):
 
 
 if __name__ == "__main__":
-    test_proxy_check_has_a_dedicated_progress_model()
-    test_paced_and_rejected_probe_outcomes_are_distinct()
-    test_proxy_check_reports_progressive_transport_phases()
-    test_probe_timeout_starts_after_handoff_and_uses_network_budget()
-    test_probe_facts_do_not_publish_selected_main_status()
-    test_probe_terminal_callbacks_reset_before_exact_lease_release()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

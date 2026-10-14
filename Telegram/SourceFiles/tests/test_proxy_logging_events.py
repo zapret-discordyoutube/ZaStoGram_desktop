@@ -93,3 +93,10 @@ def test_diagnostics_declares_structured_proxy_events_and_context():
 
     assert "ProxyKeyHash(" in source
     assert "QCryptographicHash::Sha256" in source
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

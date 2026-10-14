@@ -253,12 +253,7 @@ def function_body(text: str, signature: str) -> str:
 
 
 if __name__ == "__main__":
-    test_diagnostics_model_is_disk_only()
-    test_diagnostics_has_no_in_memory_event_stream()
-    test_diagnostics_does_not_read_back_log_files()
-    test_diagnostics_redacts_secret_material()
-    test_transport_paths_emit_diagnostics()
-    test_proxy_reporting_is_centralized()
-    test_proxy_log_lines_include_cooldown_ms()
-    test_proxy_logs_have_no_separate_settings_entry()
-    test_proxy_logs_ui_does_not_render_log_memory()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

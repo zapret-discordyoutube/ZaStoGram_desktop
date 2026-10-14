@@ -549,12 +549,7 @@ def cpp_int_argument(statement: str) -> int:
 
 
 if __name__ == "__main__":
-    test_chrome_modern_capture_fixture_is_ja4_consistent()
-    test_profile_metadata_marks_only_capture_backed_profile_validated()
-    test_client_hello_builder_owns_templates_and_fragmentation_plan()
-    test_client_hello_uses_shared_constants_and_typed_absence()
-    test_client_hello_facts_module_parses_and_computes_ja4()
-    test_chrome_modern_builder_template_matches_capture_ja4_facts()
-    test_chrome_modern_builder_matches_capture_extension_payloads()
-    test_new_client_hello_sources_are_registered_for_build()
-    test_cpp_smoke_invokes_deterministic_builder_and_ja4_facts()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

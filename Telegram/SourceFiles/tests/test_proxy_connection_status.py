@@ -304,13 +304,7 @@ def test_key_destroyer_does_not_require_a_main_dc():
 
 
 if __name__ == "__main__":
-    test_proxy_status_model_is_exposed_to_ui()
-    test_connection_notice_model_is_visible_without_proxy()
-    test_proxy_status_tracks_phases_and_socket_errors()
-    test_mtproxy_terminal_status_is_sticky_until_new_attempt_or_success()
-    test_proxy_status_kind_and_severity_are_centralized()
-    test_proxy_shield_uses_status_tones()
-    test_proxy_shield_replaces_left_spinner()
-    test_visible_proxy_phrases_exist()
-    test_proxy_retry_with_error_uses_generated_argument_order()
-    test_key_destroyer_does_not_require_a_main_dc()
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

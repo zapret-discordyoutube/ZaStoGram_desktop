@@ -44,7 +44,7 @@ def function_body(text: str, signature: str) -> str:
     raise AssertionError(f"body not found for {signature}")
 
 
-def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
+def test_user_proxy_selection_uses_fixed_strict_mtproxy_plan():
     session = read(SESSION_CPP)
     policy = read(TRANSPORT_POLICY_CPP)
     refresh = function_body(session, "void Session::refreshOptions(")
@@ -53,17 +53,20 @@ def test_user_proxy_selection_uses_capability_then_strict_mtproxy_plan():
         "proxy.type == ProxyData::Type::Mtproto) {", 1)[1].split(
         "if (settings == ProxyData::Settings::Enabled", 1)[0]
 
+    # The ClientHello profile is whatever the user configured, fixed: a
+    # fingerprint filter is deterministic, so steering the profile from the
+    # outcome of earlier dials only hands the other side more profiles.
     assert "EffectiveProxyStealthOptions(" in refresh
-    assert "runtime->proxyServices().capabilities().lookup(proxy)" in (
-        mtproxy_branch)
     assert mtproxy_branch.index("result.transport = ProxyTransport::Tcp;") < (
-        mtproxy_branch.index(
-            "runtime->proxyServices().capabilities().lookup(proxy)"))
-    assert "BoringMtproxyStealthOptions(std::move(result))" in mtproxy_branch
-    assert "ProxyTlsProfile::ChromeModern" in policy
-    assert "capability.lastGoodProfile" in mtproxy_branch
-    assert mtproxy_branch.index("capability.lastGoodProfile") < (
         mtproxy_branch.index("BoringMtproxyStealthOptions(std::move(result))"))
+    boring = function_body(policy, "ProxyStealthOptions BoringMtproxyStealthOptions(")
+    assert boring.index("const auto profile = result.tlsProfile;") < (
+        boring.index("CompatStrictProxyStealthOptions(std::move(result));"))
+    assert boring.index("CompatStrictProxyStealthOptions(std::move(result));") < (
+        boring.index("result.tlsProfile = profile;"))
+    assert "ProxyTlsProfile::" not in boring
+    assert "capabilities()" not in mtproxy_branch
+    assert "capability." not in mtproxy_branch
     assert "ProxyTransport::Wss" not in mtproxy_branch
     assert "ApplyProxyStealthLevel(" not in mtproxy_branch
     assert "syntheticPskAllowed" not in mtproxy_branch
@@ -92,12 +95,18 @@ def test_dns_singleflight_precedes_route_open_and_route_racing_is_bounded():
         connect.index("startResolving();"))
     assert "_runtime->proxyServices().dnsResolver().request(" in start_resolving
     assert "domainResolved(" in start_resolving
-    assert "_runtime->proxyServices().capabilities().lookup(_proxy)" in (
-        route_order)
-    assert route_order.index("capability.goodRoutes") < (
-        route_order.index("for (auto index = 0; index != int(_proxy.resolvedIPs.size())"))
-    assert "MtProxy::RouteEndpointFromAddress(" in route_order
-    assert "MtProxy::RouteKey(route)" in route_order
+    mtproxy_order = compact(route_order).split(
+        "if (_proxy.type != ProxyData::Type::Mtproto) {", 1)[1].split(
+        "return result; }", 1)[1]
+    # Addresses that answered last time go first, untried ones next and the
+    # ones that already failed last.
+    good = mtproxy_order.index("listed(capability.goodRoutes, keyOf(index))")
+    untried = mtproxy_order.index("!listed(capability.badRoutes, key)")
+    assert mtproxy_order.index(
+        "_runtime->proxyServices().capabilities().lookup( _proxy)") < good
+    assert good < untried < mtproxy_order.rindex(
+        "for (auto index = 0; index != int(_proxy.resolvedIPs.size()); ++index) { append(index); }")
+    assert "MtProxy::RouteKey(MtProxy::RouteEndpointFromAddress(" in mtproxy_order
     assert "attempt.child = _child->clone(ToDirectIpProxy(_proxy, ipIndex));" in add_route
     assert add_route.index("ToDirectIpProxy(_proxy, ipIndex)") < (
         add_route.index("stored.child->connectToServer("))
@@ -131,13 +140,16 @@ def test_first_app_data_reported_once_per_tls_socket():
     tls = read(TLS_SOCKET_RECORDS_CPP)
     body = function_body(tls, "bool TlsSocket::checkNextPacket(")
 
-    # FirstDataReceived progress and the health success report must fire
-    # once per socket, not on every incoming TLS record: repeated reports
-    # knock the proxy status from Connected back to CheckingTelegram.
-    guard = body.index("if (!_firstAppDataReceived) {")
-    assert guard < body.index("_firstAppDataReceived = true;")
-    assert guard < body.index("connectionProgress(_phase);")
-    assert guard < body.index("reportMtproxySuccess({")
+    # FirstDataReceived progress and the data-path success must fire once
+    # per socket, not on every incoming TLS record: repeated reports knock
+    # the proxy status from Connected back to CheckingTelegram.
+    guarded = function_body(body, "if (!_firstAppDataReceived) {")
+    assert "_firstAppDataReceived = true;" in guarded
+    assert "connectionProgress(_phase);" in guarded
+    assert "u\"mtproxy first tls appdata received\"_q" in guarded
+    assert "syntheticPsks().noteDataPathSuccess(" in guarded
+    assert body.count("connectionProgress(") == 1
+    assert body.count("noteDataPathSuccess(") == 1
 
 
 def test_resolving_connection_forwards_timeout_to_route_attempts():
@@ -173,3 +185,10 @@ def test_stealth_option_changes_restart_proxy_connections():
     assert "Core::App().settings().setProxyStealthOptions(" not in box
     assert "Core::App().applyProxyStealthOptions(o);" in box
     assert "Core::App().restartProxyConnections();" in box
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

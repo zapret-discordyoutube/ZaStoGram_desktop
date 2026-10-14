@@ -117,3 +117,10 @@ def test_capability_key_components_compute_identical_values():
     domain = function_body(capabilities, "QString ProxyCapabilityDomain(")
     assert "DomainFromSecret(bytes::make_span(secret))" in domain
     assert "result.canonical.domainFromSecret = DomainFromSecret(secret);" in from_proxy
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")
