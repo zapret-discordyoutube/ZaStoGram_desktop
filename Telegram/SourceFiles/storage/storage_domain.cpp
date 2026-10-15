@@ -93,17 +93,6 @@ constexpr auto kMaxWrapCount = quint32(2);
 		&& (a.salt == b.salt);
 }
 
-[[nodiscard]] QByteArray WrapLocalKey(
-		const MTP::AuthKeyPtr &localKey,
-		const MTP::AuthKeyPtr &wrapKey) {
-	Expects(localKey != nullptr);
-	Expects(wrapKey != nullptr);
-
-	EncryptedDescriptor data(MTP::AuthKey::kSize);
-	localKey->write(data.stream);
-	return PrepareEncrypted(data, wrapKey);
-}
-
 [[nodiscard]] MTP::AuthKeyPtr UnwrapLocalKey(
 		const QByteArray &keyEncrypted,
 		const MTP::AuthKeyPtr &wrapKey) {
@@ -318,6 +307,17 @@ void PasscodeDerivation::cleanse() {
 		OPENSSL_cleanse(_passcode.data(), _passcode.size());
 	}
 	_cleansed = true;
+}
+
+QByteArray Domain::WrapLocalKey(
+		const MTP::AuthKeyPtr &localKey,
+		const MTP::AuthKeyPtr &wrapKey) {
+	Expects(localKey != nullptr);
+	Expects(wrapKey != nullptr);
+
+	EncryptedDescriptor data(MTP::AuthKey::kSize);
+	localKey->write(data.stream);
+	return PrepareEncrypted(data, wrapKey);
 }
 
 Domain::Domain(not_null<Main::Domain*> owner, const QString &dataName)

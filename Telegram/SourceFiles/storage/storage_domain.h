@@ -192,6 +192,9 @@ private:
 		const QByteArray &passcode,
 		std::unique_ptr<Main::Account> account);
 	void generateLocalKey();
+	[[nodiscard]] static QByteArray WrapLocalKey(
+		const MTP::AuthKeyPtr &localKey,
+		const MTP::AuthKeyPtr &wrapKey);
 	void installOpenWrap(KeyData &data) const;
 	void dropOpenWrap(KeyData &data) const;
 	void installLegacyWrap(KeyData &data, const QByteArray &passcode) const;
