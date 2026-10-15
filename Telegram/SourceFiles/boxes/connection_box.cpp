@@ -85,6 +85,15 @@ constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
 using ProxyData = MTP::ProxyData;
 using ItemState = ProxiesBoxController::ItemState;
 
+struct TopButtonMenuState {
+	~TopButtonMenuState() {
+		closing = true;
+	}
+
+	bool closing = false;
+	base::unique_qptr<Ui::PopupMenu> menu;
+};
+
 [[nodiscard]] std::vector<QString> ExtractLinkCandidates(const QString &input) {
 	auto urls = std::vector<QString>();
 	static const auto urlRegex = QRegularExpression(
@@ -1275,14 +1284,13 @@ void ProxiesBox::showFinished() {
 
 void ProxiesBox::setupTopButton() {
 	const auto top = addTopButton(st::infoTopBarMenu);
-	const auto menu
-		= top->lifetime().make_state<base::unique_qptr<Ui::PopupMenu>>();
+	const auto state = top->lifetime().make_state<TopButtonMenuState>();
 
 	top->setClickedCallback([=] {
-		*menu = base::make_unique_q<Ui::PopupMenu>(
+		state->menu = base::make_unique_q<Ui::PopupMenu>(
 			top,
 			st::popupMenuWithIcons);
-		const auto raw = menu->get();
+		const auto raw = state->menu.get();
 		const auto addAction = Ui::Menu::CreateAddActionCallback(raw);
 		addAction({
 			.text = tr::lng_proxy_add_from_clipboard(tr::now),
@@ -1300,8 +1308,8 @@ void ProxiesBox::setupTopButton() {
 		raw->setForcedOrigin(Ui::PanelAnimation::Origin::TopRight);
 		top->setForceRippled(true);
 		raw->setDestroyedCallback([=] {
-			if (const auto strong = top.data()) {
-				strong->setForceRippled(false);
+			if (!state->closing) {
+				top->setForceRippled(false);
 			}
 		});
 		raw->popup(
@@ -2317,13 +2325,13 @@ void ProxiesBoxController::ShowApplyConfirmation(
 				? &controller->session().account()
 				: &Core::App().activeAccount();
 			const auto top = box->addTopButton(st::boxTitleMenu);
-			const auto menu = top->lifetime().make_state<
-				base::unique_qptr<Ui::PopupMenu>>();
+			const auto state = top->lifetime().make_state<
+				TopButtonMenuState>();
 			top->setClickedCallback([=] {
-				*menu = base::make_unique_q<Ui::PopupMenu>(
+				state->menu = base::make_unique_q<Ui::PopupMenu>(
 					top,
 					st::popupMenuWithIcons);
-				const auto raw = menu->get();
+				const auto raw = state->menu.get();
 				const auto addAction = Ui::Menu::CreateAddActionCallback(raw);
 				addAction({
 					.text = tr::lng_proxy_edit_share(tr::now),
@@ -2342,8 +2350,8 @@ void ProxiesBoxController::ShowApplyConfirmation(
 				raw->setForcedOrigin(Ui::PanelAnimation::Origin::TopRight);
 				top->setForceRippled(true);
 				raw->setDestroyedCallback([=] {
-					if (const auto strong = top.data()) {
-						strong->setForceRippled(false);
+					if (!state->closing) {
+						top->setForceRippled(false);
 					}
 				});
 				raw->popup(top->mapToGlobal(QPoint(

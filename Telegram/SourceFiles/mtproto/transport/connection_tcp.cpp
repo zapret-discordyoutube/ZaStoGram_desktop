@@ -582,6 +582,10 @@ void TcpConnection::connectToServer(
 		int16 protocolDcId,
 		bool protocolForFiles,
 		ConnectionStartContext context) {
+	if (_status == Status::Finished) {
+		// Queued connectToServer() may arrive after disconnectFromServer().
+		return;
+	}
 	Expects(_address.isEmpty());
 	Expects(_port == 0);
 	Expects(_protocol == nullptr);

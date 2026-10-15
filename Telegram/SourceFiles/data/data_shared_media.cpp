@@ -95,6 +95,13 @@ bool SharedMediaAllowSearch(Storage::SharedMediaType type) {
 	}
 }
 
+Storage::SharedMediaKey SharedMediaLoadableKey(Storage::SharedMediaKey key) {
+	if (key.type == Type::ChatPhoto) {
+		key.topicRootId = MsgId(); // messages.search rejects it in threads.
+	}
+	return key;
+}
+
 rpl::producer<SparseIdsSlice> SharedMediaViewer(
 		not_null<Main::Session*> session,
 		Storage::SharedMediaKey key,
@@ -103,6 +110,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 	Expects(IsServerMsgId(key.messageId) || (key.messageId == 0));
 	Expects((key.messageId != 0) || (limitBefore == 0 && limitAfter == 0));
 
+	key = SharedMediaLoadableKey(key);
 	return [=](auto consumer) {
 		auto lifetime = rpl::lifetime();
 		auto builder = lifetime.make_state<SparseIdsSliceBuilder>(

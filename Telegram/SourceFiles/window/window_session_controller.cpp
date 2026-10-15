@@ -2190,6 +2190,9 @@ bool SessionController::showForumInDifferentWindow(
 		not_null<Data::Forum*> forum,
 		const SectionShow &params,
 		MsgId showAtMsgId) {
+	if (windowId().forum() == forum) {
+		return false;
+	}
 	const auto window = Core::App().windowForShowingForum(forum);
 	if (window == _window) {
 		return false;
