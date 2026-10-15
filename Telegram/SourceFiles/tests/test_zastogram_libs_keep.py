@@ -63,8 +63,13 @@ def stage_consumers(all_stages) -> dict[str, set[str]]:
     return consumers
 
 
-def cmake_library_paths() -> list[tuple[str, str]] | None:
-    """(path under libs_loc, cmake file) that a strip would delete."""
+def cmake_library_paths(stage_dirs: set[str]) -> list[tuple[str, str]] | None:
+    """(path under libs_loc, cmake file) that a strip would delete.
+
+    Only paths inside a Libraries stage of prepare.py count: other branches of
+    the same CMake (macOS ${libs_loc}/local, Linux packages) are not stripped
+    by clean-libs.ps1.
+    """
     roots = [REPO / "cmake", ROOT / "cmake"]
     if not (REPO / "cmake/external").is_dir():
         return None  # submodule not checked out (host checkout without submodules)
@@ -100,6 +105,8 @@ def cmake_library_paths() -> list[tuple[str, str]] | None:
             rel = expanded[len("${libs_loc}/"):]
             if "${" in rel or "/include/" in f"/{rel}/" or "/objects-" in f"/{rel}":
                 continue
+            if rel.split("/")[0] not in stage_dirs:
+                continue
             suffix = Path(rel).suffix.lower()
             if suffix and suffix not in STRIP_SURVIVORS:
                 found.append((rel, str(path.relative_to(REPO))))
@@ -125,7 +132,8 @@ def main() -> None:
                 "исходники или читают другие файлы, или в headers_and_libraries, если "
                 "берут только заголовки и .lib")
 
-    paths = cmake_library_paths()
+    libraries = {n for n, (location, _) in all_stages.items() if location == "Libraries"}
+    paths = cmake_library_paths(libraries)
     if paths is None:
         print("cmake/ не развёрнут: проверка путей CMake пропущена")
     else:
