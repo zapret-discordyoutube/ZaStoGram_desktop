@@ -1,0 +1,24 @@
+{
+  "_doc": [
+    "What clean-libs.ps1 strip must leave in Libraries/win64 after a successful prepare.",
+    "Strip mirrors the 'Free up some disk space' step of win.yml: only *.lib *.a *.exe *.h *.hpp *.inc *.cmake *.pc and include/, objects-*, cache_keys/ survive.",
+    "That is safe only for stages whose consumers read headers and libraries. A stage whose other files are read later must be in keep_whole, otherwise its cache key stays valid while its files are gone.",
+    "The guard Telegram/SourceFiles/tests/test_zastogram_libs_keep.py derives every consumer from prepare.py and the client CMake and requires each consumed Libraries stage to be classified here."
+  ],
+  "keep_whole": {
+    "patches": "recipes and patches applied by many later stages",
+    "nv-codec-headers": "installed again by the ffmpeg build script",
+    "gas-preprocessor": "perl tool run by the dav1d, openh264 and ffmpeg builds",
+    "tlottie": "crate sources compiled by tdesktop_rust (cargo add --path ..\\tlottie)",
+    "wallet-engine": "crate sources compiled by tdesktop_rust",
+    "tdesktop_rust/out": "generated src/wallet_engine/wallet_engine.cpp compiled by cmake/external/wallet_engine"
+  },
+  "headers_and_libraries": {
+    "ffmpeg": "tg_owt reads its headers and .lib",
+    "liblcms2": "crashpad reads its headers and .lib",
+    "libwebp": "crashpad reads its headers and .lib",
+    "mozjpeg": "crashpad and tg_owt read its headers and .lib",
+    "openssl3": "crashpad, tde2e and tg_owt read its headers and .lib",
+    "zlib": "crashpad and tde2e read its headers and .lib"
+  }
+}
