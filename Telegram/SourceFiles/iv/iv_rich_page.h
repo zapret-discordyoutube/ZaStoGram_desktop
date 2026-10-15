@@ -350,7 +350,25 @@ inline constexpr auto kTextDiffDeletedColorIndex = 11;
 [[nodiscard]] RichPage SplitTextIntoRichPage(TextWithEntities text);
 [[nodiscard]] RichPage SplitTextIntoRichPage(const TextWithTags &text);
 [[nodiscard]] bool TextLooksLikeMarkdownPage(const QString &text);
-[[nodiscard]] RichPage ParseMarkdownTextIntoRichPage(TextWithEntities text);
+[[nodiscard]] RichPage ParseMarkdownTextIntoRichPage(
+	TextWithEntities text,
+	int detailsDepth = 0);
+
+// ZaStoGram: typed <details><summary>..</summary>..</details> text.
+// All positions are offsets in the source text, nothing is trimmed.
+struct MarkdownDetailsMatch {
+	int titleFrom = 0;
+	int titleTill = 0;
+	int bodyFrom = 0;
+	int bodyTill = 0;
+	int end = 0; // Line end (the '\n' or text end) after the closing tag.
+	bool open = false;
+};
+inline constexpr auto kMaxMarkdownDetailsDepth = 8;
+// Matches a correctly closed pair starting at the line beginning `from`.
+[[nodiscard]] std::optional<MarkdownDetailsMatch> MatchMarkdownDetails(
+	QStringView text,
+	int from);
 [[nodiscard]] TextWithEntities FlattenRichPageSummary(
 	const RichPage &page,
 	bool emptyFallback = true);

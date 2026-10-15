@@ -146,10 +146,10 @@ struct Entry {
 		},
 		{
 			.command = Command::Details,
-			.title = tr::lng_article_insert_details,
+			.title = tr::lng_zasto_article_details,
 			.icon = &st::ivEditorToolbarDetailsIcon,
 			.shortcut = u"/details"_q,
-			.triggers = u"details toggle collapse"_q,
+			.triggers = u"details toggle collapse collapsible spoiler hide"_q,
 			.premium = true,
 		},
 		{

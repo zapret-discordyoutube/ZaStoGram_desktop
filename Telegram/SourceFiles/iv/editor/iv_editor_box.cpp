@@ -171,7 +171,7 @@ enum class ToolbarActionId : uchar {
 	case ToolbarActionId::CodeBlock:
 		return tr::lng_article_insert_code(tr::now);
 	case ToolbarActionId::Details:
-		return tr::lng_article_insert_details(tr::now);
+		return tr::lng_zasto_article_details(tr::now);
 	case ToolbarActionId::OrderedList:
 		return tr::lng_article_insert_ordered_list(tr::now);
 	case ToolbarActionId::BulletList:
@@ -1022,6 +1022,14 @@ void Toolbar::fillBlockStyleMenu(not_null<Ui::PopupMenu*> menu) {
 		&st::ivEditorToolbarFooterIcon,
 		(kind == Kind::Footer),
 		starSize);
+	// ZaStoGram: the collapsible block is also here, not only in Lists.
+	Menu::AddActiveColorAction(
+		menu,
+		tr::lng_zasto_article_details(tr::now),
+		[=] { insertType(State::InsertBlockType::Details); },
+		&st::ivEditorToolbarDetailsIcon,
+		false,
+		starSize);
 	Menu::AddActiveColorAction(
 		menu,
 		tr::lng_article_insert_divider(tr::now),
@@ -1267,7 +1275,7 @@ void Toolbar::fillListStyleMenu(not_null<Ui::PopupMenu*> menu) {
 		}
 		Menu::AddActiveColorAction(
 			target,
-			tr::lng_article_insert_details(tr::now),
+			tr::lng_zasto_article_details(tr::now),
 			[=] { insertType(State::InsertBlockType::Details); },
 			&st::ivEditorToolbarDetailsIcon,
 			false,

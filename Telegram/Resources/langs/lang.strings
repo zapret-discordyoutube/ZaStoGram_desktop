@@ -907,6 +907,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_zasto_media_speed" = "Speed";
 "lng_zasto_media_brightness" = "Brightness";
 "lng_zasto_media_volume_gain" = "Volume";
+"lng_zasto_article_details" = "Collapsible block (details)";
 "lng_settings_stickers_emoji" = "Stickers and emoji";
 "lng_settings_messages" = "Messages";
 "lng_settings_themes" = "Themes";

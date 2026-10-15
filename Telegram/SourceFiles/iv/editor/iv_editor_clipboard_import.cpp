@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/editor/iv_editor_page_blocks.h"
 #include "iv/editor/iv_editor_session.h"
 #include "iv/editor/iv_editor_text_entities.h"
+#include "iv/iv_rich_page.h"
 #include "platform/platform_file_utilities.h"
 #include "storage/storage_media_prepare.h"
 #include "ui/text/text_entity.h"
@@ -1324,6 +1325,49 @@ void ParseMarkdownBlocks(
 			out.push_back(std::move(block));
 			builder.marked = true;
 			continue;
+		}
+		// ZaStoGram: a correctly closed <details> pair is a details block.
+		if (depth < kMaxMarkdownDetailsDepth
+			&& trimmed.startsWith(u"<details", Qt::CaseInsensitive)) {
+			const auto offset = int(line.data() - text.data());
+			if (const auto match = MatchMarkdownDetails(text, offset)) {
+				if (!builder.allot()) {
+					return;
+				}
+				auto blocks = std::vector<RichPage::Block>();
+				ParseMarkdownBlocks(
+					builder,
+					blocks,
+					text.mid(
+						match->bodyFrom,
+						match->bodyTill - match->bodyFrom),
+					depth + 1);
+				if (blocks.empty()) {
+					auto paragraph = RichPage::Block();
+					paragraph.kind = RichPage::BlockKind::Paragraph;
+					blocks.push_back(std::move(paragraph));
+				}
+				auto block = RichPage::Block();
+				block.kind = RichPage::BlockKind::Details;
+				block.open = match->open;
+				block.text.text = ConvertImportedText(MarkdownInlineText(
+					text.mid(
+						match->titleFrom,
+						match->titleTill - match->titleFrom).trimmed(),
+					&builder));
+				block.text.text.text.replace(QChar('\n'), QChar(' '));
+				block.blocks = std::move(blocks);
+				out.push_back(std::move(block));
+				builder.marked = true;
+				builder.beyondComposeField = true;
+				++index;
+				for (auto i = offset; i != match->end; ++i) {
+					if (text[i] == u'\n') {
+						++index;
+					}
+				}
+				continue;
+			}
 		}
 		auto headingLevel = 0;
 		while (headingLevel < trimmed.size()
