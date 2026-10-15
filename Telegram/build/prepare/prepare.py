@@ -585,7 +585,7 @@ win:
 
 stage('jom', """
 win:
-    powershell -Command "iwr -OutFile ./jom.zip https://master.qt.io/official_releases/jom/jom_1_1_3.zip"
+    powershell -Command "try { iwr -OutFile ./jom.zip https://master.qt.io/official_releases/jom/jom_1_1_3.zip } catch { iwr -OutFile ./jom.zip https://ftp.fau.de/qtproject/official_releases/jom/jom_1_1_3.zip }"
     powershell -Command "Expand-Archive ./jom.zip"
     del jom.zip
 """, 'ThirdParty')
