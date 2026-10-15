@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/serialize_common.h"
 #include "storage/storage_account.h"
@@ -27,6 +28,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <openssl/kdf.h>
 
 namespace Wallet {
+
+// Narrow access to the raw passcode-derived key for the vault KDF.
+struct AuthKeyAccess {
+	[[nodiscard]] static bytes::const_span Bytes(const MTP::AuthKey &key) {
+		return bytes::make_span(key._key);
+	}
+};
+
 namespace {
 
 constexpr auto kDeviceKeyringMagic = quint32(0x574B5247);
@@ -1116,7 +1125,7 @@ std::optional<SecureBytes> DeriveVaultWrapKey(
 			return std::nullopt;
 		}
 		result = HkdfSha256(
-			ikm->data(),
+			AuthKeyAccess::Bytes(*ikm),
 			{},
 			Label(kVaultPasscodeWrapLabel),
 			kVaultKeySize);

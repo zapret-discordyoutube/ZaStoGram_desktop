@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "main/main_session.h"
 #include "mtproto/config/mtproto_config.h"
+#include "mtproto/instance/mtp_instance.h"
 
 namespace Wallet {
 namespace {

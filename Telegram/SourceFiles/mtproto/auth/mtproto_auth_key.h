@@ -16,6 +16,10 @@ namespace Main {
 class Account;
 } // namespace Main
 
+namespace Wallet {
+struct AuthKeyAccess;
+} // namespace Wallet
+
 namespace Storage {
 class Account;
 class Domain;
@@ -68,6 +72,7 @@ private:
 	friend class ::Main::Account;
 	friend class ::Storage::Account;
 	friend class ::Storage::Domain;
+	friend struct ::Wallet::AuthKeyAccess;
 
 	void countKeyId();
 	void write(QDataStream &to) const;
