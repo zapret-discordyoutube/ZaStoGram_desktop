@@ -1212,6 +1212,10 @@ depends:patches/ffmpeg.patch
     SET CHERE_INVOKING=enabled_from_arguments
     SET MSYS2_PATH_TYPE=inherit
 
+    rem ZaStoGram: localized MSVC prints its banner as "<localized text> Microsoft ...",
+    rem so configure's anchored grep ^Microsoft misses cl.exe and lib.exe.
+    sed -i "s/grep -q ^Microsoft/grep -q Microsoft/g" configure
+
     SET "ARCH_PARAM="
 winarm:
     SET "ARCH_PARAM=--arch=aarch64"
