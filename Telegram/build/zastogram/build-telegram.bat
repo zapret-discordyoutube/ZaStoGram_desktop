@@ -25,7 +25,9 @@ call configure.bat -G "Ninja Multi-Config" qt6 -D TDESKTOP_API_TEST=ON ^
 if errorlevel 1 (echo === CONFIGURE FAILED === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
 
 rem 28 parallel links do not fit into the VM's 20 GB of RAM.
-cmake --build ..\out --config Release --target Telegram Packer --parallel 4
+rem -k 0: keep compiling after a failed object, so one run reports every error
+rem (upstream-sync hands the whole list to its build fixer at once).
+cmake --build ..\out --config Release --target Telegram Packer --parallel 4 -- -k 0
 set BUILD_EXIT=%ERRORLEVEL%
 echo === exit code: %BUILD_EXIT% at %DATE% %TIME% ===
 exit /b %BUILD_EXIT%
