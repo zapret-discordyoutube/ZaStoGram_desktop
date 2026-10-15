@@ -5552,7 +5552,7 @@ void Message::refreshDataIdHook() {
 int Message::monospaceMaxWidth() const {
 	const auto textual = hasRichPage() ? bubbleTextualWidth() : 0;
 	const auto fromText = hasRichPage()
-		? std::max(
+		? std::max({
 			textualMaxWidth()
 				- st::msgPadding.left()
 				- st::msgPadding.right(),
