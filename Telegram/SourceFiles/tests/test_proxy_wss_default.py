@@ -392,6 +392,20 @@ def test_wss_direct_tcp_is_a_guarded_step_before_the_front_floor():
     assert "accumulate_max(wait, kDirectStepMinConnectedTimeout);" in connection
 
 
+
+def test_wss_fronts_are_dialled_by_pinned_address_with_the_name_as_fallback():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    cdn = function_body(source, "[[nodiscard]] std::optional<WssRoute> CdnRoute(")
+    # By name the resolver handed out edges the provider drops (desktop log
+    # 16.10.2026: 102 front TCP connects in 48 000 attempts).
+    assert "kCdnFrontAddresses[slot % kCdnFrontCount][address]" in cdn
+    assert "route.relayHostFallback = route.domain;" in cdn
+    assert "route.relayHost = route.domain;" not in cdn
+    assert '{ "104.21.80.254", "172.67.155.165" }, // virkgj.com' in source
+    assert "every front needs its two addresses" in source
+    advance = function_body(source, "void AdvanceCdn(const WssRoute &route)")
+    assert "CdnAddressRound[route.metered] ^= 1;" in advance
+
 if __name__ == "__main__":
     for name, value in list(globals().items()):
         if name.startswith("test_") and callable(value):

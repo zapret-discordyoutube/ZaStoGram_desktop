@@ -207,6 +207,38 @@ constexpr const char *kCdnFronts[] = {
 	"zaftuzsftqdq.com",
 };
 constexpr auto kCdnFrontCount = int(sizeof(kCdnFronts) / sizeof(kCdnFronts[0]));
+// The zones' own Cloudflare addresses (27.09.2026), in kCdnFronts order, as
+// in the Android client and ZapretGUI. Fronts were dialled by name, and the
+// resolver handed out edges in ranges the provider drops: a user's desktop
+// got TCP to a front in 102 attempts of 48 000 on 16.10.2026, in bursts while
+// DNS pointed at a reachable edge. Any Cloudflare edge serves the zone, so a
+// pinned address keeps working; the name stays the fallback host.
+constexpr const char *kCdnFrontAddresses[][2] = {
+	{ "104.21.80.254", "172.67.155.165" }, // virkgj.com
+	{ "104.21.43.90", "172.67.177.105" }, // vmmzovy.com
+	{ "104.21.41.25", "172.67.159.17" }, // mkuosckvso.com
+	{ "104.21.70.196", "172.67.138.236" }, // zaewayzmplad.com
+	{ "104.21.21.168", "172.67.199.162" }, // twdmbzcm.com
+	{ "104.21.69.145", "172.67.209.89" }, // awzwsldi.com
+	{ "104.21.73.83", "172.67.189.26" }, // clngqrflngqin.com
+	{ "104.21.39.36", "172.67.142.232" }, // tjacxbqtj.com
+	{ "104.21.84.223", "172.67.197.117" }, // bxaxtxmrw.com
+	{ "104.21.48.178", "172.67.155.85" }, // dmohrsgmohcrwb.com
+	{ "104.21.33.146", "172.67.146.105" }, // vwbmtmoi.com
+	{ "104.21.78.6", "172.67.214.68" }, // khgrre.com
+	{ "104.21.7.253", "172.67.156.145" }, // ulihssf.com
+	{ "104.21.25.159", "172.67.134.93" }, // tmhqsdqmfpmk.com
+	{ "104.21.44.55", "172.67.195.218" }, // xwuwoqbm.com
+	{ "104.21.64.155", "172.67.152.37" }, // orgcnunpj.com
+	{ "104.21.51.133", "172.67.180.160" }, // zhkuldz.com
+	{ "104.21.37.105", "172.67.207.129" }, // zypoljnslxa.com
+	{ "104.21.35.206", "172.67.179.145" }, // efabnxaowuzs.com
+	{ "104.21.78.5", "172.67.214.67" }, // zaftuzsftqdq.com
+};
+static_assert(
+	sizeof(kCdnFrontAddresses) / sizeof(kCdnFrontAddresses[0])
+		== sizeof(kCdnFronts) / sizeof(kCdnFronts[0]),
+	"every front needs its two addresses");
 // A front connection is either served at once or answers 503 to every
 // upgrade (host test 27.09); a retry on the same TLS connection costs ~25 ms.
 constexpr auto kCdnUpgradeRetries = 8;
@@ -559,6 +591,10 @@ std::map<bool, int> CdnCursor;
 	return i->second;
 }
 
+// Which of the two pinned addresses the fronts are dialled on: switches
+// every time the cursor has gone round the whole catalog.
+std::map<bool, int> CdnAddressRound;
+
 void AdvanceCdn(const WssRoute &route) {
 	if (!IsCdn(route)) {
 		return;
@@ -567,6 +603,9 @@ void AdvanceCdn(const WssRoute &route) {
 	auto &cursor = CdnCursor[route.metered];
 	if (cursor == route.cdnSlot) {
 		cursor = (cursor + 1) % kCdnFrontCount;
+		if (!cursor) {
+			CdnAddressRound[route.metered] ^= 1;
+		}
 	}
 }
 
@@ -834,18 +873,23 @@ void NoteRelayAddressWorked(const WssRoute &route) {
 		return std::nullopt;
 	}
 	auto slot = 0;
+	auto address = 0;
 	{
 		QMutexLocker lock(&RelayPreferencesMutex);
 		slot = CdnCursorLocked(route.metered);
+		address = CdnAddressRound[route.metered];
 	}
 	const auto front = kCdnFronts[slot % kCdnFrontCount];
 	route.cdnSlot = slot;
 	route.cdnDcId = dcId;
 	// The fronts have no -1 media hosts: media rides kwsN too, as in Mirrly,
-	// with the plain DC in the obfuscation header (plainDcMarker). A failure
-	// moves to the next front instead of a DNS/IP fallback.
+	// with the plain DC in the obfuscation header (plainDcMarker). The pinned
+	// address is dialled first and the name once on the same socket; the
+	// next socket moves to the next front.
 	route.domain = prefix + u"."_q + DecodeCdnDomain(front);
-	route.relayHost = route.domain;
+	route.relayHost = QString::fromLatin1(
+		kCdnFrontAddresses[slot % kCdnFrontCount][address]);
+	route.relayHostFallback = route.domain;
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
 	return route;
