@@ -36,6 +36,10 @@ struct WssRoute {
 	// DC of an official relay route, which picks relayHost from the DC's
 	// list of ingress addresses; 0 for fronts, the tunnel and custom relays.
 	int relayDcId = 0;
+	// Plain TCP to the DC's own address, the guarded step after the tunnel
+	// and before the fronts that ignore suppression. The socket factory makes
+	// a WssDirectStepSocket for it, not a WebSocket.
+	bool direct = false;
 };
 
 // A phone's hotspot (Windows marks Android tethering as metered) reaches
@@ -59,9 +63,10 @@ struct WssRouteDiagnostics {
 
 // Official MTProto-over-WebSocket route for a data center, mirroring the
 // web.telegram.org transport; while the DC's relay is suppressed, the
-// Cloudflare fronts of tg-ws-proxy (kwsN.<front domain>), then the tunnel.
-// With everything suppressed the fronts stay the floor: the direct TCP this
-// used to fall back to is what the blocking networks close.
+// Cloudflare fronts of tg-ws-proxy (kwsN.<front domain>), then the tunnel,
+// then direct TCP (WssRoute::direct) unless that is paused. With everything
+// suppressed the fronts stay the floor: unguarded direct TCP, which this used
+// to fall back to, is what the blocking networks close.
 //
 // Every production DC (1-5) has a working web relay, but the ingress addresses are NOT interchangeable: each one serves
 // only its own datacenters. Reaching the wrong ingress answers 302 (with an
@@ -91,6 +96,45 @@ struct WssRouteDiagnostics {
 // Cloudflare tunnel, where every connection freezes after ~16 KB downstream.
 // File downloads then use small parts over many short-lived connections.
 [[nodiscard]] bool WssMediaTunneled(int dcId);
+
+// Direct TCP handed out by WssOfficialRoute as the guarded last step
+// (WssRoute::direct): an ordinary TcpSocket underneath, watched so that one
+// failure (no TCP, no answer within the connect budget, a session that ended
+// short of 32 KB) pauses the step for this DC and network, and 32 KB of
+// answers clear the pause history. Networks that block the relays often let
+// TCP up and the first answers through and then throttle.
+class WssDirectStepSocket final : public AbstractSocket {
+public:
+	WssDirectStepSocket(
+		not_null<RuntimeEnvironment*> runtime,
+		not_null<QThread*> thread,
+		const QNetworkProxy &proxy,
+		bool protocolForFiles,
+		WssRoute route);
+	~WssDirectStepSocket();
+
+	void connectToHost(const QString &address, int port) override;
+	bool isGoodStartNonce(bytes::const_span nonce) override;
+	void timedOut() override;
+	bool isConnected() override;
+	bool hasBytesAvailable() override;
+	int64 read(bytes::span buffer) override;
+	void write(bytes::const_span prefix, bytes::const_span buffer) override;
+
+	int32 debugState() override;
+	QString debugPostfix() const override;
+
+private:
+	void judge(const char *failure);
+
+	const std::unique_ptr<AbstractSocket> _tcp;
+	const WssRoute _route;
+	qint64 _bytesReceived = 0;
+	bool _ipv6 = false;
+	bool _judged = false;
+	rpl::lifetime _lifetime;
+
+};
 
 // A clean, self-contained MTProto-over-WebSocket(-over-TLS) transport. It
 // speaks RFC 6455 over a real QSslSocket and carries the obfuscated MTProto

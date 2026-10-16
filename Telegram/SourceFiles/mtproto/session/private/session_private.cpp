@@ -186,7 +186,9 @@ void SessionPrivate::logMtprotoEvent(
 			if (!wss) {
 				wss = details::WssOfficialRoute(getProtocolDcId());
 			}
-			if (wss) {
+			if (wss && wss->direct) {
+				route = wss->domain;
+			} else if (wss) {
 				transport = wss->tunnel ? u"WSSTunnel"_q : u"WSS"_q;
 				route = wss->tunnel
 					? wss->domain

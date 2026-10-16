@@ -42,7 +42,14 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 		if (!route) {
 			route = WssOfficialRoute(protocolDcId);
 		}
-		if (route) {
+		if (route && route->direct) {
+			return std::make_unique<WssDirectStepSocket>(
+				runtime,
+				thread,
+				networkProxy,
+				protocolForFiles,
+				std::move(*route));
+		} else if (route) {
 			return std::make_unique<WssSocket>(
 				runtime,
 				thread,

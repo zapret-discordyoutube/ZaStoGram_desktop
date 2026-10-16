@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/wss/socket.h"
 
 #include "mtproto/protocol/mtproto_binary.h"
+#include "mtproto/transport/details/mtproto_tcp_socket.h"
 #include "mtproto/proxy/diagnostics.h"
 #include "logs.h"
 #include "base/bytes.h"
@@ -122,10 +123,10 @@ std::map<QString, RelayAddressState> RelayAddressStates;
 
 // DC203 serves non-Premium media and has no kws relay. The Cloudflare fronts
 // carry it as kws203.<front> (16.10.2026: resPQ from every front tried), so
-// it goes fronts -> tunnel -> fronts like a DC with a closed relay. As a
-// tunnel-only DC it lost every file once the workers ran out of their daily
-// quota: with the tunnel suppressed the socket factory fell back to direct
-// TCP, which these networks block (desktop log 16.10, 19:20).
+// it goes fronts -> tunnel -> direct -> fronts like a DC with a closed relay.
+// As a tunnel-only DC it lost every file once the workers ran out of their
+// daily quota: with the tunnel suppressed the socket factory fell back to
+// unguarded direct TCP, which these networks block (desktop log 16.10, 19:20).
 constexpr auto kNoRelayDcId = 203;
 // Worker tunnels (zastogram-ws-worker/worker.js), each on its own Cloudflare
 // account. A free account serves 100 000 requests a day; past that the worker
@@ -373,8 +374,10 @@ void SuppressLocked(
 		).arg(NetworkKey(route.metered, HealthName(route))
 		).arg(ttl / 1000
 		).arg(reason
-		).arg(route.tunnel
+		).arg(route.direct
 			? u"Cloudflare fronts"_q
+			: route.tunnel
+			? u"direct TCP or Cloudflare fronts"_q
 			: IsCdn(route)
 			? u"Cloudflare tunnel"_q
 			: u"Cloudflare fronts"_q));
@@ -848,6 +851,60 @@ void NoteRelayAddressWorked(const WssRoute &route) {
 	return route;
 }
 
+// Received bytes that prove a direct step, as kCdnProofBytes do a front.
+constexpr auto kDirectProofBytes = qint64(32 * 1024);
+
+// One health record per DC and network for direct TCP; media shares it.
+[[nodiscard]] QString DirectHealthName(int dcId) {
+	return u"direct-dc%1"_q.arg((dcId < 0) ? -dcId : dcId);
+}
+
+// Direct TCP as the last guarded step. Networks that block the relays close
+// direct TCP too, and the unguarded fallback kept DC2 "connecting" for
+// minutes (Android logs (1) (8)): one failure pauses it like a suppressed
+// route, so a blocked network pays one connect budget per pause, while one
+// where only Cloudflare is closed still reaches the DC.
+[[nodiscard]] std::optional<WssRoute> DirectRoute(int dcId) {
+	auto route = WssRoute();
+	route.metered = CurrentNetworkMetered.load();
+	route.direct = true;
+	route.domain = route.healthDomain = DirectHealthName(dcId);
+	if (RouteSuppressed(route)) {
+		return std::nullopt;
+	}
+	return route;
+}
+
+void NoteDirectStepClosed(
+		const WssRoute &route,
+		qint64 received,
+		const char *failure) {
+	const auto key = NetworkKey(route.metered, HealthName(route));
+	QMutexLocker lock(&RelayPreferencesMutex);
+	LoadRouteHealthLocked();
+	auto &health = RouteHealthByDomain[key];
+	const auto now = crl::now();
+	if (received >= kDirectProofBytes) {
+		const auto persisted = (health.suppressions != 0);
+		if (persisted) {
+			LOG(("WSS Route: %1 restored (proven).").arg(key));
+		}
+		health = RouteHealth();
+		if (persisted) {
+			SaveRouteHealthLocked();
+		}
+		return;
+	} else if (!failure || health.suppressedUntil > now) {
+		return;
+	}
+	health.lastFailureAt = now;
+	LOG(("WSS Route: %1 failed after %2 bytes (%3)."
+		).arg(key
+		).arg(received
+		).arg(QString::fromLatin1(failure)));
+	SuppressLocked(route, health, now, QString::fromLatin1(failure));
+}
+
 } // namespace
 
 void WssTrackNetwork() {
@@ -889,13 +946,17 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		if (auto tunnel = TunnelRoute()) {
 			return tunnel;
 		}
+		if (auto direct = DirectRoute(kNoRelayDcId)) {
+			return direct;
+		}
 		return CdnRoute(kNoRelayDcId, true);
 	}
 	if (RouteSuppressed(*route)
 		|| RouteSuppressed(RelayAddressRoute(*route))) {
 		// Релей датацентра недоступен: сначала фронты Cloudflare, потом
-		// туннель. Если подавлено всё, остаются фронты: прямой TCP, к
-		// которому это раньше сваливалось, такие сети и закрывают.
+		// туннель, потом прямой TCP, если он не на паузе. Если подавлено
+		// всё, остаются фронты: прямой TCP без охраны, к которому это
+		// раньше сваливалось, такие сети и закрывают.
 		const auto raw = int(protocolDcId);
 		const auto dcId = (raw < 0) ? -raw : raw;
 		if (auto front = CdnRoute(dcId)) {
@@ -904,12 +965,15 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		if (auto tunnel = TunnelRoute()) {
 			return tunnel;
 		}
+		if (auto direct = DirectRoute(dcId)) {
+			return direct;
+		}
 		static auto lastFloorLog = std::atomic<crl::time>(0);
 		const auto now = crl::now();
 		if (now - lastFloorLog.load() > 10 * crl::time(1000)) {
 			lastFloorLog = now;
-			LOG(("WSS Route: dc %1 has every route suppressed, "
-				"using the Cloudflare fronts anyway.").arg(raw));
+			LOG(("WSS Route: dc %1 has every route suppressed, direct TCP "
+				"too, using the Cloudflare fronts anyway.").arg(raw));
 		}
 		return CdnRoute(dcId, true);
 	}
@@ -1008,6 +1072,111 @@ WssRouteDiagnostics WssRouteDiagnosticsForDc(
 		}
 	}
 	return result;
+}
+
+WssDirectStepSocket::WssDirectStepSocket(
+	not_null<RuntimeEnvironment*> runtime,
+	not_null<QThread*> thread,
+	const QNetworkProxy &proxy,
+	bool protocolForFiles,
+	WssRoute route)
+: AbstractSocket(runtime, thread)
+, _tcp(std::make_unique<TcpSocket>(runtime, thread, proxy, protocolForFiles))
+, _route(std::move(route)) {
+	_tcp->connected() | rpl::start_with_next([=] {
+		_connected.fire({});
+	}, _lifetime);
+	_tcp->disconnected() | rpl::start_with_next([=] {
+		judge("closed_short");
+		_disconnected.fire({});
+	}, _lifetime);
+	_tcp->readyRead() | rpl::start_with_next([=] {
+		_readyRead.fire({});
+	}, _lifetime);
+	_tcp->error() | rpl::start_with_next([=](int errorCode) {
+		judge("socket_error");
+		_error.fire_copy(errorCode);
+	}, _lifetime);
+	_tcp->syncTimeRequests() | rpl::start_with_next([=] {
+		_syncTimeRequests.fire({});
+	}, _lifetime);
+	_tcp->progress() | rpl::start_with_next([=](HandshakePhase phase) {
+		_progress.fire_copy(phase);
+	}, _lifetime);
+}
+
+// A socket destroyed without a verdict lost a race to a sibling or was
+// dropped by its session: no evidence about the path either way.
+WssDirectStepSocket::~WssDirectStepSocket() = default;
+
+void WssDirectStepSocket::connectToHost(const QString &address, int port) {
+	_ipv6 = address.contains(':');
+	_tcp->setDebugId(_debugId);
+	LOG(("WSS Route: %1 direct step to %2:%3."
+		).arg(NetworkKey(_route.metered, HealthName(_route))
+		).arg(address
+		).arg(port));
+	_tcp->connectToHost(address, port);
+}
+
+bool WssDirectStepSocket::isGoodStartNonce(bytes::const_span nonce) {
+	return _tcp->isGoodStartNonce(nonce);
+}
+
+void WssDirectStepSocket::timedOut() {
+	judge(!_tcp->isConnected()
+		? "tcp_timeout"
+		: !_bytesReceived
+		? "no_answer"
+		: "stalled");
+	_tcp->timedOut();
+}
+
+bool WssDirectStepSocket::isConnected() {
+	return _tcp->isConnected();
+}
+
+bool WssDirectStepSocket::hasBytesAvailable() {
+	return _tcp->hasBytesAvailable();
+}
+
+int64 WssDirectStepSocket::read(bytes::span buffer) {
+	const auto result = _tcp->read(buffer);
+	if (result > 0) {
+		_bytesReceived += result;
+		if (_bytesReceived >= kDirectProofBytes) {
+			judge(nullptr);
+		}
+	}
+	return result;
+}
+
+void WssDirectStepSocket::write(
+		bytes::const_span prefix,
+		bytes::const_span buffer) {
+	_tcp->write(prefix, buffer);
+}
+
+int32 WssDirectStepSocket::debugState() {
+	return _tcp->debugState();
+}
+
+QString WssDirectStepSocket::debugPostfix() const {
+	return u"_direct"_q;
+}
+
+// One verdict per socket. Only IPv4 failures count: with IPv6 enabled but
+// absent, every IPv6 sibling fails and would pause a working IPv4 path.
+void WssDirectStepSocket::judge(const char *failure) {
+	if (_judged
+		|| (_bytesReceived < kDirectProofBytes && (!failure || _ipv6))) {
+		return;
+	}
+	_judged = true;
+	NoteDirectStepClosed(
+		_route,
+		_bytesReceived,
+		(_bytesReceived < kDirectProofBytes) ? failure : nullptr);
 }
 
 WssSocket::WssSocket(

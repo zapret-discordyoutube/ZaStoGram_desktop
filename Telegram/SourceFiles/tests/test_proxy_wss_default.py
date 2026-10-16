@@ -20,6 +20,8 @@ SESSION_CPP = SOURCE_DIR / "mtproto" / "session" / "session.cpp"
 SESSION_PRIVATE_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "session_private.cpp"
 CONNECTION_TCP_CPP = SOURCE_DIR / "mtproto" / "transport" / "connection_tcp.cpp"
 CMAKE_LISTS = SOURCE_DIR.parent / "CMakeLists.txt"
+SOCKET_FACTORY_CPP = SOURCE_DIR / "mtproto" / "proxy" / "socket_factory.cpp"
+CONNECTION_CPP = SOURCE_DIR / "mtproto" / "session" / "private" / "connection.cpp"
 
 
 def test_wss_transport_is_the_stealth_default():
@@ -339,21 +341,59 @@ def function_body(text: str, signature: str) -> str:
     raise AssertionError(f"body not found for {signature}")
 
 
-if __name__ == "__main__":
-    for name, value in list(globals().items()):
-        if name.startswith("test_") and callable(value):
-            value()
-    print("ok")
 
 
-def test_wss_dc203_goes_through_fronts_before_tunnel_and_never_direct():
+def test_wss_dc203_goes_through_fronts_and_tunnel_before_guarded_direct():
     source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
     body = function_body(
         source,
         "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
     no_relay = body[:body.index("if (RouteSuppressed(*route)")]
     # DC203 has no kws relay, but the fronts carry kws203.<front>: with the
-    # workers out of quota the DC must not fall back to direct TCP.
+    # workers out of quota the DC goes to guarded direct TCP, then the fronts.
     assert "constexpr auto kNoRelayDcId = 203;" in source
-    assert no_relay.index("CdnRoute(kNoRelayDcId)") < no_relay.index("TunnelRoute()")
-    assert "return CdnRoute(kNoRelayDcId, true);" in no_relay
+    assert no_relay.index("CdnRoute(kNoRelayDcId)") < no_relay.index("TunnelRoute()") \
+        < no_relay.index("DirectRoute(kNoRelayDcId)") < no_relay.index("return CdnRoute(kNoRelayDcId, true);")
+
+
+def test_wss_direct_tcp_is_a_guarded_step_before_the_front_floor():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    header = WSS_SOCKET_H.read_text(encoding="utf-8")
+    factory = SOCKET_FACTORY_CPP.read_text(encoding="utf-8")
+    connection = CONNECTION_CPP.read_text(encoding="utf-8")
+    body = function_body(
+        source,
+        "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
+    closed = body[body.index("if (RouteSuppressed(*route)"):]
+    # A DC with a closed relay: fronts, tunnel, direct TCP unless paused, and
+    # only then the fronts whatever their suppression.
+    assert closed.index("CdnRoute(dcId)") < closed.index("TunnelRoute()") \
+        < closed.index("DirectRoute(dcId)") < closed.index("return CdnRoute(dcId, true);")
+    direct = function_body(source, "[[nodiscard]] std::optional<WssRoute> DirectRoute(int dcId)")
+    assert "route.direct = true;" in direct
+    assert "if (RouteSuppressed(route)) {" in direct
+    assert 'u"direct-dc%1"_q' in source
+    # One failure pauses it; 32 KB prove it.
+    note = function_body(source, "void NoteDirectStepClosed(")
+    assert "if (received >= kDirectProofBytes) {" in note
+    assert "SuppressLocked(route, health, now, QString::fromLatin1(failure));" in note
+    assert "consecutiveFailures" not in note
+    # The factory builds a plain TCP socket under the watcher, never a WSS one.
+    assert factory.index("if (route && route->direct) {") \
+        < factory.index("std::make_unique<WssDirectStepSocket>(") \
+        < factory.index("std::make_unique<WssSocket>(")
+    assert "class WssDirectStepSocket final : public AbstractSocket" in header
+    timed_out = function_body(source, "void WssDirectStepSocket::timedOut()")
+    assert '"tcp_timeout"' in timed_out and '"no_answer"' in timed_out and '"stalled"' in timed_out
+    judge = function_body(source, "void WssDirectStepSocket::judge(const char *failure)")
+    # IPv6 siblings fail wherever IPv6 is absent: only IPv4 failures count.
+    assert "(!failure || _ipv6)" in judge
+    # The 1 s first connect wait would pause a slow but working direct path.
+    assert "accumulate_max(wait, kDirectStepMinConnectedTimeout);" in connection
+
+
+if __name__ == "__main__":
+    for name, value in list(globals().items()):
+        if name.startswith("test_") and callable(value):
+            value()
+    print("ok")

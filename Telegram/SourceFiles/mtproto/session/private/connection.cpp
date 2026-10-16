@@ -57,6 +57,10 @@ constexpr auto kTunnelMinConnectedTimeout = crl::time(6000);
 // retries on the same connection (~25 ms each); a mobile network made the
 // handshake alone 300-500 ms on Android, so the 1 s first wait is too short.
 constexpr auto kCdnMinConnectedTimeout = crl::time(4000);
+// Direct TCP as the last WSS step needs TCP and the first answer within the
+// budget, and one miss pauses it (WssDirectStepSocket): the 1 s first wait
+// would pause a slow but working path.
+constexpr auto kDirectStepMinConnectedTimeout = crl::time(4000);
 constexpr auto kMtproxyMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kProxyReconnectMinTimeout = 1800;
@@ -261,6 +265,8 @@ void SessionTransport::armWaitForConnectedTimer() {
 			accumulate_max(wait, kTunnelMinConnectedTimeout);
 		} else if (route && route->cdnSlot >= 0) {
 			accumulate_max(wait, kCdnMinConnectedTimeout);
+		} else if (route && route->direct) {
+			accumulate_max(wait, kDirectStepMinConnectedTimeout);
 		}
 	}
 	if (_owner->_sessionState.options && (_owner->_sessionState.options->proxy.type != ProxyData::Type::None)) {
