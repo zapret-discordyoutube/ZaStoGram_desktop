@@ -33,6 +33,9 @@ struct WssRoute {
 	// Network the route was chosen on (see WssTrackNetwork): its failures
 	// count against that network only, even when reported after a switch.
 	bool metered = false;
+	// DC of an official relay route, which picks relayHost from the DC's
+	// list of ingress addresses; 0 for fronts, the tunnel and custom relays.
+	int relayDcId = 0;
 };
 
 // A phone's hotspot (Windows marks Android tethering as metered) reaches
@@ -141,6 +144,7 @@ private:
 	bool _upgraded = false;
 	bool _usedFallback = false;
 	bool _hostFlipped = false;
+	bool _addressMoved = false;
 	QString _currentHost;
 	bool _tcpConnected = false;
 	qint64 _bytesReceived = 0;

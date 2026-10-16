@@ -276,6 +276,37 @@ def test_wss_remembers_working_relay_host_across_sockets():
     assert "NoteRelayUpgraded(_route, _usedFallback);" in upgrade_body
 
 
+def test_wss_dc2_dc4_have_two_ingress_addresses():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    header = WSS_SOCKET_H.read_text(encoding="utf-8")
+    ingress_body = function_body(
+        source,
+        "[[nodiscard]] const QStringList &OfficialRelayIngresses(int dcId)")
+    official_body = function_body(
+        source,
+        "[[nodiscard]] std::optional<WssRoute> OfficialRoute(int16 protocolDcId)")
+    error_body = function_body(source, "void WssSocket::handleError(")
+    timed_out_body = function_body(source, "void WssSocket::timedOut()")
+    upgrade_body = function_body(source, "bool WssSocket::tryFinishUpgrade()")
+
+    # DNS names 149.154.167.99 for kws2/kws4, every client hardcoded .220;
+    # both carry DC2/DC4 (16.10.2026), so a provider blocking one by IP must
+    # not leave the DC to the resolver.
+    assert 'u"149.154.167.220"_q' in ingress_body
+    assert 'u"149.154.167.99"_q' in ingress_body
+    assert "int relayDcId = 0;" in header
+    assert "bool _addressMoved = false;" in header
+    assert "SelectRelayAddress(metered, positive)" in official_body
+    assert "route.relayDcId = positive;" in official_body
+    # The other ingress comes before the IP <-> DNS flip inside one socket,
+    # and the watchdog path moves new sockets to it as well.
+    assert error_body.index("MoveToNextRelayAddress(_route, _usedFallback)") \
+        < error_body.index("_usedFallback = !_usedFallback;")
+    assert "MoveToNextRelayAddress(_route, _usedFallback).isEmpty()" in timed_out_body
+    # Only an answer through a hardcoded address makes it the preferred one.
+    assert "NoteRelayAddressWorked(_route);" in upgrade_body
+
+
 def test_wss_remote_closed_forbids_wss_for_that_proxy():
     source = CONNECTION_TCP_CPP.read_text(encoding="utf-8")
     error_body = function_body(source, "void TcpConnection::socketError(")

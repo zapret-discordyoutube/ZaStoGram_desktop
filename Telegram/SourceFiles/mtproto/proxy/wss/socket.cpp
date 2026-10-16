@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <crl/crl_time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <algorithm>
@@ -53,6 +54,48 @@ std::atomic<bool> CurrentNetworkMetered = false;
 
 [[nodiscard]] QString NetworkKey(bool metered, const QString &value) {
 	return (metered ? u"metered/"_q : u"unmetered/"_q) + value;
+}
+
+// Telegram Web ingress addresses. Each serves only its own datacenters; they
+// are not interchangeable (verified against live relays 2026-08-08). DC2 and
+// DC4 have two: DNS names 149.154.167.99 (web.telegram.org too), while
+// 149.154.167.220 is the one every client hardcoded for months. Both carried
+// all four kws2/kws4 names on 16.10.2026, 25 rounds each, with no difference
+// beyond noise. A provider blocking one of them by IP (tg-ws-proxy issue
+// #1450, 15.10.2026) leaves the other, which unlike the DNS fallback does
+// not depend on the resolver.
+[[nodiscard]] const QStringList &OfficialRelayIngresses(int dcId) {
+	static const auto dc13 = QStringList{ u"149.154.174.100"_q };
+	static const auto dc24 = QStringList{
+		u"149.154.167.220"_q,
+		u"149.154.167.99"_q,
+	};
+	static const auto dc5 = QStringList{ u"149.154.170.100"_q };
+	static const auto none = QStringList();
+	switch (dcId) {
+	case 1:
+	case 3: return dc13;
+	case 2:
+	case 4: return dc24;
+	case 5: return dc5;
+	}
+	return none;
+}
+
+// Which ingress of a DC last answered on a network, and when each one failed.
+// A dead address hands the DC to the next ingress before the DNS name.
+// Guarded by RelayPreferencesMutex.
+struct RelayAddressState {
+	QString preferred;
+	std::map<QString, crl::time> failedAt;
+};
+std::map<QString, RelayAddressState> RelayAddressStates;
+
+[[nodiscard]] QString RelayAddressStateKey(bool metered, int dcId) {
+	const auto &addresses = OfficialRelayIngresses(dcId);
+	return NetworkKey(
+		metered,
+		u"ingress-"_q + (addresses.isEmpty() ? QString() : addresses.front()));
 }
 
 [[nodiscard]] QString RelayPreferenceKey(const WssRoute &route) {
@@ -413,14 +456,23 @@ void SuppressRelayAddressWithDomain(const WssRoute &route) {
 		|| domain->second.suppressedUntil <= now) {
 		return;
 	}
-	const auto address = RelayAddressRoute(route);
-	auto &health = RouteHealthByDomain[
-		NetworkKey(route.metered, HealthName(address))];
-	if (health.consecutiveFailures > 0
-		&& health.suppressedUntil <= now
-		&& health.lastFailureAt
-		&& (now - health.lastFailureAt < 2 * 60 * crl::time(1000))) {
-		SuppressLocked(address, health, now, u"domain"_q);
+	// Every ingress the DC went through before the name failed: DC2/DC4
+	// try both of theirs first.
+	auto addresses = route.relayDcId
+		? OfficialRelayIngresses(route.relayDcId)
+		: QStringList{ route.relayHost };
+	for (const auto &relayAddress : addresses) {
+		auto relay = route;
+		relay.relayHost = relayAddress;
+		const auto address = RelayAddressRoute(relay);
+		auto &health = RouteHealthByDomain[
+			NetworkKey(route.metered, HealthName(address))];
+		if (health.consecutiveFailures > 0
+			&& health.suppressedUntil <= now
+			&& health.lastFailureAt
+			&& (now - health.lastFailureAt < 2 * 60 * crl::time(1000))) {
+			SuppressLocked(address, health, now, u"domain"_q);
+		}
 	}
 }
 
@@ -616,19 +668,100 @@ void NoteRotatedTunnelSocket(
 	return result;
 }
 
-[[nodiscard]] QString OfficialRelayIngress(int dcId) {
-	// Each ingress serves only its own datacenters; they are not
-	// interchangeable. Verified against live relays on 2026-08-08: all three
-	// accept the upgrade and carry real MTProto, including the media (-1)
-	// hostnames.
-	switch (dcId) {
-	case 1:
-	case 3: return u"149.154.174.100"_q;
-	case 2:
-	case 4: return u"149.154.167.220"_q;
-	case 5: return u"149.154.170.100"_q;
+// The ingress OfficialRoute dials: the one that last answered on this
+// network, else the list order, with addresses that failed in the last two
+// minutes moved back and suppressed ones skipped. With every address down it
+// returns the first, whose suppression then sends the DC down the ladder.
+[[nodiscard]] QString SelectRelayAddress(bool metered, int dcId) {
+	const auto &addresses = OfficialRelayIngresses(dcId);
+	if (addresses.isEmpty()) {
+		return QString();
+	}
+	auto order = QStringList();
+	{
+		QMutexLocker lock(&RelayPreferencesMutex);
+		const auto i = RelayAddressStates.find(
+			RelayAddressStateKey(metered, dcId));
+		const auto preferred = (i != end(RelayAddressStates))
+			? i->second.preferred
+			: QString();
+		if (addresses.contains(preferred)) {
+			order.push_back(preferred);
+		}
+		for (const auto &address : addresses) {
+			if (address != preferred) {
+				order.push_back(address);
+			}
+		}
+		if (i != end(RelayAddressStates)) {
+			const auto now = crl::now();
+			std::stable_partition(order.begin(), order.end(), [&](
+					const QString &address) {
+				const auto failed = i->second.failedAt.find(address);
+				return (failed == end(i->second.failedAt))
+					|| (now - failed->second >= kRouteSuppressTtl);
+			});
+		}
+	}
+	for (const auto &address : order) {
+		auto relay = WssRoute();
+		relay.metered = metered;
+		relay.relayHost = address;
+		if (!RouteSuppressed(RelayAddressRoute(relay))) {
+			return address;
+		}
+	}
+	return order.front();
+}
+
+// A relay address failed. Returns the DC's other ingress that has not failed
+// in the last two minutes, which new sockets dial from now on instead of the
+// DNS name, or an empty string when none is left.
+[[nodiscard]] QString MoveToNextRelayAddress(
+		const WssRoute &route,
+		bool viaFallback) {
+	if (!IsOfficialRelay(route) || viaFallback || !route.relayDcId) {
+		return QString();
+	}
+	const auto &addresses = OfficialRelayIngresses(route.relayDcId);
+	if (addresses.size() < 2) {
+		return QString();
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	const auto now = crl::now();
+	auto &state = RelayAddressStates[
+		RelayAddressStateKey(route.metered, route.relayDcId)];
+	state.failedAt[route.relayHost] = now;
+	for (const auto &address : addresses) {
+		if (address == route.relayHost) {
+			continue;
+		}
+		const auto failed = state.failedAt.find(address);
+		if (failed != end(state.failedAt)
+			&& (now - failed->second < kRouteSuppressTtl)) {
+			continue;
+		}
+		if (state.preferred != address) {
+			state.preferred = address;
+			LOG(("WSS Route: dc %1 relay %2 failed, next: %3."
+				).arg(route.relayDcId
+				).arg(route.relayHost
+				).arg(address));
+		}
+		return address;
 	}
 	return QString();
+}
+
+void NoteRelayAddressWorked(const WssRoute &route) {
+	if (!IsOfficialRelay(route) || !route.relayDcId) {
+		return;
+	}
+	QMutexLocker lock(&RelayPreferencesMutex);
+	auto &state = RelayAddressStates[
+		RelayAddressStateKey(route.metered, route.relayDcId)];
+	state.preferred = route.relayHost;
+	state.failedAt.erase(route.relayHost);
 }
 
 [[nodiscard]] std::optional<WssRoute> OfficialRoute(int16 protocolDcId) {
@@ -637,13 +770,15 @@ void NoteRotatedTunnelSocket(
 	if (positive >= kTestModeDcIdShift) {
 		return std::nullopt; // test-mode DCs have no public web relay
 	}
-	const auto ingress = OfficialRelayIngress(positive);
+	const auto metered = CurrentNetworkMetered.load();
+	const auto ingress = SelectRelayAddress(metered, positive);
 	if (ingress.isEmpty()) {
 		return std::nullopt; // CDN and unknown ids have no public web relay
 	}
 	auto route = WssRoute();
-	route.metered = CurrentNetworkMetered.load();
+	route.metered = metered;
 	route.relayHost = ingress;
+	route.relayDcId = positive;
 	route.relayPort = 443;
 	route.path = u"/apiws"_q;
 	const auto name = u"kws%1"_q.arg(positive);
@@ -1077,7 +1212,9 @@ void WssSocket::timedOut() {
 	// The session watchdog is killing this socket before any socket error
 	// arrived. Remember which relay host stalled so the next socket starts
 	// from the other one instead of repeating the same dead-host attempt.
-	if (!_upgraded && !_hostFlipped) {
+	if (!_upgraded
+		&& !_hostFlipped
+		&& MoveToNextRelayAddress(_route, _usedFallback).isEmpty()) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
 	}
 	if (!_upgraded && !_tcpConnected) {
@@ -1157,6 +1294,20 @@ void WssSocket::handleError(int errorCode) {
 	// (hardcoded IP <-> domain) before giving up, so a blocked or stale
 	// relay IP does not kill web-relay connectivity. The failure is recorded
 	// so the next socket starts from the host that still may work.
+	if (!_upgraded && !_hostFlipped && !_addressMoved) {
+		// DC2/DC4 have a second ingress: try it before the DNS name, which
+		// depends on the resolver and may land on the same blocked address.
+		const auto next = MoveToNextRelayAddress(_route, _usedFallback);
+		if (!next.isEmpty()) {
+			_addressMoved = true;
+			_route.relayHost = next;
+			_incoming = QByteArray();
+			_phase = HandshakePhase::None;
+			_socket.abort();
+			connectToRelayHost();
+			return;
+		}
+	}
 	if (!_upgraded && !_hostFlipped && HasRelayFallback(_route)) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
 		_hostFlipped = true;
@@ -1267,6 +1418,7 @@ bool WssSocket::tryFinishUpgrade() {
 			// Only an answer through the hardcoded address clears it; the
 			// DNS fallback reaches another one.
 			NoteRouteReachable(RelayAddressRoute(_route));
+			NoteRelayAddressWorked(_route);
 		}
 	}
 	NoteRelayUpgraded(_route, _usedFallback);
