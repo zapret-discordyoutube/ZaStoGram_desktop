@@ -1127,24 +1127,30 @@ WssDirectStepSocket::WssDirectStepSocket(
 : AbstractSocket(runtime, thread)
 , _tcp(std::make_unique<TcpSocket>(runtime, thread, proxy, protocolForFiles))
 , _route(std::move(route)) {
-	_tcp->connected() | rpl::start_with_next([=] {
+	_tcp->connected(
+	) | rpl::on_next([=] {
 		_connected.fire({});
 	}, _lifetime);
-	_tcp->disconnected() | rpl::start_with_next([=] {
+	_tcp->disconnected(
+	) | rpl::on_next([=] {
 		judge("closed_short");
 		_disconnected.fire({});
 	}, _lifetime);
-	_tcp->readyRead() | rpl::start_with_next([=] {
+	_tcp->readyRead(
+	) | rpl::on_next([=] {
 		_readyRead.fire({});
 	}, _lifetime);
-	_tcp->error() | rpl::start_with_next([=](int errorCode) {
+	_tcp->error(
+	) | rpl::on_next([=](int errorCode) {
 		judge("socket_error");
 		_error.fire_copy(errorCode);
 	}, _lifetime);
-	_tcp->syncTimeRequests() | rpl::start_with_next([=] {
+	_tcp->syncTimeRequests(
+	) | rpl::on_next([=] {
 		_syncTimeRequests.fire({});
 	}, _lifetime);
-	_tcp->progress() | rpl::start_with_next([=](HandshakePhase phase) {
+	_tcp->progress(
+	) | rpl::on_next([=](HandshakePhase phase) {
 		_progress.fire_copy(phase);
 	}, _lifetime);
 }
