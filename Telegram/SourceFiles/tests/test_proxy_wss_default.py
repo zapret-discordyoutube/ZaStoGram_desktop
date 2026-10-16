@@ -344,3 +344,16 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(value):
             value()
     print("ok")
+
+
+def test_wss_dc203_goes_through_fronts_before_tunnel_and_never_direct():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    body = function_body(
+        source,
+        "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
+    no_relay = body[:body.index("if (RouteSuppressed(*route)")]
+    # DC203 has no kws relay, but the fronts carry kws203.<front>: with the
+    # workers out of quota the DC must not fall back to direct TCP.
+    assert "constexpr auto kNoRelayDcId = 203;" in source
+    assert no_relay.index("CdnRoute(kNoRelayDcId)") < no_relay.index("TunnelRoute()")
+    assert "return CdnRoute(kNoRelayDcId, true);" in no_relay

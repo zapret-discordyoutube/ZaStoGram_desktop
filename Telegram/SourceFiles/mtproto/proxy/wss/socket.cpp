@@ -120,7 +120,13 @@ std::map<QString, RelayAddressState> RelayAddressStates;
 		&& (i->second.until > crl::now());
 }
 
-constexpr auto kTunnelOnlyDcId = 203;
+// DC203 serves non-Premium media and has no kws relay. The Cloudflare fronts
+// carry it as kws203.<front> (16.10.2026: resPQ from every front tried), so
+// it goes fronts -> tunnel -> fronts like a DC with a closed relay. As a
+// tunnel-only DC it lost every file once the workers ran out of their daily
+// quota: with the tunnel suppressed the socket factory fell back to direct
+// TCP, which these networks block (desktop log 16.10, 19:20).
+constexpr auto kNoRelayDcId = 203;
 // Worker tunnels (zastogram-ws-worker/worker.js), each on its own Cloudflare
 // account. A free account serves 100 000 requests a day; past that the worker
 // answers 429 (error code: 1027) until 00:00 UTC, and on 08.10.2026 the single
@@ -873,14 +879,17 @@ void WssTrackNetwork() {
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	auto route = OfficialRoute(protocolDcId);
 	if (!route) {
-		// DC203 serves non-Premium media and has no kws relay at all.
 		const auto raw = int(protocolDcId);
-		if (raw == kTunnelOnlyDcId || raw == -kTunnelOnlyDcId) {
-			if (auto tunnel = TunnelRoute()) {
-				return tunnel;
-			}
+		if (raw != kNoRelayDcId && raw != -kNoRelayDcId) {
+			return std::nullopt;
 		}
-		return std::nullopt;
+		if (auto front = CdnRoute(kNoRelayDcId)) {
+			return front;
+		}
+		if (auto tunnel = TunnelRoute()) {
+			return tunnel;
+		}
+		return CdnRoute(kNoRelayDcId, true);
 	}
 	if (RouteSuppressed(*route)
 		|| RouteSuppressed(RelayAddressRoute(*route))) {
