@@ -22,6 +22,7 @@ For license and copyright information see the local LEGAL file.
 #include "core/update_verify.h"
 #include "core/version.h"
 #include "core/zsg_build.h"
+#include "core/zsg_mirrors.h"
 #include "data/data_channel.h"
 #include "data/data_session.h"
 #include "mainwindow.h"
@@ -192,6 +193,9 @@ private:
 	};
 
 	void request(const QUrl &url, ResponseType type);
+	void sendRequest();
+	bool tryNextHost();
+	[[nodiscard]] QString mirrored(const QString &url) const;
 	void gotResponse();
 	void gotFailure(QNetworkReply::NetworkError e);
 	void clearSentRequest();
@@ -208,6 +212,9 @@ private:
 	std::unique_ptr<QNetworkAccessManager> _manager;
 	QNetworkReply *_reply = nullptr;
 	ResponseType _responseType = ResponseType::UpdateMap;
+	QUrl _baseUrl;
+	QStringList _hosts;
+	int _hostIndex = 0;
 
 };
 
@@ -225,6 +232,7 @@ private:
 	friend class HttpLoaderActor;
 
 	QString _url;
+	QStringList _hosts;
 	std::unique_ptr<QThread> _thread;
 	HttpLoaderActor *_actor = nullptr;
 
@@ -235,11 +243,13 @@ public:
 	HttpLoaderActor(
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
-		const QString &url);
+		const QString &url,
+		const QStringList &hosts);
 
 private:
 	void start();
 	void sendRequest();
+	bool tryNextHost();
 
 	void gotMetaData();
 	void partFinished(qint64 got, qint64 total);
@@ -247,6 +257,8 @@ private:
 
 	not_null<HttpLoader*> _parent;
 	QString _url;
+	QStringList _hosts;
+	int _hostIndex = 0;
 	QNetworkAccessManager _manager;
 	std::unique_ptr<QNetworkReply> _reply;
 
@@ -932,6 +944,39 @@ void HttpChecker::start() {
 
 void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
+	_baseUrl = url;
+	_hostIndex = 0;
+	// git.zapret.moe is dropped by name in some countries: the same
+	// Forgejo answers on its numbered mirrors, so try them one by one.
+	_hosts = Core::ZsgMirrors::IsGitHost(url.host())
+		? Core::ZsgMirrors::Hosts()
+		: QStringList();
+	sendRequest();
+}
+
+bool HttpChecker::tryNextHost() {
+	if (_hostIndex + 1 >= _hosts.size()) {
+		return false;
+	}
+	LOG(("Update Info: '%1' did not answer, trying '%2'."
+		).arg(_hosts[_hostIndex]
+		).arg(_hosts[_hostIndex + 1]));
+	++_hostIndex;
+	sendRequest();
+	return true;
+}
+
+QString HttpChecker::mirrored(const QString &url) const {
+	return _hosts.isEmpty()
+		? url
+		: Core::ZsgMirrors::WithHost(url, _hosts[_hostIndex]);
+}
+
+void HttpChecker::sendRequest() {
+	const auto type = _responseType;
+	const auto url = _hosts.isEmpty()
+		? _baseUrl
+		: Core::ZsgMirrors::WithHost(_baseUrl, _hosts[_hostIndex]);
 	auto request = QNetworkRequest(url);
 	request.setTransferTimeout(int(kUpdateCheckTimeout));
 	if (type == ResponseType::DevReleases) {
@@ -961,15 +1006,22 @@ void HttpChecker::gotResponse() {
 	if (response.size() >= kMaxResponseSize) {
 		LOG(("Update Error: update response is too large: %1")
 			.arg(response.size()));
-		fail();
+		if (!tryNextHost()) {
+			fail();
+		}
 		return;
 	}
+	const auto host = _hosts.isEmpty() ? QString() : _hosts[_hostIndex];
 	const auto handled = (responseType == ResponseType::DevReleases)
 		? handleDevReleases(response)
 		: handleResponse(response);
 	if (!handled) {
 		LOG(("Update Error: Bad update map size: %1").arg(response.size()));
-		fail();
+		if (!tryNextHost()) {
+			fail();
+		}
+	} else if (!host.isEmpty()) {
+		Core::ZsgMirrors::RememberGood(host);
 	}
 }
 
@@ -1046,13 +1098,15 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 		return true;
 	}
 	DEBUG_LOG(("Update Info: found ZaStoGram dev build %1").arg(best));
-	done(std::make_shared<HttpLoader>(bestUrl));
+	done(std::make_shared<HttpLoader>(mirrored(bestUrl)));
 	return true;
 }
 
 bool HttpChecker::handleResponse(const QByteArray &response) {
 	const auto handle = [&](const QString &url) {
-		done(url.isEmpty() ? nullptr : std::make_shared<HttpLoader>(url));
+		done(url.isEmpty()
+			? nullptr
+			: std::make_shared<HttpLoader>(mirrored(url)));
 		return true;
 	};
 	if (const auto url = parseOldResponse(response)) {
@@ -1082,7 +1136,9 @@ void HttpChecker::gotFailure(QNetworkReply::NetworkError e) {
 	LOG(("Update Error: "
 		"could not get current version %1").arg(e));
 	clearSentRequest();
-	fail();
+	if (!tryNextHost()) {
+		fail();
+	}
 }
 
 std::optional<QString> HttpChecker::parseOldResponse(
@@ -1171,8 +1227,11 @@ HttpLoader::HttpLoader(const QString &url)
 void HttpLoader::startLoading() {
 	LOG(("Update Info: Loading using HTTP from '%1'.").arg(_url));
 
+	_hosts = Core::ZsgMirrors::IsGitHost(QUrl(_url).host())
+		? Core::ZsgMirrors::Hosts()
+		: QStringList();
 	_thread = std::make_unique<QThread>();
-	_actor = new HttpLoaderActor(this, _thread.get(), _url);
+	_actor = new HttpLoaderActor(this, _thread.get(), _url, _hosts);
 	_thread->start();
 }
 
@@ -1193,9 +1252,14 @@ HttpLoader::~HttpLoader() {
 HttpLoaderActor::HttpLoaderActor(
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
-		const QString &url)
-: _parent(parent) {
+		const QString &url,
+		const QStringList &hosts)
+: _parent(parent)
+, _hosts(hosts) {
 	_url = url;
+	// Begin with the host the URL already points at.
+	const auto index = _hosts.indexOf(QUrl(url).host().toLower());
+	_hostIndex = std::max(index, 0);
 	moveToThread(thread);
 	_manager.moveToThread(thread);
 
@@ -1204,6 +1268,22 @@ HttpLoaderActor::HttpLoaderActor(
 
 void HttpLoaderActor::start() {
 	sendRequest();
+}
+
+bool HttpLoaderActor::tryNextHost() {
+	if (_hostIndex + 1 >= _hosts.size()) {
+		return false;
+	}
+	++_hostIndex;
+	_url = Core::ZsgMirrors::WithHost(_url, _hosts[_hostIndex]);
+	LOG(("Update Info: trying to continue from '%1'.").arg(_url));
+	if (const auto old = _reply.release()) {
+		old->disconnect(this);
+		old->abort();
+		old->deleteLater();
+	}
+	sendRequest();
+	return true;
 }
 
 void HttpLoaderActor::sendRequest() {
@@ -1256,7 +1336,9 @@ void HttpLoaderActor::partFinished(qint64 got, qint64 total) {
 			LOG(("Update Error: "
 				"Bad HTTP status received in partFinished(): %1"
 				).arg(status));
-			_parent->threadSafeFailed();
+			if (!tryNextHost()) {
+				_parent->threadSafeFailed();
+			}
 			return;
 		}
 	}
@@ -1283,7 +1365,9 @@ void HttpLoaderActor::partFailed(QNetworkReply::NetworkError e) {
 	LOG(("Update Error: failed to download part after %1, error %2"
 		).arg(_parent->alreadySize()
 		).arg(e));
-	_parent->threadSafeFailed();
+	if (!tryNextHost()) {
+		_parent->threadSafeFailed();
+	}
 }
 
 MtpChecker::MtpChecker(

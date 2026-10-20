@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/core_settings.h"
 #include "core/proxy_wss_fallback.h"
 #include "core/update_checker.h"
+#include "core/zsg_mirrors.h"
 #include "core/shortcuts.h"
 #include "core/sandbox.h"
 #include "core/local_url_handlers.h"
@@ -1333,7 +1334,8 @@ bool Application::openInternalUrl(const QString &url, QVariant context) {
 }
 
 QString Application::changelogLink() const {
-	return u"https://git.zapret.moe/zastogram/ZaStoGram_desktop/releases"_q;
+	return u"https://%1/zastogram/ZaStoGram_desktop/releases"_q.arg(
+		ZsgMirrors::Hosts().front());
 }
 
 bool Application::openCustomUrl(
