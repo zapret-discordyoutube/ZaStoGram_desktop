@@ -1334,7 +1334,9 @@ bool Application::openInternalUrl(const QString &url, QVariant context) {
 }
 
 QString Application::changelogLink() const {
-	return u"https://%1/zastogram/ZaStoGram_desktop/releases"_q.arg(
+	// The main name is dropped in some countries, link a mirror that works.
+	return ZsgMirrors::WithHost(
+		u"https://git.zapret.moe/zastogram/ZaStoGram_desktop/releases"_q,
 		ZsgMirrors::Hosts().front());
 }
 
