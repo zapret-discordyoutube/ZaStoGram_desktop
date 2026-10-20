@@ -1259,7 +1259,7 @@ HttpLoaderActor::HttpLoaderActor(
 	_url = url;
 	// Begin with the host the URL already points at.
 	const auto index = _hosts.indexOf(QUrl(url).host().toLower());
-	_hostIndex = std::max(index, 0);
+	_hostIndex = std::max(int(index), 0);
 	moveToThread(thread);
 	_manager.moveToThread(thread);
 
