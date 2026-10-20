@@ -1078,17 +1078,21 @@ void BuildZaStoGramSection(SectionBuilder &builder) {
 		.title = rpl::single(u"Сохранить копию аккаунта сейчас"_q),
 		.st = &st::settingsButtonNoIcon,
 		.onClick = [=] {
-			const auto folder = Main::AccountArchive::Save(
-				session,
-				Main::AccountArchive::Reason::Manual);
-			if (folder.isEmpty()) {
-				if (controller) {
-					controller->showToast(
-						u"Сохранять нечего: чаты ещё не загружены."_q);
-				}
-				return;
+			const auto weak = base::make_weak(controller);
+			if (controller) {
+				controller->showToast(u"Сохраняю копию, окно можно не закрывать."_q);
 			}
-			File::ShowInFolder(folder + u"/index.html"_q);
+			Main::AccountArchive::SaveAsync(
+				session,
+				Main::AccountArchive::Reason::Manual,
+				[=](QString folder) {
+					if (!folder.isEmpty()) {
+						File::ShowInFolder(folder + u"/index.html"_q);
+					} else if (const auto strong = weak.get()) {
+						strong->showToast(
+							u"Не сохранено: чаты ещё не загружены или копия уже делается."_q);
+					}
+				});
 		},
 		.keywords = { u"archive"_q, u"backup"_q, u"deleted"_q, u"frozen"_q },
 	});

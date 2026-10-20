@@ -206,9 +206,6 @@ void Account::destroySession(DestroyReason reason) {
 	// listener may enter a nested event dispatch that drains crl::on_main.
 	// Nothing may delete this Account while we're still on the stack.
 	_destroyingSession = true;
-	if (reason == DestroyReason::Quitting) {
-		AccountArchive::Save(_session.get(), AccountArchive::Reason::Live);
-	}
 	_sessionValue = nullptr;
 
 	if (reason == DestroyReason::LoggedOut) {

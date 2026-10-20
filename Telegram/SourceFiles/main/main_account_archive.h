@@ -30,8 +30,16 @@ enum class Reason {
 
 [[nodiscard]] QString RootPath();
 
-// Writes the copy synchronously, returns the folder or an empty string.
+// Writes the copy synchronously (only right before a logout wipes the
+// session), returns the folder or an empty string.
 QString Save(not_null<Session*> session, Reason reason);
+
+// Collects in short slices and writes in the background, so the window never
+// stalls; `done` gets the folder (empty when nothing was saved or it is busy).
+void SaveAsync(
+	not_null<Session*> session,
+	Reason reason,
+	Fn<void(QString)> done);
 
 // Starts the periodic "live" mirror of the session.
 void Watch(not_null<Session*> session);
