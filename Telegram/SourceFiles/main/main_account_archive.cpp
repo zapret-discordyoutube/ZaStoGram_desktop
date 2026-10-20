@@ -463,7 +463,7 @@ void WriteIndex(
 }
 
 void CollectHistories(
-		not_null<Dialogs::MainList*> list,
+		not_null<const Dialogs::MainList*> list,
 		std::vector<not_null<History*>> &result,
 		base::flat_set<not_null<History*>> &seen) {
 	for (const auto &row : list->indexed()->all()) {
