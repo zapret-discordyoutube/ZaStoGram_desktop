@@ -10,8 +10,22 @@ set LTO=OFF
 if /I "%~1"=="lto" set LTO=ON
 echo === start %DATE% %TIME%  LTO=%LTO% ===
 
+rem ZaStoGram's own Telegram API identity (line 1 api_id, line 2 api_hash) lives
+rem next to the signing keys, outside git. The public tdesktop test pair gets
+rem API_ID_PUBLISHED_FLOOD on login, so a build without the file must not start.
+set "ZSG_API_FILE=%TBUILD%\DesktopPrivate\telegram_api.txt"
+if not exist "%ZSG_API_FILE%" (echo === ENVIRONMENT NOT READY: %ZSG_API_FILE% is missing === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
+set "ZSG_API_ID="
+set "ZSG_API_HASH="
+for /f "usebackq tokens=* delims=" %%a in ("%ZSG_API_FILE%") do (
+ if not defined ZSG_API_ID (set "ZSG_API_ID=%%a") else if not defined ZSG_API_HASH (set "ZSG_API_HASH=%%a")
+)
+if not defined ZSG_API_HASH (echo === ENVIRONMENT NOT READY: telegram_api.txt must hold api_id and api_hash === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
+if "%ZSG_API_ID%"=="4" (echo === ENVIRONMENT NOT READY: api_id is the public test id === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
+if "%ZSG_API_ID%"=="17349" (echo === ENVIRONMENT NOT READY: api_id is the public tdesktop id === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
+
 cd /d "%ZSG_REPO%\Telegram"
-call configure.bat -G "Ninja Multi-Config" qt6 -D TDESKTOP_API_TEST=ON ^
+call configure.bat -G "Ninja Multi-Config" qt6 -D TDESKTOP_API_ID=%ZSG_API_ID% -D TDESKTOP_API_HASH=%ZSG_API_HASH% ^
  -D CMAKE_CONFIGURATION_TYPES=Release ^
  -D DESKTOP_APP_ENABLE_LTO=%LTO% ^
  -D CMAKE_C_COMPILER_LAUNCHER=sccache ^

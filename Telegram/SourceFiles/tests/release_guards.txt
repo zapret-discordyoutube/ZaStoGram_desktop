@@ -23,6 +23,7 @@ Telegram/SourceFiles/tests/test_proxy_wss_default.py
 Telegram/SourceFiles/tests/test_release_guards_run_their_tests.py
 Telegram/SourceFiles/tests/test_session_endpoint_cooldown.py
 Telegram/SourceFiles/tests/test_update_mirrors.py
+Telegram/SourceFiles/tests/test_own_api_id.py
 Telegram/SourceFiles/tests/test_zastogram_branding.py
 Telegram/SourceFiles/tests/test_web_proxy_carrier_flow.py
 Telegram/SourceFiles/tests/test_zastogram_libs_keep.py
