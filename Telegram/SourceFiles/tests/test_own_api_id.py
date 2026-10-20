@@ -12,7 +12,9 @@ def test_build_uses_own_api_identity_not_the_public_test_pair():
 
     # The public tdesktop pair is flagged by Telegram: login fails with
     # API_ID_PUBLISHED_FLOOD for every user of such a build.
-    assert "TDESKTOP_API_TEST" not in script
+    assert "TDESKTOP_API_TEST=ON" not in script
+    # A cached ON from an earlier configure would override the id below.
+    assert "-D TDESKTOP_API_TEST=OFF" in script
     assert "-D TDESKTOP_API_ID=%ZSG_API_ID%" in script
     assert "-D TDESKTOP_API_HASH=%ZSG_API_HASH%" in script
 
