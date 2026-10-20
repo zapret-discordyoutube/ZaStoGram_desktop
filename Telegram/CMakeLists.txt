@@ -1515,6 +1515,8 @@ PRIVATE
     layout/layout_item_base.h
     main/main_account.cpp
     main/main_account.h
+    main/main_account_archive.cpp
+    main/main_account_archive.h
     main/main_app_config.cpp
     main/main_app_config.h
     main/main_app_config_values.cpp

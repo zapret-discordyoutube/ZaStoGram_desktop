@@ -1,3 +1,4 @@
+Telegram/SourceFiles/tests/test_account_archive.py
 Telegram/SourceFiles/tests/test_e2e_cloud_desktop_integration.py
 Telegram/SourceFiles/tests/test_mtproto_relay_silence.py
 Telegram/SourceFiles/tests/test_mtproxy_client_hello_profiles.py

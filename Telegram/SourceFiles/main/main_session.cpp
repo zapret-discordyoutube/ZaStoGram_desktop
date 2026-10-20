@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
 #include "main/main_account.h"
+#include "main/main_account_archive.h"
 #include "main/main_domain.h"
 #include "main/main_session_settings.h"
 #include "main/main_app_config.h"
@@ -283,6 +284,8 @@ Session::Session(
 	) | rpl::on_next([=] {
 		appConfigRefreshed();
 	}, _lifetime);
+
+	AccountArchive::Watch(this);
 }
 
 void Session::appConfigRefreshed() {
@@ -293,6 +296,10 @@ void Session::appConfigRefreshed() {
 		.until = config.get<int>(u"freeze_until_date"_q, 0),
 		.appealUrl = config.get<QString>(u"freeze_appeal_url"_q, QString()),
 	};
+	if (_frozen.current().since) {
+		// A frozen account may be deleted later: keep a local copy now.
+		AccountArchive::SaveFrozenOnce(this, _frozen.current().since);
+	}
 
 #ifndef OS_MAC_STORE
 	_premiumPossible = !config.get<bool>(

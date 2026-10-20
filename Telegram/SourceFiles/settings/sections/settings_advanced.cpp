@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/info_memento.h"
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
+#include "main/main_account_archive.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
@@ -1068,6 +1069,44 @@ void BuildZaStoGramSection(SectionBuilder &builder) {
 	}
 	builder.addSkip();
 	builder.addDividerText(tr::lng_settings_zastogram_pin_channel_about());
+
+	const auto controller = builder.controller();
+	const auto session = builder.session();
+	builder.addSkip();
+	builder.addButton({
+		.id = u"advanced/zastogram_archive_save"_q,
+		.title = rpl::single(u"Сохранить копию аккаунта сейчас"_q),
+		.st = &st::settingsButtonNoIcon,
+		.onClick = [=] {
+			const auto folder = Main::AccountArchive::Save(
+				session,
+				Main::AccountArchive::Reason::Manual);
+			if (folder.isEmpty()) {
+				if (controller) {
+					controller->showToast(
+						u"Сохранять нечего: чаты ещё не загружены."_q);
+				}
+				return;
+			}
+			File::ShowInFolder(folder + u"/index.html"_q);
+		},
+		.keywords = { u"archive"_q, u"backup"_q, u"deleted"_q, u"frozen"_q },
+	});
+	builder.addButton({
+		.id = u"advanced/zastogram_archive_open"_q,
+		.title = rpl::single(u"Открыть папку архива аккаунтов"_q),
+		.st = &st::settingsButtonNoIcon,
+		.onClick = [=] {
+			const auto root = Main::AccountArchive::RootPath();
+			QDir().mkpath(root);
+			File::Launch(root);
+			Main::AccountArchive::MarkSeen();
+		},
+		.keywords = { u"archive"_q, u"backup"_q, u"deleted"_q, u"frozen"_q },
+	});
+	builder.addSkip();
+	builder.addDividerText(rpl::single(
+		u"Если Telegram удалит, заблокирует или заморозит аккаунт, перед стиранием данных приложение сохраняет в эту папку список чатов, каналов и групп со ссылками, загруженные сообщения и скачанные файлы. ПК-клиент не хранит историю на диске, поэтому копия содержит только то, что уже было загружено в память; она обновляется в фоне."_q));
 }
 
 void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
