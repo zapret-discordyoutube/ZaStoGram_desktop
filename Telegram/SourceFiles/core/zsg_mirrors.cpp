@@ -27,10 +27,12 @@ constexpr auto kRefreshTimeout = 6 * 1000;
 constexpr auto kMaxResponseSize = 256 * 1024;
 
 [[nodiscard]] QStringList Builtin() {
+	// The numbered mirrors go first: the plain name is the one that gets
+	// filtered by name, and the others are the same Forgejo.
 	return {
-		u"git.zapret.moe"_q,
 		u"git2.zapret.moe"_q,
 		u"git3.zapret.moe"_q,
+		u"git.zapret.moe"_q,
 	};
 }
 

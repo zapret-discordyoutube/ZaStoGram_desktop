@@ -24,22 +24,50 @@ def body_after(source: Path, signature: str) -> str:
     raise AssertionError(f"body not found for {signature}")
 
 
-def test_checker_falls_back_to_the_next_mirror():
+def test_checker_races_the_mirrors_instead_of_waiting_for_each():
     request = body_after(CHECKER, "void HttpChecker::request(")
     assert "ZsgMirrors::Hosts()" in request
 
-    failure = body_after(CHECKER, "void HttpChecker::gotFailure(")
-    assert failure.index("tryNextHost()") < failure.index("fail();")
+    # A host dropped silently never errors: the next one has to start on a
+    # timer, not after the previous one failed.
+    start = body_after(CHECKER, "void HttpChecker::startNext()")
+    assert "_staggerTimer.callOnce(kMirrorStagger)" in start
 
-    response = body_after(CHECKER, "void HttpChecker::gotResponse()")
-    assert "tryNextHost()" in response
+    failed = body_after(CHECKER, "void HttpChecker::attemptFailed()")
+    assert "startNext()" in failed
+    assert failed.index("startNext()") < failed.index("fail();")
+
+    response = body_after(CHECKER, "void HttpChecker::gotResponse(")
+    assert "attemptFailed()" in response
     assert "ZsgMirrors::RememberGood(host)" in response
+
+
+def test_whole_check_has_room_for_every_mirror():
+    checker = CHECKER.read_text(encoding="utf-8")
+
+    # Updater gave the entire check 6 seconds, which a blocked first name
+    # used up alone: the mirrors never got their turn.
+    assert "kUpdateCheckBudget = 25 * crl::time(1000)" in checker
+    checking = body_after(CHECKER, "void Updater::reportChecking()")
+    assert "kUpdateCheckBudget" in checking
+    assert "kUpdateCheckTimeout" not in checking
+
+
+def test_builtin_order_puts_the_filtered_name_last():
+    mirrors = MIRRORS.read_text(encoding="utf-8")
+    builtin = body_after(MIRRORS, "[[nodiscard]] QStringList Builtin()")
+    assert builtin.index("git2.zapret.moe") < builtin.index('u"git.zapret.moe"_q')
 
 
 def test_download_url_follows_the_host_that_answered():
     checker = CHECKER.read_text(encoding="utf-8")
     assert "std::make_shared<HttpLoader>(mirrored(bestUrl))" in checker
     assert "std::make_shared<HttpLoader>(mirrored(url))" in checker
+
+
+def test_loader_gives_up_on_a_silent_host():
+    send = body_after(CHECKER, "void HttpLoaderActor::sendRequest()")
+    assert "setTransferTimeout(kLoaderSilence)" in send
 
 
 def test_loader_resumes_from_another_mirror():

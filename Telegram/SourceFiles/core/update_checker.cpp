@@ -67,7 +67,13 @@ namespace Core {
 namespace {
 
 constexpr auto kUpdateCheckTimeout = 6 * crl::time(1000);
-constexpr auto kUpdaterStallTimeout = 10 * crl::time(1000);
+// A stalled download is told apart from a slow one by this silence.
+constexpr auto kUpdaterStallTimeout = 20 * crl::time(1000);
+// The whole check, with every mirror: the mirrors are raced, so a name that
+// is dropped silently must not eat the time the working ones need.
+constexpr auto kUpdateCheckBudget = 25 * crl::time(1000);
+constexpr auto kMirrorStagger = crl::time(1500);
+constexpr auto kLoaderSilence = 5 * 1000;
 constexpr auto kMaxResponseSize = 1024 * 1024;
 constexpr auto kZaStoGramReleasesApi =
 	"https://git.zapret.moe/api/v1/repos/"
@@ -193,11 +199,12 @@ private:
 	};
 
 	void request(const QUrl &url, ResponseType type);
-	void sendRequest();
-	bool tryNextHost();
+	void startNext();
+	void sendTo(const QString &host);
+	void attemptFailed();
+	[[nodiscard]] int attemptsCount() const;
 	[[nodiscard]] QString mirrored(const QString &url) const;
-	void gotResponse();
-	void gotFailure(QNetworkReply::NetworkError e);
+	void gotResponse(not_null<QNetworkReply*> reply, const QString &host);
 	void clearSentRequest();
 	bool handleResponse(const QByteArray &response);
 	bool handleDevReleases(const QByteArray &response);
@@ -210,11 +217,13 @@ private:
 		QString url) const;
 
 	std::unique_ptr<QNetworkAccessManager> _manager;
-	QNetworkReply *_reply = nullptr;
+	std::vector<QNetworkReply*> _replies;
 	ResponseType _responseType = ResponseType::UpdateMap;
 	QUrl _baseUrl;
 	QStringList _hosts;
-	int _hostIndex = 0;
+	QString _answeredHost;
+	int _nextHost = 0;
+	base::Timer _staggerTimer;
 
 };
 
@@ -923,7 +932,9 @@ rpl::lifetime &Checker::lifetime() {
 	return _lifetime;
 }
 
-HttpChecker::HttpChecker(bool testing) : Checker(testing) {
+HttpChecker::HttpChecker(bool testing)
+: Checker(testing)
+, _staggerTimer([=] { startNext(); }) {
 }
 
 void HttpChecker::start() {
@@ -945,82 +956,113 @@ void HttpChecker::start() {
 void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
 	_baseUrl = url;
-	_hostIndex = 0;
-	// git.zapret.moe is dropped by name in some countries: the same
-	// Forgejo answers on its numbered mirrors, so try them one by one.
+	_nextHost = 0;
+	// git.zapret.moe is dropped by name in some countries, while the same
+	// Forgejo answers on its numbered mirrors. They are raced: the next one
+	// starts after a short stagger or as soon as the previous one fails,
+	// and the first valid answer wins.
 	_hosts = Core::ZsgMirrors::IsGitHost(url.host())
 		? Core::ZsgMirrors::Hosts()
 		: QStringList();
-	sendRequest();
+	_manager = std::make_unique<QNetworkAccessManager>();
+	startNext();
 }
 
-bool HttpChecker::tryNextHost() {
-	if (_hostIndex + 1 >= _hosts.size()) {
-		return false;
+int HttpChecker::attemptsCount() const {
+	return std::max(int(_hosts.size()), 1);
+}
+
+void HttpChecker::startNext() {
+	_staggerTimer.cancel();
+	if (_nextHost >= attemptsCount()) {
+		return;
 	}
-	LOG(("Update Info: '%1' did not answer, trying '%2'."
-		).arg(_hosts[_hostIndex]
-		).arg(_hosts[_hostIndex + 1]));
-	++_hostIndex;
-	sendRequest();
-	return true;
+	const auto host = _hosts.isEmpty() ? QString() : _hosts[_nextHost];
+	++_nextHost;
+	sendTo(host);
+	if (_nextHost < attemptsCount()) {
+		_staggerTimer.callOnce(kMirrorStagger);
+	}
 }
 
 QString HttpChecker::mirrored(const QString &url) const {
-	return _hosts.isEmpty()
+	return _answeredHost.isEmpty()
 		? url
-		: Core::ZsgMirrors::WithHost(url, _hosts[_hostIndex]);
+		: Core::ZsgMirrors::WithHost(url, _answeredHost);
 }
 
-void HttpChecker::sendRequest() {
-	const auto type = _responseType;
-	const auto url = _hosts.isEmpty()
+void HttpChecker::sendTo(const QString &host) {
+	const auto url = host.isEmpty()
 		? _baseUrl
-		: Core::ZsgMirrors::WithHost(_baseUrl, _hosts[_hostIndex]);
+		: Core::ZsgMirrors::WithHost(_baseUrl, host);
 	auto request = QNetworkRequest(url);
 	request.setTransferTimeout(int(kUpdateCheckTimeout));
-	if (type == ResponseType::DevReleases) {
+	if (_responseType == ResponseType::DevReleases) {
 		request.setRawHeader("Accept", "application/json");
 		request.setRawHeader("User-Agent", "ZaStoGram-Desktop-Updater");
 	}
-	_manager = std::make_unique<QNetworkAccessManager>();
-	_reply = _manager->get(request);
-	_reply->connect(_reply, &QNetworkReply::finished, [=] {
-		gotResponse();
-	});
-	_reply->connect(_reply, &QNetworkReply::errorOccurred, [=](auto e) {
-		gotFailure(e);
+	const auto reply = _manager->get(request);
+	_replies.push_back(reply);
+	// "finished" also comes after an error, one handler covers both.
+	reply->connect(reply, &QNetworkReply::finished, [=] {
+		gotResponse(reply, host);
 	});
 }
 
-void HttpChecker::gotResponse() {
-	if (!_reply) {
+void HttpChecker::attemptFailed() {
+	if (_nextHost < attemptsCount()) {
+		startNext();
+	} else if (_replies.empty()) {
+		clearSentRequest();
+		fail();
+	}
+}
+
+void HttpChecker::gotResponse(
+		not_null<QNetworkReply*> reply,
+		const QString &host) {
+	const auto i = std::find(_replies.begin(), _replies.end(), reply.get());
+	if (i == _replies.end()) {
+		return;
+	}
+	_replies.erase(i);
+	const auto ok = (reply->error() == QNetworkReply::NoError);
+	const auto response = ok ? reply->readAll() : QByteArray();
+	reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);
+	reply->deleteLater();
+	if (!ok) {
+		LOG(("Update Error: '%1' did not answer: %2"
+			).arg(host
+			).arg(int(reply->error())));
+		attemptFailed();
 		return;
 	}
 
 	cSetLastUpdateCheck(base::unixtime::now());
-	const auto response = _reply->readAll();
-	const auto responseType = _responseType;
-	clearSentRequest();
-
 	if (response.size() >= kMaxResponseSize) {
 		LOG(("Update Error: update response is too large: %1")
 			.arg(response.size()));
-		if (!tryNextHost()) {
-			fail();
-		}
+		attemptFailed();
 		return;
 	}
-	const auto host = _hosts.isEmpty() ? QString() : _hosts[_hostIndex];
-	const auto handled = (responseType == ResponseType::DevReleases)
+	_answeredHost = host;
+	const auto weak = base::make_weak(this);
+	const auto handled = (_responseType == ResponseType::DevReleases)
 		? handleDevReleases(response)
 		: handleResponse(response);
 	if (!handled) {
 		LOG(("Update Error: Bad update map size: %1").arg(response.size()));
-		if (!tryNextHost()) {
-			fail();
+		if (const auto strong = weak.get()) {
+			strong->_answeredHost = QString();
+			strong->attemptFailed();
 		}
-	} else if (!host.isEmpty()) {
+		return;
+	}
+	// done() may have destroyed this checker already.
+	if (const auto strong = weak.get()) {
+		strong->clearSentRequest();
+	}
+	if (!host.isEmpty()) {
 		Core::ZsgMirrors::RememberGood(host);
 	}
 }
@@ -1118,26 +1160,15 @@ bool HttpChecker::handleResponse(const QByteArray &response) {
 }
 
 void HttpChecker::clearSentRequest() {
-	const auto reply = base::take(_reply);
-	if (!reply) {
-		return;
+	_staggerTimer.cancel();
+	_nextHost = attemptsCount();
+	for (const auto reply : base::take(_replies)) {
+		reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);
+		reply->abort();
+		reply->deleteLater();
 	}
-	reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);
-	reply->disconnect(reply, &QNetworkReply::errorOccurred, nullptr, nullptr);
-	reply->abort();
-	reply->deleteLater();
-	_manager = nullptr;
-}
-
-void HttpChecker::gotFailure(QNetworkReply::NetworkError e) {
-	if (!_reply) {
-		return;
-	}
-	LOG(("Update Error: "
-		"could not get current version %1").arg(e));
-	clearSentRequest();
-	if (!tryNextHost()) {
-		fail();
+	if (const auto manager = _manager.release()) {
+		manager->deleteLater();
 	}
 }
 
@@ -1288,6 +1319,9 @@ bool HttpLoaderActor::tryNextHost() {
 
 void HttpLoaderActor::sendRequest() {
 	auto request = QNetworkRequest(_url);
+	// A name dropped by a filter never answers and never errors: give up
+	// on it after a short silence so the next mirror can resume the file.
+	request.setTransferTimeout(kLoaderSilence);
 	const auto rangeHeaderValue = "bytes="
 		+ QByteArray::number(_parent->alreadySize())
 		+ "-";
@@ -2012,7 +2046,7 @@ void Updater::reportLatest() {
 
 void Updater::reportChecking() {
 	_action = Action::Checking;
-	_retryTimer.callOnce(kUpdateCheckTimeout);
+	_retryTimer.callOnce(kUpdateCheckBudget);
 	_checking.fire({});
 }
 
