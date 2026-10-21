@@ -53,6 +53,26 @@ def test_whole_check_has_room_for_every_mirror():
     assert "kUpdateCheckTimeout" not in checking
 
 
+def test_proxied_attempts_are_backed_by_direct_ones():
+    request = body_after(CHECKER, "void HttpChecker::request(")
+    # An app-wide proxy that only carries Telegram swallows these requests
+    # silently while a browser on the same machine works: race a direct route.
+    assert "QNetworkProxy::applicationProxy().type()" in request
+    assert "usesSystemConfiguration()" in request
+    assert "_directManager->setProxy(QNetworkProxy::NoProxy)" in request
+    assert "{ _attempts[i].host, true }" in request
+
+    send = body_after(CHECKER, "void HttpChecker::sendTo(")
+    assert "attempt.direct ? _directManager : _manager" in send
+
+
+def test_failures_are_diagnosable_from_the_log():
+    response = body_after(CHECKER, "void HttpChecker::gotResponse(")
+    assert "LOG((\"Update Info: %1%2 -> %3 (%4), http %5" in response
+    request = body_after(CHECKER, "void HttpChecker::request(")
+    assert "QHostInfo::lookupHost(" in request
+
+
 def test_builtin_order_puts_the_filtered_name_last():
     mirrors = MIRRORS.read_text(encoding="utf-8")
     builtin = body_after(MIRRORS, "[[nodiscard]] QStringList Builtin()")
@@ -61,8 +81,8 @@ def test_builtin_order_puts_the_filtered_name_last():
 
 def test_download_url_follows_the_host_that_answered():
     checker = CHECKER.read_text(encoding="utf-8")
-    assert "std::make_shared<HttpLoader>(mirrored(bestUrl))" in checker
-    assert "std::make_shared<HttpLoader>(mirrored(url))" in checker
+    assert "std::make_shared<HttpLoader>(mirrored(bestUrl), _answeredDirect)" in checker
+    assert "std::make_shared<HttpLoader>(mirrored(url), _answeredDirect)" in checker
 
 
 def test_loader_gives_up_on_a_silent_host():

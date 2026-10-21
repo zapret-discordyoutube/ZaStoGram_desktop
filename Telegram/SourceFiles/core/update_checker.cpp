@@ -38,6 +38,8 @@ For license and copyright information see the local LEGAL file.
 #include "ui/layers/box_content.h"
 
 #include <QtCore/QDataStream>
+#include <QtNetwork/QHostInfo>
+#include <QtNetwork/QNetworkProxy>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonObject>
@@ -199,12 +201,19 @@ private:
 	};
 
 	void request(const QUrl &url, ResponseType type);
+	struct Attempt {
+		QString host;
+		bool direct = false;
+	};
 	void startNext();
-	void sendTo(const QString &host);
+	void sendTo(const Attempt &attempt);
 	void attemptFailed();
 	[[nodiscard]] int attemptsCount() const;
 	[[nodiscard]] QString mirrored(const QString &url) const;
-	void gotResponse(not_null<QNetworkReply*> reply, const QString &host);
+	void gotResponse(
+		not_null<QNetworkReply*> reply,
+		const Attempt &attempt,
+		crl::time started);
 	void clearSentRequest();
 	bool handleResponse(const QByteArray &response);
 	bool handleDevReleases(const QByteArray &response);
@@ -217,11 +226,13 @@ private:
 		QString url) const;
 
 	std::unique_ptr<QNetworkAccessManager> _manager;
+	std::unique_ptr<QNetworkAccessManager> _directManager;
 	std::vector<QNetworkReply*> _replies;
 	ResponseType _responseType = ResponseType::UpdateMap;
 	QUrl _baseUrl;
-	QStringList _hosts;
+	std::vector<Attempt> _attempts;
 	QString _answeredHost;
+	bool _answeredDirect = false;
 	int _nextHost = 0;
 	base::Timer _staggerTimer;
 
@@ -231,7 +242,7 @@ class HttpLoaderActor;
 
 class HttpLoader : public Loader {
 public:
-	HttpLoader(const QString &url);
+	HttpLoader(const QString &url, bool direct = false);
 
 	~HttpLoader();
 
@@ -242,6 +253,7 @@ private:
 
 	QString _url;
 	QStringList _hosts;
+	bool _direct = false;
 	std::unique_ptr<QThread> _thread;
 	HttpLoaderActor *_actor = nullptr;
 
@@ -253,7 +265,8 @@ public:
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
 		const QString &url,
-		const QStringList &hosts);
+		const QStringList &hosts,
+		bool direct);
 
 private:
 	void start();
@@ -957,19 +970,56 @@ void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
 	_baseUrl = url;
 	_nextHost = 0;
+	_attempts.clear();
 	// git.zapret.moe is dropped by name in some countries, while the same
 	// Forgejo answers on its numbered mirrors. They are raced: the next one
 	// starts after a short stagger or as soon as the previous one fails,
 	// and the first valid answer wins.
-	_hosts = Core::ZsgMirrors::IsGitHost(url.host())
+	const auto hosts = Core::ZsgMirrors::IsGitHost(url.host())
 		? Core::ZsgMirrors::Hosts()
 		: QStringList();
+	for (const auto &host : hosts) {
+		_attempts.push_back({ host, false });
+	}
+	if (_attempts.empty()) {
+		_attempts.push_back({ QString(), false });
+	}
+	// The app-wide proxy (a Telegram-only SOCKS5 from the free catalog, a
+	// system PAC) also applies to these requests and may silently swallow
+	// them, while a browser on the same machine goes straight out. So the
+	// same hosts are also tried directly, after the proxied ones.
+	const auto proxied = (QNetworkProxy::applicationProxy().type()
+			!= QNetworkProxy::NoProxy)
+		|| QNetworkProxyFactory::usesSystemConfiguration();
+	if (proxied) {
+		const auto count = _attempts.size();
+		for (auto i = size_t(0); i != count; ++i) {
+			_attempts.push_back({ _attempts[i].host, true });
+		}
+	}
+	LOG(("Update Info: checking through %1 route(s), proxy: %2, hosts: %3"
+		).arg(_attempts.size()
+		).arg(proxied ? u"app/system"_q : u"none"_q
+		).arg(Core::ZsgMirrors::Hosts().join(',')));
+	for (const auto &host : Core::ZsgMirrors::Hosts()) {
+		QHostInfo::lookupHost(host, [=](const QHostInfo &info) {
+			auto addresses = QStringList();
+			for (const auto &address : info.addresses()) {
+				addresses.push_back(address.toString());
+			}
+			LOG(("Update Info: DNS %1 -> %2 (%3)"
+				).arg(host
+				).arg(addresses.join(','), info.errorString()));
+		});
+	}
 	_manager = std::make_unique<QNetworkAccessManager>();
+	_directManager = std::make_unique<QNetworkAccessManager>();
+	_directManager->setProxy(QNetworkProxy::NoProxy);
 	startNext();
 }
 
 int HttpChecker::attemptsCount() const {
-	return std::max(int(_hosts.size()), 1);
+	return int(_attempts.size());
 }
 
 void HttpChecker::startNext() {
@@ -977,9 +1027,9 @@ void HttpChecker::startNext() {
 	if (_nextHost >= attemptsCount()) {
 		return;
 	}
-	const auto host = _hosts.isEmpty() ? QString() : _hosts[_nextHost];
+	const auto attempt = _attempts[_nextHost];
 	++_nextHost;
-	sendTo(host);
+	sendTo(attempt);
 	if (_nextHost < attemptsCount()) {
 		_staggerTimer.callOnce(kMirrorStagger);
 	}
@@ -991,21 +1041,23 @@ QString HttpChecker::mirrored(const QString &url) const {
 		: Core::ZsgMirrors::WithHost(url, _answeredHost);
 }
 
-void HttpChecker::sendTo(const QString &host) {
-	const auto url = host.isEmpty()
+void HttpChecker::sendTo(const Attempt &attempt) {
+	const auto url = attempt.host.isEmpty()
 		? _baseUrl
-		: Core::ZsgMirrors::WithHost(_baseUrl, host);
+		: Core::ZsgMirrors::WithHost(_baseUrl, attempt.host);
 	auto request = QNetworkRequest(url);
 	request.setTransferTimeout(int(kUpdateCheckTimeout));
 	if (_responseType == ResponseType::DevReleases) {
 		request.setRawHeader("Accept", "application/json");
 		request.setRawHeader("User-Agent", "ZaStoGram-Desktop-Updater");
 	}
-	const auto reply = _manager->get(request);
+	const auto started = crl::now();
+	const auto reply = (attempt.direct ? _directManager : _manager)->get(
+		request);
 	_replies.push_back(reply);
 	// "finished" also comes after an error, one handler covers both.
 	reply->connect(reply, &QNetworkReply::finished, [=] {
-		gotResponse(reply, host);
+		gotResponse(reply, attempt, started);
 	});
 }
 
@@ -1020,20 +1072,29 @@ void HttpChecker::attemptFailed() {
 
 void HttpChecker::gotResponse(
 		not_null<QNetworkReply*> reply,
-		const QString &host) {
+		const Attempt &attempt,
+		crl::time started) {
 	const auto i = std::find(_replies.begin(), _replies.end(), reply.get());
 	if (i == _replies.end()) {
 		return;
 	}
 	_replies.erase(i);
 	const auto ok = (reply->error() == QNetworkReply::NoError);
+	const auto status = reply->attribute(
+		QNetworkRequest::HttpStatusCodeAttribute).toInt();
 	const auto response = ok ? reply->readAll() : QByteArray();
+	const auto host = attempt.host;
+	LOG(("Update Info: %1%2 -> %3 (%4), http %5, %6 bytes, %7 ms"
+		).arg(host
+		).arg(attempt.direct ? u" [direct]"_q : QString()
+		).arg(int(reply->error())
+		).arg(reply->errorString()
+		).arg(status
+		).arg(response.size()
+		).arg(crl::now() - started));
 	reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);
 	reply->deleteLater();
 	if (!ok) {
-		LOG(("Update Error: '%1' did not answer: %2"
-			).arg(host
-			).arg(int(reply->error())));
 		attemptFailed();
 		return;
 	}
@@ -1046,6 +1107,7 @@ void HttpChecker::gotResponse(
 		return;
 	}
 	_answeredHost = host;
+	_answeredDirect = attempt.direct;
 	const auto weak = base::make_weak(this);
 	const auto handled = (_responseType == ResponseType::DevReleases)
 		? handleDevReleases(response)
@@ -1140,7 +1202,7 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 		return true;
 	}
 	DEBUG_LOG(("Update Info: found ZaStoGram dev build %1").arg(best));
-	done(std::make_shared<HttpLoader>(mirrored(bestUrl)));
+	done(std::make_shared<HttpLoader>(mirrored(bestUrl), _answeredDirect));
 	return true;
 }
 
@@ -1148,7 +1210,7 @@ bool HttpChecker::handleResponse(const QByteArray &response) {
 	const auto handle = [&](const QString &url) {
 		done(url.isEmpty()
 			? nullptr
-			: std::make_shared<HttpLoader>(mirrored(url)));
+			: std::make_shared<HttpLoader>(mirrored(url), _answeredDirect));
 		return true;
 	};
 	if (const auto url = parseOldResponse(response)) {
@@ -1168,6 +1230,9 @@ void HttpChecker::clearSentRequest() {
 		reply->deleteLater();
 	}
 	if (const auto manager = _manager.release()) {
+		manager->deleteLater();
+	}
+	if (const auto manager = _directManager.release()) {
 		manager->deleteLater();
 	}
 }
@@ -1250,9 +1315,10 @@ HttpChecker::~HttpChecker() {
 	clearSentRequest();
 }
 
-HttpLoader::HttpLoader(const QString &url)
+HttpLoader::HttpLoader(const QString &url, bool direct)
 : Loader(UpdatesFolder() + '/' + ExtractFilename(url), kChunkSize)
-, _url(url) {
+, _url(url)
+, _direct(direct) {
 }
 
 void HttpLoader::startLoading() {
@@ -1262,7 +1328,7 @@ void HttpLoader::startLoading() {
 		? Core::ZsgMirrors::Hosts()
 		: QStringList();
 	_thread = std::make_unique<QThread>();
-	_actor = new HttpLoaderActor(this, _thread.get(), _url, _hosts);
+	_actor = new HttpLoaderActor(this, _thread.get(), _url, _hosts, _direct);
 	_thread->start();
 }
 
@@ -1284,9 +1350,13 @@ HttpLoaderActor::HttpLoaderActor(
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
 		const QString &url,
-		const QStringList &hosts)
+		const QStringList &hosts,
+		bool direct)
 : _parent(parent)
 , _hosts(hosts) {
+	if (direct) {
+		_manager.setProxy(QNetworkProxy::NoProxy);
+	}
 	_url = url;
 	// Begin with the host the URL already points at.
 	const auto index = _hosts.indexOf(QUrl(url).host().toLower());
