@@ -62,8 +62,12 @@ def main() -> None:
     require(
         "SourceFiles/window/window_main_menu.cpp",
         "AppName.utf16()",
-        FORK_RELEASES,
+        "Core::App().changelogLink()",
     )
+    # git.zapret.moe is dropped by name in Russia: browser links go through
+    # Application::changelogLink(), which puts them on a working mirror.
+    if "https://git.zapret.moe" in source("SourceFiles/window/window_main_menu.cpp"):
+        raise AssertionError("the main menu links the blocked git name directly")
     require(
         "SourceFiles/settings/sections/settings_advanced.cpp",
         "BuildUpdateSection(builder, true);",

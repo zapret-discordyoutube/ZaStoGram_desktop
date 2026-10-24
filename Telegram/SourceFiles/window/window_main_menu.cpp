@@ -388,9 +388,11 @@ MainMenu::MainMenu(
 
 	parentResized();
 
+	// The fork's releases, on the git mirror that opens (the main name is
+	// dropped in some countries).
 	_telegram->setMarkedText(tr::link(
 		AppName.utf16(),
-		u"https://git.zapret.moe/zastogram/ZaStoGram_desktop/releases"_q));
+		Core::App().changelogLink()));
 	_telegram->setLinksTrusted();
 	// The canary version is too long for the "Version {version}" form.
 	_version->setMarkedText(

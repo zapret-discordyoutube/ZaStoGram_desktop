@@ -255,9 +255,9 @@ footer a:hover {{ text-decoration: underline; }}
 
 <footer>
   Auto-generated from
-  <a href="https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/raw/branch/dev/changelog.txt">changelog.txt</a>.
+  <a href="https://git2.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop/raw/branch/dev/changelog.txt">changelog.txt</a>.
   Source code is published under
-  <a href="https://git.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop">GPL v3</a>.
+  <a href="https://git2.zapret.moe/zapretdiscordyoutube/ZaStoGram_desktop">GPL v3</a>.
 </footer>
 
 <script>
