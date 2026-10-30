@@ -208,6 +208,8 @@ private:
 	void startNext();
 	void sendTo(const Attempt &attempt);
 	void attemptFailed();
+	void requestEntryNames();
+	void addAttempts(const QStringList &hosts);
 	[[nodiscard]] int attemptsCount() const;
 	[[nodiscard]] QString mirrored(const QString &url) const;
 	void gotResponse(
@@ -235,6 +237,13 @@ private:
 	bool _answeredDirect = false;
 	int _nextHost = 0;
 	base::Timer _staggerTimer;
+	bool _proxied = false;
+	enum class EntryState {
+		None,
+		Pending,
+		Done,
+	};
+	EntryState _entryState = EntryState::None;
 
 };
 
@@ -972,34 +981,27 @@ void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_nextHost = 0;
 	_attempts.clear();
 	// git.zapret.moe is dropped by name in some countries, while the same
-	// Forgejo answers on its numbered mirrors. They are raced: the next one
-	// starts after a short stagger or as soon as the previous one fails,
-	// and the first valid answer wins.
-	const auto hosts = Core::ZsgMirrors::IsGitHost(url.host())
-		? Core::ZsgMirrors::Hosts()
-		: QStringList();
-	for (const auto &host : hosts) {
-		_attempts.push_back({ host, false });
-	}
-	if (_attempts.empty()) {
-		_attempts.push_back({ QString(), false });
-	}
+	// Forgejo answers on its mirrors. They are raced: the next one starts
+	// after a short stagger or as soon as the previous one fails, and the
+	// first valid answer wins. When every known name is out, the names
+	// handed out now come from the entry pages (requestEntryNames).
+	const auto mirrored = Core::ZsgMirrors::IsGitHost(url.host());
+	_entryState = mirrored ? EntryState::None : EntryState::Done;
 	// The app-wide proxy (a Telegram-only SOCKS5 from the free catalog, a
 	// system PAC) also applies to these requests and may silently swallow
 	// them, while a browser on the same machine goes straight out. So the
 	// same hosts are also tried directly, after the proxied ones.
-	const auto proxied = (QNetworkProxy::applicationProxy().type()
+	_proxied = (QNetworkProxy::applicationProxy().type()
 			!= QNetworkProxy::NoProxy)
 		|| QNetworkProxyFactory::usesSystemConfiguration();
-	if (proxied) {
-		const auto count = _attempts.size();
-		for (auto i = size_t(0); i != count; ++i) {
-			_attempts.push_back({ _attempts[i].host, true });
-		}
+	if (mirrored) {
+		addAttempts(Core::ZsgMirrors::Hosts());
+	} else {
+		_attempts.push_back({ QString(), false });
 	}
 	LOG(("Update Info: checking through %1 route(s), proxy: %2, hosts: %3"
 		).arg(_attempts.size()
-		).arg(proxied ? u"app/system"_q : u"none"_q
+		).arg(_proxied ? u"app/system"_q : u"none"_q
 		).arg(Core::ZsgMirrors::Hosts().join(',')));
 	for (const auto &host : Core::ZsgMirrors::Hosts()) {
 		QHostInfo::lookupHost(host, [=](const QHostInfo &info) {
@@ -1022,9 +1024,55 @@ int HttpChecker::attemptsCount() const {
 	return int(_attempts.size());
 }
 
+void HttpChecker::addAttempts(const QStringList &hosts) {
+	for (const auto &host : hosts) {
+		_attempts.push_back({ host, false });
+	}
+	if (_proxied) {
+		for (const auto &host : hosts) {
+			_attempts.push_back({ host, true });
+		}
+	}
+}
+
+// Every known name has been started: the entry pages are asked at once,
+// not after the silent ones time out, so the new names still fit into the
+// check budget. Names already tried are not repeated.
+void HttpChecker::requestEntryNames() {
+	if (_entryState != EntryState::None) {
+		return;
+	}
+	_entryState = EntryState::Pending;
+	auto tried = QStringList();
+	for (const auto &attempt : _attempts) {
+		if (!tried.contains(attempt.host)) {
+			tried.push_back(attempt.host);
+		}
+	}
+	LOG(("Update Info: asking the entry pages for new mirror names"));
+	const auto weak = base::make_weak(this);
+	Core::ZsgMirrors::FetchEntryNames(tried, [=](QStringList fresh) {
+		const auto strong = weak.get();
+		if (!strong || strong->_entryState != EntryState::Pending) {
+			return; // the check already ended: an answer, a failure or a new request
+		}
+		strong->_entryState = EntryState::Done;
+		LOG(("Update Info: entry pages gave %1").arg(fresh.join(',')));
+		if (!fresh.isEmpty()) {
+			strong->addAttempts(fresh);
+			strong->startNext();
+		} else if (strong->_replies.empty()
+			&& strong->_nextHost >= strong->attemptsCount()) {
+			strong->clearSentRequest();
+			strong->fail();
+		}
+	});
+}
+
 void HttpChecker::startNext() {
 	_staggerTimer.cancel();
 	if (_nextHost >= attemptsCount()) {
+		requestEntryNames();
 		return;
 	}
 	const auto attempt = _attempts[_nextHost];
@@ -1064,7 +1112,9 @@ void HttpChecker::sendTo(const Attempt &attempt) {
 void HttpChecker::attemptFailed() {
 	if (_nextHost < attemptsCount()) {
 		startNext();
-	} else if (_replies.empty()) {
+	} else if (_entryState == EntryState::None) {
+		requestEntryNames();
+	} else if (_replies.empty() && _entryState == EntryState::Done) {
 		clearSentRequest();
 		fail();
 	}
@@ -1223,6 +1273,7 @@ bool HttpChecker::handleResponse(const QByteArray &response) {
 
 void HttpChecker::clearSentRequest() {
 	_staggerTimer.cancel();
+	_entryState = EntryState::Done;
 	_nextHost = attemptsCount();
 	for (const auto reply : base::take(_replies)) {
 		reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);

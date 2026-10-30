@@ -60,7 +60,8 @@ def test_proxied_attempts_are_backed_by_direct_ones():
     assert "QNetworkProxy::applicationProxy().type()" in request
     assert "usesSystemConfiguration()" in request
     assert "_directManager->setProxy(QNetworkProxy::NoProxy)" in request
-    assert "{ _attempts[i].host, true }" in request
+    added = body_after(CHECKER, "void HttpChecker::addAttempts(")
+    assert "_attempts.push_back({ host, true });" in added
 
     send = body_after(CHECKER, "void HttpChecker::sendTo(")
     assert "attempt.direct ? _directManager : _manager" in send
@@ -97,10 +98,39 @@ def test_loader_resumes_from_another_mirror():
     assert "tryNextHost()" in finished
 
 
-def test_only_numbered_git_names_stand_in_for_each_other():
-    mirrors = MIRRORS.read_text(encoding="utf-8")
-    assert 'u"^git\\\\d{0,2}\\\\.zapret\\\\.moe$"_q' in mirrors
-    assert 'u"git2.zapret.moe"_q' in mirrors
+def test_git_names_stand_in_for_each_other_but_never_another_site():
+    # Since 2026-10-30 the names handed out are random labels (cwdnvtsqdc.zapret.moe):
+    # any *.zapret.moe name may stand in, except the wiki's numbered names.
+    is_git = body_after(MIRRORS, "bool IsGitHost(")
+    assert 'u"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\\\.zapret\\\\.moe$"_q' in is_git
+    assert 'u"^wiki\\\\d*\\\\.zapret\\\\.moe$"_q' in is_git
+    assert "!otherSite.match(host).hasMatch()" in is_git
+    builtin = body_after(MIRRORS, "[[nodiscard]] QStringList Builtin()")
+    assert builtin.index('u"git4.zapret.moe"_q') < builtin.index('u"git.zapret.moe"_q')
+
+
+def test_entry_pages_give_the_names_when_every_known_one_is_silent():
+    lists = body_after(MIRRORS, "[[nodiscard]] QStringList EntryLists()")
+    assert "script.google.com/macros/s/" in lists and "?format=json" in lists
+    assert "gist.githubusercontent.com/fuckyourkn/" in lists
+    parse = body_after(MIRRORS, "QStringList ParseEntry(")
+    assert 'value("schema").toInt() != 1' in parse
+    assert '.value("git").toObject().value("hosts").toArray()' in parse
+    assert "IsGitHost(name)" in parse
+
+    # The entry pages are asked as soon as every known name has been started,
+    # not after the silent ones time out: the new names must fit the budget.
+    start = body_after(CHECKER, "void HttpChecker::startNext()")
+    assert start.index("requestEntryNames();") < start.index("sendTo(attempt)")
+    failed = body_after(CHECKER, "void HttpChecker::attemptFailed()")
+    assert failed.index("requestEntryNames();") < failed.index("fail();")
+    assert "_entryState == EntryState::Done" in failed
+
+    entry = body_after(CHECKER, "void HttpChecker::requestEntryNames()")
+    assert "Core::ZsgMirrors::FetchEntryNames(tried" in entry
+    # A late answer after the check ended must not start requests on released managers.
+    assert "strong->_entryState != EntryState::Pending" in entry
+    assert "_entryState = EntryState::Done;" in body_after(CHECKER, "void HttpChecker::clearSentRequest()")
 
 
 def test_changelog_link_uses_a_reachable_mirror():

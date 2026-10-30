@@ -22,7 +22,7 @@ For license and copyright information see the local LEGAL file.
 namespace Core::ZsgMirrors {
 namespace {
 
-constexpr auto kMaxHosts = 4;
+constexpr auto kMaxHosts = 6;
 constexpr auto kRefreshTimeout = 6 * 1000;
 constexpr auto kMaxResponseSize = 256 * 1024;
 
@@ -32,7 +32,15 @@ constexpr auto kMaxResponseSize = 256 * 1024;
 	return {
 		u"git2.zapret.moe"_q,
 		u"git3.zapret.moe"_q,
+		u"git4.zapret.moe"_q,
 		u"git.zapret.moe"_q,
+	};
+}
+
+[[nodiscard]] QStringList EntryLists() {
+	return {
+		u"https://script.google.com/macros/s/AKfycbzcEPk67WW6fYC0vPVm397QyDFHd4m-SrfKDBnfvG8jAD-n_HXVv8AqQnEHZ6A42oIh/exec?format=json"_q,
+		u"https://gist.githubusercontent.com/fuckyourkn/ecb9b6a03f53bddcdd47023ebc12d4f9/raw/targets.json"_q,
 	};
 }
 
@@ -100,13 +108,56 @@ void Refresh(const QString &host) {
 	});
 }
 
+void FetchEntryName(
+		QStringList tried,
+		int index,
+		Fn<void(QStringList)> done) {
+	const auto lists = EntryLists();
+	if (index >= lists.size()) {
+		done({});
+		return;
+	}
+	const auto manager = new QNetworkAccessManager();
+	auto request = QNetworkRequest(QUrl(lists[index]));
+	request.setTransferTimeout(kRefreshTimeout);
+	// Apps Script answers through a redirect to script.googleusercontent.com.
+	request.setAttribute(
+		QNetworkRequest::RedirectPolicyAttribute,
+		QNetworkRequest::NoLessSafeRedirectPolicy);
+	const auto reply = manager->get(request);
+	QObject::connect(reply, &QNetworkReply::finished, [=] {
+		const auto body = reply->error() == QNetworkReply::NoError
+			? reply->read(kMaxResponseSize)
+			: QByteArray();
+		reply->deleteLater();
+		manager->deleteLater();
+		auto fresh = QStringList();
+		for (const auto &name : ParseEntry(body)) {
+			if (!tried.contains(name)) {
+				fresh.push_back(name);
+			}
+		}
+		if (fresh.isEmpty()) {
+			FetchEntryName(tried, index + 1, done);
+			return;
+		}
+		auto state = ReadState();
+		state.names = fresh;
+		WriteState(state);
+		done(fresh);
+	});
+}
+
 } // namespace
 
 bool IsGitHost(const QString &host) {
-	static const auto expression = QRegularExpression(
-		u"^git\\d{0,2}\\.zapret\\.moe$"_q,
+	static const auto name = QRegularExpression(
+		u"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.zapret\\.moe$"_q,
 		QRegularExpression::CaseInsensitiveOption);
-	return expression.match(host).hasMatch();
+	static const auto otherSite = QRegularExpression(
+		u"^wiki\\d*\\.zapret\\.moe$"_q,
+		QRegularExpression::CaseInsensitiveOption);
+	return name.match(host).hasMatch() && !otherSite.match(host).hasMatch();
 }
 
 QStringList Hosts() {
@@ -181,6 +232,28 @@ QStringList ParseNames(const QByteArray &json) {
 		}
 	}
 	return open + rest;
+}
+
+QStringList ParseEntry(const QByteArray &json) {
+	const auto document = QJsonDocument::fromJson(json);
+	if (!document.isObject()
+		|| document.object().value("schema").toInt() != 1) {
+		return {};
+	}
+	auto result = QStringList();
+	const auto hosts = document.object().value("families").toObject()
+		.value("git").toObject().value("hosts").toArray();
+	for (const auto &value : hosts) {
+		const auto name = value.toString().trimmed().toLower();
+		if (IsGitHost(name) && !result.contains(name)) {
+			result.push_back(name);
+		}
+	}
+	return result;
+}
+
+void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done) {
+	FetchEntryName(std::move(tried), 0, std::move(done));
 }
 
 } // namespace Core::ZsgMirrors
