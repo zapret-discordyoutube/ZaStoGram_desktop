@@ -1,3 +1,7 @@
+7.3.2 (30.10.26)
+
+- Updates reach users in Russia again: the update check tries every mirror of the update server and, when all known ones are blocked, learns the new ones from the project pages on Google and GitHub.
+
 7.3.1 (09.10.26)
 
 - Fix wallet encryption with Windows Hello sometimes failing.
