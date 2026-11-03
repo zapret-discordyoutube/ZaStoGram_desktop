@@ -54,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_file_utilities.h"
 #include "spellcheck/spellcheck_highlight_syntax.h"
 #include "storage/storage_media_prepare.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/chat/attach/attach_prepare.h"
 #include "ui/chat/chat_style.h"
 #include "ui/chat/chat_theme.h"
@@ -1202,14 +1203,6 @@ void Widget::activateInitialNodeAtEnd() {
 	activateTextOrdinalAtEnd(_state->textNodeCount() - 1);
 }
 
-void Widget::activateSegment(int segmentIndex, int cursorOffset) {
-	const auto ordinal = editableOrdinalForSegment(segmentIndex);
-	if (ordinal < 0) {
-		return;
-	}
-	activateTextOrdinal(ordinal, cursorOffset);
-}
-
 bool Widget::prepareFieldForInput() {
 	if (hasStructuralSelection()) {
 		if (const auto target = removeCurrentStructuralSelection(true)) {
@@ -1335,10 +1328,6 @@ bool Widget::commitAndActivateTextOrdinal(
 	return true;
 }
 
-void Widget::acceptInlineField() {
-	hideInlineFieldAndRefresh();
-}
-
 void Widget::toggleSearch() {
 	if (_search && _search->shown()) {
 		_search->hide();
@@ -1451,14 +1440,6 @@ void Widget::refreshPreparedContent() {
 		} else {
 			_search->refresh();
 		}
-	}
-}
-
-void Widget::refreshPreparedLeafAtActiveSource() {
-	if (const auto source = _state->activePreparedLeafSource()) {
-		refreshPreparedLeafAtSource(*source);
-	} else {
-		refreshPreparedContent();
 	}
 }
 
@@ -1736,44 +1717,13 @@ void Widget::insertBlock(State::InsertAction action) {
 		}
 		auto restore = restoreField;
 		const auto restoreInlineField = gsl::finally([&] {
-			if (!restore) {
-				return;
+			if (restore) {
+				restoreInlineFieldAfterMutation(
+					restoreLeaf,
+					restoreStyleKey,
+					restoreMode,
+					restoreSelection);
 			}
-			if (restoreLeaf && restoreStyleKey) {
-				if (auto revived = reviveRetainedLeafField(
-						_historyIndex,
-						*restoreLeaf,
-						restoreMode,
-						*restoreStyleKey)) {
-					_field = std::move(revived);
-					_activeFieldStyleKey = restoreStyleKey;
-					_fieldMode = restoreMode;
-					_fieldLeaf = *restoreLeaf;
-					refreshInlineFieldPlaceholder();
-					_fieldUndoAvailable = _field->isUndoAvailable();
-					_fieldRedoAvailable = _field->isRedoAvailable();
-					clearFieldUndoRedoNoopState();
-				}
-			}
-			if (!_fieldLeaf && restoreSelection) {
-				const auto ordinal = _state->textOrdinalForLeafPath(
-					restoreSelection->leaf);
-				if (ordinal >= 0) {
-					activateTextOrdinal(
-						ordinal,
-						restoreSelection->anchorOffset,
-						restoreSelection->cursorOffset);
-					return;
-				}
-			}
-			_field->show();
-			syncInlineFieldGeometry();
-			updateInlineFieldHeightOverride();
-			syncArticleVisibleTopBottom();
-			revealActiveInlineField();
-			_field->raise();
-			_field->setFocusFast();
-			notifyToolbarStateChanged();
 		});
 		auto activeBlockResult
 			= std::optional<State::ActiveTextBlockActionResult>();
@@ -1924,14 +1874,6 @@ void Widget::insertPreparedBlocks(std::vector<RichPage::Block> blocks) {
 	insertPreparedBlocks(std::move(blocks), activeTextInsertContext());
 }
 
-void Widget::pastePreparedBlock(
-		RichPage::Block block,
-		PreparedMediaPasteTarget target) {
-	auto blocks = std::vector<RichPage::Block>();
-	blocks.push_back(std::move(block));
-	pastePreparedBlocks(std::move(blocks), std::move(target));
-}
-
 void Widget::pastePreparedBlocks(
 		std::vector<RichPage::Block> blocks,
 		PreparedMediaPasteTarget target) {
@@ -2035,44 +1977,13 @@ void Widget::insertPreparedBlocks(
 		}
 		auto restore = restoreField;
 		const auto restoreInlineField = gsl::finally([&] {
-			if (!restore) {
-				return;
+			if (restore) {
+				restoreInlineFieldAfterMutation(
+					restoreLeaf,
+					restoreStyleKey,
+					restoreMode,
+					restoreSelection);
 			}
-			if (restoreLeaf && restoreStyleKey) {
-				if (auto revived = reviveRetainedLeafField(
-						_historyIndex,
-						*restoreLeaf,
-						restoreMode,
-						*restoreStyleKey)) {
-					_field = std::move(revived);
-					_activeFieldStyleKey = restoreStyleKey;
-					_fieldMode = restoreMode;
-					_fieldLeaf = *restoreLeaf;
-					refreshInlineFieldPlaceholder();
-					_fieldUndoAvailable = _field->isUndoAvailable();
-					_fieldRedoAvailable = _field->isRedoAvailable();
-					clearFieldUndoRedoNoopState();
-				}
-			}
-			if (!_fieldLeaf && restoreSelection) {
-				const auto ordinal = _state->textOrdinalForLeafPath(
-					restoreSelection->leaf);
-				if (ordinal >= 0) {
-					activateTextOrdinal(
-						ordinal,
-						restoreSelection->anchorOffset,
-						restoreSelection->cursorOffset);
-					return;
-				}
-			}
-			_field->show();
-			syncInlineFieldGeometry();
-			updateInlineFieldHeightOverride();
-			syncArticleVisibleTopBottom();
-			revealActiveInlineField();
-			_field->raise();
-			_field->setFocusFast();
-			notifyToolbarStateChanged();
 		});
 		const auto applied = hadStructuralSelection
 			? _state->replaceStructuralSelectionWithPreparedBlocks(
@@ -2268,7 +2179,11 @@ auto Widget::markdownForLiteralHtmlImport(
 
 void Widget::pasteImportedBlocks(BlocksImportResult &&imported) {
 	if (!imported.localMedia.empty()) {
-		resolveImportedLocalMedia(std::move(imported));
+		if (CanPasteWithoutConfirmation(imported)) {
+			resolveImportedLocalMedia(std::move(imported));
+		} else {
+			confirmImportedLocalMedia(std::move(imported));
+		}
 		return;
 	}
 	if (!imported.blocks.empty()) {
@@ -2279,6 +2194,88 @@ void Widget::pasteImportedBlocks(BlocksImportResult &&imported) {
 	if (imported.truncated) {
 		_show->showToast(tr::lng_article_paste_truncated(tr::now));
 	}
+}
+
+namespace {
+
+constexpr auto kConfirmPathsLabelLimit = 16 * 1024; // text parses 32k max
+
+void ConfirmImportedMediaBox(
+		not_null<Ui::GenericBox*> box,
+		const QStringList &paths,
+		Fn<void(bool confirmed)> done) {
+	Ui::ConfirmBox(box, {
+		.text = tr::lng_article_paste_attach_files(
+			tr::now,
+			lt_count,
+			paths.size()),
+		.confirmed = [=](Fn<void()> close) {
+			close();
+			done(true);
+		},
+		.cancelled = [=](Fn<void()> close) {
+			close();
+			done(false);
+		},
+		.confirmText = tr::lng_continue(),
+	});
+	const auto padding = st::boxPadding;
+	const auto lineHeight = st::boxLabel.style.font->height;
+	const auto addChunk = [&](const QString &text, bool last) {
+		const auto label = box->addRow(
+			object_ptr<Ui::FlatLabel>(box, text, st::boxLabel),
+			QMargins(
+				padding.left(),
+				0,
+				padding.right(),
+				last ? padding.bottom() : lineHeight));
+		label->setSelectable(true);
+		label->setBreakEverywhere(true);
+	};
+	auto chunk = QString();
+	for (auto i = 0; i != paths.size(); ++i) {
+		const auto line = u"%1. %2"_q.arg(i + 1).arg(paths[i]);
+		if (!chunk.isEmpty()
+			&& chunk.size() + line.size() > kConfirmPathsLabelLimit) {
+			addChunk(chunk, false);
+			chunk = QString();
+		}
+		if (!chunk.isEmpty()) {
+			chunk += u"\n\n"_q;
+		}
+		chunk += line;
+	}
+	addChunk(chunk, true);
+}
+
+} // namespace
+
+void Widget::confirmImportedLocalMedia(BlocksImportResult &&imported) {
+	if (!_show) {
+		imported.blocks = DropImportedMediaPlaceholders(
+			std::move(imported.blocks),
+			{});
+		imported.localMedia.clear();
+		pasteImportedBlocks(std::move(imported));
+		return;
+	}
+	const auto paths = ImportedMediaPathsToConfirm(imported);
+	const auto shared = std::make_shared<BlocksImportResult>(
+		std::move(imported));
+	const auto weak = QPointer<Widget>(this);
+	if (_keyboardStructuralSelectionActive) {
+		releaseKeyboard();
+	}
+	_show->showBox(Box(ConfirmImportedMediaBox, paths, [=](bool confirmed) {
+		if (!weak) {
+			return;
+		} else if (weak->_keyboardStructuralSelectionActive) {
+			weak->grabKeyboard();
+		}
+		if (confirmed) {
+			weak->resolveImportedLocalMedia(std::move(*shared));
+		}
+	}));
 }
 
 void Widget::resolveImportedLocalMedia(BlocksImportResult &&imported) {
@@ -2380,44 +2377,13 @@ void Widget::pasteStructuredClipboardData(const ClipboardData &data) {
 		}
 		auto restore = restoreField;
 		const auto restoreInlineField = gsl::finally([&] {
-			if (!restore) {
-				return;
+			if (restore) {
+				restoreInlineFieldAfterMutation(
+					restoreLeaf,
+					restoreStyleKey,
+					restoreMode,
+					restoreSelection);
 			}
-			if (restoreLeaf && restoreStyleKey) {
-				if (auto revived = reviveRetainedLeafField(
-						_historyIndex,
-						*restoreLeaf,
-						restoreMode,
-						*restoreStyleKey)) {
-					_field = std::move(revived);
-					_activeFieldStyleKey = restoreStyleKey;
-					_fieldMode = restoreMode;
-					_fieldLeaf = *restoreLeaf;
-					refreshInlineFieldPlaceholder();
-					_fieldUndoAvailable = _field->isUndoAvailable();
-					_fieldRedoAvailable = _field->isRedoAvailable();
-					clearFieldUndoRedoNoopState();
-				}
-			}
-			if (!_fieldLeaf && restoreSelection) {
-				const auto ordinal = _state->textOrdinalForLeafPath(
-					restoreSelection->leaf);
-				if (ordinal >= 0) {
-					activateTextOrdinal(
-						ordinal,
-						restoreSelection->anchorOffset,
-						restoreSelection->cursorOffset);
-					return;
-				}
-			}
-			_field->show();
-			syncInlineFieldGeometry();
-			updateInlineFieldHeightOverride();
-			syncArticleVisibleTopBottom();
-			revealActiveInlineField();
-			_field->raise();
-			_field->setFocusFast();
-			notifyToolbarStateChanged();
 		});
 		const auto applied = hadStructuralSelection
 			? (blocks
@@ -2653,44 +2619,13 @@ void Widget::replaceCurrentSelectionWithText(TextWithEntities text) {
 		clearInlineFieldEditSession(true);
 		auto restore = true;
 		const auto restoreInlineField = gsl::finally([&] {
-			if (!restore) {
-				return;
+			if (restore) {
+				restoreInlineFieldAfterMutation(
+					restoreLeaf,
+					restoreStyleKey,
+					restoreMode,
+					restoreSelection);
 			}
-			if (restoreLeaf && restoreStyleKey) {
-				if (auto revived = reviveRetainedLeafField(
-						_historyIndex,
-						*restoreLeaf,
-						restoreMode,
-						*restoreStyleKey)) {
-					_field = std::move(revived);
-					_activeFieldStyleKey = restoreStyleKey;
-					_fieldMode = restoreMode;
-					_fieldLeaf = *restoreLeaf;
-					refreshInlineFieldPlaceholder();
-					_fieldUndoAvailable = _field->isUndoAvailable();
-					_fieldRedoAvailable = _field->isRedoAvailable();
-					clearFieldUndoRedoNoopState();
-				}
-			}
-			if (!_fieldLeaf && restoreSelection) {
-				const auto ordinal = _state->textOrdinalForLeafPath(
-					restoreSelection->leaf);
-				if (ordinal >= 0) {
-					activateTextOrdinal(
-						ordinal,
-						restoreSelection->anchorOffset,
-						restoreSelection->cursorOffset);
-					return;
-				}
-			}
-			_field->show();
-			syncInlineFieldGeometry();
-			updateInlineFieldHeightOverride();
-			syncArticleVisibleTopBottom();
-			revealActiveInlineField();
-			_field->raise();
-			_field->setFocusFast();
-			notifyToolbarStateChanged();
 		});
 		const auto applied = _state->replaceActiveTextSelectionWithText(
 			std::move(text),
@@ -3547,13 +3482,6 @@ Fn<void()> Widget::captureOuterScrollTopRestorer() const {
 		}
 	}
 	return nullptr;
-}
-
-void Widget::insertHeading1() {
-	insertBlock({
-		.type = State::InsertBlockType::Heading,
-		.headingLevel = 1,
-	});
 }
 
 void Widget::insertBlockquote() {
@@ -10032,6 +9960,48 @@ base::unique_qptr<Ui::InputField> Widget::reviveRetainedLeafField(
 	return {};
 }
 
+void Widget::restoreInlineFieldAfterMutation(
+		const std::optional<State::LeafPath> &restoreLeaf,
+		const std::optional<InlineFieldStyleKey> &restoreStyleKey,
+		State::FieldMode restoreMode,
+		const std::optional<HistoryLeafSelection> &restoreSelection) {
+	if (restoreLeaf && restoreStyleKey) {
+		if (auto revived = reviveRetainedLeafField(
+				_historyIndex,
+				*restoreLeaf,
+				restoreMode,
+				*restoreStyleKey)) {
+			_field = std::move(revived);
+			_activeFieldStyleKey = restoreStyleKey;
+			_fieldMode = restoreMode;
+			_fieldLeaf = *restoreLeaf;
+			refreshInlineFieldPlaceholder();
+			_fieldUndoAvailable = _field->isUndoAvailable();
+			_fieldRedoAvailable = _field->isRedoAvailable();
+			clearFieldUndoRedoNoopState();
+		}
+	}
+	if (!_fieldLeaf && restoreSelection) {
+		const auto ordinal = _state->textOrdinalForLeafPath(
+			restoreSelection->leaf);
+		if (ordinal >= 0) {
+			activateTextOrdinal(
+				ordinal,
+				restoreSelection->anchorOffset,
+				restoreSelection->cursorOffset);
+			return;
+		}
+	}
+	_field->show();
+	syncInlineFieldGeometry();
+	updateInlineFieldHeightOverride();
+	syncArticleVisibleTopBottom();
+	revealActiveInlineField();
+	_field->raise();
+	_field->setFocusFast();
+	notifyToolbarStateChanged();
+}
+
 void Widget::pruneRetainedLeafFields() {
 	for (auto i = _retainedLeafFields.begin(); i != _retainedLeafFields.end();) {
 		if (!i->field) {
@@ -11197,44 +11167,13 @@ void Widget::applyInlineSelectionDrop() {
 		}
 		auto restore = restoreField;
 		const auto restoreInlineField = gsl::finally([&] {
-			if (!restore) {
-				return;
+			if (restore) {
+				restoreInlineFieldAfterMutation(
+					restoreLeaf,
+					restoreStyleKey,
+					restoreMode,
+					restoreSelection);
 			}
-			if (restoreLeaf && restoreStyleKey) {
-				if (auto revived = reviveRetainedLeafField(
-						_historyIndex,
-						*restoreLeaf,
-						restoreMode,
-						*restoreStyleKey)) {
-					_field = std::move(revived);
-					_activeFieldStyleKey = restoreStyleKey;
-					_fieldMode = restoreMode;
-					_fieldLeaf = *restoreLeaf;
-					refreshInlineFieldPlaceholder();
-					_fieldUndoAvailable = _field->isUndoAvailable();
-					_fieldRedoAvailable = _field->isRedoAvailable();
-					clearFieldUndoRedoNoopState();
-				}
-			}
-			if (!_fieldLeaf && restoreSelection) {
-				const auto ordinal = _state->textOrdinalForLeafPath(
-					restoreSelection->leaf);
-				if (ordinal >= 0) {
-					activateTextOrdinal(
-						ordinal,
-						restoreSelection->anchorOffset,
-						restoreSelection->cursorOffset);
-					return;
-				}
-			}
-			_field->show();
-			syncInlineFieldGeometry();
-			updateInlineFieldHeightOverride();
-			syncArticleVisibleTopBottom();
-			revealActiveInlineField();
-			_field->raise();
-			_field->setFocusFast();
-			notifyToolbarStateChanged();
 		});
 		const auto sourceSpans = _articleSelectionDrag.fromField
 			? (_articleSelectionDrag.sourceLeaf

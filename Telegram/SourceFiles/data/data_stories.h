@@ -183,7 +183,6 @@ public:
 	const StoriesSource *source(PeerId id) const;
 	[[nodiscard]] const std::vector<StoriesSourceInfo> &sources(
 		StorySourcesList list) const;
-	[[nodiscard]] bool sourcesLoaded(StorySourcesList list) const;
 	[[nodiscard]] rpl::producer<> sourcesChanged(
 		StorySourcesList list) const;
 	[[nodiscard]] rpl::producer<PeerId> sourceChanged() const;
@@ -224,7 +223,6 @@ public:
 	[[nodiscard]] rpl::producer<StoryAlbumIdsKey> albumIdsChanged() const;
 	[[nodiscard]] int albumIdsCount(PeerId peerId, int albumId) const;
 	[[nodiscard]] bool albumIdsCountKnown(PeerId peerId, int albumId) const;
-	[[nodiscard]] bool albumIdsLoaded(PeerId peerId, int albumId) const;
 	void albumIdsLoadMore(PeerId peerId, int albumId);
 	[[nodiscard]] const base::flat_set<StoryId> &albumKnownInArchive(
 		PeerId peerId,
@@ -253,7 +251,6 @@ public:
 		Fn<void()> done,
 		Fn<void()> fail);
 	void notifyAlbumUpdate(StoryAlbumUpdate &&update);
-	[[nodiscard]] rpl::producer<StoryAlbumUpdate> albumUpdates() const;
 
 	void deleteList(const std::vector<FullStoryId> &ids);
 	void toggleInProfileList(
@@ -267,8 +264,6 @@ public:
 
 	void incrementPreloadingMainSources();
 	void decrementPreloadingMainSources();
-	void incrementPreloadingHiddenSources();
-	void decrementPreloadingHiddenSources();
 	void setPreloadingInViewer(std::vector<FullStoryId> ids);
 
 	struct PeerSourceState {
@@ -448,7 +443,6 @@ private:
 	std::unordered_map<PeerId, Set> _archive;
 	std::unordered_map<PeerId, Set> _saved;
 	std::unordered_map<PeerId, Albums> _albums;
-	rpl::event_stream<StoryAlbumUpdate> _albumUpdates;
 	rpl::event_stream<StoryAlbumIdsKey> _albumIdsChanged;
 
 	base::flat_set<PeerId> _markReadPending;

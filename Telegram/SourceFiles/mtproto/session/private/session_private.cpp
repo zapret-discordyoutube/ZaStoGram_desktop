@@ -234,10 +234,6 @@ void SessionPrivate::cdnConfigChanged() {
 	_transport.connectToServer(true);
 }
 
-int32 SessionPrivate::getShiftedDcId() const {
-	return _shiftedDcId;
-}
-
 void SessionPrivate::dcOptionsChanged() {
 	_transport.setRetryTimeout(1);
 	_transport.connectToServer(true);

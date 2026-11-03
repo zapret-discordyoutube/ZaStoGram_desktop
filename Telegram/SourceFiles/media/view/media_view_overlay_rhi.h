@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/view/media_view_metal_texture.h"
 #endif
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0) && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API
 
 class QRhi;
 class QRhiBuffer;
@@ -96,7 +96,7 @@ private:
 		not_null<const style::icon*> icon;
 	};
 
-	void createPipelines();
+	[[nodiscard]] bool createPipelines();
 	void validateControlsFade();
 	void validateControls();
 	void invalidateControls();
@@ -238,4 +238,4 @@ private:
 
 } // namespace Media::View
 
-#endif // Qt >= 6.7
+#endif // Qt >= 6.7 && !DESKTOP_APP_DISABLE_PRIVATE_QT_API

@@ -286,7 +286,7 @@ int VideoTrackObject::durationByPacket(const FFmpeg::Packet &packet) {
 
 void VideoTrackObject::queueReadFrames(crl::time delay) {
 	if (delay > 0) {
-		_readFramesTimer.callOnce(delay);
+		_readFramesTimer.callOnce(std::min(delay, kDurationMax - 1));
 	} else if (!_queued) {
 		_queued = true;
 		_weak.with([](VideoTrackObject &that) {
@@ -807,7 +807,9 @@ bool VideoTrackObject::processFirstFrame() {
 
 crl::time VideoTrackObject::currentFramePosition() const {
 	const auto position = FramePosition(_stream);
-	if (position == kTimeUnknown || position == kFinishedPosition) {
+	if (position == kTimeUnknown
+		|| position == kFinishedPosition
+		|| position > kDurationMax) {
 		return kTimeUnknown;
 	}
 	return _loopingShift + std::clamp(

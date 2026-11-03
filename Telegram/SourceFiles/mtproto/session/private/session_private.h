@@ -49,7 +49,6 @@ public:
 			= &DefaultSessionAuthKeyFactory());
 	~SessionPrivate();
 
-	[[nodiscard]] int32 getShiftedDcId() const;
 	void dcOptionsChanged();
 	void cdnConfigChanged();
 

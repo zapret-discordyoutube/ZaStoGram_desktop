@@ -931,9 +931,15 @@ void SessionTransport::onError(
 		LOG(("Protocol Error: -429 flood code returned!"));
 	} else if (errorCode == -444) {
 		LOG(("Protocol Error: -444 bad dc_id code returned!"));
-		InvokeQueued(_owner->_instance, [delegate = _owner->_delegate] {
-			delegate->badConfigurationError();
-		});
+		if (_owner->_sessionState.options) {
+			const auto &proxy = _owner->_sessionState.options->proxy;
+			if (proxy.type == ProxyData::Type::Mtproto
+				|| proxy.type == ProxyData::Type::Web) {
+				InvokeQueued(_owner->_instance, [delegate = _owner->_delegate, proxy] {
+					delegate->badConfigurationError(proxy);
+				});
+			}
+		}
 	}
 	const auto found = ranges::find(
 		_state.testConnections,

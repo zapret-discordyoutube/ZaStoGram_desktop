@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/protocol/mtproto_response.h"
 #include "mtproto/dc_id.h"
+#include "mtproto/proxy/data.h"
 #include "rpl/producer.h"
 
 #include <memory>
@@ -50,7 +51,7 @@ public:
 	virtual void requestConfig() = 0;
 	virtual void requestConfigIfOld() = 0;
 	virtual void requestCDNConfig() = 0;
-	virtual void badConfigurationError() = 0;
+	virtual void badConfigurationError(const ProxyData &proxy) = 0;
 	virtual void restartedByTimeout(ShiftedDcId shiftedDcId) = 0;
 	virtual void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId) = 0;
 	virtual void keyDestroyedOnServer(ShiftedDcId shiftedDcId, uint64 keyId) = 0;

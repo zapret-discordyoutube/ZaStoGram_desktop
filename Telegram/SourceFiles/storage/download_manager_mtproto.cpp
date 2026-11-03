@@ -1247,6 +1247,10 @@ void DownloadMtprotoTask::removeFromQueue() {
 bool DownloadMtprotoTask::partLoaded(
 		const RequestData &requestData,
 		const QByteArray &bytes) {
+	if (bytes.size() > Storage::kDownloadPartSize) {
+		cancelOnFail();
+		return false;
+	}
 	_owner->addAcceptedBytes(
 		requestData.diagnosticLaneOrdinal,
 		bytes.size());

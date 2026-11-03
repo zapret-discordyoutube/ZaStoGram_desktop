@@ -150,7 +150,8 @@ void SessionMessageHandler::handleReceived() {
 			return _owner->restart();
 		}
 
-		if ((messageLength > kMaxMessageLength)
+		if ((messageLength < kIntSize)
+			|| (messageLength > kMaxMessageLength)
 			|| (messageLength & 0x03)
 			|| (paddingSize < kMinPaddingSize)
 			|| (paddingSize > kMaxPaddingSize)) {
@@ -730,7 +731,7 @@ SessionMessageHandler::HandleResult SessionMessageHandler::handleRpcResult(
 		const mtpPrime *end,
 		uint64 msgId,
 		OuterInfo info) {
-	if (from + 3 > end) {
+	if (end - from < 4) {
 		return HandleResult::ParseError;
 	}
 	auto response = mtpBuffer();
@@ -959,14 +960,12 @@ mtpBuffer SessionMessageHandler::ungzip(const mtpPrime *from, const mtpPrime *en
 		if (res != Z_OK && res != Z_STREAM_END) {
 			inflateEnd(&stream);
 			LOG(("RPC Error: could not unpack gziped data, code: %1").arg(res));
-			DEBUG_LOG(("RPC Error: bad gzip: %1").arg(Logs::mb(packed.v.constData(), packedLen).str()));
 			return mtpBuffer();
 		}
 	}
 	if (stream.avail_out & 0x03) {
 		uint32 badSize = result.size() * sizeof(mtpPrime) - stream.avail_out;
 		LOG(("RPC Error: bad length of unpacked data %1").arg(badSize));
-		DEBUG_LOG(("RPC Error: bad unpacked data %1").arg(Logs::mb(result.data(), badSize).str()));
 		return mtpBuffer();
 	}
 	result.resize(result.size() - (stream.avail_out >> 2));

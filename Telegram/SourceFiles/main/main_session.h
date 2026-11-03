@@ -266,6 +266,7 @@ public:
 	void addWindow(not_null<Window::SessionController*> controller);
 	[[nodiscard]] auto windows() const
 		-> const base::flat_set<not_null<Window::SessionController*>> &;
+	[[nodiscard]] rpl::producer<> windowAdded() const;
 	[[nodiscard]] Window::SessionController *tryResolveWindow(
 		PeerData *forPeer = nullptr) const;
 
@@ -295,6 +296,7 @@ public:
 		TextWithEntities query) const;
 
 	void setTmpPassword(const QByteArray &password, TimeId validUntil);
+	void dropTmpPassword(const QByteArray &password);
 	[[nodiscard]] QByteArray validTmpPassword() const;
 
 	// Can be called only right before ~Session.
@@ -383,6 +385,7 @@ private:
 	std::unique_ptr<Window::TermsLock> _termsLock;
 
 	base::flat_set<not_null<Window::SessionController*>> _windows;
+	rpl::event_stream<> _windowAdded;
 	base::Timer _saveSettingsTimer;
 
 	rpl::variable<FreezeInfo> _frozen;

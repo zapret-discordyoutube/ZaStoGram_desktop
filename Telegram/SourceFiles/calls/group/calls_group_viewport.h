@@ -108,7 +108,8 @@ public:
 		VideoTileTrack track,
 		rpl::producer<QSize> trackSize,
 		rpl::producer<bool> pinned,
-		bool self);
+		bool self,
+		bool shown);
 	void remove(const VideoEndpoint &endpoint);
 	void removeByRow(not_null<MembersRow*> row);
 	void showLarge(const VideoEndpoint &endpoint);
@@ -129,7 +130,7 @@ public:
 	void ensureBorrowedCleared();
 	void borrowedPaint(Painter &p, const QRegion &clip);
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0) && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API
 	// Borrowed rendering happens inside an external (media viewer) render
 	// pass, so it is split in phases: offscreen passes and resource
 	// updates must be finished BEFORE the external beginPass, while the
@@ -252,6 +253,7 @@ private:
 	Ui::RpWidgetWrap * const _borrowed = nullptr;
 	QRect _borrowedGeometry;
 	std::unique_ptr<Ui::GL::Renderer> _borrowedRenderer;
+	QRhi *_borrowedRhi = nullptr;
 	QMetaObject::Connection _borrowedConnection;
 
 	rpl::lifetime _lifetime;

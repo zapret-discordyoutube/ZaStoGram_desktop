@@ -60,7 +60,7 @@ struct RuntimeStorageGateway final {
 
 struct RuntimeAppGateway final {
 	Fn<void()> refreshGlobalProxy;
-	Fn<void()> badMtprotoConfigurationError;
+	Fn<void(const ProxyData&)> badMtprotoConfigurationError;
 };
 
 struct RuntimeDiagnosticsGateway final {

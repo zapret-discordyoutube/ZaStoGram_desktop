@@ -1094,6 +1094,8 @@ void HttpChecker::sendTo(const Attempt &attempt) {
 		? _baseUrl
 		: Core::ZsgMirrors::WithHost(_baseUrl, attempt.host);
 	auto request = QNetworkRequest(url);
+	// Qt's HTTP/2 backend does not apply the read-buffer limit.
+	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 	request.setTransferTimeout(int(kUpdateCheckTimeout));
 	if (_responseType == ResponseType::DevReleases) {
 		request.setRawHeader("Accept", "application/json");
@@ -1103,6 +1105,16 @@ void HttpChecker::sendTo(const Attempt &attempt) {
 	const auto reply = (attempt.direct ? _directManager : _manager)->get(
 		request);
 	_replies.push_back(reply);
+	reply->setReadBufferSize(kMaxResponseSize);
+	reply->connect(reply, &QNetworkReply::readyRead, [=, queued = false]() mutable {
+		if (queued || reply->bytesAvailable() < kMaxResponseSize) {
+			return;
+		}
+		queued = true;
+		crl::on_main(this, [=] {
+			gotResponse(reply, attempt, started);
+		});
+	});
 	// "finished" also comes after an error, one handler covers both.
 	reply->connect(reply, &QNetworkReply::finished, [=] {
 		gotResponse(reply, attempt, started);
@@ -1132,7 +1144,7 @@ void HttpChecker::gotResponse(
 	const auto ok = (reply->error() == QNetworkReply::NoError);
 	const auto status = reply->attribute(
 		QNetworkRequest::HttpStatusCodeAttribute).toInt();
-	const auto response = ok ? reply->readAll() : QByteArray();
+	const auto response = ok ? reply->read(kMaxResponseSize) : QByteArray();
 	const auto host = attempt.host;
 	LOG(("Update Info: %1%2 -> %3 (%4), http %5, %6 bytes, %7 ms"
 		).arg(host
@@ -1278,6 +1290,7 @@ void HttpChecker::clearSentRequest() {
 	for (const auto reply : base::take(_replies)) {
 		reply->disconnect(reply, &QNetworkReply::finished, nullptr, nullptr);
 		reply->abort();
+		reply->disconnect();
 		reply->deleteLater();
 	}
 	if (const auto manager = _manager.release()) {

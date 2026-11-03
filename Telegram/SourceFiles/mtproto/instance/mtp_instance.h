@@ -28,6 +28,7 @@ class DcOptions;
 class ConnectionStatus;
 class Config;
 struct ConfigFields;
+struct ProxyData;
 class AuthKey;
 class RuntimeEnvironment;
 using AuthKeyPtr = std::shared_ptr<AuthKey>;

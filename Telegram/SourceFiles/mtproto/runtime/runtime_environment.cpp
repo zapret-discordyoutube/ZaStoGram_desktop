@@ -191,8 +191,8 @@ RuntimeAppGateway CreateAppGateway() {
 		.refreshGlobalProxy = [] {
 			Core::App().refreshGlobalProxy();
 		},
-		.badMtprotoConfigurationError = [] {
-			Core::App().badMtprotoConfigurationError();
+		.badMtprotoConfigurationError = [](const MTP::ProxyData &proxy) {
+			Core::App().badMtprotoConfigurationError(proxy);
 		},
 	};
 }
