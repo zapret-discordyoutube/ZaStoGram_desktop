@@ -1810,18 +1810,18 @@ win:
             exit /b 1
         )
     )
+    for %%i in ("%REPO_DIR%\\Telegram\\build\\patches_extra\\qtbase_%QT%\\*.patch") do (
+        git apply "%%~fi" -v
+        if errorlevel 1 (
+            echo ERROR: Applying extra patch %%~nxi failed!
+            exit /b 1
+        )
+    )
     cd ..\\qtsvg
     for /r %%i in (..\\..\\patches\\qtsvg_%QT%\\*) do (
         git apply %%i --ignore-whitespace -v
         if errorlevel 1 (
             echo ERROR: Applying patch %%~nxi failed!
-            exit /b 1
-        )
-    )
-    for %%i in ("%REPO_DIR%\\Telegram\\build\\patches_extra\\qtbase_%QT%\\*.patch") do (
-        git apply "%%~fi" -v
-        if errorlevel 1 (
-            echo ERROR: Applying extra patch %%~nxi failed!
             exit /b 1
         )
     )
