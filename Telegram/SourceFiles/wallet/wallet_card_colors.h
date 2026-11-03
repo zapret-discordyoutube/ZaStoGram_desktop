@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/timer.h"
 #include "base/weak_ptr.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 
 #include "styles/style_widgets.h"
 

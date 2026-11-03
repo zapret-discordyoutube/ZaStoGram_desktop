@@ -25,7 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/session/session_show.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 #include "settings/settings_credits_graphics.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/effects/round_area_with_shadow.h"

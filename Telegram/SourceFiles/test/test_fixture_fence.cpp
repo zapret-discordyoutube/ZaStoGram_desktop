@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #ifdef _DEBUG
 
-#include "mtproto/details/mtproto_dump_to_text.h"
+#include "mtproto/protocol/mtproto_dump_to_text.h"
 #include "test/test_agent.h"
 #include "test/test_log.h"
 #include "test/test_runner.h"

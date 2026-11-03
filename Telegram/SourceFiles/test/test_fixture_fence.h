@@ -9,8 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/flat_set.h"
 #include "data/data_msg_id.h"
-#include "mtproto/details/mtproto_serialized_request.h"
-#include "mtproto/mtp_instance.h"
+#include "mtproto/protocol/mtproto_serialized_request.h"
+#include "mtproto/instance/mtp_instance.h"
 #include "test/test_probe.h"
 
 #include <QtCore/QPointer>

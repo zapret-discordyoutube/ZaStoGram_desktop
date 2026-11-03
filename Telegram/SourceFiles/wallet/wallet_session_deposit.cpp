@@ -11,7 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "gram/api/gram_api_nft.h"
 #include "gram/gram_boc.h"
 #include "main/main_session.h"
-#include "mtproto/mtproto_response.h"
+#include "mtproto/protocol/mtproto_response.h"
 #include "wallet/wallet_address.h"
 
 #include "wallet_engine.hpp"

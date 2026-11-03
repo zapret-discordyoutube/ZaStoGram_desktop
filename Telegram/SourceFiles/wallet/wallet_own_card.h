@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "crl/crl_time.h"
 #include "data/data_user_wallet_card.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "rpl/variable.h"
 
 namespace Main {
