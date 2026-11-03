@@ -1807,19 +1807,17 @@ void FillPeerQrBox(
 			if (dropRendered(snapshot)) {
 				return;
 			}
-			crl::on_main(weak, [=] {
-				state->saveButtonBusy = false;
-				(void)Core::SetMediaClipboard({
-					.mime = u"image/png"_q,
-					.image = std::move(image),
-					.suggestedName = u"qr.png"_q,
-					.alreadyTransformed = true,
-				});
-				show->showToast({
-					.text = { tr::lng_group_invite_qr_copied(tr::now) },
-					.iconLottie = u"toast/copy"_q,
-					.iconLottieSize = st::toastLottieIconSize,
-				});
+			const auto show = box->uiShow();
+			(void)Core::SetMediaClipboard({
+				.mime = u"image/png"_q,
+				.image = std::move(image),
+				.suggestedName = u"qr.png"_q,
+				.alreadyTransformed = true,
+			});
+			show->showToast({
+				.text = { tr::lng_group_invite_qr_copied(tr::now) },
+				.iconLottie = u"toast/copy"_q,
+				.iconLottieSize = st::toastLottieIconSize,
 			});
 		});
 	});
