@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_unread_value.h"
 #include "window/notifications_manager.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "lang/lang_keys.h"
 #include "apiwrap.h"
 
@@ -950,6 +951,10 @@ void RepliesList::readTill(
 void RepliesList::sendReadTillRequest() {
 	if (_readRequestTimer.isActive()) {
 		_readRequestTimer.cancel();
+	}
+	if (Core::App().settings().ghostNoRead()) {
+		// ZaStoGram: режим призрака — обсуждение не отмечаем прочитанным.
+		return;
 	}
 	const auto api = &_history->session().api();
 	api->request(base::take(_readRequestId)).cancel();
