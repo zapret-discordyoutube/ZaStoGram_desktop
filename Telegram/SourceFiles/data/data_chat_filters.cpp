@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_chat_filters.h"
 
+#include "api/api_chat_filters_sync.h"
 #include "data/data_chat_filters_tree.h"
 
 #include "api/api_text_entities.h"
@@ -400,6 +401,9 @@ ChatFilters::ChatFilters(not_null<Session*> owner)
 	crl::on_main(&owner->session(), [=] {
 		load();
 		_local->load();
+		_sync = std::make_unique<Api::LocalFoldersSync>(
+			&_owner->session(),
+			_local.get());
 	});
 }
 
@@ -892,6 +896,16 @@ void ChatFilters::saveOrder(
 	if (after) {
 		_saveOrderAfterId = after;
 	}
+	auto localOrder = std::vector<FilterId>();
+	for (const auto id : order) {
+		if (IsLocalFilterId(id)) {
+			localOrder.push_back(id);
+		}
+	}
+	if (!localOrder.empty()) {
+		_local->reorderTop(localOrder);
+	}
+
 	const auto api = &_owner->session().api();
 	api->request(_saveOrderRequestId).cancel();
 
@@ -901,6 +915,9 @@ void ChatFilters::saveOrder(
 		if (!IsLocalFilterId(id)) {
 			ids.push_back(MTP_int(id));
 		}
+	}
+	if (ids.isEmpty()) {
+		return;
 	}
 	const auto wrapped = MTP_vector<MTPint>(ids);
 
@@ -970,6 +987,17 @@ const ChatFilter &ChatFilters::Tabs::iterator::operator*() const {
 	return _owner->tabAt(_index);
 }
 
+FilterId ChatFilters::tabIdFor(FilterId id) const {
+	for (auto guard = 0; IsLocalFilterId(id) && guard < 1000; ++guard) {
+		const auto parent = _local->parentOf(id);
+		if (!parent) {
+			break;
+		}
+		id = parent;
+	}
+	return id;
+}
+
 int ChatFilters::serverCount() const {
 	return int(ranges::find_if(_list, [](const ChatFilter &filter) {
 		return IsLocalFilterId(filter.id());
@@ -988,6 +1016,13 @@ void ChatFilters::refreshLocal() {
 		for (const auto peerId : _local->peersOf(id)) {
 			always.emplace(_owner->history(peerId));
 		}
+		auto pinned = std::vector<not_null<History*>>();
+		for (const auto peerId : _local->pinnedOf(id)) {
+			const auto history = _owner->history(peerId);
+			if (always.contains(history)) {
+				pinned.push_back(history);
+			}
+		}
 		// Nested folders show their whole path where a flat list of all
 		// folders is displayed (like the "add to folder" menu).
 		const auto title = _local->isNested(id)
@@ -1000,7 +1035,7 @@ void ChatFilters::refreshLocal() {
 			std::optional<uint8>(),
 			ChatFilter::Flags(),
 			std::move(always),
-			std::vector<not_null<History*>>(),
+			std::move(pinned),
 			base::flat_set<not_null<History*>>());
 	}
 

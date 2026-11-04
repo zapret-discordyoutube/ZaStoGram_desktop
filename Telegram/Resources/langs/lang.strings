@@ -916,6 +916,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_zsg_folders_name" = "Folder name";
 "lng_zsg_folders_sync" = "Synchronize with other devices";
 "lng_zsg_folders_local_only" = "this device only";
+"lng_zsg_folders_parent" = "Parent folder";
+"lng_zsg_folders_top_level" = "Top level";
+"lng_zsg_folders_move_up" = "Move up";
+"lng_zsg_folders_move_down" = "Move down";
+"lng_zsg_folders_chats" = "Chats in the folder…";
+"lng_zsg_folders_pick_title" = "Chats in the folder";
+"lng_zsg_folders_sync_too_large" = "ZaStoGram folders are too large to synchronize ({size} KB, the limit is {limit} KB). Turn off synchronization for some folders.";
+"lng_zsg_folders_sync_flood" = "Telegram limits how often ZaStoGram folders can be saved. Synchronization will continue in {seconds} s.";
 "lng_zsg_folders_subfolder" = "New subfolder";
 "lng_zsg_folders_delete" = "Delete folder";
 "lng_zsg_folders_delete_sure" = "Delete \"{name}\" with all its subfolders? The chats themselves are not deleted.";

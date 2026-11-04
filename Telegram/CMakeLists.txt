@@ -138,6 +138,8 @@ PRIVATE
     api/api_bot_callback_state.h
     api/api_chat_filters.cpp
     api/api_chat_filters.h
+    api/api_chat_filters_sync.cpp
+    api/api_chat_filters_sync.h
     api/api_chat_filters_remove_manager.cpp
     api/api_chat_filters_remove_manager.h
     api/api_chat_invite.cpp
@@ -915,6 +917,8 @@ PRIVATE
     dialogs/suggestions/suggestion_premium_offer.cpp
     dialogs/suggestions/suggestion_unreviewed_auth.cpp
     dialogs/suggestions/suggestion_userpic_setup.cpp
+    dialogs/dialogs_subfolders_row.cpp
+    dialogs/dialogs_subfolders_row.h
     dialogs/dialogs_widget.cpp
     dialogs/dialogs_widget.h
     editor/audio_track_timeline.cpp

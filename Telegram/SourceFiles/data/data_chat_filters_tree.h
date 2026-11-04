@@ -92,7 +92,10 @@ public:
 
 	// Saved Messages sync: the canonical form has no device-local ids and a
 	// fixed order, so equal states give equal bytes on every device.
-	[[nodiscard]] QByteArray serializeForSync() const;
+	// Entries of `remote` that this device does not synchronize (local-only
+	// here) are carried over, so that writing never drops them for others.
+	[[nodiscard]] QByteArray serializeForSync(
+		const QByteArray &remote = QByteArray()) const;
 	// Per-folder newest-wins merge, local-only folders are never touched.
 	// Returns true if anything changed.
 	bool mergeRemote(const QByteArray &json);

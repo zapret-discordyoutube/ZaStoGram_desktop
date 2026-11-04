@@ -437,7 +437,8 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		[&] {
 			const auto lookingId = state->lastFilterId.value_or(
 				trackActiveFilterAndUnreadAndReorder
-					? controller->activeChatsFilterCurrent()
+					? session->data().chatsFilters().tabIdFor(
+						controller->activeChatsFilterCurrent())
 					: list[0].id());
 			for (auto i = 0; i < list.size(); i++) {
 				const auto &filter = list[i];
@@ -465,7 +466,8 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		}();
 		if (trackActiveFilterAndUnreadAndReorder) {
 			controller->activeChatsFilter(
-			) | rpl::on_next([=](FilterId id) {
+			) | rpl::on_next([=](FilterId active) {
+				const auto id = session->data().chatsFilters().tabIdFor(active);
 				const auto &list = session->data().chatsFilters().tabs();
 				for (auto i = 0; i < list.size(); ++i) {
 					if (list[i].id() == id) {

@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_peer.h"
 #include "data/data_session.h"
 #include "history/history.h"
@@ -870,10 +871,21 @@ void ProcessFilterInvite(
 void SaveNewFilterPinned(
 		not_null<Main::Session*> session,
 		FilterId filterId) {
-	if (Data::IsLocalFilterId(filterId)) {
-		return; // ZaStoGram's own folders are not on the server.
-	}
 	const auto &order = session->data().pinnedChatsOrder(filterId);
+	if (Data::IsLocalFilterId(filterId)) {
+		// ZaStoGram's own folders are not on the server, the pins are kept
+		// (and synchronized) together with the folder.
+		auto pinned = std::vector<PeerId>();
+		for (const auto &key : order) {
+			if (const auto history = key.history()) {
+				pinned.push_back(history->peer->id);
+			}
+		}
+		session->data().chatsFilters().local().setPinned(
+			filterId,
+			std::move(pinned));
+		return;
+	}
 	auto &filters = session->data().chatsFilters();
 	const auto &filter = filters.applyUpdatedPinned(filterId, order);
 	session->api().request(MTPmessages_UpdateDialogFilter(

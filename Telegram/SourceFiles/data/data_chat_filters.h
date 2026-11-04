@@ -23,6 +23,10 @@ namespace Ui {
 struct MoreChatsBarContent;
 } // namespace Ui
 
+namespace Api {
+class LocalFoldersSync;
+} // namespace Api
+
 namespace Data {
 
 class Session;
@@ -239,6 +243,9 @@ public:
 		return Tabs(this);
 	}
 	[[nodiscard]] int tabsCount() const;
+	// The tab that shows this folder: the folder itself, or for a nested
+	// ZaStoGram folder the top-level folder it is inside of.
+	[[nodiscard]] FilterId tabIdFor(FilterId id) const;
 	[[nodiscard]] const ChatFilter &tabAt(int index) const;
 	[[nodiscard]] LocalFolders &local();
 	[[nodiscard]] const LocalFolders &local() const;
@@ -349,6 +356,7 @@ private:
 	mtpRequestId _linksRequestId = 0;
 
 	const std::unique_ptr<LocalFolders> _local;
+	std::unique_ptr<Api::LocalFoldersSync> _sync;
 	rpl::lifetime _localLifetime;
 	mutable std::vector<int> _tabIndices;
 	mutable bool _tabsDirty = true;

@@ -21,6 +21,7 @@ namespace Data {
 namespace {
 
 constexpr auto kFormatVersion = 1;
+constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 
 [[nodiscard]] int64 NowMs() {
 	return int64(QDateTime::currentMSecsSinceEpoch());
@@ -498,19 +499,44 @@ QByteArray LocalFolders::serialize(bool syncedOnly) const {
 	return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
-QByteArray LocalFolders::serializeForSync() const {
+QByteArray LocalFolders::serializeForSync(const QByteArray &remote) const {
 	auto synced = std::vector<const LocalFolder*>();
 	for (const auto &folder : _folders) {
 		if (folder.sync) {
 			synced.push_back(&folder);
 		}
 	}
-	ranges::sort(synced, [](const LocalFolder *a, const LocalFolder *b) {
-		return a->uid < b->uid;
+	auto entries = std::vector<std::pair<QString, QJsonObject>>();
+	for (const auto folder : synced) {
+		entries.emplace_back(folder->uid, FolderToJson(*folder, false));
+	}
+	// Cloud entries this device does not own: local-only here, or tombstones
+	// of folders it never saw. Dropping them would let others resurrect them.
+	if (!remote.isEmpty()) {
+		const auto document = QJsonDocument::fromJson(remote);
+		const auto limit = NowMs() - kTombstoneLifetime;
+		for (const auto &value : document.object().value(u"folders"_q).toArray()) {
+			const auto object = value.toObject();
+			const auto uid = object.value(u"uid"_q).toString();
+			const auto stale = object.value(u"deleted"_q).toBool()
+				&& int64(object.value(u"rev"_q).toDouble()) < limit;
+			if (!uid.isEmpty() && !stale) {
+				const auto mine = ranges::contains(
+					synced,
+					uid,
+					&LocalFolder::uid);
+				if (!mine) {
+					entries.emplace_back(uid, object);
+				}
+			}
+		}
+	}
+	ranges::sort(entries, [](const auto &a, const auto &b) {
+		return a.first < b.first;
 	});
 	auto folders = QJsonArray();
-	for (const auto folder : synced) {
-		folders.push_back(FolderToJson(*folder, false));
+	for (const auto &entry : entries) {
+		folders.push_back(entry.second);
 	}
 	auto root = QJsonObject();
 	root.insert(u"v"_q, kFormatVersion);
@@ -579,7 +605,6 @@ bool LocalFolders::mergeRemote(const QByteArray &json) {
 		}
 	}
 	// Old tombstones have long been delivered everywhere.
-	constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 	const auto limit = NowMs() - kTombstoneLifetime;
 	const auto before = _folders.size();
 	_folders.erase(
