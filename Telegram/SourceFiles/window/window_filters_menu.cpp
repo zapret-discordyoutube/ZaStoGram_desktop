@@ -274,7 +274,7 @@ void FiltersMenu::scrollToButton(not_null<Ui::RpWidget*> widget) {
 }
 
 void FiltersMenu::applyFilterAt(int start, int delta) {
-	const auto &list = _session->session().data().chatsFilters().tabs();
+	const auto &list = _session->session().data().chatsFilters().list();
 	const auto count = int(list.size());
 	// Move focus to the folder at `start`, then in the `delta` direction,
 	// stopping at the bounds (no wrap). Arrow keys only move focus; activation
@@ -296,7 +296,7 @@ void FiltersMenu::applyFilterAt(int start, int delta) {
 }
 
 void FiltersMenu::moveToFilter(int delta) {
-	const auto &list = _session->session().data().chatsFilters().tabs();
+	const auto &list = _session->session().data().chatsFilters().list();
 	const auto count = int(list.size());
 	// Move relative to the currently focused folder, so navigation continues
 	// from a locked one (which only takes focus, without becoming active); fall
@@ -316,7 +316,7 @@ void FiltersMenu::moveToFilter(int delta) {
 
 void FiltersMenu::moveToFilterEdge(int delta) {
 	const auto count = int(
-		_session->session().data().chatsFilters().tabs().size());
+		_session->session().data().chatsFilters().list().size());
 	applyFilterAt((delta > 0) ? 0 : (count - 1), delta);
 }
 
@@ -384,8 +384,10 @@ void FiltersMenu::refresh() {
 
 	auto now = base::flat_map<int, base::unique_qptr<Ui::SideBarButton>>();
 	const auto &currentFilter = _session->activeChatsFilterCurrent();
-	for (const auto &filter : filters->tabs()) {
-		const auto nextIsLocked = (now.size() >= premiumFrom);
+	for (const auto &filter : filters->list()) {
+		// ZaStoGram's own folders are not limited by Telegram's folder limit.
+		const auto nextIsLocked = !Data::IsLocalFilterId(filter.id())
+			&& (now.size() >= premiumFrom);
 		if (nextIsLocked && (currentFilter == filter.id())) {
 			_session->setActiveChatsFilter(FilterId(0));
 		}
@@ -809,7 +811,7 @@ void FiltersMenu::applyReorder(
 	}
 
 	const auto filters = &_session->session().data().chatsFilters();
-	const auto &list = filters->tabs();
+	const auto &list = filters->list();
 	if (!premium()) {
 		if (list[0].id() != FilterId()) {
 			filters->moveAllToFront();
