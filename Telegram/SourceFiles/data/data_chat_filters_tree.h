@@ -38,6 +38,7 @@ struct LocalFolder {
 	bool deleted = false; // A tombstone, so that sync can delete elsewhere.
 	int64 rev = 0; // Milliseconds since epoch of the last change.
 	base::flat_set<PeerId> own; // Chats added directly to this folder.
+	std::vector<PeerId> pinned; // Pinned in this folder, in order.
 };
 
 class LocalFolders final {
@@ -75,15 +76,33 @@ public:
 	bool removeChatDeep(FilterId id, PeerId peerId);
 	// From every folder, for example when the chat is left.
 	bool removeChatEverywhere(PeerId peerId);
+	// Replaces the chats added directly to the folder.
+	bool setChats(FilterId id, const base::flat_set<PeerId> &peers);
+	bool setPinned(FilterId id, std::vector<PeerId> pinned);
+	[[nodiscard]] std::vector<PeerId> pinnedOf(FilterId id) const;
+	// Among siblings: -1 is up, +1 is down.
+	bool moveBy(FilterId id, int delta);
+	// Orders the top-level folders as in the list (others keep their place
+	// after them).
+	void reorderTop(const std::vector<FilterId> &ids);
 
 	// The JSON format is shared with Android and with Saved Messages sync.
 	[[nodiscard]] QByteArray serialize(bool syncedOnly) const;
 	bool deserialize(const QByteArray &json);
 
+	// Saved Messages sync: the canonical form has no device-local ids and a
+	// fixed order, so equal states give equal bytes on every device.
+	[[nodiscard]] QByteArray serializeForSync() const;
+	// Per-folder newest-wins merge, local-only folders are never touched.
+	// Returns true if anything changed.
+	bool mergeRemote(const QByteArray &json);
+
 	[[nodiscard]] rpl::producer<> changed() const;
 
 private:
 	[[nodiscard]] LocalFolder *findMutable(FilterId id);
+	[[nodiscard]] LocalFolder *findAnyByUid(const QString &uid);
+	void applySiblingOrder(const std::vector<FilterId> &ids);
 	[[nodiscard]] std::vector<const LocalFolder*> childrenOfUid(
 		const QString &uid) const;
 	void collectSubtree(

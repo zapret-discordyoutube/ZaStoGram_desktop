@@ -58,6 +58,90 @@ constexpr auto kFormatVersion = 1;
 	return PeerId();
 }
 
+[[nodiscard]] QJsonObject FolderToJson(const LocalFolder &folder, bool withId) {
+	auto peers = QStringList();
+	for (const auto peerId : folder.own) {
+		const auto text = PeerToString(peerId);
+		if (!text.isEmpty()) {
+			peers.push_back(text);
+		}
+	}
+	peers.sort(); // Stable bytes for sync.
+	auto peersJson = QJsonArray();
+	for (const auto &text : peers) {
+		peersJson.push_back(text);
+	}
+	auto pinnedJson = QJsonArray();
+	for (const auto peerId : folder.pinned) {
+		const auto text = PeerToString(peerId);
+		if (!text.isEmpty()) {
+			pinnedJson.push_back(text);
+		}
+	}
+	auto object = QJsonObject();
+	object.insert(u"uid"_q, folder.uid);
+	if (withId) {
+		object.insert(u"id"_q, int(folder.id));
+	}
+	object.insert(u"parent"_q, folder.parentUid);
+	object.insert(u"title"_q, folder.title);
+	object.insert(u"icon"_q, folder.iconEmoji);
+	object.insert(u"order"_q, folder.order);
+	object.insert(u"sync"_q, folder.sync);
+	object.insert(u"deleted"_q, folder.deleted);
+	object.insert(u"rev"_q, double(folder.rev));
+	object.insert(u"peers"_q, peersJson);
+	object.insert(u"pinned"_q, pinnedJson);
+	return object;
+}
+
+[[nodiscard]] LocalFolder FolderFromJson(const QJsonObject &object) {
+	auto folder = LocalFolder();
+	folder.uid = object.value(u"uid"_q).toString();
+	folder.id = FilterId(object.value(u"id"_q).toInt());
+	folder.parentUid = object.value(u"parent"_q).toString();
+	folder.title = object.value(u"title"_q).toString();
+	folder.iconEmoji = object.value(u"icon"_q).toString();
+	folder.order = object.value(u"order"_q).toInt();
+	folder.sync = object.value(u"sync"_q).toBool(true);
+	folder.deleted = object.value(u"deleted"_q).toBool();
+	folder.rev = int64(object.value(u"rev"_q).toDouble());
+	for (const auto &peer : object.value(u"peers"_q).toArray()) {
+		if (const auto peerId = PeerFromString(peer.toString())) {
+			folder.own.emplace(peerId);
+		}
+	}
+	for (const auto &peer : object.value(u"pinned"_q).toArray()) {
+		if (const auto peerId = PeerFromString(peer.toString())) {
+			folder.pinned.push_back(peerId);
+		}
+	}
+	return folder;
+}
+
+[[nodiscard]] bool ParseRoot(
+		const QByteArray &json,
+		std::vector<LocalFolder> &folders,
+		int &next) {
+	auto error = QJsonParseError();
+	const auto document = QJsonDocument::fromJson(json, &error);
+	if (error.error != QJsonParseError::NoError || !document.isObject()) {
+		return false;
+	}
+	const auto root = document.object();
+	if (root.value(u"v"_q).toInt() != kFormatVersion) {
+		return false;
+	}
+	next = root.value(u"next"_q).toInt();
+	for (const auto &value : root.value(u"folders"_q).toArray()) {
+		auto folder = FolderFromJson(value.toObject());
+		if (!folder.uid.isEmpty()) {
+			folders.push_back(std::move(folder));
+		}
+	}
+	return true;
+}
+
 } // namespace
 
 LocalFolders::LocalFolders(not_null<Session*> owner)
@@ -104,7 +188,12 @@ std::vector<const LocalFolder*> LocalFolders::childrenOfUid(
 		const QString &uid) const {
 	auto result = std::vector<const LocalFolder*>();
 	for (const auto &folder : _folders) {
-		if (!folder.deleted && folder.parentUid == uid) {
+		if (folder.deleted) {
+			continue;
+		}
+		const auto orphan = !folder.parentUid.isEmpty()
+			&& !findByUid(folder.parentUid);
+		if (folder.parentUid == uid || (uid.isEmpty() && orphan)) {
 			result.push_back(&folder);
 		}
 	}
@@ -398,28 +487,9 @@ bool LocalFolders::removeChatEverywhere(PeerId peerId) {
 QByteArray LocalFolders::serialize(bool syncedOnly) const {
 	auto folders = QJsonArray();
 	for (const auto &folder : _folders) {
-		if (syncedOnly && !folder.sync) {
-			continue;
+		if (!syncedOnly || folder.sync) {
+			folders.push_back(FolderToJson(folder, true));
 		}
-		auto peers = QJsonArray();
-		for (const auto peerId : folder.own) {
-			const auto text = PeerToString(peerId);
-			if (!text.isEmpty()) {
-				peers.push_back(text);
-			}
-		}
-		auto object = QJsonObject();
-		object.insert(u"uid"_q, folder.uid);
-		object.insert(u"id"_q, int(folder.id));
-		object.insert(u"parent"_q, folder.parentUid);
-		object.insert(u"title"_q, folder.title);
-		object.insert(u"icon"_q, folder.iconEmoji);
-		object.insert(u"order"_q, folder.order);
-		object.insert(u"sync"_q, folder.sync);
-		object.insert(u"deleted"_q, folder.deleted);
-		object.insert(u"rev"_q, double(folder.rev));
-		object.insert(u"peers"_q, peers);
-		folders.push_back(object);
 	}
 	auto root = QJsonObject();
 	root.insert(u"v"_q, kFormatVersion);
@@ -428,47 +498,188 @@ QByteArray LocalFolders::serialize(bool syncedOnly) const {
 	return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
-bool LocalFolders::deserialize(const QByteArray &json) {
-	auto error = QJsonParseError();
-	const auto document = QJsonDocument::fromJson(json, &error);
-	if (error.error != QJsonParseError::NoError || !document.isObject()) {
-		return false;
-	}
-	const auto root = document.object();
-	if (root.value(u"v"_q).toInt() != kFormatVersion) {
-		return false;
-	}
-	auto folders = std::vector<LocalFolder>();
-	auto next = root.value(u"next"_q).toInt();
-	auto seenIds = base::flat_set<FilterId>();
-	for (const auto &value : root.value(u"folders"_q).toArray()) {
-		const auto object = value.toObject();
-		auto folder = LocalFolder();
-		folder.uid = object.value(u"uid"_q).toString();
-		folder.id = FilterId(object.value(u"id"_q).toInt());
-		folder.parentUid = object.value(u"parent"_q).toString();
-		folder.title = object.value(u"title"_q).toString();
-		folder.iconEmoji = object.value(u"icon"_q).toString();
-		folder.order = object.value(u"order"_q).toInt();
-		folder.sync = object.value(u"sync"_q).toBool(true);
-		folder.deleted = object.value(u"deleted"_q).toBool();
-		folder.rev = int64(object.value(u"rev"_q).toDouble());
-		for (const auto &peer : object.value(u"peers"_q).toArray()) {
-			if (const auto peerId = PeerFromString(peer.toString())) {
-				folder.own.emplace(peerId);
-			}
+QByteArray LocalFolders::serializeForSync() const {
+	auto synced = std::vector<const LocalFolder*>();
+	for (const auto &folder : _folders) {
+		if (folder.sync) {
+			synced.push_back(&folder);
 		}
-		if (folder.uid.isEmpty()
-			|| !IsLocalFilterId(folder.id)
-			|| !seenIds.emplace(folder.id).second) {
+	}
+	ranges::sort(synced, [](const LocalFolder *a, const LocalFolder *b) {
+		return a->uid < b->uid;
+	});
+	auto folders = QJsonArray();
+	for (const auto folder : synced) {
+		folders.push_back(FolderToJson(*folder, false));
+	}
+	auto root = QJsonObject();
+	root.insert(u"v"_q, kFormatVersion);
+	root.insert(u"folders"_q, folders);
+	return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+bool LocalFolders::deserialize(const QByteArray &json) {
+	auto folders = std::vector<LocalFolder>();
+	auto next = 0;
+	if (!ParseRoot(json, folders, next)) {
+		return false;
+	}
+	auto seenIds = base::flat_set<FilterId>();
+	auto valid = std::vector<LocalFolder>();
+	for (auto &folder : folders) {
+		if (!IsLocalFilterId(folder.id) || !seenIds.emplace(folder.id).second) {
 			continue;
 		}
 		next = std::max(next, int(folder.id - kLocalFilterIdBase));
-		folders.push_back(std::move(folder));
+		valid.push_back(std::move(folder));
 	}
-	_folders = std::move(folders);
+	_folders = std::move(valid);
 	_nextNumber = next;
 	return true;
+}
+
+LocalFolder *LocalFolders::findAnyByUid(const QString &uid) {
+	for (auto &folder : _folders) {
+		if (folder.uid == uid) {
+			return &folder;
+		}
+	}
+	return nullptr;
+}
+
+bool LocalFolders::mergeRemote(const QByteArray &json) {
+	auto remote = std::vector<LocalFolder>();
+	auto next = 0;
+	if (!ParseRoot(json, remote, next)) {
+		return false;
+	}
+	auto changed = false;
+	for (auto &incoming : remote) {
+		const auto folder = findAnyByUid(incoming.uid);
+		if (!folder) {
+			if (incoming.deleted) {
+				continue; // Nothing to delete here.
+			}
+			incoming.id = kLocalFilterIdBase + (++_nextNumber);
+			incoming.sync = true;
+			_folders.push_back(std::move(incoming));
+			changed = true;
+		} else if (!folder->sync) {
+			continue; // Local-only folders are never touched.
+		} else if (incoming.rev > folder->rev) {
+			folder->parentUid = incoming.parentUid;
+			folder->title = incoming.title;
+			folder->iconEmoji = incoming.iconEmoji;
+			folder->order = incoming.order;
+			folder->own = std::move(incoming.own);
+			folder->pinned = std::move(incoming.pinned);
+			folder->deleted = incoming.deleted;
+			folder->rev = incoming.rev;
+			changed = true;
+		}
+	}
+	// Old tombstones have long been delivered everywhere.
+	constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
+	const auto limit = NowMs() - kTombstoneLifetime;
+	const auto before = _folders.size();
+	_folders.erase(
+		std::remove_if(_folders.begin(), _folders.end(), [&](
+				const LocalFolder &folder) {
+			return folder.deleted && folder.rev < limit;
+		}),
+		_folders.end());
+	if (_folders.size() != before) {
+		changed = true;
+	}
+	if (changed) {
+		save();
+		_changed.fire({});
+	}
+	return changed;
+}
+
+bool LocalFolders::setChats(
+		FilterId id,
+		const base::flat_set<PeerId> &peers) {
+	const auto folder = findMutable(id);
+	if (!folder || folder->own == peers) {
+		return false;
+	}
+	folder->own = peers;
+	changedFolder(*folder);
+	return true;
+}
+
+bool LocalFolders::setPinned(FilterId id, std::vector<PeerId> pinned) {
+	const auto folder = findMutable(id);
+	if (!folder || folder->pinned == pinned) {
+		return false;
+	}
+	folder->pinned = std::move(pinned);
+	changedFolder(*folder);
+	return true;
+}
+
+std::vector<PeerId> LocalFolders::pinnedOf(FilterId id) const {
+	const auto folder = find(id);
+	return folder ? folder->pinned : std::vector<PeerId>();
+}
+
+void LocalFolders::applySiblingOrder(const std::vector<FilterId> &ids) {
+	auto changed = false;
+	const auto now = NowMs();
+	for (auto i = 0, count = int(ids.size()); i != count; ++i) {
+		if (const auto folder = findMutable(ids[i])) {
+			if (folder->order != i) {
+				folder->order = i;
+				folder->rev = now;
+				changed = true;
+			}
+		}
+	}
+	if (changed) {
+		save();
+		_changed.fire({});
+	}
+}
+
+bool LocalFolders::moveBy(FilterId id, int delta) {
+	const auto folder = findMutable(id);
+	if (!folder || !delta) {
+		return false;
+	}
+	const auto parentUid = parentOf(id) ? folder->parentUid : QString();
+	auto ordered = std::vector<FilterId>();
+	for (const auto sibling : childrenOfUid(parentUid)) {
+		ordered.push_back(sibling->id);
+	}
+	const auto i = ranges::find(ordered, id);
+	if (i == ordered.end()) {
+		return false;
+	}
+	const auto index = int(i - ordered.begin());
+	const auto target = index + delta;
+	if (target < 0 || target >= int(ordered.size())) {
+		return false;
+	}
+	std::swap(ordered[index], ordered[target]);
+	applySiblingOrder(ordered);
+	return true;
+}
+
+void LocalFolders::reorderTop(const std::vector<FilterId> &ids) {
+	auto ordered = std::vector<FilterId>();
+	for (const auto id : ids) {
+		if (find(id) && !parentOf(id) && !ranges::contains(ordered, id)) {
+			ordered.push_back(id);
+		}
+	}
+	for (const auto sibling : childrenOfUid(QString())) {
+		if (!ranges::contains(ordered, sibling->id)) {
+			ordered.push_back(sibling->id);
+		}
+	}
+	applySiblingOrder(ordered);
 }
 
 void LocalFolders::save() {
