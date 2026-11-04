@@ -4097,4 +4097,33 @@ void Account::writePrefImpl<QString>(
 	writePrefGeneric(key, value.toUtf8());
 }
 
+namespace {
+
+// "ZSGFLDR1": a fixed key, not registered in the account map.
+constexpr auto kZsgFoldersKey = FileKey(0x5A53474644524C31ULL);
+
+} // namespace
+
+void Account::writeZsgFolders(const QByteArray &json) {
+	if (json.isEmpty()) {
+		ClearKey(kZsgFoldersKey, _basePath);
+		return;
+	}
+	EncryptedDescriptor data(Serialize::bytearraySize(json));
+	data.stream << json;
+
+	FileWriteDescriptor file(kZsgFoldersKey, _basePath);
+	file.writeEncrypted(data, _localKey);
+}
+
+QByteArray Account::readZsgFolders() {
+	FileReadDescriptor file;
+	if (!ReadEncryptedFile(file, kZsgFoldersKey, _basePath, _localKey)) {
+		return {};
+	}
+	auto json = QByteArray();
+	file.stream >> json;
+	return json;
+}
+
 } // namespace Storage

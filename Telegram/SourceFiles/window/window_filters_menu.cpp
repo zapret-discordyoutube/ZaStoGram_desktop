@@ -272,7 +272,7 @@ void FiltersMenu::scrollToButton(not_null<Ui::RpWidget*> widget) {
 }
 
 void FiltersMenu::applyFilterAt(int start, int delta) {
-	const auto &list = _session->session().data().chatsFilters().list();
+	const auto &list = _session->session().data().chatsFilters().tabs();
 	const auto count = int(list.size());
 	// Move focus to the folder at `start`, then in the `delta` direction,
 	// stopping at the bounds (no wrap). Arrow keys only move focus; activation
@@ -294,7 +294,7 @@ void FiltersMenu::applyFilterAt(int start, int delta) {
 }
 
 void FiltersMenu::moveToFilter(int delta) {
-	const auto &list = _session->session().data().chatsFilters().list();
+	const auto &list = _session->session().data().chatsFilters().tabs();
 	const auto count = int(list.size());
 	// Move relative to the currently focused folder, so navigation continues
 	// from a locked one (which only takes focus, without becoming active); fall
@@ -314,7 +314,7 @@ void FiltersMenu::moveToFilter(int delta) {
 
 void FiltersMenu::moveToFilterEdge(int delta) {
 	const auto count = int(
-		_session->session().data().chatsFilters().list().size());
+		_session->session().data().chatsFilters().tabs().size());
 	applyFilterAt((delta > 0) ? 0 : (count - 1), delta);
 }
 
@@ -366,7 +366,7 @@ void FiltersMenu::refresh() {
 	}
 	_reorder->addPinnedInterval(
 		premiumFrom,
-		std::max(1, int(filters->list().size()) - maxLimit));
+		std::max(1, filters->serverCount() - maxLimit));
 
 	// Remember which folder holds keyboard focus so the roving Tab-stop can be
 	// re-established on its replacement after the rebuild: the new buttons are
@@ -382,7 +382,7 @@ void FiltersMenu::refresh() {
 
 	auto now = base::flat_map<int, base::unique_qptr<Ui::SideBarButton>>();
 	const auto &currentFilter = _session->activeChatsFilterCurrent();
-	for (const auto &filter : filters->list()) {
+	for (const auto &filter : filters->tabs()) {
 		const auto nextIsLocked = (now.size() >= premiumFrom);
 		if (nextIsLocked && (currentFilter == filter.id())) {
 			_session->setActiveChatsFilter(FilterId(0));
@@ -797,7 +797,7 @@ void FiltersMenu::applyReorder(
 	}
 
 	const auto filters = &_session->session().data().chatsFilters();
-	const auto &list = filters->list();
+	const auto &list = filters->tabs();
 	if (!premium()) {
 		if (list[0].id() != FilterId()) {
 			filters->moveAllToFront();

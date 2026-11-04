@@ -247,6 +247,8 @@ PRIVATE
     api/api_who_reacted.h
     boxes/filters/edit_filter_box.cpp
     boxes/filters/edit_filter_box.h
+    boxes/filters/edit_local_folder_box.cpp
+    boxes/filters/edit_local_folder_box.h
     boxes/filters/edit_filter_chats_list.cpp
     boxes/filters/edit_filter_chats_list.h
     boxes/filters/edit_filter_chats_preview.cpp
@@ -711,6 +713,8 @@ PRIVATE
     data/data_chat.h
     data/data_chat_filters.cpp
     data/data_chat_filters.h
+    data/data_chat_filters_tree.cpp
+    data/data_chat_filters_tree.h
     data/data_chat_participant_status.cpp
     data/data_chat_participant_status.h
     data/data_changes.cpp
@@ -2053,6 +2057,8 @@ PRIVATE
     settings/settings_experimental.h
     settings/sections/settings_folders.cpp
     settings/sections/settings_folders.h
+    settings/sections/settings_folders_local.cpp
+    settings/sections/settings_folders_local.h
     settings/sections/settings_global_ttl.cpp
     settings/sections/settings_global_ttl.h
     settings/sections/settings_information.cpp

@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h" // primaryWindow
 #include "core/ui_integration.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_premium_limits.h"
 #include "data/data_session.h"
 #include "data/data_channel.h"
@@ -161,6 +162,35 @@ void ChangeFilterById(
 		not_null<History*> history,
 		bool add) {
 	Expects(filterId != 0);
+
+	if (Data::IsLocalFilterId(filterId)) {
+		auto &local = history->owner().chatsFilters().local();
+		const auto folder = local.find(filterId);
+		if (!folder) {
+			return;
+		}
+		const auto title = folder->title;
+		const auto changed = add
+			? local.addChat(filterId, history->peer->id)
+			: local.removeChatDeep(filterId, history->peer->id);
+		const auto account = not_null(&history->session().account());
+		if (changed) {
+			if (const auto controller = Core::App().windowFor(account)) {
+				controller->showToast({
+					.text = (add
+						? tr::lng_filters_toast_add
+						: tr::lng_filters_toast_remove)(
+							tr::now,
+							lt_chat,
+							tr::bold(history->peer->name()),
+							lt_folder,
+							tr::bold(title),
+							tr::marked),
+				});
+			}
+		}
+		return;
+	}
 
 	const auto list = history->owner().chatsFilters().list();
 	const auto i = ranges::find(list, filterId, &Data::ChatFilter::id);
@@ -355,7 +385,10 @@ void FillChooseFilterMenu(
 	const auto limit = [session = &controller->session()] {
 		return Data::PremiumLimits(session).dialogFiltersCurrent();
 	};
-	if ((list.size() - 1) < limit()) {
+	const auto serverFilters = [session = &controller->session()] {
+		return session->data().chatsFilters().serverCount() - 1;
+	};
+	if (serverFilters() < limit()) {
 		menu->addAction(tr::lng_filters_create(tr::now), [=] {
 			const auto strong = weak.get();
 			if (!strong) {
@@ -363,7 +396,7 @@ void FillChooseFilterMenu(
 			}
 			const auto session = &strong->session();
 			const auto &list = session->data().chatsFilters().list();
-			if ((list.size() - 1) >= limit()) {
+			if (session->data().chatsFilters().serverCount() - 1 >= limit()) {
 				return;
 			}
 			const auto chooseNextId = [&] {

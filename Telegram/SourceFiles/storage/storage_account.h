@@ -172,6 +172,11 @@ public:
 	void writeSearchSuggestions();
 	void readSearchSuggestions();
 
+	// ZaStoGram folders: one encrypted blob (JSON) under a fixed file key,
+	// outside of the account map, so upstream's map layout is untouched.
+	void writeZsgFolders(const QByteArray &json);
+	[[nodiscard]] QByteArray readZsgFolders();
+
 	void writeSelf();
 
 	// Read self is special, it can't get session from account, because

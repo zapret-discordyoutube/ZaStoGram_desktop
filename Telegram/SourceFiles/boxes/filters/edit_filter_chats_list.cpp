@@ -147,7 +147,9 @@ ExceptionRow::ExceptionRow(
 : Row(history) {
 	auto filters = TextWithEntities();
 	for (const auto &filter : history->owner().chatsFilters().list()) {
-		if (filter.contains(history) && filter.id()) {
+		if (filter.contains(history)
+			&& filter.id()
+			&& !Data::IsLocalFilterId(filter.id())) {
 			if (!filters.empty()) {
 				filters.append(u", "_q);
 			}

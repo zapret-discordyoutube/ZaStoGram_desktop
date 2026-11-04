@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_folders.h"
 
+#include "settings/sections/settings_folders_local.h"
+
 #include "api/api_chat_filters.h"
 #include "apiwrap.h"
 #include "boxes/filters/edit_filter_box.h"
@@ -15,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/ui_integration.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_folder.h"
 #include "data/data_peer.h"
 #include "data/data_peer_values.h"
@@ -542,7 +545,7 @@ not_null<Ui::VerticalLayout*> SetupFoldersList(
 	};
 	const auto &list = session->data().chatsFilters().list();
 	for (const auto &filter : list) {
-		if (filter.id()) {
+		if (filter.id() && !Data::IsLocalFilterId(filter.id())) {
 			addFilter(filter);
 		}
 	}
@@ -1260,6 +1263,10 @@ void Folders::setupContent() {
 
 		BuildTopContent(builder, std::move(showFinishedDup));
 		BuildFoldersListSection(builder, state.get());
+		builder.add([=](const WidgetContext &ctx) {
+			SetupLocalFolders(ctx.controller, ctx.container);
+			return SectionBuilder::WidgetToAdd{};
+		});
 		BuildTagsSection(builder, state.get());
 		BuildViewSection(builder);
 

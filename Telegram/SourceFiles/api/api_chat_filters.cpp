@@ -870,6 +870,9 @@ void ProcessFilterInvite(
 void SaveNewFilterPinned(
 		not_null<Main::Session*> session,
 		FilterId filterId) {
+	if (Data::IsLocalFilterId(filterId)) {
+		return; // ZaStoGram's own folders are not on the server.
+	}
 	const auto &order = session->data().pinnedChatsOrder(filterId);
 	auto &filters = session->data().chatsFilters();
 	const auto &filter = filters.applyUpdatedPinned(filterId, order);

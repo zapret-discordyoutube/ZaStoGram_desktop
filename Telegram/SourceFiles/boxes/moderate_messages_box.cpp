@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_chat_participant_status.h"
 #include "data/data_histories.h"
 #include "data/data_peer.h"
@@ -424,6 +425,9 @@ void ProccessCommonGroups(
 		not_null<History*> history) {
 	auto result = std::vector<FilterId>();
 	for (const auto &filter : history->owner().chatsFilters().list()) {
+		if (Data::IsLocalFilterId(filter.id())) {
+			continue;
+		}
 		if (filter.withoutAlways(history) != filter) {
 			result.push_back(filter.id());
 		}
@@ -434,6 +438,7 @@ void ProccessCommonGroups(
 void RemoveChatFromFilters(not_null<PeerData*> peer) {
 	const auto history = peer->owner().history(peer).get();
 	const auto removeFrom = FiltersWithChat(history);
+	peer->owner().chatsFilters().local().removeChatEverywhere(peer->id);
 	for (const auto &filter : peer->owner().chatsFilters().list()) {
 		if (!ranges::contains(removeFrom, filter.id())) {
 			continue;
