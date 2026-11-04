@@ -73,10 +73,21 @@ constexpr auto kUpdateCheckTimeout = 6 * crl::time(1000);
 constexpr auto kUpdaterStallTimeout = 20 * crl::time(1000);
 // The whole check, with every mirror: the mirrors are raced, so a name that
 // is dropped silently must not eat the time the working ones need.
-constexpr auto kUpdateCheckBudget = 25 * crl::time(1000);
+constexpr auto kUpdateCheckBudget = 40 * crl::time(1000);
+// The entry pages are asked once the first routes had their chance: most
+// checks end sooner and never need them.
+constexpr auto kEntryDelay = crl::time(2500);
 constexpr auto kMirrorStagger = crl::time(1500);
 constexpr auto kLoaderSilence = 5 * 1000;
 constexpr auto kMaxResponseSize = 1024 * 1024;
+// The same releases are mirrored to GitHub, whose names are not filtered where
+// the git ones are: it is the first route and the git mirrors back it up.
+constexpr auto kZaStoGramGithubApi =
+	"https://api.github.com/repos/zapret-discordyoutube/"
+	"ZaStoGram_desktop/releases?per_page=6"_cs;
+constexpr auto kZaStoGramForgejoDownload =
+	"https://git.zapret.moe/zastogram/ZaStoGram_desktop/"
+	"releases/download/%1/%2"_cs;
 constexpr auto kZaStoGramReleasesApi =
 	"https://git.zapret.moe/api/v1/repos/"
 	"zastogram/ZaStoGram_desktop/releases"
@@ -204,12 +215,13 @@ private:
 	struct Attempt {
 		QString host;
 		bool direct = false;
+		bool github = false;
 	};
 	void startNext();
 	void sendTo(const Attempt &attempt);
 	void attemptFailed();
 	void requestEntryNames();
-	void addAttempts(const QStringList &hosts);
+	void addAttempts(const QStringList &hosts, bool github = false);
 	[[nodiscard]] int attemptsCount() const;
 	[[nodiscard]] QString mirrored(const QString &url) const;
 	void gotResponse(
@@ -235,8 +247,10 @@ private:
 	std::vector<Attempt> _attempts;
 	QString _answeredHost;
 	bool _answeredDirect = false;
+	bool _answeredGithub = false;
 	int _nextHost = 0;
 	base::Timer _staggerTimer;
+	base::Timer _entryTimer;
 	bool _proxied = false;
 	enum class EntryState {
 		None,
@@ -251,7 +265,10 @@ class HttpLoaderActor;
 
 class HttpLoader : public Loader {
 public:
-	HttpLoader(const QString &url, bool direct = false);
+	HttpLoader(
+		const QString &url,
+		const QString &fallbackUrl = QString(),
+		bool direct = false);
 
 	~HttpLoader();
 
@@ -261,7 +278,7 @@ private:
 	friend class HttpLoaderActor;
 
 	QString _url;
-	QStringList _hosts;
+	QString _fallbackUrl;
 	bool _direct = false;
 	std::unique_ptr<QThread> _thread;
 	HttpLoaderActor *_actor = nullptr;
@@ -273,8 +290,7 @@ public:
 	HttpLoaderActor(
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
-		const QString &url,
-		const QStringList &hosts,
+		const QStringList &urls,
 		bool direct);
 
 private:
@@ -287,10 +303,8 @@ private:
 	void partFailed(QNetworkReply::NetworkError e);
 
 	not_null<HttpLoader*> _parent;
-	QString _url;
-	QStringList _hosts;
-	int _hostIndex = 0;
-	int _switches = 0;
+	QStringList _urls;
+	int _urlIndex = 0;
 	QNetworkAccessManager _manager;
 	std::unique_ptr<QNetworkReply> _reply;
 
@@ -957,7 +971,8 @@ rpl::lifetime &Checker::lifetime() {
 
 HttpChecker::HttpChecker(bool testing)
 : Checker(testing)
-, _staggerTimer([=] { startNext(); }) {
+, _staggerTimer([=] { startNext(); })
+, _entryTimer([=] { requestEntryNames(); }) {
 }
 
 void HttpChecker::start() {
@@ -980,6 +995,8 @@ void HttpChecker::request(const QUrl &url, ResponseType type) {
 	_responseType = type;
 	_baseUrl = url;
 	_nextHost = 0;
+	_answeredGithub = false;
+	_entryTimer.cancel();
 	_attempts.clear();
 	// git.zapret.moe is dropped by name in some countries, while the same
 	// Forgejo answers on its mirrors. They are raced: the next one starts
@@ -996,7 +1013,10 @@ void HttpChecker::request(const QUrl &url, ResponseType type) {
 			!= QNetworkProxy::NoProxy)
 		|| QNetworkProxyFactory::usesSystemConfiguration();
 	if (mirrored) {
-		addAttempts(Core::ZsgMirrors::Hosts());
+		addAttempts(
+			Core::ZsgMirrors::Hosts(),
+			type == ResponseType::DevReleases);
+		_entryTimer.callOnce(kEntryDelay);
 	} else {
 		_attempts.push_back({ QString(), false });
 	}
@@ -1025,44 +1045,59 @@ int HttpChecker::attemptsCount() const {
 	return int(_attempts.size());
 }
 
-void HttpChecker::addAttempts(const QStringList &hosts) {
-	for (const auto &host : hosts) {
-		_attempts.push_back({ host, false });
-	}
-	if (_proxied) {
-		for (const auto &host : hosts) {
-			_attempts.push_back({ host, true });
+void HttpChecker::addAttempts(const QStringList &hosts, bool github) {
+	const auto add = [&](bool direct) {
+		if (github) {
+			_attempts.push_back({ QString(), direct, true });
 		}
+		for (const auto &host : hosts) {
+			_attempts.push_back({ host, direct, false });
+		}
+	};
+	add(false);
+	if (_proxied) {
+		add(true);
 	}
 }
 
-// Every known name has been started: the entry pages are asked at once,
-// not after the silent ones time out, so the new names still fit into the
-// check budget. Names already tried are not repeated.
+// The entry pages are asked a little after the first routes started, and
+// at once when every known name has failed: the new names still fit into
+// the check budget. Names already tried are not repeated. The check waits
+// for every page: Apps Script is slow, and it is the one that always
+// carries the live names.
 void HttpChecker::requestEntryNames() {
+	_entryTimer.cancel();
 	if (_entryState != EntryState::None) {
 		return;
 	}
 	_entryState = EntryState::Pending;
 	auto tried = QStringList();
 	for (const auto &attempt : _attempts) {
-		if (!tried.contains(attempt.host)) {
+		if (!attempt.host.isEmpty() && !tried.contains(attempt.host)) {
 			tried.push_back(attempt.host);
 		}
 	}
 	LOG(("Update Info: asking the entry pages for new mirror names"));
 	const auto weak = base::make_weak(this);
-	Core::ZsgMirrors::FetchEntryNames(tried, [=](QStringList fresh) {
+	Core::ZsgMirrors::FetchEntryNames(tried, [=](
+			QStringList fresh,
+			bool last) {
 		const auto strong = weak.get();
 		if (!strong || strong->_entryState != EntryState::Pending) {
 			return; // the check already ended: an answer, a failure or a new request
 		}
-		strong->_entryState = EntryState::Done;
-		LOG(("Update Info: entry pages gave %1").arg(fresh.join(',')));
+		if (last) {
+			strong->_entryState = EntryState::Done;
+		}
+		LOG(("Update Info: entry pages gave %1%2"
+			).arg(fresh.join(',')
+			).arg(last ? u" (all answered)"_q : QString()));
 		if (!fresh.isEmpty()) {
 			strong->addAttempts(fresh);
 			strong->startNext();
-		} else if (strong->_replies.empty()
+		}
+		if (last
+			&& strong->_replies.empty()
 			&& strong->_nextHost >= strong->attemptsCount()) {
 			strong->clearSentRequest();
 			strong->fail();
@@ -1091,7 +1126,9 @@ QString HttpChecker::mirrored(const QString &url) const {
 }
 
 void HttpChecker::sendTo(const Attempt &attempt) {
-	const auto url = attempt.host.isEmpty()
+	const auto url = attempt.github
+		? QUrl(kZaStoGramGithubApi.utf16())
+		: attempt.host.isEmpty()
 		? _baseUrl
 		: Core::ZsgMirrors::WithHost(_baseUrl, attempt.host);
 	auto request = QNetworkRequest(url);
@@ -1148,7 +1185,7 @@ void HttpChecker::gotResponse(
 	const auto response = ok ? reply->read(kMaxResponseSize) : QByteArray();
 	const auto host = attempt.host;
 	LOG(("Update Info: %1%2 -> %3 (%4), http %5, %6 bytes, %7 ms"
-		).arg(host
+		).arg(attempt.github ? u"github"_q : host
 		).arg(attempt.direct ? u" [direct]"_q : QString()
 		).arg(int(reply->error())
 		).arg(reply->errorString()
@@ -1171,6 +1208,7 @@ void HttpChecker::gotResponse(
 	}
 	_answeredHost = host;
 	_answeredDirect = attempt.direct;
+	_answeredGithub = attempt.github;
 	const auto weak = base::make_weak(this);
 	const auto handled = (_responseType == ResponseType::DevReleases)
 		? handleDevReleases(response)
@@ -1203,6 +1241,7 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 	const auto current = ZaStoGramDevBuildNumber().value_or(0);
 	auto best = current;
 	auto bestUrl = QString();
+	auto bestFallback = QString();
 	static const auto TagExpression = QRegularExpression(u"^dev-(\\d+)$"_q);
 	const auto packagePrefix = [&] {
 		const auto platform = Platform::AutoUpdateKey();
@@ -1240,6 +1279,7 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 		auto hasManifest = false;
 		auto packageVersion = 0ULL;
 		auto packageUrl = QString();
+		auto packageName = QString();
 		const auto packageExpression = QRegularExpression(
 			u"^%1(\\d+)_dev%2$"_q.arg(packagePrefix).arg(build));
 		for (const auto &assetValue : release.value("assets").toArray()) {
@@ -1251,6 +1291,7 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 				package.hasMatch()) {
 				packageVersion = package.captured(1).toULongLong();
 				packageUrl = asset.value("browser_download_url").toString();
+				packageName = name;
 			}
 		}
 		if (hasManifest
@@ -1258,6 +1299,13 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 			&& !packageUrl.isEmpty()) {
 			best = build;
 			bestUrl = packageUrl;
+			// A package found on GitHub can also be fetched from the git
+			// mirrors when GitHub's file host is the one that is cut.
+			bestFallback = _answeredGithub
+				? QString(kZaStoGramForgejoDownload.utf16()).arg(
+					QString("dev-%1").arg(build),
+					packageName)
+				: QString();
 		}
 	}
 	if (bestUrl.isEmpty()) {
@@ -1265,7 +1313,10 @@ bool HttpChecker::handleDevReleases(const QByteArray &response) {
 		return true;
 	}
 	DEBUG_LOG(("Update Info: found ZaStoGram dev build %1").arg(best));
-	done(std::make_shared<HttpLoader>(mirrored(bestUrl), _answeredDirect));
+	done(std::make_shared<HttpLoader>(
+		mirrored(bestUrl),
+		bestFallback,
+		_answeredDirect));
 	return true;
 }
 
@@ -1273,7 +1324,10 @@ bool HttpChecker::handleResponse(const QByteArray &response) {
 	const auto handle = [&](const QString &url) {
 		done(url.isEmpty()
 			? nullptr
-			: std::make_shared<HttpLoader>(mirrored(url), _answeredDirect));
+			: std::make_shared<HttpLoader>(
+				mirrored(url),
+				QString(),
+				_answeredDirect));
 		return true;
 	};
 	if (const auto url = parseOldResponse(response)) {
@@ -1286,6 +1340,7 @@ bool HttpChecker::handleResponse(const QByteArray &response) {
 
 void HttpChecker::clearSentRequest() {
 	_staggerTimer.cancel();
+	_entryTimer.cancel();
 	_entryState = EntryState::Done;
 	_nextHost = attemptsCount();
 	for (const auto reply : base::take(_replies)) {
@@ -1380,20 +1435,42 @@ HttpChecker::~HttpChecker() {
 	clearSentRequest();
 }
 
-HttpLoader::HttpLoader(const QString &url, bool direct)
+HttpLoader::HttpLoader(
+	const QString &url,
+	const QString &fallbackUrl,
+	bool direct)
 : Loader(UpdatesFolder() + '/' + ExtractFilename(url), kChunkSize)
 , _url(url)
+, _fallbackUrl(fallbackUrl)
 , _direct(direct) {
 }
 
 void HttpLoader::startLoading() {
 	LOG(("Update Info: Loading using HTTP from '%1'.").arg(_url));
 
-	_hosts = Core::ZsgMirrors::IsGitHost(QUrl(_url).host())
-		? Core::ZsgMirrors::Hosts()
-		: QStringList();
+	// The address the check was answered with goes first, then the same file
+	// on every other git mirror, then the fallback file with its mirrors.
+	auto urls = QStringList(_url);
+	const auto addMirrors = [&](const QString &url) {
+		if (!Core::ZsgMirrors::IsGitHost(QUrl(url).host())) {
+			if (!urls.contains(url)) {
+				urls.push_back(url);
+			}
+			return;
+		}
+		for (const auto &host : Core::ZsgMirrors::Hosts()) {
+			const auto mirror = Core::ZsgMirrors::WithHost(url, host);
+			if (!urls.contains(mirror)) {
+				urls.push_back(mirror);
+			}
+		}
+	};
+	addMirrors(_url);
+	if (!_fallbackUrl.isEmpty()) {
+		addMirrors(_fallbackUrl);
+	}
 	_thread = std::make_unique<QThread>();
-	_actor = new HttpLoaderActor(this, _thread.get(), _url, _hosts, _direct);
+	_actor = new HttpLoaderActor(this, _thread.get(), urls, _direct);
 	_thread->start();
 }
 
@@ -1414,18 +1491,13 @@ HttpLoader::~HttpLoader() {
 HttpLoaderActor::HttpLoaderActor(
 		not_null<HttpLoader*> parent,
 		not_null<QThread*> thread,
-		const QString &url,
-		const QStringList &hosts,
+		const QStringList &urls,
 		bool direct)
 : _parent(parent)
-, _hosts(hosts) {
+, _urls(urls) {
 	if (direct) {
 		_manager.setProxy(QNetworkProxy::NoProxy);
 	}
-	_url = url;
-	// Begin with the host the URL already points at.
-	const auto index = _hosts.indexOf(QUrl(url).host().toLower());
-	_hostIndex = std::max(int(index), 0);
 	moveToThread(thread);
 	_manager.moveToThread(thread);
 
@@ -1437,15 +1509,11 @@ void HttpLoaderActor::start() {
 }
 
 bool HttpLoaderActor::tryNextHost() {
-	// The name the check was answered by may be the last one in the list:
-	// go round the whole list once, not only forward from it.
-	if (_hosts.size() < 2 || _switches + 1 >= _hosts.size()) {
+	if (_urlIndex + 1 >= _urls.size()) {
 		return false;
 	}
-	++_switches;
-	_hostIndex = int((_hostIndex + 1) % _hosts.size());
-	_url = Core::ZsgMirrors::WithHost(_url, _hosts[_hostIndex]);
-	LOG(("Update Info: trying to continue from '%1'.").arg(_url));
+	++_urlIndex;
+	LOG(("Update Info: trying to continue from '%1'.").arg(_urls[_urlIndex]));
 	if (const auto old = _reply.release()) {
 		old->disconnect(this);
 		old->abort();
@@ -1456,10 +1524,14 @@ bool HttpLoaderActor::tryNextHost() {
 }
 
 void HttpLoaderActor::sendRequest() {
-	auto request = QNetworkRequest(_url);
+	auto request = QNetworkRequest(QUrl(_urls[_urlIndex]));
 	// A name dropped by a filter never answers and never errors: give up
 	// on it after a short silence so the next mirror can resume the file.
 	request.setTransferTimeout(kLoaderSilence);
+	// GitHub hands its files over through a redirect to another host.
+	request.setAttribute(
+		QNetworkRequest::RedirectPolicyAttribute,
+		QNetworkRequest::NoLessSafeRedirectPolicy);
 	const auto rangeHeaderValue = "bytes="
 		+ QByteArray::number(_parent->alreadySize())
 		+ "-";

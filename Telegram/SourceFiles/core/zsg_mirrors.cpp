@@ -30,6 +30,9 @@ namespace {
 
 constexpr auto kMaxHosts = 6;
 constexpr auto kRefreshTimeout = 6 * 1000;
+// Apps Script starts cold and answers through a redirect: 6 seconds were not
+// enough for it from a slow line, and it is the page that carries the live names.
+constexpr auto kEntryTimeout = 15 * 1000;
 constexpr auto kMaxResponseSize = 256 * 1024;
 
 [[nodiscard]] QStringList Builtin() {
@@ -117,10 +120,11 @@ void Refresh(const QString &host) {
 // One race over every list and every route: a proxy that swallows requests
 // (the app-wide one only carries Telegram) must not hide the pages that a
 // browser on the same machine opens directly, and a silent list must not
-// delay the other one. The first answer with new names wins.
+// delay the other one. Names are handed over as each answer arrives, and
+// the last call says that every page has answered or timed out.
 struct EntryRace {
 	int pending = 0;
-	bool finished = false;
+	QStringList delivered;
 };
 
 } // namespace
@@ -227,7 +231,9 @@ QStringList ParseEntry(const QByteArray &json) {
 	return result;
 }
 
-void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done) {
+void FetchEntryNames(
+		QStringList tried,
+		Fn<void(QStringList fresh, bool last)> done) {
 	const auto lists = EntryLists();
 	const auto proxied = (QNetworkProxy::applicationProxy().type()
 			!= QNetworkProxy::NoProxy)
@@ -243,7 +249,7 @@ void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done) {
 				manager->setProxy(QNetworkProxy::NoProxy);
 			}
 			auto request = QNetworkRequest(QUrl(list));
-			request.setTransferTimeout(kRefreshTimeout);
+			request.setTransferTimeout(kEntryTimeout);
 			// Apps Script answers through a redirect to
 			// script.googleusercontent.com.
 			request.setAttribute(
@@ -265,32 +271,28 @@ void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done) {
 					).arg(crl::now() - started));
 				reply->deleteLater();
 				manager->deleteLater();
-				if (race->finished) {
-					return;
-				}
 				--race->pending;
 				auto fresh = QStringList();
 				for (const auto &name : ParseEntry(body)) {
-					if (!tried.contains(name)) {
+					if (!tried.contains(name)
+						&& !race->delivered.contains(name)) {
 						fresh.push_back(name);
 					}
 				}
 				if (!fresh.isEmpty()) {
-					race->finished = true;
+					race->delivered += fresh;
 					auto state = ReadState();
-					state.names = fresh;
+					state.names = race->delivered;
 					WriteState(state);
-					done(fresh);
-				} else if (!race->pending) {
-					race->finished = true;
-					done({});
+				}
+				if (!fresh.isEmpty() || !race->pending) {
+					done(fresh, !race->pending);
 				}
 			});
 		}
 	}
 	if (!race->pending) {
-		race->finished = true;
-		done({});
+		done({}, true);
 	}
 }
 
