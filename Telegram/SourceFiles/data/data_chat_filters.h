@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flags.h"
 #include "base/timer.h"
 
+#include <iterator>
+
 class History;
 
 namespace Dialogs {
@@ -171,21 +173,39 @@ public:
 
 		class iterator final {
 		public:
+			using iterator_category = std::forward_iterator_tag;
+			using value_type = ChatFilter;
+			using difference_type = std::ptrdiff_t;
+			using pointer = const ChatFilter*;
+			using reference = const ChatFilter&;
+
+			iterator() = default;
 			iterator(not_null<const ChatFilters*> owner, int index)
 			: _owner(owner)
 			, _index(index) {
 			}
-			[[nodiscard]] const ChatFilter &operator*() const;
+
+			[[nodiscard]] reference operator*() const;
+			[[nodiscard]] pointer operator->() const {
+				return &**this;
+			}
 			iterator &operator++() {
 				++_index;
 				return *this;
 			}
-			[[nodiscard]] bool operator!=(const iterator &other) const {
-				return _index != other._index;
+			iterator operator++(int) {
+				auto result = *this;
+				++_index;
+				return result;
+			}
+			[[nodiscard]] friend bool operator==(
+					const iterator &a,
+					const iterator &b) {
+				return a._index == b._index;
 			}
 
 		private:
-			not_null<const ChatFilters*> _owner;
+			const ChatFilters *_owner = nullptr;
 			int _index = 0;
 
 		};
