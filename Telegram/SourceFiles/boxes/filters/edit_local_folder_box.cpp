@@ -184,11 +184,12 @@ protected:
 		}
 	}
 
-	void leaveEvent(QEvent *e) override {
-		if (_hovered) {
+	bool eventHook(QEvent *e) override {
+		if (e->type() == QEvent::Leave && _hovered) {
 			_hovered = 0;
 			update();
 		}
+		return RpWidget::eventHook(e);
 	}
 
 private:
