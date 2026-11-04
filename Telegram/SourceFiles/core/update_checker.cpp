@@ -290,6 +290,7 @@ private:
 	QString _url;
 	QStringList _hosts;
 	int _hostIndex = 0;
+	int _switches = 0;
 	QNetworkAccessManager _manager;
 	std::unique_ptr<QNetworkReply> _reply;
 
@@ -1436,10 +1437,13 @@ void HttpLoaderActor::start() {
 }
 
 bool HttpLoaderActor::tryNextHost() {
-	if (_hostIndex + 1 >= _hosts.size()) {
+	// The name the check was answered by may be the last one in the list:
+	// go round the whole list once, not only forward from it.
+	if (_hosts.size() < 2 || _switches + 1 >= _hosts.size()) {
 		return false;
 	}
-	++_hostIndex;
+	++_switches;
+	_hostIndex = int((_hostIndex + 1) % _hosts.size());
 	_url = Core::ZsgMirrors::WithHost(_url, _hosts[_hostIndex]);
 	LOG(("Update Info: trying to continue from '%1'.").arg(_url));
 	if (const auto old = _reply.release()) {
@@ -2161,6 +2165,7 @@ void Updater::reportFailed() {
 		&& !flatpakWaiting) {
 		return;
 	}
+	LOG(("Update Info: the update check ended with a failure."));
 	scheduleNext();
 	_failed.fire({});
 }
@@ -2174,6 +2179,7 @@ void Updater::reportLatest() {
 	if (const auto update = FindUpdateFile(); !update.isEmpty()) {
 		QFile(update).remove();
 	}
+	LOG(("Update Info: the latest version is installed."));
 	scheduleNext();
 	_isLatest.fire({});
 }
@@ -2240,6 +2246,12 @@ void Updater::start(bool forceWait) {
 	}
 
 	_timer.cancel();
+	if (_action == Action::Checking && !_retryTimer.isActive()) {
+		// A check that has lost its budget timer would stay on "Checking"
+		// forever and swallow every manual restart: end it now.
+		LOG(("Update Info: the check had no timer, ending it."));
+		handleTimeout();
+	}
 	if (!cAutoUpdate() || _action != Action::Waiting) {
 		return;
 	}
@@ -2350,6 +2362,10 @@ void Updater::setMtproto(base::weak_ptr<Main::Session> session) {
 }
 
 void Updater::handleTimeout() {
+	LOG(("Update Info: timeout in state %1 (http: %2, mtp: %3)"
+		).arg(int(_action)
+		).arg(_httpImplementation.checker ? u"waiting"_q : u"done"_q
+		).arg(_mtpImplementation.checker ? u"waiting"_q : u"done"_q));
 	if (_action == Action::Checking) {
 		const auto reset = [&](Implementation &which) {
 			if (base::take(which.checker)) {
@@ -2390,6 +2406,13 @@ bool Updater::tryLoaders() {
 			}, loader->lifetime());
 
 			_retryTimer.callOnce(kUpdaterStallTimeout);
+			// The settings page says "Checking" until the first progress
+			// arrives, and through a slow mirror it takes a while.
+			_progress.fire(Progress{
+				loader->alreadySize(),
+				loader->totalSize(),
+				loader->preferPercent(),
+			});
 			loader->wipeFolder();
 			loader->start();
 		} else {

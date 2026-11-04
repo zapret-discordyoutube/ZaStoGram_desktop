@@ -133,6 +133,41 @@ def test_entry_pages_give_the_names_when_every_known_one_is_silent():
     assert "_entryState = EntryState::Done;" in body_after(CHECKER, "void HttpChecker::clearSentRequest()")
 
 
+def test_entry_pages_are_raced_and_reached_around_the_app_proxy():
+    # The entry pages are the only way to learn a fresh name when every known
+    # one is dropped; the app-wide proxy that swallows the git requests must
+    # not swallow them too, and a silent list must not hold the other one back.
+    fetch = body_after(MIRRORS, "void FetchEntryNames(")
+    assert "QNetworkProxy::applicationProxy().type()" in fetch
+    assert "usesSystemConfiguration()" in fetch
+    assert "setProxy(QNetworkProxy::NoProxy)" in fetch
+    assert "for (const auto &list : lists)" in fetch
+    assert "race->finished" in fetch
+    assert "LOG((\"Update Info: entry page" in fetch
+
+
+def test_loader_goes_round_the_whole_mirror_list():
+    # The host that answered the check may be the last in the list.
+    next_host = body_after(CHECKER, "bool HttpLoaderActor::tryNextHost()")
+    assert "% _hosts.size()" in next_host
+    assert "_switches" in next_host
+
+
+def test_a_stuck_check_ends_and_says_so():
+    updater = CHECKER.read_text(encoding="utf-8")
+    # The budget timer ends a check that nobody answered.
+    timeout = body_after(CHECKER, "void Updater::handleTimeout()")
+    assert "Action::Checking" in timeout and "tryLoaders()" in timeout
+    # A check that lost its timer is ended by the next manual restart.
+    start = body_after(CHECKER, "void Updater::start(bool forceWait)")
+    assert "!_retryTimer.isActive()" in start
+    assert start.index("handleTimeout()") < start.index("!cAutoUpdate()")
+    # The settings page leaves "Checking" as soon as a download starts.
+    loaders = body_after(CHECKER, "bool Updater::tryLoaders()")
+    assert "_progress.fire(Progress{" in loaders
+    assert "Update Info: the update check ended with a failure" in updater
+
+
 def test_changelog_link_uses_a_reachable_mirror():
     assert "ZsgMirrors::Hosts().front()" in APPLICATION.read_text(encoding="utf-8")
 
