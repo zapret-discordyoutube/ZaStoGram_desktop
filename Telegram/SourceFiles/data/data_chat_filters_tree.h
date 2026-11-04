@@ -82,6 +82,10 @@ public:
 	[[nodiscard]] std::vector<PeerId> pinnedOf(FilterId id) const;
 	// Among siblings: -1 is up, +1 is down.
 	bool moveBy(FilterId id, int delta);
+	// Puts the folder inside `newParent` (0 for the top level) right before
+	// the sibling `before` (0 for the end). False if that would put a folder
+	// inside itself or its own subfolders.
+	bool place(FilterId id, FilterId newParent, FilterId before);
 	// Orders the top-level folders as in the list (others keep their place
 	// after them).
 	void reorderTop(const std::vector<FilterId> &ids);

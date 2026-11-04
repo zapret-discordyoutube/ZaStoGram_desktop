@@ -251,6 +251,8 @@ PRIVATE
     boxes/filters/edit_filter_box.h
     boxes/filters/edit_local_folder_box.cpp
     boxes/filters/edit_local_folder_box.h
+    boxes/filters/local_folder_menu.cpp
+    boxes/filters/local_folder_menu.h
     boxes/filters/edit_filter_chats_list.cpp
     boxes/filters/edit_filter_chats_list.h
     boxes/filters/edit_filter_chats_preview.cpp

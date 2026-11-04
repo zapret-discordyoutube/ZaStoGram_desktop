@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/widgets/chat_filters_tabs_strip.h"
 
+#include "boxes/filters/local_folder_menu.h"
+
 #include "api/api_chat_filters_remove_manager.h"
 #include "boxes/choose_filter_box.h"
 #include "boxes/filters/edit_filter_box.h"
@@ -81,7 +83,15 @@ void ShowMenu(
 	const auto addAction = Ui::Menu::CreateAddActionCallback(
 		state->menu.get());
 
-	if (id) {
+	if (id && Data::IsLocalFilterId(id)) {
+		FillLocalFolderMenu(addAction, controller, id);
+
+		MarkAsReadMenu::AddChatListAction(
+			controller,
+			MarkAsReadMenu::ChatListKind::Folder,
+			[=] { return session->data().chatsFilters().chatsList(id); },
+			addAction);
+	} else if (id) {
 		addAction(
 			tr::lng_filters_context_edit(tr::now),
 			[=] { EditExistingFilter(controller, id); },

@@ -692,6 +692,56 @@ bool LocalFolders::moveBy(FilterId id, int delta) {
 	return true;
 }
 
+bool LocalFolders::place(FilterId id, FilterId newParent, FilterId before) {
+	const auto folder = findMutable(id);
+	if (!folder) {
+		return false;
+	}
+	auto parentUid = QString();
+	if (newParent) {
+		if (newParent == id) {
+			return false;
+		}
+		const auto parent = find(newParent);
+		if (!parent) {
+			return false;
+		}
+		auto up = newParent;
+		for (auto guard = 0; up && guard <= int(_folders.size()); ++guard) {
+			if (up == id) {
+				return false;
+			}
+			up = parentOf(up);
+		}
+		parentUid = parent->uid;
+	}
+	auto ordered = std::vector<FilterId>();
+	for (const auto sibling : childrenOfUid(parentUid)) {
+		if (sibling->id != id) {
+			ordered.push_back(sibling->id);
+		}
+	}
+	auto at = ordered.end();
+	if (before) {
+		const auto i = ranges::find(ordered, before);
+		if (i != ordered.end()) {
+			at = i;
+		}
+	}
+	ordered.insert(at, id);
+	const auto reparent = (folder->parentUid != parentUid);
+	if (reparent) {
+		folder->parentUid = parentUid;
+		folder->rev = NowMs();
+	}
+	applySiblingOrder(ordered);
+	if (reparent) {
+		save();
+		_changed.fire({});
+	}
+	return true;
+}
+
 void LocalFolders::reorderTop(const std::vector<FilterId> &ids) {
 	auto ordered = std::vector<FilterId>();
 	for (const auto id : ids) {

@@ -909,13 +909,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_settings_zastogram_pin_channel_about" = "When off, the ZaStoGram channel is an ordinary chat that can be archived.";
 "lng_zasto_media_speed" = "Speed";
 "lng_zsg_folders_title" = "ZaStoGram folders";
-"lng_zsg_folders_about" = "These folders live on your devices, so there is no limit on their number. A folder can contain subfolders: open its tab, and its subfolders appear in a row under the tabs, with the path above them to go back up. A parent folder shows the chats of all its subfolders. Turn synchronization off for a folder to keep it on this device only.";
+"lng_zsg_folders_about" = "These folders live on your devices, so there is no limit on their number. Drag a folder to reorder it: drop it on the middle of another folder to put it inside, or between folders to put it next to them. Right-click a folder for more actions. A folder can contain subfolders: open its tab, and its subfolders appear in a row under the tabs, with the path above them to go back up. A parent folder shows the chats of all its subfolders. Turn synchronization off for a folder to keep it on this device only.";
 "lng_zsg_folders_create" = "Create ZaStoGram folder";
 "lng_zsg_folders_new_title" = "New folder";
 "lng_zsg_folders_edit_title" = "Edit folder";
 "lng_zsg_folders_name" = "Folder name";
 "lng_zsg_folders_sync" = "Synchronize with other devices";
 "lng_zsg_folders_local_only" = "this device only";
+"lng_zsg_folders_menu_to_top" = "Move to top level";
+"lng_zsg_folders_menu_sync_off" = "Keep on this device only";
+"lng_zsg_folders_menu_sync_on" = "Synchronize with other devices";
 "lng_zsg_folders_parent" = "Parent folder";
 "lng_zsg_folders_top_level" = "Top level";
 "lng_zsg_folders_move_up" = "Move up";

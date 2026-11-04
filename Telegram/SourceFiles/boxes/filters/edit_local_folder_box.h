@@ -24,3 +24,14 @@ void EditLocalFolderBox(
 	not_null<Window::SessionController*> controller,
 	FilterId id,
 	FilterId parent);
+
+// Chooses the chats added directly to the folder.
+void ShowLocalFolderChatsBox(
+	not_null<Window::SessionController*> controller,
+	FilterId id);
+
+// Asks for confirmation and deletes the folder with all its subfolders.
+void DeleteLocalFolder(
+	not_null<Window::SessionController*> controller,
+	FilterId id,
+	Fn<void()> done = nullptr);

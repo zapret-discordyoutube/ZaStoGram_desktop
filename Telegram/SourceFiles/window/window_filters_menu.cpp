@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_filters_menu.h"
 
+#include "boxes/filters/local_folder_menu.h"
+
 #include "menu/menu_mark_as_read.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
@@ -746,7 +748,17 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 		i->second.get(),
 		st::popupMenuWithIcons);
 	const auto addAction = Ui::Menu::CreateAddActionCallback(_popupMenu);
-	if (id) {
+	if (id && Data::IsLocalFilterId(id)) {
+		FillLocalFolderMenu(addAction, _session, id);
+
+		MarkAsReadMenu::AddChatListAction(
+			_session,
+			MarkAsReadMenu::ChatListKind::Folder,
+			[=] {
+				return _session->session().data().chatsFilters().chatsList(id);
+			},
+			addAction);
+	} else if (id) {
 		addAction(
 			tr::lng_filters_context_edit(tr::now),
 			crl::guard(&_outer, [=] { EditExistingFilter(_session, id); }),

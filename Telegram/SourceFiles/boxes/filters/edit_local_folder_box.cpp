@@ -117,6 +117,38 @@ void ShowChatsBox(
 
 } // namespace
 
+void ShowLocalFolderChatsBox(
+		not_null<Window::SessionController*> controller,
+		FilterId id) {
+	ShowChatsBox(controller, id);
+}
+
+void DeleteLocalFolder(
+		not_null<Window::SessionController*> controller,
+		FilterId id,
+		Fn<void()> done) {
+	const auto session = &controller->session();
+	const auto folder = session->data().chatsFilters().local().find(id);
+	if (!folder) {
+		return;
+	}
+	controller->show(Ui::MakeConfirmBox({
+		.text = tr::lng_zsg_folders_delete_sure(
+			tr::now,
+			lt_name,
+			folder->title),
+		.confirmed = [=](Fn<void()> close) {
+			session->data().chatsFilters().local().remove(id);
+			close();
+			if (done) {
+				done();
+			}
+		},
+		.confirmText = tr::lng_box_delete(),
+		.confirmStyle = &st::attentionBoxButton,
+	}));
+}
+
 void EditLocalFolderBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Window::SessionController*> controller,
@@ -221,22 +253,6 @@ void EditLocalFolderBox(
 			Box(EditLocalFolderBox, controller, FilterId(0), id));
 	});
 	box->addLeftButton(tr::lng_zsg_folders_delete(), [=] {
-		const auto folder = folders().find(id);
-		if (!folder) {
-			return;
-		}
-		controller->show(Ui::MakeConfirmBox({
-			.text = tr::lng_zsg_folders_delete_sure(
-				tr::now,
-				lt_name,
-				folder->title),
-			.confirmed = [=](Fn<void()> close) {
-				folders().remove(id);
-				close();
-				box->closeBox();
-			},
-			.confirmText = tr::lng_box_delete(),
-			.confirmStyle = &st::attentionBoxButton,
-		}));
+		DeleteLocalFolder(controller, id, [=] { box->closeBox(); });
 	});
 }
