@@ -70,7 +70,7 @@ void SubfoldersRow::rebuild() {
 			}
 			for (const auto id : children) {
 				if (const auto folder = local.find(id)) {
-					add(id, folder->title, false);
+					add(id, u"↳ "_q + folder->title, false);
 				}
 			}
 		}

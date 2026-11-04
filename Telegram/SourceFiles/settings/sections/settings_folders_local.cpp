@@ -43,20 +43,32 @@ void SetupLocalFolders(
 			if (!folder) {
 				continue;
 			}
-			const auto indent = QString(u"      "_q).repeated(local.depth(id));
+			// Subfolders are marked and indented under their parent.
+			const auto depth = local.depth(id);
+			const auto title = depth
+				? (QString(u"      "_q).repeated(depth - 1)
+					+ u"↳ "_q
+					+ folder->title)
+				: folder->title;
 			const auto count = int(local.peersOf(id).size());
+			const auto subfolders = int(local.childrenOf(id).size());
+			auto label = tr::lng_zsg_folders_chats_count(
+				tr::now,
+				lt_count,
+				count);
+			if (subfolders) {
+				label += u" · "_q + tr::lng_zsg_folders_subfolders_count(
+					tr::now,
+					lt_count,
+					subfolders);
+			}
+			if (!folder->sync) {
+				label += u" · "_q + tr::lng_zsg_folders_local_only(tr::now);
+			}
 			const auto button = AddButtonWithLabel(
 				list,
-				rpl::single(indent + folder->title),
-				rpl::single(folder->sync
-					? tr::lng_zsg_folders_chats_count(
-						tr::now,
-						lt_count,
-						count)
-					: (tr::lng_zsg_folders_chats_count(
-						tr::now,
-						lt_count,
-						count) + u" · "_q + tr::lng_zsg_folders_local_only(tr::now))),
+				rpl::single(title),
+				rpl::single(label),
 				st::settingsButtonNoIcon);
 			button->addClickHandler([=] {
 				controller->show(

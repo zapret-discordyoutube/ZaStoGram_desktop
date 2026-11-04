@@ -131,8 +131,14 @@ void EditLocalFolderBox(
 		box->closeBox();
 		return;
 	}
+	const auto parentFolder = (!id && parent) ? folders().find(parent) : nullptr;
 	box->setTitle(id
 		? tr::lng_zsg_folders_edit_title()
+		: parentFolder
+		? rpl::single(tr::lng_zsg_folders_new_sub_title(
+			tr::now,
+			lt_name,
+			folders().pathTitle(parent)))
 		: tr::lng_zsg_folders_new_title());
 
 	const auto name = box->addRow(
