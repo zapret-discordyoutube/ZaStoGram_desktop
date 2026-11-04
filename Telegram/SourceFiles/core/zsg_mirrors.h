@@ -44,8 +44,11 @@ void RememberGood(const QString &host);
 [[nodiscard]] QStringList ParseEntry(const QByteArray &json);
 
 // Asks all the entry pages at once, each also directly when the app has a
-// proxy; the first answer that gives names
-// not in `tried` is remembered and passed to `done` (empty if none did).
-void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done);
+// proxy. Every answer with names not in `tried` is remembered and passed to
+// `done` as it arrives; `last` is true on the call after which no page is
+// pending (that call may carry no names).
+void FetchEntryNames(
+	QStringList tried,
+	Fn<void(QStringList fresh, bool last)> done);
 
 } // namespace Core::ZsgMirrors

@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "api/api_send_progress.h"
 
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "main/main_session.h"
 #include "history/history.h"
 #include "data/data_peer.h"
@@ -69,6 +71,12 @@ void SendProgressManager::update(
 		|| (peer->isChannel()
 			&& !peer->isMegagroup()
 			&& type != SendProgressType::Speaking)) {
+		return;
+	}
+	if (type != SendProgressType::Speaking
+		&& Core::App().settings().ghostNoTyping()) {
+		// ZaStoGram: режим призрака — «печатает», запись и загрузку
+		// не показываем. Речь в групповом звонке видна и без этого.
 		return;
 	}
 

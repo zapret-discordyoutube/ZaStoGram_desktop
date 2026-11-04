@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_element.h"
 #include "iv/iv_rich_page.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "apiwrap.h"
 
 namespace Data {
@@ -747,6 +748,13 @@ void Histories::sendReadRequests() {
 void Histories::sendReadRequest(not_null<History*> history, State &state) {
 	Expects(state.willReadTill > state.sentReadTill);
 
+	if (Core::App().settings().ghostNoRead()) {
+		// ZaStoGram: режим призрака — отметку о прочтении не отправляем.
+		// Локально чат уже показан прочитанным, сервер о нём не узнает.
+		state.willReadTill = 0;
+		state.willReadWhen = 0;
+		return;
+	}
 	const auto tillId = state.sentReadTill = base::take(state.willReadTill);
 	state.willReadWhen = 0;
 	state.sentReadDone = false;
