@@ -20,12 +20,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/vertical_list.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/wrap/vertical_layout.h"
 #include "window/window_session_controller.h"
+#include "ui/painter.h"
+#include "ui/rp_widget.h"
 #include "styles/palette.h"
 #include "styles/style_basic.h"
+#include "styles/style_dialogs.h"
+#include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 
@@ -36,9 +41,104 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Settings {
 namespace {
 
+struct RowData {
+	QString title;
+	QString subtitle;
+	QString icon;
+	QColor color;
+	int depth = 0;
+};
+
+// The trash button at the right edge of a row.
+class TrashButton final : public Ui::AbstractButton {
+public:
+	explicit TrashButton(QWidget *parent) : AbstractButton(parent) {
+		setCursor(style::cur_pointer);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		Painter p(this);
+		st::menuIconDelete.paintInCenter(p, rect());
+	}
+
+};
+
+// One folder in the list: a round icon of the folder's own color, the title,
+// the line below it, the trash button. Shaped like Telegram's Folders page.
+class LocalFolderRow final : public Ui::RippleButton {
+public:
+	LocalFolderRow(QWidget *parent, RowData data)
+	: RippleButton(parent, st::defaultRippleAnimation)
+	, _data(std::move(data))
+	, _trash(base::make_unique_q<TrashButton>(this)) {
+	}
+
+	[[nodiscard]] not_null<Ui::AbstractButton*> trash() const {
+		return _trash.get();
+	}
+
+protected:
+	int resizeGetHeight(int newWidth) override {
+		return st::defaultDialogRow.height;
+	}
+
+	void resizeEvent(QResizeEvent *e) override {
+		_trash->setGeometry(width() - height(), 0, height(), height());
+	}
+
+	void paintEvent(QPaintEvent *e) override {
+		Painter p(this);
+		paintRipple(p, QPoint());
+		p.setRenderHint(QPainter::Antialiasing);
+
+		const auto h = height();
+		const auto indent = _data.depth * (h * 6 / 10);
+		const auto left = st::boxRowPadding.left() + indent;
+		const auto diameter = h * 6 / 10;
+		const auto circle = QRect(left, (h - diameter) / 2, diameter, diameter);
+		p.setPen(Qt::NoPen);
+		p.setBrush(_data.color.isValid() ? _data.color : st::windowBgActive->c);
+		p.drawEllipse(circle);
+		auto font = st::normalFont->f;
+		font.setPixelSize(diameter * 55 / 100);
+		p.setFont(font);
+		p.setPen(QColor(255, 255, 255));
+		p.drawText(
+			circle,
+			Qt::AlignCenter,
+			_data.icon.isEmpty() ? QString::fromUtf8("📁") : _data.icon);
+
+		const auto textLeft = circle.right() + st::boxRowPadding.left();
+		const auto available = std::max(
+			1,
+			width() - textLeft - h);
+		const auto titleHeight = st::semiboldFont->height;
+		const auto lineHeight = st::normalFont->height;
+		const auto top = (h - titleHeight - lineHeight) / 2;
+		p.setPen(st::windowFg);
+		p.setFont(st::semiboldFont);
+		p.drawText(
+			QRect(textLeft, top, available, titleHeight),
+			Qt::AlignLeft | Qt::AlignVCenter,
+			st::semiboldFont->elided(_data.title, available));
+		p.setPen(st::windowSubTextFg);
+		p.setFont(st::normalFont);
+		p.drawText(
+			QRect(textLeft, top + titleHeight, available, lineHeight),
+			Qt::AlignLeft | Qt::AlignVCenter,
+			st::normalFont->elided(_data.subtitle, available));
+	}
+
+private:
+	RowData _data;
+	const base::unique_qptr<TrashButton> _trash;
+
+};
+
 struct DragRow {
 	FilterId id = 0;
-	Ui::SettingsButton *button = nullptr;
+	Ui::RpWidget *widget = nullptr;
 };
 
 struct ListState {
@@ -70,7 +170,7 @@ void SetupLocalFolders(
 	const auto state = list->lifetime().make_state<ListState>();
 
 	// The line that shows where the dragged folder will land.
-	state->indicator = Ui::CreateChild<Ui::RpWidget>(list.get());
+	state->indicator = Ui::CreateChild<Ui::RpWidget>(list);
 	state->indicator->hide();
 	state->indicator->setAttribute(Qt::WA_TransparentForMouseEvents);
 	state->indicator->paintRequest(
@@ -91,8 +191,8 @@ void SetupLocalFolders(
 			return;
 		}
 		const auto pos = list->mapFromGlobal(global);
-		const auto first = rows.front().button->geometry();
-		const auto last = rows.back().button->geometry();
+		const auto first = rows.front().widget->geometry();
+		const auto last = rows.back().widget->geometry();
 		auto parent = FilterId(0);
 		auto before = FilterId(0);
 		auto indicatorY = 0;
@@ -106,14 +206,14 @@ void SetupLocalFolders(
 		} else {
 			auto index = 0;
 			for (auto i = 0, count = int(rows.size()); i != count; ++i) {
-				const auto geometry = rows[i].button->geometry();
+				const auto geometry = rows[i].widget->geometry();
 				if (pos.y() >= geometry.top() && pos.y() < geometry.bottom()) {
 					index = i;
 					break;
 				}
 			}
 			const auto target = rows[index].id;
-			const auto geometry = rows[index].button->geometry();
+			const auto geometry = rows[index].widget->geometry();
 			const auto fraction = float64(pos.y() - geometry.top())
 				/ std::max(1, geometry.height());
 			if (fraction < 0.28) {
@@ -178,7 +278,7 @@ void SetupLocalFolders(
 			return;
 		}
 		// The rows are rebuilt by the change, so not inside their own event.
-		crl::on_main(list.get(), [=] {
+		crl::on_main(list, [=] {
 			session->data().chatsFilters().local().place(id, parent, before);
 		});
 	};
@@ -195,34 +295,35 @@ void SetupLocalFolders(
 			if (!folder) {
 				continue;
 			}
-			// Subfolders are marked and indented under their parent.
 			const auto depth = local.depth(id);
-			const auto title = depth
-				? (QString(u"      "_q).repeated(depth - 1)
-					+ u"↳ "_q
-					+ folder->title)
-				: folder->title;
 			const auto count = int(local.peersOf(id).size());
 			const auto subfolders = int(local.childrenOf(id).size());
-			auto label = tr::lng_zsg_folders_chats_count(
+			auto subtitle = tr::lng_zsg_folders_chats_count(
 				tr::now,
 				lt_count,
 				count);
 			if (subfolders) {
-				label += u" · "_q + tr::lng_zsg_folders_subfolders_count(
+				subtitle += u" · "_q + tr::lng_zsg_folders_subfolders_count(
 					tr::now,
 					lt_count,
 					subfolders);
 			}
 			if (!folder->sync) {
-				label += u" · "_q + tr::lng_zsg_folders_local_only(tr::now);
+				subtitle += u" · "_q + tr::lng_zsg_folders_local_only(tr::now);
 			}
-			const auto button = AddButtonWithLabel(
+			const auto button = list->add(object_ptr<LocalFolderRow>(
 				list,
-				rpl::single(title),
-				rpl::single(label),
-				st::settingsButtonNoIcon);
-			state->rows.push_back({ id, button.get() });
+				RowData{
+					.title = folder->title,
+					.subtitle = subtitle,
+					.icon = folder->iconEmoji,
+					.color = local.colorOf(id),
+					.depth = depth,
+				}));
+			state->rows.push_back({ id, button });
+			button->trash()->setClickedCallback([=] {
+				DeleteLocalFolder(controller, id);
+			});
 			button->addClickHandler([=] {
 				if (state->justDragged) {
 					state->justDragged = false;
@@ -237,7 +338,7 @@ void SetupLocalFolders(
 					const auto mouse = static_cast<QMouseEvent*>(e.get());
 					if (mouse->button() == Qt::RightButton) {
 						state->menu = base::make_unique_q<Ui::PopupMenu>(
-							list.get(),
+							list,
 							st::popupMenuWithIcons);
 						FillLocalFolderMenu(
 							Ui::Menu::CreateAddActionCallback(state->menu),

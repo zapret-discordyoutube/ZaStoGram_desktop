@@ -22,7 +22,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/fields/input_field.h"
+#include "ui/painter.h"
+#include "ui/rp_widget.h"
 #include "window/window_session_controller.h"
+#include "styles/palette.h"
+#include "styles/style_basic.h"
 #include "styles/style_layers.h"
 #include "styles/style_window.h"
 
@@ -30,6 +34,238 @@ namespace {
 
 constexpr auto kMaxLocalFolderTitleLength = 64;
 constexpr auto kNoChatsLimit = 1000000;
+constexpr auto kMaxIconLength = 8;
+
+// A few ready icons, any other emoji can be typed or pasted.
+const char *const kPresetIcons[] = {
+	"📁", "⭐", "❤️", "🔥", "💼", "🏠", "🎮", "🎵",
+	"📚", "✈️", "🛒", "💬", "👥", "📢", "🤖", "💰",
+	"🎓", "🏋️", "🍕", "🐱", "🔒", "📷", "🧠", "⚡",
+};
+
+// A few ready colors, any other one can be typed as #RRGGBB.
+const char *const kPresetColors[] = {
+	"#e57373", "#f06292", "#ba68c8", "#9575cd", "#7986cb", "#64b5f6",
+	"#4dd0e1", "#4db6ac", "#81c784", "#dce775", "#ffb74d", "#a1887f",
+};
+
+// The preview of a folder with the ready icons and colors to choose from.
+class LookPicker final : public Ui::RpWidget {
+public:
+	LookPicker(
+		QWidget *parent,
+		const QString &icon,
+		const QString &color,
+		const QString &title)
+	: RpWidget(parent)
+	, _icon(icon)
+	, _color(color)
+	, _title(title) {
+		setMouseTracking(true);
+	}
+
+	void setIcon(const QString &icon) {
+		if (_icon != icon) {
+			_icon = icon;
+			update();
+		}
+	}
+	void setColor(const QString &color) {
+		if (_color != color) {
+			_color = color;
+			update();
+		}
+	}
+	void setTitle(const QString &title) {
+		if (_title != title) {
+			_title = title;
+			update();
+		}
+	}
+
+	[[nodiscard]] rpl::producer<QString> iconPicked() const {
+		return _iconPicked.events();
+	}
+	[[nodiscard]] rpl::producer<QString> colorPicked() const {
+		return _colorPicked.events();
+	}
+
+protected:
+	int resizeGetHeight(int newWidth) override {
+		layoutCells(newWidth);
+		return _height;
+	}
+
+	void paintEvent(QPaintEvent *e) override {
+		Painter p(this);
+		p.setRenderHint(QPainter::Antialiasing);
+		const auto fill = _color.isEmpty()
+			? st::windowBgActive->c
+			: QColor(_color);
+
+		p.setPen(Qt::NoPen);
+		p.setBrush(fill);
+		p.drawEllipse(_preview);
+		auto big = st::normalFont->f;
+		big.setPixelSize(int(_preview.height() * 0.55));
+		p.setFont(big);
+		p.setPen(QColor(255, 255, 255));
+		p.drawText(
+			_preview,
+			Qt::AlignCenter,
+			_icon.isEmpty() ? QString::fromUtf8("📁") : _icon);
+		p.setFont(st::semiboldFont);
+		p.setPen(st::windowFg);
+		const auto textLeft = _preview.right() + st::boxRowPadding.left() / 2;
+		p.drawText(
+			QRect(textLeft, _preview.top(), width() - textLeft - _pad, _preview.height()),
+			Qt::AlignLeft | Qt::AlignVCenter,
+			_title.isEmpty() ? tr::lng_zsg_folders_new_title(tr::now) : _title);
+
+		auto small = st::normalFont->f;
+		small.setPixelSize(int(_icons.empty() ? 20 : _icons.front().rect.height() * 0.58));
+		p.setFont(small);
+		for (auto i = 0, count = int(_icons.size()); i != count; ++i) {
+			const auto &cell = _icons[i];
+			if (_hovered == (i + 1)) {
+				p.setPen(Qt::NoPen);
+				p.setBrush(st::windowBgOver);
+				p.drawRoundedRect(cell.rect, 8, 8);
+			}
+			if (cell.value == _icon) {
+				p.setPen(QPen(st::windowBgActive->c, 2));
+				p.setBrush(Qt::NoBrush);
+				p.drawRoundedRect(cell.rect.adjusted(1, 1, -1, -1), 8, 8);
+			}
+			p.setPen(st::windowFg);
+			p.drawText(cell.rect, Qt::AlignCenter, cell.value);
+		}
+		for (auto i = 0, count = int(_colors.size()); i != count; ++i) {
+			const auto &cell = _colors[i];
+			const auto none = cell.value.isEmpty();
+			const auto selected = (cell.value == _color);
+			const auto dot = cell.rect.adjusted(4, 4, -4, -4);
+			if (none) {
+				p.setPen(QPen(st::windowSubTextFg->c, 2));
+				p.setBrush(Qt::NoBrush);
+				p.drawEllipse(dot);
+				p.drawLine(dot.bottomLeft(), dot.topRight());
+			} else {
+				p.setPen(Qt::NoPen);
+				p.setBrush(QColor(cell.value));
+				p.drawEllipse(dot);
+			}
+			if (selected) {
+				p.setPen(QPen(st::windowFg->c, 2));
+				p.setBrush(Qt::NoBrush);
+				p.drawEllipse(cell.rect.adjusted(1, 1, -1, -1));
+			}
+		}
+	}
+
+	void mouseMoveEvent(QMouseEvent *e) override {
+		const auto hovered = hitIcon(e->pos());
+		const auto over = hovered || hitColor(e->pos()) >= 0;
+		if (_hovered != hovered) {
+			_hovered = hovered;
+			update();
+		}
+		setCursor(over ? style::cur_pointer : style::cur_default);
+	}
+
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) {
+			return;
+		}
+		if (const auto icon = hitIcon(e->pos())) {
+			_iconPicked.fire_copy(_icons[icon - 1].value);
+		} else if (const auto color = hitColor(e->pos()); color >= 0) {
+			_colorPicked.fire_copy(_colors[color].value);
+		}
+	}
+
+	void leaveEvent(QEvent *e) override {
+		if (_hovered) {
+			_hovered = 0;
+			update();
+		}
+	}
+
+private:
+	struct Cell {
+		QRect rect;
+		QString value;
+	};
+
+	void layoutCells(int width) {
+		_pad = st::boxRowPadding.left();
+		const auto previewSize = st::boxRowPadding.left() * 2;
+		_preview = QRect(_pad, _pad / 2, previewSize, previewSize);
+		auto y = _preview.bottom() + _pad;
+
+		const auto cell = previewSize * 9 / 10;
+		const auto columns = std::max(1, (width - 2 * _pad) / cell);
+		_icons.clear();
+		auto index = 0;
+		for (const auto icon : kPresetIcons) {
+			const auto column = index % columns;
+			const auto row = index / columns;
+			_icons.push_back({
+				QRect(_pad + column * cell, y + row * cell, cell, cell),
+				QString::fromUtf8(icon),
+			});
+			++index;
+		}
+		y += ((index + columns - 1) / columns) * cell + _pad / 2;
+
+		const auto swatch = cell * 4 / 5;
+		const auto swatches = std::max(1, (width - 2 * _pad) / swatch);
+		_colors.clear();
+		_colors.push_back({ QRect(_pad, y, swatch, swatch), QString() });
+		index = 1;
+		for (const auto color : kPresetColors) {
+			const auto column = index % swatches;
+			const auto row = index / swatches;
+			_colors.push_back({
+				QRect(_pad + column * swatch, y + row * swatch, swatch, swatch),
+				QString::fromLatin1(color),
+			});
+			++index;
+		}
+		y += ((index + swatches - 1) / swatches) * swatch + _pad / 2;
+		_height = y;
+	}
+
+	[[nodiscard]] int hitIcon(QPoint point) const {
+		for (auto i = 0, count = int(_icons.size()); i != count; ++i) {
+			if (_icons[i].rect.contains(point)) {
+				return i + 1;
+			}
+		}
+		return 0;
+	}
+	[[nodiscard]] int hitColor(QPoint point) const {
+		for (auto i = 0, count = int(_colors.size()); i != count; ++i) {
+			if (_colors[i].rect.contains(point)) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	QString _icon;
+	QString _color;
+	QString _title;
+	int _pad = 0;
+	int _height = 0;
+	int _hovered = 0;
+	QRect _preview;
+	std::vector<Cell> _icons;
+	std::vector<Cell> _colors;
+	rpl::event_stream<QString> _iconPicked;
+	rpl::event_stream<QString> _colorPicked;
+
+};
 
 void ChooseParentBox(
 		not_null<Ui::GenericBox*> box,
@@ -186,6 +422,66 @@ void EditLocalFolderBox(
 		name->setFocusFast();
 	});
 
+	const auto look = box->addRow(
+		object_ptr<LookPicker>(
+			box,
+			existing ? existing->iconEmoji : QString(),
+			existing ? existing->color : QString(),
+			existing ? existing->title : QString()),
+		style::margins());
+	const auto icon = box->addRow(
+		object_ptr<Ui::InputField>(
+			box,
+			st::windowFilterNameInput,
+			Ui::InputField::Mode::SingleLine,
+			tr::lng_zsg_folders_icon(),
+			existing ? existing->iconEmoji : QString()),
+		st::windowFilterNameInputPadding);
+	icon->setMaxLength(kMaxIconLength);
+	const auto color = box->addRow(
+		object_ptr<Ui::InputField>(
+			box,
+			st::windowFilterNameInput,
+			Ui::InputField::Mode::SingleLine,
+			tr::lng_zsg_folders_color(),
+			existing ? existing->color : QString()),
+		st::windowFilterNameInputPadding);
+	color->setMaxLength(9);
+
+	const auto syncing = name->lifetime().make_state<bool>(false);
+	name->changes() | rpl::on_next([=] {
+		look->setTitle(name->getLastText().trimmed());
+	}, name->lifetime());
+	icon->changes() | rpl::on_next([=] {
+		if (!*syncing) {
+			look->setIcon(icon->getLastText().trimmed());
+		}
+	}, icon->lifetime());
+	color->changes() | rpl::on_next([=] {
+		if (*syncing) {
+			return;
+		}
+		const auto text = color->getLastText().trimmed();
+		const auto parsed = QColor(text);
+		if (text.isEmpty()) {
+			look->setColor(QString());
+		} else if (parsed.isValid()) {
+			look->setColor(parsed.name(QColor::HexRgb));
+		}
+	}, color->lifetime());
+	look->iconPicked() | rpl::on_next([=](const QString &value) {
+		*syncing = true;
+		icon->setText(value);
+		*syncing = false;
+		look->setIcon(value);
+	}, look->lifetime());
+	look->colorPicked() | rpl::on_next([=](const QString &value) {
+		*syncing = true;
+		color->setText(value);
+		*syncing = false;
+		look->setColor(value);
+	}, look->lifetime());
+
 	const auto sync = box->addRow(
 		object_ptr<Ui::Checkbox>(
 			box,
@@ -199,6 +495,11 @@ void EditLocalFolderBox(
 			name->showError();
 			return;
 		}
+		const auto colorText = color->getLastText().trimmed();
+		if (!colorText.isEmpty() && !QColor(colorText).isValid()) {
+			color->showError();
+			return;
+		}
 		auto &local = folders();
 		const auto target = id ? id : local.create(title, parent);
 		if (!target) {
@@ -208,6 +509,8 @@ void EditLocalFolderBox(
 		if (id) {
 			local.rename(id, title);
 		}
+		local.setIcon(target, icon->getLastText().trimmed());
+		local.setColor(target, colorText);
 		local.setSync(target, sync->checked());
 		box->closeBox();
 		if (!id) {

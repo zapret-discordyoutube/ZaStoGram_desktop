@@ -53,6 +53,11 @@ void SubfoldersRow::rebuild() {
 					this,
 					rpl::single(title),
 					current ? st::defaultActiveButton : st::defaultLightButton);
+				// A folder of its own color has it on its chip, as on its tab.
+				const auto color = local.colorOf(id);
+				if (!current && color.isValid()) {
+					button->setTextFgOverride(color);
+				}
 				button->setClickedCallback([=] {
 					controller->setActiveChatsFilter(id);
 				});
@@ -62,15 +67,23 @@ void SubfoldersRow::rebuild() {
 			for (const auto id : path) {
 				const auto folder = local.find(id);
 				if (folder) {
+					const auto icon = folder->iconEmoji.isEmpty()
+						? QString()
+						: (folder->iconEmoji + u" "_q);
 					add(
 						id,
-						(id == active) ? folder->title : (folder->title + u"  ›"_q),
+						(id == active)
+							? (icon + folder->title)
+							: (icon + folder->title + u"  ›"_q),
 						(id == active));
 				}
 			}
 			for (const auto id : children) {
 				if (const auto folder = local.find(id)) {
-					add(id, u"↳ "_q + folder->title, false);
+					const auto icon = folder->iconEmoji.isEmpty()
+						? QString()
+						: (folder->iconEmoji + u" "_q);
+					add(id, u"↳ "_q + icon + folder->title, false);
 				}
 			}
 		}

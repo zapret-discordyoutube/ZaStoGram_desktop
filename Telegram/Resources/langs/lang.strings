@@ -914,6 +914,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_zsg_folders_new_title" = "New folder";
 "lng_zsg_folders_edit_title" = "Edit folder";
 "lng_zsg_folders_name" = "Folder name";
+"lng_zsg_folders_icon" = "Icon: any emoji";
+"lng_zsg_folders_color" = "Color: any, as #RRGGBB";
 "lng_zsg_folders_sync" = "Synchronize with other devices";
 "lng_zsg_folders_local_only" = "this device only";
 "lng_zsg_folders_menu_to_top" = "Move to top level";

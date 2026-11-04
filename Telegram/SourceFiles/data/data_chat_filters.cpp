@@ -1025,14 +1025,20 @@ void ChatFilters::refreshLocal() {
 		}
 		// Nested folders show their whole path where a flat list of all
 		// folders is displayed (like the "add to folder" menu).
-		const auto title = _local->isNested(id)
+		const auto plain = _local->isNested(id)
 			? _local->pathTitle(id)
 			: folder->title;
+		// The icon is any emoji, it is shown before the title everywhere.
+		const auto title = folder->iconEmoji.isEmpty()
+			? plain
+			: (folder->iconEmoji + u" "_q + plain);
+		// Chat tags of our folders always show, a color index only has to
+		// exist for that, the real color is the folder's own one.
 		wanted.emplace_back(
 			id,
 			ChatFilterTitle{ .text = TextWithEntities{ .text = title } },
 			folder->iconEmoji,
-			std::optional<uint8>(),
+			std::optional<uint8>(uint8(id % 7)),
 			ChatFilter::Flags(),
 			std::move(always),
 			std::move(pinned),
@@ -1063,9 +1069,9 @@ void ChatFilters::refreshLocal() {
 		applyRemove(position);
 		changed = true;
 	}
-	if (changed) {
-		_listChanged.fire({});
-	}
+	// A color change alone is not a change of the filter, but chat tags
+	// have to be repainted.
+	_listChanged.fire({});
 }
 
 FilterId ChatFilters::defaultId() const {

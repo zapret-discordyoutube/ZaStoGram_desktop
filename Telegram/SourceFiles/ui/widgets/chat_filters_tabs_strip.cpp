@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/shortcuts.h"
 #include "core/ui_integration.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_peer_values.h" // Data::AmPremiumValue.
 #include "data/data_premium_limits.h"
 #include "data/data_session.h"
@@ -412,6 +413,16 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			return LookupFilterIcon(filter.id()
 				? ComputeFilterIcon(filter)
 				: FilterIcon::All).tabs.get();
+		}) | ranges::to_vector);
+		slider->setSectionColors(ranges::views::all(
+			list
+		) | ranges::views::transform([=](const Data::ChatFilter &filter) {
+			const auto color = Data::IsLocalFilterId(filter.id())
+				? session->data().chatsFilters().local().colorOf(filter.id())
+				: QColor();
+			return color.isValid()
+				? std::optional<QColor>(color)
+				: std::optional<QColor>();
 		}) | ranges::to_vector);
 		if (!sectionsChanged) {
 			return;

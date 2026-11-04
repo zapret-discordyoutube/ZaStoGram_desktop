@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QByteArray>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
+#include <QtGui/QColor>
 
 namespace Data {
 
@@ -32,7 +33,8 @@ struct LocalFolder {
 	FilterId id = 0; // Local to this device.
 	QString parentUid; // Empty for a top-level folder.
 	QString title;
-	QString iconEmoji;
+	QString iconEmoji; // Any emoji, shown before the title.
+	QString color; // "#RRGGBB", empty for none.
 	int order = 0; // Among siblings.
 	bool sync = true;
 	bool deleted = false; // A tombstone, so that sync can delete elsewhere.
@@ -66,6 +68,9 @@ public:
 	FilterId create(const QString &title, FilterId parent = 0);
 	bool rename(FilterId id, const QString &title);
 	bool setIcon(FilterId id, const QString &iconEmoji);
+	bool setColor(FilterId id, const QString &color);
+	// An invalid color if the folder has none.
+	[[nodiscard]] QColor colorOf(FilterId id) const;
 	// False when the new parent is the folder itself or its descendant.
 	bool move(FilterId id, FilterId newParent);
 	bool remove(FilterId id); // With all subfolders.

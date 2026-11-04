@@ -87,6 +87,7 @@ constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 	object.insert(u"parent"_q, folder.parentUid);
 	object.insert(u"title"_q, folder.title);
 	object.insert(u"icon"_q, folder.iconEmoji);
+	object.insert(u"color"_q, folder.color);
 	object.insert(u"order"_q, folder.order);
 	object.insert(u"sync"_q, folder.sync);
 	object.insert(u"deleted"_q, folder.deleted);
@@ -103,6 +104,7 @@ constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 	folder.parentUid = object.value(u"parent"_q).toString();
 	folder.title = object.value(u"title"_q).toString();
 	folder.iconEmoji = object.value(u"icon"_q).toString();
+	folder.color = object.value(u"color"_q).toString();
 	folder.order = object.value(u"order"_q).toInt();
 	folder.sync = object.value(u"sync"_q).toBool(true);
 	folder.deleted = object.value(u"deleted"_q).toBool();
@@ -364,6 +366,31 @@ bool LocalFolders::setIcon(FilterId id, const QString &iconEmoji) {
 	return true;
 }
 
+bool LocalFolders::setColor(FilterId id, const QString &color) {
+	const auto folder = findMutable(id);
+	auto normalized = QString();
+	if (!color.trimmed().isEmpty()) {
+		const auto parsed = QColor(color.trimmed());
+		if (!parsed.isValid()) {
+			return false;
+		}
+		normalized = parsed.name(QColor::HexRgb);
+	}
+	if (!folder || folder->color == normalized) {
+		return false;
+	}
+	folder->color = normalized;
+	changedFolder(*folder);
+	return true;
+}
+
+QColor LocalFolders::colorOf(FilterId id) const {
+	const auto folder = find(id);
+	return (folder && !folder->color.isEmpty())
+		? QColor(folder->color)
+		: QColor();
+}
+
 bool LocalFolders::move(FilterId id, FilterId newParent) {
 	const auto folder = findMutable(id);
 	if (!folder) {
@@ -596,6 +623,7 @@ bool LocalFolders::mergeRemote(const QByteArray &json) {
 			folder->parentUid = incoming.parentUid;
 			folder->title = incoming.title;
 			folder->iconEmoji = incoming.iconEmoji;
+			folder->color = incoming.color;
 			folder->order = incoming.order;
 			folder->own = std::move(incoming.own);
 			folder->pinned = std::move(incoming.pinned);
