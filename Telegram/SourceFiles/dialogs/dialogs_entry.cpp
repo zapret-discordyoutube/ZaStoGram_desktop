@@ -515,17 +515,16 @@ void Entry::updateChatListEntryHeight() {
 }
 
 bool Entry::hasChatsFilterTags(FilterId exclude) const {
-	if (!owner().chatsFilters().tagsEnabled()) {
-		return false;
-	}
-	if (exclude) {
-		if (_tagColors.size() == 1) {
-			if (_tagColors.begin()->first == exclude) {
-				return false;
-			}
+	// Telegram's tags need their setting, ZaStoGram's own folders always show
+	// theirs: that is how chats that are in several folders are told apart.
+	const auto telegramTags = owner().chatsFilters().tagsEnabled();
+	for (const auto &[filterId, color] : _tagColors) {
+		if (filterId != exclude
+			&& (telegramTags || Data::IsLocalFilterId(filterId))) {
+			return true;
 		}
 	}
-	return !_tagColors.empty();
+	return false;
 }
 
 } // namespace Dialogs

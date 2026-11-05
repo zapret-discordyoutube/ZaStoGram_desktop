@@ -57,6 +57,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_values.h"
 #include "data/data_histories.h"
 #include "data/data_chat_filters.h"
+#include "data/data_chat_filters_tree.h"
 #include "data/data_changes.h"
 #include "data/data_media_types.h"
 #include "data/data_message_reactions.h"
@@ -1163,9 +1164,13 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 				- context.st->nameLeft;
 			auto more = uint8(0);
 			const auto &list = session().data().chatsFilters().list();
+			const auto telegramTags
+				= session().data().chatsFilters().tagsEnabled();
 			for (const auto &filter : list) {
 				if (!row->entry()->inChatList(filter.id())
-					|| (filter.id() == context.filter)) {
+					|| (filter.id() == context.filter)
+					|| (!telegramTags
+						&& !Data::IsLocalFilterId(filter.id()))) {
 					continue;
 				}
 				if (active
@@ -5870,8 +5875,16 @@ QImage *InnerWidget::cacheChatsFilterTag(
 	if (roundedText.empty() || colorIndex < 0) {
 		return nullptr;
 	}
-	const auto color = Ui::EmptyUserpic::UserpicColor(colorIndex).color2;
-	entry.context.color = color->c;
+	auto color = Ui::EmptyUserpic::UserpicColor(colorIndex).color2->c;
+	if (Data::IsLocalFilterId(filter.id())) {
+		// ZaStoGram's folders have a color of their own, any one.
+		const auto own = session().data().chatsFilters().local().colorOf(
+			filter.id());
+		if (own.isValid()) {
+			color = own;
+		}
+	}
+	entry.context.color = color;
 	entry.context.active = active;
 	entry.context.textContext = Core::TextContext({ .session = &session() });
 	entry.frame = Ui::ChatsFilterTag(roundedText, entry.context);

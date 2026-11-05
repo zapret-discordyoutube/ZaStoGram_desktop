@@ -1113,6 +1113,126 @@ void BuildZaStoGramSection(SectionBuilder &builder) {
 		u"Если Telegram удалит, заблокирует или заморозит аккаунт, перед стиранием данных приложение сохраняет в эту папку список чатов, каналов и групп со ссылками, загруженные сообщения и скачанные файлы. ПК-клиент не хранит историю на диске, поэтому копия содержит только то, что уже было загружено в память; она обновляется в фоне."_q));
 }
 
+// ZaStoGram: режим призрака — четыре независимых переключателя и общий.
+void BuildGhostSection(SectionBuilder &builder) {
+	struct State {
+		rpl::variable<bool> noRead;
+		rpl::variable<bool> noStories;
+		rpl::variable<bool> noOnline;
+		rpl::variable<bool> noTyping;
+	};
+	const auto state = std::make_shared<State>();
+	{
+		auto &settings = Core::App().settings();
+		state->noRead = settings.ghostNoRead();
+		state->noStories = settings.ghostNoStories();
+		state->noOnline = settings.ghostNoOnline();
+		state->noTyping = settings.ghostNoTyping();
+	}
+	const auto allOn = [=] {
+		return state->noRead.current()
+			&& state->noStories.current()
+			&& state->noOnline.current()
+			&& state->noTyping.current();
+	};
+	const auto keywords = QStringList{
+		u"ghost"_q,
+		u"призрак"_q,
+		u"read"_q,
+		u"online"_q,
+		u"typing"_q,
+		u"stories"_q,
+	};
+
+	builder.addDivider();
+	builder.addSkip();
+	builder.addSubsectionTitle({
+		.id = u"advanced/ghost"_q,
+		.title = rpl::single(u"Режим призрака"_q),
+		.keywords = keywords,
+	});
+
+	const auto all = builder.addButton({
+		.id = u"advanced/ghost_all"_q,
+		.title = rpl::single(u"Всё сразу"_q),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::combine(
+			state->noRead.value(),
+			state->noStories.value(),
+			state->noOnline.value(),
+			state->noTyping.value(),
+			[](bool a, bool b, bool c, bool d) { return a && b && c && d; }
+		) | rpl::distinct_until_changed(),
+		.keywords = keywords,
+	});
+	if (all) {
+		all->toggledValue(
+		) | rpl::filter([=](bool enabled) {
+			return (enabled != allOn());
+		}) | rpl::on_next([=](bool enabled) {
+			auto &settings = Core::App().settings();
+			settings.setGhostNoRead(enabled);
+			settings.setGhostNoStories(enabled);
+			settings.setGhostNoOnline(enabled);
+			settings.setGhostNoTyping(enabled);
+			Core::App().saveSettingsDelayed();
+			state->noRead = enabled;
+			state->noStories = enabled;
+			state->noOnline = enabled;
+			state->noTyping = enabled;
+		}, all->lifetime());
+	}
+
+	const auto add = [&](
+			QString id,
+			QString title,
+			rpl::variable<bool> State::*member,
+			void (Core::Settings::*setter)(bool)) {
+		const auto button = builder.addButton({
+			.id = std::move(id),
+			.title = rpl::single(std::move(title)),
+			.st = &st::settingsButtonNoIcon,
+			.toggled = (state.get()->*member).value(),
+			.keywords = keywords,
+		});
+		if (!button) {
+			return;
+		}
+		button->toggledValue(
+		) | rpl::filter([=](bool enabled) {
+			return (enabled != (state.get()->*member).current());
+		}) | rpl::on_next([=](bool enabled) {
+			(Core::App().settings().*setter)(enabled);
+			Core::App().saveSettingsDelayed();
+			state.get()->*member = enabled;
+		}, button->lifetime());
+	};
+	add(
+		u"advanced/ghost_no_read"_q,
+		u"Не отмечать сообщения прочитанными"_q,
+		&State::noRead,
+		&Core::Settings::setGhostNoRead);
+	add(
+		u"advanced/ghost_no_stories"_q,
+		u"Не отмечать истории просмотренными"_q,
+		&State::noStories,
+		&Core::Settings::setGhostNoStories);
+	add(
+		u"advanced/ghost_no_online"_q,
+		u"Не отправлять онлайн-статус"_q,
+		&State::noOnline,
+		&Core::Settings::setGhostNoOnline);
+	add(
+		u"advanced/ghost_no_typing"_q,
+		u"Не отправлять «печатает»"_q,
+		&State::noTyping,
+		&Core::Settings::setGhostNoTyping);
+
+	builder.addSkip();
+	builder.addDividerText(rpl::single(
+		u"Отметка о прочтении и просмотр историй не уходят на сервер: собеседник не увидит «прочитано», а автор истории — ваш просмотр. Чат у вас при этом выглядит прочитанным, а после перезапуска непрочитанное может вернуться. Если вы сами отправите сообщение, Telegram всё равно отметит чат прочитанным. Онлайн-статус не отправляется без настроек приватности, «был(а) недавно» остаётся таким, каким его видит сервер."_q));
+}
+
 void ShowDownloadProgress(
 		not_null<rpl::event_stream<QString>*> texts,
 		not_null<rpl::event_stream<bool>*> downloading,
@@ -1426,6 +1546,7 @@ const auto kMeta = BuildHelper({
 }, [](SectionBuilder &builder) {
 	BuildUpdateSection(builder, true);
 	BuildZaStoGramSection(builder);
+	BuildGhostSection(builder);
 	BuildDataStorageSection(builder);
 	BuildAutoDownloadSection(builder);
 	BuildWindowTitleSection(builder);

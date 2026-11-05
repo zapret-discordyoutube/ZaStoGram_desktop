@@ -2648,6 +2648,17 @@ void AttachWebView::closeAll() {
 	destroyDeferred(base::take(_instances));
 }
 
+std::vector<not_null<UserData*>> AttachWebView::openBots() const {
+	auto result = std::vector<not_null<UserData*>>();
+	for (const auto &instance : _instances) {
+		const auto bot = instance->bot();
+		if (!ranges::contains(result, bot)) {
+			result.push_back(bot);
+		}
+	}
+	return result;
+}
+
 void AttachWebView::loadPopularAppBots() {
 	if (_popularAppBotsLoaded.current() || _popularAppBotsRequestId) {
 		return;

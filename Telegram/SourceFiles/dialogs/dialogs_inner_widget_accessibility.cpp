@@ -567,9 +567,11 @@ QString SubItemValue(
 		}
 		QStringList tags;
 		const auto &list = row->history()->session().data().chatsFilters().list();
+		const auto telegramTags = row->history()->session().data().chatsFilters().tagsEnabled();
 		for (const auto &filter : list) {
 			if (!entry->inChatList(filter.id())
-				|| (filter.id() == filterId)) {
+				|| (filter.id() == filterId)
+				|| (!telegramTags && !Data::IsLocalFilterId(filter.id()))) {
 				continue;
 			}
 			tags << filter.title().text.text;

@@ -66,6 +66,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "support/support_helper.h"
 #include "lang/lang_keys.h"
 #include "core/application.h"
+#include "core/zsg_login_guard.h"
 #include "ui/text/text_utilities.h"
 #include "ui/layers/generic_box.h"
 #include "styles/style_layers.h"
@@ -199,6 +200,9 @@ Session::Session(
 	_api->requestFullPeer(_user);
 
 	_api->instance().setUserPhone(_user->phone());
+
+	// ZaStoGram: login code guard (mini apps that ask for the code).
+	Core::ZsgLoginGuard::Watch(this);
 
 	// Load current userpic and keep it loaded.
 	_user->loadUserpic();

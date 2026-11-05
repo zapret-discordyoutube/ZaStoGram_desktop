@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "apiwrap.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "core/version.h"
 #include "data/components/top_peers.h"
 #include "data/data_changes.h"
@@ -1480,13 +1481,17 @@ void Stories::markAsRead(FullStoryId id, bool viewed) {
 		return;
 	}
 	const auto story = *maybeStory;
-	if (story->expired() && story->inProfile()) {
+	// ZaStoGram: режим призрака — просмотр на сервер не уходит, но
+	// локально история отмечается просмотренной, чтобы плеер работал
+	// как обычно.
+	const auto ghost = Core::App().settings().ghostNoStories();
+	if (!ghost && story->expired() && story->inProfile()) {
 		_incrementViewsPending[id.peer].emplace(id.story);
 		if (!_incrementViewsTimer.isActive()) {
 			_incrementViewsTimer.callOnce(kIncrementViewsDelay);
 		}
 	}
-	if (!bumpReadTill(id.peer, id.story)) {
+	if (!bumpReadTill(id.peer, id.story) || ghost) {
 		return;
 	}
 	if (!_markReadPending.contains(id.peer)) {

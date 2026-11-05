@@ -8,6 +8,9 @@ For license and copyright information see the local LEGAL file.
 
 #include "base/qthelp_url.h"
 #include "core/launcher.h"
+#include "logs.h"
+
+#include <crl/crl_time.h>
 
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
@@ -16,14 +19,20 @@ For license and copyright information see the local LEGAL file.
 #include <QtCore/QRegularExpression>
 #include <QtCore/QUrl>
 #include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkProxy>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
+
+#include <memory>
 
 namespace Core::ZsgMirrors {
 namespace {
 
 constexpr auto kMaxHosts = 6;
 constexpr auto kRefreshTimeout = 6 * 1000;
+// Apps Script starts cold and answers through a redirect: 6 seconds were not
+// enough for it from a slow line, and it is the page that carries the live names.
+constexpr auto kEntryTimeout = 15 * 1000;
 constexpr auto kMaxResponseSize = 256 * 1024;
 
 [[nodiscard]] QStringList Builtin() {
@@ -108,45 +117,15 @@ void Refresh(const QString &host) {
 	});
 }
 
-void FetchEntryName(
-		QStringList tried,
-		int index,
-		Fn<void(QStringList)> done) {
-	const auto lists = EntryLists();
-	if (index >= lists.size()) {
-		done({});
-		return;
-	}
-	const auto manager = new QNetworkAccessManager();
-	auto request = QNetworkRequest(QUrl(lists[index]));
-	request.setTransferTimeout(kRefreshTimeout);
-	// Apps Script answers through a redirect to script.googleusercontent.com.
-	request.setAttribute(
-		QNetworkRequest::RedirectPolicyAttribute,
-		QNetworkRequest::NoLessSafeRedirectPolicy);
-	const auto reply = manager->get(request);
-	QObject::connect(reply, &QNetworkReply::finished, [=] {
-		const auto body = reply->error() == QNetworkReply::NoError
-			? reply->read(kMaxResponseSize)
-			: QByteArray();
-		reply->deleteLater();
-		manager->deleteLater();
-		auto fresh = QStringList();
-		for (const auto &name : ParseEntry(body)) {
-			if (!tried.contains(name)) {
-				fresh.push_back(name);
-			}
-		}
-		if (fresh.isEmpty()) {
-			FetchEntryName(tried, index + 1, done);
-			return;
-		}
-		auto state = ReadState();
-		state.names = fresh;
-		WriteState(state);
-		done(fresh);
-	});
-}
+// One race over every list and every route: a proxy that swallows requests
+// (the app-wide one only carries Telegram) must not hide the pages that a
+// browser on the same machine opens directly, and a silent list must not
+// delay the other one. Names are handed over as each answer arrives, and
+// the last call says that every page has answered or timed out.
+struct EntryRace {
+	int pending = 0;
+	QStringList delivered;
+};
 
 } // namespace
 
@@ -252,8 +231,69 @@ QStringList ParseEntry(const QByteArray &json) {
 	return result;
 }
 
-void FetchEntryNames(QStringList tried, Fn<void(QStringList)> done) {
-	FetchEntryName(std::move(tried), 0, std::move(done));
+void FetchEntryNames(
+		QStringList tried,
+		Fn<void(QStringList fresh, bool last)> done) {
+	const auto lists = EntryLists();
+	const auto proxied = (QNetworkProxy::applicationProxy().type()
+			!= QNetworkProxy::NoProxy)
+		|| QNetworkProxyFactory::usesSystemConfiguration();
+	const auto routes = proxied ? 2 : 1;
+	const auto race = std::make_shared<EntryRace>();
+	race->pending = int(lists.size()) * routes;
+	for (const auto &list : lists) {
+		for (auto route = 0; route != routes; ++route) {
+			const auto direct = (route == 1);
+			const auto manager = new QNetworkAccessManager();
+			if (direct) {
+				manager->setProxy(QNetworkProxy::NoProxy);
+			}
+			auto request = QNetworkRequest(QUrl(list));
+			request.setTransferTimeout(kEntryTimeout);
+			// Apps Script answers through a redirect to
+			// script.googleusercontent.com.
+			request.setAttribute(
+				QNetworkRequest::RedirectPolicyAttribute,
+				QNetworkRequest::NoLessSafeRedirectPolicy);
+			const auto started = crl::now();
+			const auto reply = manager->get(request);
+			QObject::connect(reply, &QNetworkReply::finished, [=] {
+				const auto ok = (reply->error() == QNetworkReply::NoError);
+				const auto body = ok
+					? reply->read(kMaxResponseSize)
+					: QByteArray();
+				LOG(("Update Info: entry page %1%2 -> %3 (%4), %5 bytes, %6 ms"
+					).arg(QUrl(list).host()
+					).arg(direct ? u" [direct]"_q : QString()
+					).arg(int(reply->error())
+					).arg(reply->errorString()
+					).arg(body.size()
+					).arg(crl::now() - started));
+				reply->deleteLater();
+				manager->deleteLater();
+				--race->pending;
+				auto fresh = QStringList();
+				for (const auto &name : ParseEntry(body)) {
+					if (!tried.contains(name)
+						&& !race->delivered.contains(name)) {
+						fresh.push_back(name);
+					}
+				}
+				if (!fresh.isEmpty()) {
+					race->delivered += fresh;
+					auto state = ReadState();
+					state.names = race->delivered;
+					WriteState(state);
+				}
+				if (!fresh.isEmpty() || !race->pending) {
+					done(fresh, !race->pending);
+				}
+			});
+		}
+	}
+	if (!race->pending) {
+		done({}, true);
+	}
 }
 
 } // namespace Core::ZsgMirrors

@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_chat_filters.h"
 
+#include "api/api_chat_filters_sync.h"
+#include "data/data_chat_filters_tree.h"
+
 #include "api/api_text_entities.h"
 #include "history/history.h"
 #include "data/data_peer.h"
@@ -389,9 +392,19 @@ bool ChatFilter::contains(
 
 ChatFilters::ChatFilters(not_null<Session*> owner)
 : _owner(owner)
+, _local(std::make_unique<LocalFolders>(owner))
 , _moreChatsTimer([=] { checkLoadMoreChatsLists(); }) {
 	_list.emplace_back();
-	crl::on_main(&owner->session(), [=] { load(); });
+	_local->changed() | rpl::on_next([=] {
+		refreshLocal();
+	}, _localLifetime);
+	crl::on_main(&owner->session(), [=] {
+		load();
+		_local->load();
+		_sync = std::make_unique<Api::LocalFoldersSync>(
+			&_owner->session(),
+			_local.get());
+	});
 }
 
 ChatFilters::~ChatFilters() = default;
@@ -413,6 +426,7 @@ not_null<Dialogs::MainList*> ChatFilters::chatsList(FilterId filterId) {
 }
 
 void ChatFilters::clear() {
+	_tabsDirty = true;
 	_chatsLists.clear();
 	_list.clear();
 }
@@ -494,7 +508,7 @@ void ChatFilters::received(const QVector<MTPDialogFilter> &list) {
 	for (const auto &filter : list) {
 		auto parsed = ChatFilter::FromTL(filter, _owner);
 		const auto b = begin(_list) + position;
-		const auto e = end(_list);
+		const auto e = begin(_list) + serverCount();
 		const auto i = ranges::find(b, e, parsed.id(), &ChatFilter::id);
 		if (i == e) {
 			applyInsert(std::move(parsed), position);
@@ -504,13 +518,14 @@ void ChatFilters::received(const QVector<MTPDialogFilter> &list) {
 				changed = true;
 			}
 		} else {
+			_tabsDirty = true;
 			std::swap(*i, *b);
 			applyChange(*b, std::move(parsed));
 			changed = true;
 		}
 		++position;
 	}
-	while (position < _list.size()) {
+	while (position < serverCount()) {
 		applyRemove(position);
 		changed = true;
 	}
@@ -668,6 +683,8 @@ void ChatFilters::set(ChatFilter filter) {
 void ChatFilters::applyInsert(ChatFilter filter, int position) {
 	Expects(position >= 0 && position <= _list.size());
 
+	_tabsDirty = true;
+
 	_list.insert(
 		begin(_list) + position,
 		ChatFilter(filter.id(), {}, {}, {}, {}, {}, {}, {}));
@@ -684,6 +701,7 @@ void ChatFilters::remove(FilterId id) {
 }
 
 void ChatFilters::moveAllToFront() {
+	_tabsDirty = true;
 	const auto i = ranges::find(_list, FilterId(), &ChatFilter::id);
 	if (!_list.empty() && i == begin(_list)) {
 		return;
@@ -695,6 +713,8 @@ void ChatFilters::moveAllToFront() {
 
 void ChatFilters::applyRemove(int position) {
 	Expects(position >= 0 && position < _list.size());
+
+	_tabsDirty = true;
 
 	// Remove the filter from the list before applyChange() tears down its
 	// chats. Unpinning a chat re-caches its siblings' pinned indices, which
@@ -797,13 +817,16 @@ bool ChatFilters::applyChange(ChatFilter &filter, ChatFilter &&updated) {
 }
 
 bool ChatFilters::applyOrder(const QVector<MTPint> &order) {
-	if (order.size() != _list.size()) {
+	const auto count = serverCount();
+	if (order.size() != count) {
 		return false;
-	} else if (_list.empty()) {
+	} else if (!count) {
 		return true;
 	}
 	auto indices = ranges::views::all(
 		_list
+	) | ranges::views::take(
+		count
 	) | ranges::views::transform(
 		&ChatFilter::id
 	) | ranges::to_vector;
@@ -817,8 +840,9 @@ bool ChatFilters::applyOrder(const QVector<MTPint> &order) {
 		}
 		++b;
 	}
+	_tabsDirty = true;
 	auto changed = false;
-	auto begin = _list.begin(), end = _list.end();
+	auto begin = _list.begin(), end = _list.begin() + count;
 	for (const auto &id : order) {
 		const auto i = ranges::find(begin, end, id.v, &ChatFilter::id);
 		Assert(i != end);
@@ -872,13 +896,28 @@ void ChatFilters::saveOrder(
 	if (after) {
 		_saveOrderAfterId = after;
 	}
+	auto localOrder = std::vector<FilterId>();
+	for (const auto id : order) {
+		if (IsLocalFilterId(id)) {
+			localOrder.push_back(id);
+		}
+	}
+	if (!localOrder.empty()) {
+		_local->reorderTop(localOrder);
+	}
+
 	const auto api = &_owner->session().api();
 	api->request(_saveOrderRequestId).cancel();
 
 	auto ids = QVector<MTPint>();
 	ids.reserve(order.size());
 	for (const auto id : order) {
-		ids.push_back(MTP_int(id));
+		if (!IsLocalFilterId(id)) {
+			ids.push_back(MTP_int(id));
+		}
+	}
+	if (ids.isEmpty()) {
+		return;
 	}
 	const auto wrapped = MTP_vector<MTPint>(ids);
 
@@ -901,22 +940,163 @@ const std::vector<ChatFilter> &ChatFilters::list() const {
 	return _list;
 }
 
+LocalFolders &ChatFilters::local() {
+	return *_local;
+}
+
+const LocalFolders &ChatFilters::local() const {
+	return *_local;
+}
+
+void ChatFilters::ensureTabs() const {
+	if (!_tabsDirty) {
+		return;
+	}
+	_tabsDirty = false;
+	_tabIndices.clear();
+	_tabIndices.reserve(_list.size());
+	for (auto i = 0, count = int(_list.size()); i != count; ++i) {
+		const auto id = _list[i].id();
+		if (!IsLocalFilterId(id) || !_local->isNested(id)) {
+			_tabIndices.push_back(i);
+		}
+	}
+}
+
+int ChatFilters::tabsCount() const {
+	ensureTabs();
+	return int(_tabIndices.size());
+}
+
+const ChatFilter &ChatFilters::tabAt(int index) const {
+	ensureTabs();
+	Expects(index >= 0 && index < _tabIndices.size());
+
+	return _list[_tabIndices[index]];
+}
+
+int ChatFilters::Tabs::size() const {
+	return _owner->tabsCount();
+}
+
+const ChatFilter &ChatFilters::Tabs::operator[](int index) const {
+	return _owner->tabAt(index);
+}
+
+const ChatFilter &ChatFilters::Tabs::iterator::operator*() const {
+	return _owner->tabAt(_index);
+}
+
+FilterId ChatFilters::tabIdFor(FilterId id) const {
+	for (auto guard = 0; IsLocalFilterId(id) && guard < 1000; ++guard) {
+		const auto parent = _local->parentOf(id);
+		if (!parent) {
+			break;
+		}
+		id = parent;
+	}
+	return id;
+}
+
+int ChatFilters::serverCount() const {
+	return int(ranges::find_if(_list, [](const ChatFilter &filter) {
+		return IsLocalFilterId(filter.id());
+	}) - begin(_list));
+}
+
+void ChatFilters::refreshLocal() {
+	_tabsDirty = true;
+	auto wanted = std::vector<ChatFilter>();
+	const auto ids = _local->ids();
+	wanted.reserve(ids.size());
+	for (const auto id : ids) {
+		const auto folder = _local->find(id);
+		Assert(folder != nullptr);
+		auto always = base::flat_set<not_null<History*>>();
+		for (const auto peerId : _local->peersOf(id)) {
+			always.emplace(_owner->history(peerId));
+		}
+		auto pinned = std::vector<not_null<History*>>();
+		for (const auto peerId : _local->pinnedOf(id)) {
+			const auto history = _owner->history(peerId);
+			if (always.contains(history)) {
+				pinned.push_back(history);
+			}
+		}
+		// Nested folders show their whole path where a flat list of all
+		// folders is displayed (like the "add to folder" menu).
+		const auto plain = _local->isNested(id)
+			? _local->pathTitle(id)
+			: folder->title;
+		// The icon is any emoji, it is shown before the title everywhere.
+		const auto title = folder->iconEmoji.isEmpty()
+			? plain
+			: (folder->iconEmoji + u" "_q + plain);
+		// Chat tags of our folders always show, a color index only has to
+		// exist for that, the real color is the folder's own one.
+		wanted.emplace_back(
+			id,
+			ChatFilterTitle{ .text = TextWithEntities{ .text = title } },
+			folder->iconEmoji,
+			std::optional<uint8>(uint8(id % 7)),
+			ChatFilter::Flags(),
+			std::move(always),
+			std::move(pinned),
+			base::flat_set<not_null<History*>>());
+	}
+
+	auto changed = false;
+	auto position = serverCount();
+	for (auto &filter : wanted) {
+		const auto b = begin(_list) + position;
+		const auto e = end(_list);
+		const auto i = ranges::find(b, e, filter.id(), &ChatFilter::id);
+		if (i == e) {
+			applyInsert(std::move(filter), position);
+			changed = true;
+		} else if (i == b) {
+			if (applyChange(*b, std::move(filter))) {
+				changed = true;
+			}
+		} else {
+			std::swap(*i, *b);
+			applyChange(*b, std::move(filter));
+			changed = true;
+		}
+		++position;
+	}
+	while (position < int(_list.size())) {
+		applyRemove(position);
+		changed = true;
+	}
+	// A color change alone is not a change of the filter, but chat tags
+	// have to be repainted.
+	_listChanged.fire({});
+}
+
 FilterId ChatFilters::defaultId() const {
 	return lookupId(0);
 }
 
 FilterId ChatFilters::lookupId(int index) const {
-	Expects(index >= 0 && index < _list.size());
+	Expects(index >= 0 && index < tabsCount());
 
-	if (_owner->session().user()->isPremium() || !_list.front().id()) {
-		return _list[index].id();
+	if (_owner->session().user()->isPremium() || !tabAt(0).id()) {
+		return tabAt(index).id();
 	}
-	const auto i = ranges::find(_list, FilterId(0), &ChatFilter::id);
+	const auto defaultAt = [&] {
+		for (auto i = 0, count = tabsCount(); i != count; ++i) {
+			if (!tabAt(i).id()) {
+				return i;
+			}
+		}
+		return tabsCount();
+	}();
 	return !index
 		? FilterId()
-		: (index <= int(i - begin(_list)))
-		? _list[index - 1].id()
-		: _list[index].id();
+		: (index <= defaultAt)
+		? tabAt(index - 1).id()
+		: tabAt(index).id();
 }
 
 bool ChatFilters::loaded() const {

@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flags.h"
 #include "base/timer.h"
 
+#include <iterator>
+
 class History;
 
 namespace Dialogs {
@@ -21,9 +23,21 @@ namespace Ui {
 struct MoreChatsBarContent;
 } // namespace Ui
 
+namespace Api {
+class LocalFoldersSync;
+} // namespace Api
+
 namespace Data {
 
 class Session;
+class LocalFolders;
+
+// ZaStoGram's own folders live above this id, Telegram's own ids are small.
+inline constexpr auto kLocalFilterIdBase = FilterId(0x10000000);
+
+[[nodiscard]] inline bool IsLocalFilterId(FilterId id) {
+	return id >= kLocalFilterIdBase;
+}
 
 struct ChatFilterTitle {
 	TextWithEntities text;
@@ -148,6 +162,69 @@ struct TagColorChanged final {
 
 class ChatFilters final {
 public:
+	// What the folder tabs show: Telegram's folders and ZaStoGram's
+	// top-level ones. Nested ZaStoGram folders are reached from their parent.
+	class Tabs final {
+	public:
+		explicit Tabs(not_null<const ChatFilters*> owner) : _owner(owner) {
+		}
+
+		[[nodiscard]] int size() const;
+		[[nodiscard]] bool empty() const {
+			return !size();
+		}
+		[[nodiscard]] const ChatFilter &operator[](int index) const;
+
+		class iterator final {
+		public:
+			using iterator_category = std::forward_iterator_tag;
+			using value_type = ChatFilter;
+			using difference_type = std::ptrdiff_t;
+			using pointer = const ChatFilter*;
+			using reference = const ChatFilter&;
+
+			iterator() = default;
+			iterator(not_null<const ChatFilters*> owner, int index)
+			: _owner(owner)
+			, _index(index) {
+			}
+
+			[[nodiscard]] reference operator*() const;
+			[[nodiscard]] pointer operator->() const {
+				return &**this;
+			}
+			iterator &operator++() {
+				++_index;
+				return *this;
+			}
+			iterator operator++(int) {
+				auto result = *this;
+				++_index;
+				return result;
+			}
+			[[nodiscard]] friend bool operator==(
+					const iterator &a,
+					const iterator &b) {
+				return a._index == b._index;
+			}
+
+		private:
+			const ChatFilters *_owner = nullptr;
+			int _index = 0;
+
+		};
+		[[nodiscard]] iterator begin() const {
+			return iterator(_owner, 0);
+		}
+		[[nodiscard]] iterator end() const {
+			return iterator(_owner, size());
+		}
+
+	private:
+		not_null<const ChatFilters*> _owner;
+
+	};
+
 	explicit ChatFilters(not_null<Session*> owner);
 	~ChatFilters();
 
@@ -162,11 +239,23 @@ public:
 	void remove(FilterId id);
 	void moveAllToFront();
 	[[nodiscard]] const std::vector<ChatFilter> &list() const;
+	[[nodiscard]] Tabs tabs() const {
+		return Tabs(this);
+	}
+	[[nodiscard]] int tabsCount() const;
+	// The tab that shows this folder: the folder itself, or for a nested
+	// ZaStoGram folder the top-level folder it is inside of.
+	[[nodiscard]] FilterId tabIdFor(FilterId id) const;
+	[[nodiscard]] const ChatFilter &tabAt(int index) const;
+	[[nodiscard]] LocalFolders &local();
+	[[nodiscard]] const LocalFolders &local() const;
 	[[nodiscard]] rpl::producer<> changed() const;
 	[[nodiscard]] rpl::producer<FilterId> isChatlistChanged() const;
 	[[nodiscard]] rpl::producer<TagColorChanged> tagColorChanged() const;
 	[[nodiscard]] bool loaded() const;
 	[[nodiscard]] bool has() const;
+	// Telegram's own folders (with the default one), not ZaStoGram's.
+	[[nodiscard]] int serverCount() const;
 
 	[[nodiscard]] FilterId defaultId() const;
 	[[nodiscard]] FilterId lookupId(int index) const;
@@ -234,6 +323,10 @@ private:
 	void checkLoadMoreChatsLists();
 	void loadMoreChatsList(FilterId id);
 
+	// ZaStoGram's own folders live at the tail of _list, after Telegram's.
+	void refreshLocal();
+	void ensureTabs() const;
+
 	const not_null<Session*> _owner;
 
 	std::vector<ChatFilter> _list;
@@ -261,6 +354,12 @@ private:
 	base::flat_map<FilterId, std::vector<ChatFilterLink>> _chatlistLinks;
 	rpl::event_stream<FilterId> _chatlistLinksUpdated;
 	mtpRequestId _linksRequestId = 0;
+
+	const std::unique_ptr<LocalFolders> _local;
+	std::unique_ptr<Api::LocalFoldersSync> _sync;
+	rpl::lifetime _localLifetime;
+	mutable std::vector<int> _tabIndices;
+	mutable bool _tabsDirty = true;
 
 	base::flat_map<FilterId, MoreChatsData> _moreChatsData;
 	rpl::event_stream<FilterId> _moreChatsUpdated;

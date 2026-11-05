@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_widget.h"
+#include "dialogs/dialogs_subfolders_row.h"
 
 #include "base/call_delayed.h"
 #include "base/qt/qt_key_modifiers.h"
@@ -2119,15 +2120,28 @@ void Widget::toggleFiltersMenu(bool enabled) {
 		raw->resizeToWidth(width());
 		const auto shadow = Ui::CreateChild<Ui::PlainShadow>(raw);
 		shadow->show();
-		inner->sizeValue() | rpl::on_next([=, this](const QSize &s) {
-			raw->resize(s);
+		const auto subfolders = Ui::CreateChild<SubfoldersRow>(
+			raw,
+			controller());
+		const auto relayout = [=, this] {
+			const auto s = inner->size();
+			subfolders->resizeToWidth(s.width());
+			subfolders->move(0, s.height());
+			const auto height = s.height()
+				+ (subfolders->isHidden() ? 0 : subfolders->height());
+			raw->resize(s.width(), height);
 			shadow->setGeometry(
 				0,
-				s.height() - shadow->height(),
+				height - shadow->height(),
 				s.width(),
 				shadow->height());
 			updateControlsGeometry();
-		}, _chatFilters->lifetime());
+		};
+		inner->sizeValue() | rpl::on_next(relayout, _chatFilters->lifetime());
+		rpl::merge(
+			subfolders->shownValue() | rpl::to_empty,
+			subfolders->heightValue() | rpl::to_empty
+		) | rpl::on_next(relayout, _chatFilters->lifetime());
 		updateControlsGeometry();
 	} else {
 		_chatFilters = nullptr;

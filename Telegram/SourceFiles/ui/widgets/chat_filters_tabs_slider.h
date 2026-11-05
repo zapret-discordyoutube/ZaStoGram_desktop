@@ -40,6 +40,8 @@ public:
 	void setUnreadCount(int index, int unreadCount, bool muted);
 	void setTabsMode(ChatsFiltersTabsMode mode);
 	void setSectionIcons(std::vector<const style::internal::Icon*> icons);
+	// A tab of its own color (ZaStoGram's folders), none for the default.
+	void setSectionColors(std::vector<std::optional<QColor>> colors);
 	void setLockedFrom(int index);
 	[[nodiscard]] int lockedFrom() const {
 		return _lockedFrom;
@@ -97,6 +99,7 @@ private:
 	const int _iconSkip;
 	ChatsFiltersTabsMode _tabsMode = ChatsFiltersTabsMode::TextOnly;
 	std::vector<const style::internal::Icon*> _sectionIcons;
+	std::vector<std::optional<QColor>> _sectionColors;
 	std::vector<int> _cachedBadgeWidths;
 	int _cachedBadgeHeight = 0;
 	int _lockedFrom = 0;

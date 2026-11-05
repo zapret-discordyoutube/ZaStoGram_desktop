@@ -180,6 +180,31 @@ public:
 	void setPinZaStoGramChannel(bool value) {
 		writePref<bool>("zastoPinPromoChannel", value);
 	}
+	// ZaStoGram: режим призрака. Четыре независимых переключателя.
+	[[nodiscard]] bool ghostNoRead() {
+		return readPref<bool>("zastoGhostNoRead", false);
+	}
+	void setGhostNoRead(bool value) {
+		writePref<bool>("zastoGhostNoRead", value);
+	}
+	[[nodiscard]] bool ghostNoStories() {
+		return readPref<bool>("zastoGhostNoStories", false);
+	}
+	void setGhostNoStories(bool value) {
+		writePref<bool>("zastoGhostNoStories", value);
+	}
+	[[nodiscard]] bool ghostNoOnline() {
+		return readPref<bool>("zastoGhostNoOnline", false);
+	}
+	void setGhostNoOnline(bool value) {
+		writePref<bool>("zastoGhostNoOnline", value);
+	}
+	[[nodiscard]] bool ghostNoTyping() {
+		return readPref<bool>("zastoGhostNoTyping", false);
+	}
+	void setGhostNoTyping(bool value) {
+		writePref<bool>("zastoGhostNoTyping", value);
+	}
 	// ZaStoGram: усиление яркости и громкости видео в просмотрщике.
 	[[nodiscard]] float64 videoBrightnessGain() {
 		return readGainPref("zastoVideoBrightness", 0.5, 2.5);

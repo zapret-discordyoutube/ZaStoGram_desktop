@@ -140,6 +140,8 @@ PRIVATE
     api/api_bot_callback_state.h
     api/api_chat_filters.cpp
     api/api_chat_filters.h
+    api/api_chat_filters_sync.cpp
+    api/api_chat_filters_sync.h
     api/api_chat_filters_remove_manager.cpp
     api/api_chat_filters_remove_manager.h
     api/api_chat_invite.cpp
@@ -249,6 +251,10 @@ PRIVATE
     api/api_who_reacted.h
     boxes/filters/edit_filter_box.cpp
     boxes/filters/edit_filter_box.h
+    boxes/filters/edit_local_folder_box.cpp
+    boxes/filters/edit_local_folder_box.h
+    boxes/filters/local_folder_menu.cpp
+    boxes/filters/local_folder_menu.h
     boxes/filters/edit_filter_chats_list.cpp
     boxes/filters/edit_filter_chats_list.h
     boxes/filters/edit_filter_chats_preview.cpp
@@ -643,6 +649,8 @@ PRIVATE
     core/websocket_client.cpp
     core/websocket_client.h
     core/zsg_build.h
+    core/zsg_login_guard.cpp
+    core/zsg_login_guard.h
     core/zsg_mirrors.cpp
     core/zsg_mirrors.h
     countries/countries_manager.cpp
@@ -713,6 +721,8 @@ PRIVATE
     data/data_chat.h
     data/data_chat_filters.cpp
     data/data_chat_filters.h
+    data/data_chat_filters_tree.cpp
+    data/data_chat_filters_tree.h
     data/data_chat_participant_status.cpp
     data/data_chat_participant_status.h
     data/data_changes.cpp
@@ -913,6 +923,8 @@ PRIVATE
     dialogs/suggestions/suggestion_premium_offer.cpp
     dialogs/suggestions/suggestion_unreviewed_auth.cpp
     dialogs/suggestions/suggestion_userpic_setup.cpp
+    dialogs/dialogs_subfolders_row.cpp
+    dialogs/dialogs_subfolders_row.h
     dialogs/dialogs_widget.cpp
     dialogs/dialogs_widget.h
     editor/audio_track_timeline.cpp
@@ -2055,6 +2067,8 @@ PRIVATE
     settings/settings_experimental.h
     settings/sections/settings_folders.cpp
     settings/sections/settings_folders.h
+    settings/sections/settings_folders_local.cpp
+    settings/sections/settings_folders_local.h
     settings/sections/settings_global_ttl.cpp
     settings/sections/settings_global_ttl.h
     settings/sections/settings_information.cpp

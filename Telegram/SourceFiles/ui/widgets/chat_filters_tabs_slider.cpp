@@ -87,6 +87,15 @@ void ChatsFiltersTabs::setTabsMode(ChatsFiltersTabsMode mode) {
 	update();
 }
 
+void ChatsFiltersTabs::setSectionColors(
+		std::vector<std::optional<QColor>> colors) {
+	if (_sectionColors == colors) {
+		return;
+	}
+	_sectionColors = std::move(colors);
+	update();
+}
+
 void ChatsFiltersTabs::setSectionIcons(
 		std::vector<const style::internal::Icon*> icons) {
 	if (_sectionIcons == icons) {
@@ -299,7 +308,16 @@ void ChatsFiltersTabs::paintEvent(QPaintEvent *e) {
 				== ChatsFiltersTabsMode::IconsOnly)
 				? 0
 				: section.label.maxWidth();
-			p.setPen(anim::pen(_st.labelFg, _st.labelFgActive, active));
+			const auto custom = (index >= 0 && index < int(_sectionColors.size()))
+				? _sectionColors[index]
+				: std::optional<QColor>();
+			const auto labelColor = custom
+				? anim::color(
+					QColor(custom->red(), custom->green(), custom->blue(), 150),
+					*custom,
+					active)
+				: anim::color(_st.labelFg, _st.labelFgActive, active);
+			p.setPen(labelColor);
 			if (icon) {
 				icon->paint(
 					p,
@@ -307,7 +325,7 @@ void ChatsFiltersTabs::paintEvent(QPaintEvent *e) {
 					_st.labelTop
 						+ (_st.labelStyle.font->height - icon->height()) / 2,
 					width(),
-					anim::color(_st.labelFg, _st.labelFgActive, active));
+					labelColor);
 			}
 			if (labelWidth > 0) {
 				section.label.draw(p, {
