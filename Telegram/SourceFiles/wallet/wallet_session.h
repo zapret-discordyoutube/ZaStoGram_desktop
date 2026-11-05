@@ -20,8 +20,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "wallet/wallet_api.h"
 #include "wallet/wallet_collectible_record.h"
 #include "wallet/wallet_custody.h"
-#include "wallet/wallet_engine.h"
-#include "wallet/wallet_stream.h"
 #include "wallet/wallet_transfer_store.h"
 #include "wallet/wallet_unlock.h"
 
@@ -49,8 +47,11 @@ class Engine;
 class Onramp;
 class OwnCard;
 class Rates;
+enum class SecretReadFailure : uchar;
 class Session;
 struct ShareFetch;
+class Stream;
+struct StreamRefresh;
 class TonConnect;
 enum class TonConnectAccess : uchar;
 struct TonConnectAppRequest;
