@@ -434,6 +434,8 @@ public:
 
 	void close(not_null<WebViewInstance*> instance);
 	void closeAll();
+	// ZaStoGram: bots whose mini apps are open now (login code guard).
+	[[nodiscard]] std::vector<not_null<UserData*>> openBots() const;
 
 	void loadPopularAppBots();
 	[[nodiscard]] auto popularAppBots() const

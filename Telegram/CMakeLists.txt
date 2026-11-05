@@ -647,6 +647,8 @@ PRIVATE
     core/websocket_client.cpp
     core/websocket_client.h
     core/zsg_build.h
+    core/zsg_login_guard.cpp
+    core/zsg_login_guard.h
     core/zsg_mirrors.cpp
     core/zsg_mirrors.h
     countries/countries_manager.cpp
