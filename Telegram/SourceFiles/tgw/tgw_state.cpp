@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 #include "main/main_session.h"
-#include "mtproto/sender.h"
+#include "mtproto/instance/sender.h"
 #include "tgw/tgw_media.h"
 #include "tgw/tgw_runtime.h"
 
