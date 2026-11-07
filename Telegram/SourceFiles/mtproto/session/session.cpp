@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/runtime/runtime_environment.h"
 #include "mtproto/session/session_state.h"
 #include "base/unixtime.h"
+#include "test/test_l10n_seams.h"
 
 namespace MTP {
 namespace details {
@@ -558,6 +559,9 @@ QString Session::transport() const {
 void Session::sendPrepared(
 		const SerializedRequest &request,
 		crl::time msCanWait) {
+	if (Test::HoldRequest(_instance, request)) {
+		return;
+	}
 	DEBUG_LOG(("MTP Info: adding request to toSendMap, msCanWait %1"
 		).arg(msCanWait));
 	_data->enqueueToSend(request);

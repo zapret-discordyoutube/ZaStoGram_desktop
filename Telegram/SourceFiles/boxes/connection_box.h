@@ -78,7 +78,6 @@ public:
 		bool selected = false;
 		bool deleted = false;
 		bool supportsShare = false;
-		bool supportsCalls = false;
 		bool web = false;
 		bool canOpenBrowser = false;
 		ItemState state = ItemState::Unknown;
@@ -98,7 +97,6 @@ public:
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();
 	bool setProxySettings(ProxyData::Settings value);
-	void setProxyForCalls(bool enabled);
 	void setTryIPv6(bool enabled);
 	void setFastWarmup(bool enabled);
 	rpl::producer<ProxyData::Settings> proxySettingsValue() const;

@@ -67,6 +67,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "core/application.h"
 #include "core/zsg_login_guard.h"
+#include "tgw/tgw_storage.h"
 #include "ui/text/text_utilities.h"
 #include "ui/layers/generic_box.h"
 #include "styles/style_layers.h"
@@ -284,6 +285,7 @@ Session::Session(
 	_api->requestNotifySettings(MTP_inputNotifyBroadcasts());
 
 	Core::App().downloadManager().trackSession(this);
+	Tgw::StartStorage(this);
 
 	appConfig().value(
 	) | rpl::on_next([=] {

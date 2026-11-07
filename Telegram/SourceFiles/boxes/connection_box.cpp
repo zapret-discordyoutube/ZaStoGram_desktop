@@ -792,7 +792,6 @@ private:
 	void applyView(View &&view);
 	void setupButtons(int id, not_null<ProxyRow*> button);
 	int rowHeight() const;
-	void refreshProxyForCalls();
 	void refreshRouteViaWss();
 	void refreshReorder();
 
@@ -801,13 +800,11 @@ private:
 	QPointer<Ui::Checkbox> _tryIPv6;
 	QPointer<Ui::Checkbox> _fastWarmup;
 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
-	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
 	QPointer<Ui::Checkbox> _routeViaWss;
 	QPointer<Ui::DividerLabel> _about;
 	base::unique_qptr<Ui::RpWidget> _noRows;
 	object_ptr<Ui::VerticalLayout> _initialWrap;
 	QPointer<Ui::VerticalLayout> _wrap;
-	int _currentProxySupportsCallsId = 0;
 
 	base::flat_map<int, base::unique_qptr<ProxyRow>> _rows;
 	std::unique_ptr<Ui::VerticalLayoutReorder> _reorder;
@@ -1365,27 +1362,6 @@ void ProxiesBox::setupContent() {
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
-	{
-		auto checkbox = object_ptr<Ui::Checkbox>(
-			right,
-			tr::lng_proxy_use_for_calls(tr::now),
-			_settings.useProxyForCalls());
-		checkbox->setAllowTextLines(2);
-		_proxyForCalls = right->add(
-			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
-				right,
-				std::move(checkbox),
-				style::margins(
-					0,
-					st::proxySettingsRightUsePadding.top(),
-					0,
-					st::proxySettingsRightUsePadding.bottom())),
-			style::margins(
-				st::proxySettingsRightCheckPadding.left(),
-				0,
-				st::proxySettingsRightCheckPadding.right(),
-				st::proxySettingsRightCheckPadding.top()));
-	}
 	const auto addStealthToggle = [&](
 			const QString &label,
 			bool checked,
@@ -1645,7 +1621,6 @@ void ProxiesBox::setupContent() {
 			_proxySettings->setValue(_settings.settings());
 			addNewProxy();
 		}
-		refreshProxyForCalls();
 		refreshRouteViaWss();
 	});
 	_tryIPv6->checkedChanges(
@@ -1660,7 +1635,6 @@ void ProxiesBox::setupContent() {
 	_controller->proxySettingsValue(
 	) | rpl::on_next([=](ProxyData::Settings value) {
 		_proxySettings->setValue(value);
-		refreshProxyForCalls();
 		refreshRouteViaWss();
 	}, inner->lifetime());
 	_settings.connectionTypeChanges(
@@ -1668,17 +1642,11 @@ void ProxiesBox::setupContent() {
 		refreshRouteViaWss();
 	}, inner->lifetime());
 
-	_proxyForCalls->entity()->checkedChanges(
-	) | rpl::on_next([=](bool checked) {
-		_controller->setProxyForCalls(checked);
-	}, _proxyForCalls->lifetime());
 
 	if (_rows.empty()) {
 		createNoRowsLabel();
 	}
-	refreshProxyForCalls();
 	refreshRouteViaWss();
-	_proxyForCalls->finishAnimating();
 
 	{
 		const auto wrap = left->add(
@@ -1711,16 +1679,6 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](int height) {
 		setDimensions(st::proxySettingsBoxWidth, height);
 	}, inner->lifetime());
-}
-
-void ProxiesBox::refreshProxyForCalls() {
-	if (!_proxyForCalls) {
-		return;
-	}
-	_proxyForCalls->toggle(
-		(_proxySettings->current() == ProxyData::Settings::Enabled
-			&& _currentProxySupportsCallsId != 0),
-		anim::type::normal);
 }
 
 void ProxiesBox::refreshRouteViaWss() {
@@ -1764,19 +1722,9 @@ void ProxiesBox::finishInitialRows() {
 	if (!_rows.empty()) {
 		wrap->resizeToWidth(st::proxySettingsListColumnWidth);
 	}
-	refreshProxyForCalls();
 }
 
 void ProxiesBox::applyView(View &&view) {
-	if (view.selected) {
-		_currentProxySupportsCallsId = view.supportsCalls ? view.id : 0;
-	} else if (view.id == _currentProxySupportsCallsId) {
-		_currentProxySupportsCallsId = 0;
-	}
-	if (!_initializingRows) {
-		refreshProxyForCalls();
-	}
-
 	const auto id = view.id;
 	const auto i = _rows.find(id);
 	if (i == _rows.end()) {
@@ -2986,17 +2934,6 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
 	return true;
 }
 
-void ProxiesBoxController::setProxyForCalls(bool enabled) {
-	if (_settings.useProxyForCalls() == enabled) {
-		return;
-	}
-	_settings.setUseProxyForCalls(enabled);
-	if (_settings.isEnabled() && _settings.selected().supportsCalls()) {
-		_settings.connectionTypeChangesNotify();
-	}
-	saveDelayed();
-}
-
 void ProxiesBoxController::setTryIPv6(bool enabled) {
 	if (Core::App().settings().proxy().tryIPv6() == enabled) {
 		return;
@@ -3075,7 +3012,6 @@ void ProxiesBoxController::updateView(const Item &item) {
 		? int(_account->mtp().connectionStatus().pingTime())
 		: item.ping;
 	const auto supportsShare = ProxyDataIsShareable(item.data);
-	const auto supportsCalls = item.data.supportsCalls();
 	_views.fire({
 		item.id,
 		type,
@@ -3087,7 +3023,6 @@ void ProxiesBoxController::updateView(const Item &item) {
 		!deleted && selected,
 		deleted,
 		!deleted && supportsShare,
-		supportsCalls,
 		item.data.type == Type::Web,
 		!deleted
 			&& selected
