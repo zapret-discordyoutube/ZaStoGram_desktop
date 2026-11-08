@@ -102,6 +102,20 @@ def test_delete_animation_never_touches_the_main_window_on_windows():
     assert "ThanosEffect::Supported()" in body
 
 
+def test_thanos_overlay_has_no_qt_parent():
+    # dev-67: с главным окном как Qt-родителем накладки Qt при добавлении
+    # RHI-виджета искал ближайшего предка с нативным окном, перешагнул через
+    # накладку (у неё ещё нет хэндла) и пересоздал ГЛАВНОЕ окно. Родитель — только
+    # нативный владелец (GWLP_HWNDPARENT).
+    overlay = source("ui/effects/zsg_thanos_overlay.cpp")
+    ctor = between(overlay, "ThanosOverlay::ThanosOverlay(", "void ThanosOverlay::syncGeometry()")
+    assert ": QWidget(\n\tnullptr, // No Qt parent" in ctor
+    present = between(overlay, "void ThanosOverlay::present()", "void ThanosOverlay::dismiss()")
+    assert "GWLP_HWNDPARENT" in present
+    assert present.index("GWLP_HWNDPARENT") < present.index("show();")
+    assert "WA_QuitOnClose, false" in overlay
+
+
 def test_thanos_overlay_cannot_steal_focus_or_input():
     overlay = source("ui/effects/zsg_thanos_overlay.cpp")
     for flag in ("Qt::Tool", "Qt::WindowDoesNotAcceptFocus", "Qt::WindowTransparentForInput"):

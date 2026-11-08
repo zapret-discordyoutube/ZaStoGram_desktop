@@ -10,11 +10,15 @@ For license and copyright information see the local LEGAL file.
 
 #include <QtGui/QWindow>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif // Q_OS_WIN
+
 namespace Ui {
 
 ThanosOverlay::ThanosOverlay(not_null<QWidget*> parent)
 : QWidget(
-	parent,
+	nullptr, // No Qt parent, see the header.
 	Qt::Tool
 		| Qt::FramelessWindowHint
 		| Qt::NoDropShadowWindowHint
@@ -25,6 +29,7 @@ ThanosOverlay::ThanosOverlay(not_null<QWidget*> parent)
 	setAttribute(Qt::WA_NoSystemBackground);
 	setAttribute(Qt::WA_ShowWithoutActivating);
 	setAttribute(Qt::WA_TransparentForMouseEvents);
+	setAttribute(Qt::WA_QuitOnClose, false);
 	setFocusPolicy(Qt::NoFocus);
 
 	// The parent moves and resizes without telling us otherwise.
@@ -44,6 +49,16 @@ void ThanosOverlay::syncGeometry() {
 void ThanosOverlay::present() {
 	syncGeometry();
 	if (!isVisible()) {
+#ifdef Q_OS_WIN
+		// The native window is created here, with the GPU child already
+		// in place; the owner is set before the first show.
+		if (_parent->windowHandle()) {
+			SetWindowLongPtr(
+				reinterpret_cast<HWND>(winId()),
+				GWLP_HWNDPARENT,
+				reinterpret_cast<LONG_PTR>(_parent->winId()));
+		}
+#endif // Q_OS_WIN
 		show();
 		const auto handle = windowHandle();
 		Core::ZsgDiag::Trace(

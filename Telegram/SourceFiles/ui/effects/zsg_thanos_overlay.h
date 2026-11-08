@@ -27,9 +27,16 @@ namespace Ui {
 //
 // The overlay is created hidden and gets its GPU child before its own native
 // window exists, so Qt creates it already configured and recreates nothing.
-// It is owned by the main window (Qt::Tool with a parent), so Windows keeps it
-// right above the main window and hides it together with it. It never takes
-// focus or input.
+//
+// It must NOT have a Qt parent: when the GPU widget is added, Qt looks for the
+// closest ancestor that already has a native window and recreates THAT one
+// (QWidget::setParent), walking over a child window that has no handle yet up
+// to its parent. dev-67 had the main window as the parent and was closed by
+// exactly this. So the overlay is a parentless top-level and is tied to the
+// main window with the native Windows owner relation (GWLP_HWNDPARENT, as
+// Platform::MainWindow does for the taskbar): Windows keeps it right above the
+// owner, hides it together with the owner and keeps it out of the taskbar.
+// It never takes focus or input. The owner of the object frees it.
 class ThanosOverlay final : public QWidget {
 public:
 	explicit ThanosOverlay(not_null<QWidget*> parent);
