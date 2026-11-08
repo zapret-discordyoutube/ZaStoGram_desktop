@@ -76,19 +76,43 @@ def test_exits_are_traced_with_a_stack():
     assert "thanos: surface created" in thanos
 
 
-def test_delete_animation_cannot_quit_the_app_on_windows():
-    # Первое удаление в сессии создаёт RHI-поверхность Thanos как дочернюю у
-    # верхнеуровневого окна, Qt пересоздаёт окно, WM_DESTROY превращается в
-    # Core::Quit(). Пока поверхность так создаётся, эффект на Windows выключен.
+def test_delete_animation_never_touches_the_main_window_on_windows():
+    # Первое удаление в сессии добавляло RHI-виджет эффекта в главное окно, Qt
+    # пересоздавал его хэндл, WM_DESTROY превращался в Core::Quit() (dev-63..65).
+    # Поверхность эффекта живёт в отдельном прозрачном окне-накладке, которое
+    # создаётся вместе со своим GPU-потомком и не пересоздаётся.
     thanos = source("ui/effects/thanos_effect.cpp")
-    body = between(thanos, "bool ThanosEffect::Supported()", "bool ThanosEffect::WindowVisible(")
+    body = between(thanos, "void ThanosEffect::ensureSurface()", "void ThanosEffect::showSurface()")
     assert "#ifdef Q_OS_WIN" in body
-    assert 'qEnvironmentVariableIsSet("ZSG_ENABLE_THANOS")' in body
-    # Запрет раньше любой проверки возможностей GPU.
-    assert body.index("ZSG_ENABLE_THANOS") < body.index("ThanosEffectFailedOnce")
+    assert "new ThanosOverlay(_parent)" in body
+    # Родитель поверхности — накладка, а не главное окно.
+    assert "GL::CreateSurface(\n\t\tsurfaceParent," in body
+    assert body.index("new ThanosOverlay") < body.index("GL::CreateSurface")
+    show = between(thanos, "void ThanosEffect::showSurface()", "void ThanosEffect::hideSurface()")
+    assert "_overlay->present()" in show
+    assert "_overlay->dismiss()" in between(thanos, "void ThanosEffect::hideSurface()", "void ThanosEffect::finishNow()")
+    # Освобождение: поверхность раньше накладки, накладка раньше главного окна.
+    dtor = between(thanos, "ThanosEffect::~ThanosEffect()", "QWidget *ThanosEffect::surfaceWidget()")
+    assert dtor.index("_surface = nullptr") < dtor.index("delete _overlay.data()")
+    supported = between(thanos, "bool ThanosEffect::Supported()", "bool ThanosEffect::WindowVisible(")
+    assert 'qEnvironmentVariableIsSet("ZSG_DISABLE_THANOS")' in supported
+    assert "ZSG_ENABLE_THANOS" not in thanos
     controller = source("ui/effects/thanos_effect_controller.cpp")
     body = between(controller, "void ThanosEffectController::captureItemsBatch(", "auto anyFound")
     assert "ThanosEffect::Supported()" in body
+
+
+def test_thanos_overlay_cannot_steal_focus_or_input():
+    overlay = source("ui/effects/zsg_thanos_overlay.cpp")
+    for flag in ("Qt::Tool", "Qt::WindowDoesNotAcceptFocus", "Qt::WindowTransparentForInput"):
+        assert flag in overlay, flag
+    for attr in ("WA_TranslucentBackground", "WA_ShowWithoutActivating", "WA_TransparentForMouseEvents"):
+        assert attr in overlay, attr
+    # Накладка следит за главным окном.
+    assert "QEvent::Move" in overlay and "QEvent::Resize" in overlay
+    cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "ui/effects/zsg_thanos_overlay.cpp" in cmake
+    assert "ui/effects/zsg_thanos_overlay.h" in cmake
 
 
 def test_selftest_is_opt_in():

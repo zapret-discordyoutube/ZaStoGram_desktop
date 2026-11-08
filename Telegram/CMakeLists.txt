@@ -2472,6 +2472,8 @@ PRIVATE
     ui/effects/thanos_effect_renderer.h
     ui/effects/thanos_effect_session.cpp
     ui/effects/thanos_effect_session.h
+    ui/effects/zsg_thanos_overlay.cpp
+    ui/effects/zsg_thanos_overlay.h
     ui/effects/send_action_animations.cpp
     ui/effects/send_action_animations.h
     ui/effects/voice_once_particles.cpp

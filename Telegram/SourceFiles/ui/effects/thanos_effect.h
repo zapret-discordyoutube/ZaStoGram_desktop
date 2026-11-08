@@ -10,8 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unique_qptr.h"
 #include "base/weak_ptr.h"
 #include "ui/effects/animations.h"
+#include "ui/effects/zsg_thanos_overlay.h"
 
 #include <QImage>
+#include <QPointer>
 
 namespace Ui {
 class RpWidget;
@@ -55,6 +57,9 @@ private:
 
 	const not_null<QWidget*> _parent;
 
+	// ZaStoGram (Windows): the surface lives in this window instead of the
+	// main window, see zsg_thanos_overlay.h. Owned by _parent as a Qt child.
+	QPointer<ThanosOverlay> _overlay;
 	std::unique_ptr<RpWidgetWrap> _surface;
 	ThanosEffectRenderer *_renderer = nullptr;
 	bool _shown = false;

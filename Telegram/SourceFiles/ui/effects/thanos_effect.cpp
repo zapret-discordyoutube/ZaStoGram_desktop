@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/event_filter.h"
 #include "base/qt_signal_producer.h"
 #include "core/zsg_diag.h"
+#include "ui/effects/zsg_thanos_overlay.h"
 
 #include <QtGui/QWindow>
 
@@ -25,22 +26,14 @@ bool ThanosEffectFailedOnce = false;
 
 bool ThanosEffect::Supported() {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0) && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API
-#ifdef Q_OS_WIN
-	// ZaStoGram: the first deletion in a session creates the effect's RHI
-	// surface as a child of the top-level main window. Qt answers that with
-	// QWidgetPrivate::recreate(): the main window's native handle is
-	// destroyed, Windows sends WM_DESTROY, and
-	// Platform::MainWindow::destroyedFromSystem() turns it into Core::Quit():
-	// the app disappears in the middle of every first delete (dev-63..65,
-	// found with core/zsg_diag, see .memory/crash-diagnostics-module.md).
-	// Until the surface can be created without touching the main window,
-	// deletions just collapse, as before Telegram Desktop 7.4.
-	// ZSG_ENABLE_THANOS=1 turns the effect back on for experiments.
-	static const auto allowed = qEnvironmentVariableIsSet("ZSG_ENABLE_THANOS");
-	if (!allowed) {
+	// ZaStoGram: kill switch. On Windows the surface is hosted by an overlay
+	// window (zsg_thanos_overlay.h); if that misbehaves on some machine,
+	// ZSG_DISABLE_THANOS=1 (or Settings > Power saving > Chat effects)
+	// makes deletions simply collapse again.
+	static const auto disabled = qEnvironmentVariableIsSet("ZSG_DISABLE_THANOS");
+	if (disabled) {
 		return false;
 	}
-#endif // Q_OS_WIN
 	if (ThanosEffectFailedOnce
 		|| PowerSaving::On(PowerSaving::kChatEffects)
 		|| PowerSaving::On(PowerSaving::kAnimations)) {
@@ -90,7 +83,14 @@ ThanosEffect::ThanosEffect(not_null<QWidget*> parent)
 }) {
 }
 
-ThanosEffect::~ThanosEffect() = default;
+ThanosEffect::~ThanosEffect() {
+	// The surface is a child of the overlay, which is a child of the main
+	// window: free them in this order whatever the order of destruction.
+	_surface = nullptr;
+	if (_overlay) {
+		delete _overlay.data();
+	}
+}
 
 QWidget *ThanosEffect::surfaceWidget() const {
 	return _surface ? _surface->rpWidget() : nullptr;
@@ -135,8 +135,16 @@ void ThanosEffect::ensureSurface() {
 	}, _lifetime);
 
 	Core::ZsgDiag::Trace("thanos: creating surface");
+#ifdef Q_OS_WIN
+	// The GPU widget goes into a window that does not exist yet, never into
+	// the main window: adding it there would recreate the main window.
+	_overlay = new ThanosOverlay(_parent);
+	const auto surfaceParent = not_null<QWidget*>(_overlay.data());
+#else // Q_OS_WIN
+	const auto surfaceParent = _parent;
+#endif // else for Q_OS_WIN
 	_surface = GL::CreateSurface(
-		_parent,
+		surfaceParent,
 		GL::ChosenRenderer{
 			.renderer = std::move(renderer),
 			.backend = GL::Backend::QRhi,
@@ -144,6 +152,9 @@ void ThanosEffect::ensureSurface() {
 	Core::ZsgDiag::Trace("thanos: surface created", _surface ? 1 : 0);
 	if (!_surface) {
 		_renderer = nullptr;
+		if (_overlay) {
+			delete _overlay.data();
+		}
 		return;
 	}
 
@@ -178,6 +189,9 @@ void ThanosEffect::showSurface() {
 			if (!_shown) {
 				return;
 			}
+			if (_overlay) {
+				_overlay->present();
+			}
 			w->show();
 			w->raise();
 		});
@@ -190,6 +204,9 @@ void ThanosEffect::hideSurface() {
 	_animation.stop();
 	if (const auto w = surfaceWidget()) {
 		w->hide();
+	}
+	if (_overlay) {
+		_overlay->dismiss();
 	}
 }
 
