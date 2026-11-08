@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_specific.h"
 #include "base/platform/base_platform_info.h"
 #include "core/launcher.h"
+#include "core/zsg_diag.h"
 
 #include <signal.h>
 #include <new>
@@ -274,6 +275,10 @@ bool DumpCallback(const char* _dump_dir, const char* _minidump_id, void *context
 bool DumpCallback(const google_breakpad::MinidumpDescriptor &md, void *context, bool success)
 #endif // else for Q_OS_WIN || Q_OS_MAC
 {
+#ifdef Q_OS_WIN
+	// ZaStoGram: one text report with a real call stack for every crash.
+	Core::ZsgDiag::OnBreakpadException(exinfo);
+#endif // Q_OS_WIN
 	if (CrashLogged) return success;
 	CrashLogged = true;
 
@@ -343,7 +348,11 @@ void StartCatching() {
 		DumpCallback,
 		(void*)nullptr, // callback_context
 		google_breakpad::ExceptionHandler::HANDLER_ALL,
-		MINIDUMP_TYPE(MiniDumpNormal),
+		// ZaStoGram: stacks plus the memory they point to, thread times and
+		// unloaded modules; MiniDumpNormal had too little to name an object.
+		MINIDUMP_TYPE(MiniDumpWithIndirectlyReferencedMemory
+			| MiniDumpWithThreadInfo
+			| MiniDumpWithUnloadedModules),
 		// MINIDUMP_TYPE(MiniDumpWithFullMemory | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo | MiniDumpWithUnloadedModules | MiniDumpWithFullAuxiliaryState | MiniDumpIgnoreInaccessibleMemory | MiniDumpWithTokenInformation),
 		(const wchar_t*)nullptr, // pipe_name
 		(const google_breakpad::CustomClientInfo*)nullptr
@@ -387,7 +396,17 @@ void StartCatching() {
 		-1
 	);
 #endif // else for Q_OS_WIN || Q_OS_MAC
+	Core::ZsgDiag::Install();
 #endif // !TDESKTOP_DISABLE_CRASH_REPORTS
+}
+
+bool WriteMinidumpNow() {
+#if !defined TDESKTOP_DISABLE_CRASH_REPORTS && defined Q_OS_WIN
+	return BreakpadExceptionHandler
+		&& BreakpadExceptionHandler->WriteMinidump();
+#else // !TDESKTOP_DISABLE_CRASH_REPORTS && Q_OS_WIN
+	return false;
+#endif // else for !TDESKTOP_DISABLE_CRASH_REPORTS && Q_OS_WIN
 }
 
 void FinishCatching() {

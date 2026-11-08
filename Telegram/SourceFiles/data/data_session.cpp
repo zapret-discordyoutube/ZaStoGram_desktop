@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_user_names.h"
 #include "chat_helpers/stickers_lottie.h"
 #include "core/application.h"
+#include "core/zsg_diag.h"
 #include "core/core_settings.h"
 #include "core/mime_type.h" // Core::IsMimeSticker
 #include "ui/image/image_location_factory.h" // Images::FromPhotoSize
@@ -2409,6 +2410,10 @@ rpl::producer<> Session::sessionDataAboutToBeCleared() const {
 
 void Session::notifyItemsAboutToBeDestroyed(
 		const std::vector<not_null<HistoryItem*>> &items) {
+	// Every subscriber (views, Tgw storage, notifications) runs inside this.
+	const auto diag = Core::ZsgDiag::Scope(
+		"Session::notifyItemsAboutToBeDestroyed",
+		items.size());
 	schedulePhotoCacheClear(items);
 	_itemsAboutToBeDestroyed.fire_copy(items);
 }
@@ -3376,6 +3381,8 @@ void Session::processMessagesDeleted(
 	if (!list && !affected) {
 		return;
 	}
+	Core::ZsgDiag::Trace("server delete: begin", data.size());
+	const auto diag = Core::ZsgDiag::Scope("Session::processMessagesDeleted");
 
 	auto toDestroy = std::vector<not_null<HistoryItem*>>();
 	auto historiesToCheck = base::flat_set<not_null<History*>>();
@@ -3429,6 +3436,9 @@ const std::vector<Data::EditedVersion> &Session::editVersions(
 
 void Session::processNonChannelMessagesDeleted(const QVector<MTPint> &data) {
 	Tgw::ClearNonChannelStorage(_session, data);
+	Core::ZsgDiag::Trace("server delete (non-channel): begin", data.size());
+	const auto diag = Core::ZsgDiag::Scope(
+		"Session::processNonChannelMessagesDeleted");
 	auto toDestroy = std::vector<not_null<HistoryItem*>>();
 	auto historiesToCheck = base::flat_set<not_null<History*>>();
 	for (const auto &messageId : data) {

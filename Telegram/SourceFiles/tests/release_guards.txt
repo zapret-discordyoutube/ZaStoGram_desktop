@@ -29,3 +29,4 @@ Telegram/SourceFiles/tests/test_zastogram_ghost_mode.py
 Telegram/SourceFiles/tests/test_web_proxy_carrier_flow.py
 Telegram/SourceFiles/tests/test_zastogram_libs_keep.py
 Telegram/SourceFiles/tests/test_zastogram_login_guard.py
+Telegram/SourceFiles/tests/test_zastogram_diag.py

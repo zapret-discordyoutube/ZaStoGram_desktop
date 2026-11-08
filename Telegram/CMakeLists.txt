@@ -658,6 +658,8 @@ PRIVATE
     core/websocket_client.cpp
     core/websocket_client.h
     core/zsg_build.h
+    core/zsg_diag.cpp
+    core/zsg_diag.h
     core/zsg_login_guard.cpp
     core/zsg_login_guard.h
     core/zsg_mirrors.cpp
@@ -2838,6 +2840,12 @@ if (WIN32)
     endif()
 
     target_link_options(Telegram PRIVATE /PDBPAGESIZE:8192)
+
+    # ZaStoGram: a link map for every build. Crash reports of core/zsg_diag
+    # hold module+offset only; tools/zsg-crash-resolve.py turns them into
+    # function names with this file. The map does not change Telegram.exe.
+    target_link_options(Telegram PRIVATE
+        "/MAP:$<TARGET_FILE_DIR:Telegram>/Telegram.map")
 
     if (DESKTOP_APP_WIN7_BASELINE)
         # The loader reads the subsystem version as the minimal Windows.

@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "base/unixtime.h"
 #include "core/application.h"
+#include "core/zsg_diag.h"
 #include "core/core_settings.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -662,7 +663,11 @@ void DeleteMessagesBox::deleteAndClear() {
 		return;
 	}
 	const auto ids = _ids;
+	Core::ZsgDiag::Trace("delete: box confirmed", ids.size(), revoke ? 1 : 0);
 	invokeCallbackAndClose();
+	Core::ZsgDiag::Note("delete: box closed");
 	session->data().histories().deleteMessages(ids, revoke);
+	Core::ZsgDiag::Note("delete: sending history changes");
 	session->data().sendHistoryChangeNotifications();
+	Core::ZsgDiag::Note("delete: box flow finished");
 }

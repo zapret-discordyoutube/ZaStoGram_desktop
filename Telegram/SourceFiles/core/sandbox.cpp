@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/notifications_manager.h"
 #include "window/window_controller.h"
 #include "core/crash_reports.h"
+#include "core/zsg_diag.h"
 #include "core/crash_report_window.h"
 #include "core/application.h"
 #include "core/external_control.h"
@@ -493,6 +494,8 @@ void Sandbox::singleInstanceChecked() {
 		return;
 	}
 	const auto result = CrashReports::Start();
+	Core::ZsgDiag::Arm();
+	Core::ZsgDiag::ReportPreviousCrashes();
 	v::match(result, [&](CrashReports::Status status) {
 		if (status == CrashReports::CantOpen) {
 			new NotStartedWindow();

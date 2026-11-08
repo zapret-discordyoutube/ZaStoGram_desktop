@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_element.h"
 #include "iv/iv_rich_page.h"
 #include "core/application.h"
+#include "core/zsg_diag.h"
 #include "core/core_settings.h"
 #include "apiwrap.h"
 
@@ -980,6 +981,8 @@ void Histories::deleteMessagesByDates(
 }
 
 void Histories::deleteMessages(const MessageIdsList &ids, bool revoke) {
+	Core::ZsgDiag::Trace("delete: begin", ids.size(), revoke ? 1 : 0);
+	const auto diag = Core::ZsgDiag::Scope("Histories::deleteMessages");
 	auto remove = std::vector<not_null<HistoryItem*>>();
 	remove.reserve(ids.size());
 	base::flat_map<not_null<History*>, QVector<MTPint>> idsByPeer;
@@ -1056,19 +1059,28 @@ void Histories::deleteMessages(const MessageIdsList &ids, bool revoke) {
 		document->owner().savedMusic().remove(document);
 	}
 
+	Core::ZsgDiag::Trace("delete: destroying local items", remove.size());
 	if (!remove.empty()) {
 		_owner->notifyItemsAboutToBeDestroyed(remove);
 	}
+	Core::ZsgDiag::Note("delete: notified");
 	for (const auto &item : remove) {
 		const auto history = item->history();
 		const auto wasLast = (history->lastMessage() == item);
 		const auto wasInChats = (history->chatListMessage() == item);
+		Core::ZsgDiag::Note(
+			"delete: item",
+			item->id.bare,
+			(item->isRegular() ? 1 : 0)
+				| (item->isSending() ? 2 : 0)
+				| (item->out() ? 4 : 0));
 		item->destroy();
 
 		if (wasLast || wasInChats) {
 			history->requestChatListMessage();
 		}
 	}
+	Core::ZsgDiag::Trace("delete: done", remove.size());
 }
 
 int Histories::sendRequest(

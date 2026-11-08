@@ -79,6 +79,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h" // remove when History::paintUserpic accepts QPainter
 #include "payments/payments_checkout_process.h"
 #include "core/crash_reports.h"
+#include "core/zsg_diag.h"
 #include "core/application.h"
 #include "base/options.h"
 #include "base/unixtime.h"
@@ -721,6 +722,10 @@ not_null<HistoryItem*> History::insertItem(
 void History::destroyMessage(not_null<HistoryItem*> item) {
 	Expects(item->isHistoryEntry() || !item->mainView());
 
+	const auto diag = Core::ZsgDiag::Scope(
+		"History::destroyMessage",
+		item->id.bare);
+
 	if (item->isHistoryEntry()) {
 		// All this must be done for all items manually in History::clear()!
 		item->destroyHistoryEntry();
@@ -744,7 +749,11 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 	}();
 
 	owner().unregisterMessage(item);
-	Core::App().notifications().clearFromItem(item);
+	// Upstream gate (d23928eefa): only items that can hold a notification
+	// are looked up in the notification manager. A merge had dropped it.
+	if (CanHoldItemNotification(item)) {
+		Core::App().notifications().clearFromItem(item);
+	}
 	if (_e2eCloudGroupCarriers.remove(item)) {
 		owner().notifyHistoryChangeDelayed(this);
 	}

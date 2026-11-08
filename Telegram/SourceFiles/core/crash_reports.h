@@ -51,4 +51,8 @@ inline void ClearAnnotationRef(const std::string &key) {
 void StartCatching();
 void FinishCatching();
 
+// ZaStoGram: writes a minidump of the current process right now (Windows).
+// Returns false when there is no crash handler to do it.
+bool WriteMinidumpNow();
+
 } // namespace CrashReports
