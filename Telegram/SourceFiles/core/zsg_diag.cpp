@@ -24,6 +24,7 @@ For license and copyright information see the local LEGAL file.
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <iterator>
 #include <typeinfo>
 
@@ -401,6 +402,39 @@ LONG CALLBACK VectoredHandler(PEXCEPTION_POINTERS pointers) {
 
 #endif // Q_OS_WIN
 
+// ZSG_DIAG_SELFTEST=abort|terminate|access|stack makes the launch fail in the
+// chosen way, to check on a real build that the report gets written. It does
+// nothing when the variable is not set.
+volatile int SelfTestStop = 0;
+
+int SelfTestRecursion(int depth) {
+	volatile char pad[512];
+	pad[0] = char(depth);
+	if (SelfTestStop) {
+		return pad[0];
+	}
+	return SelfTestRecursion(depth + 1) + pad[0];
+}
+
+void RunSelfTest() {
+	const auto what = qEnvironmentVariable("ZSG_DIAG_SELFTEST");
+	if (what.isEmpty()) {
+		return;
+	}
+	Note("selftest", 1);
+	if (what == QStringLiteral("abort")) {
+		std::abort();
+	} else if (what == QStringLiteral("terminate")) {
+		[]() noexcept {
+			throw std::runtime_error("diag selftest exception");
+		}();
+	} else if (what == QStringLiteral("access")) {
+		*static_cast<volatile int*>(nullptr) = 1;
+	} else if (what == QStringLiteral("stack")) {
+		SelfTestRecursion(0);
+	}
+}
+
 } // namespace
 
 void Install() {
@@ -436,6 +470,7 @@ void Arm() {
 	PreviousAbort = std::signal(SIGABRT, AbortHandler);
 #endif // Q_OS_WIN
 	Note("diag armed");
+	RunSelfTest();
 }
 
 void OnBreakpadException(void *exceptionPointers) noexcept {

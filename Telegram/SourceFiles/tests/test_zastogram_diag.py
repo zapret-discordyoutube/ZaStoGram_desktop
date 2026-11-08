@@ -60,6 +60,13 @@ def test_every_kind_of_death_is_covered():
     assert "RtlVirtualUnwind" in diag
 
 
+def test_selftest_is_opt_in():
+    diag = source("core/zsg_diag.cpp")
+    body = between(diag, "void RunSelfTest()", "} // namespace\n\nvoid Install()")
+    assert body.index("isEmpty()") < body.index("std::abort()")
+    assert "ZSG_DIAG_SELFTEST" in diag
+
+
 def test_signal_handler_chains_the_previous_one():
     diag = source("core/zsg_diag.cpp")
     body = between(diag, "void AbortHandler(", "// First-chance look")
