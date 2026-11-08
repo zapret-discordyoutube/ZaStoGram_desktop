@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "base/event_filter.h"
 #include "base/qt_signal_producer.h"
+#include "core/zsg_diag.h"
 
 #include <QtGui/QWindow>
 
@@ -117,12 +118,14 @@ void ThanosEffect::ensureSurface() {
 		});
 	}, _lifetime);
 
+	Core::ZsgDiag::Trace("thanos: creating surface");
 	_surface = GL::CreateSurface(
 		_parent,
 		GL::ChosenRenderer{
 			.renderer = std::move(renderer),
 			.backend = GL::Backend::QRhi,
 		});
+	Core::ZsgDiag::Trace("thanos: surface created", _surface ? 1 : 0);
 	if (!_surface) {
 		_renderer = nullptr;
 		return;

@@ -60,6 +60,22 @@ def test_every_kind_of_death_is_covered():
     assert "RtlVirtualUnwind" in diag
 
 
+def test_exits_are_traced_with_a_stack():
+    # Выход приложения — не падение: ни дампа, ни отчёта. Единственный след —
+    # кто попросил выйти. Все выходы идут через Core::Quit.
+    app = source("core/application.cpp")
+    body = between(app, "void Quit(QuitReason reason)", "bool Quitting()")
+    assert 'ZsgDiag::TraceStack("quit requested"' in body
+    assert body.index("TraceStack(") < body.index("QuitAttempt()")
+    window = source("platform/win/main_window_win.cpp")
+    body = between(window, "void MainWindow::destroyedFromSystem()", "bool MainWindow::setDwmThumbnail(")
+    assert "TraceStack(" in body
+    assert body.index("TraceStack(") < body.index("Core::Quit()")
+    thanos = source("ui/effects/thanos_effect.cpp")
+    assert "thanos: creating surface" in thanos
+    assert "thanos: surface created" in thanos
+
+
 def test_selftest_is_opt_in():
     diag = source("core/zsg_diag.cpp")
     body = between(diag, "void RunSelfTest()", "} // namespace\n\nvoid Install()")

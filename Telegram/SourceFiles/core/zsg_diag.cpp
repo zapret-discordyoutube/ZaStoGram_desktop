@@ -533,6 +533,49 @@ void Note(const char *what, qint64 a, qint64 b) noexcept {
 	NoteImpl(' ', what, a, b);
 }
 
+void TraceStack(const char *what, qint64 a) {
+	NoteImpl(' ', what, a, 0);
+#if defined(Q_OS_WIN) && defined(_M_X64)
+	auto context = CONTEXT();
+	::RtlCaptureContext(&context);
+	unsigned long long frames[kMaxFrames];
+	const auto count = Unwind(context, frames);
+	auto text = QString();
+	for (auto i = 0; i != count; ++i) {
+		auto base = PVOID(nullptr);
+		const auto header = ::RtlPcToFileHeader(PVOID(frames[i]), &base);
+		if (!header) {
+			text += QStringLiteral("  #%1 0x%2 (no module)\n"
+				).arg(i
+				).arg(frames[i], 0, 16);
+			continue;
+		}
+		char path[MAX_PATH] = {};
+		::GetModuleFileNameA(HMODULE(header), path, MAX_PATH);
+		const auto slash = std::strrchr(path, '\\');
+		text += QStringLiteral("  #%1 %2+0x%3\n"
+			).arg(i
+			).arg(QString::fromLatin1(slash ? (slash + 1) : path)
+			).arg(frames[i] - reinterpret_cast<unsigned long long>(header),
+				0,
+				16);
+	}
+	const auto module = ::GetModuleHandleW(nullptr);
+	const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+	const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+		reinterpret_cast<const char*>(module) + dos->e_lfanew);
+	LOG(("[diag] %1 %2\nTimeDateStamp: 0x%3\n%4"
+		).arg(QString::fromLatin1(what)
+		).arg(a
+		).arg(qulonglong(nt->FileHeader.TimeDateStamp), 8, 16, QChar('0')
+		).arg(text));
+#else // Q_OS_WIN && _M_X64
+	LOG(("[diag] %1 %2"
+		).arg(QString::fromLatin1(what)
+		).arg(a));
+#endif // else for Q_OS_WIN && _M_X64
+}
+
 void Trace(const char *what, qint64 a, qint64 b) {
 	NoteImpl(' ', what, a, b);
 	LOG(("[diag] %1 %2 %3"

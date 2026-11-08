@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "core/core_screenshot_protection.h"
 #include "core/core_settings.h"
+#include "core/zsg_diag.h"
 #include "core/proxy_wss_fallback.h"
 #include "core/update_checker.h"
 #include "core/zsg_mirrors.h"
@@ -2214,7 +2215,10 @@ Application &App() {
 void Quit(QuitReason reason) {
    if (Quitting()) {
 	   return;
-   } else if (IsAppLaunched() && App().preventsQuit(reason)) {
+   }
+   // ZaStoGram: who asked the app to exit (see core/zsg_diag.h).
+   ZsgDiag::TraceStack("quit requested", int(reason));
+   if (IsAppLaunched() && App().preventsQuit(reason)) {
 	   return;
    }
    SetLaunchState(LaunchState::QuitRequested);

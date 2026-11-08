@@ -41,6 +41,13 @@ void ReportPreviousCrashes();
 void Note(const char *what, qint64 a = 0, qint64 b = 0) noexcept;
 void Trace(const char *what, qint64 a = 0, qint64 b = 0);
 
+// Like Trace(), plus the call stack of the caller as `module+offset` lines and
+// the build's TimeDateStamp, so a log alone is enough to find out who did it:
+// python3 ~/zastogram/tools/zsg-crash-resolve.py --filter log.txt
+// Used where the app is asked to quit: the only trace of an exit that is not a
+// crash.
+void TraceStack(const char *what, qint64 a = 0);
+
 // Leaves "> what" and "< what" breadcrumbs; the missing "<" in a crash report
 // shows which scope the process died in.
 class Scope final {

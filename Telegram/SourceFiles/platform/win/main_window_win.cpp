@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/platform/base_platform_info.h"
 #include "core/application.h"
 #include "core/sandbox.h"
+#include "core/zsg_diag.h"
 #include "lang/lang_keys.h"
 #include "storage/localstorage.h"
 #include "ui/widgets/popup_menu.h"
@@ -443,6 +444,8 @@ void MainWindow::shadowsDeactivate() {
 }
 
 void MainWindow::destroyedFromSystem() {
+	// ZaStoGram: an exit that starts here is not a crash, see core/zsg_diag.h.
+	Core::ZsgDiag::TraceStack("main window destroyed from system");
 	if (!Core::App().closeNonLastAsync(&controller())) {
 		Core::Quit();
 	}
