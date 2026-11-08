@@ -56,7 +56,7 @@ void ThanosOverlay::present() {
 			SetWindowLongPtr(
 				reinterpret_cast<HWND>(winId()),
 				GWLP_HWNDPARENT,
-				reinterpret_cast<LONG_PTR>(_parent->winId()));
+				static_cast<LONG_PTR>(_parent->winId()));
 		}
 #endif // Q_OS_WIN
 		show();
