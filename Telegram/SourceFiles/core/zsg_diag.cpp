@@ -425,9 +425,11 @@ void RunSelfTest() {
 	if (what == QStringLiteral("abort")) {
 		std::abort();
 	} else if (what == QStringLiteral("terminate")) {
-		[]() noexcept {
+		try {
 			throw std::runtime_error("diag selftest exception");
-		}();
+		} catch (...) {
+			std::terminate();
+		}
 	} else if (what == QStringLiteral("access")) {
 		*static_cast<volatile int*>(nullptr) = 1;
 	} else if (what == QStringLiteral("stack")) {
