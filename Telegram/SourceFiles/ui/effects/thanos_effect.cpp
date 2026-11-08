@@ -25,6 +25,22 @@ bool ThanosEffectFailedOnce = false;
 
 bool ThanosEffect::Supported() {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0) && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API
+#ifdef Q_OS_WIN
+	// ZaStoGram: the first deletion in a session creates the effect's RHI
+	// surface as a child of the top-level main window. Qt answers that with
+	// QWidgetPrivate::recreate(): the main window's native handle is
+	// destroyed, Windows sends WM_DESTROY, and
+	// Platform::MainWindow::destroyedFromSystem() turns it into Core::Quit():
+	// the app disappears in the middle of every first delete (dev-63..65,
+	// found with core/zsg_diag, see .memory/crash-diagnostics-module.md).
+	// Until the surface can be created without touching the main window,
+	// deletions just collapse, as before Telegram Desktop 7.4.
+	// ZSG_ENABLE_THANOS=1 turns the effect back on for experiments.
+	static const auto allowed = qEnvironmentVariableIsSet("ZSG_ENABLE_THANOS");
+	if (!allowed) {
+		return false;
+	}
+#endif // Q_OS_WIN
 	if (ThanosEffectFailedOnce
 		|| PowerSaving::On(PowerSaving::kChatEffects)
 		|| PowerSaving::On(PowerSaving::kAnimations)) {

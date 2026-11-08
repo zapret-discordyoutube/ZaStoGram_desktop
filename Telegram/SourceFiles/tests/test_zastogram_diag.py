@@ -76,6 +76,21 @@ def test_exits_are_traced_with_a_stack():
     assert "thanos: surface created" in thanos
 
 
+def test_delete_animation_cannot_quit_the_app_on_windows():
+    # Первое удаление в сессии создаёт RHI-поверхность Thanos как дочернюю у
+    # верхнеуровневого окна, Qt пересоздаёт окно, WM_DESTROY превращается в
+    # Core::Quit(). Пока поверхность так создаётся, эффект на Windows выключен.
+    thanos = source("ui/effects/thanos_effect.cpp")
+    body = between(thanos, "bool ThanosEffect::Supported()", "bool ThanosEffect::WindowVisible(")
+    assert "#ifdef Q_OS_WIN" in body
+    assert 'qEnvironmentVariableIsSet("ZSG_ENABLE_THANOS")' in body
+    # Запрет раньше любой проверки возможностей GPU.
+    assert body.index("ZSG_ENABLE_THANOS") < body.index("ThanosEffectFailedOnce")
+    controller = source("ui/effects/thanos_effect_controller.cpp")
+    body = between(controller, "void ThanosEffectController::captureItemsBatch(", "auto anyFound")
+    assert "ThanosEffect::Supported()" in body
+
+
 def test_selftest_is_opt_in():
     diag = source("core/zsg_diag.cpp")
     body = between(diag, "void RunSelfTest()", "} // namespace\n\nvoid Install()")
