@@ -47,7 +47,7 @@ def test_proxy_window_open_path_does_not_start_probe_checks():
 def test_proxy_rows_start_unchecked_and_offer_manual_check():
     header = HEADER.read_text(encoding="utf-8")
     paint = body_after("void ProxyRow::paintEvent")
-    menu = body_after("void ProxyRow::showMenu")
+    menu = body_after("void ProxyRow::fillMenu")
     setup_buttons = body_after("void ProxiesBox::setupButtons")
 
     assert "Unknown," in header

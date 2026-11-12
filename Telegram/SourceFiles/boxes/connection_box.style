@@ -31,6 +31,10 @@ proxySettingsRightAboutPadding: margins(0px, 7px, 0px, 14px);
 proxyRowPadding: margins(22px, 8px, 8px, 8px);
 proxyRowIconSkip: 32px;
 proxyRowSkip: 2px;
+proxyRowSelectingSkipRight: 22px;
+proxyRowCheck: RoundCheckbox(defaultPeerListCheck) {
+	border: overviewCheckBgActive;
+}
 proxyRowRipple: defaultRippleAnimationBgOver;
 proxyRowTitleFg: windowFg;
 proxyRowTitlePalette: TextPalette(defaultTextPalette) {

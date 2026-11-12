@@ -1819,6 +1819,7 @@ void ApiWrap::requestMessagesCount(int localSplitIndex) {
 	requestChatMessages(
 		_chatProcess->info.splits[localSplitIndex],
 		0, // offset_id
+		0, // offset_date
 		0, // add_offset
 		1, // limit
 		[=](const MTPmessages_Messages &result) {
@@ -2239,9 +2240,17 @@ void ApiWrap::requestMessagesSlice() {
 		startMessagesSlice({});
 		return;
 	}
+	// Keep the upstream offset_date form of the request. Date-limited exports
+	// use messages.search below, where the same inclusive bound is min_date.
+	const auto &dateRange = _settings->singlePeerDateRange;
+	const auto offsetDate = (_chatProcess->largestIdPlusOne == 1
+		&& dateRange.hasFrom())
+		? dateRange.searchMinDate()
+		: 0;
 	requestChatMessages(
 		_chatProcess->info.splits[_chatProcess->localSplitIndex],
 		_chatProcess->largestIdPlusOne,
+		offsetDate,
 		-kMessagesSliceLimit,
 		kMessagesSliceLimit,
 		[=](const MTPmessages_Messages &result) {
@@ -2266,6 +2275,7 @@ void ApiWrap::requestMessagesSlice() {
 void ApiWrap::requestChatMessages(
 		int splitIndex,
 		int offsetId,
+		int offsetDate,
 		int addOffset,
 		int limit,
 		FnMut<void(MTPmessages_Messages&&)> done) {
@@ -2304,6 +2314,7 @@ void ApiWrap::requestChatMessages(
 					requestChatMessages(
 						splitIndex,
 						offsetId,
+						offsetDate,
 						addOffset,
 						limit,
 						base::take(_chatProcess->requestDone));
@@ -2336,8 +2347,8 @@ void ApiWrap::requestChatMessages(
 	} else {
 		splitRequest(realSplitIndex, MTPmessages_GetHistory(
 			realPeerInput,
-			MTP_int(offsetId),
-			MTP_int(0), // offset_date
+			MTP_int(offsetDate ? 0 : offsetId),
+			MTP_int(offsetDate),
 			MTP_int(addOffset),
 			MTP_int(limit),
 			MTP_int(0), // max_id
