@@ -2495,7 +2495,7 @@ void History::setFakeUnreadWhileOpened(bool enabled) {
 	owner().chatsFilters().refreshHistory(this);
 }
 
-[[nodiscard]] bool History::fakeUnreadWhileOpened() const {
+bool History::fakeUnreadWhileOpened() const {
 	return (_flags & Flag::FakeUnreadWhileOpened);
 }
 

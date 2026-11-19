@@ -167,6 +167,13 @@ void DeleteMyModules() {
 	RemoveDirectory(modules.c_str());
 }
 
+void DeleteMyStartLogs() {
+	Logs::closeMain();
+	for (auto i = 0; i != 10; ++i) {
+		QFile::remove(cWorkingDir() + u"log_start%1.txt"_q.arg(i));
+	}
+}
+
 // Windows remembers here which startup entries a user switched off in the
 // system Startup apps list. The mark is keyed by the link file name and it
 // outlives the link itself, so a rewritten link stays switched off.
@@ -455,6 +462,7 @@ void psDoCleanup() {
 		psSendToMenu(false, true);
 		AppUserModelId::CleanupShortcut();
 		DeleteMyModules();
+		DeleteMyStartLogs();
 	} catch (...) {
 	}
 }

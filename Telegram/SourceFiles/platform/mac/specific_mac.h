@@ -45,10 +45,6 @@ inline bool WaitForProcessExit(uint64 processId, crl::time timeout) {
 	return true;
 }
 
-inline bool LocalSocketPeerAllowed(qintptr) {
-	return true;
-}
-
 inline QString ApplicationIconName() {
 	return {};
 }

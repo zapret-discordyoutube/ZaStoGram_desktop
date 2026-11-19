@@ -697,7 +697,7 @@ void Uploader::stopSessions() {
 		Assert(_diagnosticLanes.size() == _sentPerDcIndex.size());
 		for (auto i = 0; i != int(_sentPerDcIndex.size()); ++i) {
 			finishDiagnosticSession(i);
-			_api->instance().stopSession(MTP::uploadDcId(i));
+			_api->instance().killSessionsByShift(MTP::kBaseUploadDcShift + i);
 		}
 		_sentPerDcIndex.clear();
 		_diagnosticLanes.clear();
@@ -1236,7 +1236,7 @@ void Uploader::removeDcIndex() {
 	_sentPerDcIndex.pop_back();
 	_diagnosticLanes.pop_back();
 	_dcIndicesWithFastRequests.remove(dcIndex);
-	_api->instance().stopSession(MTP::uploadDcId(dcIndex));
+	_api->instance().killSessionsByShift(MTP::kBaseUploadDcShift + dcIndex);
 	DEBUG_LOG(("Uploader: Removed dc index %1.").arg(dcIndex));
 }
 

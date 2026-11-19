@@ -81,10 +81,21 @@ SessionPrivate::SessionPrivate(
 }
 
 SessionPrivate::~SessionPrivate() {
+	const auto hadKeyCreator = (_authState.keyCreator != nullptr);
 	releaseKeyCreationOnFail();
 	doDisconnect();
 
 	Expects(_transport.empty());
+
+	if (hadKeyCreator) {
+		const auto bareDcId = BareDcId(_shiftedDcId);
+		const auto dcId = isTemporaryDcId(bareDcId)
+			? getRealIdFromTemporaryDcId(bareDcId)
+			: bareDcId;
+		InvokeQueued(_instance, [delegate = _delegate, dcId] {
+			delegate->dcTemporaryKeyChanged(dcId);
+		});
+	}
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {

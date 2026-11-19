@@ -47,7 +47,6 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 				runtime,
 				thread,
 				networkProxy,
-				protocolForFiles,
 				std::move(*route));
 		} else if (route) {
 			return std::make_unique<WssSocket>(
@@ -64,7 +63,6 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 			thread,
 			secret,
 			proxy,
-			protocolForFiles,
 			stealth,
 			mtproxyAttempt,
 			std::move(mtproxyPlan),
@@ -73,8 +71,7 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 	return std::make_unique<TcpSocket>(
 		runtime,
 		thread,
-		networkProxy,
-		protocolForFiles);
+		networkProxy);
 }
 
 } // namespace MTP::details

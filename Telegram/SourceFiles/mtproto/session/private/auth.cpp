@@ -158,13 +158,12 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		LOG(("MTP Error: No key %1 in updateAuthKey() for destroying."
 			).arg(_shiftedDcId));
 		_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
-	} else if (noMediaKeyWithExistingRegularKey()) {
-		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey() for media, "
-			"but someone has created regular, trying to acquire."));
+	} else if (!_authState.keyCreator) {
 		const auto dcType = tryAcquireKeyCreation();
 		if (_authState.keyCreator && dcType != _currentDcType) {
 			DEBUG_LOG(("AuthKey Info: "
 				"Dc type changed for creation, restarting."));
+			_currentDcType = dcType;
 			restart();
 			return;
 		}
@@ -188,12 +187,6 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 			ProxyDiagnosticsSeverity::Info,
 			u"no auth key, waiting for creation by another session"_q);
 	}
-}
-
-bool SessionPrivate::noMediaKeyWithExistingRegularKey() const {
-	return (TemporaryKeyTypeByDcType(_currentDcType)
-			== TemporaryKeyType::MediaCluster)
-		&& _sessionState.data->getTemporaryKey(TemporaryKeyType::Regular);
 }
 
 void SessionPrivate::dropMismatchedTemporaryKey() {
@@ -287,7 +280,10 @@ bool SessionPrivate::destroyOldEnoughPersistentKey() {
 }
 
 DcType SessionPrivate::tryAcquireKeyCreation() {
-	if (_authState.keyCreator) {
+	if (_authState.keyCreator
+		|| (_sessionState.keyId
+			&& _realDcType == DcType::MediaCluster
+			&& _currentDcType == DcType::Regular)) {
 		return _currentDcType;
 	} else if (_delegate->isKeysDestroyer()) {
 		return _realDcType;

@@ -176,6 +176,7 @@ public:
 
 	[[nodiscard]] PauseState pauseState() const;
 	[[nodiscard]] float64 currentVolume() const;
+	[[nodiscard]] rpl::producer<float64> volumeChanges() const;
 	void toggleVolume();
 	void changeVolume(float64 volume);
 	void volumeChangeFinished();

@@ -17,19 +17,10 @@ namespace MTP::details {
 TcpSocket::TcpSocket(
 	not_null<RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
-	const QNetworkProxy &proxy,
-	bool protocolForFiles)
+	const QNetworkProxy &proxy)
 : AbstractSocket(runtime, thread) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
-	if (protocolForFiles) {
-		_socket.setSocketOption(
-			QAbstractSocket::SendBufferSizeSocketOption,
-			kFilesSendBufferSize);
-		_socket.setSocketOption(
-			QAbstractSocket::ReceiveBufferSizeSocketOption,
-			kFilesReceiveBufferSize);
-	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });

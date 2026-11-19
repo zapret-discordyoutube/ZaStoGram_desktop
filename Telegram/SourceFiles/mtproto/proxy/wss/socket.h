@@ -109,7 +109,6 @@ public:
 		not_null<RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles,
 		WssRoute route);
 	~WssDirectStepSocket();
 

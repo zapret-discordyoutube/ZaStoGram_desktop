@@ -2367,6 +2367,7 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 		}
 	} break;
 
+	case mtpc_updateNewBotConnection:
 	case mtpc_updateNewAuthorization: {
 		session().api().authorizations().apply(update);
 	} break;

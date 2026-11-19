@@ -124,7 +124,6 @@ private:
 	void clearUnboundKeyCreator();
 	void releaseKeyCreationOnFail();
 	void applyAuthKey(AuthKeyPtr &&encryptionKey);
-	[[nodiscard]] bool noMediaKeyWithExistingRegularKey() const;
 	void dropMismatchedTemporaryKey();
 	void dropForgottenTemporaryKey();
 	bool destroyOldEnoughPersistentKey();

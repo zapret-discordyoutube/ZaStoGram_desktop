@@ -29,7 +29,7 @@ def test_stories_snapshot_cache_has_storage_hooks():
 
     assert "readPrefImpl<QByteArray>" in source
     assert "writePrefImpl<QByteArray>" in source
-    assert "writePrefGeneric(key, value)" in source
+    assert "writePrefGeneric(key, std::move(value))" in source
     assert "return readPrefGeneric(key)" in source
     assert "readPref(" in header
     assert "writePref(" in header

@@ -35,6 +35,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_account.h"
 #include "storage/storage_facade.h"
 #include "data/components/credits.h"
+#include "data/data_stories.h"
+#include "data/data_story_drafts.h"
+#include "data/data_story_edit_sources.h"
 #include "data/components/ephemeral_messages.h"
 #include "data/components/factchecks.h"
 #include "data/components/gift_auctions.h"
@@ -345,6 +348,8 @@ void Session::finishLogout() {
 	Wallet::CloseWallet(this);
 	unlockTerms();
 	botCallbacks().finishSession();
+	data().stories().drafts().clear();
+	data().stories().editSources().clear();
 	data().clear();
 	data().clearLocalStorage();
 }

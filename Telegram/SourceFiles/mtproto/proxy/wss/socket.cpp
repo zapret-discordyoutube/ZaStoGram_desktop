@@ -1122,10 +1122,9 @@ WssDirectStepSocket::WssDirectStepSocket(
 	not_null<RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
 	const QNetworkProxy &proxy,
-	bool protocolForFiles,
 	WssRoute route)
 : AbstractSocket(runtime, thread)
-, _tcp(std::make_unique<TcpSocket>(runtime, thread, proxy, protocolForFiles))
+, _tcp(std::make_unique<TcpSocket>(runtime, thread, proxy))
 , _route(std::move(route)) {
 	_tcp->connected(
 	) | rpl::on_next([=] {
@@ -1241,14 +1240,6 @@ WssSocket::WssSocket(
 	_socket.setProxy(proxy);
 	_socket.setPeerVerifyMode(QSslSocket::VerifyPeer);
 	_forFiles = protocolForFiles;
-	if (protocolForFiles) {
-		_socket.setSocketOption(
-			QAbstractSocket::SendBufferSizeSocketOption,
-			kFilesSendBufferSize);
-		_socket.setSocketOption(
-			QAbstractSocket::ReceiveBufferSizeSocketOption,
-			kFilesReceiveBufferSize);
-	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });

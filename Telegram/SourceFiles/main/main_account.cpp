@@ -66,7 +66,7 @@ Storage::Domain &Account::domainLocal() const {
 	return _domain->local();
 }
 
-[[nodiscard]] Storage::StartResult Account::legacyStart(
+Storage::StartResult Account::legacyStart(
 		const QByteArray &passcode) {
 	Expects(!_appConfig);
 
