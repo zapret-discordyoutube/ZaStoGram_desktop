@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_chat_filters.h"
+#include "data/stickers/data_custom_emoji.h"
 
 #include "api/api_chat_filters_sync.h"
 #include "data/data_chat_filters_tree.h"
@@ -1034,9 +1035,19 @@ void ChatFilters::refreshLocal() {
 			: (folder->iconEmoji + u" "_q + plain);
 		// Chat tags of our folders always show, a color index only has to
 		// exist for that, the real color is the folder's own one.
+		auto titleText = TextWithEntities{ .text = title };
+		if (folder->iconCustom && !folder->iconEmoji.isEmpty()) {
+			// ZaStoGram: a custom emoji icon needs no Premium, the folder
+			// is stored on the device and never sent to the server.
+			titleText.entities.push_back(EntityInText(
+				EntityType::CustomEmoji,
+				0,
+				int(folder->iconEmoji.size()),
+				Data::SerializeCustomEmojiId(folder->iconCustom)));
+		}
 		wanted.emplace_back(
 			id,
-			ChatFilterTitle{ .text = TextWithEntities{ .text = title } },
+			ChatFilterTitle{ .text = std::move(titleText) },
 			folder->iconEmoji,
 			std::optional<uint8>(uint8(id % 7)),
 			ChatFilter::Flags(),

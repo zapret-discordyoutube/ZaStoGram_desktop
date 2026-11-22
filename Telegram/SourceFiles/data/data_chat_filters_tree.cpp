@@ -87,6 +87,12 @@ constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 	object.insert(u"parent"_q, folder.parentUid);
 	object.insert(u"title"_q, folder.title);
 	object.insert(u"icon"_q, folder.iconEmoji);
+	if (folder.iconCustom) {
+		// Older clients ignore the key and show the plain icon above.
+		object.insert(
+			u"iconCustom"_q,
+			QString::number(folder.iconCustom));
+	}
 	object.insert(u"color"_q, folder.color);
 	object.insert(u"order"_q, folder.order);
 	object.insert(u"sync"_q, folder.sync);
@@ -104,6 +110,7 @@ constexpr auto kTombstoneLifetime = int64(30) * 24 * 60 * 60 * 1000;
 	folder.parentUid = object.value(u"parent"_q).toString();
 	folder.title = object.value(u"title"_q).toString();
 	folder.iconEmoji = object.value(u"icon"_q).toString();
+	folder.iconCustom = object.value(u"iconCustom"_q).toString().toULongLong();
 	folder.color = object.value(u"color"_q).toString();
 	folder.order = object.value(u"order"_q).toInt();
 	folder.sync = object.value(u"sync"_q).toBool(true);
@@ -356,12 +363,18 @@ bool LocalFolders::rename(FilterId id, const QString &title) {
 	return true;
 }
 
-bool LocalFolders::setIcon(FilterId id, const QString &iconEmoji) {
+bool LocalFolders::setIcon(
+		FilterId id,
+		const QString &iconEmoji,
+		uint64 iconCustom) {
 	const auto folder = findMutable(id);
-	if (!folder || folder->iconEmoji == iconEmoji) {
+	if (!folder
+		|| (folder->iconEmoji == iconEmoji
+			&& folder->iconCustom == iconCustom)) {
 		return false;
 	}
 	folder->iconEmoji = iconEmoji;
+	folder->iconCustom = iconEmoji.isEmpty() ? 0 : iconCustom;
 	changedFolder(*folder);
 	return true;
 }
@@ -623,6 +636,7 @@ bool LocalFolders::mergeRemote(const QByteArray &json) {
 			folder->parentUid = incoming.parentUid;
 			folder->title = incoming.title;
 			folder->iconEmoji = incoming.iconEmoji;
+			folder->iconCustom = incoming.iconCustom;
 			folder->color = incoming.color;
 			folder->order = incoming.order;
 			folder->own = std::move(incoming.own);

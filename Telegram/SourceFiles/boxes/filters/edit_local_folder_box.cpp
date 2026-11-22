@@ -9,6 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "boxes/filters/edit_filter_chats_list.h"
 #include "boxes/peer_list_box.h"
+#include "chat_helpers/tabbed_panel.h"
+#include "chat_helpers/tabbed_selector.h"
+#include "data/data_document.h"
+#include "data/stickers/data_stickers.h"
+#include "ui/controls/emoji_button_factory.h"
+#include "styles/style_chat_helpers.h"
 #include "data/data_chat_filters.h"
 #include "data/data_chat_filters_tree.h"
 #include "data/data_peer.h"
@@ -439,6 +445,9 @@ void EditLocalFolderBox(
 			existing ? existing->iconEmoji : QString()),
 		st::windowFilterNameInputPadding);
 	icon->setMaxLength(kMaxIconLength);
+	// ZaStoGram: a custom emoji icon, no Premium needed.
+	const auto customIcon = icon->lifetime().make_state<uint64>(
+		existing ? existing->iconCustom : 0);
 	const auto color = box->addRow(
 		object_ptr<Ui::InputField>(
 			box,
@@ -455,6 +464,7 @@ void EditLocalFolderBox(
 	}, name->lifetime());
 	icon->changes() | rpl::on_next([=] {
 		if (!*syncing) {
+			*customIcon = 0; // Typed by hand: a plain emoji again.
 			look->setIcon(icon->getLastText().trimmed());
 		}
 	}, icon->lifetime());
@@ -471,11 +481,60 @@ void EditLocalFolderBox(
 		}
 	}, color->lifetime());
 	look->iconPicked() | rpl::on_next([=](const QString &value) {
+		*customIcon = 0;
 		*syncing = true;
 		icon->setText(value);
 		*syncing = false;
 		look->setIcon(value);
 	}, look->lifetime());
+
+	using Selector = ChatHelpers::TabbedSelector;
+	const auto panelHolder = box->lifetime().make_state<
+		base::unique_qptr<ChatHelpers::TabbedPanel>>(
+			base::make_unique_q<ChatHelpers::TabbedPanel>(
+				box->getDelegate()->outerContainer(),
+				controller,
+				object_ptr<Selector>(
+					nullptr,
+					controller->uiShow(),
+					Window::GifPauseReason::Layer,
+					Selector::Mode::EmojiOnly)));
+	const auto panel = panelHolder->get();
+	panel->setDesiredHeightValues(
+		1.,
+		st::emojiPanMinHeight / 2,
+		st::emojiPanMinHeight);
+	panel->hide();
+	// The own chat allows any custom emoji, so nothing is locked here.
+	panel->selector()->setCurrentPeer(controller->session().user());
+	panel->selector()->emojiChosen(
+	) | rpl::on_next([=](ChatHelpers::EmojiChosen data) {
+		*customIcon = 0;
+		*syncing = true;
+		icon->setText(data.emoji->text());
+		*syncing = false;
+		look->setIcon(icon->getLastText().trimmed());
+	}, icon->lifetime());
+	panel->selector()->customEmojiChosen(
+	) | rpl::on_next([=](ChatHelpers::FileChosen data) {
+		const auto sticker = data.document->sticker();
+		if (!sticker
+			|| sticker->setType != Data::StickersType::Emoji
+			|| sticker->alt.isEmpty()) {
+			return;
+		}
+		*customIcon = data.document->id;
+		*syncing = true;
+		icon->setText(sticker->alt);
+		*syncing = false;
+		look->setIcon(icon->getLastText().trimmed());
+	}, icon->lifetime());
+	Ui::AddEmojiToggleToField(
+		icon,
+		box,
+		controller,
+		panel,
+		st::windowFilterNameEmojiPosition)->show();
 	look->colorPicked() | rpl::on_next([=](const QString &value) {
 		*syncing = true;
 		color->setText(value);
@@ -510,7 +569,7 @@ void EditLocalFolderBox(
 		if (id) {
 			local.rename(id, title);
 		}
-		local.setIcon(target, icon->getLastText().trimmed());
+		local.setIcon(target, icon->getLastText().trimmed(), *customIcon);
 		local.setColor(target, colorText);
 		local.setSync(target, sync->checked());
 		box->closeBox();

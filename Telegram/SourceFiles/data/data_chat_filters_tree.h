@@ -34,6 +34,7 @@ struct LocalFolder {
 	QString parentUid; // Empty for a top-level folder.
 	QString title;
 	QString iconEmoji; // Any emoji, shown before the title.
+	uint64 iconCustom = 0; // Custom emoji document id, iconEmoji is its alt.
 	QString color; // "#RRGGBB", empty for none.
 	int order = 0; // Among siblings.
 	bool sync = true;
@@ -67,7 +68,10 @@ public:
 
 	FilterId create(const QString &title, FilterId parent = 0);
 	bool rename(FilterId id, const QString &title);
-	bool setIcon(FilterId id, const QString &iconEmoji);
+	bool setIcon(
+		FilterId id,
+		const QString &iconEmoji,
+		uint64 iconCustom = 0);
 	bool setColor(FilterId id, const QString &color);
 	// An invalid color if the folder has none.
 	[[nodiscard]] QColor colorOf(FilterId id) const;
