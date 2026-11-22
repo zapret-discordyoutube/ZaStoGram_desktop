@@ -610,7 +610,7 @@ HistoryWidget::HistoryWidget(
 
 	_fieldChatStyle = InitMessageField(controller, _field, [=](
 			not_null<DocumentData*> document) {
-		if (_peer && Data::AllowEmojiWithoutPremium(_peer, document)) {
+		if (_peer && Data::AllowEmojiInChat(_peer, document)) {
 			return true;
 		}
 		showPremiumToast(document);
@@ -2182,7 +2182,7 @@ void HistoryWidget::initFieldAutocomplete() {
 		},
 	});
 	const auto allow = [=](const auto&) {
-		return _peer->isSelf();
+		return _peer->isSelf() || Data::AllowEmojiLocalOnly(_peer);
 	};
 	_emojiSuggestions.reset(Ui::Emoji::SuggestionsController::Init(
 		this,
@@ -2646,7 +2646,7 @@ void HistoryWidget::fileChosen(ChatHelpers::FileChosen &&data) {
 		if (data.document->isPremiumEmoji()
 			&& !session().premium()
 			&& (!_peer
-				|| !Data::AllowEmojiWithoutPremium(
+				|| !Data::AllowEmojiInChat(
 					_peer,
 					data.document))) {
 			showPremiumToast(data.document);

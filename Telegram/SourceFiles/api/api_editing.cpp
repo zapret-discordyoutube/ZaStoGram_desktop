@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_text_entities.h"
 #include "base/random.h"
 #include "core/application.h"
+#include "history/history_item_helpers.h" // DropDisallowedCustomEmoji.
 #include "ui/boxes/confirm_box.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/scheduled_messages.h"
@@ -170,7 +171,9 @@ mtpRequestId SuggestMedia(
 	const auto text = textWithEntities.text;
 	const auto sentEntities = EntitiesToMTP(
 		session,
-		textWithEntities.entities,
+		DropDisallowedCustomEmoji(
+			item->history()->peer,
+			textWithEntities).entities,
 		ConvertOption::SkipLocal);
 
 	const auto updateRecentStickers = inputMedia
@@ -319,7 +322,9 @@ mtpRequestId EditMessage(
 	const auto text = textWithEntities.text;
 	const auto sentEntities = EntitiesToMTP(
 		session,
-		textWithEntities.entities,
+		DropDisallowedCustomEmoji(
+			item->history()->peer,
+			textWithEntities).entities,
 		ConvertOption::SkipLocal);
 	const auto media = item->media();
 

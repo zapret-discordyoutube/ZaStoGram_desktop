@@ -3300,7 +3300,7 @@ void ComposeControls::initField() {
 #endif // Q_OS_MAC
 	_chatStyle = InitMessageField(_show, _field, [=](not_null<DocumentData*> emoji) {
 		if (_history
-			&& Data::AllowEmojiWithoutPremium(_history->peer, emoji)) {
+			&& Data::AllowEmojiInChat(_history->peer, emoji)) {
 			return true;
 		}
 		if (_unavailableEmojiPasted) {
@@ -3381,7 +3381,7 @@ void ComposeControls::initFieldAutocomplete() {
 			: nullptr),
 	});
 	const auto allow = [=](not_null<DocumentData*> emoji) {
-		return Data::AllowEmojiWithoutPremium(_history->peer, emoji);
+		return Data::AllowEmojiInChat(_history->peer, emoji);
 	};
 	_emojiSuggestions.reset(Ui::Emoji::SuggestionsController::Init(
 		_panelsParent,
@@ -4060,7 +4060,7 @@ void ComposeControls::initTabbedSelector() {
 			if (data.document->isPremiumEmoji()
 				&& !session().premium()
 				&& (!_history
-					|| !Data::AllowEmojiWithoutPremium(
+					|| !Data::AllowEmojiInChat(
 						_history->peer,
 						data.document))) {
 				if (_unavailableEmojiPasted) {

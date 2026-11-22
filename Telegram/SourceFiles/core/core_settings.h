@@ -218,6 +218,14 @@ public:
 	void setGhostNoTyping(bool value) {
 		writePref<bool>("zastoGhostNoTyping", value);
 	}
+	// ZaStoGram: любые эмодзи без Premium, но только у себя: на сервер
+	// такие эмодзи не уходят (см. DropDisallowedCustomEmoji).
+	[[nodiscard]] bool localPremiumEmoji() {
+		return readPref<bool>("zastoLocalPremiumEmoji", true);
+	}
+	void setLocalPremiumEmoji(bool value) {
+		writePref<bool>("zastoLocalPremiumEmoji", value);
+	}
 	// ZaStoGram: усиление яркости и громкости видео в просмотрщике.
 	[[nodiscard]] float64 videoBrightnessGain() {
 		return readGainPref("zastoVideoBrightness", 0.5, 2.5);

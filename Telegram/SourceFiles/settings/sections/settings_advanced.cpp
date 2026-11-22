@@ -1233,6 +1233,46 @@ void BuildGhostSection(SectionBuilder &builder) {
 		u"Отметка о прочтении и просмотр историй не уходят на сервер: собеседник не увидит «прочитано», а автор истории — ваш просмотр. Чат у вас при этом выглядит прочитанным, а после перезапуска непрочитанное может вернуться. Если вы сами отправите сообщение, Telegram всё равно отметит чат прочитанным. Онлайн-статус не отправляется без настроек приватности, «был(а) недавно» остаётся таким, каким его видит сервер."_q));
 }
 
+// ZaStoGram: любые эмодзи без Premium, только на этом устройстве.
+void BuildLocalEmojiSection(SectionBuilder &builder) {
+	const auto enabled = std::make_shared<rpl::variable<bool>>(
+		Core::App().settings().localPremiumEmoji());
+	const auto keywords = QStringList{
+		u"emoji"_q,
+		u"эмодзи"_q,
+		u"premium"_q,
+		u"премиум"_q,
+	};
+
+	builder.addDivider();
+	builder.addSkip();
+	builder.addSubsectionTitle({
+		.id = u"advanced/local_emoji"_q,
+		.title = rpl::single(u"Эмодзи без Premium"_q),
+		.keywords = keywords,
+	});
+	const auto button = builder.addButton({
+		.id = u"advanced/local_emoji_enabled"_q,
+		.title = rpl::single(u"Любые анимированные эмодзи"_q),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = enabled->value(),
+		.keywords = keywords,
+	});
+	if (button) {
+		button->toggledValue(
+		) | rpl::filter([=](bool value) {
+			return (value != enabled->current());
+		}) | rpl::on_next([=](bool value) {
+			Core::App().settings().setLocalPremiumEmoji(value);
+			Core::App().saveSettingsDelayed();
+			*enabled = value;
+		}, button->lifetime());
+	}
+	builder.addSkip();
+	builder.addDividerText(rpl::single(
+		u"Анимированные эмодзи можно выбирать и вставлять без Premium, но видите их только вы: собеседник получит обычный текст без них, а после перезапуска или перезагрузки чата они пропадут. В Избранном и в группах с собственным набором эмодзи они работают как раньше."_q));
+}
+
 void ShowDownloadProgress(
 		not_null<rpl::event_stream<QString>*> texts,
 		not_null<rpl::event_stream<bool>*> downloading,
@@ -1547,6 +1587,7 @@ const auto kMeta = BuildHelper({
 	BuildUpdateSection(builder, true);
 	BuildZaStoGramSection(builder);
 	BuildGhostSection(builder);
+	BuildLocalEmojiSection(builder);
 	BuildDataStorageSection(builder);
 	BuildAutoDownloadSection(builder);
 	BuildWindowTitleSection(builder);

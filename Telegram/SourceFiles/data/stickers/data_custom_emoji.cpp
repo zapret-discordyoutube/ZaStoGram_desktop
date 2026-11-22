@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/stickers/data_custom_emoji.h"
 
+#include "core/application.h"
+#include "core/core_settings.h"
+
 #include "boxes/peers/edit_forum_topic_box.h" // MakeTopicIconEmoji.
 #include "chat_helpers/stickers_emoji_pack.h"
 #include "main/main_app_config.h"
@@ -1058,6 +1061,18 @@ bool AllowEmojiWithoutPremium(
 		}
 	}
 	return false;
+}
+
+bool AllowEmojiLocalOnly(not_null<PeerData*> peer) {
+	return Core::App().settings().localPremiumEmoji()
+		&& !peer->session().premium();
+}
+
+bool AllowEmojiInChat(
+		not_null<PeerData*> peer,
+		DocumentData *exactEmoji) {
+	return AllowEmojiWithoutPremium(peer, exactEmoji)
+		|| AllowEmojiLocalOnly(peer);
 }
 
 void InsertCustomEmoji(

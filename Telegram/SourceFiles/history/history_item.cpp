@@ -2991,6 +2991,52 @@ void HistoryItem::applySentMessage(const MTPDmessage &data) {
 	_history->owner().updateDependentMessages(this);
 }
 
+namespace {
+
+// ZaStoGram: the server never sees the custom emoji of a non-Premium account
+// (see DropDisallowedCustomEmoji), so its reply comes without them. Put the
+// local ones back when the reply is the same text we sent.
+[[nodiscard]] TextWithEntities KeepLocalOnlyEmoji(
+		not_null<Main::Session*> session,
+		const TextWithEntities &current,
+		TextWithEntities received) {
+	if (!Core::App().settings().localPremiumEmoji()
+		|| session->premium()
+		|| current.text != received.text) {
+		return received;
+	}
+	auto added = false;
+	for (const auto &entity : current.entities) {
+		if (entity.type() != EntityType::CustomEmoji
+			|| entity.data().startsWith(u"icon-emoji-"_q)) {
+			continue;
+		}
+		const auto same = ranges::any_of(
+			received.entities,
+			[&](const EntityInText &other) {
+				return (other.type() == EntityType::CustomEmoji)
+					&& (other.offset() == entity.offset())
+					&& (other.length() == entity.length());
+			});
+		if (!same) {
+			received.entities.push_back(entity);
+			added = true;
+		}
+	}
+	if (added) {
+		ranges::stable_sort(
+			received.entities,
+			[](const EntityInText &a, const EntityInText &b) {
+				return (a.offset() != b.offset())
+					? (a.offset() < b.offset())
+					: (a.length() > b.length());
+			});
+	}
+	return received;
+}
+
+} // namespace
+
 void HistoryItem::updateSentContent(const MTPDmessage &data) {
 	if (_isServiceMessage) {
 		return;
@@ -3084,7 +3130,10 @@ void HistoryItem::updateSentContent(
 			setText(Iv::FlattenRichPageSummary(richPage));
 		} else {
 			clearRichPage();
-			setText(textWithEntities);
+			setText(KeepLocalOnlyEmoji(
+				&_history->session(),
+				originalText(),
+				textWithEntities));
 		}
 	}
 	if (mediaCheck == MediaCheckResult::Unsupported) {

@@ -200,6 +200,13 @@ private:
 	not_null<PeerData*> peer,
 	DocumentData *exactEmoji = nullptr);
 
+// ZaStoGram: a non-Premium account may use any custom emoji in the chat
+// field, they are shown only locally and never sent to the server.
+[[nodiscard]] bool AllowEmojiLocalOnly(not_null<PeerData*> peer);
+[[nodiscard]] bool AllowEmojiInChat(
+	not_null<PeerData*> peer,
+	DocumentData *exactEmoji = nullptr);
+
 void InsertCustomEmoji(
 	not_null<Ui::InputField*> field,
 	not_null<DocumentData*> document);

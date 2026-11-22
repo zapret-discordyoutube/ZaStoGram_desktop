@@ -3130,7 +3130,9 @@ void EmojiListWidget::selectEmoji(EmojiChosen data) {
 
 void EmojiListWidget::selectCustom(FileChosen data) {
 	const auto document = data.document;
-	const auto skip = (document->isPremiumEmoji() && !session().premium());
+	const auto skip = (document->isPremiumEmoji()
+		&& !session().premium()
+		&& !_allowWithoutPremium);
 	if (!skip && _mode == Mode::Full) {
 		auto &settings = Core::App().settings();
 		settings.incrementRecentEmoji({ RecentEmojiDocument{

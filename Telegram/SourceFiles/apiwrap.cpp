@@ -2469,7 +2469,10 @@ mtpRequestId ApiWrap::savePreparedDraftToCloud(
 	}
 	auto entities = Api::EntitiesToMTP(
 		_session,
-		TextUtilities::ConvertTextTagsToEntities(textWithTags.tags),
+		DropDisallowedCustomEmoji(history->peer, TextWithEntities{
+			QString(),
+			TextUtilities::ConvertTextTagsToEntities(textWithTags.tags),
+		}).entities,
 		Api::ConvertOption::SkipLocal);
 	const auto richDraftOrigin = Data::FileOrigin(Data::FileOriginCloudDraft{
 		.peerId = history->peer->id,
@@ -4907,9 +4910,10 @@ void ApiWrap::sendMessage(
 			sendFlags |= MTPmessages_SendMessage::Flag::f_silent;
 			mediaFlags |= MTPmessages_SendMedia::Flag::f_silent;
 		}
+		// ZaStoGram: local-only custom emoji stay in the local item.
 		const auto sentEntities = Api::EntitiesToMTP(
 			_session,
-			sending.entities,
+			DropDisallowedCustomEmoji(peer, sending).entities,
 			Api::ConvertOption::SkipLocal);
 		if (!sentEntities.v.isEmpty()) {
 			sendFlags |= MTPmessages_SendMessage::Flag::f_entities;
@@ -5396,7 +5400,7 @@ void ApiWrap::sendMediaWithRandomId(
 	TextUtilities::Trim(caption);
 	auto sentEntities = Api::EntitiesToMTP(
 		_session,
-		caption.entities,
+		DropDisallowedCustomEmoji(peer, caption).entities,
 		Api::ConvertOption::SkipLocal);
 
 	const auto updateRecentStickers = Api::HasAttachedStickers(media);
@@ -5487,7 +5491,7 @@ void ApiWrap::sendMultiPaidMedia(
 	TextUtilities::Trim(caption);
 	auto sentEntities = Api::EntitiesToMTP(
 		_session,
-		caption.entities,
+		DropDisallowedCustomEmoji(peer, caption).entities,
 		Api::ConvertOption::SkipLocal);
 	const auto starsPaid = std::min(
 		peer->starsPerMessageChecked(),

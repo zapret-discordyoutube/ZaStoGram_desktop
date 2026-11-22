@@ -1151,7 +1151,7 @@ void TabbedSelector::setCurrentPeer(PeerData *peer) {
 		stickers()->showMegagroupSet(peer ? peer->asMegagroup() : nullptr);
 	}
 	setAllowEmojiWithoutPremium(
-		peer && Data::AllowEmojiWithoutPremium(peer));
+		peer && Data::AllowEmojiInChat(peer));
 }
 
 void TabbedSelector::provideRecentEmoji(
