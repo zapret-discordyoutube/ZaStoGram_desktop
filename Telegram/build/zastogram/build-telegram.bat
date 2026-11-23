@@ -27,7 +27,7 @@ if "%ZSG_API_ID%"=="4" (echo === ENVIRONMENT NOT READY: api_id is the public tes
 if "%ZSG_API_ID%"=="17349" (echo === ENVIRONMENT NOT READY: api_id is the public tdesktop id === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
 
 cd /d "%ZSG_REPO%\Telegram"
-call configure.bat -G "Ninja Multi-Config" qt6 -D TDESKTOP_API_TEST=OFF -D TDESKTOP_API_ID=%ZSG_API_ID% -D TDESKTOP_API_HASH=%ZSG_API_HASH% ^
+call configure.bat -G "Ninja Multi-Config" -D TDESKTOP_API_TEST=OFF -D TDESKTOP_API_ID=%ZSG_API_ID% -D TDESKTOP_API_HASH=%ZSG_API_HASH% ^
  -D CMAKE_CONFIGURATION_TYPES=Release ^
  -D DESKTOP_APP_ENABLE_LTO=%LTO% ^
  -D CMAKE_C_COMPILER_LAUNCHER=sccache ^

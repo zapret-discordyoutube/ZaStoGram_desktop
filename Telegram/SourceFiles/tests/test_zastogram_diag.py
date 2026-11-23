@@ -31,10 +31,10 @@ def test_breakpad_reaches_the_module():
     callback = between(
         crash,
         "bool DumpCallback(const wchar_t*",
-        "#endif // !Q_OS_MAC || MAC_USE_BREAKPAD")
+        "#endif // !Q_OS_MACOS || MAC_USE_BREAKPAD")
     assert "Core::ZsgDiag::OnBreakpadException(exinfo)" in callback
     # Обработчик ставится в конце StartCatching, а SIGABRT — после Start().
-    catching = between(crash, "void StartCatching()", "bool WriteMinidumpNow()")
+    catching = between(crash, "QString StartCatching()", "bool WriteMinidumpNow()")
     assert "Core::ZsgDiag::Install()" in catching
     assert "bool WriteMinidumpNow()" in crash
     sandbox = source("core/sandbox.cpp")
