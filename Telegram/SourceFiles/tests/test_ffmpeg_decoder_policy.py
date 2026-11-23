@@ -43,7 +43,8 @@ def test_ffmpeg_decoder_threads_have_shared_policy():
     assert "ConfigureDecoderThreads(context);" in make_codec
     assert (
         make_codec.index("ConfigureDecoderThreads(context);")
-        < make_codec.index("const auto codec = FindDecoder(context);")
+        < make_codec.index(
+            "const auto codec = FindDecoder(context, descriptor.hwAllowed);")
     )
     assert "FFmpeg::ConfigureDecoderThreads(_codecContext);" in clip
     assert (

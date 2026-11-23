@@ -97,10 +97,7 @@ void ChatsFiltersTabs::setSectionColors(
 }
 
 void ChatsFiltersTabs::setSectionIcons(
-		std::vector<const style::internal::Icon*> icons) {
-	if (_sectionIcons == icons) {
-		return;
-	}
+		std::vector<SectionIcon> icons) {
 	_sectionIcons = std::move(icons);
 	if (_tabsMode != ChatsFiltersTabsMode::TextOnly) {
 		updateSectionsContentWidths();
@@ -115,7 +112,7 @@ auto ChatsFiltersTabs::sectionIcon(int index) const
 		|| index < 0
 		|| index >= int(_sectionIcons.size()))
 		? nullptr
-		: _sectionIcons[index];
+		: _sectionIcons[index].fallback;
 }
 
 int ChatsFiltersTabs::iconExtraWidth(
@@ -291,11 +288,12 @@ void ChatsFiltersTabs::paintEvent(QPaintEvent *e) {
 		}
 		const auto labelLeft = shiftedLeft
 			+ (section.width - section.contentWidth) / 2;
+		const auto fontHeight = _st.labelStyle.font->height;
 		const auto rect = myrtlrect(
 			labelLeft,
 			_st.labelTop,
 			section.contentWidth,
-			_st.labelStyle.font->height);
+			fontHeight);
 		if (rect.intersects(clip)) {
 			const auto locked = (_lockedFrom && (index >= _lockedFrom));
 			if (locked) {
@@ -319,13 +317,18 @@ void ChatsFiltersTabs::paintEvent(QPaintEvent *e) {
 				: anim::color(_st.labelFg, _st.labelFgActive, active);
 			p.setPen(labelColor);
 			if (icon) {
-				icon->paint(
-					p,
-					labelLeft,
-					_st.labelTop
-						+ (_st.labelStyle.font->height - icon->height()) / 2,
-					width(),
-					labelColor);
+				const auto size = icon->size();
+				const auto top = _st.labelTop
+					+ (fontHeight - size.height()) / 2;
+				const auto pos = QPoint(labelLeft, top);
+				const auto color = labelColor;
+				const auto &entry = _sectionIcons[index];
+				const auto &paintEmoji = entry.paintEmoji;
+				const auto rect = myrtlrect(QRect(pos, size));
+				if (!paintEmoji
+					|| !paintEmoji(p, rect, color)) {
+					icon->paint(p, pos, width(), color);
+				}
 			}
 			if (labelWidth > 0) {
 				section.label.draw(p, {
@@ -505,6 +508,9 @@ void ChatsFiltersTabs::reorderSections(int oldIndex, int newIndex) {
 	}
 	if (oldIndex < _sectionIcons.size() && newIndex < _sectionIcons.size()) {
 		base::reorder(_sectionIcons, oldIndex, newIndex);
+	}
+	if (oldIndex < _sectionColors.size() && newIndex < _sectionColors.size()) {
+		base::reorder(_sectionColors, oldIndex, newIndex);
 	}
 
 	base::reorder(sectionsRef(), oldIndex, newIndex);

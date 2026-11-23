@@ -233,7 +233,9 @@ void LogError(
 	FFmpeg::AvErrorWrap error,
 	const QString &details = {});
 
-[[nodiscard]] const AVCodec *FindDecoder(not_null<AVCodecContext*> context);
+[[nodiscard]] const AVCodec *FindDecoder(
+	not_null<AVCodecContext*> context,
+	bool preferHw = false);
 void ConfigureDecoderThreads(not_null<AVCodecContext*> context);
 [[nodiscard]] int64_t MaxPixelsForAreaLimit(int64_t area);
 [[nodiscard]] crl::time PtsToTime(int64_t pts, AVRational timeBase);

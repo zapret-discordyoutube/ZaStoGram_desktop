@@ -101,6 +101,7 @@ public:
 	int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
 
 	void killSession(ShiftedDcId shiftedDcId);
+	void killSessionsByShift(int shift);
 	void stopSession(ShiftedDcId shiftedDcId);
 	void reInitConnection(DcId dcId);
 	void logout(Fn<void()> done);

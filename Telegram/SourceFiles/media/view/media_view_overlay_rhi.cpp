@@ -29,43 +29,43 @@ using namespace Ui::GL;
 // The NDC Y flip stays at offset 12 in every block, see NdcFlipY().
 struct ImageUniforms {
 	float viewport[2];
-	float g_opacity;
-	float flipY;
+	float g_opacity = 0.;
+	float flipY = 0.;
 };
 static_assert(sizeof(ImageUniforms) % 16 == 0);
 
 struct ContentUniforms {
 	float viewport[2];
-	float fragCoordYUp;
-	float flipY;
+	float fragCoordYUp = 0.;
+	float flipY = 0.;
 	float shadowTopRect[4];
 	float shadowBottomSkipOpacityFullFade[4];
 	float roundRect[4];
-	float roundRadius;
-	float brightness;
-	float _pad1[2];
+	float roundRadius = 0.;
+	float brightness = 0.;
+	float _pad1[2] = {};
 };
 static_assert(sizeof(ContentUniforms) == 80);
 
 struct TransparentContentUniforms {
 	float viewport[2];
-	float fragCoordYUp;
-	float flipY;
+	float fragCoordYUp = 0.;
+	float flipY = 0.;
 	float shadowTopRect[4];
 	float shadowBottomSkipOpacityFullFade[4];
 	float transparentBg[4];
 	float transparentFg[4];
-	float transparentSize;
+	float transparentSize = 0.;
 	float _pad1[3];
 };
 static_assert(sizeof(TransparentContentUniforms) == 96);
 
 struct RoundedCornersUniforms {
 	float viewport[2];
-	float fragCoordYUp;
-	float flipY;
+	float fragCoordYUp = 0.;
+	float flipY = 0.;
 	float roundRect[4];
-	float roundRadius;
+	float roundRadius = 0.;
 	float _pad1[3];
 };
 static_assert(sizeof(RoundedCornersUniforms) == 48);
@@ -167,6 +167,16 @@ void OverlayWidget::RendererRhi::initialize(
 		QRhiSampler::ClampToEdge,
 		QRhiSampler::ClampToEdge);
 	if (!_sampler->create()) {
+		return;
+	}
+
+	_mipmapSampler = rhi->newSampler(
+		QRhiSampler::Linear,
+		QRhiSampler::Linear,
+		QRhiSampler::Linear,
+		QRhiSampler::ClampToEdge,
+		QRhiSampler::ClampToEdge);
+	if (!_mipmapSampler->create()) {
 		return;
 	}
 
@@ -763,9 +773,9 @@ void OverlayWidget::RendererRhi::releaseResources() {
 	_usingExternalVideoTextures = false;
 	_trackFrameIndex = -1;
 	_streamedIndex = 0;
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	_metalTextureCache.flush();
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 
 	delete _placeholderTexture;
 	_placeholderTexture = nullptr;
@@ -778,6 +788,8 @@ void OverlayWidget::RendererRhi::releaseResources() {
 	_uniformBuffer = nullptr;
 	delete _sampler;
 	_sampler = nullptr;
+	delete _mipmapSampler;
+	_mipmapSampler = nullptr;
 
 	_initialized = false;
 }
@@ -1107,7 +1119,9 @@ void OverlayWidget::RendererRhi::drawContentQuad(
 			1,
 			QRhiShaderResourceBinding::FragmentStage,
 			contentTexture,
-			_sampler),
+			((contentTexture->flags() & QRhiTexture::MipMapped)
+				? _mipmapSampler
+				: _sampler)),
 		QRhiShaderResourceBinding::sampledTexture(
 			2,
 			QRhiShaderResourceBinding::FragmentStage,
@@ -1203,7 +1217,7 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 
 	if (upload) {
 		auto zeroCopied = false;
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 		if (nativeTexture && data.nativeFrame
 			&& data.nativeFrame->pixelBuffer) {
 			if (_metalTextureCache.createTexturesFromPixelBuffer(
@@ -1219,7 +1233,7 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 				return;
 			}
 		}
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 		if (!zeroCopied) {
 		if (_usingExternalVideoTextures) {
 			delete _yTexture;
@@ -1232,9 +1246,9 @@ void OverlayWidget::RendererRhi::paintTransformedVideoFrame(
 			_uvTexture = nullptr;
 			_lumaSize = QSize();
 			_chromaSize = QSize();
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 			_metalTextureCache.flush();
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 		}
 		if (!yuv || yuv->size.isEmpty()) {
 			return;
@@ -1600,9 +1614,16 @@ void OverlayWidget::RendererRhi::paintTransformedStaticContent(
 		if (!_rgbaTextures[index]
 			|| _rgbaSizes[index] != image.size()) {
 			delete _rgbaTextures[index];
+			const auto flags = _rhi->isFeatureSupported(
+				QRhi::NPOTTextureRepeat)
+				? (QRhiTexture::MipMapped
+					| QRhiTexture::UsedWithGenerateMips)
+				: QRhiTexture::Flags();
 			_rgbaTextures[index] = _rhi->newTexture(
 				QRhiTexture::BGRA8,
-				image.size());
+				image.size(),
+				1,
+				flags);
 			if (!_rgbaTextures[index]->create()) {
 				_initialized = false;
 				return;
@@ -1614,6 +1635,9 @@ void OverlayWidget::RendererRhi::paintTransformedStaticContent(
 			QRhiTextureUploadDescription(
 				QRhiTextureUploadEntry(0, 0,
 					QRhiTextureSubresourceUploadDescription(image))));
+		if (_rgbaTextures[index]->flags() & QRhiTexture::MipMapped) {
+			_rub->generateMips(_rgbaTextures[index]);
+		}
 		_cacheKeys[index] = cacheKey;
 	}
 

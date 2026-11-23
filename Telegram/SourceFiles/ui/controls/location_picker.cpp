@@ -15,8 +15,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "lottie/lottie_icon.h"
 #include "main/session/session_show.h"
-#include "main/main_session.h"
 #include "mtproto/config/mtproto_config.h"
+#include "main/main_app_config.h"
+#include "main/main_session.h"
 #include "ui/chat/attach/attach_bot_webview.h"
 #include "ui/effects/radial_animation.h"
 #include "ui/widgets/labels.h"
@@ -353,6 +354,17 @@ bool LocationPicker::Available(const LocationPickerConfig &config) {
 		&& !config.mapsToken.isEmpty();
 }
 
+LocationPickerConfig ResolveMapsConfig(not_null<Main::Session*> session) {
+	const auto &appConfig = session->appConfig();
+	auto map = appConfig.get<base::flat_map<QString, QString>>(
+		u"tdesktop_config_map"_q,
+		base::flat_map<QString, QString>());
+	return {
+		.mapsToken = map[u"maps"_q],
+		.geoToken = map[u"geo"_q],
+	};
+}
+
 void LocationPicker::setup(const Descriptor &descriptor) {
 	setupWindow(descriptor);
 
@@ -494,14 +506,18 @@ void LocationPicker::setupWebview() {
 				// Another send can be handled before the queued close() runs.
 				const auto onstack = base::take(_callback);
 				if (onstack && point) {
-					onstack(*point, _geocoderAddress.current());
+					auto address = _geocoderFull;
+					address.name = _geocoderAddress.current();
+					onstack(*point, std::move(address));
 				}
 				close();
 			} else if (event == u"move_start"_q) {
 				if (const auto now = _geocoderAddress.current()
 					; !now.isEmpty()) {
 					_geocoderSavedAddress = now;
+					_geocoderSavedFull = _geocoderFull;
 					_geocoderAddress = QString();
+					_geocoderFull = {};
 				}
 				base::take(_geocoderResolvePostponed);
 				_geocoderResolveTimer.cancel();
@@ -515,6 +531,7 @@ void LocationPicker::setupWebview() {
 				if (AreTheSame(_geocoderResolvingFor, location)
 					&& !_geocoderSavedAddress.isEmpty()) {
 					_geocoderAddress = base::take(_geocoderSavedAddress);
+					_geocoderFull = base::take(_geocoderSavedFull);
 					_geocoderResolveTimer.cancel();
 				} else {
 					_geocoderResolvePostponed = location;
@@ -625,7 +642,9 @@ void LocationPicker::resolveAddress(Core::GeoLocation location) {
 	const auto done = [=](Core::GeoAddress address) {
 		if (!AreTheSame(_geocoderResolvingFor, location)) {
 			return;
-		} else if (address) {
+		}
+		_geocoderFull = address;
+		if (address) {
 			_geocoderAddress = address.name;
 		} else {
 			_geocoderAddress = u"(%1, %2)"_q

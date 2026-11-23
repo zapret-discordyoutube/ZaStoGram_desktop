@@ -1792,7 +1792,8 @@ void IvHistoryViewSlideshowBlock::paintFrame(
 	}
 
 	if (_slides.size() >= 2) {
-		if (!_previousRect.isEmpty()) {
+		if (!_previousRect.isEmpty()
+			&& !context.suppressInteractiveControls) {
 			const auto active = ClickHandler::showAsActive(_previousLink)
 				|| ClickHandler::showAsPressed(_previousLink);
 			PaintRoundButton(
@@ -1801,7 +1802,7 @@ void IvHistoryViewSlideshowBlock::paintFrame(
 				active ? st.navButtonBgOver : st.navButtonBg,
 				active ? st.navPreviousIconOver : st.navPreviousIcon);
 		}
-		if (!_nextRect.isEmpty()) {
+		if (!_nextRect.isEmpty() && !context.suppressInteractiveControls) {
 			const auto active = ClickHandler::showAsActive(_nextLink)
 				|| ClickHandler::showAsPressed(_nextLink);
 			PaintRoundButton(

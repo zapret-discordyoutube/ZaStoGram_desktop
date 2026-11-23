@@ -4126,4 +4126,17 @@ QByteArray Account::readZsgFolders() {
 	return json;
 }
 
+template <>
+std::optional<QByteArray> Account::readPrefImpl<QByteArray>(
+		std::string_view key) {
+	return readPrefGeneric(key);
+}
+
+template <>
+void Account::writePrefImpl<QByteArray>(
+		std::string_view key,
+		QByteArray value) {
+	writePrefGeneric(key, std::move(value));
+}
+
 } // namespace Storage

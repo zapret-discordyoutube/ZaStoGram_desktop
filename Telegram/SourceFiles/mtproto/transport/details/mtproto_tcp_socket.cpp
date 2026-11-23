@@ -22,14 +22,6 @@ TcpSocket::TcpSocket(
 : AbstractSocket(runtime, thread) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
-	if (protocolForFiles) {
-		_socket.setSocketOption(
-			QAbstractSocket::SendBufferSizeSocketOption,
-			kFilesSendBufferSize);
-		_socket.setSocketOption(
-			QAbstractSocket::ReceiveBufferSizeSocketOption,
-			kFilesReceiveBufferSize);
-	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });
