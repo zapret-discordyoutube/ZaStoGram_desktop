@@ -29,9 +29,9 @@ $keepNames = @($keep.keep_whole.PSObject.Properties.Name)
 "=== clean-libs ${Mode}: free $(Free-GB) GB ==="
 
 if ($Mode -eq 'stale') {
-    # The same branch build-libs.bat (argument qt6) uses to choose Qt.
+    # qt_version.py is the single source of truth used by prepare.py.
     $text = Get-Content $qtVersionPy -Raw
-    $m = [regex]::Match($text, "'qt6' in sys\.argv:[\s\S]*?os\.environ\['QT'\] = '([0-9.]+)'")
+    $m = [regex]::Match($text, "os\.environ\['QT'\]\s*=\s*'([0-9.]+)'")
     if (-not $m.Success) { "Qt 6 version not found in $qtVersionPy, nothing removed"; exit 0 }
     $current = $m.Groups[1].Value
     "current Qt: $current"
