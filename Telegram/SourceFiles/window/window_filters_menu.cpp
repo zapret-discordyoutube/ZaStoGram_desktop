@@ -8,49 +8,50 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_filters_menu.h"
 
 #include "boxes/filters/local_folder_menu.h"
-
-#include "menu/menu_mark_as_read.h"
-#include "mainwindow.h"
-#include "window/window_session_controller.h"
-#include "window/window_controller.h"
-#include "window/window_main_menu.h"
-#include "window/window_peer_menu.h"
-#include "window/window_filters_favorite.h"
-#include "main/main_session.h"
+#include "api/api_chat_filters.h"
+#include "apiwrap.h"
 #include "base/event_filter.h"
 #include "base/options.h"
-#include "core/application.h"
-#include "core/core_settings.h"
-#include "core/ui_integration.h"
-#include "data/data_session.h"
-#include "data/data_chat_filters.h"
-#include "data/data_user.h"
-#include "data/data_peer_values.h"
-#include "data/data_premium_limits.h"
-#include "data/data_unread_value.h"
-#include "lang/lang_keys.h"
-#include "ui/filter_icons.h"
-#include "ui/wrap/vertical_layout.h"
-#include "ui/wrap/vertical_layout_reorder.h"
-#include "ui/wrap/slide_wrap.h"
-#include "ui/widgets/menu/menu_add_action_callback_factory.h"
-#include "ui/widgets/popup_menu.h"
-#include "ui/boxes/confirm_box.h"
-#include "ui/power_saving.h"
-#include "ui/screen_reader_mode.h"
-#include "ui/ui_utility.h"
 #include "boxes/filters/edit_filter_box.h"
 #include "boxes/choose_filter_box.h"
 #include "boxes/premium_limits_box.h"
+#include "core/application.h"
+#include "core/core_settings.h"
+#include "core/ui_integration.h"
+#include "data/data_chat_filters.h"
+#include "data/data_peer_values.h"
+#include "data/data_premium_limits.h"
+#include "data/data_session.h"
+#include "data/data_unread_value.h"
+#include "data/data_user.h"
+#include "lang/lang_keys.h"
+#include "main/main_session.h"
+#include "mainwindow.h"
+#include "menu/menu_mark_as_read.h"
 #include "settings/sections/settings_folders.h"
 #include "storage/storage_media_prepare.h"
-#include "api/api_chat_filters.h"
-#include "apiwrap.h"
-#include "styles/style_widgets.h"
-#include "styles/style_window.h"
-#include "styles/style_menu_icons.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/widgets/menu/menu_add_action_callback_factory.h"
+#include "ui/widgets/popup_menu.h"
+#include "ui/wrap/slide_wrap.h"
+#include "ui/wrap/vertical_layout.h"
+#include "ui/wrap/vertical_layout_reorder.h"
+#include "ui/filter_icons.h"
+#include "ui/filter_title_icon.h"
+#include "ui/power_saving.h"
+#include "ui/screen_reader_mode.h"
+#include "ui/ui_utility.h"
+#include "window/window_controller.h"
+#include "window/window_filters_favorite.h"
+#include "window/window_main_menu.h"
+#include "window/window_peer_menu.h"
+#include "window/window_session_controller.h"
 
 #include <QtGui/QtEvents>
+
+#include "styles/style_menu_icons.h"
+#include "styles/style_widgets.h"
+#include "styles/style_window.h"
 
 namespace Window {
 namespace {
@@ -384,6 +385,9 @@ void FiltersMenu::refresh() {
 
 	auto now = base::flat_map<int, base::unique_qptr<Ui::SideBarButton>>();
 	const auto &currentFilter = _session->activeChatsFilterCurrent();
+	using Mode = Ui::ChatsFiltersTabsMode;
+	const auto withIcons = (tabsMode() != Mode::TextOnly);
+	_titleIconsLifetime.destroy();
 	for (const auto &filter : filters->list()) {
 		// ZaStoGram's own folders are not limited by Telegram's folder limit.
 		const auto nextIsLocked = !Data::IsLocalFilterId(filter.id())
@@ -391,12 +395,24 @@ void FiltersMenu::refresh() {
 		if (nextIsLocked && (currentFilter == filter.id())) {
 			_session->setActiveChatsFilter(FilterId(0));
 		}
+		const auto title = filter.title();
+		const auto titleIcon = (withIcons && filter.id())
+			? Ui::ResolveFilterTitleIcon(
+				&_session->session(),
+				filter,
+				title,
+				&_outer,
+				_titleIconsLifetime,
+				[=] { refresh(); })
+			: Ui::FilterTitleIcon();
 		auto button = prepareButton(
 			_list,
 			filter.id(),
-			filter.title(),
+			title,
 			Ui::ComputeFilterIcon(filter),
-			nextIsLocked);
+			nextIsLocked,
+			false,
+			&titleIcon);
 		now.emplace(filter.id(), std::move(button));
 	}
 	_filters = std::move(now);
@@ -550,7 +566,8 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 		Data::ChatFilterTitle title,
 		Ui::FilterIcon icon,
 		bool locked,
-		bool toBeginning) {
+		bool toBeginning,
+		const Ui::FilterTitleIcon *titleIcon) {
 	const auto isStatic = title.isStatic;
 	const auto paused = [=] {
 		return On(PowerSaving::kEmojiChat)
@@ -565,7 +582,11 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 	const auto mode = tabsMode();
 	auto prepared = object_ptr<Ui::SideBarButton>(
 		container,
-		id ? title.text : TextWithEntities{ tr::lng_filters_all(tr::now) },
+		!id
+			? tr::marked(tr::lng_filters_all(tr::now))
+			: titleIcon
+			? Ui::FilterTitleWithoutIcon(title.text, *titleIcon)
+			: title.text,
 		buttonStyle(),
 		Core::TextContext({
 			.session = &_session->session(),
@@ -588,6 +609,14 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 		? icon
 		: Ui::FilterIcon::All);
 	raw->setIconOverride(icons.normal, icons.active);
+	if (titleIcon && titleIcon->document) {
+		raw->setIconPainter(
+			Ui::MakeFilterEmojiIcon(
+				raw,
+				*titleIcon,
+				isStatic,
+				paused));
+	}
 	if (id >= 0) {
 		if (locked) {
 			// Surface a locked folder's premium-gated status and what pressing

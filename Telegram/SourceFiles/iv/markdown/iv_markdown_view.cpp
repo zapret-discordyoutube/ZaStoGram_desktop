@@ -6,9 +6,10 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "iv/markdown/iv_markdown_view.h"
+
+#include "base/platform/base_platform_info.h"
 #include "base/algorithm.h"
 #include "base/weak_ptr.h"
-#include "base/platform/base_platform_info.h"
 #include "core/click_handler_types.h"
 #include "core/credits_amount.h"
 #include "core/file_utilities.h"
@@ -18,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/markdown/iv_markdown_view_widget.h"
 #include "iv/iv_delegate.h"
 #include "lang/lang_keys.h"
+#include "logs.h"
 #include "ui/controls/jump_down_button.h"
 #include "ui/effects/animations.h"
 #include "ui/layers/generic_box.h"
@@ -25,16 +27,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/style/style_core_scale.h"
 #include "ui/text/text.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/labels.h"
 #include "ui/widgets/elastic_scroll.h"
+#include "ui/widgets/labels.h"
 #include "ui/widgets/selecting_scroll.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/integration.h"
 #include "ui/rect.h"
-#include "logs.h"
 
-#include "styles/style_iv.h"
 #include "styles/style_chat_helpers.h"
+#include "styles/style_iv.h"
 #include "styles/style_layers.h"
 #include "styles/style_window.h"
 
@@ -194,6 +195,7 @@ public:
 	bool updateContent(MarkdownArticleContent prepared, OpenOptions options);
 	[[nodiscard]] auto searchSources() const
 	-> std::vector<MarkdownArticleSearchSource>;
+	[[nodiscard]] rpl::producer<> searchSourcesChanges() const;
 	void setSearchMatches(
 		std::vector<MarkdownArticleSearchMatch> matches,
 		int current);
@@ -249,6 +251,8 @@ private:
 	Ui::LinkButton *_failureOpen = nullptr;
 	const std::shared_ptr<MathRenderer> _renderer;
 	std::shared_ptr<MarkdownArticle> _article;
+	rpl::event_stream<> _searchSourcesChanges;
+	rpl::lifetime _articleLifetime;
 	QString _pendingFragment;
 	int _devicePixelRatio = 0;
 	PendingEmbedState _pendingEmbed;
@@ -617,7 +621,7 @@ bool MarkdownPreviewRoot::showEmbed(const MediaActivation &activation) {
 		|| !activation.placeholderId) {
 		return false;
 	}
-	if (Platform::IsLinux()) {
+	if (Platform::IsWayland()) {
 		closeEmbed();
 		return _embedOverlay
 			? _embedOverlay->showExternalEmbed(activation.embed)
@@ -702,6 +706,7 @@ void MarkdownPreviewRoot::applyPreparedContent(
 	closeEmbed();
 	if (failure.failed()) {
 		_article = nullptr;
+		_articleLifetime.destroy();
 		_footnotes.clear();
 		_scrollToAnimation.stop();
 		startScrollToTopButtonAnimation(false);
@@ -730,6 +735,7 @@ void MarkdownPreviewRoot::applyPreparedContent(
 
 	if (!_body) {
 		_article = nullptr;
+		_articleLifetime.destroy();
 		logPreparationSummary(failure, debug, prepareMs, 0);
 		return;
 	}
@@ -739,6 +745,8 @@ void MarkdownPreviewRoot::applyPreparedContent(
 		_article = std::make_shared<MarkdownArticle>(
 			st::defaultMarkdown,
 			_renderer);
+		_article->searchSourcesChanges(
+		) | rpl::start_to_stream(_searchSourcesChanges, _articleLifetime);
 	}
 	_article->setContent(std::move(prepared));
 	_body->setClickHandlerContext(
@@ -825,6 +833,10 @@ auto MarkdownPreviewRoot::searchSources() const
 		: std::vector<MarkdownArticleSearchSource>();
 }
 
+rpl::producer<> MarkdownPreviewRoot::searchSourcesChanges() const {
+	return _searchSourcesChanges.events();
+}
+
 void MarkdownPreviewRoot::setSearchMatches(
 		std::vector<MarkdownArticleSearchMatch> matches,
 		int current) {
@@ -888,6 +900,13 @@ auto MarkdownPreviewSearchSources(Ui::RpWidget *preview)
 	return root
 		? root->searchSources()
 		: std::vector<MarkdownArticleSearchSource>();
+}
+
+rpl::producer<> MarkdownPreviewSearchSourcesChanges(Ui::RpWidget *preview) {
+	if (const auto root = dynamic_cast<MarkdownPreviewRoot*>(preview)) {
+		return root->searchSourcesChanges();
+	}
+	return rpl::never<>();
 }
 
 bool ExpandMarkdownPreviewDetails(

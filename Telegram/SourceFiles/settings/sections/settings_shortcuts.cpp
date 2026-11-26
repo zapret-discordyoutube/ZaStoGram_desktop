@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_shortcuts.h"
 
-#include "base/event_filter.h"
 #include "base/qt/qt_possible_keys.h"
+#include "base/event_filter.h"
 #include "core/application.h"
 #include "core/shortcuts.h"
 #include "lang/lang_keys.h"
@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/search_field_controller.h"
 #include "ui/vertical_list.h"
 #include "window/window_session_controller.h"
+
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 
@@ -139,11 +140,11 @@ struct Labeled {
 		return {};
 	}
 	auto text = key.toString();
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	text.replace(u"Ctrl+"_q, u"Ctrl Cmd Command "_q);
 	text.replace(u"Meta+"_q, u"Meta Control "_q);
 	text.replace(u"Alt+"_q, u"Alt Opt Option "_q);
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 	return SearchWords(text);
 }
 

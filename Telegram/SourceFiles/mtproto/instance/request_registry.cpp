@@ -58,6 +58,18 @@ std::optional<ShiftedDcId> RequestRegistry::changeDc(
 	return std::nullopt;
 }
 
+std::vector<mtpRequestId> RequestRegistry::requestsForDc(
+		ShiftedDcId shiftedDcId) const {
+	auto result = std::vector<mtpRequestId>();
+	QMutexLocker locker(&_requestByDcLock);
+	for (const auto &[requestId, registered] : _requestsByDc) {
+		if (std::abs(registered) == shiftedDcId) {
+			result.push_back(requestId);
+		}
+	}
+	return result;
+}
+
 SerializedRequest RequestRegistry::request(mtpRequestId requestId) const {
 	QReadLocker locker(&_requestMapLock);
 	const auto it = _requestMap.find(requestId);

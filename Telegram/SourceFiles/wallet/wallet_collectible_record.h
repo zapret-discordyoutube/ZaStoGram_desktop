@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Data {
 struct StarGift;
+struct UniqueGift;
 } // namespace Data
 
 namespace Main {
@@ -32,6 +33,12 @@ struct CollectibleRecord : Gram::NftItem {
 [[nodiscard]] bool SameServedGift(
 	const CollectibleRecord &a,
 	const CollectibleRecord &b);
+
+[[nodiscard]] bool OnOwnSale(const CollectibleRecord &record);
+
+[[nodiscard]] const CollectibleRecord *FindListedGift(
+	const std::vector<CollectibleRecord> &list,
+	const Data::UniqueGift &gift);
 
 [[nodiscard]] bool FillServedGift(
 	not_null<Main::Session*> session,

@@ -10,21 +10,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_common.h"
 #include "base/object_ptr.h"
 #include "base/required.h"
-#include "base/unique_qptr.h"
 #include "base/timer.h"
+#include "base/unique_qptr.h"
 #include "chat_helpers/compose/compose_features.h"
 #include "chat_helpers/field_characters_count_manager.h"
 #include "chat_helpers/rich_paste_toast.h"
 #include "dialogs/dialogs_key.h"
 #include "history/view/controls/compose_controls_common.h"
 #include "history/view/controls/history_view_bot_menu_button.h"
-#include "ui/round_rect.h"
-#include "ui/rp_widget.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/fields/input_field.h"
+#include "ui/round_rect.h"
+#include "ui/rp_widget.h"
 
 class History;
 class DocumentData;
+class SendFilesBox;
 struct InlineBotQuery;
 
 namespace style {
@@ -230,6 +231,7 @@ public:
 		Fn<void(
 			std::shared_ptr<Ui::PreparedBundle>,
 			Api::SendOptions)> confirmed);
+	void closeSendAsFileBox(bool restoreText = true);
 	void processChosenSticker(FileChosen &&chosen);
 	void clearFieldAfterStickerSend();
 	[[nodiscard]] rpl::producer<FileChosen> fileChosen() const;
@@ -438,7 +440,9 @@ private:
 	void orderControls();
 	void updateFieldPlaceholder();
 	void updateSilentBroadcast();
-	void editMessage(not_null<HistoryItem*> item);
+	void editMessage(
+		not_null<HistoryItem*> item,
+		const TextWithTags &editData);
 
 	void escape();
 	void fieldChanged();
@@ -643,6 +647,7 @@ private:
 	rpl::event_stream<not_null<QKeyEvent*>> _editLastMessageRequests;
 	rpl::event_stream<std::optional<bool>> _attachRequests;
 	Fn<void(std::shared_ptr<Ui::PreparedBundle>, Api::SendOptions)> _sendAsFileConfirmed;
+	QPointer<SendFilesBox> _sendAsFileBox;
 	rpl::event_stream<> _likeToggled;
 	rpl::event_stream<ReplyNextRequest> _replyNextRequests;
 	rpl::event_stream<> _replyCancelled;

@@ -7,24 +7,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "chat_helpers/field_characters_count_manager.h"
+#include "chat_helpers/rich_paste_toast.h"
+#include "data/data_report.h"
+#include "history/view/controls/history_view_bot_menu_button.h"
 #include "history/view/controls/history_view_compose_media_edit_manager.h"
 #include "e2e_cloud/core/types.h"
 #include "history/view/history_view_corner_buttons.h"
+#include "history/history.h"
 #include "history/history_drag_area.h"
 #include "history/history_item_helpers.h"
 #include "history/history_view_highlight_manager.h"
 #include "history/history_view_top_toast.h"
-#include "history/history.h"
-#include "chat_helpers/field_characters_count_manager.h"
-#include "chat_helpers/rich_paste_toast.h"
-#include "data/data_report.h"
-#include "window/section_widget.h"
-#include "window/window_session_controller.h"
-#include "history/view/controls/history_view_bot_menu_button.h"
-#include "ui/effects/message_sending_history.h"
-#include "ui/widgets/fields/input_field.h"
 #include "mtproto/instance/sender.h"
 #include "tgw/tgw_scroll.h"
+#include "ui/effects/message_sending_history.h"
+#include "ui/widgets/fields/input_field.h"
+#include "window/section_widget.h"
+#include "window/window_session_controller.h"
 
 enum class SendMediaType;
 class MessageLinksParser;
@@ -383,7 +383,7 @@ private:
 	};
 	struct ScrollChange {
 		ScrollChangeType type;
-		int value;
+		int value = 0;
 	};
 	struct ChooseMessagesForReport {
 		Data::ReportInput reportInput;
@@ -516,6 +516,7 @@ private:
 	void showFinished();
 	void updateOverStates(QPoint pos);
 	void clearOverStates();
+	[[nodiscard]] bool canEditMediaPreview() const;
 	void chooseAttach(std::optional<bool> overrideSendImagesAsPhotos = {});
 	void sendButtonClicked();
 	void stopStreamedDraft();
@@ -722,6 +723,7 @@ private:
 	// messages bar, choosing from _history and _migrated unreadBar.
 	std::optional<int> unreadBarTop() const;
 	int itemTopForHighlight(not_null<HistoryView::Element*> view) const;
+	[[nodiscard]] HistoryView::Element *closestLoadedView(MsgId id) const;
 	void scrollToCurrentVoiceMessage(FullMsgId fromId, FullMsgId toId);
 
 	void writeDrafts();
@@ -992,9 +994,9 @@ private:
 	using CharactersLimitLabel = HistoryView::Controls::CharactersLimitLabel;
 	base::unique_qptr<CharactersLimitLabel> _charsLimitation;
 	QString _sendRestrictionKey;
-	Ui::Animations::Simple _inPhotoEditOver;
+	Ui::Animations::Simple _inMediaEditOver;
 	bool _inDetails = false;
-	bool _inPhotoEdit = false;
+	bool _inMediaEdit = false;
 	bool _inClickable = false;
 
 	bool _kbShown = false;

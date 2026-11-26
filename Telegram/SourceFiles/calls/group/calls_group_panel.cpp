@@ -7,6 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/group/calls_group_panel.h"
 
+#include "api/api_chat_participants.h" // api().kick.
+#include "apiwrap.h" // api().kick.
+#include "base/platform/base_platform_info.h"
+#include "base/event_filter.h"
+#include "base/qt_signal_producer.h"
+#include "base/timer_rpl.h"
+#include "base/unixtime.h"
+#include "calls/group/ui/calls_group_scheduled_labels.h"
+#include "calls/group/ui/desktop_capture_choose_source.h"
 #include "calls/group/calls_group_common.h"
 #include "calls/group/calls_group_invite_controller.h"
 #include "calls/group/calls_group_members.h"
@@ -17,57 +26,49 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "calls/group/calls_group_settings.h"
 #include "calls/group/calls_group_toasts.h"
 #include "calls/group/calls_group_viewport.h"
-#include "calls/group/ui/calls_group_scheduled_labels.h"
-#include "calls/group/ui/desktop_capture_choose_source.h"
 #include "calls/calls_emoji_fingerprint.h"
 #include "calls/calls_window.h"
-#include "base/platform/base_platform_info.h"
-#include "platform/platform_window_title.h"
 #include "chat_helpers/compose/compose_show.h"
-#include "data/data_file_origin.h"
-#include "ui/platform/ui_platform_window_title.h" // TitleLayout
-#include "ui/platform/ui_platform_utility.h"
-#include "ui/controls/call_mute_button.h"
-#include "ui/widgets/buttons.h"
-#include "ui/controls/call_button.h"
-#include "ui/widgets/checkbox.h"
-#include "ui/widgets/dropdown_menu.h"
-#include "ui/widgets/fields/input_field.h"
-#include "ui/widgets/tooltip.h"
-#include "ui/widgets/rp_window.h"
-#include "ui/chat/group_call_bar.h"
-#include "ui/layers/generic_box.h"
-#include "ui/text/text_utilities.h"
-#include "ui/toast/toast.h"
-#include "ui/image/image_prepare.h"
-#include "ui/integration.h"
-#include "ui/painter.h"
-#include "ui/round_rect.h"
-#include "info/profile/info_profile_values.h" // Info::Profile::Value.
 #include "core/application.h"
 #include "core/core_settings.h"
-#include "lang/lang_keys.h"
+#include "data/data_changes.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
-#include "data/data_user.h"
+#include "data/data_file_origin.h"
 #include "data/data_group_call.h"
 #include "data/data_session.h"
-#include "data/data_changes.h"
+#include "data/data_user.h"
+#include "info/profile/info_profile_values.h" // Info::Profile::Value.
+#include "lang/lang_keys.h"
 #include "main/session/session_show.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "menu/menu_send.h"
-#include "base/event_filter.h"
-#include "base/unixtime.h"
-#include "base/qt_signal_producer.h"
-#include "base/timer_rpl.h"
-#include "apiwrap.h" // api().kick.
-#include "api/api_chat_participants.h" // api().kick.
-#include "webrtc/webrtc_environment.h"
-#include "webrtc/webrtc_video_track.h"
+#include "platform/platform_window_title.h"
+#include "ui/chat/group_call_bar.h"
+#include "ui/controls/call_button.h"
+#include "ui/controls/call_mute_button.h"
+#include "ui/image/image_prepare.h"
+#include "ui/layers/generic_box.h"
+#include "ui/platform/ui_platform_utility.h"
+#include "ui/platform/ui_platform_window_title.h" // TitleLayout
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
+#include "ui/widgets/fields/input_field.h"
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/dropdown_menu.h"
+#include "ui/widgets/rp_window.h"
+#include "ui/widgets/tooltip.h"
+#include "ui/integration.h"
+#include "ui/painter.h"
+#include "ui/round_rect.h"
 #include "webrtc/webrtc_audio_input_tester.h"
 #include "webrtc/webrtc_create_adm.h"
+#include "webrtc/webrtc_environment.h"
+#include "webrtc/webrtc_video_track.h"
 #include "window/window_unlock_passcode_box.h"
+
 #include "styles/style_calls.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
@@ -603,6 +604,12 @@ void Panel::initControls() {
 	createMessageButton();
 	refreshLeftButton();
 	refreshVideoButtons();
+	if (!Platform::IsWayland()) {
+		createPinOnTop();
+	}
+	if (_call->rtmp()) {
+		setupFullScreenBehavior();
+	}
 
 	rpl::combine(
 		_mode.value(),
@@ -1629,12 +1636,6 @@ void Panel::setupFullScreenBehavior() {
 }
 
 void Panel::refreshTopButton() {
-	if (!_pinOnTop) {
-		createPinOnTop();
-		if (_call->rtmp()) {
-			setupFullScreenBehavior();
-		}
-	}
 	if (_mode.current() == PanelMode::Wide) {
 		_menuToggle.destroy();
 		if (!_call->rtmp()) {
@@ -1976,12 +1977,12 @@ QRect Panel::computeTitleRect() const {
 			+ (_menuToggle ? _menuToggle->width() : 0)
 			+ custom));
 	const auto width = widget()->width();
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	const auto left = window()->isFullScreen()
 		? st::groupCallNarrowSkip
 		: st::groupCallTitleLeftMac;
 	return QRect(left, 0, width - remove - left, 28);
-#else // Q_OS_MAC
+#else // Q_OS_MACOS
 	const auto controls = _window->controlsGeometry();
 	const auto onTheLeft = (controls.center().x() < width / 2);
 	auto band = controls;
@@ -1992,7 +1993,7 @@ QRect Panel::computeTitleRect() const {
 	return onTheLeft
 		? QRect(right, 0, width - right - remove, band.height())
 		: QRect(remove, 0, band.x() - skip - remove, band.height());
-#endif // !Q_OS_MAC
+#endif // !Q_OS_MACOS
 }
 
 bool Panel::updateMode() {
@@ -2643,6 +2644,7 @@ void Panel::updateButtonsGeometry() {
 		const auto addSkip = st::callMuteButtonSmall.active.outerRadius;
 		const auto muteSize = _mute->innerSize().width() + 2 * addSkip;
 		const auto skip = st::groupCallButtonSkipSmall;
+		_mute->setLabelsMaxWidth(0);
 		const auto fullWidth = (rtmp
 			? (_settings->width() + skip)
 			: (_screenShare->width() + skip
@@ -2799,6 +2801,9 @@ void Panel::updateButtonsGeometry() {
 			? (nextButtonLeft + single + buttonSkip + addSkip)
 			: (nextButtonLeft + addSkip);
 		_mute->moveInner({ muteButtonLeft, muteTop });
+		_mute->setLabelsMaxWidth(muteSize
+			+ 2 * buttonSkip
+			- st::callMuteButton.labelAdditional);
 		toggle(_wideMenu, false);
 		toggle(_callShare, true);
 		if (_callShare) {

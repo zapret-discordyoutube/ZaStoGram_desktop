@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/layers/box_content.h"
 #include "base/timer.h"
 #include "mtproto/instance/sender.h"
+#include "ui/layers/box_content.h"
 
 class PeerListBox;
 struct RequestPeerQuery;
@@ -236,7 +236,7 @@ private:
 	std::shared_ptr<Ui::RadioenumGroup<Privacy>> _privacyGroup;
 	object_ptr<Ui::Radioenum<Privacy>> _public;
 	object_ptr<Ui::Radioenum<Privacy>> _private;
-	int32 _aboutPublicWidth, _aboutPublicHeight;
+	int32 _aboutPublicWidth, _aboutPublicHeight = 0;
 	Ui::Text::String _aboutPublic, _aboutPrivate;
 
 	object_ptr<Ui::UsernameInput> _link;

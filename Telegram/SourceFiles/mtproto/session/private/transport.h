@@ -35,7 +35,7 @@ public:
 	void doDisconnect();
 	void destroyAllConnections(
 		ProxyCloseOrigin origin = ProxyCloseOrigin::OwnerDestroyed);
-	void onSentSome(uint64 size);
+	void onSentSome(uint64 size, bool behindUnanswered);
 	void onReceivedSome();
 	void startContainerCleanup();
 	void retryByTimer();

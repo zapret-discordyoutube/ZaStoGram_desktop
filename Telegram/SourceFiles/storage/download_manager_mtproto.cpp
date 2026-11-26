@@ -169,7 +169,7 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 	}) | rpl::on_next([=](MTP::ShiftedDcId shiftedDcId) {
 		sessionTimedOut(
 			MTP::BareDcId(shiftedDcId),
-			MTP::GetDcIdShift(shiftedDcId));
+			MTP::GetDcIdShift(shiftedDcId) - MTP::kBaseDownloadDcShift);
 	}, _lifetime);
 }
 
@@ -431,18 +431,26 @@ void DownloadManagerMtproto::removeSession(MTP::DcId dcId) {
 	Assert(session.requested == kMaxWaitedInSession * kMaxSessionsCount);
 
 	dc.sessions.pop_back();
-	api().instance().killSession(MTP::downloadDcId(dcId, index));
+	// A part migrated here from another datacenter keeps the session alive.
+	if (!api().instance().killSessionIfIdle(MTP::downloadDcId(dcId, index))
+		&& !dc.totalRequested) {
+		killSessionsSchedule(dcId, true);
+	}
 
 	dc.lastSessionRemove = crl::now();
 }
 
-void DownloadManagerMtproto::killSessionsSchedule(MTP::DcId dcId) {
-	// Tunnel connections are reopened after every piece anyway.
+void DownloadManagerMtproto::killSessionsSchedule(
+		MTP::DcId dcId,
+		bool retry) {
 	const auto timeout = MTP::details::WssMediaTunneled(dcId)
 		? kKillSessionTimeout
 		: kKillWarmSessionTimeout;
 	if (!_killSessionsWhen.contains(dcId)) {
-		_killSessionsWhen.emplace(dcId, crl::now() + timeout);
+		_killSessionsWhen.emplace(dcId, KillSessionsWhen{
+			.when = crl::now() + timeout,
+			.retry = retry,
+		});
 	}
 	if (!_killSessionsTimer.isActive()
 		|| _killSessionsTimer.remainingTime() > timeout + 5) {
@@ -461,37 +469,50 @@ void DownloadManagerMtproto::killSessions() {
 	const auto now = crl::now();
 	auto left = kKillWarmSessionTimeout;
 	for (auto i = begin(_killSessionsWhen); i != end(_killSessionsWhen); ) {
-		if (i->second <= now) {
-			killSessions(i->first);
-			i = _killSessionsWhen.erase(i);
-		} else {
-			if (i->second - now < left) {
-				left = i->second - now;
+		auto &entry = i->second;
+		if (entry.when <= now) {
+			if (killSessions(i->first, entry.retry)) {
+				i = _killSessionsWhen.erase(i);
+				continue;
 			}
-			++i;
+			entry.when = now + kKillSessionTimeout;
+			entry.retry = true;
 		}
+		if (entry.when - now < left) {
+			left = entry.when - now;
+		}
+		++i;
 	}
 	if (!_killSessionsWhen.empty()) {
 		_killSessionsTimer.callOnce(left);
 	}
 }
 
-void DownloadManagerMtproto::killSessions(MTP::DcId dcId) {
+bool DownloadManagerMtproto::killSessions(MTP::DcId dcId, bool retry) {
 	const auto i = _balanceData.find(dcId);
-	if (i != end(_balanceData)) {
-		auto &dc = i->second;
-		Assert(dc.totalRequested == 0);
+	if (i == end(_balanceData)) {
+		return true;
+	}
+	auto &dc = i->second;
+	Assert(dc.totalRequested == 0);
+	if (!retry) {
 		auto sessions = base::take(dc.sessions);
 		dc = DcBalanceData();
 		for (auto j = 0; j != int(sessions.size()); ++j) {
 			Assert(sessions[j].requested == 0);
+			finishDiagnosticSession(MTP::downloadDcId(dcId, j));
 			sessions[j] = DcSessionBalanceData();
-			const auto shiftedDcId = MTP::downloadDcId(dcId, j);
-			finishDiagnosticSession(shiftedDcId);
-			api().instance().stopSession(shiftedDcId);
 		}
 		dc.sessions = base::take(sessions);
 	}
+	auto &instance = api().instance();
+	auto allRetired = true;
+	for (auto j = 0; j != kMaxSessionsCount; ++j) {
+		if (!instance.killSessionIfIdle(MTP::downloadDcId(dcId, j))) {
+			allRetired = false;
+		}
+	}
+	return allRetired;
 }
 
 void DownloadManagerMtproto::finishDiagnosticSession(
@@ -622,11 +643,11 @@ void DownloadMtprotoTask::refreshFileReferenceFrom(
 	if (const auto v = std::get_if<StorageFileLocation>(&_location.data)) {
 		v->refreshFileReference(updates);
 		if (v->fileReference() == current) {
-			cancelOnFail();
+			failRequest(requestId);
 			return;
 		}
 	} else {
-		cancelOnFail();
+		failRequest(requestId);
 		return;
 	}
 	if (_sentRequests.contains(requestId)) {
@@ -1088,7 +1109,7 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 		case CheckCdnHashResult::Invalid: {
 			LOG(("API Error: Wrong cdnFileHash for offset %1."
 				).arg(uncheckedData.offset));
-			cancelOnFail();
+			failFinishedRequest(requestData, true);
 			return;
 		} break;
 
@@ -1110,7 +1131,7 @@ void DownloadMtprotoTask::getCdnFileHashesDone(
 			"Could not find cdnFileHash for offset %1 "
 			"after getCdnFileHashes request."
 			).arg(requestData.offset));
-		cancelOnFail();
+		failFinishedRequest(requestData, true);
 		return;
 	}
 	requestMoreCdnFileHashes();
@@ -1236,6 +1257,34 @@ void DownloadMtprotoTask::cancelRequest(mtpRequestId requestId) {
 	_owner->checkSendNextAfterCancel();
 }
 
+void DownloadMtprotoTask::failRequest(mtpRequestId requestId) {
+	if (!_sentRequests.contains(requestId)) {
+		cancelOnFail();
+		return;
+	}
+	const auto hashes = (_cdnHashesRequestId == requestId);
+	const auto requestData = finishSentRequest(
+		requestId,
+		FinishRequestReason::Cancel);
+	const auto owner = _owner;
+	const auto dcId = this->dcId();
+	failFinishedRequest(requestData, hashes);
+
+	// 'this' may be deleted at this point.
+	owner->checkSendNextAfterSuccess(dcId);
+}
+
+void DownloadMtprotoTask::failFinishedRequest(
+		const RequestData &requestData,
+		bool hashes) {
+	if (hashes) {
+		_cdnUncheckedParts.clear();
+	} else {
+		_cdnUncheckedParts.remove(requestData);
+	}
+	cancelOnFail();
+}
+
 void DownloadMtprotoTask::addToQueue(int priority) {
 	_owner->enqueue(this, priority);
 }
@@ -1285,7 +1334,7 @@ bool DownloadMtprotoTask::partFailed(
 	if (MTP::IsDefaultHandledError(error)) {
 		return false;
 	}
-	cancelOnFail();
+	failRequest(requestId);
 	return true;
 }
 

@@ -7,33 +7,33 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_forum.h"
 
+#include "apiwrap.h"
+#include "base/random.h"
+#include "base/unixtime.h"
+#include "core/application.h"
 #include "data/components/recent_peers.h"
-#include "data/data_channel.h"
-#include "data/data_histories.h"
+#include "data/notify/data_notify_settings.h"
 #include "data/data_changes.h"
+#include "data/data_channel.h"
 #include "data/data_compose_stash.h"
-#include "data/data_session.h"
 #include "data/data_forum_icons.h"
 #include "data/data_forum_topic.h"
+#include "data/data_histories.h"
 #include "data/data_replies_list.h"
+#include "data/data_session.h"
 #include "data/data_user.h"
-#include "data/notify/data_notify_settings.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_unread_things.h"
-#include "main/main_session.h"
-#include "base/random.h"
-#include "base/unixtime.h"
-#include "apiwrap.h"
 #include "lang/lang_keys.h"
-#include "core/application.h"
-#include "ui/layers/generic_box.h"
-#include "ui/widgets/fields/input_field.h"
+#include "main/main_session.h"
 #include "storage/storage_facade.h"
 #include "storage/storage_shared_media.h"
 #include "tgw/tgw_storage.h"
-#include "window/window_session_controller.h"
+#include "ui/layers/generic_box.h"
+#include "ui/widgets/fields/input_field.h"
 #include "window/notifications_manager.h"
+#include "window/window_session_controller.h"
 
 namespace Data {
 namespace {
@@ -44,6 +44,59 @@ constexpr auto kTopicsPerPage = 500;
 constexpr auto kStalePerRequest = 100;
 constexpr auto kShowTopicNamesCount = 8;
 // constexpr auto kGeneralColorId = 0xA9A9A9;
+
+[[nodiscard]] MsgId TopicRootFromMessage(const MTPMessage &message) {
+	const auto replyRoot = [](
+			const MTPMessageReplyHeader *reply,
+			bool topicAction) {
+		if (!reply) {
+			return MsgId();
+		}
+		return reply->match([&](const MTPDmessageReplyHeader &data) {
+			const auto id = data.vreply_to_msg_id().value_or_empty();
+			return (id && (topicAction || data.is_forum_topic()))
+				? MsgId(data.vreply_to_top_id().value_or(id))
+				: MsgId();
+		}, [](const MTPDmessageReplyStoryHeader &) {
+			return MsgId();
+		});
+	};
+	return message.match([&](const MTPDmessage &data) {
+		return replyRoot(data.vreply_to(), false);
+	}, [&](const MTPDmessageService &data) {
+		const auto type = data.vaction().type();
+		const auto created = (type == mtpc_messageActionTopicCreate);
+		const auto edited = (type == mtpc_messageActionTopicEdit);
+		const auto root = replyRoot(data.vreply_to(), created || edited);
+		return root
+			? root
+			: created
+			? MsgId(data.vid().v)
+			: MsgId();
+	}, [](const MTPDmessageEmpty &) {
+		return MsgId();
+	});
+}
+
+[[nodiscard]] PeerId SinglePeerReferringTo(
+		const QVector<MTPMessage> &messages,
+		MsgId rootId) {
+	if (!rootId) {
+		return PeerId();
+	}
+	auto result = PeerId();
+	for (const auto &message : messages) {
+		if (TopicRootFromMessage(message) != rootId) {
+			continue;
+		}
+		const auto peerId = PeerFromMessage(message);
+		if (!peerId || (result && result != peerId)) {
+			return PeerId();
+		}
+		result = peerId;
+	}
+	return result;
+}
 
 } // namespace
 
@@ -182,6 +235,8 @@ void Forum::requestTopics() {
 		MTP_flags(0),
 		peer()->input(),
 		MTPstring(), // q
+		MTPlong(), // icon_emoji_id
+		MTPBool(), // closed
 		MTP_int(_offset.date),
 		MTP_int(_offset.id),
 		MTP_int(_offset.topicId),
@@ -434,12 +489,25 @@ void Forum::applyReceivedTopics(
 			}
 		};
 
-		if (!_topicRequests.contains(rootId)) {
+		const auto min = topic.match([](const MTPDforumTopicDeleted &) {
+			return false;
+		}, [](const MTPDforumTopic &data) {
+			return data.is_short();
+		});
+		// A short record can't stand in for a pending full refresh.
+		if (!min && !_topicRequests.contains(rootId)) {
 			_staleRootIds.remove(rootId);
 		}
 		topic.match([&](const MTPDforumTopicDeleted &data) {
 			if (rootId != ForumTopic::kGeneralId) {
 				applyTopicDeleted(rootId);
+				if (_staleRootIds.remove(rootId)) {
+					// A request already sent finishes on its own response.
+					const auto i = _topicRequests.find(rootId);
+					if (i != end(_topicRequests) && !i->second.id) {
+						finishTopicRequest(rootId);
+					}
+				}
 			} else {
 				// We shouldn't delete general topic in any case.
 				// Here this happens in bot forums, for example.
@@ -682,6 +750,28 @@ rpl::producer<> Forum::chatsListChanges() const {
 
 rpl::producer<> Forum::chatsListLoadedEvents() const {
 	return _chatsListLoadedEvents.events();
+}
+
+void ApplyResponseTopics(
+		not_null<Session*> owner,
+		const MTPVector<MTPForumTopic> *topics,
+		const QVector<MTPMessage> &messages,
+		ChannelData *channel) {
+	if (!topics) {
+		return;
+	}
+	for (const auto &topic : topics->v) {
+		const auto peerId = topic.match([](const MTPDforumTopic &data) {
+			return peerFromMTP(data.vpeer());
+		}, [&](const MTPDforumTopicDeleted &data) {
+			return channel
+				? channel->id
+				: SinglePeerReferringTo(messages, data.vid().v);
+		});
+		if (const auto peer = owner->peerLoaded(peerId)) {
+			peer->processTopics(MTP_vector<MTPForumTopic>(1, topic));
+		}
+	}
 }
 
 } // namespace Data

@@ -7,11 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/connection_box.h"
 
-#include "base/call_delayed.h"
 #include "base/qt/qt_key_modifiers.h"
+#include "base/call_delayed.h"
 #include "base/qthelp_regex.h"
 #include "base/qthelp_url.h"
 #include "base/weak_ptr.h"
+#include "boxes/abstract_box.h" // Ui::show().
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/file_utilities.h"
@@ -34,37 +35,37 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/settings_common.h"
 #include "settings.h"
 #include "storage/localstorage.h"
-#include "ui/basic_click_handlers.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/peer_qr_box.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/radial_animation.h"
 #include "ui/effects/round_checkbox.h"
-#include "ui/painter.h"
-#include "ui/rect.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
-#include "ui/widgets/buttons.h"
-#include "ui/widgets/checkbox.h"
-#include "ui/widgets/dropdown_menu.h"
-#include "ui/widgets/discrete_sliders.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/fields/number_input.h"
 #include "ui/widgets/fields/password_input.h"
-#include "ui/widgets/labels.h"
 #include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/discrete_sliders.h"
+#include "ui/widgets/dropdown_menu.h"
+#include "ui/widgets/labels.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/selecting_scroll.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/table_layout.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/vertical_layout_reorder.h"
-#include "ui/vertical_list.h"
+#include "ui/basic_click_handlers.h"
+#include "ui/painter.h"
+#include "ui/rect.h"
 #include "ui/ui_utility.h"
-#include "boxes/abstract_box.h" // Ui::show().
+#include "ui/vertical_list.h"
 #include "window/window_session_controller.h"
+
 #include "styles/style_boxes.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_connection_box.h"
@@ -2447,6 +2448,19 @@ void ProxyBox::setupSocketAddress(const ProxyData &data) {
 		tr::lng_connection_port_ph(),
 		data.port ? QString::number(data.port) : QString(),
 		65535);
+	{
+		// The field is at least as wide as its placeholder.
+		const auto &st = st::connectionPortInputField;
+		const auto placeholder = st.placeholderFont->width(
+			tr::lng_connection_port_ph(tr::now))
+			+ st.textMargins.left()
+			+ st.textMargins.right()
+			+ st.placeholderMargins.left()
+			+ st.placeholderMargins.right();
+		if (placeholder > _port->width()) {
+			_port->resize(placeholder, _port->height());
+		}
+	}
 	address->widthValue(
 	) | rpl::on_next([=](int width) {
 		_port->moveToRight(0, 0);

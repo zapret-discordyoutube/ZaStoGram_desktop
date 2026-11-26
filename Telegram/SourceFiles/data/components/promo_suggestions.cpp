@@ -165,7 +165,11 @@ void PromoSuggestions::refreshTopPromotion() {
 			_topPromotionNextRequestTime);
 
 		result.match([&](const MTPDhelp_promoDataEmpty &) {
-			// ZaStoGram: keep our own channel promoted.
+			if (!_pendingSuggestions.empty() || _custom) {
+				_pendingSuggestions.clear();
+				_custom = std::nullopt;
+				_refreshed.fire({});
+			}
 		}, [&](const MTPDhelp_promoData &data) {
 			_session->data().processChats(data.vchats());
 			_session->data().processUsers(data.vusers());

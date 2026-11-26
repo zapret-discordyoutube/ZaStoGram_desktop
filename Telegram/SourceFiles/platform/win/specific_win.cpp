@@ -28,7 +28,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "window/window_controller.h"
 #include "core/crash_reports.h"
-#include "core/version.h"
 
 #include <QtCore/QOperatingSystemVersion>
 #include <QtWidgets/QApplication>
@@ -143,28 +142,21 @@ void DeleteMyModules() {
 		return;
 	}
 	const auto modules = exe.substr(0, last + 1) + L"modules";
-	const auto deleteOne = [&](const wchar_t *name, const wchar_t *arch) {
-		const auto path = modules + L'\\' + arch + L'\\' + name;
-		DeleteFile(path.c_str());
-	};
-	const auto deleteBoth = [&](const wchar_t *name) {
-		deleteOne(name, L"x86");
-		deleteOne(name, L"x64");
-	};
-	const auto removeOne = [&](const std::wstring &name) {
-		const auto path = modules + L'\\' + name;
-		RemoveDirectory(path.c_str());
-	};
-	const auto removeBoth = [&](const std::wstring &name) {
-		removeOne(L"x86\\" + name);
-		removeOne(L"x64\\" + name);
-	};
-	deleteBoth(L"d3d\\d3dcompiler_47.dll");
-
-	removeBoth(L"d3d");
-	removeOne(L"x86");
-	removeOne(L"x64");
+	for (const auto arch : { L"x86", L"x64", L"arm64" }) {
+		const auto folder = modules + L'\\' + arch;
+		DeleteFile((folder + L"\\d3d\\d3dcompiler_47.dll").c_str());
+		DeleteFile((folder + L"\\TelegramWidgetHelper.exe").c_str());
+		RemoveDirectory((folder + L"\\d3d").c_str());
+		RemoveDirectory(folder.c_str());
+	}
 	RemoveDirectory(modules.c_str());
+}
+
+void DeleteMyStartLogs() {
+	Logs::closeMain();
+	for (auto i = 0; i != 10; ++i) {
+		QFile::remove(cWorkingDir() + u"log_start%1.txt"_q.arg(i));
+	}
 }
 
 // Windows remembers here which startup entries a user switched off in the
@@ -455,6 +447,7 @@ void psDoCleanup() {
 		psSendToMenu(false, true);
 		AppUserModelId::CleanupShortcut();
 		DeleteMyModules();
+		DeleteMyStartLogs();
 	} catch (...) {
 	}
 }

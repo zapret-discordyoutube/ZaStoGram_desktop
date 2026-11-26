@@ -25,12 +25,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rect.h"
 #include "ui/rp_widget.h"
 #include "ui/ui_utility.h"
+
 #include "styles/style_chat.h" // textMoreIconEmoji
 #include "styles/style_info.h"
 #include "styles/style_info_levels.h"
 #include "styles/style_layers.h"
-#include "styles/style_premium.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_premium.h"
 
 namespace Ui {
 namespace {
@@ -339,7 +340,7 @@ void AboutRatingBox(
 			const QString &text,
 			const style::RoundButton &st) {
 		return helper.paletteDependent(
-			Text::CustomEmojiTextBadge(text.toUpper(), st));
+			Text::CustomEmojiTextBadge(Text::Upper(text), st));
 	};
 	const auto makeActive = [&](const QString &text) {
 		return makeBadge(text, st::customEmojiTextBadge);

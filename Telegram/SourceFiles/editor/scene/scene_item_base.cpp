@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/painter.h"
+
 #include "styles/style_editor.h"
 #include "styles/style_menu_icons.h"
 
@@ -127,6 +128,13 @@ bool NumberedItem::undoable() const {
 	return _undoable;
 }
 
+bool ItemBase::isBackground() const {
+	return false;
+}
+
+bool ItemBase::isBackgroundLocked() const {
+	return false;
+}
 ItemBase::ItemBase(Data data)
 : _lastZ(data.zPtr)
 , _imageSize(data.imageSize)
@@ -235,6 +243,13 @@ void ItemBase::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
 
 void ItemBase::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {
 	const auto owner = static_cast<Scene*>(scene());
+	if (isBackgroundLocked()) {
+		setCursor((owner && owner->hasPendingShape())
+			? Qt::CrossCursor
+			: Qt::ArrowCursor);
+		QGraphicsItem::hoverMoveEvent(event);
+		return;
+	}
 	setCursor((owner && owner->hasPendingShape())
 		? Qt::CrossCursor
 		: isHandling()
@@ -246,6 +261,10 @@ void ItemBase::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {
 }
 
 void ItemBase::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+	if (isBackgroundLocked() && (event->button() == Qt::LeftButton)) {
+		event->ignore();
+		return;
+	}
 	raiseToTop();
 	resetDragging();
 	if (event->button() == Qt::LeftButton) {
@@ -480,6 +499,10 @@ std::optional<float64> ItemBase::stickyGuide(
 	return StickyLine(owner->canvasRect(), orientation, sticky.line);
 }
 
+bool NumberedItem::bakes() const {
+	return true;
+}
+
 void ItemBase::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 	if (scene()) {
 		scene()->clearSelection();
@@ -525,6 +548,9 @@ void ItemBase::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 		&st::mediaMenuIconCopy);
 
 	_menu->popup(event->screenPos());
+	if (const auto scene = static_cast<Scene*>(this->scene())) {
+		scene->noteItemContextMenu();
+	}
 }
 
 void ItemBase::fillContextMenu(not_null<Ui::PopupMenu*> menu) {
@@ -572,8 +598,22 @@ void ItemBase::actionDuplicate() {
 	}
 }
 
+void ItemBase::actionRaise() {
+	if (const auto s = static_cast<Scene*>(scene())) {
+		s->raiseItem(this);
+	}
+}
+
+void ItemBase::actionLower() {
+	if (const auto s = static_cast<Scene*>(scene())) {
+		s->lowerItem(this);
+	}
+}
+
 void ItemBase::raiseToTop() {
-	setZValue((*_lastZ)++);
+	if (!isBackground()) {
+		setZValue((*_lastZ)++);
+	}
 }
 
 bool ItemBase::sceneEvent(QEvent *event) {
@@ -613,6 +653,10 @@ void ItemBase::handleActionKey(not_null<QKeyEvent*> e) {
 	};
 	if (matches(kDuplicateSequence)) {
 		performForSelectedItems(&ItemBase::actionDuplicate);
+	} else if (matches(kRaiseZOrderSequence)) {
+		performForSelectedItems(&ItemBase::actionRaise);
+	} else if (matches(kLowerZOrderSequence)) {
+		performForSelectedItems(&ItemBase::actionLower);
 	} else if (matches(kDeleteSequence) || matches(kBackspaceSequence)) {
 		performForSelectedItems(&ItemBase::actionDelete);
 	} else {

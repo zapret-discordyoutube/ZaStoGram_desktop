@@ -71,6 +71,7 @@ SessionPrivate::SessionPrivate(
 , _messageHandler(this)
 , _sessionState(std::move(data)) {
 	Expects(_shiftedDcId != 0);
+	_sessionState.reInitGeneration = _sessionState.data->reInitGeneration();
 
 	moveToThread(thread);
 
@@ -81,10 +82,14 @@ SessionPrivate::SessionPrivate(
 }
 
 SessionPrivate::~SessionPrivate() {
+	const auto hadKeyCreator = (_authState.keyCreator != nullptr);
 	releaseKeyCreationOnFail();
 	doDisconnect();
 
 	Expects(_transport.empty());
+	if (hadKeyCreator) {
+		wakeKeyWaiters();
+	}
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {
@@ -99,16 +104,17 @@ void SessionPrivate::restart() {
 	_transport.restart();
 }
 
-void SessionPrivate::restartNow() {
+void SessionPrivate::restartNow(uint64 reInitGeneration) {
 	_transport.restartNow();
+	_sessionState.reInitGeneration = reInitGeneration;
 }
 
 void SessionPrivate::migrateProxy(uint64 generation) {
 	_transport.migrateProxy(generation);
 }
 
-void SessionPrivate::onSentSome(uint64 size) {
-	_transport.onSentSome(size);
+void SessionPrivate::onSentSome(uint64 size, bool behindUnanswered) {
+	_transport.onSentSome(size, behindUnanswered);
 }
 
 void SessionPrivate::onReceivedSome() {
@@ -309,6 +315,7 @@ void SessionPrivate::changeSessionId() {
 	_requestState.ackData.clear();
 	_requestState.resendData.clear();
 	_requestState.stateData.clear();
+	_requestState.stateAndResendRequests.clear();
 	_requestState.receivedIds.clear();
 }
 

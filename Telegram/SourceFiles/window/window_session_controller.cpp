@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_session_controller.h"
 
-#include "apiwrap.h"
 #include "api/api_cloud_password.h"
 #include "api/api_text_entities.h"
+#include "apiwrap.h"
 #include "boxes/peers/add_bot_to_chat_box.h"
 #include "boxes/peers/community_box.h"
 #include "boxes/peers/edit_peer_info_box.h"
@@ -18,123 +18,125 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/delete_messages_box.h"
 #include "boxes/star_gift_auction_box.h"
 #include "e2e_cloud/desktop/protected_groups_box.h"
+#include "history/view/reactions/history_view_reactions.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "info/channel_statistics/earn/info_channel_earn_list.h"
+#include "info/peer_gifts/info_peer_gifts_widget.h"
+#include "info/stories/info_stories_widget.h"
+#include "info/info_controller.h"
+#include "info/info_memento.h"
+#include "inline_bots/bot_attach_web_view.h"
+#include "window/section_widget.h"
 #include "window/window_chat_preview.h"
 #include "window/window_chat_switch_process.h"
 #include "window/window_columns.h"
 #include "window/window_controller.h"
 #include "window/window_filters_menu.h"
-#include "window/section_widget.h"
 #include "window/window_separate_id.h"
-#include "info/channel_statistics/earn/info_channel_earn_list.h"
-#include "info/peer_gifts/info_peer_gifts_widget.h"
-#include "info/stories/info_stories_widget.h"
-#include "info/info_memento.h"
-#include "info/info_controller.h"
-#include "inline_bots/bot_attach_web_view.h"
-#include "history/history.h"
-#include "history/history_item.h"
-#include "history/view/reactions/history_view_reactions.h"
 //#include "history/view/reactions/history_view_reactions_button.h"
-#include "history/view/history_view_chat_section.h"
-#include "history/view/history_view_scheduled_section.h"
-#include "history/view/history_view_subsection_tabs.h"
-#include "media/player/media_player_instance.h"
-#include "media/view/media_view_open_common.h"
-#include "data/components/gift_auctions.h"
-#include "data/components/recent_peers.h"
-#include "data/stickers/data_custom_emoji.h"
-#include "data/data_document_resolver.h"
-#include "data/data_download_manager.h"
-#include "data/data_saved_messages.h"
-#include "data/data_saved_sublist.h"
-#include "data/data_session.h"
-#include "data/data_thread.h"
-#include "data/data_file_origin.h"
-#include "data/data_flags.h"
-#include "data/data_folder.h"
-#include "data/data_channel.h"
-#include "data/data_chat.h"
-#include "data/data_chat_participant_status.h"
-#include "data/data_user.h"
-#include "data/data_document.h"
-#include "data/data_document_media.h"
-#include "data/data_file_click_handler.h"
-#include "data/data_photo_media.h"
-#include "data/data_changes.h"
-#include "data/data_group_call.h"
-#include "data/data_forum.h"
-#include "data/data_forum_topic.h"
-#include "data/data_chat_filters.h"
-#include "data/data_replies_list.h"
-#include "data/data_report.h"
-#include "data/data_peer_values.h"
-#include "data/data_premium_limits.h"
-#include "data/data_web_page.h"
-#include "data/data_search_calendar.h"
-#include "dialogs/ui/chat_search_in.h"
-#include "passport/passport_form_controller.h"
-#include "chat_helpers/tabbed_selector.h"
-#include "chat_helpers/emoji_interactions.h"
-#include "core/shortcuts.h"
-#include "core/application.h"
-#include "core/core_screenshot_protection.h"
-#include "core/click_handler_types.h"
-#include "core/file_utilities.h"
-#include "core/ui_integration.h"
+#include "api/api_blocked_peers.h"
+#include "api/api_chat_invite.h"
+#include "api/api_global_privacy.h"
+#include "api/api_premium.h"
 #include "base/options.h"
 #include "base/unixtime.h"
-#include "info/channel_statistics/earn/earn_icons.h"
-#include "ui/controls/userpic_button.h"
-#include "ui/text/text_utilities.h"
-#include "ui/text/format_values.h" // Ui::FormatPhone.
-#include "ui/delayed_activation.h"
-#include "ui/boxes/boost_box.h"
-#include "ui/chat/chat_style.h"
-#include "ui/chat/chat_theme.h"
-#include "ui/effects/message_sending_animation_controller.h"
-#include "ui/style/style_palette_colorizer.h"
-#include "ui/toast/toast.h"
 #include "calls/calls_instance.h"
 #include "calls/group/calls_group_call.h"
 #include "calls/group/calls_group_common.h"
 #include "calls/group/calls_group_invite_controller.h"
-#include "ui/boxes/calendar_box.h"
-#include "ui/boxes/collectible_info_box.h"
-#include "ui/boxes/confirm_box.h"
-#include "ui/dynamic_thumbnails.h"
-#include "ui/ui_utility.h"
-#include "mainwidget.h"
+#include "calls/calls_instance.h" // Core::App().calls().inCall().
+#include "chat_helpers/emoji_interactions.h"
+#include "chat_helpers/tabbed_selector.h"
+#include "core/application.h"
+#include "core/click_handler_types.h"
+#include "core/core_screenshot_protection.h"
+#include "core/file_utilities.h"
+#include "core/shortcuts.h"
+#include "core/ui_integration.h"
+#include "data/components/gift_auctions.h"
+#include "data/components/recent_peers.h"
+#include "data/stickers/data_custom_emoji.h"
+#include "data/data_changes.h"
+#include "data/data_channel.h"
+#include "data/data_chat.h"
+#include "data/data_chat_filters.h"
+#include "data/data_chat_participant_status.h"
+#include "data/data_document.h"
+#include "data/data_document_media.h"
+#include "data/data_document_resolver.h"
+#include "data/data_download_manager.h"
+#include "data/data_file_click_handler.h"
+#include "data/data_file_origin.h"
+#include "data/data_flags.h"
+#include "data/data_folder.h"
+#include "data/data_forum.h"
+#include "data/data_forum_topic.h"
+#include "data/data_group_call.h"
+#include "data/data_peer_values.h"
+#include "data/data_photo_media.h"
+#include "data/data_premium_limits.h"
+#include "data/data_replies_list.h"
+#include "data/data_report.h"
+#include "data/data_saved_messages.h"
+#include "data/data_saved_sublist.h"
+#include "data/data_search_calendar.h"
+#include "data/data_session.h"
+#include "data/data_thread.h"
+#include "data/data_user.h"
+#include "data/data_web_page.h"
+#include "dialogs/ui/chat_search_in.h"
+#include "history/view/history_view_chat_section.h"
+#include "history/view/history_view_scheduled_section.h"
+#include "history/view/history_view_subsection_tabs.h"
+#include "info/channel_statistics/earn/earn_icons.h"
+#include "lang/lang_keys.h"
 #include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "mtproto/instance/mtp_instance.h"
-#include "lang/lang_keys.h"
-#include "apiwrap.h"
-#include "api/api_chat_invite.h"
-#include "api/api_global_privacy.h"
-#include "api/api_blocked_peers.h"
-#include "api/api_premium.h"
 #include "boxes/star_gift_craft_box.h"
-#include "support/support_helper.h"
-#include "storage/file_upload.h"
+#include "mainwidget.h"
+#include "media/player/media_player_instance.h"
+#include "media/stories/media_stories_post.h"
+#include "media/view/media_view_open_common.h"
+#include "passport/passport_form_controller.h"
+#include "settings/cloud_password/settings_cloud_password_email_confirm.h"
+#include "settings/cloud_password/settings_cloud_password_input.h"
+#include "settings/cloud_password/settings_cloud_password_start.h"
+#include "settings/sections/settings_main.h"
+#include "settings/sections/settings_premium.h"
+#include "settings/sections/settings_privacy_security.h"
 #include "storage/download_manager_mtproto.h"
+#include "storage/file_upload.h"
 #include "storage/storage_account.h"
+#include "support/support_helper.h"
+#include "ui/boxes/boost_box.h"
+#include "ui/boxes/calendar_box.h"
+#include "ui/boxes/collectible_info_box.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/chat/chat_style.h"
+#include "ui/chat/chat_theme.h"
+#include "ui/controls/userpic_button.h"
+#include "ui/effects/message_sending_animation_controller.h"
+#include "ui/style/style_palette_colorizer.h"
+#include "ui/text/format_values.h" // Ui::FormatPhone.
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
+#include "ui/delayed_activation.h"
+#include "ui/dynamic_thumbnails.h"
+#include "ui/ui_utility.h"
 #include "window/themes/window_theme.h"
 #include "window/themes/window_themes_chat.h"
 #include "window/window_no_paid_token.h"
 #include "window/window_peer_menu.h"
 #include "window/window_session_controller_link_info.h"
-#include "settings/cloud_password/settings_cloud_password_input.h"
-#include "settings/cloud_password/settings_cloud_password_start.h"
-#include "settings/cloud_password/settings_cloud_password_email_confirm.h"
-#include "settings/sections/settings_main.h"
-#include "settings/sections/settings_premium.h"
-#include "settings/sections/settings_privacy_security.h"
+
 #include "styles/style_chat_helpers.h"
-#include "styles/style_window.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_layers.h" // st::boxLabel
+#include "styles/style_window.h"
 
 namespace Window {
 namespace {
@@ -475,6 +477,12 @@ void SessionNavigation::showPeerByLink(const PeerByLinkInfo &info) {
 			showPeerByLinkResolved(channel, info);
 		});
 	}
+}
+
+void SessionNavigation::showPeerByLink(not_null<PeerData*> peer) {
+	Core::App().hideMediaView();
+	cancelContactTokenResolve();
+	showPeerByLinkResolved(peer, PeerByLinkInfo{});
 }
 
 void SessionNavigation::fullInfoLoadedHook(not_null<PeerData*> peer) {
@@ -1776,6 +1784,7 @@ SessionController::SessionController(
 		crl::on_main(base::make_weak(this), [=] {
 			Theme::CheckChatThemeWallPaper(this);
 		});
+		Media::Stories::SetupStoryPostToasts(this);
 	}
 	style::PaletteChanged(
 	) | rpl::on_next([=] {
@@ -2234,7 +2243,18 @@ void SessionController::activateFirstChatsFilter() {
 		return;
 	}
 	_filtersActivated = true;
-	setActiveChatsFilter(session().data().chatsFilters().defaultId());
+	const auto id = session().data().chatsFilters().defaultId();
+	const auto main = widget()->sessionContent();
+	if (main && !main->isMainSectionShown()) {
+		setActiveChatsFilter(
+			id,
+			SectionShow(
+				SectionShow::Way::ClearStack,
+				anim::type::normal,
+				anim::activation::background));
+	} else {
+		setActiveChatsFilter(id);
+	}
 }
 
 bool SessionController::uniqueChatsInSearchResults(
@@ -3189,13 +3209,14 @@ void SessionController::showCalendar(ShowCalendarDescriptor &&descriptor) {
 	const auto searchCalendarResult = [&]() -> SearchCalendarResult {
 		using Factory = Fn<void(QDate, Ui::CalendarImageSetter)>;
 		using CustomJump = Fn<void(const QDate &, Fn<void()>)>;
-		if (!descriptor.mediaPhoto && !descriptor.mediaVideo) {
+		const auto hasMediaFilter = descriptor.mediaPhoto || descriptor.mediaVideo;
+		if (!hasMediaFilter && (topic || sublist)) {
 			return {};
 		}
 		const auto search = std::make_shared<Api::SearchCalendarController>(
 			&session(),
 			history->peer->id,
-			(descriptor.mediaPhoto && descriptor.mediaVideo)
+			(!hasMediaFilter || (descriptor.mediaPhoto && descriptor.mediaVideo))
 				? Storage::SharedMediaType::PhotoVideo
 				: descriptor.mediaPhoto
 				? Storage::SharedMediaType::Photo
@@ -3212,7 +3233,7 @@ void SessionController::showCalendar(ShowCalendarDescriptor &&descriptor) {
 				});
 		};
 		auto customJump = CustomJump(nullptr);
-		if (const auto performJump = descriptor.customJump) {
+		if (hasMediaFilter && performJump) {
 			customJump = [=](const QDate &d, Fn<void()> close) {
 				const auto date = base::unixtime::serialize(
 					QDateTime(d, QTime()));

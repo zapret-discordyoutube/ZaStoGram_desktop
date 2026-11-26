@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -227,6 +228,45 @@ struct EditableTextEmptyOverride {
 	bool empty = true;
 };
 
+struct WidthAnalysisNode {
+	std::vector<WidthAnalysisNode> children;
+	int contentMinimumWidth = 1;
+	int contentPreferredWidth = 1;
+	int outerMinimumWidth = 1;
+	int outerPreferredWidth = 1;
+	int scrollOwnerMinimumWidth = 1;
+	int scrollOwnerOverflowWidth = 1;
+	int scrollViewportMinimumWidth = 1;
+	int outerScrollViewportMinimumWidth = 1;
+	int inlineButtonWidthCap = 0;
+	bool ownerEligible = false;
+	bool chosenScrollOwner = false;
+	bool subtreeNeedsScrollOwner = false;
+	bool subtreeHasChildMovingScrollOwner = false;
+	bool subtreeHasScrollOwner = false;
+	bool foldZeroLines = false;
+	bool foldBarrier = false;
+};
+
+enum class QuoteFoldState : uchar {
+	Counting,
+	Ended,
+	Refused,
+};
+
+struct QuoteFold {
+	int remainingLines = 0;
+	QuoteFoldState state = QuoteFoldState::Counting;
+	bool collapsed = false;
+	bool exceeded = false;
+};
+
+struct QuoteFoldHiddenRange {
+	std::span<const PreparedBlock> blocks;
+	QString toggleId;
+	int segmentIndex = -1;
+};
+
 enum class CachedTextLeafSlot {
 	Leaf,
 	Placeholder,
@@ -335,7 +375,6 @@ struct LayoutContext {
 	int articleLeft = 0;
 	int articleWidth = 0;
 	int inlineButtonWidthCap = 0;
-	int collapsibleQuoteLines = 0;
 	QSize skipBlock;
 	double mediaPixelScale = 1.;
 	bool tightList = false;
@@ -343,10 +382,10 @@ struct LayoutContext {
 	bool editMode = false;
 	bool rtl = false;
 	bool hideEmptyQuoteAuthor = false;
-	bool collapsibleQuoteCollapsed = false;
 	bool allowAsyncSyntaxHighlighting = true;
 	CodeBlockSyntaxHighlightTracker *syntaxHighlightTracker = nullptr;
 	CachedTextLeafPool *cachedTextLeafs = nullptr;
+	QuoteFold *quoteFold = nullptr;
 	Fn<void()> repaint;
 	Fn<void(QRect)> repaintRect;
 	Fn<bool(const ClickContext&)> spoilerLinkFilter;
@@ -378,6 +417,35 @@ void ResetBlockGeometryFields(LaidOutBlock *block);
 [[nodiscard]] QRect QuoteCollapseControlRect(
 	QRect outer,
 	const style::QuoteStyle &style);
+[[nodiscard]] int ConsumeQuoteFoldLines(
+	QuoteFold *fold,
+	const std::vector<Ui::Text::LineLayoutInfo> &lines);
+[[nodiscard]] bool QuoteFoldHidesBlock(
+	const LayoutContext &context,
+	const PreparedBlock &block,
+	bool anchorOnly,
+	const WidthAnalysisNode &analysis);
+void SummarizeQuoteFoldOpening(
+	const PreparedBlock &prepared,
+	WidthAnalysisNode *analysis);
+[[nodiscard]] int TightenQuoteFoldBand(
+	const PreparedBlock &prepared,
+	const WidthAnalysisNode &analysis,
+	LaidOutBlock *block,
+	const style::QuoteStyle &quoteStyle,
+	int band,
+	int excess,
+	const LayoutContext &context);
+void AppendPreparedBlocksText(
+	std::span<const PreparedBlock> blocks,
+	QString *to);
+void CollectQuoteFoldHiddenRanges(
+	const std::vector<PreparedBlock> &prepared,
+	const std::vector<LaidOutBlock> &laid,
+	std::vector<QuoteFoldHiddenRange> *ranges);
+[[nodiscard]] MarkdownArticleAnchorExpansion ExpandQuoteFold(
+	std::vector<PreparedBlock> *blocks,
+	const QString &toggleId);
 [[nodiscard]] QString ListMarkerText(const PreparedBlock &block);
 [[nodiscard]] int TextLineHeight(const style::TextStyle &style);
 [[nodiscard]] int TextLineAscent(const style::TextStyle &style);
@@ -406,7 +474,8 @@ void ResetBlockGeometryFields(LaidOutBlock *block);
 	InlineFormulaObjectCache *inlineFormulaObjects,
 	const std::shared_ptr<MediaRuntime> &mediaRuntime,
 	const style::Markdown &st,
-	LayoutContext context = {});
+	LayoutContext context = {},
+	bool *empty = nullptr);
 [[nodiscard]] int CodeBlockMinimumWidth(const style::Markdown &st);
 [[nodiscard]] int CodeTextMinResizeWidth(const style::Markdown &st);
 [[nodiscard]] int CodeBlockPreferredWidth(

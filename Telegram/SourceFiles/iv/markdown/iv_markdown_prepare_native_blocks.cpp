@@ -6,9 +6,10 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "iv/markdown/iv_markdown_prepare_native_blocks.h"
+
 #include "base/unixtime.h"
-#include "iv/iv_rich_page.h"
 #include "iv/markdown/iv_markdown_prepare_links.h"
+#include "iv/iv_rich_page.h"
 #include "lang/lang_keys.h"
 
 #include <algorithm>
@@ -1319,7 +1320,10 @@ void ClearPreparedEditSources(std::vector<PreparedBlock> *blocks) {
 	block.pullquote = data.pullquote;
 	const auto collapsible = RichBlockquoteIsCollapsible(data);
 	const auto atomic = collapsible && data.collapsed && state->editMode;
-	if (collapsible && (data.collapsed || state->editMode)) {
+	const auto toggleable = state->editMode
+		? collapsible
+		: (data.collapsed && !data.pullquote);
+	if (toggleable) {
 		block.collapseToggleId = NativeIvQuoteToggleId(state);
 		block.collapsed = data.collapsed;
 	}

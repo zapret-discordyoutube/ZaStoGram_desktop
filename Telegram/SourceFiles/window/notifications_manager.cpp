@@ -8,44 +8,44 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/notifications_manager.h"
 
 #include "api/api_bot.h"
-#include "base/options.h"
-#include "base/platform/base_platform_info.h"
-#include "base/qt/qt_key_modifiers.h"
-#include "platform/platform_notifications_manager.h"
-#include "window/notifications_manager_default.h"
-#include "media/audio/media_audio_track.h"
-#include "media/audio/media_audio.h"
-#include "mtproto/config/mtproto_config.h"
-#include "history/history.h"
-#include "history/history_item_components.h"
-#include "history/history_item_helpers.h"
-#include "history/view/history_view_chat_section.h"
-#include "lang/lang_keys.h"
-#include "data/notify/data_notify_settings.h"
-#include "data/stickers/data_custom_emoji.h"
-#include "data/data_document_media.h"
-#include "data/data_saved_sublist.h"
-#include "data/data_session.h"
-#include "data/data_channel.h"
-#include "data/data_forum_topic.h"
-#include "data/data_user.h"
-#include "data/data_document.h"
-#include "data/data_poll.h"
-#include "base/unixtime.h"
-#include "window/window_controller.h"
-#include "window/window_session_controller.h"
-#include "core/application.h"
-#include "core/version.h"
-#include "mainwindow.h"
 #include "api/api_reactions_notify_settings.h"
 #include "api/api_updates.h"
 #include "apiwrap.h"
+#include "base/platform/base_platform_info.h"
+#include "base/qt/qt_key_modifiers.h"
+#include "base/options.h"
+#include "base/unixtime.h"
+#include "core/application.h"
+#include "core/version.h"
+#include "data/notify/data_notify_settings.h"
+#include "data/stickers/data_custom_emoji.h"
+#include "data/data_channel.h"
+#include "data/data_document.h"
+#include "data/data_document_media.h"
+#include "data/data_forum_topic.h"
+#include "data/data_poll.h"
+#include "data/data_saved_sublist.h"
+#include "data/data_session.h"
+#include "data/data_user.h"
+#include "history/view/history_view_chat_section.h"
+#include "history/history.h"
+#include "history/history_item_components.h"
+#include "history/history_item_helpers.h"
+#include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
-#include "ui/text/text_utilities.h"
+#include "mainwindow.h"
+#include "media/audio/media_audio.h"
+#include "media/audio/media_audio_track.h"
+#include "mtproto/config/mtproto_config.h"
+#include "platform/platform_notifications_manager.h"
 #include "platform/platform_specific.h"
+#include "ui/text/text_utilities.h"
+#include "window/notifications_manager_default.h"
+#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 
 #include <QtGui/QWindow>
 #include <QtGui/QGuiApplication>
@@ -66,11 +66,11 @@ constexpr auto kMinimalAlertDelay = crl::time(500);
 constexpr auto kWaitingForAllGroupedDelay = crl::time(1000);
 constexpr auto kReactionNotificationEach = 60 * 60 * crl::time(1000);
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 constexpr auto kSystemAlertDuration = crl::time(1000);
-#else // !Q_OS_MAC
+#else // !Q_OS_MACOS
 constexpr auto kSystemAlertDuration = crl::time(0);
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 
 base::options::toggle OptionCustomNotification({
 	.id = kOptionCustomNotification,
@@ -1813,14 +1813,14 @@ QRect NotificationDisplayRect(Window::Controller *controller) {
 	}
 
 	if (screen) {
-		return Platform::ScreenAvailableGeometry(screen);
+		return screen->availableGeometry();
 	} else if (controller) {
 		return controller->widget()->desktopRect();
 	}
 	// When the last monitor is removed QGuiApplication has no screens at
 	// all, so primaryScreen() is nullptr.
 	const auto primary = QGuiApplication::primaryScreen();
-	return primary ? Platform::ScreenAvailableGeometry(primary) : QRect();
+	return primary ? primary->availableGeometry() : QRect();
 }
 
 } // namespace Notifications

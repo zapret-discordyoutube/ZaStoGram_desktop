@@ -85,6 +85,19 @@ public:
 	[[nodiscard]] int aiComposeSavedTonesDefault() const;
 	[[nodiscard]] int aiComposeSavedTonesPremium() const;
 
+	[[nodiscard]] int storyCaptionLengthDefault() const;
+	[[nodiscard]] int storyCaptionLengthPremium() const;
+	[[nodiscard]] int storyCaptionLengthCurrent() const;
+
+	[[nodiscard]] int storiesExpiringDefault() const;
+	[[nodiscard]] int storiesExpiringPremium() const;
+
+	[[nodiscard]] int storiesSentWeeklyDefault() const;
+	[[nodiscard]] int storiesSentWeeklyPremium() const;
+
+	[[nodiscard]] int storiesSentMonthlyDefault() const;
+	[[nodiscard]] int storiesSentMonthlyPremium() const;
+
 private:
 	[[nodiscard]] int appConfigLimit(
 		const QString &key,

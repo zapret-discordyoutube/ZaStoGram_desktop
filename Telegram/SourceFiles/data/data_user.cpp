@@ -9,37 +9,37 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_credits.h"
 #include "api/api_global_privacy.h"
+#include "api/api_peer_photo.h"
 #include "api/api_sensitive_content.h"
 #include "api/api_share_themes.h"
 #include "api/api_statistics.h"
 #include "api/api_text_entities.h"
+#include "apiwrap.h"
 #include "base/timer_rpl.h"
 #include "core/application.h"
-#include "storage/localstorage.h"
-#include "storage/storage_account.h"
-#include "storage/storage_user_photos.h"
-#include "main/main_app_config.h"
-#include "main/main_session.h"
 #include "data/business/data_business_common.h"
 #include "data/business/data_business_info.h"
 #include "data/components/credits.h"
+#include "data/notify/data_notify_settings.h"
+#include "data/data_changes.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_forum.h"
 #include "data/data_forum_icons.h"
-#include "data/data_saved_music.h"
-#include "data/data_session.h"
-#include "data/data_changes.h"
 #include "data/data_peer_bot_command.h"
 #include "data/data_photo.h"
+#include "data/data_saved_music.h"
+#include "data/data_session.h"
 #include "data/data_stories.h"
 #include "data/data_user_wallet_card.h"
 #include "data/data_wall_paper.h"
-#include "data/notify/data_notify_settings.h"
 #include "history/history.h"
 #include "history/history_item.h"
-#include "api/api_peer_photo.h"
-#include "apiwrap.h"
 #include "lang/lang_keys.h"
+#include "main/main_app_config.h"
+#include "main/main_session.h"
+#include "storage/localstorage.h"
+#include "storage/storage_account.h"
+#include "storage/storage_user_photos.h"
 #include "wallet/wallet_own_card.h"
 #include "wallet/wallet_session.h"
 #include "window/notifications_manager.h"
@@ -525,6 +525,7 @@ void UserData::setBotInfo(const MTPBotInfo &info) {
 			botInfo.get(),
 			d.vmenu_button());
 		botInfo->inited = true;
+		botInfo->hasPreviewMedias = d.is_has_preview_medias();
 
 		const auto privacy = qs(d.vprivacy_policy_url().value_or_empty());
 		const auto privacyChanged = (botInfo->privacyPolicyUrl != privacy);
@@ -652,6 +653,10 @@ bool UserData::isFake() const {
 
 bool UserData::isPremium() const {
 	return flags() & UserDataFlag::Premium;
+}
+
+bool UserData::isBotInlineGeo() const {
+	return flags() & UserDataFlag::BotInlineGeo;
 }
 
 bool UserData::isBot() const {
@@ -824,6 +829,18 @@ bool UserData::isContact() const {
 	return (contactStatus() == ContactStatus::Contact);
 }
 
+bool UserData::isCloseFriend() const {
+	return (flags() & UserDataFlag::CloseFriend);
+}
+
+void UserData::setIsCloseFriend(bool is) {
+	if (is) {
+		addFlags(UserDataFlag::CloseFriend);
+	} else {
+		removeFlags(UserDataFlag::CloseFriend);
+	}
+}
+
 UserData::CallsStatus UserData::callsStatus() const {
 	return _callsStatus;
 }
@@ -924,6 +941,9 @@ void ApplyUserUpdate(
 		user->setBotInfo(*info);
 	} else {
 		user->setBotInfoVersion(-1);
+		if (const auto info = user->botInfo.get()) {
+			info->hasPreviewMedias = false;
+		}
 	}
 	if (const auto info = user->botInfo.get()) {
 		info->canManageEmojiStatus = update.is_bot_can_manage_emoji_status();

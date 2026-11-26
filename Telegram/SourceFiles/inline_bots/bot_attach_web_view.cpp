@@ -11,16 +11,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_common.h"
 #include "api/api_sending.h"
 #include "apiwrap.h"
-#include "base/call_delayed.h"
 #include "base/base_file_utilities.h"
+#include "base/call_delayed.h"
 #include "base/qthelp_regex.h"
 #include "base/qthelp_url.h"
 #include "base/random.h"
 #include "base/timer_rpl.h"
 #include "base/unixtime.h"
-#include "boxes/music_attach_box.h"
 #include "boxes/peers/choose_peer_box.h"
 #include "boxes/peers/create_managed_bot_box.h"
+#include "boxes/music_attach_box.h"
 #include "boxes/peer_list_controllers.h"
 #include "boxes/premium_preview_box.h"
 #include "boxes/report_messages_box.h"
@@ -33,6 +33,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/ui_integration.h" // TextContext
 #include "data/components/ephemeral_messages.h"
 #include "data/components/location_pickers.h"
+#include "data/stickers/data_custom_emoji.h"
+#include "data/stickers/data_stickers.h"
 #include "data/data_bot_app.h"
 #include "data/data_changes.h"
 #include "data/data_document.h"
@@ -44,17 +46,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_user.h"
 #include "data/data_web_page.h"
-#include "data/stickers/data_custom_emoji.h"
-#include "data/stickers/data_stickers.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_helpers.h"
 #include "history/history_item_reply_markup.h"
 #include "info/bot/starref/info_bot_starref_common.h" // MakePeerBubbleButton
 #include "info/profile/info_profile_values.h"
-#include "inline_bots/inline_bot_result.h"
 #include "inline_bots/inline_bot_confirm_prepared.h"
 #include "inline_bots/inline_bot_downloads.h"
+#include "inline_bots/inline_bot_result.h"
 #include "inline_bots/inline_bot_storage.h"
 #include "iv/editor/iv_editor_session.h"
 #include "iv/iv_instance.h"
@@ -63,30 +63,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "mainwidget.h"
+#include "media/stories/media_stories_post.h"
 #include "payments/payments_checkout_process.h"
 #include "payments/payments_non_panel_process.h"
 #include "settings/sections/settings_premium.h"
 #include "storage/storage_account.h"
 #include "storage/storage_domain.h"
-#include "ui/basic_click_handlers.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/chat/attach/attach_bot_webview.h"
 #include "ui/controls/location_picker.h"
 #include "ui/controls/userpic_button.h"
-#include "ui/delayed_activation.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/image/svg_safety.h"
-#include "ui/painter.h"
 #include "ui/text/text_custom_emoji.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
-#include "ui/ui_utility.h"
-#include "ui/vertical_list.h"
-#include "ui/widgets/checkbox.h"
-#include "ui/widgets/dropdown_menu.h"
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/menu/menu_item_base.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/dropdown_menu.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/basic_click_handlers.h"
+#include "ui/delayed_activation.h"
+#include "ui/painter.h"
+#include "ui/ui_utility.h"
+#include "ui/vertical_list.h"
 #include "wallet/wallet_panel.h"
 #include "wallet/wallet_session.h"
 #include "wallet/wallet_ton_connect_link.h"
@@ -97,6 +98,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "window/window_peer_menu.h"
 #include "window/window_session_controller.h"
+
 #include "styles/style_boxes.h"
 #include "styles/style_chat.h"
 #include "styles/style_info.h" // infoVerifiedStar.
@@ -281,18 +283,6 @@ constexpr auto kPopularAppBotsLimit = 100;
 	}, [&](const MTPDjoinChatBotResultWebView &) {
 		return QString();
 	});
-}
-
-[[nodiscard]] Ui::LocationPickerConfig ResolveMapsConfig(
-		not_null<Main::Session*> session) {
-	const auto &appConfig = session->appConfig();
-	auto map = appConfig.get<base::flat_map<QString, QString>>(
-		u"tdesktop_config_map"_q,
-		base::flat_map<QString, QString>());
-	return {
-		.mapsToken = map[u"maps"_q],
-		.geoToken = map[u"geo"_q],
-	};
 }
 
 [[nodiscard]] Window::SessionController *WindowForThread(
@@ -2238,6 +2228,26 @@ void WebViewInstance::botRequestChat(
 	}).send();
 }
 
+void WebViewInstance::botShareToStory(
+		Ui::BotWebView::ShareStoryRequest request) {
+	const auto controller = _context.controller.get();
+	if (!controller || !_panel) {
+		return;
+	}
+	if (!request.mediaUrl.startsWith(u"https://"_q, Qt::CaseInsensitive)) {
+		_parentShow->showToast(tr::lng_bot_share_story_failed(tr::now));
+		return;
+	}
+	Media::Stories::PostStoryFromWebApp(
+		not_null(controller),
+		{
+			.mediaUrl = std::move(request.mediaUrl),
+			.caption = std::move(request.caption),
+			.widgetLinkUrl = std::move(request.widgetLinkUrl),
+			.widgetLinkName = std::move(request.widgetLinkName),
+		});
+}
+
 void WebViewInstance::botSetEmojiStatus(
 		Ui::BotWebView::SetEmojiStatusRequest request) {
 	const auto bot = _bot;
@@ -3043,7 +3053,7 @@ void ChooseAndSendLocation(
 		state->send = nullptr;
 		Api::SendLocation(action, point.lat(), point.lon());
 	};
-	const auto callback = [=](Data::LocationPoint point, QString) {
+	const auto callback = [=](Data::LocationPoint point, Core::GeoAddress) {
 		state->send(point, action);
 	};
 	const auto picker = Ui::LocationPicker::Show({
@@ -3137,7 +3147,7 @@ std::unique_ptr<Ui::DropdownMenu> MakeAttachBotsMenu(
 	}
 	const auto session = &controller->session();
 	const auto locationType = ChatRestriction::SendOther;
-	const auto config = ResolveMapsConfig(session);
+	const auto config = Ui::ResolveMapsConfig(session);
 	if (Data::CanSendAnyOf(peer, locationType, false)
 		&& Ui::LocationPicker::Available(config)) {
 		raw->addAction(tr::lng_maps_point(tr::now), [=] {

@@ -7,54 +7,54 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_peer.h"
 
+#include "api/api_chat_participants.h"
 #include "api/api_sensitive_content.h"
-#include "data/data_user.h"
+#include "apiwrap.h"
+#include "base/crc32hash.h"
+#include "base/unixtime.h"
+#include "core/application.h"
+#include "core/click_handler_types.h"
+#include "data/data_changes.h"
+#include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_chat_participant_status.h"
-#include "data/data_channel.h"
-#include "data/data_changes.h"
+#include "data/data_cloud_themes.h"
 #include "data/data_emoji_statuses.h"
-#include "data/data_message_reaction_id.h"
-#include "data/data_photo.h"
+#include "data/data_file_origin.h"
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
+#include "data/data_histories.h"
+#include "data/data_message_reaction_id.h"
+#include "data/data_photo.h"
 #include "data/data_saved_messages.h"
 #include "data/data_session.h"
-#include "data/data_file_origin.h"
-#include "data/data_histories.h"
-#include "data/data_cloud_themes.h"
-#include "base/unixtime.h"
-#include "base/crc32hash.h"
+#include "data/data_user.h"
+#include "history/view/history_view_element.h"
+#include "history/history.h"
+#include "history/history_item.h"
 #include "lang/lang_keys.h"
-#include "apiwrap.h"
-#include "api/api_chat_participants.h"
-#include "ui/boxes/confirm_box.h"
+#include "main/main_app_config.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
-#include "main/main_domain.h"
-#include "main/main_app_config.h"
 #include "mtproto/config/mtproto_config.h"
 #include "mtproto/instance/mtp_instance.h"
-#include "core/application.h"
-#include "core/click_handler_types.h"
-#include "window/notifications_manager.h"
-#include "window/window_session_controller.h"
-#include "window/main_window.h" // Window::LogoNoMargin.
-#include "ui/image/image.h"
-#include "ui/chat/chat_style.h"
-#include "ui/empty_userpic.h"
-#include "ui/text/text_options.h"
-#include "ui/painter.h"
-#include "ui/unread_badge.h"
-#include "ui/ui_utility.h"
-#include "history/history.h"
-#include "history/view/history_view_element.h"
-#include "history/history_item.h"
 #include "storage/file_download.h"
 #include "storage/storage_account.h"
 #include "storage/storage_facade.h"
 #include "storage/storage_shared_media.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/chat/chat_style.h"
+#include "ui/image/image.h"
+#include "ui/text/text_options.h"
+#include "ui/empty_userpic.h"
+#include "ui/painter.h"
+#include "ui/ui_utility.h"
+#include "ui/unread_badge.h"
+#include "window/main_window.h" // Window::LogoNoMargin.
+#include "window/notifications_manager.h"
+#include "window/window_session_controller.h"
 
 namespace {
 
@@ -825,7 +825,9 @@ void PeerData::clearBusinessBot() {
 	if (const auto details = _barDetails.get()) {
 		if (details->requestChatDate
 			|| details->paysPerMessage
-			|| !details->phoneCountryCode.isEmpty()) {
+			|| !details->phoneCountryCode.isEmpty()
+			|| details->botInviter
+			|| details->botOwner) {
 			details->businessBot = nullptr;
 			details->businessBotManageUrl = QString();
 		} else {
@@ -868,14 +870,19 @@ void PeerData::saveTranslationDisabled(bool disabled) {
 
 void PeerData::setBarSettings(const MTPPeerSettings &data) {
 	data.match([&](const MTPDpeerSettings &data) {
+		const auto wasSettings = _barSettings.current();
 		const auto wasPaysPerMessage = paysPerMessage();
+		const auto wasBotInviter = botInviter();
+		const auto wasBotOwner = botOwner();
 		if (!data.vbusiness_bot_id()
 			&& !data.vrequest_chat_title()
 			&& !data.vcharge_paid_message_stars()
 			&& !data.vphone_country()
 			&& !data.vregistration_month()
 			&& !data.vname_change_date()
-			&& !data.vphoto_change_date()) {
+			&& !data.vphoto_change_date()
+			&& !data.vbot_inviter_id()
+			&& !data.vbot_owner_id()) {
 			_barDetails = nullptr;
 		} else if (!_barDetails) {
 			_barDetails = std::make_unique<PeerBarDetails>();
@@ -900,6 +907,12 @@ void PeerData::setBarSettings(const MTPPeerSettings &data) {
 				= qs(data.vbusiness_bot_manage_url().value_or_empty());
 			_barDetails->paysPerMessage
 				= data.vcharge_paid_message_stars().value_or_empty();
+			_barDetails->botInviter = data.vbot_inviter_id()
+				? _owner->user(data.vbot_inviter_id()->v).get()
+				: nullptr;
+			_barDetails->botOwner = data.vbot_owner_id()
+				? _owner->user(data.vbot_owner_id()->v).get()
+				: nullptr;
 		}
 		using Flag = PeerBarSetting;
 		setBarSettings((data.is_add_contact() ? Flag::AddContact : Flag())
@@ -922,7 +935,12 @@ void PeerData::setBarSettings(const MTPPeerSettings &data) {
 				: Flag())
 			| (data.is_business_bot_can_reply()
 				? Flag::BusinessBotCanReply
-				: Flag()));
+				: Flag())
+			| (data.vbot_inviter_id() ? Flag::HasBotInviter : Flag()));
+		if (_barSettings.current() == wasSettings
+			&& (wasBotInviter != botInviter() || wasBotOwner != botOwner())) {
+			session().changes().peerUpdated(this, UpdateFlag::BarSettings);
+		}
 		if (wasPaysPerMessage != paysPerMessage()) {
 			session().changes().peerUpdated(
 				this,
@@ -963,7 +981,9 @@ void PeerData::clearPaysPerMessage() {
 		if (details->paysPerMessage) {
 			if (details->businessBot
 				|| details->requestChatDate
-				|| !details->phoneCountryCode.isEmpty()) {
+				|| !details->phoneCountryCode.isEmpty()
+				|| details->botInviter
+				|| details->botOwner) {
 				details->paysPerMessage = 0;
 			} else {
 				_barDetails = nullptr;
@@ -1008,6 +1028,14 @@ UserData *PeerData::businessBot() const {
 
 QString PeerData::businessBotManageUrl() const {
 	return _barDetails ? _barDetails->businessBotManageUrl : QString();
+}
+
+UserData *PeerData::botInviter() const {
+	return _barDetails ? _barDetails->botInviter : nullptr;
+}
+
+UserData *PeerData::botOwner() const {
+	return _barDetails ? _barDetails->botOwner : nullptr;
 }
 
 QString PeerData::phoneCountryCode() const {

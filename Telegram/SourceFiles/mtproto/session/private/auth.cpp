@@ -158,13 +158,12 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 		LOG(("MTP Error: No key %1 in updateAuthKey() for destroying."
 			).arg(_shiftedDcId));
 		_delegate->keyWasPossiblyDestroyed(_shiftedDcId);
-	} else if (noMediaKeyWithExistingRegularKey()) {
-		DEBUG_LOG(("AuthKey Info: No key in updateAuthKey() for media, "
-			"but someone has created regular, trying to acquire."));
+	} else if (!_authState.keyCreator) {
 		const auto dcType = tryAcquireKeyCreation();
 		if (_authState.keyCreator && dcType != _currentDcType) {
 			DEBUG_LOG(("AuthKey Info: "
 				"Dc type changed for creation, restarting."));
+			_currentDcType = dcType;
 			restart();
 			return;
 		}
@@ -188,12 +187,6 @@ void SessionPrivate::applyAuthKey(AuthKeyPtr &&encryptionKey) {
 			ProxyDiagnosticsSeverity::Info,
 			u"no auth key, waiting for creation by another session"_q);
 	}
-}
-
-bool SessionPrivate::noMediaKeyWithExistingRegularKey() const {
-	return (TemporaryKeyTypeByDcType(_currentDcType)
-			== TemporaryKeyType::MediaCluster)
-		&& _sessionState.data->getTemporaryKey(TemporaryKeyType::Regular);
 }
 
 void SessionPrivate::dropMismatchedTemporaryKey() {
@@ -287,7 +280,10 @@ bool SessionPrivate::destroyOldEnoughPersistentKey() {
 }
 
 DcType SessionPrivate::tryAcquireKeyCreation() {
-	if (_authState.keyCreator) {
+	if (_authState.keyCreator
+		|| (_sessionState.keyId
+			&& _realDcType == DcType::MediaCluster
+			&& _currentDcType == DcType::Regular)) {
 		return _currentDcType;
 	} else if (_delegate->isKeysDestroyer()) {
 		return _realDcType;
@@ -312,6 +308,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 				}
 				LOG(("AuthKey Error: could not choose public RSA key"));
 			}
+			wakeKeyWaiters();
 			restart();
 			return;
 		}
@@ -336,6 +333,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 				: _sessionState.data->getPersistentKey();
 			if (!key) {
 				releaseKeyCreationOnFail();
+				wakeKeyWaiters();
 				restart();
 				return;
 			}
@@ -351,9 +349,7 @@ DcType SessionPrivate::tryAcquireKeyCreation() {
 			}
 		}
 	};
-	delegate.sentSome = [=](uint64 size) {
-		onSentSome(size);
-	};
+	delegate.sentSome = [=](uint64 size) { onSentSome(size, false); };
 	delegate.receivedSome = [=] {
 		onReceivedSome();
 	};
@@ -407,12 +403,26 @@ void SessionPrivate::destroyTemporaryKey() {
 		ProxyDiagnosticsSeverity::Warning,
 		u"temporary key (id %1) assumed destroyed by server, recreating"_q
 			.arg(_sessionState.keyId));
+	const auto hadKeyCreator = (_authState.keyCreator != nullptr);
 	releaseKeyCreationOnFail();
 	if (_sessionState.encryptionKey) {
 		_sessionState.data->destroyTemporaryKey(_sessionState.encryptionKey->keyId());
 	}
 	applyAuthKey(nullptr);
+	if (hadKeyCreator) {
+		wakeKeyWaiters();
+	}
 	restart();
+}
+
+void SessionPrivate::wakeKeyWaiters() {
+	const auto bareDcId = BareDcId(_shiftedDcId);
+	const auto dcId = isTemporaryDcId(bareDcId)
+		? getRealIdFromTemporaryDcId(bareDcId)
+		: bareDcId;
+	InvokeQueued(_instance, [delegate = _delegate, dcId] {
+		delegate->dcTemporaryKeyChanged(dcId);
+	});
 }
 
 void SessionPrivate::clearUnboundKeyCreator() {

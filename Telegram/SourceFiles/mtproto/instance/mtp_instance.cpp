@@ -330,7 +330,8 @@ public:
 	void cancel(mtpRequestId requestId);
 	[[nodiscard]] int32 state(mtpRequestId requestId); // < 0 means waiting for such count of ms
 	void killSession(ShiftedDcId shiftedDcId);
-	void stopSession(ShiftedDcId shiftedDcId);
+	void killSessionsByShift(int shift);
+	[[nodiscard]] bool killSessionIfIdle(ShiftedDcId shiftedDcId);
 	void reInitConnection(DcId dcId);
 	void logout(Fn<void()> done);
 
@@ -418,6 +419,10 @@ private:
 	void sendAuthExport(DcId dcId);
 	void failOverAuthImports(ShiftedDcId shiftedDcId);
 	void restartAuthImport(DcId dcId, mtpRequestId requestId);
+	void authImportFailed(DcId dcId, const Error &error);
+	void failAuthWaiters(
+		const std::vector<mtpRequestId> &waiters,
+		const Error &error);
 	bool onErrorDefault(const Error &error, const Response &response);
 
 	void unpaused();
@@ -440,6 +445,8 @@ private:
 	void requestConfigIfExpired();
 	void configLoadDone(const MTPConfig &result);
 	bool configLoadFail(const Error &error);
+
+	[[nodiscard]] ResponseHandler takeResponseHandler(mtpRequestId requestId);
 
 	void checkDelayedRequests();
 	void resendDependentRequests(
@@ -988,27 +995,48 @@ void Instance::Private::killSession(ShiftedDcId shiftedDcId) {
 	scheduleSessionDestroy(shiftedDcId);
 }
 
-void Instance::Private::stopSession(ShiftedDcId shiftedDcId) {
-	// Upload sessions are addressed without a dc (MTP::uploadDcId) and
-	// getSession() starts them on the main one. Looked up as given they were
-	// never found: both stayed after the first upload and were reconnected
-	// each time the idle connection was closed, every 93 s for the rest of
-	// the run (desktop log 01.10, 454 connections for 8 uploads).
-	if (shiftedDcId && !BareDcId(shiftedDcId) && _mainSession) {
-		shiftedDcId += BareDcId(_mainSession->getDcWithShift());
-	}
-	if (const auto session = findSession(shiftedDcId)) {
-		if (session != _mainSession) { // don't stop main session
-			session->stop();
+void Instance::Private::killSessionsByShift(int shift) {
+	Expects(shift > 0);
+
+	auto selected = std::vector<ShiftedDcId>();
+	for (const auto &[shiftedDcId, session] : _sessions) {
+		if (GetDcIdShift(shiftedDcId) == shift) {
+			selected.push_back(shiftedDcId);
 		}
+	}
+	for (const auto shiftedDcId : selected) {
+		killSession(shiftedDcId);
 	}
 }
 
+bool Instance::Private::killSessionIfIdle(ShiftedDcId shiftedDcId) {
+	if (!findSession(shiftedDcId)) {
+		return true;
+	}
+	for (const auto requestId : _requests.requestsForDc(shiftedDcId)) {
+		if (!_authImportRequests.contains(requestId)) {
+			return false;
+		}
+	}
+	killSession(shiftedDcId);
+	return true;
+}
+
 void Instance::Private::reInitConnection(DcId dcId) {
+	const auto dc = findDc(dcId);
+	auto selected = std::vector<not_null<Session*>>();
 	for (const auto &[shiftedDcId, session] : _sessions) {
 		if (BareDcId(shiftedDcId) == dcId) {
-			session->reInitConnection();
+			session->prepareReInitConnection();
+			selected.push_back(session.get());
+		} else if (dc && getDcById(shiftedDcId).get() == dc) {
+			// Shares the flag, keeps its connection for its config request.
+			session->prepareReInitConnection();
 		}
+	}
+	for (const auto &session : selected) {
+		session->setConnectionNotInited();
+		session->restart();
 	}
 }
 
@@ -1325,6 +1353,11 @@ bool Instance::Private::hasCallback(mtpRequestId requestId) const {
 	return _requests.hasCallback(requestId);
 }
 
+ResponseHandler Instance::Private::takeResponseHandler(
+		mtpRequestId requestId) {
+	return _requests.takeCallback(requestId);
+}
+
 void Instance::Private::processCallback(const Response &response) {
 	const auto requestId = response.requestId;
 	auto handler = _requests.takeCallback(requestId);
@@ -1528,7 +1561,7 @@ bool Instance::Private::importFail(
 
 	auto it = _authImportRequests.find(response.requestId);
 	if (it != _authImportRequests.cend()) {
-		_authWaiters[it->second].clear();
+		authImportFailed(it->second, error);
 		_authImportRequests.erase(it);
 	}
 	//
@@ -1605,7 +1638,8 @@ bool Instance::Private::exportFail(
 
 	auto it = _authExportRequests.find(response.requestId);
 	if (it != _authExportRequests.cend()) {
-		_authWaiters[it->second].clear();
+		authImportFailed(it->second, error);
+		_authExportRequests.erase(it);
 	}
 	//
 	// Don't log out on export/import problems, perhaps this is a server side error.
@@ -1813,6 +1847,14 @@ void Instance::Private::failOverAuthImports(ShiftedDcId shiftedDcId) {
 		}
 		const auto requestId = i->first;
 		const auto dcId = i->second;
+
+		// A due retry would recreate the session before the queued restart.
+		_delayedRequests.erase(
+			ranges::remove(
+				_delayedRequests,
+				requestId,
+				[](const auto &entry) { return entry.first; }),
+			end(_delayedRequests));
 		i = _authImportRequests.erase(i);
 		InvokeQueued(_instance, [=] {
 			restartAuthImport(dcId, requestId);
@@ -1836,6 +1878,40 @@ void Instance::Private::restartAuthImport(
 	const auto i = _authWaiters.find(dcId);
 	if (i != end(_authWaiters) && !i->second.empty()) {
 		sendAuthExport(dcId);
+	}
+}
+
+void Instance::Private::authImportFailed(DcId dcId, const Error &error) {
+	auto waiters = base::take(_authWaiters[dcId]);
+	if (waiters.empty()) {
+		return;
+	}
+	LOG(("MTP Error: auth transfer to dc %1 failed with %2, "
+		"%3 waiting requests fail."
+		).arg(dcId
+		).arg(error.type()
+		).arg(waiters.size()));
+	InvokeQueued(_instance, [=, waiters = std::move(waiters)] {
+		failAuthWaiters(waiters, error);
+	});
+}
+
+void Instance::Private::failAuthWaiters(
+		const std::vector<mtpRequestId> &waiters,
+		const Error &error) {
+	const auto guard = QPointer<Instance>(_instance);
+	for (const auto requestId : waiters) {
+		const auto handler = takeResponseHandler(requestId);
+		_badGuestDcRequests.erase(requestId);
+		if (handler.fail) {
+			handler.fail(error, Response{ .requestId = requestId });
+			if (!guard) {
+				return;
+			}
+		}
+		auto unregistered = _requests.unregisterRequest(requestId);
+		resendDependentRequests(
+			std::move(unregistered.dependentRequests));
 	}
 }
 
@@ -2253,8 +2329,12 @@ void Instance::killSession(ShiftedDcId shiftedDcId) {
 	_private->killSession(shiftedDcId);
 }
 
-void Instance::stopSession(ShiftedDcId shiftedDcId) {
-	_private->stopSession(shiftedDcId);
+void Instance::killSessionsByShift(int shift) {
+	_private->killSessionsByShift(shift);
+}
+
+bool Instance::killSessionIfIdle(ShiftedDcId shiftedDcId) {
+	return _private->killSessionIfIdle(shiftedDcId);
 }
 
 void Instance::reInitConnection(DcId dcId) {

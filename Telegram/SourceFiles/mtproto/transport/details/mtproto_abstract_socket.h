@@ -103,9 +103,6 @@ public:
 	}
 
 protected:
-	static const int kFilesSendBufferSize = 2 * 1024 * 1024;
-	static const int kFilesReceiveBufferSize = 2 * 1024 * 1024;
-
 	void logError(int errorCode, const QString &errorText);
 	void connectionProgress(HandshakePhase phase) {
 		_progress.fire_copy(phase);

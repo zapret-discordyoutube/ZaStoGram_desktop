@@ -56,7 +56,7 @@ public:
 	[[nodiscard]] QString transport() const;
 
 	void updateAuthKey();
-	void restartNow();
+	void restartNow(uint64 reInitGeneration);
 	void migrateProxy(uint64 generation);
 	void sendPingForce();
 	void tryToSend();
@@ -75,7 +75,7 @@ private:
 	void connectToServer(bool afterConfig = false);
 	void doDisconnect();
 	void restart();
-	void onSentSome(uint64 size);
+	void onSentSome(uint64 size, bool behindUnanswered);
 	void onReceivedSome();
 
 	void handleReceived();
@@ -111,7 +111,9 @@ private:
 
 	bool sendSecureRequest(
 		SerializedRequest &&request,
-		bool needAnyResponse);
+		bool needAnyResponse,
+		bool behindUnanswered);
+	[[nodiscard]] uint64 haveSentBytes() const;
 	mtpRequestId wasSent(mtpMsgId msgId) const;
 
 	bool setState(int state, int ifState = kUpdateStateAlways);
@@ -124,7 +126,7 @@ private:
 	void clearUnboundKeyCreator();
 	void releaseKeyCreationOnFail();
 	void applyAuthKey(AuthKeyPtr &&encryptionKey);
-	[[nodiscard]] bool noMediaKeyWithExistingRegularKey() const;
+	void wakeKeyWaiters();
 	void dropMismatchedTemporaryKey();
 	void dropForgottenTemporaryKey();
 	bool destroyOldEnoughPersistentKey();
@@ -157,6 +159,7 @@ private:
 
 		std::shared_ptr<SessionData> data;
 		std::unique_ptr<SessionOptions> options;
+		uint64 reInitGeneration = 0;
 		AuthKeyPtr encryptionKey;
 		uint64 keyId = 0;
 		uint64 sessionId = 0;

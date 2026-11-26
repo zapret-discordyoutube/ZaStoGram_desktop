@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_location.h"
 
-#include "ui/image/image.h"
 #include "data/data_file_origin.h"
+#include "ui/image/image.h"
 
 #include <cmath>
 
@@ -87,7 +87,7 @@ uint64 LocationPoint::accessHash() const {
 }
 
 size_t LocationPoint::hash() const {
-	return QtPrivate::QHashCombine().operator()(
+	return qHashMulti(
 		std::hash<float64>()(_lat),
 		_lon);
 }

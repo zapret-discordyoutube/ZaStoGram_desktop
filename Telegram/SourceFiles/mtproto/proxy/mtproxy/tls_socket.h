@@ -30,7 +30,6 @@ public:
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const ProxyData &proxy,
-		bool protocolForFiles,
 		const ProxyStealthOptions &stealth,
 		ProxyConnectionAttempt mtproxyAttempt,
 		MtProxyAttemptPlan mtproxyPlan,

@@ -23,22 +23,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_user.h"
 #include "history/view/media/history_view_sticker_player.h"
-#include "lang/lang_keys.h"
 #include "info/channel_statistics/earn/earn_icons.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "overview/overview_checkbox.h"
 #include "settings/settings_credits_graphics.h"
+#include "ui/effects/premium_graphics.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/buttons.h"
 #include "ui/dynamic_image.h"
 #include "ui/dynamic_thumbnails.h"
-#include "ui/effects/premium_graphics.h"
 #include "ui/painter.h"
 #include "ui/power_saving.h"
 #include "ui/top_background_gradient.h"
 #include "window/window_session_controller.h"
+
 #include "styles/style_chat.h"
 #include "styles/style_credits.h"
 #include "styles/style_layers.h"
@@ -310,17 +311,23 @@ void GiftButton::unsubscribe() {
 }
 
 void GiftButton::setDescriptor(const GiftDescriptor &descriptor, Mode mode) {
-	_mode = mode;
-
 	const auto unique = v::is<GiftTypeStars>(descriptor)
 		? v::get<GiftTypeStars>(descriptor).info.unique.get()
 		: nullptr;
-	const auto resalePrice = (unique && _mode != Mode::CraftPreview)
-		? unique->starsForResale
-		: 0;
-	if (_descriptor == descriptor && _resalePrice == resalePrice) {
+	const auto resalePrice = unique
+		? ResalePrice{
+			.nanoTon = unique->nanoTonForResale,
+			.stars = unique->starsForResale,
+			.tonOnly = unique->onlyAcceptTon,
+		}
+		: ResalePrice();
+	if (_mode == mode
+		&& _descriptor == descriptor
+		&& _resalePrice == resalePrice) {
 		return;
 	}
+	_mode = mode;
+
 	const auto starsType = Ui::Premium::MiniStarsType::SlowStars;
 	unsubscribe();
 	update();
@@ -339,7 +346,9 @@ void GiftButton::setDescriptor(const GiftDescriptor &descriptor, Mode mode) {
 
 	_descriptor = descriptor;
 	_resalePrice = resalePrice;
-	const auto resale = (_resalePrice > 0);
+	const auto resale = unique
+		&& (_mode != Mode::CraftPreview)
+		&& Data::UniqueGiftOnSale(*unique);
 	v::match(descriptor, [&](const GiftTypePremium &data) {
 		const auto months = data.months;
 		_text = Ui::Text::String(st::giftBoxGiftHeight / 4);
@@ -391,10 +400,14 @@ void GiftButton::setDescriptor(const GiftDescriptor &descriptor, Mode mode) {
 			_stars.reset();
 			return;
 		}
+		const auto resaleTon = unique
+			&& (data.forceTon
+				|| ((unique->starsForResale <= 0)
+					&& (unique->nanoTonForResale > 0)));
 		_price.setMarkedText(
 			st::semiboldTextStyle,
 			(data.resale
-				? ((unique && data.forceTon)
+				? (resaleTon
 					? Data::FormatGiftResaleTon(*unique)
 					: (unique
 					? _delegate->monostar()
@@ -403,7 +416,7 @@ void GiftButton::setDescriptor(const GiftDescriptor &descriptor, Mode mode) {
 								? unique->starsForResale
 								: data.info.starsResellMin)
 						).append(data.info.resellCount > 1 ? "+" : ""))
-				: (small() && unique && unique->starsForResale)
+				: (small() && resale)
 				? Data::FormatGiftResaleAsked(*unique)
 				: unique
 				? tr::lng_gift_transfer_button(tr::now, tr::marked)
@@ -1009,7 +1022,7 @@ void GiftButton::paintEvent(QPaintEvent *e) {
 void GiftButton::paint(QPainter &p, float64 craftProgress) {
 	const auto stargift = std::get_if<GiftTypeStars>(&_descriptor);
 	const auto unique = stargift ? stargift->info.unique.get() : nullptr;
-	const auto onsale = unique && unique->starsForResale && small();
+	const auto onsale = unique && small() && Data::UniqueGiftOnSale(*unique);
 	const auto onCard = unique && stargift->onCard;
 	const auto silhouette = onCard || (unique && stargift->silhouette);
 	const auto requirePremium = stargift

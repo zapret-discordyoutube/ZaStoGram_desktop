@@ -6,13 +6,13 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "iv/markdown/iv_markdown_article_layout_blocks.h"
-#include "iv/markdown/iv_markdown_media_block.h"
+
 #include "iv/markdown/iv_markdown_article_text.h"
+#include "iv/markdown/iv_markdown_media_block.h"
 #include "iv/markdown/iv_markdown_prepare_links.h"
 #include "iv/markdown/iv_markdown_prepare_serialize.h"
-#include "spellcheck/spellcheck_highlight_syntax.h"
-
 #include "lang/lang_keys.h"
+#include "spellcheck/spellcheck_highlight_syntax.h"
 
 #include "styles/style_chat.h"
 #include "styles/style_iv.h"
@@ -688,19 +688,6 @@ void ApplyMessageSkipBlock(not_null<LaidOutBlock*> block, QSize skip) {
 		leaf.updateSkipBlock(skip.width(), skip.height());
 		block->skipBlockLength = leaf.length() - length;
 	}
-}
-
-[[nodiscard]] int LeafCollapsedLineBottom(
-		const Ui::Text::String &leaf,
-		int width,
-		int lines) {
-	if (lines <= 0) {
-		return 0;
-	}
-	const auto geometry = leaf.countLinesGeometry(width);
-	return (lines < int(geometry.size()))
-		? geometry[lines - 1].bottom
-		: 0;
 }
 
 [[nodiscard]] QRect PaddedBand(
@@ -1449,14 +1436,23 @@ int ResolveEditableHeight(
 		: naturalHeight;
 }
 
+[[nodiscard]] int FirstLineBaseline(
+		const std::vector<Ui::Text::LineLayoutInfo> &lines,
+		const QRect &textRect,
+		const style::TextStyle &style) {
+	return textRect.y() + (lines.empty()
+		? TextLineBaseline(style)
+		: lines.front().baseline);
+}
+
 [[nodiscard]] int LeafFirstLineBaseline(
 		const Ui::Text::String &leaf,
 		const QRect &textRect,
 		const style::TextStyle &style) {
-	const auto lines = leaf.countLinesGeometry(textRect.width());
-	return textRect.y() + (lines.empty()
-		? TextLineBaseline(style)
-		: lines.front().baseline);
+	return FirstLineBaseline(
+		leaf.countLinesGeometry(textRect.width()),
+		textRect,
+		style);
 }
 
 QPoint BulletMarkerCenter(
@@ -1523,8 +1519,20 @@ int FlowBlockPreferredWidth(
 		InlineFormulaObjectCache *inlineFormulaObjects,
 		const std::shared_ptr<MediaRuntime> &mediaRuntime,
 		const style::Markdown &st,
-		LayoutContext context) {
+		LayoutContext context,
+		bool *empty) {
+	const auto measured = [&](
+			const Ui::Text::String &leaf,
+			Spellchecker::HighlightProcessId) {
+		if (empty) {
+			*empty = leaf.isEmpty();
+		}
+		return leaf.maxWidth();
+	};
 	if (IsAnchorOnlyBlock(prepared)) {
+		if (empty) {
+			*empty = true;
+		}
 		return 1;
 	}
 	const auto &textStyle = TextStyleFor(prepared, st);
@@ -1561,10 +1569,7 @@ int FlowBlockPreferredWidth(
 					context.repaintRect);
 				BindLinks(leaf, prepared.links);
 			},
-			[](const Ui::Text::String &leaf,
-					Spellchecker::HighlightProcessId) {
-				return leaf.maxWidth();
-			});
+			measured);
 	}
 	const auto &placeholderStyle = EditPlaceholderTextStyleFor(prepared, st);
 	const auto value = EditPlaceholderTextValue(
@@ -1590,10 +1595,7 @@ int FlowBlockPreferredWidth(
 				PlainTextMinResizeWidth(placeholderStyle),
 				context.rtl);
 		},
-		[](const Ui::Text::String &leaf,
-				Spellchecker::HighlightProcessId) {
-			return leaf.maxWidth();
-		});
+		measured);
 }
 
 int FlowBlockContentMinimumWidth(
@@ -3617,17 +3619,14 @@ LaidOutBlock LayoutGroupedMediaBlock(
 	const auto &displayLeaf = usePlaceholder
 		? block->placeholderLeaf
 		: block->leaf;
+	const auto lines = displayLeaf.countLinesGeometry(block->textWidth);
 	auto height = ResolveEditableHeight(
 		LeafHeight(displayLeaf, textStyle, block->textWidth),
 		context);
 	const auto clipped = prepared.quoteAuthor
 		? 0
-		: LeafCollapsedLineBottom(
-			displayLeaf,
-			block->textWidth,
-			context.collapsibleQuoteLines);
-	block->collapsedLinesExceeded = (clipped > 0);
-	if (clipped > 0 && context.collapsibleQuoteCollapsed) {
+		: ConsumeQuoteFoldLines(context.quoteFold, lines);
+	if (clipped > 0 && context.quoteFold->collapsed) {
 		height = std::min(height, clipped);
 	}
 	block->textRect = QRect(left, top, block->textWidth, height);
@@ -3657,8 +3656,8 @@ LaidOutBlock LayoutGroupedMediaBlock(
 			scrollOwner,
 			block->horizontalScrollMax,
 			st));
-	block->firstLineBaseline = LeafFirstLineBaseline(
-		displayLeaf,
+	block->firstLineBaseline = FirstLineBaseline(
+		lines,
 		block->textRect,
 		textStyle);
 	FinishBlockGeometry(block);

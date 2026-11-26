@@ -6,22 +6,23 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "iv/markdown/iv_markdown_article_paint.h"
+
 #include "iv/markdown/iv_markdown_article.h"
 #include "iv/markdown/iv_markdown_article_quote.h"
 #include "iv/markdown/iv_markdown_article_text.h"
-#include "ui/dynamic_image.h"
+#include "styles/palette.h"
 #include "ui/effects/path_shift_gradient.h"
 #include "ui/effects/toggle_arrow.h"
-#include "ui/integration.h"
 #include "ui/style/style_core_scale.h"
 #include "ui/widgets/checkbox.h"
+#include "ui/dynamic_image.h"
+#include "ui/integration.h"
 #include "ui/round_rect.h"
 
-#include "styles/palette.h"
 #include "styles/style_chat.h"
 #include "styles/style_iv.h"
-#include "styles/style_window.h"
 #include "styles/style_widgets.h"
+#include "styles/style_window.h"
 
 #include <QtGui/QPainterPath>
 
@@ -1963,7 +1964,8 @@ void PaintQuoteBlock(
 			*context.caches.blockquote,
 			quoteStyle);
 		if (!block.pullquote) {
-			const auto control = QuoteHasCollapseControl(block);
+			const auto control = QuoteHasCollapseControl(block)
+				&& !context.suppressInteractiveControls;
 			p.save();
 			p.setClipRect(quoteClip);
 			Ui::Text::FillQuotePaint(
@@ -2790,7 +2792,7 @@ void PaintDetailsBlock(
 	if (lineHeight > 0 && !lineRect.isEmpty()) {
 		p.fillRect(lineRect, lineFg);
 	}
-	if (!block.iconRect.isEmpty()) {
+	if (!block.iconRect.isEmpty() && !context.suppressInteractiveControls) {
 		const auto collapsed = block.actionRect.isEmpty()
 			? block.collapsed
 			: !block.detailsOpen;

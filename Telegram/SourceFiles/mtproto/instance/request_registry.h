@@ -63,6 +63,8 @@ public:
 	[[nodiscard]] std::optional<ShiftedDcId> changeDc(
 		mtpRequestId requestId,
 		DcId newdc);
+	[[nodiscard]] std::vector<mtpRequestId> requestsForDc(
+		ShiftedDcId shiftedDcId) const;
 	[[nodiscard]] SerializedRequest request(mtpRequestId requestId) const;
 	[[nodiscard]] bool hasCallback(mtpRequestId requestId) const;
 	[[nodiscard]] ResponseHandler takeCallback(mtpRequestId requestId);

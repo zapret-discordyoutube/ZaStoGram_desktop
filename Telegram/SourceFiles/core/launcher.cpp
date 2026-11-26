@@ -79,19 +79,16 @@ FilteredCommandLineArguments::FilteredCommandLineArguments(
 		pushArgument(argv[i]);
 	}
 
-#ifdef Q_OS_WIN
-	// WHY: as in Qt 5, GDI draws at dpr 1 following the system smoothing,
-	// and unlike DirectWrite it doesn't keep every font file mapped.
-	pushArgument("-platform");
-	pushArgument((OptionFreeType.value() || OptionHighDpiDownscale.value())
-		? "windows:fontengine=freetype"
-		: "windows:fontengine=gdi");
-#elif defined Q_OS_MAC
+#if defined Q_OS_WIN || defined Q_OS_MACOS
 	if (OptionFreeType.value() || OptionHighDpiDownscale.value()) {
 		pushArgument("-platform");
+#ifdef Q_OS_WIN
+		pushArgument("windows:fontengine=freetype");
+#else // Q_OS_WIN
 		pushArgument("cocoa:fontengine=freetype");
+#endif // !Q_OS_WIN
 	}
-#endif // Q_OS_WIN || Q_OS_MAC
+#endif // Q_OS_WIN || Q_OS_MACOS
 
 	pushArgument(nullptr);
 }
@@ -127,7 +124,7 @@ void ComputeDebugMode() {
 	auto file = QFile(debugModeSettingPath);
 	if (file.exists() && file.open(QIODevice::ReadOnly)) {
 		Logs::SetDebugEnabled(file.read(1) != "0");
-#if defined _DEBUG && !defined Q_OS_MAC
+#if defined _DEBUG && !defined Q_OS_MACOS
 	} else {
 		Logs::SetDebugEnabled(true);
 #endif

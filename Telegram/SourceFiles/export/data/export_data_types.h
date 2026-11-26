@@ -1032,7 +1032,9 @@ struct ActionPrizeStars {
 struct ActionStarGift {
 	uint64 giftId = 0;
 	int64 stars = 0;
+	Utf8String title;
 	std::vector<TextPart> text;
+	int32 num = 0;
 	bool anonymous = false;
 	bool limited = false;
 
@@ -1042,6 +1044,7 @@ struct ActionStarGift {
 	bool offerAccepted = false;
 	bool offerDeclined = false;
 	bool offerExpired = false;
+	bool offerOutcome = false;
 };
 
 struct ActionPaidMessagesRefunded {
@@ -1117,6 +1120,7 @@ struct ActionGramTransfer {
 	Utf8String peerAddress;
 	Utf8String transactionId;
 	Utf8String comment;
+	Utf8String onrampProviderName;
 	bool commentEncrypted = false;
 };
 
@@ -1130,6 +1134,10 @@ struct ActionWalletTonConnectRequest {
 };
 
 struct ActionNoPaidMessagesTokenUsed {
+};
+
+struct ActionBotInvite {
+	UserId inviterId = 0;
 };
 
 struct ServiceAction {
@@ -1196,7 +1204,8 @@ struct ServiceAction {
 		ActionManagedBotCreated,
 		ActionGramTransfer,
 		ActionWalletTonConnectRequest,
-		ActionNoPaidMessagesTokenUsed> content;
+		ActionNoPaidMessagesTokenUsed,
+		ActionBotInvite> content;
 };
 
 ServiceAction ParseServiceAction(
@@ -1452,6 +1461,7 @@ Utf8String FormatDateTime(
 	QChar timeSeparator = QChar(':'),
 	QChar separator = QChar(' '));
 Utf8String FormatMoneyAmount(int64 amount, const Utf8String &currency);
+Utf8String FormatDecimalAmount(bool negative, uint64 whole, uint64 nano);
 Utf8String FormatGramsAmount(int64 nanos);
 Utf8String FormatFileSize(int64 size);
 Utf8String FormatDuration(int64 seconds);

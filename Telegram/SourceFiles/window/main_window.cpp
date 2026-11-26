@@ -8,52 +8,53 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/main_window.h"
 
 #include "api/api_updates.h"
-#include "storage/localstorage.h"
-#include "platform/platform_specific.h"
-#include "ui/platform/ui_platform_window.h"
-#include "ui/platform/ui_platform_window_title.h"
-#include "platform/platform_window_title.h"
-#include "history/history.h"
-#include "info/media/info_media_widget.h" // SharedMediaTitle.
-#include "window/window_saved_windows.h"
-#include "window/window_separate_id.h"
-#include "window/window_session_controller.h"
-#include "window/window_lock_widgets.h"
-#include "window/window_controller.h"
-#include "main/main_account.h" // Account::sessionValue.
-#include "main/main_domain.h"
+#include "apiwrap.h"
+#include "base/crc32hash.h"
+#include "base/options.h"
 #include "core/application.h"
 #include "core/sandbox.h"
 #include "core/shortcuts.h"
 #include "core/update_channel.h"
-#include "lang/lang_keys.h"
-#include "data/data_session.h"
 #include "data/data_forum_topic.h"
 #include "data/data_saved_sublist.h"
+#include "data/data_session.h"
 #include "data/data_user.h"
+#include "history/history.h"
+#include "info/media/info_media_widget.h" // SharedMediaTitle.
+#include "lang/lang_keys.h"
+#include "main/main_account.h" // Account::sessionValue.
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
-#include "base/options.h"
-#include "base/crc32hash.h"
+#include "mainwidget.h" // session->content()->windowShown().
+#include "platform/platform_specific.h"
+#include "platform/platform_window_title.h"
+#include "storage/localstorage.h"
+#include "tray.h"
 #include "ui/boxes/confirm_box.h"
-#include "ui/toast/toast.h"
-#include "ui/widgets/shadow.h"
 #include "ui/controls/title_sub_widget.h"
 #include "ui/controls/window_outdated_bar.h"
 #include "ui/controls/window_screen_reader_bar.h"
+#include "ui/platform/ui_platform_window.h"
+#include "ui/platform/ui_platform_window_title.h"
+#include "ui/toast/toast.h"
+#include "ui/widgets/shadow.h"
 #include "ui/painter.h"
 #include "ui/screen_reader_mode.h"
 #include "ui/ui_utility.h"
 #include "ui/unread_counter_format.h"
-#include "apiwrap.h"
-#include "mainwidget.h" // session->content()->windowShown().
-#include "tray.h"
-#include "styles/style_window.h"
-#include "styles/style_dialogs.h" // ChildSkip().x() for new child windows.
+#include "window/window_controller.h"
+#include "window/window_lock_widgets.h"
+#include "window/window_saved_windows.h"
+#include "window/window_separate_id.h"
+#include "window/window_session_controller.h"
 
-#ifdef Q_OS_MAC
+#include "styles/style_dialogs.h" // ChildSkip().x() for new child windows.
+#include "styles/style_window.h"
+
+#ifdef Q_OS_MACOS
 #include "platform/mac/global_menu_mac.h"
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 
 #include <QtCore/QMimeData>
 #include <QtGui/QWindow>
@@ -73,7 +74,12 @@ using Core::WindowPosition;
 	// When the last monitor is removed Qt keeps delivering resize events
 	// while QGuiApplication has no screens at all, so screen() is nullptr.
 	const auto screen = widget->screen();
-	return screen ? Platform::ScreenAvailableGeometry(screen) : QRect();
+	return screen ? screen->availableGeometry() : QRect();
+}
+
+[[nodiscard]] bool NativeFrameEnabled() {
+	return Ui::Platform::NativeWindowFrameSupported()
+		&& Core::App().settings().nativeWindowFrame();
 }
 
 [[nodiscard]] QPoint ChildSkip() {
@@ -98,15 +104,15 @@ base::options::toggle OptionNewWindowsSizeAsFirst({
 base::options::toggle OptionDisableTouchbar({
 	.id = kOptionDisableTouchbar,
 	.name = "Disable Touch Bar (macOS only).",
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	.defaultValue = !Platform::HasTouchBar(),
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 	.scope = [] {
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 		return true;
-#else // !Q_OS_MAC
+#else // !Q_OS_MACOS
 		return false;
-#endif // !Q_OS_MAC
+#endif // !Q_OS_MACOS
 	},
 	.restartRequired = true,
 });
@@ -535,11 +541,11 @@ void MainWindow::clearWidgets() {
 }
 
 void MainWindow::updateGlobalMenu() {
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	Platform::RequestUpdateGlobalMenu();
-#else // Q_OS_MAC
+#else // Q_OS_MACOS
 	updateGlobalMenuHook();
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 }
 
 void MainWindow::updateIsActive() {
@@ -587,6 +593,10 @@ void MainWindow::init() {
 }
 
 void MainWindow::handleStateChanged(Qt::WindowState state) {
+	const auto restored = Platform::IsWindows()
+		&& !isHidden()
+		&& positionMaximized()
+		&& (state == Qt::WindowNoState);
 	if (isHidden()) {
 		// A withdrawn window can flip to no state on X11, keep what it had.
 		if (state == Qt::WindowMaximized) {
@@ -609,7 +619,15 @@ void MainWindow::handleStateChanged(Qt::WindowState state) {
 		&& (Core::App().settings().workMode() == WorkMode::TrayOnly)) {
 		minimizeToTray();
 	}
-	savePosition(state);
+	if (restored && isVisible() && positionInited()) {
+		// Windows can report the state before the restored geometry.
+		if (const auto saved = Core::App().savedWindows()) {
+			saved->scheduleSave();
+		}
+		savePositionToSettings();
+	} else {
+		savePosition(state);
+	}
 }
 
 void MainWindow::handleActiveChanged(bool active) {
@@ -698,8 +716,7 @@ int MainWindow::computeMinHeight() const {
 }
 
 void MainWindow::refreshTitleWidget() {
-	if (Ui::Platform::NativeWindowFrameSupported()
-		&& Core::App().settings().nativeWindowFrame()) {
+	if (NativeFrameEnabled()) {
 		setNativeFrame(true);
 		if (Platform::NativeTitleRequiresShadow()) {
 			_titleShadow.create(this);
@@ -769,7 +786,7 @@ WindowPosition MainWindow::initialPosition() const {
 }
 
 WindowPosition MainWindow::nextInitialChildPosition(SeparateId childId) {
-	const auto rect = geometry().marginsRemoved(frameMargins());
+	const auto rect = body()->mapToGlobal(body()->rect());
 	const auto position = rect.topLeft();
 	const auto adjust = [&](int value) {
 		return (value * 3 / 4);
@@ -855,6 +872,46 @@ void MainWindow::firstShow() {
 	setGeometry(geometry);
 	rememberOwnBodyMargins(geometry);
 	show();
+	if (NativeFrameEnabled()) {
+		// Frame margins counted before show() can be another screen's.
+		InvokeQueued(this, [=] { correctFirstGeometry(); });
+	}
+}
+
+void MainWindow::correctFirstGeometry() {
+	if (!NativeFrameEnabled()
+		|| isHidden()
+		|| (windowState() & ~Qt::WindowActive)) {
+		return;
+	}
+	const auto inner = body()->mapToGlobal(body()->rect());
+	const auto geometry = countInitialGeometry(withScreenInPosition({
+		.scale = cScale(),
+		.x = inner.x(),
+		.y = inner.y(),
+		.w = inner.width(),
+		.h = inner.height(),
+	}));
+	if (geometry == inner) {
+		return;
+	}
+	DEBUG_LOG(("Window Pos: Correcting first %1, %2, %3, %4 "
+		"to %5, %6, %7, %8"
+		).arg(inner.x()
+		).arg(inner.y()
+		).arg(inner.width()
+		).arg(inner.height()
+		).arg(geometry.x()
+		).arg(geometry.y()
+		).arg(geometry.width()
+		).arg(geometry.height()));
+	rememberOwnGeometry(QRect(
+		geometry.x(),
+		geometry.y(),
+		geometry.width() - (_rightColumn ? _rightColumn->width() : 0),
+		geometry.height()));
+	setGeometry(geometry);
+	rememberOwnBodyMargins(geometry);
 }
 
 void MainWindow::positionUpdated(bool spontaneous) {
@@ -1109,7 +1166,13 @@ WindowPosition MainWindow::countPositionForSave() {
 		|| state == Qt::WindowFullScreen
 		|| rememberedMaximized) {
 		result.maximized = 1;
-		const auto normal = normalGeometry();
+		auto normal = QRect();
+		if (state == Qt::WindowFullScreen) {
+			normal = normalGeometry();
+		} else {
+			recoverOwnGeometry();
+			normal = _ownPosition.rect();
+		}
 		result.x = normal.x() - screenGeometry.x();
 		result.y = normal.y() - screenGeometry.y();
 		result.w = normal.width();
@@ -1416,13 +1479,17 @@ QRect CountInitialGeometry(
 			> screenGeometry.y() + screenGeometry.height())) {
 		return initial.rect();
 	}
+	const auto result = widget->fitFrameInWorkArea(
+		position.rect(),
+		spaceForInner,
+		screen);
 	DEBUG_LOG(("%1 Pos: Resulting geometry is %2, %3, %4, %5"
 		).arg(name
-		).arg(position.x
-		).arg(position.y
-		).arg(position.w
-		).arg(position.h));
-	return position.rect();
+		).arg(result.x()
+		).arg(result.y()
+		).arg(result.width()
+		).arg(result.height()));
+	return result;
 }
 
 } // namespace Window

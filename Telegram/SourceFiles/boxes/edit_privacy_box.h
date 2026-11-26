@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/layers/box_content.h"
-#include "mtproto/instance/sender.h"
 #include "api/api_user_privacy.h"
+#include "mtproto/instance/sender.h"
+#include "ui/layers/box_content.h"
 
 namespace Ui {
 class GenericBox;

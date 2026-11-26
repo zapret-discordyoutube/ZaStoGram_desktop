@@ -8,21 +8,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_updates.h"
 
 #include "api/api_authorizations.h"
-#include "api/api_user_names.h"
 #include "api/api_chat_participants.h"
 #include "api/api_global_privacy.h"
 #include "api/api_ringtones.h"
 #include "api/api_text_entities.h"
-#include "api/api_user_privacy.h"
-#include "api/api_unread_things.h"
 #include "api/api_transcribes.h"
-#include "main/main_session.h"
-#include "main/main_account.h"
-#include "main/main_app_config.h"
-#include "mtproto/instance/mtp_instance.h"
-#include "mtproto/config/mtproto_config.h"
-#include "mtproto/config/mtproto_dc_options.h"
+#include "api/api_unread_things.h"
+#include "api/api_user_names.h"
+#include "api/api_user_privacy.h"
+#include "apiwrap.h"
+#include "base/unixtime.h"
+#include "calls/calls_instance.h"
+#include "chat_helpers/emoji_interactions.h"
 #include "chat_helpers/stickers_dice_pack.h"
+#include "core/application.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/credits.h"
 #include "data/components/ephemeral_messages.h"
@@ -33,52 +32,53 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/notify/data_notify_settings.h"
 #include "data/stickers/data_stickers.h"
 #include "data/data_ai_compose_tones.h"
-#include "data/data_saved_messages.h"
-#include "data/data_saved_sublist.h"
-#include "data/data_session.h"
-#include "data/data_user.h"
-#include "data/data_chat.h"
 #include "data/data_changes.h"
 #include "data/data_channel.h"
+#include "data/data_chat.h"
 #include "data/data_chat_filters.h"
 #include "data/data_cloud_themes.h"
-#include "data/data_emoji_statuses.h"
-#include "data/data_group_call.h"
 #include "data/data_drafts.h"
-#include "data/data_histories.h"
+#include "data/data_emoji_statuses.h"
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
-#include "data/data_send_action.h"
-#include "data/data_stories.h"
+#include "data/data_group_call.h"
+#include "data/data_histories.h"
 #include "data/data_message_reactions.h"
-#include "inline_bots/bot_attach_web_view.h"
-#include "chat_helpers/emoji_interactions.h"
-#include "lang/lang_cloud_manager.h"
+#include "data/data_saved_messages.h"
+#include "data/data_saved_sublist.h"
+#include "data/data_send_action.h"
+#include "data/data_session.h"
+#include "data/data_stories.h"
+#include "data/data_user.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_helpers.h"
 #include "history/history_streamed_drafts.h"
 #include "history/history_unread_things.h"
-#include "core/application.h"
 #include "core/core_settings.h"
+#include "inline_bots/bot_attach_web_view.h"
+#include "iv/editor/iv_editor_session.h"
+#include "lang/lang_cloud_manager.h"
+#include "main/main_account.h"
+#include "main/main_app_config.h"
+#include "main/main_session.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/config/mtproto_config.h"
+#include "mtproto/config/mtproto_dc_options.h"
 #include "storage/storage_account.h"
 #include "storage/storage_facade.h"
-#include "storage/storage_user_photos.h"
 #include "storage/storage_shared_media.h"
-#include "calls/calls_instance.h"
-#include "base/unixtime.h"
+#include "storage/storage_user_photos.h"
 #include "tgw/tgw_state.h"
 #include "tgw/tgw_storage.h"
-#include "window/window_session_controller.h"
-#include "window/window_controller.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/text/format_values.h" // Ui::FormatPhone
 #include "wallet/wallet_panel.h"
 #include "wallet/wallet_session.h"
 #include "wallet/wallet_transfer_messages.h"
-#include "iv/editor/iv_editor_session.h"
-#include "ui/boxes/confirm_box.h"
-#include "apiwrap.h"
-#include "ui/text/format_values.h" // Ui::FormatPhone
+#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 
 namespace Api {
 namespace {
@@ -230,6 +230,28 @@ bool HasForceLogoutNotification(const MTPUpdates &updates) {
 		return checkUpdate(updates.c_updateShort().vupdate());
 	}
 	return false;
+}
+
+[[nodiscard]] const MTPMessage *ProcessTopMessageReply(
+		not_null<Data::Session*> owner,
+		const MTPmessages_Messages &result,
+		PeerId peerId,
+		MsgId id) {
+	return result.match([](const MTPDmessages_messagesNotModified &)
+	-> const MTPMessage* {
+		return nullptr;
+	}, [&](const auto &data) -> const MTPMessage* {
+		owner->processUsers(data.vusers());
+		owner->processChats(data.vchats());
+		for (const auto &message : data.vmessages().v) {
+			if ((message.type() != mtpc_messageEmpty)
+				&& (IdFromMessage(message) == id)
+				&& (PeerFromMessage(message) == peerId)) {
+				return &message;
+			}
+		}
+		return nullptr;
+	});
 }
 
 } // namespace
@@ -410,6 +432,11 @@ void Updates::channelDifferenceDone(
 	}, [&](const MTPDupdates_channelDifferenceTooLong &data) {
 		session().data().processUsers(data.vusers());
 		session().data().processChats(data.vchats());
+		Data::ApplyResponseTopics(
+			&session().data(),
+			data.vtopics(),
+			{},
+			channel);
 		const auto history = session().data().historyLoaded(channel->id);
 		if (history) {
 			history->setNotLoadedAtBottom();
@@ -431,9 +458,14 @@ void Updates::channelDifferenceDone(
 			forum->reloadTopics();
 		}
 	}, [&](const MTPDupdates_channelDifference &data) {
-		feedChannelDifference(data);
+		feedChannelDifference(channel, data);
 		channel->ptsInit(data.vpts().v);
 	});
+	if (isFinal) {
+		if (const auto history = session().data().historyLoaded(channel->id)) {
+			history->clearTopMessageHint();
+		}
+	}
 
 	channel->ptsSetRequesting(false);
 
@@ -452,9 +484,11 @@ void Updates::channelDifferenceDone(
 }
 
 void Updates::feedChannelDifference(
+		not_null<ChannelData*> channel,
 		const MTPDupdates_channelDifference &data) {
 	session().data().processUsers(data.vusers());
 	session().data().processChats(data.vchats());
+	Data::ApplyResponseTopics(&session().data(), data.vtopics(), {}, channel);
 
 	_handlingChannelDifference = true;
 	applyConvertToScheduledOnSend(data.vother_updates());
@@ -466,6 +500,7 @@ void Updates::feedChannelDifference(
 		data.vother_updates(),
 		SkipUpdatePolicy::SkipMessageIds);
 	_handlingChannelDifference = false;
+	Data::ApplyResponseTopics(&session().data(), data.vtopics(), {}, channel);
 }
 
 void Updates::channelDifferenceFail(
@@ -476,6 +511,35 @@ void Updates::channelDifferenceFail(
 		error.type(),
 		error.description()));
 	failDifferenceStartTimerFor(channel);
+}
+
+void Updates::applyChannelTopMessageHint(
+		not_null<ChannelData*> channel,
+		const MTPDupdateChannelTooLong &data) {
+	const auto id = MsgId(data.vlast_msg_id().value_or_empty());
+	const auto date = TimeId(data.vlast_msg_date().value_or_empty());
+	if (!IsServerMsgId(id) || (date <= 0) || !channel->amIn()) {
+		return;
+	}
+	const auto history = session().data().historyLoaded(channel->id);
+	if (!history || !history->applyTopMessageHint(id, date)) {
+		return;
+	}
+	api().request(MTPchannels_GetMessages(
+		channel->inputChannel(),
+		MTP_vector<MTPInputMessage>(1, MTP_inputMessageID(MTP_int(id)))
+	)).done([=](const MTPmessages_Messages &result) {
+		const auto message = history->topMessageHintActive(id)
+			? ProcessTopMessageReply(
+				&history->owner(),
+				result,
+				history->peer->id,
+				id)
+			: nullptr;
+		history->topMessageHintLoaded(id, message);
+	}).fail([=] {
+		history->topMessageHintLoaded(id, nullptr);
+	}).send();
 }
 
 void Updates::stateDone(const MTPupdates_State &state) {
@@ -505,7 +569,12 @@ void Updates::differenceDone(const MTPupdates_Difference &result) {
 	} break;
 	case mtpc_updates_differenceSlice: {
 		const auto &d = result.c_updates_differenceSlice();
-		feedDifference(d.vusers(), d.vchats(), d.vnew_messages(), d.vother_updates());
+		feedDifference(
+			d.vusers(),
+			d.vchats(),
+			d.vnew_messages(),
+			d.vother_updates(),
+			d.vtopics());
 
 		const auto &s = d.vintermediate_state().c_updates_state();
 		setState(s.vpts().v, s.vdate().v, s.vqts().v, s.vseq().v);
@@ -519,7 +588,12 @@ void Updates::differenceDone(const MTPupdates_Difference &result) {
 	} break;
 	case mtpc_updates_difference: {
 		const auto &d = result.c_updates_difference();
-		feedDifference(d.vusers(), d.vchats(), d.vnew_messages(), d.vother_updates());
+		feedDifference(
+			d.vusers(),
+			d.vchats(),
+			d.vnew_messages(),
+			d.vother_updates(),
+			d.vtopics());
 
 		stateDone(d.vstate());
 	} break;
@@ -618,14 +692,20 @@ void Updates::feedDifference(
 		const MTPVector<MTPUser> &users,
 		const MTPVector<MTPChat> &chats,
 		const MTPVector<MTPMessage> &msgs,
-		const MTPVector<MTPUpdate> &other) {
+		const MTPVector<MTPUpdate> &other,
+		const MTPVector<MTPForumTopic> *topics) {
 	Core::App().checkAutoLock();
 	session().data().processUsers(users);
 	session().data().processChats(chats);
+	Data::ApplyResponseTopics(&session().data(), topics, msgs.v);
 	applyConvertToScheduledOnSend(other);
 	feedMessageIds(other);
 	session().data().processMessages(msgs, NewMessageType::Unread);
 	feedUpdateVector(other, SkipUpdatePolicy::SkipMessageIds);
+	// WHY: applying before the messages spares them a topic request, but
+	// older service edits and other_updates then overwrite the entries,
+	// which hold the current state, so they are applied again on top.
+	Data::ApplyResponseTopics(&session().data(), topics, msgs.v);
 }
 
 void Updates::differenceFail(const MTP::Error &error) {
@@ -860,6 +940,7 @@ void Updates::channelRangeDifferenceDone(
 
 		_session->data().processUsers(d.vusers());
 		_session->data().processChats(d.vchats());
+		Data::ApplyResponseTopics(&_session->data(), d.vtopics(), {}, channel);
 
 		nextRequestPts = d.vdialog().match([&](const MTPDdialog &data) {
 			return data.vpts().value_or_empty();
@@ -874,7 +955,7 @@ void Updates::channelRangeDifferenceDone(
 	case mtpc_updates_channelDifference: {
 		const auto &d = result.c_updates_channelDifference();
 
-		feedChannelDifference(d);
+		feedChannelDifference(channel, d);
 
 		nextRequestPts = d.vpts().v;
 		isFinal = d.is_final();
@@ -2367,6 +2448,7 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 		}
 	} break;
 
+	case mtpc_updateNewBotConnection:
 	case mtpc_updateNewAuthorization: {
 		session().api().authorizations().apply(update);
 	} break;
@@ -2572,6 +2654,7 @@ void Updates::feedUpdate(const MTPUpdate &update) {
 			if (!pts || channel->pts() < pts->v) {
 				getChannelDifference(channel);
 			}
+			applyChannelTopMessageHint(channel, d);
 		}
 	} break;
 

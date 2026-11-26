@@ -7,20 +7,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "media/audio/media_audio.h"
 
-#include "media/audio/media_audio_ffmpeg_loader.h"
-#include "media/audio/media_child_ffmpeg_loader.h"
-#include "media/audio/media_audio_loaders.h"
-#include "media/audio/media_audio_track.h"
-#include "media/media_common.h"
-#include "media/streaming/media_streaming_utility.h"
-#include "webrtc/webrtc_environment.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "data/data_document.h"
 #include "data/data_file_origin.h"
 #include "data/data_session.h"
-#include "core/application.h"
-#include "core/core_settings.h"
 #include "main/main_session.h"
+#include "media/audio/media_audio_ffmpeg_loader.h"
+#include "media/audio/media_audio_loaders.h"
+#include "media/audio/media_audio_track.h"
+#include "media/audio/media_child_ffmpeg_loader.h"
+#include "media/streaming/media_streaming_utility.h"
+#include "media/media_common.h"
 #include "ui/chat/attach/attach_prepare.h"
+#include "webrtc/webrtc_environment.h"
 
 #include <al.h>
 #include <alc.h>
@@ -147,8 +147,8 @@ void Start(not_null<Instance*> instance) {
 	qRegisterMetaType<AudioMsgId>();
 	qRegisterMetaType<VoiceWaveform>();
 
-	const auto loglevel = getenv("ALSOFT_LOGLEVEL");
-	LOG(("OpenAL Logging Level: %1").arg(loglevel ? loglevel : "(not set)"));
+	LOG(("OpenAL Logging Level: %1").arg(
+		qEnvironmentVariable("ALSOFT_LOGLEVEL", u"(not set)"_q)));
 
 	MixerInstance = new Player::Mixer(instance);
 }
@@ -988,7 +988,8 @@ void Mixer::stop(const AudioMsgId &audio, State state) {
 }
 
 void Mixer::stopAndClear() {
-	Track *current_audio = nullptr, *current_song = nullptr;
+	auto current_audio = (Track*)nullptr;
+	auto current_song = (Track*)nullptr;
 	{
 		QMutexLocker lock(&AudioMutex);
 		if ((current_audio = trackForType(AudioMsgId::Type::Voice))) {

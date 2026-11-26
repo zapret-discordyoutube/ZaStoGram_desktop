@@ -7,10 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/widgets/rp_window.h"
-#include "base/timer.h"
 #include "base/object_ptr.h"
+#include "base/timer.h"
 #include "core/core_settings.h"
+#include "ui/widgets/rp_window.h"
 
 namespace Main {
 class Session;
@@ -205,6 +205,7 @@ private:
 	[[nodiscard]] Core::WindowPosition nextInitialChildPosition(
 		SeparateId childId);
 	[[nodiscard]] QRect countInitialGeometry(Core::WindowPosition position);
+	void correctFirstGeometry();
 	void rememberOwnGeometry(QRect geometry);
 	void rememberOwnBodyMargins(QRect inner);
 	void rememberOwnRequestedGeometry();

@@ -76,7 +76,9 @@ public:
 		bool someSkipped = false;
 	};
 
-	void notifyConnectionInited(const SessionOptions &options);
+	void notifyConnectionInited(
+		const SessionOptions &options,
+		uint64 reInitGeneration);
 	void setOptions(SessionOptions options) {
 		QWriteLocker locker(&_optionsLock);
 		_options = options;
@@ -84,6 +86,14 @@ public:
 	[[nodiscard]] SessionOptions options() const {
 		QReadLocker locker(&_optionsLock);
 		return _options;
+	}
+	void advanceReInitGeneration() {
+		QWriteLocker locker(&_optionsLock);
+		++_reInitGeneration;
+	}
+	[[nodiscard]] uint64 reInitGeneration() const {
+		QReadLocker locker(&_optionsLock);
+		return _reInitGeneration;
 	}
 
 	not_null<QReadWriteLock*> toSendMutex() {
@@ -146,6 +156,7 @@ private:
 	mutable QMutex _ownerMutex;
 
 	SessionOptions _options;
+	uint64 _reInitGeneration = 0;
 	mutable QReadWriteLock _optionsLock;
 
 	base::flat_map<mtpRequestId, SerializedRequest> _toSend; // map of request_id -> request, that is waiting to be sent
@@ -173,7 +184,7 @@ public:
 	~Session();
 
 	void start();
-	void reInitConnection();
+	void prepareReInitConnection();
 	void setConnectionNotInited();
 
 	void restart();

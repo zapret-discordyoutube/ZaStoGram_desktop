@@ -7,10 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "intro/intro_step.h"
-#include "core/core_cloud_password.h"
-#include "mtproto/instance/sender.h"
 #include "base/timer.h"
+#include "core/core_cloud_password.h"
+#include "intro/intro_step.h"
+#include "mtproto/instance/sender.h"
 
 namespace Ui {
 class InputField;

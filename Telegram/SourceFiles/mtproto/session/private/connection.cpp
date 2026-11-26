@@ -556,7 +556,7 @@ void SessionTransport::restart() {
 	_owner->setState(-_timing.retryTimeout);
 }
 
-void SessionTransport::onSentSome(uint64 size) {
+void SessionTransport::onSentSome(uint64 size, bool behindUnanswered) {
 	if (!_timing.waitForReceivedTimer.isActive()) {
 		auto remain = static_cast<uint64>(_timing.waitForReceived);
 		if (_state.connection
@@ -569,6 +569,9 @@ void SessionTransport::onSentSome(uint64 size) {
 		}
 		if (!_timing.oldConnection) {
 			Assert(remain <= kMaxReceiveTimeout);
+			if (behindUnanswered) {
+				size = std::max(size, _owner->haveSentBytes());
+			}
 
 			// 8kb / sec, so 512 kb give 64 sec
 			auto remainBySize = size * _timing.waitForReceived / 8192;

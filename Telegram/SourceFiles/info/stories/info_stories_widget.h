@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "info/info_content_widget.h"
 #include "info/media/info_media_widget.h"
 #include "info/stories/info_stories_common.h"
+#include "info/info_content_widget.h"
 #include "ui/effects/animations.h"
 
 namespace Ui {
@@ -98,6 +98,7 @@ private:
 	rpl::variable<bool> _hasPinnedToBottom;
 	rpl::variable<bool> _emptyAlbumShown;
 	bool _shown = false;
+	bool _bottomNear = false;
 	std::unique_ptr<FlexibleScrollHelper> _flexibleScrollHelper;
 
 };

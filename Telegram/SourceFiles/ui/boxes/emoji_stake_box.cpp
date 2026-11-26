@@ -39,6 +39,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/rect.h"
 #include "ui/vertical_list.h"
+
 #include "styles/style_boxes.h"
 #include "styles/style_calls.h" // confcallLinkFooterOr
 #include "styles/style_chat.h"
@@ -437,7 +438,7 @@ void EmojiGameStakeBox(
 	auto helper = Text::CustomEmojiHelper();
 	const auto beta = helper.paletteDependent(
 		Text::CustomEmojiTextBadge(
-			tr::lng_stake_game_beta(tr::now).toUpper(),
+			tr::lng_stake_game_beta(tr::now, tr::upper),
 			st::customEmojiTextBadge));
 	const auto sixText = helper.image({
 		.image = MakeEmojiFrame(6, st::emojiSize),

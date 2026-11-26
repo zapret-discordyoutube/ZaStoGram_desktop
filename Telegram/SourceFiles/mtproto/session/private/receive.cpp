@@ -76,6 +76,16 @@ void SessionMessageHandler::clearOldContainers() {
 			++i;
 		}
 	}
+	for (auto i = begin(_owner->_requestState.stateAndResendRequests);
+			i != end(_owner->_requestState.stateAndResendRequests);) {
+		const auto sent = i->second->lastSentTime;
+		if (sent <= checkTime) {
+			i = _owner->_requestState.stateAndResendRequests.erase(i);
+		} else {
+			nextTimeout = std::min(sent - checkTime, nextTimeout);
+			++i;
+		}
+	}
 	if (resent) {
 		_owner->_sessionState.data->queueNeedToResumeAndSend();
 	}
@@ -239,11 +249,12 @@ void SessionMessageHandler::handleReceived() {
 		}
 
 		auto lock = QReadLocker(_owner->_sessionState.data->haveReceivedMutex());
-		const auto tryToReceive = !_owner->_sessionState.data->haveReceivedMessages().empty();
+		const auto receivedCount
+			= _owner->_sessionState.data->haveReceivedMessages().size();
 		lock.unlock();
 
-		if (tryToReceive) {
-			DEBUG_LOG(("MTP Info: queueTryToReceive() - need to parse in another thread, %1 messages.").arg(_owner->_sessionState.data->haveReceivedMessages().size()));
+		if (receivedCount) {
+			DEBUG_LOG(("MTP Info: queueTryToReceive() - need to parse in another thread, %1 messages.").arg(receivedCount));
 			_owner->_sessionState.data->queueTryToReceive();
 		}
 
@@ -776,7 +787,9 @@ SessionMessageHandler::HandleResult SessionMessageHandler::handleRpcResult(
 		// the initConnection, so we're not sure yet that it was inited.
 		// Wait till a good response is received.
 	} else {
-		_owner->_sessionState.data->notifyConnectionInited(*_owner->_sessionState.options);
+		_owner->_sessionState.data->notifyConnectionInited(
+			*_owner->_sessionState.options,
+			_owner->_sessionState.reInitGeneration);
 	}
 	requestsAcked(ids, true);
 
@@ -1051,6 +1064,7 @@ void SessionMessageHandler::requestsAcked(const QVector<MTPlong> &ids, bool byRe
 
 				if (!byResponse && _owner->_delegate->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
+					i->second->delivered = true;
 					continue;
 				}
 				haveSent.erase(i);

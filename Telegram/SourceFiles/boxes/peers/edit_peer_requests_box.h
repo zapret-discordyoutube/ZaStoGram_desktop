@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "boxes/peer_list_box.h"
 #include "base/weak_ptr.h"
 #include "mtproto/instance/sender.h"
+#include "boxes/peer_list_box.h"
 
 namespace Window {
 class SessionNavigation;

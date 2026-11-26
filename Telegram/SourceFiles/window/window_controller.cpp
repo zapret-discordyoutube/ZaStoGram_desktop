@@ -8,35 +8,37 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 
 #include "api/api_updates.h"
+#include "apiwrap.h" // ApiWrap::acceptTerms.
+#include "chat_helpers/emoji_sets_manager.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
+#include "data/components/promo_suggestions.h"
+#include "data/data_thread.h"
 #include "export/export_manager.h"
-#include "ui/platform/ui_platform_window.h"
-#include "platform/platform_window_title.h"
+#include "intro/intro_widget.h"
+#include "lang/lang_hardcoded.h"
+#include "lang/lang_keys.h"
 #include "main/main_account.h"
+#include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
-#include "main/main_app_config.h"
 #include "media/view/media_view_open_common.h"
-#include "lang/lang_hardcoded.h"
-#include "lang/lang_keys.h"
-#include "intro/intro_widget.h"
 #include "mtproto/config/mtproto_config.h"
+#include "platform/platform_window_title.h"
+#include "settings/settings_common.h"
 #include "storage/storage_account.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/platform/ui_platform_window.h"
 #include "ui/toast/toast.h"
 #include "ui/emoji_config.h"
-#include "chat_helpers/emoji_sets_manager.h"
-#include "window/window_columns.h"
-#include "window/window_session_controller.h"
-#include "window/themes/window_theme_editor.h"
-#include "ui/boxes/confirm_box.h"
-#include "data/components/promo_suggestions.h"
-#include "data/data_thread.h"
-#include "settings/settings_common.h"
 #include "wallet/wallet_panel.h"
 #include "wallet/wallet_session.h"
-#include "apiwrap.h" // ApiWrap::acceptTerms.
+#include "window/themes/window_theme_editor.h"
+#include "window/window_columns.h"
+#include "window/window_logout_box.h"
+#include "window/window_session_controller.h"
+
 #include "styles/style_layers.h"
 
 #include <QtGui/QWindow>
@@ -600,27 +602,22 @@ QString LogoutConfirmationText(Main::Account *account) {
 	return result;
 }
 
+void Controller::showLogoutOptions() {
+	if (const auto controller = sessionController();
+		controller && !Core::App().passcodeLocked()) {
+		ShowLogoutOptions(this, &controller->session());
+	} else {
+		showLogoutConfirmation();
+	}
+}
+
 void Controller::showLogoutConfirmation() {
 	const auto account = Core::App().passcodeLocked()
 		? nullptr
 		: sessionController()
 		? &sessionController()->session().account()
 		: nullptr;
-	const auto weak = base::make_weak(account);
-	const auto callback = [=](Fn<void()> close) {
-		if (!account || weak) {
-			Core::App().logoutWithChecks(account);
-		}
-		if (close) {
-			close();
-		}
-	};
-	show(Ui::MakeConfirmBox({
-		.text = LogoutConfirmationText(account),
-		.confirmed = callback,
-		.confirmText = tr::lng_settings_logout(),
-		.confirmStyle = &st::attentionBoxButton,
-	}));
+	ShowLogoutConfirmation(this, account);
 }
 
 void Controller::showPasscodeClearFailed(Fn<bool()> retry) {

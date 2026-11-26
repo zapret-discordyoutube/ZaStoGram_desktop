@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/options.h"
 #include "base/unixtime.h"
 #include "core/ui_integration.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "data/data_channel.h"
 #include "data/data_drafts.h"
 #include "data/data_folder.h"
@@ -19,33 +20,33 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_thread.h"
 #include "data/data_user.h"
-#include "data/stickers/data_custom_emoji.h"
-#include "dialogs/dialogs_list.h"
-#include "dialogs/dialogs_three_state_icon.h"
-#include "dialogs/dialogs_quick_action.h"
 #include "dialogs/ui/dialogs_video_userpic.h"
+#include "dialogs/dialogs_list.h"
+#include "dialogs/dialogs_quick_action.h"
+#include "dialogs/dialogs_three_state_icon.h"
+#include "history/view/history_view_item_preview.h"
+#include "history/view/history_view_send_action.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
 #include "history/history_unread_things.h"
-#include "history/view/history_view_item_preview.h"
-#include "history/view/history_view_send_action.h"
 #include "lang/lang_keys.h"
 #include "lottie/lottie_icon.h"
 #include "main/main_session.h"
 #include "storage/localstorage.h"
 #include "support/support_helper.h"
-#include "ui/empty_userpic.h"
-#include "ui/painter.h"
-#include "ui/rect.h"
-#include "ui/power_saving.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
+#include "ui/empty_userpic.h"
+#include "ui/painter.h"
+#include "ui/power_saving.h"
+#include "ui/rect.h"
 #include "ui/unread_badge.h"
 #include "ui/unread_badge_paint.h"
 #include "ui/unread_counter_format.h"
+
 #include "styles/style_dialogs.h"
 #include "styles/style_dialogs_layout.h"
 #include "styles/style_widgets.h"
@@ -412,6 +413,20 @@ void PaintCommunityEntryText(
 	});
 }
 
+[[nodiscard]] bool PreviewInCanonicalTopic(
+		not_null<const HistoryItem*> preview,
+		const HistoryItem *canonical,
+		bool forum) {
+	if (preview.get() == canonical) {
+		return true;
+	} else if (!canonical || preview->isFakeHistoryItem()) {
+		return false;
+	}
+	return forum
+		? (preview->topicRootId() == canonical->topicRootId())
+		: (preview->sublistPeerId() == canonical->sublistPeerId());
+}
+
 enum class Flag {
 	SavedMessages    = 0x008,
 	RepliesMessages  = 0x010,
@@ -569,6 +584,10 @@ void PaintRow(
 
 	const auto promoted = (history && history->useTopPromotion())
 		&& !context.search;
+	const auto hintDateShown = !fakeRow
+		&& !promoted
+		&& history
+		&& history->topMessageHintDate();
 	const auto verifyInfo = (from
 		&& (!from->isSelf()
 			|| (!(flags & Flag::SavedMessages) && !(flags & Flag::MyNotes))))
@@ -767,6 +786,10 @@ void PaintRow(
 			});
 		}
 	} else if (!item) {
+		if (hintDateShown) {
+			PaintDialogDate(p, entry, fakeRow, date, rectForName, context);
+		}
+
 		auto availableWidth = namewidth;
 		if (const auto used = PaintRightButton(p, context)) {
 			availableWidth -= used;
@@ -810,17 +833,22 @@ void PaintRow(
 		}
 
 		paintItemCallback(nameleft, namewidth);
-	} else if (entry->isPinnedDialog(context.filter)
-		&& (context.filter || !entry->fixedOnTopIndex())) {
-		auto &icon = ThreeStateIcon(
-			st::dialogsPinnedIcon,
-			context.active,
-			context.selected);
-		icon.paint(
-			p,
-			context.width - context.st->padding.right() - icon.width(),
-			texttop,
-			context.width);
+	} else {
+		if (hintDateShown) {
+			PaintDialogDate(p, entry, fakeRow, date, rectForName, context);
+		}
+		if (entry->isPinnedDialog(context.filter)
+			&& (context.filter || !entry->fixedOnTopIndex())) {
+			auto &icon = ThreeStateIcon(
+				st::dialogsPinnedIcon,
+				context.active,
+				context.selected);
+			icon.paint(
+				p,
+				context.width - context.st->padding.right() - icon.width(),
+				texttop,
+				context.width);
+		}
 	}
 	const auto sendStateIcon = [&]() -> const style::icon* {
 		if (!thread) {
@@ -840,7 +868,10 @@ void PaintRow(
 			}
 		} else if (item && !item->isEmpty() && item->needCheck()) {
 			if (!item->isSending() && !item->hasFailed()) {
-				if (item->unread(thread)) {
+				const auto unread = (history && !fakeRow)
+					? history->chatListPreviewMessageUnread(item)
+					: item->unread(thread);
+				if (unread) {
 					return &ThreeStateIcon(
 						st::dialogsSentIcon,
 						context.active,
@@ -1058,8 +1089,16 @@ void PaintRow(
 		}
 		p.setClipping(false);
 	}
-	if (const auto quick = context.quickActionContext;
-			quick && quick->ripple && quick->rippleFg) {
+	const auto quick = context.quickActionContext;
+	if (quick && quick->staticFeedback && quick->icon) {
+		const auto size = st::dialogsQuickActionRippleSize;
+		const auto x = style::RightToLeft()
+			? 0
+			: geometry.width() - size;
+		const auto rect = QRect(x, 0, size, geometry.height());
+		p.fillRect(rect, ResolveQuickActionBg(quick->label));
+		DrawQuickAction(p, rect, quick->icon.get(), quick->label);
+	} else if (quick && quick->ripple && quick->rippleFg) {
 		const auto ripple = ResolveQuickActionBg(quick->label);
 		const auto size = st::dialogsQuickActionRippleSize;
 		const auto x = geometry.width() - size;
@@ -1133,7 +1172,10 @@ void RowPainter::Paint(
 	const auto peer = history ? history->peer.get() : nullptr;
 	const auto badgesState = entry->chatListBadgesState();
 	entry->chatListPreloadData(); // Allow chat list message resolve.
-	const auto item = entry->chatListMessage();
+	const auto canonicalItem = entry->chatListMessage();
+	const auto item = history
+		? history->chatListPreviewMessage()
+		: canonicalItem;
 	const auto cloudDraft = [&]() -> const Data::Draft*{
 		if (!thread) {
 			return nullptr;
@@ -1154,7 +1196,10 @@ void RowPainter::Paint(
 	const auto displayDate = [&]() -> TimeId {
 		const auto itemDate = item ? item->date() : TimeId(0);
 		const auto draftDate = cloudDraft ? cloudDraft->date : TimeId(0);
-		return std::max(itemDate, draftDate);
+		const auto hintDate = history
+			? history->topMessageHintDate()
+			: TimeId(0);
+		return std::max({ itemDate, draftDate, hintDate });
 	}();
 	const auto displayPinnedIcon = badgesState.empty()
 		&& entry->isPinnedDialog(context.filter)
@@ -1225,15 +1270,20 @@ void RowPainter::Paint(
 			const auto monoforum = (peer && context.st->topicsHeight)
 				? peer->monoforum()
 				: nullptr;
-			if (!view->prepared(item, forum, monoforum)) {
+			const auto plain = (forum || monoforum)
+				&& !PreviewInCanonicalTopic(
+					item,
+					canonicalItem,
+					forum != nullptr);
+			if (plain || !view->prepared(item, forum, monoforum)) {
 				view->prepare(
 					item,
-					forum,
-					monoforum,
+					plain ? nullptr : forum,
+					plain ? nullptr : monoforum,
 					[=] { entry->updateChatListEntry(); },
 					{});
 			}
-			if (forum || monoforum) {
+			if ((forum || monoforum) && !plain) {
 				rect.setHeight(context.st->topicsHeight + rect.height());
 			}
 			view->paint(p, rect, context);

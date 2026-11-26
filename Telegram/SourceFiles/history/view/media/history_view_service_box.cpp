@@ -22,13 +22,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/ripple_animation.h"
 #include "ui/text/text_utilities.h"
 #include "ui/painter.h"
-#include "ui/rect.h"
 #include "ui/power_saving.h"
+#include "ui/rect.h"
+
 #include "styles/style_chat.h"
 #include "styles/style_credits.h"
+#include "styles/style_layers.h"
 #include "styles/style_polls.h"
 #include "styles/style_premium.h"
-#include "styles/style_layers.h"
 
 namespace HistoryView {
 
@@ -42,7 +43,7 @@ ServiceBox::ServiceBox(
 : Media(parent)
 , _parent(parent)
 , _content(std::move(content))
-, _button({ .link = _content->createViewLink() })
+, _button({ .link = _content->createButtonLink() })
 , _maxWidth(_content->width()
 	- st::msgPadding.left()
 	- st::msgPadding.right())

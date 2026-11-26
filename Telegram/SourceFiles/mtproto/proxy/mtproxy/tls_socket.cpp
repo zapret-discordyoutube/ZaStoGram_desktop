@@ -57,7 +57,6 @@ TlsSocket::TlsSocket(
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
 	const ProxyData &proxy,
-	bool protocolForFiles,
 	const ProxyStealthOptions &stealth,
 	ProxyConnectionAttempt mtproxyAttempt,
 	MtProxyAttemptPlan mtproxyPlan,
@@ -103,14 +102,6 @@ TlsSocket::TlsSocket(
 
 	_transport->moveToThread(thread);
 	_transport->setProxy(ToNetworkProxy(proxy));
-	if (protocolForFiles) {
-		_transport->setSocketOption(
-			QAbstractSocket::SendBufferSizeSocketOption,
-			kFilesSendBufferSize);
-		_transport->setSocketOption(
-			QAbstractSocket::ReceiveBufferSizeSocketOption,
-			kFilesReceiveBufferSize);
-	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });

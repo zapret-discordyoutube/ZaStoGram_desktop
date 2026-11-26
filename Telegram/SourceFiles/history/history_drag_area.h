@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/rp_widget.h"
 #include "ui/effects/animations.h"
+#include "ui/rp_widget.h"
 
 namespace Storage {
 enum class MimeDataState;
@@ -19,8 +19,8 @@ public:
 	DragArea(QWidget *parent);
 
 	struct Areas {
-		DragArea *document;
-		DragArea *photo;
+		DragArea *document = nullptr;
+		DragArea *photo = nullptr;
 	};
 
 	using CallbackComputeState

@@ -7,20 +7,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_connecting_widget.h"
 
-#include "ui/widgets/buttons.h"
-#include "ui/effects/radial_animation.h"
-#include "ui/painter.h"
-#include "ui/ui_utility.h"
-#include "mtproto/instance/mtp_instance.h"
 #include "mtproto/runtime/connection_status.h"
 #include "mtproto/session/session_state.h"
-#include "main/main_account.h"
+#include "boxes/abstract_box.h"
+#include "boxes/connection_box.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/update_checker.h"
-#include "boxes/connection_box.h"
-#include "boxes/abstract_box.h"
 #include "lang/lang_keys.h"
+#include "main/main_account.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "ui/effects/radial_animation.h"
+#include "ui/widgets/buttons.h"
+#include "ui/painter.h"
+#include "ui/ui_utility.h"
+
 #include "styles/style_window.h"
 
 #include <QtGui/QWindow>
@@ -403,7 +404,9 @@ void ConnectionState::createWidget() {
 	_widget = base::make_unique_q<Widget>(_parent, _account, _currentLayout);
 	_widget->setVisible(!_forceHidden);
 
-	updateWidth();
+	_parent->widthValue() | rpl::on_next([=] {
+		updateWidth();
+	}, _widget->lifetime());
 
 	rpl::combine(
 		visibility(),
@@ -716,7 +719,9 @@ void ConnectionState::updateWidth() {
 		st::connectingMargin
 	);
 	if (_widget) {
-		_widget->resize(desired.size());
+		const auto minimal = desired.width() - int(current);
+		const auto limit = std::max(_parent->width(), minimal);
+		_widget->resize(std::min(desired.width(), limit), desired.height());
 		_widget->update();
 	}
 	refreshProgressVisibility();
@@ -855,6 +860,7 @@ void ConnectionState::Widget::setLayout(const Layout &layout) {
 		_currentLayout.proxyEnabled,
 		_currentLayout.proxyTone);
 	refreshRetryLink(_currentLayout.hasRetry);
+	updateRetryGeometry();
 	setAccessibleName(_currentLayout.text);
 }
 

@@ -51,8 +51,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QDateTime>
 #include <QtCore/QLocale>
 
-#include <ada.h>
-
 namespace {
 
 constexpr auto kReminderSetToastDuration = 4 * crl::time(1000);
@@ -72,10 +70,9 @@ constexpr auto kReminderSetToastDuration = 4 * crl::time(1000);
 [[nodiscard]] QString DisplayUrlWithUnicodeHost(const QUrl &url) {
 	const auto result = url.toDisplayString();
 	const auto shown = url.host();
-	const auto ace = url.host(QUrl::FullyEncoded).toStdString();
-	const auto unicode = ada::idna::to_unicode(ace);
-	const auto host = QString::fromStdString(unicode);
-	if (host == shown || ada::idna::to_ascii(unicode) != ace) {
+	const auto ace = url.host(QUrl::FullyEncoded).toLatin1();
+	const auto host = QUrl::fromAce(ace, QUrl::IgnoreIDNWhitelist);
+	if (host == shown || QUrl::toAce(host) != ace) {
 		return result;
 	}
 	const auto authority = result.indexOf(u"://"_q);
@@ -744,7 +741,9 @@ QString MentionClickHandler::copyToClipboardContextItemText() const {
 
 void MentionClickHandler::onClick(ClickContext context) const {
 	const auto button = context.button;
-	if (button == Qt::LeftButton || button == Qt::MiddleButton) {
+	if (Core::App().passcodeLocked()) {
+		return;
+	} else if (button == Qt::LeftButton || button == Qt::MiddleButton) {
 		const auto my = context.other.value<ClickHandlerContext>();
 		const auto controller = my.sessionWindow.get();
 		const auto use = controller

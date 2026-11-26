@@ -8,10 +8,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/notify/data_peer_notify_settings.h"
-#include "data/data_types.h"
-#include "data/data_flags.h"
 #include "data/data_cloud_file.h"
+#include "data/data_flags.h"
 #include "data/data_peer_common.h"
+#include "data/data_types.h"
 #include "ui/userpic_view.h"
 
 struct BotInfo;
@@ -183,7 +183,8 @@ enum class PeerBarSetting {
 	HasBusinessBot = (1 << 8),
 	BusinessBotPaused = (1 << 9),
 	BusinessBotCanReply = (1 << 10),
-	Unknown = (1 << 11),
+	HasBotInviter = (1 << 11),
+	Unknown = (1 << 12),
 };
 inline constexpr bool is_flag_type(PeerBarSetting) { return true; };
 using PeerBarSettings = base::flags<PeerBarSetting>;
@@ -196,6 +197,8 @@ struct PeerBarDetails {
 	QString requestChatTitle;
 	TimeId requestChatDate = 0;
 	UserData *businessBot = nullptr;
+	UserData *botInviter = nullptr;
+	UserData *botOwner = nullptr;
 	QString businessBotManageUrl;
 	int paysPerMessage = 0;
 };
@@ -513,6 +516,8 @@ public:
 	[[nodiscard]] UserData *businessBot() const;
 	[[nodiscard]] QString businessBotManageUrl() const;
 	void clearBusinessBot();
+	[[nodiscard]] UserData *botInviter() const;
+	[[nodiscard]] UserData *botOwner() const;
 	[[nodiscard]] QString phoneCountryCode() const;
 	[[nodiscard]] int registrationMonth() const;
 	[[nodiscard]] int registrationYear() const;

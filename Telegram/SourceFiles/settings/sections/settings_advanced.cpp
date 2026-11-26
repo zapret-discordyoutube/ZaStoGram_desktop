@@ -7,13 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_advanced.h"
 
-#include "settings/settings_common_session.h"
-
 #include "api/api_global_privacy.h"
 #include "apiwrap.h"
-#include "base/call_delayed.h"
 #include "base/platform/base_platform_custom_app_icon.h"
 #include "base/platform/base_platform_info.h"
+#include "base/call_delayed.h"
 #include "base/screen_reader_state.h"
 #include "boxes/about_box.h"
 #include "boxes/auto_download_box.h"
@@ -40,13 +38,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/instance/mtp_instance.h"
 #include "mtproto/runtime/connection_status.h"
 #include "platform/platform_specific.h"
-#include "settings/settings_builder.h"
+#include "settings/sections/settings_chat.h"
 #include "settings/sections/settings_local_storage.h"
 #include "settings/sections/settings_main.h"
-#include "settings/sections/settings_chat.h"
+#include "settings/sections/settings_privacy_security.h"
+#include "settings/settings_builder.h"
+#include "settings/settings_common_session.h"
 #include "settings/settings_experimental.h"
 #include "settings/settings_power_saving.h"
-#include "settings/sections/settings_privacy_security.h"
 #include "storage/localstorage.h"
 #include "storage/storage_domain.h"
 #include "tray.h"
@@ -54,29 +53,30 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/single_choice_box.h"
 #include "ui/gl/gl_detection.h"
 #include "ui/layers/generic_box.h"
-#include "ui/painter.h"
 #include "ui/platform/ui_platform_window.h"
-#include "ui/power_saving.h"
-#include "ui/rp_widget.h"
-#include "ui/screen_reader_mode.h"
 #include "ui/text/format_values.h"
-#include "ui/ui_utility.h"
-#include "ui/vertical_list.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/painter.h"
+#include "ui/power_saving.h"
+#include "ui/rp_widget.h"
+#include "ui/screen_reader_mode.h"
+#include "ui/ui_utility.h"
+#include "ui/vertical_list.h"
 #include "window/window_controller.h"
 #include "window/window_saved_windows.h"
 #include "window/window_session_controller.h"
+
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 #include "base/platform/mac/base_confirm_quit.h"
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
 #include "boxes/dictionaries_manager.h"
@@ -89,12 +89,12 @@ namespace {
 
 using namespace Builder;
 
-#if defined Q_OS_MAC && !defined OS_MAC_STORE
+#if defined Q_OS_MACOS && !defined OS_MAC_STORE
 [[nodiscard]] const QImage &IconMacRound() {
 	static const auto result = QImage(u":/gui/art/icon_round512@2x.png"_q);
 	return result;
 }
-#endif // Q_OS_MAC && !OS_MAC_STORE
+#endif // Q_OS_MACOS && !OS_MAC_STORE
 
 void BuildDataStorageSection(SectionBuilder &builder) {
 	const auto controller = builder.controller();
@@ -415,7 +415,7 @@ void BuildWindowTitleSection(SectionBuilder &builder) {
 	builder.addSkip();
 }
 
-#if !defined Q_OS_WIN && !defined Q_OS_MAC
+#if !defined Q_OS_WIN && !defined Q_OS_MACOS
 void BuildWindowCloseBehaviorSection(SectionBuilder &builder) {
 	using Behavior = Core::Settings::CloseBehavior;
 
@@ -477,7 +477,7 @@ void BuildWindowCloseBehaviorSection(SectionBuilder &builder) {
 		builder.addSkip();
 	}, std::move(shown));
 }
-#endif // !Q_OS_WIN && !Q_OS_MAC
+#endif // !Q_OS_WIN && !Q_OS_MACOS
 
 void BuildSystemIntegrationSection(SectionBuilder &builder) {
 	const auto controller = builder.controller();
@@ -584,7 +584,7 @@ void BuildSystemIntegrationSection(SectionBuilder &builder) {
 		}
 	}
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	const auto warnBeforeQuit = builder.addCheckbox({
 		.id = u"advanced/warn_before_quit"_q,
 		.title = tr::lng_settings_mac_warn_before_quit(
@@ -648,7 +648,7 @@ void BuildSystemIntegrationSection(SectionBuilder &builder) {
 		}, roundIcon->lifetime());
 	}
 #endif // OS_MAC_STORE
-#elif defined Q_OS_WIN // Q_OS_MAC
+#elif defined Q_OS_WIN // Q_OS_MACOS
 	using Behavior = Core::Settings::CloseBehavior;
 
 	const auto container = builder.container();
@@ -684,7 +684,7 @@ void BuildSystemIntegrationSection(SectionBuilder &builder) {
 			Local::writeSettings();
 		}, closeToTaskbar->lifetime());
 	}
-#endif // Q_OS_MAC || Q_OS_WIN
+#endif // Q_OS_MACOS || Q_OS_WIN
 
 	if (Platform::AutostartSupported()) {
 		const auto minimizedToggled = [=] {
@@ -1591,7 +1591,7 @@ const auto kMeta = BuildHelper({
 	BuildDataStorageSection(builder);
 	BuildAutoDownloadSection(builder);
 	BuildWindowTitleSection(builder);
-#if !defined Q_OS_WIN && !defined Q_OS_MAC
+#if !defined Q_OS_WIN && !defined Q_OS_MACOS
 	BuildWindowCloseBehaviorSection(builder);
 #endif
 	BuildSystemIntegrationSection(builder);
@@ -1959,7 +1959,7 @@ void SetupSystemIntegrationContent(
 		}
 	}
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 	const auto warnBeforeQuit = addCheckbox(
 		tr::lng_settings_mac_warn_before_quit(
 			lt_text,
@@ -1997,7 +1997,7 @@ void SetupSystemIntegrationContent(
 		Core::App().saveSettings();
 	}, roundIcon->lifetime());
 #endif // OS_MAC_STORE
-#elif defined Q_OS_WIN // Q_OS_MAC
+#elif defined Q_OS_WIN // Q_OS_MACOS
 	using Behavior = Core::Settings::CloseBehavior;
 	const auto closeToTaskbar = addSlidingCheckbox(
 		tr::lng_settings_close_to_taskbar(),
@@ -2021,7 +2021,7 @@ void SetupSystemIntegrationContent(
 		settings->setCloseBehavior(value);
 		Local::writeSettings();
 	}, closeToTaskbar->lifetime());
-#endif // Q_OS_MAC || Q_OS_WIN
+#endif // Q_OS_MACOS || Q_OS_WIN
 
 	if (Platform::AutostartSupported() && controller) {
 		const auto minimizedToggled = [=] {

@@ -12,52 +12,52 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qt/qt_key_modifiers.h"
 #include "base/algorithm.h"
 #include "base/options.h"
-#include "iv/iv_rich_page.h"
-#include "lang/lang_keys.h"
-#include "ui/effects/ripple_animation.h"
-#include "ui/effects/spoiler_mess.h"
-#include "ui/effects/voice_once_particles.h"
-#include "ui/image/image.h"
-#include "ui/toast/toast.h"
-#include "ui/text/format_values.h"
-#include "ui/text/text_options.h"
-#include "ui/text/text_utilities.h"
-#include "ui/chat/chat_style.h"
-#include "ui/chat/chat_theme.h"
-#include "ui/painter.h"
-#include "ui/paint/blobs.h"
-#include "ui/rect.h"
-#include "ui/power_saving.h"
-#include "history/history.h"
-#include "history/history_item.h"
-#include "history/history_item_helpers.h"
-#include "history/view/history_view_message.h" // FromNameFg.
-#include "history/view/history_view_service_message.h"
-#include "history/view/media/history_view_document.h"
-#include "history/view/history_view_transcribe_button.h"
 #include "core/click_handler_types.h"
 #include "core/local_url_handlers.h"
 #include "core/ui_integration.h"
-#include "media/audio/media_audio.h"
-#include "media/player/media_player_float.h"
-#include "media/player/media_player_instance.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/scheduled_messages.h"
 #include "data/stickers/data_custom_emoji.h"
 #include "data/data_channel.h"
-#include "data/data_media_types.h"
-#include "data/data_session.h"
-#include "data/data_user.h"
-#include "data/data_file_origin.h"
 #include "data/data_document.h"
-#include "data/data_web_page.h"
 #include "data/data_file_click_handler.h"
+#include "data/data_file_origin.h"
+#include "data/data_media_types.h"
 #include "data/data_session.h"
 #include "data/data_stories.h"
 #include "data/data_todo_list.h"
+#include "data/data_user.h"
+#include "data/data_web_page.h"
+#include "history/view/media/history_view_document.h"
+#include "history/view/history_view_message.h" // FromNameFg.
+#include "history/view/history_view_service_message.h"
+#include "history/view/history_view_transcribe_button.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "history/history_item_helpers.h"
+#include "iv/iv_rich_page.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
-#include "window/window_session_controller.h"
+#include "media/audio/media_audio.h"
+#include "media/player/media_player_float.h"
+#include "media/player/media_player_instance.h"
 #include "support/support_helper.h"
+#include "ui/chat/chat_style.h"
+#include "ui/chat/chat_theme.h"
+#include "ui/effects/ripple_animation.h"
+#include "ui/effects/spoiler_mess.h"
+#include "ui/effects/voice_once_particles.h"
+#include "ui/image/image.h"
+#include "ui/paint/blobs.h"
+#include "ui/text/format_values.h"
+#include "ui/text/text_options.h"
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
+#include "ui/painter.h"
+#include "ui/power_saving.h"
+#include "ui/rect.h"
+#include "window/window_session_controller.h"
+
 #include "styles/style_chat.h"
 #include "styles/style_credits.h"
 #include "styles/style_dialogs.h" // dialogsMiniReplyStory.
@@ -935,7 +935,9 @@ ReplyKeyboard::ReplyKeyboard(
 						RegExp,
 						QChar(0x2B50))
 					: row[j].text;
+				auto prependsIcon = false;
 				const auto withEmoji = [&](const style::IconEmoji &icon) {
+					prependsIcon = true;
 					return Ui::Text::IconEmoji(&icon).append(text);
 				};
 				const auto textWithEntities = [&] {
@@ -990,6 +992,12 @@ ReplyKeyboard::ReplyKeyboard(
 							.session = session,
 							.repaint = [=] { _st->repaint(_item); },
 						}));
+					if (prependsIcon) {
+						button.textWithoutIcon.setText(
+							_st->textStyle(),
+							TextUtilities::SingleLine(text),
+							kPlainTextOptions);
+					}
 				} else {
 					button.text.setText(
 						_st->textStyle(),
@@ -1380,7 +1388,11 @@ void ReplyKeyboard::Style::paintButton(
 		tw = st::botKbStyle.font->elidew;
 	}
 	paintButtonStart(p, st, button.color);
-	button.text.draw(p, {
+	const auto &text = (!button.textWithoutIcon.isEmpty()
+		&& button.text.maxWidth() > tw)
+		? button.textWithoutIcon
+		: button.text;
+	text.draw(p, {
 		.position = {
 			tx,
 			rect.y() + _st->textTop + ((rect.height() - _st->height) / 2),

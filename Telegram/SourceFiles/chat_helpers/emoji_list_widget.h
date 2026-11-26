@@ -7,12 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/timer.h"
 #include "chat_helpers/compose/compose_features.h"
 #include "chat_helpers/tabbed_selector.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/round_rect.h"
-#include "base/timer.h"
 
 #include <map>
 
@@ -84,6 +84,7 @@ enum class EmojiListMode {
 	UserpicBuilder,
 	BackgroundEmoji,
 	PeerTitle,
+	UnicodeOnly,
 	MessageEffects,
 	CustomOnly,
 };
@@ -502,6 +503,7 @@ private:
 	const std::shared_ptr<Show> _show;
 	const ComposeFeatures _features;
 	const bool _onlyUnicodeEmoji;
+	const bool _focusUnicodeSearch;
 	Mode _mode = Mode::Full;
 	QWidget *_mediaPreviewParent = nullptr;
 	QMargins _mediaPreviewMargins;

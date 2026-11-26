@@ -7,9 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/auth/mtproto_auth_key.h"
-#include "mtproto/instance/mtp_instance.h"
 #include "base/weak_ptr.h"
+#include "mtproto/instance/mtp_instance.h"
+#include "mtproto/auth/mtproto_auth_key.h"
 
 namespace Storage {
 class Account;

@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/instance/sender.h"
 #include "data/stickers/data_stickers_set.h"
+#include "mtproto/instance/sender.h"
 #include "settings.h"
 
 class HistoryItem;

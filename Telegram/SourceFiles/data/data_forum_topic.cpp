@@ -7,32 +7,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_forum_topic.h"
 
-#include "data/data_channel.h"
+#include "api/api_unread_things.h"
+#include "apiwrap.h"
+#include "base/unixtime.h"
+#include "data/notify/data_notify_settings.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "data/data_changes.h"
+#include "data/data_channel.h"
 #include "data/data_forum.h"
 #include "data/data_histories.h"
 #include "data/data_replies_list.h"
 #include "data/data_send_action.h"
-#include "data/notify/data_notify_settings.h"
 #include "data/data_session.h"
-#include "data/stickers/data_custom_emoji.h"
-#include "dialogs/dialogs_main_list.h"
 #include "dialogs/ui/dialogs_layout.h"
-#include "core/application.h"
-#include "core/core_settings.h"
-#include "apiwrap.h"
-#include "api/api_unread_things.h"
+#include "dialogs/dialogs_main_list.h"
+#include "history/view/history_view_item_preview.h"
+#include "history/view/history_view_list_widget.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_unread_things.h"
-#include "history/view/history_view_item_preview.h"
-#include "history/view/history_view_chat_section.h"
 #include "main/main_session.h"
-#include "base/unixtime.h"
-#include "ui/painter.h"
-#include "ui/color_int_conversion.h"
 #include "ui/text/text_custom_emoji.h"
 #include "ui/text/text_utilities.h"
+#include "ui/color_int_conversion.h"
+#include "ui/painter.h"
+
 #include "styles/style_dialogs.h"
 
 #include <QtSvg/QSvgRenderer>
@@ -833,6 +832,8 @@ int32 ForumTopic::colorId() const {
 void ForumTopic::applyColorId(int32 colorId) {
 	if (_colorId != colorId) {
 		_colorId = colorId;
+		_defaultIcon = QImage();
+		updateChatListEntry();
 		session().changes().topicUpdated(this, UpdateFlag::ColorId);
 	}
 }

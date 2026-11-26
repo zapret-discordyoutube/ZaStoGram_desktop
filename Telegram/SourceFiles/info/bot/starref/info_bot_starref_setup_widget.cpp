@@ -31,6 +31,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "ui/vertical_list.h"
+
 #include "styles/style_info.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
@@ -308,7 +309,7 @@ private:
 			centers,
 			widths,
 			outer,
-			labelStyle->style.font->spacew);
+			3 * labelStyle->style.font->spacew);
 		for (auto i = 0; i != state->labels.size(); ++i) {
 			state->labels[i]->moveToLeft(lefts[i], 0, outer);
 		}

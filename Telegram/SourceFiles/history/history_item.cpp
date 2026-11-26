@@ -10,52 +10,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_bot.h"
 #include "api/api_premium.h"
 #include "api/api_sensitive_content.h"
-#include "api/api_transcribes.h"
-#include "lang/lang_keys.h"
-#include "calls/calls_instance.h" // Core::App().calls().joinGroupCall.
-#include "history/view/history_view_item_preview.h"
-#include "history/view/history_view_message.h"
-#include "history/view/history_view_service_message.h"
-#include "history/view/media/history_view_media_grouped.h"
-#include "history/history_item_components.h"
-#include "history/history_item_helpers.h"
-#include "history/history_unread_things.h"
-#include "history/history.h"
-#include "iv/iv_data.h"
-#include "iv/editor/iv_editor_session.h"
-#include "iv/editor/iv_editor_page_blocks.h"
-#include "iv/iv_rich_page.h"
-#include "mtproto/config/mtproto_config.h"
 #include "ui/controls/ton_common.h"
-#include "ui/text/format_values.h"
-#include "ui/text/text_isolated_emoji.h"
-#include "ui/text/text_utilities.h"
-#include "settings/settings_credits_graphics.h" // ShowRefundInfoBox.
-#include "storage/file_upload.h"
-#include "storage/storage_shared_media.h"
-#include "main/main_session.h"
-#include "main/main_app_config.h"
-#include "main/main_session_settings.h"
-#include "menu/menu_ttl_validator.h"
-#include "apiwrap.h"
-#include "media/audio/media_audio.h"
-#include "core/application.h"
 #include "core/zsg_login_guard.h"
 #include "core/core_settings.h"
-#include "wallet/wallet_address.h"
 #include "wallet/wallet_fiat.h"
-#include "wallet/wallet_panel.h"
-#include "wallet/wallet_session.h"
-#include "wallet/wallet_ton_connect.h"
-#include "window/window_controller.h"
-#include "window/window_session_controller.h"
-#include "core/click_handler_types.h"
-#include "base/call_delayed.h"
-#include "base/unixtime.h"
-#include "base/timer_rpl.h"
-#include "boxes/send_credits_box.h"
 #include "api/api_text_entities.h"
+#include "api/api_transcribes.h"
 #include "api/api_updates.h"
+#include "apiwrap.h"
+#include "base/call_delayed.h"
+#include "base/timer_rpl.h"
+#include "base/unixtime.h"
+#include "boxes/send_credits_box.h"
+#include "calls/calls_instance.h" // Core::App().calls().joinGroupCall.
+#include "chat_helpers/stickers_gift_box_pack.h"
+#include "core/application.h"
+#include "core/click_handler_types.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/ephemeral_messages.h"
 #include "data/components/scheduled_messages.h"
@@ -63,38 +33,69 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/welcome_messages.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/data_bot_app.h"
-#include "data/data_document.h"
-#include "data/data_saved_messages.h"
-#include "data/data_saved_sublist.h"
 #include "data/data_changes.h"
-#include "data/data_session.h"
-#include "data/data_message_reactions.h"
+#include "data/data_channel.h"
+#include "data/data_chat.h"
+#include "data/data_document.h"
+#include "data/data_document_media.h"
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
-#include "data/data_channel.h"
-#include "data/data_chat.h"
 #include "data/data_game.h"
 #include "e2e_cloud/desktop/desktop_service.h"
+#include "data/data_group_call.h" // Data::GroupCall::id().
 #include "data/data_histories.h"
 #include "data/data_history_messages.h"
-#include "data/data_user.h"
-#include "data/data_group_call.h" // Data::GroupCall::id().
-#include "data/data_poll.h" // PollData::publicVotes.
-#include "data/data_todo_list.h"
-#include "data/data_document.h"
-#include "data/data_document_media.h"
+#include "data/data_message_reactions.h"
 #include "data/data_photo.h"
+#include "data/data_poll.h" // PollData::publicVotes.
+#include "data/data_saved_messages.h"
+#include "data/data_saved_sublist.h"
+#include "data/data_session.h"
 #include "data/data_stories.h"
+#include "data/data_todo_list.h"
+#include "data/data_user.h"
 #include "data/data_web_page.h"
 #include "data/data_media_types.h"
 #include "e2e_cloud/transport/cloud_vault_transport.h"
-#include "chat_helpers/stickers_gift_box_pack.h"
+#include "history/view/media/history_view_media_grouped.h"
+#include "history/view/history_view_item_preview.h"
+#include "history/view/history_view_message.h"
+#include "history/view/history_view_service_message.h"
+#include "history/history.h"
+#include "history/history_gift_onchain_offer.h"
+#include "history/history_item_bot_invite.h"
+#include "history/history_item_components.h"
+#include "history/history_item_helpers.h"
+#include "history/history_unread_things.h"
+#include "iv/editor/iv_editor_page_blocks.h"
+#include "iv/editor/iv_editor_session.h"
+#include "iv/iv_data.h"
+#include "iv/iv_rich_page.h"
+#include "lang/lang_keys.h"
+#include "main/main_app_config.h"
+#include "main/main_session.h"
+#include "main/main_session_settings.h"
+#include "media/audio/media_audio.h"
+#include "menu/menu_ttl_validator.h"
+#include "mtproto/config/mtproto_config.h"
 #include "payments/payments_checkout_process.h" // CheckoutProcess::Start.
 #include "payments/payments_non_panel_process.h" // ProcessNonPanelPaymentFormFactory.
 #include "platform/platform_notifications_manager.h"
+#include "settings/settings_credits_graphics.h" // ShowRefundInfoBox.
 #include "spellcheck/spellcheck_highlight_syntax.h"
+#include "storage/file_upload.h"
+#include "storage/storage_shared_media.h"
 #include "tgw/tgw_media.h"
+#include "ui/text/format_values.h"
+#include "ui/text/text_isolated_emoji.h"
+#include "ui/text/text_utilities.h"
+#include "wallet/wallet_address.h"
+#include "wallet/wallet_panel.h"
+#include "wallet/wallet_session.h"
+#include "wallet/wallet_ton_connect.h"
+#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 
 #include "styles/style_chat.h"
 #include "styles/style_credits.h"
@@ -1116,6 +1117,8 @@ HistoryServiceDependentData *HistoryItem::GetServiceDependentData() {
 		return append;
 	} else if (const auto poll = Get<HistoryServicePollAppendAnswer>()) {
 		return poll;
+	} else if (const auto pollDelete = Get<HistoryServicePollDeleteAnswer>()) {
+		return pollDelete;
 	} else if (const auto decision = Get<HistoryServiceSuggestDecision>()) {
 		return decision;
 	} else if (const auto finish = Get<HistoryServiceSuggestFinish>()) {
@@ -2700,6 +2703,7 @@ void HistoryItem::applyEdition(const MTPDmessageService &message) {
 	const auto wasActionTaken = wasNfr && wasNfr->actionTaken;
 	const auto wasSublist = savedSublist();
 	const auto wasTopic = topic();
+	const auto wasNotificationThread = maybeNotificationThread();
 	if (message.vaction().type() == mtpc_messageActionHistoryClear) {
 		const auto wasGrouped = history()->owner().groups().isGrouped(this);
 		setReplyMarkup({}, true);
@@ -2792,6 +2796,10 @@ void HistoryItem::applyEdition(const MTPDmessageService &message) {
 		if (nowTopic) {
 			nowTopic->applyMaybeLast(this);
 		}
+	}
+	if (wasNotificationThread
+		&& maybeNotificationThread() != wasNotificationThread) {
+		wasNotificationThread->removeNotification(this);
 	}
 }
 
@@ -5145,10 +5153,11 @@ TextWithEntities HistoryItem::notificationText(
 		}
 		return TextWithEntities();
 	}();
-	// A transfer's amount and comment are never a login code.
+	// Gram transfers and on-chain gift offers never carry a login code.
 	if (options.spoilerLoginCode
 		&& !out()
-		&& !Has<HistoryServiceGramTransfer>()) {
+		&& !Has<HistoryServiceGramTransfer>()
+		&& !Has<HistoryServiceGiftOnchainOffer>()) {
 		const auto peer = history()->peer;
 		if (peer->isNotificationsUser()) {
 			result = SpoilerLoginCode(std::move(result), kMinLoginCode);
@@ -6070,6 +6079,8 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 		transfer->peerAddress = qs(data.vpeer_address());
 		transfer->transactionId = qs(data.vtransaction_id());
 		transfer->comment = qs(data.vcomment().value_or_empty());
+		transfer->onrampProvider = qs(
+			data.vonramp_provider_name().value_or_empty()).trimmed();
 		transfer->commentEncrypted = data.is_comment_encrypted();
 	} else if (type == mtpc_messageActionWalletTonConnectRequest) {
 		const auto &data = action.c_messageActionWalletTonConnectRequest();
@@ -6254,6 +6265,11 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 			? SuggestRefundType::Expired
 			: SuggestRefundType::User;
 		finish->price = CreditsAmountFromTL(data.vprice());
+	} else if (type == mtpc_messageActionStarGiftOnchainOffer) {
+		UpdateComponents(HistoryServiceGiftOnchainOffer::Bit());
+		FillGiftOnchainOffer(
+			this,
+			action.c_messageActionStarGiftOnchainOffer());
 	} else if (type == mtpc_messageActionNoForwardsToggle) {
 		AddComponents(HistoryServiceNoForwardsToggle::Bit());
 	} else if (type == mtpc_messageActionNoForwardsRequest) {
@@ -6342,18 +6358,24 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 			const auto peerId = data.vreply_to_peer_id()
 				? peerFromMTP(*data.vreply_to_peer_id())
 				: _history->peer->id;
-			if (const auto dependent = GetServiceDependentData()) {
-				const auto id = data.vreply_to_msg_id().value_or_empty();
-				if (id) {
-					dependent->peerId = (peerId != _history->peer->id)
-						? peerId
-						: 0;
-					dependent->msgId = id;
-					dependent->topId = data.vreply_to_top_id().value_or(id);
-					dependent->topicPost = data.is_forum_topic()
-						|| Has<HistoryServiceTopicInfo>();
-					updateServiceDependent();
-				}
+			const auto id = data.vreply_to_msg_id().value_or_empty();
+			if (!id) {
+				return;
+			}
+			if (const auto offer = Get<HistoryServiceGiftOnchainOffer>()) {
+				offer->originalOfferLink = JumpToMessageClickHandler(
+					_history->owner().peer(peerId),
+					id,
+					fullId());
+			} else if (const auto dependent = GetServiceDependentData()) {
+				dependent->peerId = (peerId != _history->peer->id)
+					? peerId
+					: 0;
+				dependent->msgId = id;
+				dependent->topId = data.vreply_to_top_id().value_or(id);
+				dependent->topicPost = data.is_forum_topic()
+					|| Has<HistoryServiceTopicInfo>();
+				updateServiceDependent();
 			}
 		}, [](const MTPDmessageReplyStoryHeader &data) {
 		});
@@ -6638,6 +6660,10 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 
 	auto prepareTonConnectRequest = [&](const MTPDmessageActionWalletTonConnectRequest &) {
 		return prepareTonConnectRequestText();
+	};
+
+	auto prepareStarGiftOnchainOffer = [&](const MTPDmessageActionStarGiftOnchainOffer &) {
+		return PrepareGiftOnchainOfferText(this);
 	};
 
 	auto prepareNoPaidMessagesTokenUsed = [this](const MTPDmessageActionNoPaidMessagesTokenUsed &) {
@@ -7773,7 +7799,7 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 								lt_user,
 								tr::link(from->shortName(), 1),
 								tr::marked);
-			} else if (action.is_assigned()) {
+			} else if (action.is_assigned() && !resale) {
 				const auto gift = Api::FromTL(
 					&history()->session(),
 					action.vgift());
@@ -8117,6 +8143,15 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 		return result;
 	};
 
+	auto prepareBotInvite = [this](const MTPDmessageActionBotInvite &action) {
+		const auto sender = _from->asUser();
+		return PrepareBotInviteText(
+			_history->owner().user(action.vinviter_id().v),
+			sender && sender->isBot(),
+			fromLinkText(),
+			fromLink());
+	};
+
 	auto prepareChangeCommunity = [this](const MTPDmessageActionChangeCommunity &action) {
 		auto result = PreparedServiceText();
 		const auto fromChatItself = (_from == _history->peer);
@@ -8259,6 +8294,8 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 		prepareGramTransfer,
 		prepareTonConnectRequest,
 		prepareNoPaidMessagesTokenUsed,
+		prepareStarGiftOnchainOffer,
+		prepareBotInvite,
 		PrepareErrorText<MTPDmessageActionEmpty>));
 
 	processAction(action);
@@ -8595,6 +8632,8 @@ void HistoryItem::processAction(const MTPMessageAction &action) {
 					.type = Data::GiftType::GiftOffer,
 				});
 		}
+	}, [&](const MTPDmessageActionStarGiftOnchainOffer &) {
+		_media = CreateGiftOnchainOfferMedia(this);
 	}, [](const auto &) {
 	});
 }
@@ -8959,27 +8998,10 @@ PreparedServiceText HistoryItem::prepareGramTransferText(
 	if (!transfer) {
 		return result;
 	}
-	auto amount = tr::lng_action_gram_transfer_amount(
-		tr::now,
-		lt_count,
-		transfer->amount / float64(Ui::kNanosInOne),
-		lt_amount,
-		tr::marked(Ui::FormatTonAmount(transfer->amount).full),
-		tr::marked);
-	const auto usdPerGram = history()->session().appConfig().get<float64>(
-		u"ton_usd_rate"_q,
-		0.);
-	if (usdPerGram > 0.) {
-		amount = tr::lng_action_gram_transfer_amount_fiat(
-			tr::now,
-			lt_amount,
-			amount,
-			lt_fiat,
-			tr::marked(Wallet::FormatFiat(
-				transfer->amount,
-				Wallet::FiatRate{ u"USD"_q, usdPerGram })),
-			tr::marked);
-	}
+	auto amount = PrepareGramAmountWithFiat(
+		&history()->session(),
+		transfer->amount,
+		tr::marked(PrepareGramAmountText(transfer->amount)));
 	const auto hidden = history()->peer->isNotificationsUser();
 	auto name = tr::marked();
 	if (!hidden) {

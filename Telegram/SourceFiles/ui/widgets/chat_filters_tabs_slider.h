@@ -7,9 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/unread_badge_paint.h"
 #include "ui/widgets/chat_filters_tabs_mode.h"
 #include "ui/widgets/discrete_sliders.h"
+#include "ui/filter_title_icon.h"
+#include "ui/unread_badge_paint.h"
 
 namespace style {
 namespace internal {
@@ -39,8 +40,11 @@ public:
 	void fitWidthToSections() override;
 	void setUnreadCount(int index, int unreadCount, bool muted);
 	void setTabsMode(ChatsFiltersTabsMode mode);
-	void setSectionIcons(std::vector<const style::internal::Icon*> icons);
-	// A tab of its own color (ZaStoGram's folders), none for the default.
+	struct SectionIcon {
+		const style::internal::Icon *fallback = nullptr;
+		FilterEmojiIconPaint paintEmoji;
+	};
+	void setSectionIcons(std::vector<SectionIcon> icons);
 	void setSectionColors(std::vector<std::optional<QColor>> colors);
 	void setLockedFrom(int index);
 	[[nodiscard]] int lockedFrom() const {
@@ -98,7 +102,7 @@ private:
 	const int _unreadSkip;
 	const int _iconSkip;
 	ChatsFiltersTabsMode _tabsMode = ChatsFiltersTabsMode::TextOnly;
-	std::vector<const style::internal::Icon*> _sectionIcons;
+	std::vector<SectionIcon> _sectionIcons;
 	std::vector<std::optional<QColor>> _sectionColors;
 	std::vector<int> _cachedBadgeWidths;
 	int _cachedBadgeHeight = 0;

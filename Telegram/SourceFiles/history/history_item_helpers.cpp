@@ -9,19 +9,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_reactions_notify_settings.h"
 #include "api/api_text_entities.h"
+#include "apiwrap.h"
+#include "base/unixtime.h"
 #include "boxes/premium_preview_box.h"
 #include "calls/calls_instance.h"
+#include "core/application.h"
+#include "core/click_handler_types.h" // ClickHandlerContext.
 #include "data/components/ephemeral_messages.h"
 #include "data/components/sponsored_messages.h"
-#include "data/stickers/data_custom_emoji.h"
 #include "data/notify/data_notify_settings.h"
+#include "data/stickers/data_custom_emoji.h"
+#include "data/data_changes.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
-#include "data/data_changes.h"
 #include "data/data_document.h"
-#include "data/data_group_call.h"
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
+#include "data/data_group_call.h"
 #include "data/data_location.h"
 #include "data/data_message_reactions.h"
 #include "data/data_messages.h"
@@ -35,28 +39,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "history/history_item_components.h"
 #include "iv/iv_rich_page.h"
+#include "lang/lang_keys.h"
 #include "main/main_account.h"
+#include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "menu/menu_sponsored.h"
 #include "platform/platform_notifications_manager.h"
-#include "window/window_controller.h"
-#include "window/window_session_controller.h"
-#include "apiwrap.h"
-#include "base/unixtime.h"
-#include "core/application.h"
-#include "core/click_handler_types.h" // ClickHandlerContext.
 #include "settings/settings_credits_graphics.h"
 #include "storage/storage_account.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/emoji_stake_box.h" // InsufficientTonBox
+#include "ui/controls/ton_common.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/item_text_options.h"
-#include "lang/lang_keys.h"
+#include "wallet/wallet_fiat.h"
+#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 
 #include "styles/style_layers.h"
 
@@ -1474,6 +1477,36 @@ HistoryMessageMarkupData UnsupportedMessageMarkup() {
 		QByteArray("https://desktop.telegram.org"));
 	markup.rows.push_back(std::move(row));
 	return markup;
+}
+
+QString PrepareGramAmountText(int64 nanos) {
+	return tr::lng_action_gram_transfer_amount(
+		tr::now,
+		lt_count,
+		nanos / float64(Ui::kNanosInOne),
+		lt_amount,
+		Ui::FormatTonAmount(nanos).full);
+}
+
+TextWithEntities PrepareGramAmountWithFiat(
+		not_null<Main::Session*> session,
+		int64 nanos,
+		TextWithEntities amount) {
+	const auto usdPerGram = session->appConfig().get<float64>(
+		u"ton_usd_rate"_q,
+		0.);
+	if (usdPerGram > 0.) {
+		return tr::lng_action_gram_transfer_amount_fiat(
+			tr::now,
+			lt_amount,
+			std::move(amount),
+			lt_fiat,
+			tr::marked(Wallet::FormatFiat(
+				nanos,
+				Wallet::FiatRate{ u"USD"_q, usdPerGram })),
+			tr::marked);
+	}
+	return amount;
 }
 
 void ShowTrialTranscribesToast(int left, TimeId until) {

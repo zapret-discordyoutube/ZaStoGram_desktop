@@ -7,20 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history.h"
 
-#include "history/view/history_view_element.h"
-#include "history/view/history_view_item_preview.h"
-#include "history/view/history_view_translate_tracker.h"
-#include "dialogs/dialogs_indexed_list.h"
-#include "history/history_inner_widget.h"
-#include "history/history_item.h"
-#include "history/history_item_components.h"
-#include "history/history_item_helpers.h"
-#include "history/history_streamed_drafts.h"
-#include "history/history_translation.h"
-#include "history/history_unread_things.h"
-#include "iv/editor/iv_editor_session.h"
+#include "api/api_chat_participants.h"
+#include "api/api_text_entities.h"
+#include "api/api_updates.h"
+#include "apiwrap.h"
+#include "base/qt/qt_common_adapters.h"
+#include "base/options.h"
+#include "base/unixtime.h"
+#include "calls/calls_instance.h"
+#include "core/application.h"
+#include "core/crash_reports.h"
 #include "core/ui_integration.h"
-#include "dialogs/ui/dialogs_layout.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/credits.h"
 #include "data/components/scheduled_messages.h"
@@ -28,48 +25,56 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/top_peers.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/stickers/data_stickers.h"
+#include "data/data_changes.h"
+#include "data/data_channel.h"
+#include "data/data_channel_admins.h"
+#include "data/data_chat.h"
+#include "data/data_chat_filters.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_compose_stash.h"
+#include "data/data_document.h"
 #include "data/data_drafts.h"
-#include "data/data_saved_messages.h"
-#include "data/data_saved_sublist.h"
-#include "data/data_session.h"
-#include "data/data_media_types.h"
-#include "data/data_channel_admins.h"
-#include "data/data_changes.h"
-#include "data/data_chat_filters.h"
-#include "data/data_replies_list.h"
-#include "data/data_send_action.h"
-#include "data/data_star_gift.h"
 #include "data/data_emoji_statuses.h"
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_forum_topic.h"
-#include "data/data_photo.h"
-#include "data/data_channel.h"
-#include "data/data_chat.h"
-#include "data/data_user.h"
-#include "data/data_document.h"
 #include "data/data_histories.h"
 #include "data/data_history_messages.h"
-#include "api/api_text_entities.h"
-#include "api/api_updates.h"
+#include "data/data_media_types.h"
+#include "data/data_photo.h"
 #include "data/data_poll.h"
+#include "data/data_replies_list.h"
+#include "data/data_saved_messages.h"
+#include "data/data_saved_sublist.h"
+#include "data/data_send_action.h"
+#include "data/data_session.h"
+#include "data/data_star_gift.h"
 #include "data/data_todo_list.h"
+#include "data/data_user.h"
+#include "dialogs/ui/dialogs_layout.h"
+#include "dialogs/dialogs_indexed_list.h"
+#include "history/view/history_view_element.h"
+#include "history/view/history_view_item_preview.h"
+#include "history/view/history_view_translate_tracker.h"
+#include "history/history_inner_widget.h"
+#include "history/history_item.h"
+#include "history/history_item_components.h"
+#include "history/history_item_helpers.h"
+#include "history/history_streamed_drafts.h"
+#include "history/history_top_message_hint.h"
+#include "history/history_translation.h"
+#include "history/history_unread_things.h"
+#include "iv/editor/iv_editor_session.h"
 #include "lang/lang_keys.h"
-#include "apiwrap.h"
-#include "api/api_chat_participants.h"
+#include "main/main_session.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
-#include "main/main_session.h"
-#include "window/notifications_manager.h"
-#include "window/window_session_controller.h"
-#include "calls/calls_instance.h"
+#include "payments/payments_checkout_process.h"
 #include "spellcheck/spellcheck_types.h"
 #include "storage/localstorage.h"
+#include "storage/storage_account.h"
 #include "storage/storage_facade.h"
 #include "storage/storage_shared_media.h"
-#include "storage/storage_account.h"
 #include "support/support_helper.h"
 #include "tgw/tgw_storage.h"
 #include "ui/image/image.h"
@@ -77,13 +82,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
 #include "ui/painter.h" // remove when History::paintUserpic accepts QPainter
-#include "payments/payments_checkout_process.h"
-#include "core/crash_reports.h"
 #include "core/zsg_diag.h"
-#include "core/application.h"
-#include "base/options.h"
-#include "base/unixtime.h"
-#include "base/qt/qt_common_adapters.h"
+#include "window/notifications_manager.h"
+#include "window/window_session_controller.h"
 #include "styles/style_dialogs.h"
 
 namespace {
@@ -216,6 +217,9 @@ void History::setHasPendingResizedItems() {
 }
 
 void History::itemRemoved(not_null<HistoryItem*> item) {
+	if (const auto hint = _topMessageHint.get()) {
+		hint->itemRemoved(item);
+	}
 	if (item == _joinedMessage) {
 		_joinedMessage = nullptr;
 	} else if (item == _newPeerNameChange) {
@@ -1599,10 +1603,10 @@ void History::applyServiceChanges(
 			}
 		}
 	}, [&](const MTPDmessageActionTodoAppendTasks &data) {
-		if (const auto done = item->Get<HistoryServiceTodoCompletions>()) {
-			const auto list = done->msg
-				? done->msg
-				: owner().message(peer, done->msgId);
+		if (const auto append = item->Get<HistoryServiceTodoAppendTasks>()) {
+			const auto list = append->msg
+				? append->msg
+				: owner().message(peer, append->msgId);
 			if (const auto media = list ? list->media() : nullptr) {
 				if (const auto todolist = media->todolist()) {
 					todolist->apply(data);
@@ -2495,7 +2499,7 @@ void History::setFakeUnreadWhileOpened(bool enabled) {
 	owner().chatsFilters().refreshHistory(this);
 }
 
-[[nodiscard]] bool History::fakeUnreadWhileOpened() const {
+bool History::fakeUnreadWhileOpened() const {
 	return (_flags & Flag::FakeUnreadWhileOpened);
 }
 
@@ -2721,7 +2725,7 @@ void History::applyPinnedUpdate(const MTPDupdateDialogPinned &data) {
 }
 
 TimeId History::adjustedChatListTimeId() const {
-	const auto result = chatListTimeId();
+	const auto result = std::max(chatListTimeId(), topMessageHintDate());
 	if (const auto channel = peer->asChannel()) {
 		if (channel->isCommunity()) {
 			if (const auto info = channel->communityInfo()) {
@@ -3209,6 +3213,9 @@ void History::setLastServerMessage(HistoryItem *item) {
 
 void History::setLastMessage(HistoryItem *item) {
 	if (_lastMessage && *_lastMessage == item) {
+		if (const auto hint = _topMessageHint.get()) {
+			hint->lastMessageSet(item, false);
+		}
 		return;
 	}
 	_lastMessage = item;
@@ -3225,6 +3232,9 @@ void History::setLastMessage(HistoryItem *item) {
 		if (!chatListMessageKnown()) {
 			setFakeChatListMessage();
 		}
+	}
+	if (const auto hint = _topMessageHint.get()) {
+		hint->lastMessageSet(item, true);
 	}
 }
 
@@ -3555,6 +3565,9 @@ void History::unknownMessageDeleted(MsgId messageId) {
 		.arg(peer->id.value & PeerId::kChatTypeMask)
 		.arg(messageId.bare));
 	_unknownDeletedMessages[messageId] = base::unixtime::now();
+	if (const auto hint = _topMessageHint.get()) {
+		hint->unknownMessageDeleted(messageId);
+	}
 	if (_inboxReadBefore && messageId >= *_inboxReadBefore) {
 		owner().histories().requestDialogEntry(this);
 	}
@@ -4568,6 +4581,7 @@ void History::clear(ClearType type, bool markEmpty) {
 			messages->removeAll();
 		}
 		clearLastKeyboard();
+		clearTopMessageHint();
 	}
 
 	if (const auto chat = peer->asChat()) {
@@ -4583,6 +4597,9 @@ void History::clear(ClearType type, bool markEmpty) {
 
 void History::clearUpTill(MsgId availableMinId) {
 	Tgw::ClearHistoryStorage(this, availableMinId);
+	if (const auto hint = _topMessageHint.get()) {
+		hint->clearedUpTill(availableMinId);
+	}
 	auto remove = std::vector<not_null<HistoryItem*>>();
 	remove.reserve(_items.size());
 	for (const auto &item : _items) {

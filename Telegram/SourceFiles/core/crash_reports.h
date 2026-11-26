@@ -48,7 +48,7 @@ inline void ClearAnnotationRef(const std::string &key) {
 	SetAnnotationRef(key, nullptr);
 }
 
-void StartCatching();
+[[nodiscard]] QString StartCatching();
 void FinishCatching();
 
 // ZaStoGram: writes a minidump of the current process right now (Windows).

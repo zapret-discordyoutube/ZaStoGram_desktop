@@ -8,15 +8,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "logs.h"
 
 #include <crl/crl_time.h>
-
-#include "platform/platform_specific.h"
 #include "core/crash_reports.h"
 #include "core/launcher.h"
 #include "core/update_channel.h"
 #include "core/version.h"
 #include "mtproto/dc_id.h"
-
 #include <QtCore/QCoreApplication>
+#include "platform/platform_specific.h"
 
 namespace {
 
@@ -114,11 +112,11 @@ QString RunScopedDebugLogPath(
 int32 LogsStartIndexChosen = -1;
 QString _logsEntryStart() {
 	static thread_local auto threadId = ThreadCounter++;
-	static auto index = 0;
+	static auto index = std::atomic<uint64>(1);
 
 	const auto tm = QDateTime::currentDateTime();
 
-	return QString("[%1 %2-%3]").arg(tm.toString("hh:mm:ss.zzz"), QString("%1").arg(threadId, 2, 10, QChar('0'))).arg(++index, 7, 10, QChar('0'));
+	return QString("[%1 %2-%3]").arg(tm.toString("hh:mm:ss.zzz"), QString("%1").arg(threadId, 2, 10, QChar('0'))).arg(index.fetch_add(1, std::memory_order_relaxed), 7, 10, QChar('0'));
 }
 
 class LogsDataFields {
@@ -204,18 +202,17 @@ public:
 	}
 
 	void write(LogDataType type, const QString &msg) {
-		QMutexLocker lock(_logsMutex(type));
+		auto lock = QMutexLocker(_logsMutex(type));
 		WritingEntryScope scope;
 
 		if (IsDebugLogData(type)) {
 			ensureDebugLogOpen(type);
 		}
 		const auto file = files[type].get();
-		if (!file || !file->isOpen()) {
-			return;
+		if (file && file->isOpen()) {
+			file->write(msg.toUtf8());
+			file->flush();
 		}
-		file->write(msg.toUtf8());
-		file->flush();
 	}
 
 private:
@@ -331,9 +328,6 @@ NEW LOGGING INSTANCE STARTED!!!\n\
 			}
 
 			return true;
-		} else if (type != LogDataMain) {
-			LOG(("Could not open debug log '%1': %2"
-				).arg(files[type]->fileName(), files[type]->errorString()));
 		}
 		return false;
 	}
@@ -491,7 +485,7 @@ void start() {
 	QDir().mkpath(cWorkingDir() + u"tdata"_q);
 
 	launcher.workingFolderReady();
-	CrashReports::StartCatching();
+	const auto crashCatchingWarning = CrashReports::StartCatching();
 
 	if (!LogsData->openMain()) {
 		delete LogsData;
@@ -510,6 +504,9 @@ void start() {
 	LOG(("Initial working dir: %1").arg(launcher.initialWorkingDir()));
 	LOG(("Working dir: %1").arg(cWorkingDir()));
 	LOG(("Command line: %1").arg(launcher.arguments().join(' ')));
+	if (!crashCatchingWarning.isEmpty()) {
+		LOG((crashCatchingWarning));
+	}
 
 	if (!LogsData) {
 		LOG(("FATAL: Could not open '%1' for writing log!"
@@ -521,7 +518,7 @@ void start() {
 	if (cWorkingDir() == psAppDataPath()) { // fix old "Telegram Win (Unofficial)" version
 		MoveOldDataFiles(psAppDataPathOld());
 	}
-#elif !defined Q_OS_MAC && !defined _DEBUG // fix first version
+#elif !defined Q_OS_MACOS && !defined _DEBUG // fix first version
 	MoveOldDataFiles(launcher.initialWorkingDir());
 #endif
 
@@ -620,7 +617,7 @@ void writeDebug(const QString &v) {
 
 #ifdef Q_OS_WIN
 	//OutputDebugString(reinterpret_cast<const wchar_t *>(msg.utf16()));
-#elif defined Q_OS_MAC
+#elif defined Q_OS_MACOS
 	//objc_outputDebugString(msg);
 #elif defined _DEBUG
 	//std::cout << msg.toUtf8().constData();

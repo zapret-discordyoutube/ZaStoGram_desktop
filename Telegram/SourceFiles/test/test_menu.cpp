@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "test/test_capture.h"
 #include "test/test_console_lock.h"
 #include "test/test_log.h"
+#include "test/test_popup_hold.h"
 #include "test/test_runner.h"
 #include "test/test_widgets.h"
 #include "ui/effects/animation_value.h"
@@ -86,13 +87,68 @@ struct Fixture {
 	return true;
 }
 
-// One Ui::PopupMenu alive before a context-menu event. The QPointer makes a
-// menu destroyed since read as null, so it matches nothing - a new menu
-// allocated at a dead one's address is never taken for the old one.
-struct MenuSnapshotEntry {
-	QPointer<Ui::PopupMenu> menu;
-	bool visible = false;
-};
+// One Ui::PopupMenu::showStateValue() emission, or "none" when nothing was
+// emitted in the window it was read over.
+[[nodiscard]] QString ShowStateText(
+		const std::optional<Ui::PopupMenu::ShowState> &state) {
+	if (!state) {
+		return u"none"_q;
+	}
+	return u"appearing=%1 opacity=%2 widthProgress=%3 heightProgress=%4 "
+		"appearingSize=%5x%6 toggling=%7"_q
+		.arg(state->appearing ? 1 : 0)
+		.arg(state->opacity)
+		.arg(state->widthProgress)
+		.arg(state->heightProgress)
+		.arg(state->appearingWidth)
+		.arg(state->appearingHeight)
+		.arg(state->toggling ? 1 : 0);
+}
+
+// The opening-turn grab row, decided on the state the grab's own paint
+// emitted and never on LooksBlank, the refusal the row guards: only the
+// show animation's blank first frame - appearing at opacity 0 - is what
+// the row exists to see refused, so a grab that painted anything else is a
+// named N/A, whatever prepare() answered. |preGrab| is context for a grab
+// that emitted nothing and never decides; |prepareDetails| is the refusal
+// reason, or the readiness details when prepare() accepted
+// (docs/helpers/test_menu.md#the-opening-turn-grab-row).
+void CheckOpeningTurnGrab(
+		const std::optional<Ui::PopupMenu::ShowState> &grab,
+		const std::optional<Ui::PopupMenu::ShowState> &preGrab,
+		bool accepted,
+		const QString &prepareDetails) {
+	const auto row = u"a one-shot prepared grab in the opening turn refuses "
+		"the frame instead of saving it"_q;
+	const auto readings = u"grab={"_q
+		+ ShowStateText(grab)
+		+ u"} preGrab={"_q
+		+ ShowStateText(preGrab)
+		+ u"} accepted="_q
+		+ QString::number(accepted ? 1 : 0)
+		+ u" - "_q
+		+ prepareDetails;
+	if (grab && grab->appearing && (grab->opacity <= 0.)) {
+		Check(!accepted, row, readings);
+		return;
+	}
+	const auto why = !grab
+		? u"no state emitted by the grab - it painted no show-animation "
+			"frame: prepare() refused before grabbing, or no show animation "
+			"was running when it painted"_q
+		: !grab->appearing
+		? u"show animation already finished - the grab painted the menu's "
+			"final frame"_q
+		: u"advanced frame painted - the show animation had already "
+			"stepped past its first frame when the grab painted"_q;
+	Skipped(
+		row,
+		u"not reached: "_q
+			+ why
+			+ u", so the opening-turn grab did not paint the blank first "
+			"frame this row exists to refuse - "_q
+			+ readings);
+}
 
 // Every Ui::PopupMenu in the application, wherever it is parented. Every
 // popup is its own window, but the walk does not lean on window flags:
@@ -109,8 +165,11 @@ struct MenuSnapshotEntry {
 	return result;
 }
 
-[[nodiscard]] std::vector<MenuSnapshotEntry> SnapshotPopupMenus() {
-	auto result = std::vector<MenuSnapshotEntry>();
+// The QPointer in each entry makes a menu destroyed since read as null, so
+// it matches nothing - a new menu allocated at a dead one's address is never
+// taken for the old one.
+[[nodiscard]] std::vector<ContextMenuSnapshotEntry> SnapshotPopupMenus() {
+	auto result = std::vector<ContextMenuSnapshotEntry>();
 	for (const auto menu : LivePopupMenus()) {
 		result.push_back({ .menu = menu, .visible = menu->isVisible() });
 	}
@@ -156,16 +215,16 @@ struct MenuSnapshotEntry {
 
 // Called inside the settle action, right after sendEvent returned and
 // before any postponed call runs, so it reads the menu in the turn - and
-// the very call - that built it.
-void TakeFreshMenu(
-		ContextMenuReading &result,
-		const std::vector<MenuSnapshotEntry> &before) {
+// the very call - that built it. RetakeContextMenu calls it again on a
+// later turn, against the same snapshot.
+void TakeFreshMenu(ContextMenuReading &result) {
+	const auto &before = result.before;
 	const auto live = LivePopupMenus();
 	result.menusAfter = int(live.size());
 	auto fresh = std::vector<Ui::PopupMenu*>();
 	for (const auto menu : live) {
 		const auto known = ranges::find_if(before, [&](
-				const MenuSnapshotEntry &entry) {
+				const ContextMenuSnapshotEntry &entry) {
 			return (entry.menu.data() == menu);
 		});
 		if (known != end(before)) {
@@ -476,19 +535,6 @@ void ReleaseContextMenuFixture(not_null<ContextMenuSelfTest*> state) {
 	state->marker = nullptr;
 }
 
-// Empty unless ConsoleLockGate answers: only a locked console gates.
-[[nodiscard]] QString PopupMenuLockGate(const ConsoleLockReading &console) {
-	const auto gate = ConsoleLockGate(console);
-	if (gate.isEmpty()) {
-		return QString();
-	}
-	return gate
-		+ u"; the application is deactivated on a locked console and Qt "
-		"closes a shown Ui::PopupMenu before the next turn, so this stage, "
-		"which needs the self-test's menu to stay open across turns, cannot "
-		"run - a scheduling condition: rerun on an unlocked console"_q;
-}
-
 } // namespace
 
 PopupMenuReading ReadPopupMenu(QWidget *widget) {
@@ -596,9 +642,10 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 	struct State {
 		Fixture fixture;
 		PopupMenuReading openTurn;
-		ConsoleLockReading lock;
 		QString openTurnDetails;
 		QString oneShotReason;
+		std::optional<Ui::PopupMenu::ShowState> preGrabShowState;
+		std::optional<Ui::PopupMenu::ShowState> grabShowState;
 		bool openTurnReady = false;
 		bool oneShotAccepted = false;
 		bool built = false;
@@ -639,14 +686,6 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 			"actions the fixture put in it"_q,
 			PopupMenuDetails(widget));
 	};
-	// Read when each gated stage begins, and kept once locked: a menu
-	// popped or held while the console was locked is already closed.
-	const auto lockGate = [=] {
-		if (!state->lock.locked()) {
-			state->lock = ReadConsoleLock();
-		}
-		return PopupMenuLockGate(state->lock);
-	};
 
 	runner->add({
 		.name = u"popup menu self-test: open"_q,
@@ -661,10 +700,24 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 			if (!state->built) {
 				return;
 			}
-			// Read in the turn that decides whether Qt closes the menu.
-			state->lock = ReadConsoleLock();
-			Note(ConsoleLockText(state->lock));
+			// Armed before popup(): a locked Windows console deactivates the
+			// application, and Qt would close the menu before the four
+			// across-turn stages below could use it.
+			ArmPopupHold(runner, u"popup-menu-self-test"_q);
+			Note(ConsoleLockText(ReadConsoleLock()));
 			const auto menu = state->fixture.menu.get();
+			// The menu's own account of what it painted, which decides the
+			// one-shot grab row below. showStateValue() fires synchronously -
+			// from startShowAnimation() and from every paintEvent while the
+			// show animation runs - so the subscription lives only in this
+			// call, and the optional is declared before the lifetime, so the
+			// subscription that writes it dies first.
+			auto lastShowState = std::optional<Ui::PopupMenu::ShowState>();
+			auto showStateLifetime = rpl::lifetime();
+			menu->showStateValue(
+			) | rpl::on_next([&](const Ui::PopupMenu::ShowState &shown) {
+				lastShowState = shown;
+			}, showStateLifetime);
 			menu->popup(state->fixture.at);
 			// Everything below is snapshotted here, in the turn that called
 			// popup(), because that is the turn both failing shapes live in
@@ -674,8 +727,13 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 			state->openTurn = ReadPopupMenu(menu);
 			state->openTurnReady = PopupMenuReady(menu);
 			state->openTurnDetails = PopupMenuDetails(menu);
+			// Only what the grab itself emits decides the row; the last state
+			// before it is context, because an earlier blank frame says
+			// nothing about the frame prepare() painted.
+			state->preGrabShowState = base::take(lastShowState);
 			auto probe = PreparedWidgetCapture();
 			state->oneShotAccepted = probe.prepare(menu);
+			state->grabShowState = lastShowState;
 			state->oneShotReason = probe.pendingReason();
 		},
 		.then = [=] {
@@ -705,28 +763,20 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 				"disagree and the failing shape is reached, not merely "
 				"described"_q,
 				state->openTurnDetails);
-			Check(
-				!state->oneShotAccepted,
-				u"a one-shot prepared grab in the opening turn refuses the "
-				"frame instead of saving it"_q,
+			CheckOpeningTurnGrab(
+				state->grabShowState,
+				state->preGrabShowState,
+				state->oneShotAccepted,
 				state->oneShotReason.isEmpty()
 					? state->openTurnDetails
 					: state->oneShotReason);
 		},
 	});
 
-	CapturePopupMenu(
-		runner,
-		u"popup_menu_open"_q,
-		resolve,
-		{},
-		inspect,
-		kDefaultStageTimeout,
-		lockGate);
+	CapturePopupMenu(runner, u"popup_menu_open"_q, resolve, {}, inspect);
 
 	runner->add({
 		.name = u"popup menu self-test: close"_q,
-		.skipReason = lockGate,
 		.run = [=] {
 			if (!state->built) {
 				return;
@@ -751,14 +801,7 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 		},
 	});
 
-	CapturePopupMenu(
-		runner,
-		u"popup_menu_reopened"_q,
-		resolve,
-		open,
-		inspect,
-		kDefaultStageTimeout,
-		lockGate);
+	CapturePopupMenu(runner, u"popup_menu_reopened"_q, resolve, open, inspect);
 
 	runner->add({
 		.name = u"popup menu self-test: refusal text"_q,
@@ -839,6 +882,16 @@ void AppendPopupMenuCaptureSelfTest(not_null<Runner*> runner) {
 				.arg(state->fixture.menu ? 1 : 0)
 				.arg(state->fixture.empty ? 1 : 0)
 				.arg(state->fixture.stray ? 1 : 0));
+			// Released only once the fixture is gone, so the menu is held for
+			// its whole life. The count depends on the console, so no Check
+			// asserts it; Runner::onFinish releases a skipped teardown.
+			if (state->built) {
+				ReleasePopupHold(u"teardown"_q);
+				Note(u"popup menu self-test: popup hold released, "
+					"deactivations stopped=%1 - %2"_q.arg(
+						QString::number(ReadPopupHold().stopped),
+						ConsoleLockText(ReadConsoleLock())));
+			}
 		},
 	});
 }
@@ -919,15 +972,15 @@ ContextMenuReading OpenContextMenu(
 	result.receiverEnabled = receiver->isEnabled();
 	result.receiverVisible = receiver->isVisible();
 	result.global = receiver->mapToGlobal(point);
-	const auto before = SnapshotPopupMenus();
-	result.menusBefore = int(before.size());
+	result.before = SnapshotPopupMenus();
+	result.menusBefore = int(result.before.size());
 	auto event = QContextMenuEvent(reason, point, result.global);
 	Settle([&] {
 		QApplication::sendEvent(receiver, &event);
 		result.delivered = true;
 		result.accepted = event.isAccepted();
 		result.receiverAlive = (result.receiverWidget.data() != nullptr);
-		TakeFreshMenu(result, before);
+		TakeFreshMenu(result);
 		if (!result.receiverAlive) {
 			result.refusal = ContextMenuRefusal::ReceiverGone;
 			result.reason = u"the receiving widget was destroyed while it "
@@ -948,6 +1001,32 @@ ContextMenuReading OpenContextMenu(
 	});
 	result.afterSettle = ReadContextMenuLifecycle(result);
 	return result;
+}
+
+bool RetakeContextMenu(ContextMenuReading &reading) {
+	if ((reading.refusal != ContextMenuRefusal::NoMenu)
+		|| !reading.receiverWidget) {
+		return reading.built();
+	}
+	// Everything TakeFreshMenu fills, so a repeat counts the menus alive now
+	// rather than adding to what the event's own turn found.
+	reading.menu.clear();
+	reading.parent.clear();
+	reading.identity = QString();
+	reading.parentIdentity = QString();
+	reading.freshMenus.clear();
+	reading.texts.clear();
+	reading.reason = QString();
+	reading.refusal = ContextMenuRefusal::None;
+	reading.fresh = 0;
+	reading.reshown = 0;
+	reading.actions = 0;
+	reading.separators = 0;
+	reading.parentIsReceiver = false;
+	++reading.retakes;
+	TakeFreshMenu(reading);
+	reading.afterSettle = ReadContextMenuLifecycle(reading);
+	return reading.built();
 }
 
 QString ContextMenuDetails(const ContextMenuReading &reading) {
@@ -979,6 +1058,7 @@ QString ContextMenuDetails(const ContextMenuReading &reading) {
 		u"texts=[%1]"_q.arg(reading.texts.join(u" | "_q)),
 		u"actions=%1"_q.arg(reading.actions),
 		u"separators=%1"_q.arg(reading.separators),
+		u"retakes=%1"_q.arg(reading.retakes),
 		u"atBuild={%1}"_q.arg(ContextMenuLifecycleText(reading.atBuild)),
 		u"afterSettle={%1}"_q.arg(
 			ContextMenuLifecycleText(reading.afterSettle)),

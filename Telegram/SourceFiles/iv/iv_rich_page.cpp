@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flat_map.h"
 #include "base/qthelp_url.h"
 #include "base/unixtime.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "data/data_document.h"
 #include "data/data_location.h"
 #include "data/data_peer.h"
@@ -18,16 +19,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_premium_limits.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
-#include "data/stickers/data_custom_emoji.h"
 #include "iv/markdown/iv_markdown_prepare.h"
-#include "iv/markdown/iv_markdown_prepare_serialize.h"
 #include "iv/markdown/iv_markdown_prepare_links.h"
+#include "iv/markdown/iv_markdown_prepare_serialize.h"
 #include "iv/iv_rich_page_quote.h"
 #include "lang/lang_keys.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "ui/text/text.h"
 #include "ui/text/text_utilities.h"
+
 #include "styles/style_iv.h"
 
 #include <algorithm>
@@ -1782,6 +1783,7 @@ void AppendBlock(
 		result->push_back(std::move(parsed));
 	}, [&](const MTPDpageBlockBlockquoteBlocks &data) {
 		auto parsed = MakeBlock(BlockKind::Quote);
+		parsed.collapsed = data.is_collapsed();
 		{
 			const auto children = RichQuoteScope::BlockChildren(quote, index);
 			AppendBlocks(data.vblocks().v, &parsed.blocks, context);
@@ -2508,9 +2510,7 @@ template <typename Accumulator>
 			if (!CollectSimpleQuote(block, body)) {
 				return false;
 			}
-			to.appendQuote(
-				std::move(body),
-				block.collapsed && RichBlockquoteIsCollapsible(block));
+			to.appendQuote(std::move(body), block.collapsed);
 			break;
 		}
 		default:

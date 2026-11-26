@@ -7,13 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/flat_map.h"
 #include "iv/markdown/iv_markdown_button_row.h"
 #include "iv/markdown/iv_markdown_common.h"
 #include "iv/markdown/iv_markdown_media_block.h"
 #include "iv/markdown/iv_markdown_prepare.h"
 #include "iv/iv_rich_page.h"
-
-#include "base/flat_map.h"
 #include "spellcheck/spellcheck_highlight_syntax.h"
 #include "ui/chat/chat_style.h"
 #include "ui/chat/unsupported_notice.h"
@@ -229,6 +228,7 @@ struct MarkdownArticlePaintContext final : Ui::ChatPaintContext {
 	int hiddenSegmentIndex = -1;
 	bool debugBlockGeometry = false;
 	bool bubbleGradient = false;
+	bool suppressInteractiveControls = false;
 	RichButtonLoading buttonLoading;
 	RichButtonLoadingCoverage buttonLoadingCoverage;
 	double mediaPixelScale = 1.;
@@ -439,6 +439,7 @@ public:
 		int current);
 	[[nodiscard]] auto searchSources() const
 	-> std::vector<MarkdownArticleSearchSource>;
+	[[nodiscard]] rpl::producer<> searchSourcesChanges() const;
 	void updatePreparedLeaf(
 		const PreparedEditLeafSource &source,
 		const MarkdownArticleContent &prepared);

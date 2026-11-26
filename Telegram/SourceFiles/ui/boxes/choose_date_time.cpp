@@ -7,23 +7,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/boxes/choose_date_time.h"
 
-#include "base/unixtime.h"
 #include "base/event_filter.h"
+#include "base/unixtime.h"
+#include "lang/lang_keys.h"
 #include "ui/boxes/calendar_box.h"
 #include "ui/effects/ripple_animation.h"
-#include "ui/painter.h"
 #include "ui/text/text_utilities.h"
-#include "ui/widgets/buttons.h"
 #include "ui/widgets/fields/input_field.h"
+#include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/time_input.h"
+#include "ui/painter.h"
 #include "ui/ui_utility.h"
-#include "lang/lang_keys.h"
+
+#include "styles/style_boxes.h"
 #include "styles/style_choose_date_time.h"
 #include "styles/style_layers.h"
-#include "styles/style_boxes.h"
 #include "styles/style_passcode_box.h"
 
 #include <QtWidgets/QTextEdit>
@@ -84,6 +85,7 @@ public:
 	void setMarkedText(TextWithEntities text);
 
 protected:
+	void mousePressEvent(QMouseEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 
 	QImage prepareRippleMask() const override;
@@ -113,6 +115,14 @@ RepeatButton::RepeatButton(not_null<QWidget*> parent)
 
 void RepeatButton::setMarkedText(TextWithEntities text) {
 	_label->setMarkedText(std::move(text));
+}
+
+void RepeatButton::mousePressEvent(QMouseEvent *e) {
+	if (e->button() != Qt::LeftButton) {
+		return RippleButton::mousePressEvent(e);
+	}
+	e->accept();
+	clicked(e->modifiers(), e->button());
 }
 
 void RepeatButton::paintEvent(QPaintEvent *e) {
@@ -457,6 +467,9 @@ object_ptr<Ui::RpWidget> ChooseRepeatPeriod(
 				anchor.x() - menu->width() / 2,
 				menu->y()
 					- Ui::BoxShadow::ExtendFor(menu->st().shadow).bottom());
+			if (QGuiApplication::mouseButtons() & Qt::LeftButton) {
+				menu->menu()->handlePressedOutside(QCursor::pos());
+			}
 			menu->popupPrepared();
 		}
 	});

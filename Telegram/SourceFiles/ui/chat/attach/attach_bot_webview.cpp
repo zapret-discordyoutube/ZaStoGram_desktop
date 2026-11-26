@@ -7,43 +7,44 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/chat/attach/attach_bot_webview.h"
 
+#include "base/platform/base_platform_info.h"
+#include "base/debug_log.h"
+#include "base/invoke_queued.h"
+#include "base/qt_signal_producer.h"
+#include "base/random.h"
+#include "core/file_utilities.h"
+#include "core/shortcuts.h"
+#include "lang/lang_keys.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/chat/attach/attach_bot_downloads.h"
 #include "ui/chat/attach/attach_bot_webview_linux_shell.h"
 #include "ui/effects/radial_animation.h"
 #include "ui/effects/ripple_animation.h"
-#include "ui/boxes/confirm_box.h"
 #include "ui/layers/box_content.h"
 #include "ui/layers/standalone_layer_stack.h"
 #include "ui/platform/ui_platform_utility.h"
-#include "ui/round_rect.h"
 #include "ui/style/style_core_palette.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
-#include "ui/widgets/separate_panel.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
-#include "ui/widgets/menu/menu_add_action_callback.h"
+#include "ui/widgets/separate_panel.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/integration.h"
 #include "ui/painter.h"
 #include "ui/rect.h"
+#include "ui/round_rect.h"
 #include "ui/ui_utility.h"
-#include "lang/lang_keys.h"
-#include "core/file_utilities.h"
-#include "core/shortcuts.h"
-#include "webview/webview_embed.h"
 #include "webview/webview_dialog.h"
+#include "webview/webview_embed.h"
 #include "webview/webview_interface.h"
-#include "base/debug_log.h"
-#include "base/invoke_queued.h"
-#include "base/platform/base_platform_info.h"
-#include "base/qt_signal_producer.h"
-#include "base/random.h"
+
 #include "styles/style_chat.h"
 #include "styles/style_info.h"
-#include "styles/style_payments.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_payments.h"
 
 #include <QtCore/QBuffer>
 #include <QtCore/QJsonDocument>
@@ -2273,12 +2274,12 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 		return false;
 	}
 
-#if !defined Q_OS_WIN && !defined Q_OS_MAC
+#if !defined Q_OS_WIN && !defined Q_OS_MACOS
 	if (!_externalShell) {
 		_widget->allowChildFullScreenControls(
 			!raw->widget()->inherits("QWindowContainer"));
 	}
-#endif // !Q_OS_WIN && !Q_OS_MAC
+#endif // !Q_OS_WIN && !Q_OS_MACOS
 
 	raw->setInteractionHandler([=] {
 		_lastUserInteraction = crl::now();
@@ -2480,7 +2481,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 		} else if (command == "web_app_open_scan_qr_popup") {
 			openScanQrPopup(arguments);
 		} else if (command == "web_app_share_to_story") {
-			openShareStory(arguments);
+			processShareToStory(arguments);
 		} else if (command == "web_app_request_write_access") {
 			requestWriteAccess();
 		} else if (command == "web_app_request_phone") {
@@ -3067,16 +3068,27 @@ void Panel::openScanQrPopup(const QJsonObject &args) {
 	}, [](Webview::PopupResult) {});
 }
 
-void Panel::openShareStory(const QJsonObject &args) {
-	showPopup({
-		.parent = webviewWindowForPopup(),
-		.text = tr::lng_bot_no_share_story(tr::now),
-		.buttons = { {
-			.id = "ok",
-			.text = tr::lng_box_ok(tr::now),
-			.type = Webview::PopupArgs::Button::Type::Ok,
-		}},
-	}, [](Webview::PopupResult) {});
+void Panel::processShareToStory(const QJsonObject &args) {
+	const auto mediaUrl = args["media_url"].toString();
+	const auto widget = args["widget_link"];
+	auto widgetLinkUrl = widget.isObject()
+		? widget["url"].toString()
+		: QString();
+	if (!widgetLinkUrl.startsWith(u"https://"_q, Qt::CaseInsensitive)) {
+		widgetLinkUrl = QString();
+	}
+	const auto widgetLinkName = widgetLinkUrl.isEmpty()
+		? QString()
+		: widget["name"].toString();
+	_delegate->botShareToStory({
+		.mediaUrl = mediaUrl,
+		.caption = {
+			args["text"].toString(),
+			TextWithTags::Tags(),
+		},
+		.widgetLinkUrl = std::move(widgetLinkUrl),
+		.widgetLinkName = widgetLinkName,
+	});
 }
 
 void Panel::requestWriteAccess() {

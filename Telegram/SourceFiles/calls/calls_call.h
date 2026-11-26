@@ -7,12 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "base/weak_ptr.h"
-#include "base/timer.h"
 #include "base/bytes.h"
 #include "mtproto/instance/sender.h"
 #include "mtproto/auth/mtproto_auth_key.h"
 #include "mtproto/auth/mtproto_dh_utils.h"
+#include "base/timer.h"
+#include "base/weak_ptr.h"
 #include "webrtc/webrtc_device_resolver.h"
 #include "webrtc/webrtc_system_audio_capture.h"
 

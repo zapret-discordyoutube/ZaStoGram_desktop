@@ -7,15 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/calls_video_incoming.h"
 
-#include "ui/gl/gl_surface.h"
-#include "ui/gl/gl_shader.h"
+#include "media/view/media_view_pip.h"
 #include "ui/gl/gl_image.h"
 #include "ui/gl/gl_primitives.h"
+#include "ui/gl/gl_shader.h"
+#include "ui/gl/gl_surface.h"
 #include "ui/rhi/rhi_renderer.h"
 #include "ui/rhi/rhi_shader.h"
 #include "ui/painter.h"
-#include "media/view/media_view_pip.h"
 #include "webrtc/webrtc_video_track.h"
+
 #include "styles/style_calls.h"
 
 #include <QOpenGLShader>
@@ -351,7 +352,7 @@ void Panel::Incoming::RendererGL::paint(
 
 	FillTexturedRectangle(f, &*program);
 
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
 	if (!shadowRect.empty()) {
 		f.glEnable(GL_BLEND);
 		f.glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -368,7 +369,7 @@ void Panel::Incoming::RendererGL::paint(
 
 		FillTexturedRectangle(f, &*_imageProgram, 4);
 	}
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 }
 
 void Panel::Incoming::RendererGL::validateShadowImage() {
@@ -491,7 +492,7 @@ void Panel::Incoming::RendererSW::initBottomShadow() {
 }
 
 void Panel::Incoming::RendererSW::fillTopShadow(QPainter &p) {
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
 	const auto widget = _owner->widget();
 	const auto width = widget->parentWidget()->width();
 	const auto left = (_owner->_topControlsAlignment == style::al_left);
@@ -511,7 +512,7 @@ void Panel::Incoming::RendererSW::fillTopShadow(QPainter &p) {
 	p.setClipRect(fill);
 	icon.paint(p, position - widget->pos(), width);
 	p.restore();
-#endif // Q_OS_MAC
+#endif // Q_OS_MACOS
 }
 
 void Panel::Incoming::RendererSW::fillBottomShadow(QPainter &p) {
@@ -543,10 +544,10 @@ void Panel::Incoming::RendererSW::fillBottomShadow(QPainter &p) {
 // std140 puts the vec3 at offset 16, the NDC Y flip fills the hole.
 struct IncomingShadowUniforms {
 	float viewport[2];
-	float fragCoordYUp;
-	float flipY;
+	float fragCoordYUp = 0.;
+	float flipY = 0.;
 	float shadow[3];
-	float _pad1;
+	float _pad1 = 0.;
 };
 static_assert(sizeof(IncomingShadowUniforms) == 32);
 
@@ -693,7 +694,7 @@ public:
 			return;
 		}
 
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
 		const auto shadowFs = Ui::Rhi::ShaderFromFile(
 			u":/shaders/argb32.frag.qsb"_q);
 
@@ -963,7 +964,7 @@ public:
 		rub->updateDynamicBuffer(
 			_vertexBuffer, 0, sizeof(coords), coords);
 
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
 		prepareTitleShadow(rub, pw, ph);
 #endif
 
@@ -975,7 +976,7 @@ public:
 		cb->setVertexInput(0, 1, &vbuf);
 		cb->draw(4);
 
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
 		paintTitleShadow(cb, pw, ph);
 #endif
 

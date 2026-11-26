@@ -100,6 +100,8 @@ struct StoryLocation {
 	Data::LocationPoint point;
 	QString title;
 	QString address;
+	QString countryIso2;
+	QString city;
 	QString provider;
 	QString venueId;
 	QString venueType;
@@ -176,6 +178,7 @@ public:
 	[[nodiscard]] const StoryMedia &media() const;
 	[[nodiscard]] PhotoData *photo() const;
 	[[nodiscard]] DocumentData *document() const;
+	[[nodiscard]] DocumentData *music() const;
 	[[nodiscard]] const std::shared_ptr<GroupCall> &call() const;
 
 	[[nodiscard]] bool hasReplyPreview() const;
@@ -188,6 +191,10 @@ public:
 	void setInProfile(bool value);
 	[[nodiscard]] bool inProfile() const;
 	[[nodiscard]] StoryPrivacy privacy() const;
+	[[nodiscard]] auto privacyAllowed() const
+		-> const std::vector<not_null<PeerData*>> &;
+	[[nodiscard]] auto privacyDisallowed() const
+		-> const std::vector<not_null<PeerData*>> &;
 	[[nodiscard]] bool forbidsForward() const;
 	[[nodiscard]] bool edited() const;
 	[[nodiscard]] bool out() const;
@@ -280,7 +287,10 @@ private:
 	Data::ReactionId _sentReactionId;
 	StoryMedia _media;
 	TextWithEntities _caption;
+	DocumentData *_music = nullptr;
 	std::vector<not_null<PeerData*>> _recentViewers;
+	std::vector<not_null<PeerData*>> _privacyAllowed;
+	std::vector<not_null<PeerData*>> _privacyDisallowed;
 	std::vector<StoryLocation> _locations;
 	std::vector<SuggestedReaction> _suggestedReactions;
 	std::vector<ChannelPost> _channelPosts;

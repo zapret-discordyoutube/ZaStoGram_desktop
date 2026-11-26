@@ -53,6 +53,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rect.h"
 #include "ui/round_rect.h"
 #include "ui/ui_utility.h"
+
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_dialogs.h"
@@ -96,8 +97,8 @@ template <typename T, typename U>
 class FieldAutocomplete::Inner final : public Ui::RpWidget {
 public:
 	struct ScrollTo {
-		int top;
-		int bottom;
+		int top = 0;
+		int bottom = 0;
 	};
 
 	Inner(

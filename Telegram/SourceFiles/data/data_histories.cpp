@@ -8,6 +8,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_histories.h"
 
 #include "api/api_text_entities.h"
+#include "apiwrap.h"
+#include "base/random.h"
+#include "base/unixtime.h"
+#include "core/application.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/ephemeral_messages.h"
 #include "data/components/scheduled_messages.h"
@@ -23,20 +27,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_saved_sublist.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
-#include "base/unixtime.h"
-#include "base/random.h"
-#include "main/main_session.h"
-#include "window/notifications_manager.h"
+#include "history/view/history_view_element.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
-#include "history/view/history_view_element.h"
 #include "iv/iv_rich_page.h"
-#include "core/application.h"
 #include "core/zsg_diag.h"
 #include "core/core_settings.h"
-#include "apiwrap.h"
+#include "main/main_session.h"
+#include "window/notifications_manager.h"
 
 namespace Data {
 namespace {
@@ -525,6 +525,7 @@ void Histories::applyPeerDialogs(const MTPmessages_PeerDialogs &dialogs) {
 	const auto &data = dialogs.c_messages_peerDialogs();
 	_owner->processUsers(data.vusers());
 	_owner->processChats(data.vchats());
+	ApplyResponseTopics(_owner, data.vtopics(), data.vmessages().v);
 	_owner->processMessages(data.vmessages(), NewMessageType::Last);
 	for (const auto &dialog : data.vdialogs().v) {
 		dialog.match([&](const MTPDdialog &data) {

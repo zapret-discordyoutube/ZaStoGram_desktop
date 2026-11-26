@@ -172,11 +172,21 @@ struct CodecDeleter {
 using CodecPointer = std::unique_ptr<AVCodecContext, CodecDeleter>;
 
 struct CodecDescriptor {
-	not_null<AVStream*> stream;
+	not_null<const AVCodecParameters*> parameters;
+	AVRational timeBase = {};
 	bool hwAllowed = false;
 	int64_t videoMaxArea = 0;
 };
 [[nodiscard]] CodecPointer MakeCodecPointer(CodecDescriptor descriptor);
+
+struct CodecParametersDeleter {
+	void operator()(AVCodecParameters *value);
+};
+using CodecParametersPointer = std::unique_ptr<
+	AVCodecParameters,
+	CodecParametersDeleter>;
+[[nodiscard]] CodecParametersPointer CopyCodecParameters(
+	not_null<const AVCodecParameters*> parameters);
 
 struct FrameDeleter {
 	void operator()(AVFrame *value);
@@ -233,7 +243,9 @@ void LogError(
 	FFmpeg::AvErrorWrap error,
 	const QString &details = {});
 
-[[nodiscard]] const AVCodec *FindDecoder(not_null<AVCodecContext*> context);
+[[nodiscard]] const AVCodec *FindDecoder(
+	not_null<AVCodecContext*> context,
+	bool preferHw = false);
 void ConfigureDecoderThreads(not_null<AVCodecContext*> context);
 [[nodiscard]] int64_t MaxPixelsForAreaLimit(int64_t area);
 [[nodiscard]] crl::time PtsToTime(int64_t pts, AVRational timeBase);
