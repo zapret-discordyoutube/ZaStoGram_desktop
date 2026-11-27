@@ -137,6 +137,7 @@ struct Api {
 	WarpHandle *(*warpStart)(const WarpConfigC *, uint16_t *, char *, size_t);
 	int (*warpState)(const WarpHandle *);
 	void (*warpStop)(WarpHandle *);
+	size_t (*warpStats)(WarpHandle *, char *, size_t);
 	int (*warpKeypair)(char *, char *, size_t);
 
 	const char *(*profileVersion)();

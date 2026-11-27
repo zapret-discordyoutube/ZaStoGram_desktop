@@ -56,6 +56,7 @@ struct State {
 	std::unique_ptr<QTimer> timer;
 	bool registering = false;
 	int lastState = -1;
+	int polls = 0;
 	quint16 port = 0;
 };
 
@@ -226,8 +227,20 @@ void Poll() {
 		return;
 	}
 	const auto state = api->warpState(data.handle);
+	// While the tunnel is not up, put its counters in the log every ~10 s
+	// (handshakes sent, what came back), so a failed start can be told apart.
+	if (state != Naive::WarpUp && api->warpStats && (++data.polls % 20) == 0) {
+		char stats[256] = {};
+		api->warpStats(data.handle, stats, sizeof(stats));
+		LOG(("WARP: state %1, %2").arg(state).arg(QString::fromLatin1(stats)));
+	}
 	if (state == data.lastState) {
 		return;
+	}
+	if (api->warpStats) {
+		char stats[256] = {};
+		api->warpStats(data.handle, stats, sizeof(stats));
+		LOG(("WARP: state change to %1, %2").arg(state).arg(QString::fromLatin1(stats)));
 	}
 	data.lastState = state;
 	LOG(("WARP: tunnel state %1.").arg(state));

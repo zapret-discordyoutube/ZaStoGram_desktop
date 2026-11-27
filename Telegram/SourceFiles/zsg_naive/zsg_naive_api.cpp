@@ -205,6 +205,7 @@ struct Loaded {
 	api.warpStart = reinterpret_cast<decltype(api.warpStart)>(library.resolve("zsg_warp_start"));
 	api.warpState = reinterpret_cast<decltype(api.warpState)>(library.resolve("zsg_warp_state"));
 	api.warpStop = reinterpret_cast<decltype(api.warpStop)>(library.resolve("zsg_warp_stop"));
+	api.warpStats = reinterpret_cast<decltype(api.warpStats)>(library.resolve("zsg_warp_stats"));
 	api.warpKeypair = reinterpret_cast<decltype(api.warpKeypair)>(library.resolve("zsg_warp_keypair"));
 	if (!missing.isEmpty()) {
 		result.error = u"zsgnaive library lacks: "_q + missing;
