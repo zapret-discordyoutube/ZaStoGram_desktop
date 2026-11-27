@@ -765,7 +765,7 @@ enum class ManifestAdoption {
 		LOG(("Update Error: %1").arg(error));
 		return false;
 	}
-	if (!WriteUpdateVersionFile(tempDir, tempDirPath, version, 0)) {
+	if (!WriteUpdateVersionFile(tempDirPath, version, 0)) {
 		return false;
 	}
 
