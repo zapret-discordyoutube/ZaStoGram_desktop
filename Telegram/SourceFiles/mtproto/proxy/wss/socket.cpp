@@ -1203,7 +1203,7 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 	if (FrontsRefreshDue()) {
 		// Sockets are made on connection threads; the download needs the
 		// main one.
-		base::InvokeQueued(QCoreApplication::instance(), [] { FetchFronts(0); });
+		InvokeQueued(QCoreApplication::instance(), [] { FetchFronts(0); });
 	}
 	auto route = OfficialRoute(protocolDcId);
 	if (!route) {
