@@ -135,6 +135,11 @@ using VersionChar = wchar_t;
 using Loader = MTP::AbstractDedicatedLoader;
 
 std::optional<uint64> ZaStoGramDevBuildNumber() {
+	// Test seam: pretend to be an older dev build (the environment variable
+	// ZSG_UPDATE_FAKE_BUILD, a number), so a newer package can be found.
+	if (const auto fake = qgetenv("ZSG_UPDATE_FAKE_BUILD"); !fake.isEmpty()) {
+		return fake.toULongLong();
+	}
 	static const auto Expression = QRegularExpression(
 		u"^dev-(\\d+)(?:\\D.*)?$"_q,
 		QRegularExpression::CaseInsensitiveOption);
@@ -2559,9 +2564,12 @@ void Updater::start(bool forceWait) {
 #endif // !Q_OS_WIN && !Q_OS_MACOS
 	} else if (sendRequest) {
 		reportChecking();
+		// Test seam: only the channel route (ZSG_UPDATE_CHANNEL_ONLY is set).
 		startImplementation(
 			&_httpImplementation,
-			std::make_unique<HttpChecker>(_testing));
+			qEnvironmentVariableIsSet("ZSG_UPDATE_CHANNEL_ONLY")
+				? std::unique_ptr<Checker>()
+				: std::make_unique<HttpChecker>(_testing));
 		// Updates come from our Forgejo releases and, when those cannot be
 		// reached, from our own channel over Telegram. Never from the
 		// official Telegram update channel.
