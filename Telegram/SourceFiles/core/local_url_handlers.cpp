@@ -2089,6 +2089,26 @@ QString TryConvertUrlToLocal(QString url) {
 				(query < 0) ? QString() : url.mid(query + 1));
 	}
 
+	if (url.startsWith(u"naive+https://"_q, Qt::CaseInsensitive)) {
+		// A NaiveProxy link, naive+https://user:pass@host[:port][#name]:
+		// the same proxy as tg://naive, which shows the confirmation box.
+		const auto parsed = QUrl(url);
+		if (parsed.isValid() && !parsed.host().isEmpty()) {
+			const auto user = parsed.userName(QUrl::FullyDecoded);
+			const auto pass = parsed.password(QUrl::FullyDecoded);
+			return u"tg://naive?server="_q
+				+ qthelp::url_encode(parsed.host())
+				+ u"&port="_q + QString::number(parsed.port(443))
+				+ (user.isEmpty()
+					? QString()
+					: (u"&user="_q + qthelp::url_encode(user)))
+				+ (pass.isEmpty()
+					? QString()
+					: (u"&pass="_q + qthelp::url_encode(pass)));
+		}
+		return url;
+	}
+
 	using namespace qthelp;
 	auto matchOptions = RegExOption::CaseInsensitive;
 	auto tonsiteMatch = (url.indexOf(u".ton") >= 0)

@@ -1858,6 +1858,8 @@ PRIVATE
     mtproto/proxy/socket_factory.cpp
     mtproto/proxy/socket_factory.h
     zsg_naive/zsg_naive_api.cpp
+    zsg_naive/zsg_naive_links.cpp
+    zsg_naive/zsg_naive_links.h
     zsg_naive/zsg_naive_api.h
     zsg_naive/zsg_naive_socket.cpp
     zsg_naive/zsg_naive_socket.h

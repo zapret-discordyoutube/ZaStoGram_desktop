@@ -96,6 +96,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "wallet/wallet_ton_connect.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
+#include "zsg_naive/zsg_naive_links.h"
 
 #include "styles/style_chat.h"
 #include "styles/style_credits.h"
@@ -4897,6 +4898,7 @@ void HistoryItem::detectTextLinks(
 }
 
 void HistoryItem::setText(TextWithEntities textWithEntities) {
+	Zsg::Naive::MarkNaiveLinks(textWithEntities);
 	detectTextLinks(textWithEntities);
 	setTextValue((_media && _media->consumeMessageText(textWithEntities))
 		? TextWithEntities()
