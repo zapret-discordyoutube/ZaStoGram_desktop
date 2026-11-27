@@ -10,8 +10,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/invoke_queued.h"
 #include "logs.h"
 #include "mtproto/protocol/mtproto_binary.h"
+#include "settings.h"
+
+#include <QtCore/QDateTime>
+#include <QtCore/QFile>
 
 #include <algorithm>
+#include <memory>
 
 namespace Zsg::Naive {
 namespace {
@@ -19,15 +24,74 @@ namespace {
 using namespace MTP::details;
 
 constexpr auto kChunk = 16 * 1024;
+// NaiveProxy rotates its HTTP/2 session every five minutes (tunnel_timeout).
+constexpr auto kMaxAgeMs = qint64(5 * 60 * 1000);
+// A couple of connections instead of one: a stall of one TCP connection must
+// not freeze every MTProto connection at once.
+constexpr auto kMaxShared = 2;
+
+[[nodiscard]] bool ReuseEnabled() {
+	static const auto enabled = !qEnvironmentVariableIsEmpty("ZSG_NAIVE_REUSE")
+		|| QFile::exists(cWorkingDir() + u"tdata/zsg/naive_reuse"_q);
+	return enabled;
+}
+
+// Connections of the thread that asked: its sockets and the QTcpSocket of a
+// connection live in that thread, and nothing here is locked.
+[[nodiscard]] std::vector<std::unique_ptr<SharedConnection>> &Registry() {
+	thread_local auto result
+		= std::vector<std::unique_ptr<SharedConnection>>();
+	return result;
+}
 
 } // namespace
 
-NaiveSocket::NaiveSocket(
-	not_null<MTP::RuntimeEnvironment*> runtime,
+SharedConnection *SharedConnection::Acquire(
+		not_null<QThread*> thread,
+		const MTP::ProxyData &proxy,
+		bool share) {
+	auto &list = Registry();
+	// Forget what nobody uses and nobody can use any more.
+	list.erase(
+		std::remove_if(list.begin(), list.end(), [](const auto &connection) {
+			return !connection->hasSockets() && !connection->usable();
+		}),
+		list.end());
+	if (share) {
+		auto best = (SharedConnection*)nullptr;
+		auto count = 0;
+		for (const auto &connection : list) {
+			if (!connection->matches(proxy) || !connection->usable()) {
+				continue;
+			}
+			++count;
+			if (!best || connection->tunnelCount() < best->tunnelCount()) {
+				best = connection.get();
+			}
+		}
+		if (best && count >= kMaxShared) {
+			LOG(("Naive: reusing a connection with %1 tunnel(s), %2 shared."
+				).arg(best->tunnelCount()
+				).arg(count));
+			return best;
+		}
+	}
+	list.push_back(std::unique_ptr<SharedConnection>(
+		new SharedConnection(thread, proxy)));
+	LOG(("Naive: new connection (%1 held, sharing %2)."
+		).arg(int(list.size())
+		).arg(share ? u"on"_q : u"off"_q));
+	return list.back().get();
+}
+
+SharedConnection::SharedConnection(
 	not_null<QThread*> thread,
 	const MTP::ProxyData &proxy)
-: AbstractSocket(runtime, thread)
-, _proxy(proxy) {
+: _proxy(proxy)
+, _created(QDateTime::currentMSecsSinceEpoch()) {
+	if (QThread::currentThread() != thread) {
+		moveToThread(thread);
+	}
 	_tcp.moveToThread(thread);
 	_tcp.setProxy(QNetworkProxy::NoProxy);
 	const auto wrap = [&](auto handler) {
@@ -44,8 +108,16 @@ NaiveSocket::NaiveSocket(
 		&_tcp,
 		&QTcpSocket::disconnected,
 		wrap([=] {
-			if (!_failed) {
-				_disconnected.fire({});
+			if (_failed) {
+				return;
+			}
+			_failed = true;
+			auto snapshot = _sockets;
+			for (const auto socket : snapshot) {
+				if (std::find(_sockets.begin(), _sockets.end(), socket)
+					!= _sockets.end()) {
+					socket->onConnectionClosed();
+				}
 			}
 		}));
 	connect(
@@ -56,48 +128,32 @@ NaiveSocket::NaiveSocket(
 		&_tcp,
 		&QAbstractSocket::errorOccurred,
 		wrap([=](Error e) {
-			if (!_failed) {
-				_failed = true;
-				logError(e, _tcp.errorString());
-				_error.fire_copy(e);
-			}
+			failAll(u"tcp_error %1: %2"_q.arg(int(e)).arg(_tcp.errorString()));
 		}));
+	if (!start()) {
+		// The reason is in _error; the sockets that attach see it.
+		_failed = true;
+	}
 }
 
-NaiveSocket::~NaiveSocket() {
-	releaseClient();
+SharedConnection::~SharedConnection() {
+	if (_client) {
+		_api->naiveFree(_client);
+		_client = nullptr;
+	}
 	_tcp.abort();
 }
 
-void NaiveSocket::releaseClient() {
-	if (!_client) {
-		return;
-	}
-	if (_tunnel) {
-		_api->naiveCloseTunnel(_client, _tunnel);
-		_tunnel = 0;
-	}
-	_api->naiveFree(_client);
-	_client = nullptr;
-}
-
-void NaiveSocket::connectToHost(const QString &address, int port) {
+bool SharedConnection::start() {
 	auto loadError = QString();
 	_api = LoadApi(&loadError);
 	if (!_api) {
-		fail(loadError);
-		return;
-	}
-	if (address.contains(':')) {
-		// The Naive server reaches the data center over IPv4; a literal IPv6
-		// address would only fail on the server side.
-		fail(u"naive_ipv6_target"_q);
-		return;
+		_error = loadError;
+		return false;
 	}
 	_host = _proxy.host.toUtf8();
 	_user = _proxy.user.toUtf8();
 	_password = _proxy.password.toUtf8();
-	_target = address.toUtf8();
 
 	const auto &trust = SystemTrust();
 	const auto &identity = BrowserIdentity();
@@ -117,19 +173,205 @@ void NaiveSocket::connectToHost(const QString &address, int port) {
 	char error[256] = {};
 	_client = _api->naiveNew(&config, error, sizeof(error));
 	if (!_client) {
-		fail(u"naive_client_create_failed: "_q
-			+ QString::fromLatin1(error));
+		_error = u"naive_client_create_failed: "_q
+			+ QString::fromLatin1(error);
+		return false;
+	}
+	_tcp.connectToHost(_proxy.host, config.port);
+	return true;
+}
+
+bool SharedConnection::usable() const {
+	return !_failed
+		&& !_suspect
+		&& (QDateTime::currentMSecsSinceEpoch() - _created) < kMaxAgeMs;
+}
+
+bool SharedConnection::matches(const MTP::ProxyData &proxy) const {
+	return (proxy.host == _proxy.host)
+		&& (proxy.port == _proxy.port)
+		&& (proxy.user == _proxy.user)
+		&& (proxy.password == _proxy.password);
+}
+
+void SharedConnection::attach(not_null<NaiveSocket*> socket) {
+	_sockets.push_back(socket);
+}
+
+void SharedConnection::detach(not_null<NaiveSocket*> socket) {
+	_sockets.erase(
+		std::remove(_sockets.begin(), _sockets.end(), socket.get()),
+		_sockets.end());
+}
+
+int SharedConnection::openTunnel(const QByteArray &host, int port) {
+	if (_failed || !_client) {
+		return 0;
+	}
+	const auto tunnel = _api->naiveOpenTunnel(
+		_client,
+		host.constData(),
+		uint16_t(port));
+	if (tunnel) {
+		++_tunnels;
+	}
+	return tunnel;
+}
+
+void SharedConnection::closeTunnel(int tunnel) {
+	if (!tunnel) {
 		return;
 	}
-	_tunnel = _api->naiveOpenTunnel(
-		_client,
-		_target.constData(),
-		uint16_t(port));
+	if (_tunnels > 0) {
+		--_tunnels;
+	}
+	if (_failed || !_client) {
+		return;
+	}
+	_api->naiveCloseTunnel(_client, tunnel);
+	pump();
+}
+
+void SharedConnection::noteTimeout() {
+	if (!_suspect) {
+		_suspect = true;
+		LOG(("Naive: a tunnel timed out, the connection takes no new "
+			"tunnels."));
+	}
+}
+
+void SharedConnection::failAll(const QString &text) {
+	if (_failed) {
+		return;
+	}
+	_failed = true;
+	_error = text;
+	_tcp.abort();
+	auto snapshot = _sockets;
+	for (const auto socket : snapshot) {
+		if (std::find(_sockets.begin(), _sockets.end(), socket)
+			!= _sockets.end()) {
+			socket->onConnectionFailed(text);
+		}
+	}
+}
+
+void SharedConnection::onTcpConnected() {
+	if (_failed || !_client) {
+		return;
+	}
+	_tcpConnected = true;
+	// Nagle costs a round trip on the short request-then-wait writes mtproto
+	// is made of; keepalive lets a silently dead path surface.
+	_tcp.setSocketOption(QAbstractSocket::LowDelayOption, 1);
+	_tcp.setSocketOption(QAbstractSocket::KeepAliveOption, 1);
+	pump();
+}
+
+void SharedConnection::onReadyRead() {
+	if (_failed || !_client) {
+		return;
+	}
+	while (_tcp.bytesAvailable() > 0) {
+		const auto data = _tcp.read(kChunk);
+		if (data.isEmpty()) {
+			break;
+		}
+		_api->naiveFeedNetwork(
+			_client,
+			reinterpret_cast<const uint8_t*>(data.constData()),
+			size_t(data.size()));
+	}
+	pump();
+}
+
+void SharedConnection::pump() {
+	if (_failed || !_client) {
+		return;
+	}
+	uint8_t chunk[kChunk];
+	while (true) {
+		const auto taken = _api->naiveTakeNetwork(
+			_client,
+			chunk,
+			sizeof(chunk));
+		if (!taken) {
+			break;
+		}
+		_tcp.write(reinterpret_cast<const char*>(chunk), qint64(taken));
+	}
+	const auto state = _api->naiveState(_client);
+	if (state == NaiveFailed || state == NaiveClosed) {
+		failAll(u"naive_"_q + ((state == NaiveFailed)
+			? QString::fromLatin1(_api->naiveError(_client))
+			: u"closed"_q));
+		return;
+	}
+	auto snapshot = _sockets;
+	for (const auto socket : snapshot) {
+		if (std::find(_sockets.begin(), _sockets.end(), socket)
+			== _sockets.end()) {
+			continue;
+		}
+		[[maybe_unused]] const auto alive = socket->onConnectionProgress();
+		if (_failed || !_client) {
+			return;
+		}
+	}
+}
+
+NaiveSocket::NaiveSocket(
+	not_null<MTP::RuntimeEnvironment*> runtime,
+	not_null<QThread*> thread,
+	const MTP::ProxyData &proxy)
+: AbstractSocket(runtime, thread)
+, _thread(thread)
+, _proxy(proxy) {
+}
+
+NaiveSocket::~NaiveSocket() {
+	release();
+}
+
+void NaiveSocket::release() {
+	if (!_conn) {
+		return;
+	}
+	const auto conn = _conn;
+	const auto tunnel = _tunnel;
+	_conn = nullptr;
+	_tunnel = 0;
+	conn->detach(this);
+	conn->closeTunnel(tunnel);
+}
+
+void NaiveSocket::connectToHost(const QString &address, int port) {
+	if (address.contains(':')) {
+		// The Naive server reaches the data center over IPv4; a literal IPv6
+		// address would only fail on the server side.
+		fail(u"naive_ipv6_target"_q);
+		return;
+	}
+	_conn = SharedConnection::Acquire(_thread, _proxy, ReuseEnabled());
+	if (_conn->failed() && !_conn->error().isEmpty()) {
+		const auto text = _conn->error();
+		_conn = nullptr;
+		fail(text);
+		return;
+	}
+	_conn->attach(this);
+	_tunnel = _conn->openTunnel(address.toUtf8(), port);
 	if (!_tunnel) {
 		fail(u"naive_open_tunnel_failed"_q);
 		return;
 	}
-	_tcp.connectToHost(_proxy.host, config.port);
+	if (_conn->tcpConnected()) {
+		// Joined a connection that is already up: report where it stands.
+		[[maybe_unused]] const auto alive = onConnectionProgress();
+		if (alive) {
+			_conn->pump();
+		}
+	}
 }
 
 bool NaiveSocket::isGoodStartNonce(bytes::const_span nonce) {
@@ -149,11 +391,13 @@ bool NaiveSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void NaiveSocket::timedOut() {
+	if (_conn) {
+		_conn->noteTimeout();
+	}
 }
 
 bool NaiveSocket::isConnected() {
-	return _tunnelOpened
-		&& (_tcp.state() == QAbstractSocket::ConnectedState);
+	return _tunnelOpened && _conn && _conn->tcpConnected();
 }
 
 bool NaiveSocket::hasBytesAvailable() {
@@ -177,7 +421,7 @@ int64 NaiveSocket::read(bytes::span buffer) {
 void NaiveSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	Expects(!buffer.empty());
 
-	if (!_client || !_tunnel || _failed) {
+	if (!_conn || !_tunnel || _failed) {
 		return;
 	}
 	auto combined = QByteArray();
@@ -189,19 +433,21 @@ void NaiveSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 		reinterpret_cast<const char*>(buffer.data()),
 		int(buffer.size()));
 	const auto size = size_t(combined.size());
-	if (_api->naiveTunnelWrite(
-			_client,
+	if (_conn->api()->naiveTunnelWrite(
+			_conn->client(),
 			_tunnel,
 			reinterpret_cast<const uint8_t*>(combined.constData()),
 			size) != size) {
 		fail(u"naive_tunnel_write_failed"_q);
 		return;
 	}
-	[[maybe_unused]] const auto alive = pump();
+	_conn->pump();
 }
 
 int32 NaiveSocket::debugState() {
-	return _tcp.state();
+	return _conn
+		? _conn->tcpState()
+		: int(QAbstractSocket::UnconnectedState);
 }
 
 QString NaiveSocket::debugPostfix() const {
@@ -216,94 +462,70 @@ QString NaiveSocket::transportName() const {
 	return u"Naive"_q;
 }
 
-void NaiveSocket::onTcpConnected() {
-	if (_failed || !_client) {
-		return;
+bool NaiveSocket::onConnectionProgress() {
+	if (_failed || !_conn) {
+		return false;
 	}
-	_tcpConnected = true;
-	// Nagle costs a round trip on the short request-then-wait writes mtproto
-	// is made of.
-	_tcp.setSocketOption(QAbstractSocket::LowDelayOption, 1);
-	_phase = HandshakePhase::TcpConnected;
-	connectionProgress(_phase);
-	if (!pump()) {
-		return;
+	if (!_tunnel) {
+		return true; // Attached, the tunnel is not opened yet.
 	}
-	if (_phase == HandshakePhase::TcpConnected) {
+	if (_conn->tcpConnected() && _phase < HandshakePhase::TcpConnected) {
+		_phase = HandshakePhase::TcpConnected;
+		connectionProgress(_phase);
+		if (_failed || !_conn) {
+			return false;
+		}
 		_phase = HandshakePhase::ClientHelloSent;
 		connectionProgress(_phase);
-	}
-}
-
-void NaiveSocket::onReadyRead() {
-	if (_failed || !_client) {
-		return;
-	}
-	while (_tcp.bytesAvailable() > 0) {
-		const auto data = _tcp.read(kChunk);
-		if (data.isEmpty()) {
-			break;
+		if (_failed || !_conn) {
+			return false;
 		}
-		_api->naiveFeedNetwork(
-			_client,
-			reinterpret_cast<const uint8_t*>(data.constData()),
-			size_t(data.size()));
 	}
-	[[maybe_unused]] const auto alive = pump();
-}
-
-bool NaiveSocket::pump() {
-	if (_failed || !_client) {
-		return false;
-	}
-	uint8_t chunk[kChunk];
-	while (true) {
-		const auto taken = _api->naiveTakeNetwork(
-			_client,
-			chunk,
-			sizeof(chunk));
-		if (!taken) {
-			break;
-		}
-		_tcp.write(reinterpret_cast<const char*>(chunk), qint64(taken));
-	}
-	const auto state = _api->naiveState(_client);
-	if (state == NaiveFailed || state == NaiveClosed) {
-		const auto text = (state == NaiveFailed)
-			? QString::fromLatin1(_api->naiveError(_client))
-			: u"closed"_q;
-		fail(u"naive_"_q + text);
-		return false;
-	}
+	const auto state = _conn->api()->naiveState(_conn->client());
 	if (state >= NaivePreamble && _phase < HandshakePhase::ServerHelloOk) {
 		_phase = HandshakePhase::ServerHelloOk;
 		connectionProgress(_phase);
+		if (_failed || !_conn) {
+			return false;
+		}
 	}
 	return drainTunnel();
 }
 
+void NaiveSocket::onConnectionFailed(const QString &text) {
+	fail(text);
+}
+
+void NaiveSocket::onConnectionClosed() {
+	if (!_failed) {
+		_disconnected.fire({});
+	}
+}
+
 bool NaiveSocket::drainTunnel() {
-	const auto state = _api->naiveTunnelState(_client, _tunnel);
+	const auto api = _conn->api();
+	const auto client = _conn->client();
+	const auto state = api->naiveTunnelState(client, _tunnel);
 	if (state == TunnelFailed) {
 		// e.g. 407 for wrong credentials, 502 for an unreachable target; a
 		// probe-resistant server answers a wrong password like a web site
 		// (308), which lands here too.
 		fail(u"naive_tunnel_refused http=%1"_q.arg(
-			_api->naiveTunnelHttpStatus(_client, _tunnel)));
+			api->naiveTunnelHttpStatus(client, _tunnel)));
 		return false;
 	}
 	if (state == TunnelOpen && !_tunnelOpened) {
 		_tunnelOpened = true;
 		_connected.fire({});
-		if (_failed || !_client) {
+		if (_failed || !_conn) {
 			return false;
 		}
 	}
 	auto produced = false;
 	uint8_t chunk[kChunk];
 	while (true) {
-		const auto got = _api->naiveTunnelRead(
-			_client,
+		const auto got = api->naiveTunnelRead(
+			client,
 			_tunnel,
 			chunk,
 			sizeof(chunk));
@@ -319,11 +541,11 @@ bool NaiveSocket::drainTunnel() {
 			connectionProgress(_phase);
 		}
 		_readyRead.fire({});
-		if (_failed || !_client) {
+		if (_failed || !_conn) {
 			return false;
 		}
 	}
-	if (state == TunnelOpen && _api->naiveTunnelEof(_client, _tunnel)) {
+	if (state == TunnelOpen && api->naiveTunnelEof(client, _tunnel)) {
 		fail(u"naive_tunnel_closed"_q);
 		return false;
 	}
