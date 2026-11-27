@@ -575,7 +575,8 @@ QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
 	if (proxy.type == ProxyData::Type::None) {
 		return QNetworkProxy::DefaultProxy;
 	} else if (proxy.type == ProxyData::Type::Mtproto
-		|| proxy.type == ProxyData::Type::Web) {
+		|| proxy.type == ProxyData::Type::Web
+		|| proxy.type == ProxyData::Type::Naive) {
 		return QNetworkProxy::NoProxy;
 	}
 	return QNetworkProxy(

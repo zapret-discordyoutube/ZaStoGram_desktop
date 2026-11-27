@@ -440,6 +440,23 @@ bool ApplyWebProxy(
 	return true;
 }
 
+bool ApplyNaiveProxy(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	auto params = url_parse_params(
+		match->captured(1),
+		qthelp::UrlParamNameTransform::ToLower);
+	ProxiesBoxController::ShowApplyConfirmation(
+		controller,
+		MTP::ProxyData::Type::Naive,
+		params);
+	if (controller) {
+		controller->window().activate();
+	}
+	return true;
+}
+
 bool ShowPassportForm(
 		Window::SessionController *controller,
 		const QMap<QString, QString> &params) {
@@ -1896,6 +1913,10 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ApplyWebProxy
 		},
 		{
+			u"^naive/?\\?(.+)(#|$)"_q,
+			ApplyNaiveProxy
+		},
+		{
 			u"^passport/?\\?(.+)(#|$)"_q,
 			ShowPassport
 		},
@@ -2154,6 +2175,11 @@ QString TryConvertUrlToLocal(QString url) {
 				query,
 				matchOptions)) {
 			return u"tg://webproxy?"_q + webproxyMatch->captured(1);
+		} else if (const auto naiveMatch = regex_match(
+				u"^naive/?\\?(.+)(#|$)"_q,
+				query,
+				matchOptions)) {
+			return u"tg://naive?"_q + naiveMatch->captured(1);
 		} else if (const auto invoiceMatch = regex_match(u"^(invoice/|\\$)([a-zA-Z0-9_\\-]+)(\\?|#|$)"_q, query, matchOptions)) {
 			return u"tg://invoice?slug="_q + invoiceMatch->captured(2);
 		} else if (const auto bgMatch = regex_match(u"^bg/([a-zA-Z0-9\\.\\_\\-\\~]+)(\\?(.+)?)?$"_q, query, matchOptions)) {

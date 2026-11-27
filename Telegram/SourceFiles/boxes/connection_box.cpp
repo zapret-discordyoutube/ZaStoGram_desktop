@@ -116,7 +116,8 @@ struct TopButtonMenuState {
 	using Type = ProxyData::Type;
 	return (proxy.type == Type::Socks5)
 		|| (proxy.type == Type::Mtproto)
-		|| (proxy.type == Type::Web);
+		|| (proxy.type == Type::Web)
+		|| (proxy.type == Type::Naive);
 }
 
 [[nodiscard]] bool ProxyCheckStatusTerminal(MTP::ProxyCheckStatus status) {
@@ -184,6 +185,7 @@ struct TopButtonMenuState {
 		case Type::Socks5: return u"socks"_q;
 		case Type::Mtproto: return u"proxy"_q;
 		case Type::Web: return u"webproxy"_q;
+		case Type::Naive: return u"naive"_q;
 		case Type::None:
 		case Type::Http: return QString();
 		}
@@ -199,9 +201,11 @@ struct TopButtonMenuState {
 		+ "?server=" + server
 		+ ((proxy.type != Type::Web)
 			? "&port=" + QString::number(proxy.port) : "")
-		+ ((proxy.type == Type::Socks5 && !proxy.user.isEmpty())
+		+ (((proxy.type == Type::Socks5 || proxy.type == Type::Naive)
+				&& !proxy.user.isEmpty())
 			? "&user=" + qthelp::url_encode(proxy.user) : "")
-		+ ((proxy.type == Type::Socks5 && !proxy.password.isEmpty())
+		+ (((proxy.type == Type::Socks5 || proxy.type == Type::Naive)
+				&& !proxy.password.isEmpty())
 			? "&pass=" + qthelp::url_encode(proxy.password) : "")
 		+ (((proxy.type == Type::Mtproto || proxy.type == Type::Web)
 				&& !proxy.password.isEmpty())
@@ -414,7 +418,7 @@ void ShareProxy(
 	} else {
 		proxy.host = server;
 	}
-	if (type == ProxyData::Type::Socks5) {
+	if (type == ProxyData::Type::Socks5 || type == ProxyData::Type::Naive) {
 		proxy.user = fields.value(u"user"_q);
 		proxy.password = fields.value(u"pass"_q);
 	} else if (type == ProxyData::Type::Mtproto || web) {
@@ -434,9 +438,11 @@ void ShareProxy(
 	const auto proxyString = u"proxy"_q;
 	const auto socksString = u"socks"_q;
 	const auto webproxyString = u"webproxy"_q;
+	const auto naiveString = u"naive"_q;
 	if (!local.startsWith(protocol + proxyString, Qt::CaseInsensitive)
 		&& !local.startsWith(protocol + socksString, Qt::CaseInsensitive)
-		&& !local.startsWith(protocol + webproxyString, Qt::CaseInsensitive)) {
+		&& !local.startsWith(protocol + webproxyString, Qt::CaseInsensitive)
+		&& !local.startsWith(protocol + naiveString, Qt::CaseInsensitive)) {
 		return ProxyData();
 	}
 	const auto command = base::StringViewMid(local, protocol.size(), 8192);
@@ -446,7 +452,11 @@ void ShareProxy(
 		const auto midExpression = base::StringViewMid(expression, 1);
 		const auto isSocks = midExpression.startsWith(socksString);
 		const auto isWeb = midExpression.startsWith(webproxyString);
-		if (!midExpression.startsWith(proxyString) && !isSocks && !isWeb) {
+		const auto isNaive = midExpression.startsWith(naiveString);
+		if (!midExpression.startsWith(proxyString)
+			&& !isSocks
+			&& !isWeb
+			&& !isNaive) {
 			continue;
 		}
 		const auto match = regex_match(expression, command, options);
@@ -455,6 +465,8 @@ void ShareProxy(
 		}
 		const auto type = isWeb
 			? ProxyData::Type::Web
+			: isNaive
+			? ProxyData::Type::Naive
 			: isSocks
 			? ProxyData::Type::Socks5
 			: ProxyData::Type::Mtproto;
@@ -2330,7 +2342,8 @@ void ProxyBox::refreshButtons() {
 	if (_allowShare
 		&& (type == Type::Socks5
 			|| type == Type::Mtproto
-			|| type == Type::Web)) {
+			|| type == Type::Web
+			|| type == Type::Naive)) {
 		addLeftButton(tr::lng_proxy_share(), [=] { share(); });
 	}
 }
@@ -2398,6 +2411,7 @@ void ProxyBox::setupTypes() {
 		{ Type::Socks5, u"SOCKS5"_q },
 		{ Type::Http, u"HTTP"_q },
 		{ Type::Web, u"WEB"_q },
+		{ Type::Naive, u"NAIVE"_q },
 	};
 	for (const auto &[type, label] : types) {
 		_content->add(
@@ -2572,8 +2586,9 @@ void ProxyBox::setupControls(const ProxyData &data) {
 
 	const auto handleType = [=](Type type) {
 		const auto web = (type == Type::Web);
-		const auto credentialsShown
-			= (type == Type::Http || type == Type::Socks5);
+		const auto credentialsShown = (type == Type::Http
+			|| type == Type::Socks5
+			|| type == Type::Naive);
 		const auto mtprotoShown = (type == Type::Mtproto || web);
 		_socketAddress->toggle(!web, anim::type::instant);
 		_webAddress->toggle(web, anim::type::instant);
@@ -2779,7 +2794,7 @@ void ProxiesBoxController::ShowApplyConfirmation(
 		if (type != Type::Web) {
 			add(QString::number(proxy.port), tr::lng_proxy_box_port());
 		}
-		if (type == Type::Socks5) {
+		if (type == Type::Socks5 || type == Type::Naive) {
 			add(proxy.user, tr::lng_proxy_box_username());
 			add(proxy.password, tr::lng_proxy_box_password());
 		} else if (type == Type::Mtproto || type == Type::Web) {
@@ -3426,6 +3441,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		case Type::Socks5: return u"SOCKS5"_q;
 		case Type::Mtproto: return u"MTPROTO"_q;
 		case Type::Web: return u"WEB"_q;
+		case Type::Naive: return u"NAIVE"_q;
 		}
 		Unexpected("Proxy type in ProxiesBoxController::updateView.");
 	}();

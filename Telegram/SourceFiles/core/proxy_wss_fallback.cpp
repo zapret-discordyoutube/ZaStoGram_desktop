@@ -51,8 +51,11 @@ void ProxyWssFallback::reset() {
 bool ProxyWssFallback::allowed() const {
 	const auto &proxy = App().settings().proxy();
 	const auto transport = App().settings().proxyStealthOptions().transport;
+	// A Naive entry never falls back to a direct WSS relay: that would send
+	// the traffic around the server the user chose.
 	return proxy.isEnabled()
 		&& proxy.selected()
+		&& (proxy.selected().type != MTP::ProxyData::Type::Naive)
 		&& (transport == MTP::ProxyTransport::Wss)
 		&& App().domain().started();
 }

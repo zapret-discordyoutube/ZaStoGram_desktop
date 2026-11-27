@@ -641,6 +641,8 @@ void TcpConnection::connectToServer(
 				? "mtproxy "
 				: (_proxy.type == ProxyData::Type::Web)
 				? "webproxy "
+				: (_proxy.type == ProxyData::Type::Naive)
+				? "naive "
 				: "",
 			_address)
 		.arg(_port)

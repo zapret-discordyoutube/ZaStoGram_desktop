@@ -9,7 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/transport/details/mtproto_abstract_socket.h"
 
-#include <QtNetwork/QSslSocket>
+#include "zsg_naive/zsg_naive_api.h"
+
+#include <QtNetwork/QTcpSocket>
 
 #include <optional>
 
@@ -136,10 +138,13 @@ private:
 
 };
 
-// A clean, self-contained MTProto-over-WebSocket(-over-TLS) transport. It
-// speaks RFC 6455 over a real QSslSocket and carries the obfuscated MTProto
-// stream transparently inside binary frames, so the rest of the connection
-// stack (obfuscation, protocol negotiation) is unchanged.
+// MTProto-over-WebSocket(-over-TLS) transport. The TLS handshake (a Chrome 158
+// ClientHello), the HTTP upgrade (a Chrome WebSocket request) and the RFC 6455
+// framing are done by the zsgnaive library, so the connection looks like a
+// browser's; this class owns a plain QTcpSocket, moves bytes between it and
+// the library, and keeps the route and health bookkeeping. The obfuscated
+// MTProto stream rides transparently inside binary messages, so the rest of
+// the connection stack (obfuscation, protocol negotiation) is unchanged.
 class WssSocket final : public AbstractSocket {
 public:
 	WssSocket(
@@ -166,24 +171,28 @@ public:
 	QString transportName() const override;
 
 private:
-	void handleError(int errorCode);
+	void handleError(int errorCode, const QString &text = QString());
 	void connectToRelayHost();
 	void onTcpConnected();
-	void onEncrypted();
 	void onReadyRead();
-	void sendHttpUpgrade();
-	[[nodiscard]] bool tryFinishUpgrade();
-	[[nodiscard]] bool checkUpgradeAccept(const QByteArray &header) const;
-	[[nodiscard]] bool retryRefusedUpgrade(const QByteArray &header);
+	void startClient();
+	void releaseClient();
+	// Moves the library's outgoing bytes to the socket and reacts to its
+	// state. False means the socket reported a failure (and may be gone).
+	[[nodiscard]] bool pumpClient();
+	void finishUpgrade();
+	[[nodiscard]] bool handleRefusedUpgrade();
+	void collectMessages();
 	[[nodiscard]] bool outputDrained() const;
 	void noteFrontFailed();
-	void parseFrames();
-	void sendFrame(quint8 opcode, bytes::const_span data);
+	void sendMessage(bytes::const_span data);
 
-	QSslSocket _socket;
+	QTcpSocket _socket;
 	WssRoute _route;
-	QString _secWebSocketKey;
-	QByteArray _incoming;
+	const Zsg::Naive::Api *_api = nullptr;
+	Zsg::Naive::WsHandle *_client = nullptr;
+	QByteArray _clientDomain;
+	QByteArray _clientPath;
 	QByteArray _readBuffer;
 	bool _upgraded = false;
 	bool _usedFallback = false;

@@ -248,6 +248,7 @@ void RequestEnableAutomation() {
 	case MTP::ProxyData::Type::Http: return u"http"_q;
 	case MTP::ProxyData::Type::Mtproto: return u"mtproto"_q;
 	case MTP::ProxyData::Type::Web: return u"web"_q;
+	case MTP::ProxyData::Type::Naive: return u"naive"_q;
 	case MTP::ProxyData::Type::None: break;
 	}
 	return u"none"_q;

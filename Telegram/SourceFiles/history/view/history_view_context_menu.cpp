@@ -335,6 +335,7 @@ void RevertAction::handleKeyPress(not_null<QKeyEvent*> e) {
 	case Type::Http: return u"http"_q;
 	case Type::Mtproto: return u"mtproxy"_q;
 	case Type::Web: return u"web"_q;
+	case Type::Naive: return u"naive"_q;
 	}
 	Unexpected("ProxyData::Type in DiagnosticProxyType.");
 }

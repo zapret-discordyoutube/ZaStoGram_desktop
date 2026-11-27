@@ -28,6 +28,9 @@ struct ProxyData {
 		Http,
 		Mtproto,
 		Web,
+		// ZaStoGram: a NaiveProxy-compatible server (zsg_naive/). Appended at
+		// the end so the serialized numbering of the other types never moves.
+		Naive,
 	};
 	enum class Status {
 		Valid,

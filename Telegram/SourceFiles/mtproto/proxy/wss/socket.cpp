@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
+#include "zsg_naive/zsg_naive_api.h"
 
 #include <crl/crl_time.h>
 
@@ -23,7 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 #include <map>
 
-#include <QtCore/QCryptographicHash>
 #include <QtCore/QMutex>
 #include <QtCore/QDateTime>
 #include <QtCore/QFile>
@@ -32,8 +32,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace MTP::details {
 namespace {
 
-constexpr auto kWssMaxFrame = 2 * 1024 * 1024;
-constexpr auto kWssHeaderLimit = 32 * 1024;
+constexpr auto kWssReadChunk = 16 * 1024;
 
 // How long to remember that only the fallback (domain) relay host works.
 constexpr auto kRelayFallbackPreferenceTtl = 30 * 60 * crl::time(1000);
@@ -1239,7 +1238,6 @@ WssSocket::WssSocket(
 , _route(std::move(route)) {
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
-	_socket.setPeerVerifyMode(QSslSocket::VerifyPeer);
 	_forFiles = protocolForFiles;
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
@@ -1253,15 +1251,11 @@ WssSocket::WssSocket(
 		wrap([=] { onTcpConnected(); }));
 	connect(
 		&_socket,
-		&QSslSocket::encrypted,
-		wrap([=] { onEncrypted(); }));
-	connect(
-		&_socket,
-		&QSslSocket::disconnected,
+		&QAbstractSocket::disconnected,
 		wrap([=] { _disconnected.fire({}); }));
 	connect(
 		&_socket,
-		&QSslSocket::readyRead,
+		&QAbstractSocket::readyRead,
 		wrap([=] { onReadyRead(); }));
 	connect(
 		&_socket,
@@ -1270,6 +1264,7 @@ WssSocket::WssSocket(
 }
 
 WssSocket::~WssSocket() {
+	releaseClient();
 	if (!_openedAt) {
 		return;
 	} else if (_rotated) {
@@ -1328,11 +1323,10 @@ void WssSocket::connectToRelayHost() {
 	const auto host = _usedFallback ? _route.relayHostFallback : _route.relayHost;
 	_currentHost = host;
 	_tcpConnected = false;
-	_socket.setPeerVerifyName(_route.domain);
-	_socket.connectToHostEncrypted(
-		host,
-		quint16(_route.relayPort),
-		_route.domain);
+	releaseClient();
+	// The TLS handshake starts once TCP is up (onTcpConnected): the library
+	// speaks it, with the route's domain as SNI and the name to verify.
+	_socket.connectToHost(host, quint16(_route.relayPort));
 }
 
 bool WssSocket::plainDcMarker() const {
@@ -1343,7 +1337,7 @@ bool WssSocket::outputDrained() const {
 	// A photo going out slowly gets no answer until its part is complete, so
 	// silence while bytes still wait to be written is an upload in progress,
 	// not a frozen front.
-	return !_socket.bytesToWrite() && !_socket.encryptedBytesToWrite();
+	return !_socket.bytesToWrite();
 }
 
 void WssSocket::noteFrontFailed() {
@@ -1483,14 +1477,14 @@ void WssSocket::write(bytes::const_span prefix, bytes::const_span buffer) {
 	// live relays on 2026-08-08: 63 bytes never answered, 64 always did.
 	// Combining the header with the first packet keeps that guarantee here.
 	if (prefix.empty()) {
-		sendFrame(0x2, buffer);
+		sendMessage(buffer);
 		return;
 	}
 	auto combined = bytes::vector(prefix.size() + buffer.size());
 	auto combinedBytes = bytes::make_span(combined);
 	binary::Copy(combinedBytes, prefix);
 	binary::Copy(combinedBytes.subspan(prefix.size()), buffer);
-	sendFrame(0x2, bytes::make_span(combined));
+	sendMessage(bytes::make_span(combined));
 }
 
 int32 WssSocket::debugState() {
@@ -1509,7 +1503,7 @@ QString WssSocket::transportName() const {
 	return u"WSS"_q;
 }
 
-void WssSocket::handleError(int errorCode) {
+void WssSocket::handleError(int errorCode, const QString &text) {
 	// On a connect/handshake failure, retry once via the other relay host
 	// (hardcoded IP <-> domain) before giving up, so a blocked or stale
 	// relay IP does not kill web-relay connectivity. The failure is recorded
@@ -1521,7 +1515,6 @@ void WssSocket::handleError(int errorCode) {
 		if (!next.isEmpty()) {
 			_addressMoved = true;
 			_route.relayHost = next;
-			_incoming = QByteArray();
 			_phase = HandshakePhase::None;
 			_socket.abort();
 			connectToRelayHost();
@@ -1532,7 +1525,6 @@ void WssSocket::handleError(int errorCode) {
 		NoteRelayAttemptFailed(_route, _usedFallback);
 		_hostFlipped = true;
 		_usedFallback = !_usedFallback;
-		_incoming = QByteArray();
 		_phase = HandshakePhase::None;
 		_socket.abort();
 		connectToRelayHost();
@@ -1560,79 +1552,117 @@ void WssSocket::handleError(int errorCode) {
 		NoteRouteUnreachable(_route);
 		SuppressRelayAddressWithDomain(_route);
 	}
-	logError(errorCode, _socket.errorString());
+	logError(errorCode, text.isEmpty() ? _socket.errorString() : text);
 	_error.fire_copy(errorCode);
 }
 
 void WssSocket::onTcpConnected() {
 	_tcpConnected = true;
 	NoteTcpConnected(_route, _currentHost);
-}
-
-void WssSocket::onEncrypted() {
 	_phase = HandshakePhase::TcpConnected;
 	connectionProgress(_phase);
-	sendHttpUpgrade();
-	_phase = HandshakePhase::ClientHelloSent;
-	connectionProgress(_phase);
+	startClient();
 }
 
-void WssSocket::sendHttpUpgrade() {
-	_secWebSocketKey = QString::fromLatin1(RandomBytes(16).toBase64());
-	auto host = _route.domain;
-	if (_route.relayPort != 443) {
-		host += u":%1"_q.arg(_route.relayPort);
+// The TLS handshake, the HTTP upgrade and the WebSocket framing are the
+// zsgnaive library's: the same Chrome 158 handshake and the header order of a
+// Chrome WebSocket request. This class only moves bytes.
+void WssSocket::startClient() {
+	auto loadError = QString();
+	_api = Zsg::Naive::LoadApi(&loadError);
+	if (!_api) {
+		handleError(
+			QAbstractSocket::SslInternalError,
+			u"WSS "_q + loadError);
+		return;
 	}
-	const auto request = (u"GET %1 HTTP/1.1\r\n"
-		u"Host: %2\r\n"
-		u"Upgrade: websocket\r\n"
-		u"Connection: Upgrade\r\n"
-		u"Sec-WebSocket-Key: %3\r\n"
-		u"Sec-WebSocket-Version: 13\r\n"
-		u"Sec-WebSocket-Protocol: binary\r\n"
-		u"Origin: https://web.telegram.org\r\n"
-		u"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-		u"AppleWebKit/537.36 (KHTML, like Gecko) "
-		u"Chrome/131.0.0.0 Safari/537.36\r\n"
-		u"\r\n"_q).arg(_route.path, host, _secWebSocketKey);
-	const auto utf8 = request.toUtf8();
-	_socket.write(utf8);
+	_clientDomain = _route.domain.toUtf8();
+	_clientPath = _route.path.toUtf8();
+	const auto &trust = Zsg::Naive::SystemTrust();
+	const auto &identity = Zsg::Naive::BrowserIdentity();
+	auto config = Zsg::Naive::WsConfig();
+	config.host = _clientDomain.constData();
+	config.port = uint16_t(_route.relayPort);
+	config.path = _clientPath.constData();
+	config.origin = "https://web.telegram.org";
+	config.user_agent = identity.userAgent;
+	config.subprotocol = "binary";
+	config.extra_roots_pem = trust.pem.constData();
+	config.extra_roots_der = trust.certs.data();
+	config.extra_roots_der_count = trust.certs.size();
+	config.offer_deflate = 1;
+	char error[256] = {};
+	_client = _api->wsNew(&config, error, sizeof(error));
+	if (!_client) {
+		handleError(
+			QAbstractSocket::SslInternalError,
+			u"WSS client create failed: "_q + QString::fromLatin1(error));
+		return;
+	}
+	[[maybe_unused]] const auto alive = pumpClient();
 }
 
-bool WssSocket::tryFinishUpgrade() {
-	const auto end = _incoming.indexOf("\r\n\r\n");
-	if (end < 0) {
-		if (_incoming.size() > kWssHeaderLimit) {
-			logError(0, u"WSS HTTP response too large"_q);
+void WssSocket::releaseClient() {
+	if (_client) {
+		_api->wsFree(_client);
+		_client = nullptr;
+	}
+}
+
+bool WssSocket::pumpClient() {
+	if (!_client) {
+		return false;
+	}
+	uint8_t chunk[kWssReadChunk];
+	while (true) {
+		const auto taken = _api->wsTakeNetwork(_client, chunk, sizeof(chunk));
+		if (!taken) {
+			break;
+		}
+		_socket.write(reinterpret_cast<const char*>(chunk), qint64(taken));
+	}
+	const auto state = _api->wsState(_client);
+	if (state >= Zsg::Naive::WsUpgrading
+		&& _phase < HandshakePhase::ClientHelloSent) {
+		_phase = HandshakePhase::ClientHelloSent;
+		connectionProgress(_phase);
+	}
+	if (state == Zsg::Naive::WsOpen && !_upgraded) {
+		finishUpgrade();
+	} else if (state == Zsg::Naive::WsRefused) {
+		return handleRefusedUpgrade();
+	} else if (state == Zsg::Naive::WsFailed) {
+		const auto reason = QString::fromLatin1(_api->wsError(_client));
+		if (_upgraded) {
+			logError(0, u"WSS "_q + reason);
 			_error.fire_copy(AbstractConnection::kErrorCodeOther);
+		} else {
+			// A failed handshake or upgrade is handled like the QSslSocket
+			// failure it replaces: the other relay host gets its turn.
+			handleError(
+				QAbstractSocket::SslHandshakeFailedError,
+				u"WSS "_q + reason);
 		}
 		return false;
 	}
-	const auto header = _incoming.left(end);
-	_incoming.remove(0, end + 4);
-	if (!header.contains(" 101 ") && !header.contains(" 101\r")) {
-		if (retryRefusedUpgrade(header)) {
+	if (_upgraded) {
+		collectMessages();
+		if (_client && _api->wsState(_client) == Zsg::Naive::WsClosed) {
+			logError(0, u"WSS close frame received"_q);
+			_error.fire_copy(AbstractConnection::kErrorCodeOther);
 			return false;
 		}
-		noteFrontFailed();
-		if (_route.tunnel && header.startsWith("HTTP/1.1 429")) {
-			NoteTunnelQuotaExhausted(_route);
-		}
-		logError(0, u"WSS HTTP upgrade rejected"_q);
-		_error.fire_copy(AbstractConnection::kErrorCodeOther);
-		return false;
 	}
-	if (!checkUpgradeAccept(header)) {
-		logError(0, u"WSS Sec-WebSocket-Accept mismatch"_q);
-		_error.fire_copy(AbstractConnection::kErrorCodeOther);
-		return false;
-	}
+	return _client != nullptr;
+}
+
+void WssSocket::finishUpgrade() {
 	_upgraded = true;
 	_upgradedAt = crl::now();
 	if (!_route.tunnel && !IsCdn(_route)) {
 		// The Cloudflare tunnel upgrades fine and then freezes after ~16 KB
-		// on a throttled network; it proves itself in parseFrames instead,
-		// and so do the fronts, which also upgrade for silent paths.
+		// on a throttled network; it proves itself in collectMessages
+		// instead, and so do the fronts, which also upgrade for silent paths.
 		NoteRouteReachable(_route);
 		if (IsOfficialRelay(_route) && !_usedFallback) {
 			// Only an answer through the hardcoded address clears it; the
@@ -1645,149 +1675,78 @@ bool WssSocket::tryFinishUpgrade() {
 	_phase = HandshakePhase::ServerHelloOk;
 	connectionProgress(_phase);
 	_connected.fire({});
-	return true;
 }
 
-bool WssSocket::retryRefusedUpgrade(const QByteArray &header) {
+bool WssSocket::handleRefusedUpgrade() {
 	// A front connection is either served at once or answers 503 to every
 	// upgrade; an empty keep-alive 503 leaves the connection clean for the
-	// next request, which costs ~25 ms against a new TCP+TLS dial.
-	if (!IsCdn(_route)
-		|| _upgradeRetries >= kCdnUpgradeRetries
-		|| !_incoming.isEmpty()
-		|| !(header.startsWith("HTTP/1.1 503")
-			|| header.startsWith("HTTP/1.1 429"))) {
-		return false;
+	// next request, which costs ~25 ms against a new TCP+TLS dial. The
+	// library says whether this connection can ask again.
+	if (IsCdn(_route)
+		&& _upgradeRetries < kCdnUpgradeRetries
+		&& _api->wsUpgradeRetryable(_client)
+		&& _api->wsRetryUpgrade(_client)) {
+		++_upgradeRetries;
+		return pumpClient();
 	}
-	const auto lowered = header.toLower() + "\r\n";
-	if (!lowered.contains("\r\ncontent-length: 0\r\n")
-		|| lowered.contains("connection: close")) {
-		return false;
+	const auto status = _api->wsUpgradeStatus(_client);
+	noteFrontFailed();
+	if (_route.tunnel && status == 429) {
+		NoteTunnelQuotaExhausted(_route);
 	}
-	++_upgradeRetries;
-	sendHttpUpgrade();
-	return true;
-}
-
-bool WssSocket::checkUpgradeAccept(const QByteArray &header) const {
-	const auto expected = QCryptographicHash::hash(
-		_secWebSocketKey.toLatin1()
-			+ QByteArrayLiteral("258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
-		QCryptographicHash::Sha1).toBase64();
-	const auto lowered = header.toLower();
-	const auto marker = QByteArrayLiteral("sec-websocket-accept:");
-	const auto pos = lowered.indexOf(marker);
-	if (pos < 0) {
-		return false;
-	}
-	auto valueEnd = header.indexOf('\n', pos);
-	if (valueEnd < 0) {
-		valueEnd = header.size();
-	}
-	const auto from = pos + marker.size();
-	const auto value = header.mid(from, valueEnd - from).trimmed();
-	return (value == expected);
+	logError(0, u"WSS HTTP upgrade rejected (HTTP %1)"_q.arg(status));
+	_error.fire_copy(AbstractConnection::kErrorCodeOther);
+	return false;
 }
 
 void WssSocket::onReadyRead() {
-	_incoming += _socket.readAll();
-	if (!_upgraded && !tryFinishUpgrade()) {
+	if (!_client) {
 		return;
 	}
-	if (_upgraded) {
-		parseFrames();
-	}
-}
-
-void WssSocket::parseFrames() {
-	auto produced = false;
-	auto offset = 0;
-	const auto total = int(_incoming.size());
-	const auto data = bytes::make_span(_incoming.constData(), total);
-	const auto byteAt = [&](int index) {
-		return gsl::to_integer<quint8>(data[index]);
-	};
-	while (total - offset >= 2) {
-		const auto opcode = (byteAt(offset) & 0x0f);
-		const auto masked = ((byteAt(offset + 1) & 0x80) != 0);
-		auto length = quint64(byteAt(offset + 1) & 0x7f);
-		auto headerLen = 2;
-		if (length == 126) {
-			if (total - offset < 4) {
-				break;
-			}
-			length = (quint64(byteAt(offset + 2)) << 8)
-				| quint64(byteAt(offset + 3));
-			headerLen = 4;
-		} else if (length == 127) {
-			if (total - offset < 10) {
-				break;
-			}
-			length = 0;
-			for (auto i = 0; i != 8; ++i) {
-				length = (length << 8) | quint64(byteAt(offset + 2 + i));
-			}
-			headerLen = 10;
-		}
-		if (length > kWssMaxFrame) {
-			logError(0, u"WSS frame too large"_q);
-			_error.fire_copy(AbstractConnection::kErrorCodeOther);
-			return;
-		}
-		const auto maskLen = masked ? 4 : 0;
-		const auto frameLen = quint64(headerLen) + maskLen + length;
-		if (quint64(total - offset) < frameLen) {
+	while (_socket.bytesAvailable() > 0) {
+		const auto data = _socket.read(kWssReadChunk);
+		if (data.isEmpty()) {
 			break;
 		}
-		const auto mask = data.subspan(offset + headerLen, maskLen);
-		const auto payload = data.subspan(
-			offset + headerLen + maskLen,
-			int(length));
-		if (opcode == 0x8) { // close
-			logError(0, u"WSS close frame received"_q);
-			_error.fire_copy(AbstractConnection::kErrorCodeOther);
-			return;
-		} else if (opcode == 0x9) { // ping -> pong
-			sendFrame(0xA, payload);
-		} else if (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
-			if (length > 0) {
-				_bytesReceived += qint64(length);
-				if (_route.tunnel
-					&& !_tunnelProven
-					&& _bytesReceived >= kTunnelRotateBytes) {
-					_tunnelProven = true;
-					NoteRouteReachable(_route);
-				}
-				if (IsCdn(_route) && !_frontAnswered) {
-					_frontAnswered = true;
-					NoteRouteReachable(_route);
-				}
-				if (IsCdn(_route)
-					&& !_frontProven
-					&& _bytesReceived >= kCdnProofBytes) {
-					_frontProven = true;
-					NoteCdnProven(_route);
-				}
-				const auto at = int(_readBuffer.size());
-				const auto count = int(length);
-				_readBuffer.resize(at + count);
-				auto out = bytes::make_detached_span(_readBuffer).subspan(at);
-				if (masked) {
-					for (auto i = 0; i != count; ++i) {
-						out[i] = bytes::type(
-							byteAt(offset + headerLen + maskLen + i)
-							^ gsl::to_integer<quint8>(mask[i % 4]));
-					}
-				} else {
-					binary::Copy(out, payload);
-				}
-				produced = true;
-			}
-		}
-		offset += int(frameLen);
+		_api->wsFeedNetwork(
+			_client,
+			reinterpret_cast<const uint8_t*>(data.constData()),
+			size_t(data.size()));
 	}
-	if (offset > 0) {
-		_incoming.remove(0, offset);
+	[[maybe_unused]] const auto alive = pumpClient();
+}
+
+void WssSocket::collectMessages() {
+	auto produced = false;
+	while (_client) {
+		const auto size = _api->wsNextMessageSize(_client);
+		if (!size) {
+			break;
+		}
+		_bytesReceived += qint64(size);
+		if (_route.tunnel
+			&& !_tunnelProven
+			&& _bytesReceived >= kTunnelRotateBytes) {
+			_tunnelProven = true;
+			NoteRouteReachable(_route);
+		}
+		if (IsCdn(_route) && !_frontAnswered) {
+			_frontAnswered = true;
+			NoteRouteReachable(_route);
+		}
+		if (IsCdn(_route)
+			&& !_frontProven
+			&& _bytesReceived >= kCdnProofBytes) {
+			_frontProven = true;
+			NoteCdnProven(_route);
+		}
+		const auto at = int(_readBuffer.size());
+		_readBuffer.resize(at + int(size));
+		_api->wsPopMessage(
+			_client,
+			reinterpret_cast<uint8_t*>(_readBuffer.data()) + at,
+			size);
+		produced = true;
 	}
 	if (produced) {
 		if (_phase == HandshakePhase::ServerHelloOk) {
@@ -1799,38 +1758,20 @@ void WssSocket::parseFrames() {
 	}
 }
 
-void WssSocket::sendFrame(quint8 opcode, bytes::const_span data) {
-	const auto size = int(data.size());
-	if (opcode == 0x2) {
-		_bytesSent += size;
+void WssSocket::sendMessage(bytes::const_span data) {
+	if (!_client) {
+		return;
 	}
-	auto frame = QByteArray();
-	frame.reserve(size + 14);
-	frame.append(char(0x80 | opcode));
-	if (size < 126) {
-		frame.append(char(0x80 | size));
-	} else if (size <= 0xffff) {
-		frame.append(char(0x80 | 126));
-		frame.append(char((size >> 8) & 0xff));
-		frame.append(char(size & 0xff));
-	} else {
-		frame.append(char(0x80 | 127));
-		for (auto i = 7; i >= 0; --i) {
-			frame.append(char((quint64(size) >> (i * 8)) & 0xff));
-		}
+	_bytesSent += qint64(data.size());
+	if (_api->wsSend(
+			_client,
+			reinterpret_cast<const uint8_t*>(data.data()),
+			data.size()) != 1) {
+		logError(0, u"WSS send failed"_q);
+		_error.fire_copy(AbstractConnection::kErrorCodeOther);
+		return;
 	}
-	const auto mask = RandomBytes(4);
-	frame.append(mask);
-	const auto maskBytes = bytes::make_span(mask);
-	const auto base = int(frame.size());
-	frame.resize(base + size);
-	auto out = bytes::make_detached_span(frame).subspan(base);
-	for (auto i = 0; i != size; ++i) {
-		out[i] = bytes::type(
-			gsl::to_integer<quint8>(data[i])
-			^ gsl::to_integer<quint8>(maskBytes[i % 4]));
-	}
-	_socket.write(frame);
+	[[maybe_unused]] const auto alive = pumpClient();
 }
 
 } // namespace MTP::details

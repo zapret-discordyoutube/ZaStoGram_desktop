@@ -97,7 +97,8 @@ constexpr auto kDragAreaEvents = {
 		};
 		return (proxy(u"tg://proxy?"_q)
 			|| proxy(u"tg://socks?"_q)
-			|| proxy(u"tg://webproxy?"_q))
+			|| proxy(u"tg://webproxy?"_q)
+			|| proxy(u"tg://naive?"_q))
 			? local
 			: QString();
 	};

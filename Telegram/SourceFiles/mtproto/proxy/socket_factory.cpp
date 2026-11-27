@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/proxy/wss/socket.h"
 #include "mtproto/details/mtproto_web_proxy_socket.h"
 #include "mtproto/transport/details/mtproto_tcp_socket.h"
+#include "zsg_naive/zsg_naive_socket.h"
 
 namespace MTP::details {
 
@@ -32,6 +33,13 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 			thread,
 			proxy,
 			mtproxyAttempt.use);
+	}
+	if (proxy.type == ProxyData::Type::Naive) {
+		return std::make_unique<Zsg::Naive::NaiveSocket>(
+			runtime,
+			thread,
+			proxy,
+			protocolForFiles);
 	}
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {

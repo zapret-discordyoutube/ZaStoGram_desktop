@@ -1857,6 +1857,10 @@ PRIVATE
     mtproto/proxy/resolving_connection.h
     mtproto/proxy/socket_factory.cpp
     mtproto/proxy/socket_factory.h
+    zsg_naive/zsg_naive_api.cpp
+    zsg_naive/zsg_naive_api.h
+    zsg_naive/zsg_naive_socket.cpp
+    zsg_naive/zsg_naive_socket.h
     mtproto/transport/connection_tcp.cpp
     mtproto/transport/connection_tcp.h
     mtproto/core_types.h
@@ -2993,6 +2997,29 @@ if (WIN32)
             "Copying d3dcompiler_47.dll for ANGLE."
         VERBATIM
         )
+    endif()
+
+    # ZaStoGram Naive: zsgnaive.dll (TLS/HTTP2/Naive/WebSocket with its own
+    # BoringSSL) is built from the private naive-core and delivered as a
+    # binary; it sits next to Telegram.exe and is loaded at run time, so a
+    # missing library fails the Naive and WSS transports closed instead of
+    # stopping the application. Point ZSG_NAIVE_LIBRARY (cache variable or
+    # environment) at the DLL to have it copied next to the executable.
+    if (NOT ZSG_NAIVE_LIBRARY AND DEFINED ENV{ZSG_NAIVE_LIBRARY})
+        set(ZSG_NAIVE_LIBRARY "$ENV{ZSG_NAIVE_LIBRARY}")
+    endif()
+    if (ZSG_NAIVE_LIBRARY AND EXISTS "${ZSG_NAIVE_LIBRARY}")
+        add_custom_command(TARGET Telegram POST_BUILD
+        COMMAND
+            ${CMAKE_COMMAND} -E copy_if_different
+            "${ZSG_NAIVE_LIBRARY}"
+            "$<TARGET_FILE_DIR:Telegram>/zsgnaive.dll"
+        COMMENT
+            "Copying zsgnaive.dll."
+        VERBATIM
+        )
+    else()
+        message(WARNING "ZSG_NAIVE_LIBRARY is not set: Naive and WSS transports will not work without zsgnaive.dll next to the executable.")
     endif()
 
     # ZaStoGram: a link map for every build. Crash reports of core/zsg_diag
