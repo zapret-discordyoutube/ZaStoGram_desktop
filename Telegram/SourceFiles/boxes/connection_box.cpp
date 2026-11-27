@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/connection_box.h"
+#include "zsg_naive/zsg_warp.h"
 
 #include "base/qt/qt_key_modifiers.h"
 #include "base/call_delayed.h"
@@ -1578,6 +1579,11 @@ void ProxiesBox::setupContent() {
 				options.level = level;
 			}
 		};
+		addStealthHeader(u"Cloudflare WARP"_q);
+		addStealthToggle(
+			u"Use WARP as the entry (experimental)"_q,
+			Zsg::Warp::Enabled(),
+			[](bool on) { Zsg::Warp::SetEnabled(on); });
 		addStealthHeader(u"Transport compatibility"_q);
 		_routeViaWss = addStealthToggle(
 			u"Route via WSS (web, DC2/DC4 only)"_q,

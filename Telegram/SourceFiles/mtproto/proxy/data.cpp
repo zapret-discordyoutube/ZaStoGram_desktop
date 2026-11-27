@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/qthelp_url.h"
 #include "base/qt/qt_string_view.h"
+#include "zsg_naive/zsg_warp.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QMessageAuthenticationCode>
@@ -572,6 +573,14 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
 }
 
 QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
+	if (proxy.type == ProxyData::Type::None
+		|| proxy.type == ProxyData::Type::Mtproto
+		|| proxy.type == ProxyData::Type::Naive) {
+		// The optional WARP entry hop (a loopback SOCKS5 of the zsgnaive library).
+		if (const auto warp = Zsg::Warp::EntryProxy()) {
+			return *warp;
+		}
+	}
 	if (proxy.type == ProxyData::Type::None) {
 		return QNetworkProxy::DefaultProxy;
 	} else if (proxy.type == ProxyData::Type::Mtproto

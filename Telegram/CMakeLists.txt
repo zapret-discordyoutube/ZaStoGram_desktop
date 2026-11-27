@@ -1863,6 +1863,8 @@ PRIVATE
     zsg_naive/zsg_naive_api.h
     zsg_naive/zsg_naive_socket.cpp
     zsg_naive/zsg_naive_socket.h
+    zsg_naive/zsg_warp.cpp
+    zsg_naive/zsg_warp.h
     mtproto/transport/connection_tcp.cpp
     mtproto/transport/connection_tcp.h
     mtproto/core_types.h

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "logs.h"
 #include "mtproto/protocol/mtproto_binary.h"
 #include "settings.h"
+#include "zsg_naive/zsg_warp.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QFile>
@@ -93,7 +94,7 @@ SharedConnection::SharedConnection(
 		moveToThread(thread);
 	}
 	_tcp.moveToThread(thread);
-	_tcp.setProxy(QNetworkProxy::NoProxy);
+	_tcp.setProxy(Zsg::Warp::EntryProxy().value_or(QNetworkProxy(QNetworkProxy::NoProxy)));
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });

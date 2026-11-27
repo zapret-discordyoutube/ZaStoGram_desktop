@@ -62,6 +62,22 @@ struct WsConfig {
 	int plain;
 };
 
+struct WarpConfigC {
+	const char *private_key;
+	const char *peer_public_key;
+	const char *reserved;
+	const char *address;
+	const char *endpoint_host;
+	uint16_t endpoint_port;
+	int junk_count;
+};
+struct WarpHandle;
+enum WarpState {
+	WarpConnecting = 0,
+	WarpUp = 1,
+	WarpFailed = 2,
+};
+
 enum NaiveState {
 	NaiveHandshaking = 0,
 	NaivePreamble = 1,
@@ -116,6 +132,12 @@ struct Api {
 	size_t (*wsPopMessage)(WsHandle *, uint8_t *, size_t);
 	void (*wsClose)(WsHandle *);
 	int (*wsDeflateNegotiated)(const WsHandle *);
+
+	// WARP entry hop: absent (nullptr) in a library older than the feature.
+	WarpHandle *(*warpStart)(const WarpConfigC *, uint16_t *, char *, size_t);
+	int (*warpState)(const WarpHandle *);
+	void (*warpStop)(WarpHandle *);
+	int (*warpKeypair)(char *, char *, size_t);
 
 	const char *(*profileVersion)();
 };

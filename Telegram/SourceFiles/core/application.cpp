@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/proxy_wss_fallback.h"
 #include "core/update_checker.h"
 #include "core/zsg_mirrors.h"
+#include "zsg_naive/zsg_warp.h"
 #include "core/shortcuts.h"
 #include "core/sandbox.h"
 #include "core/local_url_handlers.h"
@@ -337,6 +338,7 @@ void Application::run() {
 		proxies.setSettings(MTP::ProxyData::Settings::Enabled);
 	}
 	refreshGlobalProxy(); // Depends on app settings being read.
+	Zsg::Warp::Init();
 	MTP::WebProxy::StartSelfTest();
 
 	if (const auto old = Local::oldSettingsVersion(); old < AppVersion) {

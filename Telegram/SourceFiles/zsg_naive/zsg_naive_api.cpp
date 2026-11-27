@@ -201,6 +201,11 @@ struct Loaded {
 	resolve(api.wsClose, "zsg_ws_close");
 	resolve(api.wsDeflateNegotiated, "zsg_ws_deflate_negotiated");
 	resolve(api.profileVersion, "zsg_naive_profile_version");
+	// Optional: the WARP entry hop exists only in a library built after it was added.
+	api.warpStart = reinterpret_cast<decltype(api.warpStart)>(library.resolve("zsg_warp_start"));
+	api.warpState = reinterpret_cast<decltype(api.warpState)>(library.resolve("zsg_warp_state"));
+	api.warpStop = reinterpret_cast<decltype(api.warpStop)>(library.resolve("zsg_warp_stop"));
+	api.warpKeypair = reinterpret_cast<decltype(api.warpKeypair)>(library.resolve("zsg_warp_keypair"));
 	if (!missing.isEmpty()) {
 		result.error = u"zsgnaive library lacks: "_q + missing;
 		return result;
