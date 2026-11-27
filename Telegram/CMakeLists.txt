@@ -3003,26 +3003,46 @@ if (WIN32)
 
     # ZaStoGram Naive: zsgnaive.dll (TLS/HTTP2/Naive/WebSocket with its own
     # BoringSSL) is built from the private naive-core and delivered as a
-    # binary; it sits next to Telegram.exe and is loaded at run time, so a
-    # missing library fails the Naive and WSS transports closed instead of
-    # stopping the application. Point ZSG_NAIVE_LIBRARY (cache variable or
-    # environment) at the DLL to have it copied next to the executable.
+    # binary. Telegram.exe stays a single file: the DLL is embedded as a
+    # resource (ZSGNAIVE) and unpacked into tdata/zsg/ at start after its
+    # SHA-256 is checked (zsg_naive/zsg_naive_api.cpp). Point ZSG_NAIVE_LIBRARY
+    # (cache variable or environment) at the DLL; without it the build has
+    # no embedded copy and looks for zsgnaive.dll next to the executable, and
+    # the Naive and WSS transports fail closed if it is not there.
     if (NOT ZSG_NAIVE_LIBRARY AND DEFINED ENV{ZSG_NAIVE_LIBRARY})
         set(ZSG_NAIVE_LIBRARY "$ENV{ZSG_NAIVE_LIBRARY}")
     endif()
+    set(zsg_naive_gen "${CMAKE_CURRENT_BINARY_DIR}/zsg_naive_gen")
+    file(MAKE_DIRECTORY "${zsg_naive_gen}")
+    set(zsg_naive_sha256 "")
     if (ZSG_NAIVE_LIBRARY AND EXISTS "${ZSG_NAIVE_LIBRARY}")
-        add_custom_command(TARGET Telegram POST_BUILD
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different
-            "${ZSG_NAIVE_LIBRARY}"
-            "$<TARGET_FILE_DIR:Telegram>/zsgnaive.dll"
-        COMMENT
-            "Copying zsgnaive.dll."
-        VERBATIM
-        )
+        file(SHA256 "${ZSG_NAIVE_LIBRARY}" zsg_naive_sha256)
+        file(TO_CMAKE_PATH "${ZSG_NAIVE_LIBRARY}" zsg_naive_library_path)
+        set(zsg_naive_rc "${zsg_naive_gen}/zsg_naive_embed.rc")
+        set(zsg_naive_rc_text "ZSGNAIVE RCDATA \"${zsg_naive_library_path}\"\n")
+        set(zsg_naive_rc_old "")
+        if (EXISTS "${zsg_naive_rc}")
+            file(READ "${zsg_naive_rc}" zsg_naive_rc_old)
+        endif()
+        if (NOT zsg_naive_rc_old STREQUAL zsg_naive_rc_text)
+            file(WRITE "${zsg_naive_rc}" "${zsg_naive_rc_text}")
+        endif()
+        target_sources(Telegram PRIVATE "${zsg_naive_rc}")
+        set_source_files_properties("${zsg_naive_rc}" PROPERTIES
+            OBJECT_DEPENDS "${zsg_naive_library_path}")
     else()
-        message(WARNING "ZSG_NAIVE_LIBRARY is not set: Naive and WSS transports will not work without zsgnaive.dll next to the executable.")
+        message(WARNING "ZSG_NAIVE_LIBRARY is not set: no embedded zsgnaive.dll; Naive and WSS transports need zsgnaive.dll next to the executable.")
     endif()
+    set(zsg_naive_header "${zsg_naive_gen}/zsg_naive_embedded.h")
+    set(zsg_naive_header_text "#define ZSG_NAIVE_EMBEDDED_SHA256 \"${zsg_naive_sha256}\"\n")
+    set(zsg_naive_header_old "")
+    if (EXISTS "${zsg_naive_header}")
+        file(READ "${zsg_naive_header}" zsg_naive_header_old)
+    endif()
+    if (NOT zsg_naive_header_old STREQUAL zsg_naive_header_text)
+        file(WRITE "${zsg_naive_header}" "${zsg_naive_header_text}")
+    endif()
+    target_include_directories(Telegram PRIVATE "${zsg_naive_gen}")
 
     # ZaStoGram: a link map for every build. Crash reports of core/zsg_diag
     # hold module+offset only; tools/zsg-crash-resolve.py turns them into
