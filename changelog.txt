@@ -1,3 +1,8 @@
+7.4.8 (27.11.26)
+
+- Fix automatic updates: updates are now signed with ZaStoGram own keys.
+- Dev builds can update to a newer build of the same version.
+
 7.4.7 (26.11.26)
 
 - Add music to stories.
