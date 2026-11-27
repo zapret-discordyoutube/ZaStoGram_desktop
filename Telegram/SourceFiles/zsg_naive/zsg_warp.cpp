@@ -69,6 +69,8 @@ struct State {
 	MasqueAccount masque;
 	bool preferMasque = false;  // the last tunnel that worked was MASQUE: try it first
 	bool enrolling = false;
+	qint64 lastEnrollTry = 0;
+	bool enrollViaTunnelTried = false;
 	Naive::WarpHandle *handle = nullptr;
 	std::unique_ptr<QNetworkAccessManager> network;
 	std::unique_ptr<QTimer> timer;
@@ -153,6 +155,7 @@ void StopEngine() {
 		data.handle = nullptr;
 	}
 	data.lastState = -1;
+	data.enrollViaTunnelTried = false;
 	if (data.timer) {
 		data.timer->stop();
 	}
@@ -181,8 +184,18 @@ void EnrollMasque() {
 		return;
 	}
 	data.enrolling = true;
+	data.lastEnrollTry = QDateTime::currentMSecsSinceEpoch();
 	if (!data.network) {
 		data.network = std::make_unique<QNetworkAccessManager>();
+	}
+	// Directly while the tunnel is not up; through the tunnel once it is (the provider drops this API by name on some
+	// networks, a tunnel that is up reaches it from inside Cloudflare).
+	if (const auto entry = Zsg::Warp::EntryProxy()) {
+		auto proxy = *entry;
+		proxy.setCapabilities(QNetworkProxy::HostNameLookupCapability
+			| QNetworkProxy::TunnelingCapability);
+		data.network->setProxy(proxy);
+	} else {
 		data.network->setProxy(QNetworkProxy::NoProxy);
 	}
 	const auto url = QString::fromLatin1(kMasqueApiUrl);
@@ -386,6 +399,14 @@ void Poll() {
 	}
 	if (state == Naive::WarpUp) {
 		data.registrations = 0;
+		if (!data.masque.valid() && !data.enrolling && g_port.load() != 0) {
+			// The tunnel is up: the API is reachable through it. Once at once, then every 5 minutes.
+			const auto now = QDateTime::currentMSecsSinceEpoch();
+			if (!data.enrollViaTunnelTried || now - data.lastEnrollTry > 300000) {
+				data.enrollViaTunnelTried = true;
+				EnrollMasque();
+			}
+		}
 		if (api->warpTransport) {
 			// Remember which transport works on this network: MASQUE first next time when WireGuard never did.
 			const auto masque = (api->warpTransport(data.handle) == 2);
