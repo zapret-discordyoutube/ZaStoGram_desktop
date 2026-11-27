@@ -25,20 +25,11 @@ constexpr auto kChunk = 16 * 1024;
 NaiveSocket::NaiveSocket(
 	not_null<MTP::RuntimeEnvironment*> runtime,
 	not_null<QThread*> thread,
-	const MTP::ProxyData &proxy,
-	bool protocolForFiles)
+	const MTP::ProxyData &proxy)
 : AbstractSocket(runtime, thread)
 , _proxy(proxy) {
 	_tcp.moveToThread(thread);
 	_tcp.setProxy(QNetworkProxy::NoProxy);
-	if (protocolForFiles) {
-		_tcp.setSocketOption(
-			QAbstractSocket::SendBufferSizeSocketOption,
-			kFilesSendBufferSize);
-		_tcp.setSocketOption(
-			QAbstractSocket::ReceiveBufferSizeSocketOption,
-			kFilesReceiveBufferSize);
-	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });

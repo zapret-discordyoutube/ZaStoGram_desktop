@@ -82,6 +82,7 @@ public:
 	[[nodiscard]] bool scheduleDelayed(
 		mtpRequestId requestId,
 		crl::time sendAt);
+	void removeDelayed(mtpRequestId requestId);
 	[[nodiscard]] std::vector<DelayedRequest> takeReadyDelayed(crl::time now);
 	[[nodiscard]] std::optional<crl::time> nextDelayedAt() const;
 	[[nodiscard]] CancelledRequest cancel(mtpRequestId requestId);

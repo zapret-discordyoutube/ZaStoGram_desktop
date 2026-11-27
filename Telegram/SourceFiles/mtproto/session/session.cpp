@@ -284,9 +284,9 @@ Session::~Session() {
 
 	// Wake key waiters even if the worker released creation before the kill.
 	const auto dcId = _dc->id();
-	const auto instance = _instance;
-	InvokeQueued(instance, [instance, dcId] {
-		instance->dcTemporaryKeyChanged(dcId);
+	const auto delegate = _delegate;
+	InvokeQueued(_instance, [delegate, dcId] {
+		delegate->dcTemporaryKeyChanged(dcId);
 	});
 }
 

@@ -1849,12 +1849,7 @@ void Instance::Private::failOverAuthImports(ShiftedDcId shiftedDcId) {
 		const auto dcId = i->second;
 
 		// A due retry would recreate the session before the queued restart.
-		_delayedRequests.erase(
-			ranges::remove(
-				_delayedRequests,
-				requestId,
-				[](const auto &entry) { return entry.first; }),
-			end(_delayedRequests));
+		_requests.removeDelayed(requestId);
 		i = _authImportRequests.erase(i);
 		InvokeQueued(_instance, [=] {
 			restartAuthImport(dcId, requestId);

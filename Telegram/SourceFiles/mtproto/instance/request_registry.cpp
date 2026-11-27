@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/instance/request_registry.h"
 
 #include "base/flat_set.h"
+#include <algorithm>
 
 namespace MTP::details {
 
@@ -171,6 +172,15 @@ bool RequestRegistry::scheduleDelayed(
 	}
 	_delayedRequests.insert(it, std::make_pair(requestId, sendAt));
 	return true;
+}
+
+void RequestRegistry::removeDelayed(mtpRequestId requestId) {
+	_delayedRequests.erase(
+		std::remove_if(
+			_delayedRequests.begin(),
+			_delayedRequests.end(),
+			[&](const auto &entry) { return entry.first == requestId; }),
+		_delayedRequests.end());
 }
 
 std::vector<RequestRegistry::DelayedRequest> RequestRegistry::takeReadyDelayed(

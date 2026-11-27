@@ -24,8 +24,7 @@ public:
 	NaiveSocket(
 		not_null<MTP::RuntimeEnvironment*> runtime,
 		not_null<QThread*> thread,
-		const MTP::ProxyData &proxy,
-		bool protocolForFiles);
+		const MTP::ProxyData &proxy);
 	~NaiveSocket();
 
 	void connectToHost(const QString &address, int port) override;

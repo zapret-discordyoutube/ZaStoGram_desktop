@@ -38,8 +38,7 @@ std::unique_ptr<AbstractSocket> CreateProxyAwareSocket(
 		return std::make_unique<Zsg::Naive::NaiveSocket>(
 			runtime,
 			thread,
-			proxy,
-			protocolForFiles);
+			proxy);
 	}
 	const auto networkProxy = ToNetworkProxy(proxy);
 	if (stealth.transport == ProxyTransport::Wss) {
