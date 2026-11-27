@@ -57,6 +57,8 @@ struct State {
 	bool registering = false;
 	int lastState = -1;
 	int polls = 0;
+	int registrations = 0; // accounts created since the last UP
+	qint64 startedAt = 0;
 	quint16 port = 0;
 };
 
@@ -146,6 +148,7 @@ void Register() {
 		return;
 	}
 	data.registering = true;
+	++data.registrations;
 	if (!data.network) {
 		data.network = std::make_unique<QNetworkAccessManager>();
 		// Registration goes out directly: the entry hop does not exist yet.
@@ -180,6 +183,7 @@ void Register() {
 			return;
 		}
 		const auto root = QJsonDocument::fromJson(bytes).object();
+		LOG(("WARP: registration warp_enabled=%1.").arg(root.value(u"warp_enabled"_q).toVariant().toString()));
 		const auto config = root.value(u"config"_q).toObject();
 		const auto peers = config.value(u"peers"_q).toArray();
 		if (peers.isEmpty()) {
@@ -233,6 +237,20 @@ void Poll() {
 		char stats[256] = {};
 		api->warpStats(data.handle, stats, sizeof(stats));
 		LOG(("WARP: state %1, %2").arg(state).arg(QString::fromLatin1(stats)));
+	}
+	if (state == Naive::WarpUp) {
+		data.registrations = 0;
+	} else if (state == Naive::WarpConnecting
+		&& data.startedAt
+		&& (QDateTime::currentMSecsSinceEpoch() - data.startedAt) > 20000
+		&& data.registrations < 4) {
+		// A fresh account sometimes never gets an answer from the WARP edge
+		// (seen: ~1 in 5); a new one usually does. Accounts are throwaway.
+		LOG(("WARP: no answer from the edge in 20 s, registering a new account."));
+		StopEngine();
+		data.account = Account();
+		Register();
+		return;
 	}
 	if (state == data.lastState) {
 		return;
@@ -291,6 +309,7 @@ void StartEngine() {
 		QObject::connect(data.timer.get(), &QTimer::timeout, [] { Poll(); });
 	}
 	data.port = port;
+	data.startedAt = QDateTime::currentMSecsSinceEpoch();
 	data.timer->start();
 }
 
