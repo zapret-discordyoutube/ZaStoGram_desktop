@@ -354,6 +354,25 @@ private:
 
 };
 
+// Last-resort route of the ZaStoGram update: the release's update package is
+// also posted to the project channel, and a Telegram document is loaded through
+// the app's own connection (proxy, WSS or Naive included), so the update works
+// where the git hosts are cut off by name. The package is checked like a file
+// from the mirrors (signature in UnpackUpdate).
+class ZsgChannelChecker : public Checker {
+public:
+	ZsgChannelChecker(base::weak_ptr<Main::Session> session, bool testing);
+
+	void start() override;
+
+private:
+	using Checker::fail;
+	void gotHistory(const MTPmessages_Messages &result);
+
+	MTP::WeakInstance _mtp;
+
+};
+
 #if !defined Q_OS_WIN && !defined Q_OS_MACOS
 class FlatpakChecker : public Checker {
 public:
@@ -1967,6 +1986,137 @@ Fn<void(const MTP::Error &error)> MtpChecker::failHandler() {
 	};
 }
 
+ZsgChannelChecker::ZsgChannelChecker(
+	base::weak_ptr<Main::Session> session,
+	bool testing)
+: Checker(testing)
+, _mtp(session) {
+}
+
+void ZsgChannelChecker::start() {
+	if (!_mtp.valid()) {
+		LOG(("Update Info: channel route: MTP is unavailable."));
+		crl::on_main(this, [=] { fail(); });
+		return;
+	}
+	MTP::ResolveChannel(&_mtp, u"zastogram"_q, [=](
+			const MTPInputChannel &channel) {
+		_mtp.send(
+			MTPmessages_GetHistory(
+				MTP_inputPeerChannel(
+					channel.c_inputChannel().vchannel_id(),
+					channel.c_inputChannel().vaccess_hash()),
+				MTP_int(0),  // offset_id
+				MTP_int(0),  // offset_date
+				MTP_int(0),  // add_offset
+				MTP_int(100), // limit
+				MTP_int(0),  // max_id
+				MTP_int(0),  // min_id
+				MTP_long(0)), // hash
+			[=](const MTPmessages_Messages &result) { gotHistory(result); },
+			[=](const MTP::Error &error) {
+				LOG(("Update Error: channel route history failed with '%1'"
+					).arg(QString::number(error.code()) + ':' + error.type()));
+				fail();
+			});
+	}, [=] { fail(); });
+}
+
+void ZsgChannelChecker::gotHistory(const MTPmessages_Messages &result) {
+	const auto platform = Platform::AutoUpdateKey();
+	const auto prefix = (platform == "win")
+		? u"tupdate"_q
+		: (platform == "win64")
+		? u"tx64upd"_q
+		: (platform == "winarm")
+		? u"tarm64upd"_q
+		: QString();
+	if (prefix.isEmpty()) {
+		fail();
+		return;
+	}
+	// A dev build follows dev packages (tx64upd7004008_dev83), a stable one
+	// follows the plain ones (tx64upd7004008).
+	const auto devCurrent = ZaStoGramDevBuildNumber();
+	const auto devExpression = QRegularExpression(
+		u"^%1(\\d+)_dev(\\d+)$"_q.arg(prefix));
+	const auto stableExpression = QRegularExpression(
+		u"^%1(\\d+)$"_q.arg(prefix));
+	auto bestRank = devCurrent.value_or(uint64(AppVersion));
+	auto bestPost = 0;
+	auto bestName = QString();
+	const auto messages = result.match([](
+			const MTPDmessages_messagesNotModified &) {
+		return QVector<MTPMessage>();
+	}, [](const auto &data) {
+		return data.vmessages().v;
+	});
+	for (const auto &message : messages) {
+		if (message.type() != mtpc_message) {
+			continue;
+		}
+		const auto &data = message.c_message();
+		const auto media = data.vmedia();
+		if (!media || media->type() != mtpc_messageMediaDocument) {
+			continue;
+		}
+		const auto document = media->c_messageMediaDocument().vdocument();
+		if (!document || document->type() != mtpc_document) {
+			continue;
+		}
+		auto name = QString();
+		for (const auto &attribute : document->c_document().vattributes().v) {
+			if (attribute.type() == mtpc_documentAttributeFilename) {
+				name = qs(attribute.c_documentAttributeFilename().vfile_name());
+				break;
+			}
+		}
+		auto rank = uint64(0);
+		auto version = uint64(0);
+		if (devCurrent) {
+			const auto match = devExpression.match(name);
+			if (!match.hasMatch()) {
+				continue;
+			}
+			version = match.captured(1).toULongLong();
+			rank = match.captured(2).toULongLong();
+		} else {
+			const auto match = stableExpression.match(name);
+			if (!match.hasMatch()) {
+				continue;
+			}
+			version = rank = match.captured(1).toULongLong();
+		}
+		if (rank > bestRank && version >= uint64(AppVersion)) {
+			bestRank = rank;
+			bestPost = data.vid().v;
+			bestName = name;
+		}
+	}
+	if (!bestPost) {
+		DEBUG_LOG(("Update Info: channel route: no newer package."));
+		done(nullptr);
+		return;
+	}
+	LOG(("Update Info: channel route: found %1 in post %2."
+		).arg(bestName
+		).arg(bestPost));
+	auto location = MTP::DedicatedLoader::Location();
+	location.username = u"zastogram"_q;
+	location.postId = bestPost;
+	MTP::StartDedicatedLoader(
+		&_mtp,
+		location,
+		UpdatesFolder(),
+		[=](std::unique_ptr<MTP::DedicatedLoader> loader) {
+			if (loader) {
+				done(std::move(loader));
+			} else {
+				fail();
+			}
+		});
+}
+
 #if !defined Q_OS_WIN && !defined Q_OS_MACOS
 FlatpakChecker::FlatpakChecker(bool testing)
 : Checker(testing)
@@ -2412,9 +2562,12 @@ void Updater::start(bool forceWait) {
 		startImplementation(
 			&_httpImplementation,
 			std::make_unique<HttpChecker>(_testing));
-		// Updates come only from our Forgejo releases, never from
-		// the official Telegram update channel.
-		startImplementation(&_mtpImplementation, nullptr);
+		// Updates come from our Forgejo releases and, when those cannot be
+		// reached, from our own channel over Telegram. Never from the
+		// official Telegram update channel.
+		startImplementation(
+			&_mtpImplementation,
+			std::make_unique<ZsgChannelChecker>(_session, _testing));
 
 	} else {
 		_timer.callOnce((updateInSecs + 5) * crl::time(1000));
