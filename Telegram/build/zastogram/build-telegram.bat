@@ -9,6 +9,10 @@ if errorlevel 1 (echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
 set LTO=OFF
 if /I "%~1"=="lto" set LTO=ON
 echo === start %DATE% %TIME%  LTO=%LTO% ===
+rem zsgnaive.dll (TLS/HTTP2/Naive/WebSocket, built from the private naive-core) is embedded into
+rem Telegram.exe by CMake; without it the WSS and Naive transports cannot work, so a build must not start.
+if not defined ZSG_NAIVE_LIBRARY if exist "%TBUILD%\zsg_naive\zsgnaive.dll" set "ZSG_NAIVE_LIBRARY=%TBUILD%\zsg_naive\zsgnaive.dll"
+if not defined ZSG_NAIVE_LIBRARY (echo === ENVIRONMENT NOT READY: %TBUILD%\zsg_naive\zsgnaive.dll is missing === & echo === exit code: 1 at %DATE% %TIME% === & exit /b 1)
 
 rem ZaStoGram's own Telegram API identity (line 1 api_id, line 2 api_hash) lives
 rem next to the signing keys, outside git. The public tdesktop test pair gets
