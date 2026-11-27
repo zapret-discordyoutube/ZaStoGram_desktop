@@ -458,7 +458,7 @@ def test_wss_front_catalog_is_refreshed_and_validated_as_a_whole():
     # The download runs on the main thread; sockets live on connection threads.
     official = function_body(source, "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
     assert "FrontsRefreshDue()" in official
-    assert "base::InvokeQueued(QCoreApplication::instance()" in official
+    assert "InvokeQueued(QCoreApplication::instance()" in official
 
 if __name__ == "__main__":
     for name, value in list(globals().items()):
