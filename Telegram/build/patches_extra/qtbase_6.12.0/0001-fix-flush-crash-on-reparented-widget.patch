@@ -1,0 +1,20 @@
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -1042,8 +1042,15 @@
+     }
+ 
+     QPoint offset;
+-    if (widget != tlw)
++    if (widget != tlw) {
++        // The widget may have been reparented into another top level window
++        // after it was marked as needing a flush here. Flushing it against
++        // our backing store would use bogus offsets, skip it instead - the
++        // repaint manager of the new window repaints it anyway.
++        if (Q_UNLIKELY(widget->window() != tlw))
++            return;
+         offset += widget->mapTo(tlw, QPoint());
++    }
+ 
+     // A widget uses RHI flush if itself, or one of its non-native children
+     // uses RHI for its drawing. If so, we composite the backing store raster
