@@ -37,6 +37,7 @@ import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,9 +49,22 @@ CHANNELS = ('stable', 'beta')
 FIVE_YEARS = 5 * 365 * 24 * 3600
 
 
+# The build VM has no openssl on PATH, Git for Windows ships one.
+GIT_OPENSSL = r'C:\Program Files\Git\usr\bin\openssl.exe'
+
+
+def openssl_path():
+    found = shutil.which('openssl')
+    if found:
+        return found
+    if os.path.isfile(GIT_OPENSSL):
+        return GIT_OPENSSL
+    raise SystemExit('openssl was not found (PATH or ' + GIT_OPENSSL + ')')
+
+
 def run_openssl(*args, data=None):
     result = subprocess.run(
-        ['openssl', *args], input=data, capture_output=True)
+        [openssl_path(), *args], input=data, capture_output=True)
     if result.returncode != 0:
         # openssl stderr never contains key material for these commands.
         raise SystemExit('openssl %s failed: %s' % (
@@ -106,7 +120,7 @@ def verify_raw(public_pem_path, message, signature):
         with open(sig, 'wb') as f:
             f.write(signature)
         result = subprocess.run(
-            ['openssl', 'pkeyutl', '-verify', '-pubin',
+            [openssl_path(), 'pkeyutl', '-verify', '-pubin',
              '-inkey', public_pem_path, '-rawin', '-in', source,
              '-sigfile', sig],
             capture_output=True)
@@ -148,7 +162,7 @@ def cmd_issue(args, create):
     for path in (root_path, release_path):
         if not os.path.isfile(path):
             raise SystemExit('missing key file (run init): ' + path)
-        if os.stat(path).st_mode & 0o077:
+        if sys.platform != 'win32' and os.stat(path).st_mode & 0o077:
             raise SystemExit('key file must be mode 600: ' + path)
 
     out = args.out

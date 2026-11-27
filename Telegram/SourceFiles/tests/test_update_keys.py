@@ -12,7 +12,9 @@ TOOL = TELEGRAM_DIR / "build" / "zastogram" / "update_keys.py"
 COMMITTED = TELEGRAM_DIR / "Resources" / "update"
 CHECKER = SOURCE_DIR / "core" / "update_checker.cpp"
 
-assert shutil.which("openssl"), "openssl is required for the update key tests"
+GIT_OPENSSL = Path(r"C:\Program Files\Git\usr\bin\openssl.exe")
+assert shutil.which("openssl") or GIT_OPENSSL.is_file(), \
+    "openssl is required for the update key tests"
 
 
 def tool(*args):
@@ -51,10 +53,11 @@ def _test_init_creates_private_keys_once_and_signs_the_manifest(tmp_path):
     assert first.returncode == 0, first.stdout + first.stderr
     assert "root created, release created" in first.stdout
 
-    for name in ("root-private.pem", "release-private.pem"):
-        mode = stat.S_IMODE((keys / name).stat().st_mode)
-        assert mode == 0o600, name
-    assert stat.S_IMODE(keys.stat().st_mode) == 0o700
+    if sys.platform != "win32":  # POSIX modes mean nothing on Windows.
+        for name in ("root-private.pem", "release-private.pem"):
+            mode = stat.S_IMODE((keys / name).stat().st_mode)
+            assert mode == 0o600, name
+        assert stat.S_IMODE(keys.stat().st_mode) == 0o700
     # Private keys never reach the output of the tool.
     assert "PRIVATE" not in first.stdout + first.stderr
 
