@@ -233,7 +233,7 @@ void Poll() {
 	LOG(("WARP: tunnel state %1.").arg(state));
 	// Connections made before the tunnel was up went out directly: restart
 	// them so that they use the entry hop (or leave it when it died).
-	g_port = (state == WarpUp) ? int(data.port) : 0;
+	g_port = (state == Naive::WarpUp) ? int(data.port) : 0;
 	Core::App().restartProxyConnections();
 }
 
