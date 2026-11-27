@@ -427,8 +427,16 @@ int main(int argc, char *argv[]) {
 			&error);
 		Check(embedded.has_value(), "embedded manifest verifies");
 		Check(embedded && embedded->version >= 1, "embedded manifest version");
-		Check(embedded && embedded->channels.size() == 4,
-			"embedded manifest lists all four channels");
+		// The fork chain (Telegram/build/zastogram/update_keys.py): one
+		// release key is the single group of the stable and beta channels.
+		Check(embedded && embedded->channels.size() == 2,
+			"embedded manifest lists the stable and beta channels");
+		Check(embedded
+			&& embedded->channels.contains("stable")
+			&& embedded->channels.at("stable").size() == 1
+			&& embedded->channels.contains("beta")
+			&& embedded->channels.at("beta").size() == 1,
+			"embedded manifest authorizes one group per channel");
 		Check(embedded && !embedded->keys.empty(),
 			"embedded manifest has usable keys");
 	}
@@ -598,6 +606,43 @@ int main(int argc, char *argv[]) {
 			payload);
 		Check(!verify(older, Channel::CanaryPublic, false, runningCanary),
 			"older version rejected");
+	}
+
+	{ // ZaStoGram dev builds share one AppVersion between dev-N releases,
+	  // the dev verification accepts an equal base but nothing lower.
+		const auto sameBase = BuildSignedEnvelope(
+			Channel::Stable,
+			runningStable,
+			manifestJson,
+			manifestSig,
+			{ &rl, &rc },
+			payload);
+		const auto devRunning = DevRunningVersion(runningStable);
+		Check(!verify(sameBase, Channel::Stable, false, runningStable),
+			"equal version rejected for a regular build");
+		Check(verify(sameBase, Channel::Stable, false, devRunning)
+			.has_value(),
+			"equal base version accepted for a dev build");
+
+		const auto lowerBase = BuildSignedEnvelope(
+			Channel::Stable,
+			MakeUpdateVersion(4999999, 0),
+			manifestJson,
+			manifestSig,
+			{ &rl, &rc },
+			payload);
+		Check(!verify(lowerBase, Channel::Stable, false, devRunning),
+			"lower base version rejected for a dev build");
+
+		const auto unsignedSameBase = BuildSignedEnvelope(
+			Channel::Stable,
+			runningStable,
+			manifestJson,
+			manifestSig,
+			{ &rl },
+			payload);
+		Check(!verify(unsignedSameBase, Channel::Stable, false, devRunning),
+			"dev build still needs every authorized signature");
 	}
 
 	{ // Expired keys cannot satisfy a group: sign with the key that

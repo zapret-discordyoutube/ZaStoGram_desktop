@@ -554,7 +554,9 @@ enum class ManifestAdoption {
 		BuildUpdateChannel,
 		AppBetaVersion || cInstallBetaVersion(),
 		*target,
-		RunningUpdateVersion(),
+		IsZaStoGramDevBuild()
+			? Updates::DevRunningVersion(RunningUpdateVersion())
+			: RunningUpdateVersion(),
 		HeldManifest(),
 		Updates::RootPublicKeyPem(),
 		base::unixtime::now(),

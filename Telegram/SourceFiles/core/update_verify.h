@@ -176,6 +176,16 @@ struct Envelope {
 	quint64 packageVersion,
 	quint64 runningVersion);
 
+// ZaStoGram dev builds (build id dev-N) are updated between dev-N releases
+// that share one AppVersion, so their packages carry the SAME base version
+// and counter 0 as the running build. The checker already orders the dev
+// numbers, so the dev verification measures the package against a running
+// version one step lower: an equal base is accepted, a lower one never is.
+// The signature is checked exactly as for every other build.
+[[nodiscard]] constexpr quint64 DevRunningVersion(quint64 running) {
+	return running ? (running - 1) : running;
+}
+
 struct VerifiedUpdate {
 	Envelope envelope;
 
