@@ -51,7 +51,7 @@ struct Account {
 struct State {
 	bool enabled = false;
 	Account account;
-	WarpHandle *handle = nullptr;
+	Naive::WarpHandle *handle = nullptr;
 	std::unique_ptr<QNetworkAccessManager> network;
 	std::unique_ptr<QTimer> timer;
 	bool registering = false;
@@ -115,7 +115,7 @@ void StopEngine() {
 	g_port = 0;
 	data.port = 0;
 	if (data.handle) {
-		if (const auto api = LoadApi(); api && api->warpStop) {
+		if (const auto api = Naive::LoadApi(); api && api->warpStop) {
 			api->warpStop(data.handle);
 		}
 		data.handle = nullptr;
@@ -133,7 +133,7 @@ void Register() {
 	if (data.registering) {
 		return;
 	}
-	const auto api = LoadApi();
+	const auto api = Naive::LoadApi();
 	if (!api || !api->warpKeypair) {
 		LOG(("WARP: the zsgnaive library has no WARP support."));
 		return;
@@ -221,7 +221,7 @@ void Register() {
 
 void Poll() {
 	auto &data = Data();
-	const auto api = LoadApi();
+	const auto api = Naive::LoadApi();
 	if (!data.handle || !api || !api->warpState) {
 		return;
 	}
@@ -242,7 +242,7 @@ void StartEngine() {
 	if (data.handle || !data.enabled) {
 		return;
 	}
-	const auto api = LoadApi();
+	const auto api = Naive::LoadApi();
 	if (!api || !api->warpStart) {
 		LOG(("WARP: the zsgnaive library has no WARP support."));
 		return;
@@ -256,7 +256,7 @@ void StartEngine() {
 	const auto reserved = data.account.reserved.toUtf8();
 	const auto address = data.account.address.toUtf8();
 	const auto host = data.account.endpointHost.toUtf8();
-	auto config = WarpConfigC();
+	auto config = Naive::WarpConfigC();
 	config.private_key = privateKey.constData();
 	config.peer_public_key = peerKey.constData();
 	config.reserved = reserved.isEmpty() ? nullptr : reserved.constData();
