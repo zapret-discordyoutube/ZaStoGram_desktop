@@ -41,8 +41,8 @@ PRIVATE
     export/output/export_output_stats.cpp
     export/output/export_output_stats.h
     export/export_settings.h
-    mtproto/details/mtproto_dump_to_text.cpp
-    mtproto/details/mtproto_dump_to_text.h
+    mtproto/protocol/mtproto_dump_to_text.cpp
+    mtproto/protocol/mtproto_dump_to_text.h
     platform/platform_specific.h
     tests/test_export_formats.cc
     tests/test_export_formats.hpp
