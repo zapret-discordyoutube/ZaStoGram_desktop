@@ -56,6 +56,10 @@ struct WsConfig {
 	const DerCert *extra_roots_der;
 	size_t extra_roots_der_count;
 	int offer_deflate;
+	// Appended to the core's zsg_ws_config: TLS server name when it must
+	// differ from host (NULL = host), and 1 for ws:// without TLS.
+	const char *sni;
+	int plain;
 };
 
 enum NaiveState {
