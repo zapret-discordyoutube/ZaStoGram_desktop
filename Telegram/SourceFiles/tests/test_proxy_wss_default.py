@@ -43,11 +43,16 @@ def test_wss_keeps_tls_peer_verification_enabled():
     header = WSS_SOCKET_H.read_text(encoding="utf-8")
     source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
 
+    # TLS is the zsgnaive library's (Chrome 158 handshake): it verifies the
+    # certificate chain and the name of the SNI host unless a config asks
+    # for insecure_skip_verify, which this transport never does.
     assert "VerifyNone" not in source
-    assert "QSslSocket::VerifyPeer" in source
-    assert "_socket.setPeerVerifyName(_route.domain);" in source
+    assert "insecure_skip_verify" not in source
+    assert "config.host = _clientDomain.constData();" in source
+    assert "config.extra_roots_der = trust.certs.data();" in source
     assert "connectToRelayHost(" in source
     assert "void connectToRelayHost();" in header
+    assert "QSslSocket" not in header
 
 
 def test_persisted_transport_falls_back_to_wss():
@@ -257,7 +262,7 @@ def test_wss_remembers_working_relay_host_across_sockets():
         "void WssSocket::connectToHost(")
     timed_out_body = function_body(source, "void WssSocket::timedOut()")
     error_body = function_body(source, "void WssSocket::handleError(")
-    upgrade_body = function_body(source, "bool WssSocket::tryFinishUpgrade()")
+    upgrade_body = function_body(source, "void WssSocket::finishUpgrade()")
 
     # A blocked primary relay IP must not be re-tried first by every new
     # socket: the working host is remembered process-wide with a TTL, the
@@ -289,7 +294,7 @@ def test_wss_dc2_dc4_have_two_ingress_addresses():
         "[[nodiscard]] std::optional<WssRoute> OfficialRoute(int16 protocolDcId)")
     error_body = function_body(source, "void WssSocket::handleError(")
     timed_out_body = function_body(source, "void WssSocket::timedOut()")
-    upgrade_body = function_body(source, "bool WssSocket::tryFinishUpgrade()")
+    upgrade_body = function_body(source, "void WssSocket::finishUpgrade()")
 
     # DNS names 149.154.167.99 for kws2/kws4, every client hardcoded .220;
     # both carry DC2/DC4 (16.10.2026), so a provider blocking one by IP must
