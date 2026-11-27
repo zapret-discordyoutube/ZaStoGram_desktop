@@ -177,6 +177,8 @@ bool SharedConnection::start() {
 			+ QString::fromLatin1(error);
 		return false;
 	}
+	_started = QDateTime::currentMSecsSinceEpoch();
+	LOG(("Naive: connecting to %1:%2.").arg(_proxy.host).arg(config.port));
 	_tcp.connectToHost(_proxy.host, config.port);
 	return true;
 }
@@ -246,6 +248,11 @@ void SharedConnection::failAll(const QString &text) {
 	}
 	_failed = true;
 	_error = text;
+	LOG(("Naive: connection to %1 failed after %2 ms: %3 (%4 tunnel(s))."
+		).arg(_proxy.host
+		).arg(QDateTime::currentMSecsSinceEpoch() - _started
+		).arg(text
+		).arg(_tunnels));
 	_tcp.abort();
 	auto snapshot = _sockets;
 	for (const auto socket : snapshot) {
@@ -261,6 +268,9 @@ void SharedConnection::onTcpConnected() {
 		return;
 	}
 	_tcpConnected = true;
+	LOG(("Naive: TCP connected to %1 in %2 ms."
+		).arg(_proxy.host
+		).arg(QDateTime::currentMSecsSinceEpoch() - _started));
 	// Nagle costs a round trip on the short request-then-wait writes mtproto
 	// is made of; keepalive lets a silently dead path surface.
 	_tcp.setSocketOption(QAbstractSocket::LowDelayOption, 1);
@@ -301,6 +311,13 @@ void SharedConnection::pump() {
 		_tcp.write(reinterpret_cast<const char*>(chunk), qint64(taken));
 	}
 	const auto state = _api->naiveState(_client);
+	if (state != _lastState) {
+		_lastState = state;
+		LOG(("Naive: %1 state %2 after %3 ms."
+			).arg(_proxy.host
+			).arg(state
+			).arg(QDateTime::currentMSecsSinceEpoch() - _started));
+	}
 	if (state == NaiveFailed || state == NaiveClosed) {
 		failAll(u"naive_"_q + ((state == NaiveFailed)
 			? QString::fromLatin1(_api->naiveError(_client))
@@ -391,6 +408,9 @@ bool NaiveSocket::isGoodStartNonce(bytes::const_span nonce) {
 }
 
 void NaiveSocket::timedOut() {
+	LOG(("Naive: MTProto connection timed out (tunnel %1, opened %2)."
+		).arg(_tunnel
+		).arg(_tunnelOpened ? u"yes"_q : u"no"_q));
 	if (_conn) {
 		_conn->noteTimeout();
 	}
@@ -557,6 +577,7 @@ void NaiveSocket::fail(const QString &text) {
 		return;
 	}
 	_failed = true;
+	LOG(("Naive: socket failed: %1.").arg(text));
 	logError(0, text);
 	_error.fire_copy(MTP::details::AbstractConnection::kErrorCodeOther);
 }

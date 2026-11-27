@@ -96,6 +96,8 @@ private:
 	QString _error;
 	std::vector<NaiveSocket*> _sockets;
 	qint64 _created = 0;
+	qint64 _started = 0;
+	int _lastState = -1;
 	int _tunnels = 0;
 	bool _tcpConnected = false;
 	bool _failed = false;
