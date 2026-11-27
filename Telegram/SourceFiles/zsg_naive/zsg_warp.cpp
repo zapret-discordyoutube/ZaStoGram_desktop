@@ -517,6 +517,31 @@ void SetEnabled(bool enabled) {
 	}
 }
 
+QString StatusText() {
+	const auto &data = Data();
+	if (!data.enabled) {
+		return u"Off."_q;
+	}
+	const auto api = Naive::LoadApi();
+	if (!data.handle || !api || !api->warpState) {
+		return (data.registering || data.enrolling)
+			? u"Registering a WARP account…"_q
+			: u"Starting…"_q;
+	}
+	switch (api->warpState(data.handle)) {
+	case Naive::WarpUp:
+		return (api->warpTransport && api->warpTransport(data.handle) == 2)
+			? u"Up through MASQUE (TCP 443)."_q
+			: u"Up through WireGuard."_q;
+	case Naive::WarpFailed:
+		return u"No answer from Cloudflare on this network: connections go direct."_q;
+	default:
+		return data.masque.valid()
+			? u"Connecting (WireGuard, then MASQUE over TCP 443)…"_q
+			: u"Connecting…"_q;
+	}
+}
+
 std::optional<QNetworkProxy> EntryProxy() {
 	const auto port = g_port.load();
 	if (!port) {

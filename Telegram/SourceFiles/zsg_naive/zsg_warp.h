@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include <QtCore/QString>
 #include <QtNetwork/QNetworkProxy>
 
 #include <optional>
@@ -27,6 +28,10 @@ void Init();
 [[nodiscard]] bool Enabled();
 // Saves the setting; turning it on registers an account on first use.
 void SetEnabled(bool enabled);
+
+// One line for the settings box: off / registering / connecting / up through
+// WireGuard or MASQUE / no answer. Main thread.
+[[nodiscard]] QString StatusText();
 
 // The SOCKS5 proxy of the running tunnel, or nothing (setting off, tunnel not
 // up yet, library without WARP). Any thread.

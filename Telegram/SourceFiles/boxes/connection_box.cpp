@@ -6,6 +6,8 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/connection_box.h"
+
+#include <QtCore/QTimer>
 #include "zsg_naive/zsg_warp.h"
 
 #include "base/qt/qt_key_modifiers.h"
@@ -1580,10 +1582,28 @@ void ProxiesBox::setupContent() {
 			}
 		};
 		addStealthHeader(u"Cloudflare WARP"_q);
+		const auto warpStatus = right->add(
+			object_ptr<Ui::FlatLabel>(
+				right,
+				Zsg::Warp::StatusText(),
+				st::boxDividerLabel),
+			st::proxySettingsRightAboutPadding);
 		addStealthToggle(
 			u"Use WARP as the entry (experimental)"_q,
 			Zsg::Warp::Enabled(),
-			[](bool on) { Zsg::Warp::SetEnabled(on); });
+			[=](bool on) {
+				Zsg::Warp::SetEnabled(on);
+				warpStatus->setText(Zsg::Warp::StatusText());
+			});
+		{
+			// The status follows the tunnel: a timer owned by the label.
+			const auto timer = new QTimer(warpStatus);
+			timer->setInterval(1000);
+			QObject::connect(timer, &QTimer::timeout, warpStatus, [=] {
+				warpStatus->setText(Zsg::Warp::StatusText());
+			});
+			timer->start();
+		}
 		addStealthHeader(u"Transport compatibility"_q);
 		_routeViaWss = addStealthToggle(
 			u"Route via WSS (web, DC2/DC4 only)"_q,
