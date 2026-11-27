@@ -5,6 +5,8 @@
 # of the client log:
 #
 #   ACCEPTED   the update was downloaded, verified and kept (tupdates\ready-package)
+#   ACCEPTED-V1 a legacy v1 package was downloaded and unpacked (tupdates\temp\ready +
+#              Telegram.exe); only the bridge for stable <= 7.3.2 produces this
 #   REJECTED   the client logged "Update Error" and dropped the package
 #   NOUPDATE   the feed offered nothing newer ("the latest version is installed")
 #   TIMEOUT    no verdict in -Seconds
@@ -31,6 +33,8 @@ $logFile = Join-Path $work 'log.txt'
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
     if (Test-Path (Join-Path $work 'tupdates\ready-package')) { $verdict = 'ACCEPTED'; break }
+    $v1 = Join-Path $work 'tupdates\temp'
+    if ((Test-Path (Join-Path $v1 'ready')) -and (Test-Path (Join-Path $v1 'Telegram.exe'))) { $verdict = 'ACCEPTED-V1'; break }
     if (Test-Path $logFile) {
         $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
         if ($text -match 'Update Error: ') { $verdict = 'REJECTED'; break }

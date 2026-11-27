@@ -6,7 +6,7 @@
 #   test_update_e2e.sh <label> <exe on the VM> [seconds]
 #
 # The exe must be a COPY outside C:\TBuild\ZaStoGram_desktop\out (a running
-# client would lock the build output). Prints RESULT: ACCEPTED|REJECTED|...
+# client would lock the build output). Prints RESULT: ACCEPTED|ACCEPTED-V1|REJECTED|...
 set -euo pipefail
 LABEL="${1:?label}"
 EXE="${2:?exe path on the VM}"
