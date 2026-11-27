@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
+#include <QtCore/QRandomGenerator>
 #include <QtCore/QSaveFile>
 #include <QtCore/QTimer>
 #include <QtNetwork/QNetworkAccessManager>
@@ -30,6 +31,7 @@ namespace Zsg::Warp {
 namespace {
 
 constexpr auto kRegisterUrl = "https://api.cloudflareclient.com/v0a2158/reg";
+constexpr auto kMasqueApiUrl = "https://api.cloudflareclient.com/v0a4471/reg";
 
 struct Account {
 	QString privateKey;
@@ -48,9 +50,25 @@ struct Account {
 	}
 };
 
+// The MASQUE account: a second WARP device enrolled with an ECDSA P-256 key.
+struct MasqueAccount {
+	QString privateKey;   // base64 SEC1 DER
+	QString serverKeyPem; // the endpoint public key (pinned)
+	QString address;      // IPv4 tunnel address
+
+	[[nodiscard]] bool valid() const {
+		return !privateKey.isEmpty()
+			&& !serverKeyPem.isEmpty()
+			&& !address.isEmpty();
+	}
+};
+
 struct State {
 	bool enabled = false;
 	Account account;
+	MasqueAccount masque;
+	bool preferMasque = false;  // the last tunnel that worked was MASQUE: try it first
+	bool enrolling = false;
 	Naive::WarpHandle *handle = nullptr;
 	std::unique_ptr<QNetworkAccessManager> network;
 	std::unique_ptr<QTimer> timer;
@@ -85,9 +103,15 @@ void Save() {
 	account.insert(u"endpoint_port"_q, data.account.endpointPort);
 	account.insert(u"address"_q, data.account.address);
 	account.insert(u"reserved"_q, data.account.reserved);
+	auto masque = QJsonObject();
+	masque.insert(u"private_key"_q, data.masque.privateKey);
+	masque.insert(u"server_key_pem"_q, data.masque.serverKeyPem);
+	masque.insert(u"address"_q, data.masque.address);
 	auto root = QJsonObject();
 	root.insert(u"enabled"_q, data.enabled);
+	root.insert(u"prefer_masque"_q, data.preferMasque);
 	root.insert(u"account"_q, account);
+	root.insert(u"masque"_q, masque);
 	auto file = QSaveFile(FilePath());
 	if (file.open(QIODevice::WriteOnly)) {
 		file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
@@ -111,6 +135,11 @@ void Load() {
 	data.account.endpointPort = account.value(u"endpoint_port"_q).toInt(2408);
 	data.account.address = account.value(u"address"_q).toString();
 	data.account.reserved = account.value(u"reserved"_q).toString();
+	const auto masque = root.value(u"masque"_q).toObject();
+	data.masque.privateKey = masque.value(u"private_key"_q).toString();
+	data.masque.serverKeyPem = masque.value(u"server_key_pem"_q).toString();
+	data.masque.address = masque.value(u"address"_q).toString();
+	data.preferMasque = root.value(u"prefer_masque"_q).toBool();
 }
 
 void StopEngine() {
@@ -130,6 +159,122 @@ void StopEngine() {
 }
 
 void StartEngine();
+
+// The MASQUE account: a throwaway device (like the WireGuard one) that is then enrolled with an ECDSA key
+// (PATCH with the device token). Done once; the account is kept in tdata/zsg/warp.json.
+void EnrollMasque() {
+	auto &data = Data();
+	if (data.enrolling || data.masque.valid()) {
+		return;
+	}
+	const auto api = Naive::LoadApi();
+	if (!api || !api->warpMasqueKeypair || !api->warpKeypair) {
+		return;
+	}
+	char masquePriv[512] = {};
+	char masquePub[512] = {};
+	char wgPriv[64] = {};
+	char wgPub[64] = {};
+	if (!api->warpMasqueKeypair(masquePriv, masquePub, sizeof(masquePriv))
+		|| !api->warpKeypair(wgPriv, wgPub, sizeof(wgPriv))) {
+		LOG(("WARP: could not generate the MASQUE key."));
+		return;
+	}
+	data.enrolling = true;
+	if (!data.network) {
+		data.network = std::make_unique<QNetworkAccessManager>();
+		data.network->setProxy(QNetworkProxy::NoProxy);
+	}
+	const auto url = QString::fromLatin1(kMasqueApiUrl);
+	const auto prepare = [&](const QUrl &where) {
+		auto request = QNetworkRequest(where);
+		request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+		request.setHeader(QNetworkRequest::UserAgentHeader, u"WARP for Android"_q);
+		request.setRawHeader("CF-Client-Version", "a-6.35-4471");
+		request.setTransferTimeout(20000);
+		return request;
+	};
+	auto body = QJsonObject();
+	body.insert(u"key"_q, QString::fromLatin1(wgPub));
+	body.insert(u"install_id"_q, QString());
+	body.insert(u"fcm_token"_q, QString());
+	body.insert(u"tos"_q, QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+	body.insert(u"model"_q, u"PC"_q);
+	body.insert(u"serial_number"_q, QString::number(QRandomGenerator::global()->generate64(), 16));
+	body.insert(u"os_version"_q, QString());
+	body.insert(u"key_type"_q, u"curve25519"_q);
+	body.insert(u"tunnel_type"_q, u"wireguard"_q);
+	body.insert(u"locale"_q, u"en-US"_q);
+	const auto first = data.network->post(
+		prepare(QUrl(url)),
+		QJsonDocument(body).toJson(QJsonDocument::Compact));
+	const auto privateKey = QString::fromLatin1(masquePriv);
+	const auto publicKey = QString::fromLatin1(masquePub);
+	QObject::connect(first, &QNetworkReply::finished, [=] {
+		auto &data = Data();
+		const auto ok = (first->error() == QNetworkReply::NoError);
+		const auto bytes = first->readAll();
+		first->deleteLater();
+		const auto device = QJsonDocument::fromJson(bytes).object();
+		const auto id = device.value(u"id"_q).toString();
+		const auto token = device.value(u"token"_q).toString();
+		if (!ok || id.isEmpty() || token.isEmpty()) {
+			data.enrolling = false;
+			LOG(("WARP: MASQUE device registration failed (%1).").arg(first->errorString()));
+			return;
+		}
+		auto patch = QJsonObject();
+		patch.insert(u"key"_q, publicKey);
+		patch.insert(u"key_type"_q, u"secp256r1"_q);
+		patch.insert(u"tunnel_type"_q, u"masque"_q);
+		patch.insert(u"name"_q, u"PC"_q);
+		auto request = QNetworkRequest(QUrl(QString::fromLatin1(kMasqueApiUrl) + '/' + id));
+		request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_q);
+		request.setHeader(QNetworkRequest::UserAgentHeader, u"WARP for Android"_q);
+		request.setRawHeader("CF-Client-Version", "a-6.35-4471");
+		request.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+		request.setTransferTimeout(20000);
+		const auto second = data.network->sendCustomRequest(
+			request,
+			"PATCH",
+			QJsonDocument(patch).toJson(QJsonDocument::Compact));
+		QObject::connect(second, &QNetworkReply::finished, [=] {
+			auto &data = Data();
+			data.enrolling = false;
+			const auto ok = (second->error() == QNetworkReply::NoError);
+			const auto bytes = second->readAll();
+			second->deleteLater();
+			if (!ok) {
+				LOG(("WARP: MASQUE enrollment failed (%1).").arg(second->errorString()));
+				return;
+			}
+			const auto config = QJsonDocument::fromJson(bytes).object()
+				.value(u"config"_q).toObject();
+			const auto peers = config.value(u"peers"_q).toArray();
+			const auto key = peers.isEmpty()
+				? QString()
+				: peers[0].toObject().value(u"public_key"_q).toString();
+			const auto address = config.value(u"interface"_q).toObject()
+				.value(u"addresses"_q).toObject().value(u"v4"_q).toString();
+			if (key.isEmpty() || address.isEmpty()) {
+				LOG(("WARP: MASQUE enrollment answer is incomplete."));
+				return;
+			}
+			data.masque.privateKey = privateKey;
+			data.masque.serverKeyPem = key;
+			data.masque.address = address;
+			Save();
+			LOG(("WARP: MASQUE account enrolled."));
+			// A tunnel that is still not up (WireGuard silent) restarts with the new fallback.
+			if (data.enabled && data.handle && data.lastState != Naive::WarpUp) {
+				StopEngine();
+				StartEngine();
+			} else if (data.enabled && !data.handle) {
+				StartEngine();
+			}
+		});
+	});
+}
 
 void Register() {
 	auto &data = Data();
@@ -218,6 +363,7 @@ void Register() {
 		data.account = account;
 		Save();
 		LOG(("WARP: account registered (endpoint %1:%2).").arg(host).arg(port));
+		EnrollMasque();
 		if (data.enabled) {
 			StartEngine();
 		}
@@ -240,15 +386,24 @@ void Poll() {
 	}
 	if (state == Naive::WarpUp) {
 		data.registrations = 0;
-	} else if (state == Naive::WarpConnecting
+		if (api->warpTransport) {
+			// Remember which transport works on this network: MASQUE first next time when WireGuard never did.
+			const auto masque = (api->warpTransport(data.handle) == 2);
+			if (masque != data.preferMasque) {
+				data.preferMasque = masque;
+				Save();
+			}
+		}
+	} else if (state != Naive::WarpUp
 		&& data.startedAt
-		&& (QDateTime::currentMSecsSinceEpoch() - data.startedAt) > 20000
+		&& (QDateTime::currentMSecsSinceEpoch() - data.startedAt) > 60000
 		&& data.registrations < 4) {
 		// A fresh account sometimes never gets an answer from the WARP edge
 		// (seen: ~1 in 5); a new one usually does. Accounts are throwaway.
-		LOG(("WARP: no answer from the edge in 20 s, registering a new account."));
+		LOG(("WARP: no answer from any edge in 60 s, registering new accounts."));
 		StopEngine();
 		data.account = Account();
+		data.masque = MasqueAccount();
 		Register();
 		return;
 	}
@@ -278,7 +433,10 @@ void StartEngine() {
 		LOG(("WARP: the zsgnaive library has no WARP support."));
 		return;
 	}
-	if (!data.account.valid()) {
+	if (!data.masque.valid()) {
+		EnrollMasque();
+	}
+	if (!data.account.valid() && !data.masque.valid()) {
 		Register();
 		return;
 	}
@@ -297,7 +455,25 @@ void StartEngine() {
 	config.junk_count = 3;
 	auto port = uint16_t(0);
 	char error[256] = {};
-	data.handle = api->warpStart(&config, &port, error, sizeof(error));
+	const auto masqueKey = data.masque.privateKey.toUtf8();
+	const auto masquePem = data.masque.serverKeyPem.toUtf8();
+	const auto masqueAddress = data.masque.address.toUtf8();
+	auto masque = Naive::WarpMasqueConfigC();
+	masque.private_key = masqueKey.constData();
+	masque.server_key_pem = masquePem.constData();
+	masque.address = masqueAddress.constData();
+	masque.edges = nullptr;
+	masque.first = data.preferMasque ? 1 : 0;
+	if (api->warpStart2 && data.masque.valid()) {
+		data.handle = api->warpStart2(
+			data.account.valid() ? &config : nullptr,
+			&masque,
+			&port,
+			error,
+			sizeof(error));
+	} else if (data.account.valid()) {
+		data.handle = api->warpStart(&config, &port, error, sizeof(error));
+	}
 	if (!data.handle) {
 		LOG(("WARP: start failed: %1").arg(QString::fromLatin1(error)));
 		return;

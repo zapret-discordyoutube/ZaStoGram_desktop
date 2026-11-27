@@ -71,6 +71,13 @@ struct WarpConfigC {
 	uint16_t endpoint_port;
 	int junk_count;
 };
+struct WarpMasqueConfigC {
+	const char *private_key;
+	const char *server_key_pem;
+	const char *address;
+	const char *edges;
+	int first;
+};
 struct WarpHandle;
 enum WarpState {
 	WarpConnecting = 0,
@@ -139,6 +146,10 @@ struct Api {
 	void (*warpStop)(WarpHandle *);
 	size_t (*warpStats)(WarpHandle *, char *, size_t);
 	int (*warpKeypair)(char *, char *, size_t);
+	// The MASQUE fallback (HTTP/2 over TCP 443): absent in a library older than it.
+	WarpHandle *(*warpStart2)(const WarpConfigC *, const WarpMasqueConfigC *, uint16_t *, char *, size_t);
+	int (*warpMasqueKeypair)(char *, char *, size_t);
+	int (*warpTransport)(const WarpHandle *);
 
 	const char *(*profileVersion)();
 };
