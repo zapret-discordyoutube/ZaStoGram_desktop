@@ -2549,6 +2549,9 @@ void Updater::start(bool forceWait) {
 			sendRequest = true;
 		}
 	}
+	if (qEnvironmentVariableIsSet("ZSG_UPDATE_CHANNEL_ONLY")) {
+		sendRequest = true;  // test seam: check at every start
+	}
 	if (cManyInstance() && !Logs::DebugEnabled()) {
 		// Only main instance is updating.
 		return;
