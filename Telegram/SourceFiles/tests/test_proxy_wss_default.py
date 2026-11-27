@@ -403,13 +403,62 @@ def test_wss_fronts_are_dialled_by_pinned_address_with_the_name_as_fallback():
     cdn = function_body(source, "[[nodiscard]] std::optional<WssRoute> CdnRoute(")
     # By name the resolver handed out edges the provider drops (desktop log
     # 16.10.2026: 102 front TCP connects in 48 000 attempts).
-    assert "kCdnFrontAddresses[slot % kCdnFrontCount][address]" in cdn
+    # The catalog hands out the baked pinned address; a front without one
+    # (new in the refreshed list) is dialled by name, a baked one never.
+    assert "front.address[address]" in cdn
+    assert "front.address[address].isEmpty()" in cdn
+    assert "kCdnFrontAddresses[i][0]" in source and "kCdnFrontAddresses[i][1]" in source
     assert "route.relayHostFallback = route.domain;" in cdn
     assert "route.relayHost = route.domain;" not in cdn
     assert '{ "104.21.80.254", "172.67.155.165" }, // virkgj.com' in source
     assert "every front needs its two addresses" in source
     advance = function_body(source, "void AdvanceCdn(const WssRoute &route)")
     assert "CdnAddressRound[route.metered] ^= 1;" in advance
+
+
+def test_wss_fronts_hide_kws_from_the_sni_and_have_a_plain_step():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    start = function_body(source, "void WssSocket::startClient()")
+    # The zone is the TLS server name; kwsN.<zone> travels only in the Host header.
+    assert "IsCdn(_route) && !_route.plain" in start
+    assert "_route.domain.mid(dot + 1)" in start
+    assert "config.sni = _clientSni.constData();" in start
+    assert "config.plain = _route.plain ? 1 : 0;" in start
+    cdn = function_body(source, "[[nodiscard]] std::optional<WssRoute> CdnRoute(")
+    # The plain ws:// step is its own route with its own health record.
+    assert "bool plain = false" in source
+    assert 'plain ? u"cdn-plain-"_q : u"cdn-"_q' in cdn
+    assert "route.relayPort = plain ? 80 : 443;" in cdn
+    assert "route.plain = plain;" in cdn
+    official = function_body(source, "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
+    assert official.count("CdnRoute(dcId, false, true)") == 1
+    assert official.count("CdnRoute(kNoRelayDcId, false, true)") == 1
+    # TLS fronts first, then plain ones, then the tunnel.
+    plain_at = official.index("CdnRoute(dcId, false, true)")
+    assert official.index("CdnRoute(dcId)") < plain_at < official.index("TunnelRoute()", plain_at)
+    plain203_at = official.index("CdnRoute(kNoRelayDcId, false, true)")
+    assert official.index("CdnRoute(kNoRelayDcId)") < plain203_at < official.index("TunnelRoute()", plain203_at)
+    # The plain step is never persisted: its key still contains "/cdn-".
+    assert 'return !key.contains(u"/cdn-"_q);' in source
+
+
+def test_wss_front_catalog_is_refreshed_and_validated_as_a_whole():
+    source = WSS_SOCKET_CPP.read_text(encoding="utf-8")
+    assert 'u"tdata/wss_fronts.txt"_q' in source
+    assert "https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/.github/cfproxy-domains.txt" in source
+    assert "https://cdn.jsdelivr.net/gh/Flowseal/tg-ws-proxy@main/.github/cfproxy-domains.txt" in source
+    parse = function_body(source, "[[nodiscard]] bool ParseCdnCatalog(")
+    # One bad line rejects the file; a short list is not a list.
+    assert "if (!ValidCdnDomain(line)) {\n\t\t\treturn false;" in parse
+    assert "result.size() < kCdnCatalogMin" in parse
+    assert "result.size() > kCdnCatalogMax" in parse
+    # The cursor follows the live catalog, not the baked table.
+    assert "base::RandomIndex(CdnFrontCount())" in source
+    assert "% CdnFrontCount();" in source
+    # The download runs on the main thread; sockets live on connection threads.
+    official = function_body(source, "std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId)")
+    assert "FrontsRefreshDue()" in official
+    assert "base::InvokeQueued(QCoreApplication::instance()" in official
 
 if __name__ == "__main__":
     for name, value in list(globals().items()):

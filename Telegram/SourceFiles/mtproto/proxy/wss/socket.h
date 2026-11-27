@@ -29,6 +29,9 @@ struct WssRoute {
 	// tunnel it needs no destination and carries the byte stream as is.
 	int cdnSlot = -1;
 	int cdnDcId = 0;
+	// A front dialled over plain HTTP (ws://, port 80): no TLS, so no SNI for
+	// a network to match. A step after the TLS fronts, with its own health.
+	bool plain = false;
 	// Failure counting and suppression key when it must not follow the
 	// domain: every front domain of a DC shares one health record.
 	QString healthDomain;
@@ -192,6 +195,7 @@ private:
 	const Zsg::Naive::Api *_api = nullptr;
 	Zsg::Naive::WsHandle *_client = nullptr;
 	QByteArray _clientDomain;
+	QByteArray _clientSni;
 	QByteArray _clientPath;
 	QByteArray _readBuffer;
 	bool _upgraded = false;

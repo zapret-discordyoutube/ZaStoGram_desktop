@@ -26,8 +26,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QMutex>
 #include <QtCore/QDateTime>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QSaveFile>
+#include <QtCore/QUrl>
+#include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkInformation>
+#include <QtNetwork/QNetworkReply>
+#include <QtNetwork/QNetworkRequest>
+
+#include <vector>
 
 namespace MTP::details {
 namespace {
@@ -575,6 +585,10 @@ void NoteCdnStalled(const WssRoute &route, qint64 received) {
 	}
 }
 
+// The catalog routes actually use: kCdnFronts until a refreshed list is
+// cached (see "Front catalog" below). Its size bounds the cursor.
+[[nodiscard]] int CdnFrontCount();
+
 // Every connection starts from this position in kCdnFronts, per network. A
 // failure moves it on, so the next connection tries another front and edge;
 // a working front is kept. A random start spreads ZaStoGram users over the
@@ -585,7 +599,7 @@ std::map<bool, int> CdnCursor;
 [[nodiscard]] int CdnCursorLocked(bool metered) {
 	auto i = CdnCursor.find(metered);
 	if (i == end(CdnCursor)) {
-		i = CdnCursor.emplace(metered, base::RandomIndex(kCdnFrontCount)).first;
+		i = CdnCursor.emplace(metered, base::RandomIndex(CdnFrontCount())).first;
 	}
 	return i->second;
 }
@@ -601,7 +615,7 @@ void AdvanceCdn(const WssRoute &route) {
 	QMutexLocker lock(&RelayPreferencesMutex);
 	auto &cursor = CdnCursor[route.metered];
 	if (cursor == route.cdnSlot) {
-		cursor = (cursor + 1) % kCdnFrontCount;
+		cursor = (cursor + 1) % CdnFrontCount();
 		if (!cursor) {
 			CdnAddressRound[route.metered] ^= 1;
 		}
@@ -628,6 +642,208 @@ void AdvanceCdn(const WssRoute &route) {
 		}
 	}
 	return name + u".co.uk"_q;
+}
+
+// ---- Front catalog -------------------------------------------------------
+// The baked list (kCdnFronts) is the floor. The client downloads the current
+// tg-ws-proxy list into tdata/wss_fronts.txt (FetchFronts, at most once
+// a day, from GitHub or the jsDelivr mirror of the same file); a valid file
+// replaces the baked list, and a front that is not baked has no pinned
+// address, so it is dialled by NAME. The file is re-checked at most once a
+// minute and never needs a restart. Same rules as Android (WssSocket.cpp).
+struct CdnEntry {
+	QString domain;
+	QString address[2]; // empty: dial the domain
+};
+
+constexpr auto kCdnCatalogRecheck = 60 * crl::time(1000);
+constexpr auto kCdnCatalogMax = size_t(64);
+constexpr auto kCdnCatalogMin = size_t(3);
+constexpr auto kFrontsMaxAge = qint64(24 * 60 * 60 * 1000);
+constexpr auto kFrontsRetryGap = 30 * 60 * crl::time(1000);
+constexpr auto kFrontsMaxBytes = 16 * 1024;
+
+QMutex CdnCatalogMutex;
+std::vector<CdnEntry> CdnCatalog;
+crl::time CdnCatalogCheckedAt = 0;
+qint64 CdnCatalogStamp = -1; // -1 never read, 0 no usable file
+
+[[nodiscard]] QString FrontsPath() {
+	return cWorkingDir() + u"tdata/wss_fronts.txt"_q;
+}
+
+[[nodiscard]] std::vector<CdnEntry> BakedCdnCatalog() {
+	auto list = std::vector<CdnEntry>();
+	for (auto i = 0; i != kCdnFrontCount; ++i) {
+		list.push_back({
+			DecodeCdnDomain(kCdnFronts[i]),
+			{
+				QString::fromLatin1(kCdnFrontAddresses[i][0]),
+				QString::fromLatin1(kCdnFrontAddresses[i][1]),
+			},
+		});
+	}
+	return list;
+}
+
+[[nodiscard]] bool ValidCdnDomain(const QString &name) {
+	static const auto expression = QRegularExpression(
+		u"^[a-z0-9][a-z0-9.-]{2,78}[a-z0-9]$"_q);
+	return expression.match(name).hasMatch()
+		&& name.contains('.')
+		&& !name.contains(u".."_q);
+}
+
+// One front per line (encoded as tg-ws-proxy publishes it, or a plain
+// domain); blank lines and #comments are skipped. Anything else rejects the
+// whole file: a half-understood list must not replace a working one.
+[[nodiscard]] bool ParseCdnCatalog(
+		const QString &text,
+		std::vector<CdnEntry> *list) {
+	const auto baked = BakedCdnCatalog();
+	auto result = std::vector<CdnEntry>();
+	for (auto line : text.split('\n')) {
+		line = line.trimmed().toLower();
+		if (line.isEmpty() || line.startsWith('#')) {
+			continue;
+		}
+		if (!ValidCdnDomain(line)) {
+			return false;
+		}
+		auto entry = CdnEntry{ DecodeCdnDomain(line.toLatin1().constData()) };
+		if (!ValidCdnDomain(entry.domain)) {
+			return false;
+		}
+		auto duplicate = false;
+		for (const auto &seen : result) {
+			duplicate = duplicate || (seen.domain == entry.domain);
+		}
+		if (duplicate) {
+			continue;
+		}
+		for (const auto &known : baked) {
+			if (known.domain == entry.domain) {
+				entry.address[0] = known.address[0];
+				entry.address[1] = known.address[1];
+			}
+		}
+		result.push_back(std::move(entry));
+		if (result.size() > kCdnCatalogMax) {
+			return false;
+		}
+	}
+	if (result.size() < kCdnCatalogMin) {
+		return false;
+	}
+	*list = std::move(result);
+	return true;
+}
+
+// Called with CdnCatalogMutex held.
+void RefreshCdnCatalogLocked() {
+	const auto now = crl::now();
+	if (!CdnCatalog.empty() && now - CdnCatalogCheckedAt < kCdnCatalogRecheck) {
+		return;
+	}
+	CdnCatalogCheckedAt = now;
+	auto stamp = qint64(0);
+	auto text = QString();
+	const auto info = QFileInfo(FrontsPath());
+	if (info.isFile() && info.size() > 0 && info.size() < 64 * 1024) {
+		stamp = info.lastModified().toMSecsSinceEpoch() + info.size();
+		if (stamp == CdnCatalogStamp && !CdnCatalog.empty()) {
+			return;
+		}
+		auto file = QFile(FrontsPath());
+		if (file.open(QIODevice::ReadOnly)) {
+			text = QString::fromUtf8(file.readAll());
+		}
+	}
+	auto list = std::vector<CdnEntry>();
+	if (!text.isEmpty() && ParseCdnCatalog(text, &list)) {
+		LOG(("WSS Route: %1 fronts from the cached list.").arg(int(list.size())));
+		CdnCatalog = std::move(list);
+		CdnCatalogStamp = stamp;
+		return;
+	}
+	if (!text.isEmpty()) {
+		LOG(("WSS Route: the cached front list was rejected, using the baked one."));
+	}
+	CdnCatalog = BakedCdnCatalog();
+	CdnCatalogStamp = text.isEmpty() ? 0 : stamp;
+}
+
+int CdnFrontCount() {
+	QMutexLocker lock(&CdnCatalogMutex);
+	RefreshCdnCatalogLocked();
+	return int(CdnCatalog.size());
+}
+
+[[nodiscard]] CdnEntry CdnFrontAt(int index) {
+	QMutexLocker lock(&CdnCatalogMutex);
+	RefreshCdnCatalogLocked();
+	return CdnCatalog[index % int(CdnCatalog.size())];
+}
+
+const char *const kFrontsSources[] = {
+	"https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/.github/cfproxy-domains.txt",
+	"https://cdn.jsdelivr.net/gh/Flowseal/tg-ws-proxy@main/.github/cfproxy-domains.txt",
+};
+std::atomic<crl::time> FrontsLastCheck = 0;
+
+// True when the cached file is older than a day (or absent). Looks at the
+// file at most once in half an hour, which is also the gap between retries
+// after a failed download. Callable from any thread.
+[[nodiscard]] bool FrontsRefreshDue() {
+	const auto now = crl::now();
+	const auto last = FrontsLastCheck.load();
+	if (last && now - last < kFrontsRetryGap) {
+		return false;
+	}
+	FrontsLastCheck = now;
+	const auto info = QFileInfo(FrontsPath());
+	return !info.isFile()
+		|| info.lastModified().msecsTo(QDateTime::currentDateTime())
+			>= kFrontsMaxAge;
+}
+
+// Main thread only (QNetworkAccessManager). Tries the sources in turn; a
+// failed or unacceptable answer changes nothing.
+void FetchFronts(int source) {
+	static auto manager = (QNetworkAccessManager*)nullptr;
+	if (source >= int(sizeof(kFrontsSources) / sizeof(kFrontsSources[0]))) {
+		LOG(("WSS Route: no front list source answered, keeping the current one."));
+		return;
+	}
+	if (!manager) {
+		manager = new QNetworkAccessManager();
+	}
+	auto request = QNetworkRequest(
+		QUrl(QString::fromLatin1(kFrontsSources[source])));
+	request.setTransferTimeout(8000);
+	request.setAttribute(
+		QNetworkRequest::RedirectPolicyAttribute,
+		QNetworkRequest::NoLessSafeRedirectPolicy);
+	const auto reply = manager->get(request);
+	QObject::connect(reply, &QNetworkReply::finished, reply, [=] {
+		const auto ok = (reply->error() == QNetworkReply::NoError);
+		const auto bytes = ok ? reply->read(kFrontsMaxBytes + 1) : QByteArray();
+		reply->deleteLater();
+		auto list = std::vector<CdnEntry>();
+		if (ok
+			&& !bytes.isEmpty()
+			&& bytes.size() <= kFrontsMaxBytes
+			&& ParseCdnCatalog(QString::fromUtf8(bytes), &list)) {
+			auto file = QSaveFile(FrontsPath());
+			if (file.open(QIODevice::WriteOnly)
+				&& file.write(bytes) == bytes.size()
+				&& file.commit()) {
+				LOG(("WSS Route: front list updated, %1 fronts.").arg(int(list.size())));
+				return;
+			}
+		}
+		FetchFronts(source + 1);
+	});
 }
 
 void NoteRelayAttemptFailed(const WssRoute &route, bool viaFallback) {
@@ -861,13 +1077,16 @@ void NoteRelayAddressWorked(const WssRoute &route) {
 	return std::nullopt;
 }
 
+// plain: the same front over ws:// on port 80. Its health is kept apart from
+// the TLS step ("cdn-plain-") and still starts with "cdn-".
 [[nodiscard]] std::optional<WssRoute> CdnRoute(
 		int dcId,
-		bool ignoreSuppression = false) {
+		bool ignoreSuppression = false,
+		bool plain = false) {
 	auto route = WssRoute();
 	route.metered = CurrentNetworkMetered.load();
 	const auto prefix = u"kws%1"_q.arg(dcId);
-	route.healthDomain = u"cdn-"_q + prefix;
+	route.healthDomain = (plain ? u"cdn-plain-"_q : u"cdn-"_q) + prefix;
 	if (!ignoreSuppression && RouteSuppressed(route)) {
 		return std::nullopt;
 	}
@@ -878,18 +1097,22 @@ void NoteRelayAddressWorked(const WssRoute &route) {
 		slot = CdnCursorLocked(route.metered);
 		address = CdnAddressRound[route.metered];
 	}
-	const auto front = kCdnFronts[slot % kCdnFrontCount];
+	const auto front = CdnFrontAt(slot);
 	route.cdnSlot = slot;
 	route.cdnDcId = dcId;
 	// The fronts have no -1 media hosts: media rides kwsN too, as in Mirrly,
 	// with the plain DC in the obfuscation header (plainDcMarker). The pinned
 	// address is dialled first and the name once on the same socket; the
 	// next socket moves to the next front.
-	route.domain = prefix + u"."_q + DecodeCdnDomain(front);
-	route.relayHost = QString::fromLatin1(
-		kCdnFrontAddresses[slot % kCdnFrontCount][address]);
+	route.domain = prefix + u"."_q + front.domain;
+	// A front without a pinned address (new in the refreshed list) is
+	// dialled by name.
+	route.relayHost = front.address[address].isEmpty()
+		? route.domain
+		: front.address[address];
 	route.relayHostFallback = route.domain;
-	route.relayPort = 443;
+	route.relayPort = plain ? 80 : 443;
+	route.plain = plain;
 	route.path = u"/apiws"_q;
 	return route;
 }
@@ -977,6 +1200,11 @@ void WssTrackNetwork() {
 }
 
 std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
+	if (FrontsRefreshDue()) {
+		// Sockets are made on connection threads; the download needs the
+		// main one.
+		base::InvokeQueued(QCoreApplication::instance(), [] { FetchFronts(0); });
+	}
 	auto route = OfficialRoute(protocolDcId);
 	if (!route) {
 		const auto raw = int(protocolDcId);
@@ -984,6 +1212,9 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 			return std::nullopt;
 		}
 		if (auto front = CdnRoute(kNoRelayDcId)) {
+			return front;
+		}
+		if (auto front = CdnRoute(kNoRelayDcId, false, true)) {
 			return front;
 		}
 		if (auto tunnel = TunnelRoute()) {
@@ -1003,6 +1234,9 @@ std::optional<WssRoute> WssOfficialRoute(int16 protocolDcId) {
 		const auto raw = int(protocolDcId);
 		const auto dcId = (raw < 0) ? -raw : raw;
 		if (auto front = CdnRoute(dcId)) {
+			return front;
+		}
+		if (auto front = CdnRoute(dcId, false, true)) {
 			return front;
 		}
 		if (auto tunnel = TunnelRoute()) {
@@ -1583,6 +1817,18 @@ void WssSocket::startClient() {
 	auto config = Zsg::Naive::WsConfig();
 	config.host = _clientDomain.constData();
 	config.port = uint16_t(_route.relayPort);
+	// A Cloudflare front: the TLS server name is the zone ("pclead.co.uk"),
+	// and the kwsN.<zone> name that picks the DC travels only in the
+	// encrypted Host header. Every front used to put "kwsN." into the
+	// clear-text SNI, one pattern a network could match to cut them all.
+	if (IsCdn(_route) && !_route.plain) {
+		const auto dot = _route.domain.indexOf('.');
+		if (dot > 0 && dot + 1 < _route.domain.size()) {
+			_clientSni = _route.domain.mid(dot + 1).toUtf8();
+			config.sni = _clientSni.constData();
+		}
+	}
+	config.plain = _route.plain ? 1 : 0;
 	config.path = _clientPath.constData();
 	config.origin = "https://web.telegram.org";
 	config.user_agent = identity.userAgent;
